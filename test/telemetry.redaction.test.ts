@@ -57,6 +57,8 @@ import {
 const CANARY_ARG = "op://vault/SuperSecret/password-CANARY-9c1f4e2a";
 const CANARY_ARG_2 = "tadas@example.com-CANARY-b7d3";
 const CANARY_TOKEN = "strad_test_CANARY-token-must-never-be-exported-4f21";
+/** An invented `?servers=` value. Unvalidated caller text on the telemetry path. */
+const CANARY_SLUG = "not-a-real-server-CANARY-e81b";
 
 const CONFIG = parseConfig(`
 version: 1
@@ -193,6 +195,18 @@ beforeAll(async () => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
   });
 
+  // 4. A 424 for a server that does not EXIST, named with a canary. `?servers=`
+  //    is parsed with zero validation, so this string is pure caller-controlled
+  //    text arriving on the telemetry path.
+  await fetch(`${baseUrl}/mcp?servers=${encodeURIComponent(CANARY_SLUG)}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${adminToken.plaintext}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+
   await tracerProvider.forceFlush();
   await metricReader.forceFlush();
 });
@@ -310,6 +324,28 @@ describe("telemetry exports the signals we actually need", () => {
     expect(request).toBeDefined();
     expect(request!.attributes["mcp.servers.selected"]).toContain("alpha");
     expect(request!.attributes["mcp.principal.kind"]).toBe("system-token");
+  });
+
+  it("never turns an invented ?servers= value into a metric series (cardinality bomb)", () => {
+    // `?servers=` is parsed with no validation at all, so a caller can invent any
+    // string — and an unrecognised one still reaches the 424 path. Putting that
+    // straight onto a metric attribute would mint a new time series per request,
+    // and a MeterProvider holds every series it has ever seen in memory. A loop
+    // of `?servers=<random>` would then OOM the process — telemetry causing the
+    // exact failure it exists to diagnose.
+    //
+    // Unknown slugs must collapse to a single `<unknown>` bucket.
+    const unavailable = findMetric("strad.mcp.unavailable");
+    expect(unavailable).toBeDefined();
+
+    const servers = unavailable!.dataPoints.map(
+      (d) => d.attributes["mcp.server"],
+    );
+    expect(servers).not.toContain(CANARY_SLUG);
+    expect(servers).toContain("<unknown>");
+
+    // ...and it must not reach a span attribute either.
+    expect(exportedPayload()).not.toContain(CANARY_SLUG);
   });
 
   it("counts the 401 and the 424 fail-closed, without the credential", () => {

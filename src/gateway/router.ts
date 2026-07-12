@@ -70,6 +70,27 @@ export function createMcpHandler(opts: McpHandlerOptions) {
   const env = opts.env ?? process.env;
   const log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
 
+  /**
+   * The slugs this deployment actually configures.
+   *
+   * This exists to keep UNBOUNDED, CLIENT-SUPPLIED text out of telemetry.
+   * `?servers=` is parsed with no validation whatsoever (see parseServersParam),
+   * so a requested slug can be any string a caller invents — and an unrecognised
+   * one still reaches the 424 path as `unavailable[].slug`.
+   *
+   * Putting that straight onto a METRIC attribute would be a cardinality bomb: a
+   * loop of `?servers=<random>` would mint a new time series per request, and a
+   * MeterProvider holds every series it has ever seen in memory. That is an OOM,
+   * caused by the telemetry, in the process whose OOMs we are here to diagnose.
+   *
+   * So anything that is not a configured slug is reported as the sentinel
+   * `<unknown>`, which bounds the attribute's domain to the config's own server
+   * list plus one.
+   */
+  const configuredSlugs = new Set(opts.config.servers.map((s) => s.slug));
+  const knownSlug = (slug: string) =>
+    configuredSlugs.has(slug) ? slug : "<unknown>";
+
   return async function handleMcp(req: Request, res: Response): Promise<void> {
     // --- telemetry: one SERVER span per /mcp request ------------------------
     // Everything below runs inside this span's context, so the tool-call and
@@ -196,14 +217,21 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       // not available to it. A spike here means an entitlement or a config is
       // wrong, which is a completely different investigation from a spike in 401s.
       setOutcome("unavailable");
-      const unavailable = selection.unavailable.map((u) => u.slug);
-      for (const slug of unavailable) {
+      for (const u of selection.unavailable) {
         inst.unavailable.add(1, {
           "strad.mode": opts.mode,
-          "mcp.server": slug,
+          // knownSlug, not u.slug: an unconfigured server is exactly the case
+          // where the string is whatever the client typed. `status` is a fixed
+          // enum from resolveSelection (not_configured | disabled |
+          // not_entitled) and is the more useful label anyway — it says WHY.
+          "mcp.server": knownSlug(u.slug),
+          "mcp.unavailable.status": u.status,
         });
       }
-      span.setAttribute("mcp.servers.unavailable", unavailable);
+      span.setAttribute(
+        "mcp.servers.unavailable",
+        selection.unavailable.map((u) => knownSlug(u.slug)),
+      );
       res.status(424).json({
         error: "downstream_not_authenticated",
         message:
@@ -226,8 +254,13 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     // Requested vs selected, both as slug arrays. This pair is the whole story of
     // what `?servers=` did: asking for three and getting one is invisible in a
     // status code and obvious here.
+    //
+    // `requested` is client-supplied and unvalidated, so it is mapped through
+    // knownSlug — an invented slug shows up as `<unknown>` rather than echoing
+    // arbitrary caller text back out into an ingestor. `selected` is already
+    // drawn from the config by resolveSelection, so it is safe as-is.
     span.setAttributes({
-      "mcp.servers.requested": requested,
+      "mcp.servers.requested": requested.map(knownSlug),
       "mcp.servers.selected": selected,
       "mcp.servers.selected_count": selected.length,
     });
