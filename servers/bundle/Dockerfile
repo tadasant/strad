@@ -163,8 +163,17 @@ COPY --from=build-host /src/dist /app/host/dist
 COPY servers/bundle/host/package.json /app/host/package.json
 COPY servers/bundle/scripts /app/scripts
 
+# The telemetry bootstrap, vendored from telemetry/bundle by `npm run
+# telemetry:sync` (CI fails if the copies drift). It lives INSIDE the host tree
+# so its bare `@opentelemetry/*` imports resolve from /app/host/node_modules.
+# With no OTEL_EXPORTER_OTLP_ENDPOINT it starts nothing and logs one line — the
+# image is identical whether or not anything is collecting.
+COPY servers/bundle/otel /app/host/otel
+
 # App Platform sets PORT; 8080 is the internal_ports value strad binds.
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["node", "/app/host/dist/index.js"]
+# --import runs the bootstrap to completion BEFORE the host loads, which is what
+# lets it publish the Chromium hooks on globalThis in time for the first launch.
+CMD ["node", "--import", "/app/host/otel/instrument.mjs", "/app/host/dist/index.js"]

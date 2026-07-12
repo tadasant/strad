@@ -80,12 +80,24 @@ describe("staging config", () => {
     // Internal-only: internal_ports and NO http_port (both is an API rejection).
     expect(bundle.internal_ports).toEqual([8080]);
     expect(bundle.http_port).toBeUndefined();
-    // The credentials of all fourteen upstream servers, unioned onto the one box.
-    expect(bundle.envs.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
-    expect(bundle.envs.some((e) => e.key === "OP_SERVICE_ACCOUNT_TOKEN")).toBe(
+    // The credentials of all fourteen upstream servers, unioned onto the one box
+    // — and every one of them SECRET-typed, so App Platform encrypts it at rest.
+    const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
+    expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
+    expect(credentials.some((e) => e.key === "OP_SERVICE_ACCOUNT_TOKEN")).toBe(
       true,
     );
-    expect(bundle.envs.every((e) => e.type === "SECRET")).toBe(true);
+    expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
+
+    // And it is INSTRUMENTED. The collapsed container is the one this telemetry
+    // exists for — it is where Chromium, `op` and fourteen servers now share a
+    // vCPU — so a bundle that renders without its identity vars is a bundle we
+    // could not tell apart from the core in a dashboard.
+    expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
+      "bundle",
+    );
+    expect(bundle.envs.some((e) => e.key === "STRAD_ENV")).toBe(true);
+    expect(bundle.envs.some((e) => e.key === "STRAD_VERSION")).toBe(true);
   });
 
   it("every containerised server runs the ONE image, in the ONE bundle", () => {

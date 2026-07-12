@@ -19,12 +19,53 @@ import { log, logWarn } from "./log.js";
  * fresh one rather than a dead handle. A crash is therefore a degraded call, not
  * a dead container — which matters a great deal more now that the container also
  * holds the other 22 servers.
+ *
+ * TELEMETRY. The launch is wrapped in the bootstrap's `instrumentLaunch` hook, so
+ * it is timed, counted, and its `disconnected` event reports a Chromium crash
+ * alongside the container's memory pressure at that instant — the only way to
+ * tell an OOM-killed browser from one that died on a bad page. That distinction
+ * is the entire question this collapse raises, so the ONE browser is exactly the
+ * thing that must be measured. good-eggs and fetchpet no longer instrument their
+ * own launches here (they no longer launch); they instrument the launch they do
+ * make when they run standalone.
  */
 
 export interface SharedBrowser {
   isConnected(): boolean;
   newContext(options?: unknown): Promise<unknown>;
   close(): Promise<void>;
+}
+
+/**
+ * The hooks `otel/instrument.mjs` publishes on `globalThis` (see
+ * telemetry/bundle/instrument.mjs). Duck-typed and optional on purpose: with no
+ * bootstrap loaded — a unit test, a plain `npm start`, no OTLP endpoint — the
+ * wrapper is a passthrough and this file behaves exactly as it would without it.
+ */
+interface BrowserTelemetryHooks {
+  instrumentLaunch<T>(
+    launch: () => Promise<T>,
+    attrs?: { browser?: string; server?: string },
+  ): Promise<T>;
+  contextOpened(attrs?: { browser?: string; server?: string }): () => void;
+}
+
+function telemetry(): BrowserTelemetryHooks | undefined {
+  return (globalThis as Record<string, unknown>).__stradBrowserTelemetry as
+    | BrowserTelemetryHooks
+    | undefined;
+}
+
+async function instrumented<T>(launch: () => Promise<T>): Promise<T> {
+  const hooks = telemetry();
+  if (!hooks) return launch();
+  // `server: "bundle"` — the browser belongs to the container, not to any one of
+  // the three servers borrowing it. Attributing it to good-eggs would make the
+  // dashboard claim good-eggs launched a browser for a fetchpet call.
+  return hooks.instrumentLaunch(launch, {
+    browser: "chromium",
+    server: "bundle",
+  });
 }
 
 let browser: SharedBrowser | null = null;
@@ -55,14 +96,16 @@ export async function getSharedBrowser(): Promise<SharedBrowser> {
       .default;
     chromium.use(StealthPlugin());
 
-    const launched = (await chromium.launch({
-      headless: true,
-      args: [
-        "--disable-blink-features=AutomationControlled",
-        "--disable-dev-shm-usage",
-        "--no-sandbox",
-      ],
-    })) as unknown as SharedBrowser;
+    const launched = (await instrumented(() =>
+      chromium.launch({
+        headless: true,
+        args: [
+          "--disable-blink-features=AutomationControlled",
+          "--disable-dev-shm-usage",
+          "--no-sandbox",
+        ],
+      }),
+    )) as unknown as SharedBrowser;
 
     launches += 1;
     log(

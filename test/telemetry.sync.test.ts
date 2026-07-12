@@ -7,7 +7,7 @@ import { drifted, TARGETS } from "../scripts/sync-telemetry.mjs";
  *
  * The bundle telemetry bootstrap has to live INSIDE each supplementary image's
  * directory, because each image is its own Docker build context and cannot COPY
- * from the repo root. So there are six identical copies of it, and the only
+ * from the repo root. So there are seven identical copies of it, and the only
  * thing standing between that and six slowly-diverging copies is this test.
  *
  * If it fails: edit `telemetry/bundle/instrument.mjs` (never a copy), run
@@ -23,6 +23,7 @@ describe("the vendored bundle telemetry bootstrap", () => {
     // dashboard that is quietly missing a container. Naming them here means
     // adding one is a deliberate act.
     expect(TARGETS).toEqual([
+      "servers/bundle/otel/instrument.mjs",
       "servers/fetchpet/otel/instrument.mjs",
       "servers/pointsyeah/otel/instrument.mjs",
       "servers/good-eggs/otel/instrument.mjs",
