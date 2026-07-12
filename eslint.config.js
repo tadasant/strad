@@ -7,7 +7,22 @@ export default tseslint.config(
   // servers with their own toolchains (servers/* and images/bundle-google).
   // They are built and linted in their own image builds, not by the core's TS
   // program.
-  { ignores: ["dist/**", "node_modules/**", "servers/**", "images/**"] },
+  //
+  // The docs/ ignores are its BUILD OUTPUT, not its source: flat-config ignore
+  // globs are anchored to this file's directory, so a bare "dist/**" does not
+  // match docs/dist/**. Without these, `cd docs && npm run build` — which the
+  // docs_site CI job and AGENTS.md both tell you to run — leaves thousands of
+  // generated files behind that the next `npm run lint` tries to parse.
+  {
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "servers/**",
+      "images/**",
+      "docs/dist/**",
+      "docs/.astro/**",
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

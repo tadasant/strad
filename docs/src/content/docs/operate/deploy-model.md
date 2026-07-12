@@ -87,6 +87,13 @@ loudly instead of producing a crash-looping deploy.
 These are encoded in `src/deploy/appspec.ts` because each one cost something to
 learn:
 
+- **A spec update is a full REPLACE. An omitted field is a deletion.** This is the
+  one that has actually bitten. Omitting `domains` from an update _detaches the
+  custom domain_, and the app stays perfectly healthy on its `*.ondigitalocean.app`
+  ingress while the real hostname fails its TLS handshake — so nothing alerts.
+  `render-spec` now always emits `domains`, defaulting it from
+  `gateway.publicUrl`. Verify the custom domain still serves after any deploy. See
+  `HACKS.md` #18.
 - **Internal components use `internal_ports: [8080]` and must _omit_
   `http_port`.** `http_port` is what mints a public route; setting both is a hard
   API rejection. Omitting it is what keeps a bundle private.
@@ -96,13 +103,27 @@ learn:
 - **Deploy from a registry image, not a GitHub source.** App Platform's GitHub
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.
-- The **core** service gets `STRAD_MODE=core`, `NODE_ENV=production`, a `/healthz`
-  health check, and a `STRAD_BUNDLE_URL_<BUNDLE>` env per bundle (bound to
-  `${bundle.PRIVATE_URL}`).
-- **Bundle** components get `STRAD_MODE=bundle` and `STRAD_BUNDLE=<name>`. A
-  builtin bundle runs the strad image itself; a supplementary bundle runs the
-  image from its own `image:` ref (`parseImage` handles GHCR / DOCR / Docker
-  Hub).
+- The **core** service gets `STRAD_MODE=core`, `NODE_ENV=production`, the whole
+  config inline as `STRAD_CONFIG_YAML`, a `/healthz` health check, and a
+  `STRAD_BUNDLE_URL_<BUNDLE>` env per bundle (bound to `${bundle.PRIVATE_URL}`).
+- **What a bundle component gets depends on whose image it runs.** A bundle of
+  `builtin` servers runs the strad image and gets `STRAD_MODE=bundle` +
+  `STRAD_BUNDLE=<name>`. A bundle of `supplementary-image` servers runs _their_
+  image and gets only its own resolved `env:` map (SECRET-typed), the identity vars
+  (`STRAD_COMPONENT`, `STRAD_ENV`, `STRAD_VERSION`), and the telemetry vars — never
+  `STRAD_MODE`, never the config, never the token secrets it has no use for. The
+  blast radius of a compromised upstream image is bounded by what it was handed.
+  (`parseImage` handles GHCR / DOCR / Docker Hub refs.)
+
+## What strad's own config renders to
+
+`infra/strad.staging.yaml` produces exactly **two** components — `core` and
+`bundle` — and `test/staging-config.test.ts` asserts that. `core` runs
+`ghcr.io/tadasant/strad` with `http_port: 8080`; `bundle` runs
+`ghcr.io/tadasant/strad-bundle` at `apps-s-1vcpu-2gb` with `internal_ports: [8080]`
+and no public route.
+
+Prod, in `tadasant-internal`, is a separate config against the same renderer.
 
 For the workflows that drive all of this, see [Operations &
 CI](/operate/operations/). For the domain wiring, see [DNS &

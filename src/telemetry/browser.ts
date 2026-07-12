@@ -6,9 +6,10 @@ import { metrics, type Meter } from "@opentelemetry/api";
  * Three of the servers (fetchpet, pointsyeah, good-eggs) drive a real headless
  * Chromium. The known baseline: ~1.06s per launch, ~545MB peak RSS, a 1GB
  * budget, and CPU — not RAM — is what binds, because 1 vCPU serialises page
- * rendering. After the collapse, all three of those browsers plus ~26 MCP
- * servers plus the `op` CLI share ONE 1-vCPU container. If that was a mistake,
- * this file is where it shows up.
+ * rendering. After the collapse, all three of those browsers are ONE browser,
+ * and it shares a 1-vCPU container with the bundle's other 11 MCP servers (14
+ * mounts in all) and the `op` CLI. If that was a mistake, this file is where it
+ * shows up.
  *
  * ── The globalThis contract ──────────────────────────────────────────────────
  *

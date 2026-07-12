@@ -90,16 +90,22 @@ exposing them. See [Architecture](/intro/architecture/).
 
 One bundle runs one image, but any number of servers may share it — each on its
 own `path`, and capability variants of one upstream on the _same_ path. strad's
-own deployment is two components: `core`, and one bundle holding all fourteen
-containerised servers.
+own deployment is two components: `core`, and one bundle whose image mounts
+fourteen MCP servers in a single process.
 
 ## Capability
 
 Which of a server's tools a slug may use, set by `tools: { allow: [...] }` /
 `{ deny: [...] }` and enforced by the gateway on `tools/list` **and**
-`tools/call` — a withheld tool is refused before it reaches the upstream. The
-capability is baked into the slug (`onepassword-ro` vs `onepassword-rw`), so
-`?servers=` selects it. Two capability variants are the same container.
+`tools/call` — a withheld tool is refused with JSON-RPC `-32600` before it reaches
+the upstream. The capability is baked into the slug (`onepassword-ro` vs
+`onepassword-rw`), so `?servers=` selects it. Two capability variants are the same
+container.
+
+Capability is therefore **policy** — a gateway that declines — and not **physics** —
+a process that lacks the tool. It is a real boundary and a weaker one than the
+container-level tool-group env vars it replaced, and strad says so rather than
+letting you assume the stronger guarantee. See `HACKS.md` #22.
 
 ## Mode
 

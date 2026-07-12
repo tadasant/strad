@@ -43,19 +43,20 @@ the usual 60s — a 60s window can miss the entire memory ramp that precedes an 
 kill), `OTEL_TRACES_SAMPLER`.
 
 :::caution[Don't set `OTEL_SERVICE_NAME` unless you mean it]
-Left unset, each component names itself: `strad-core`, `strad-bundle-fetchpet`,
-`strad-bundle-op-rw`, and so on. Setting `OTEL_SERVICE_NAME` collapses all ~13
-processes into **one** service name — which is exactly the averaging that hides
-which component is dying. If you do set it, split by the `strad.component`
-resource attribute, which is always present.
+Left unset, each component names itself from `STRAD_COMPONENT`: `strad-core` and
+`strad-bundle`. Setting `OTEL_SERVICE_NAME` collapses both processes into **one**
+service name — which is exactly the averaging that hides which component is dying.
+If you do set it, split by the `strad.component` resource attribute, which is always
+present.
 :::
 
 ## What every component reports
 
-Each of the ~13 processes carries these resource attributes:
+Each process carries these resource attributes:
 
-- `service.name` — `strad-core`, `strad-<bundle>`
+- `service.name` — `strad-core`, `strad-<component>`
 - `service.version` — the **image tag actually deployed**, not the VERSION file
+- `service.namespace` — `strad`
 - `service.instance.id` — a fresh UUID **per process start**
 - `deployment.environment` (and `.name`) — `staging` | `prod` | `dev`
 - `strad.mode` (`core` | `bundle`), `strad.component`
@@ -71,10 +72,11 @@ Each of the ~13 processes carries these resource attributes:
 | `strad.container.memory.utilization`                                    | usage / limit, `0..1`. **This is the OOM predictor.**          |
 | `strad.process.memory.rss` / `.heap.used` / `.heap.total` / `.external` | Where the memory went                                          |
 
-The limit is read from the **cgroup**, not from `os.totalmem()`. This matters more
-than it sounds: inside a 1GB App Platform container, `os.totalmem()` reports the
-_host's_ memory (tens of GB), so a "percent memory used" computed the obvious way
-reads a comfortable ~4% while the kernel is about to kill you.
+The limit is read from the **cgroup** (`/sys/fs/cgroup/memory.max`), not from
+`os.totalmem()`. This matters more than it sounds: inside the bundle's 2GB App
+Platform container, `os.totalmem()` reports the _host's_ memory (tens of GB), so a
+"percent memory used" computed the obvious way reads a comfortable single digit
+while the kernel is about to kill you.
 
 ### CPU / saturation
 
@@ -103,7 +105,10 @@ climbing toward 1.0, and then a new `service.instance.id` with uptime back at ze
 
 ### Chromium
 
-`fetchpet`, `pointsyeah` and `good-eggs` each drive a real headless Chromium.
+`good-eggs`, `fetchpet` and `pointsyeah` all drive a real headless Chromium — and
+in the collapsed bundle they drive the **same one**, with a context per call. So
+these metrics describe a single shared browser inside the `strad-bundle` process,
+not one per server.
 
 | Metric                          | Why                                                                                                   |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -130,10 +135,10 @@ mcp.request                     (SERVER; mode, principal kind, requested vs sele
     └── mcp.upstream.call_tool  (CLIENT; server slug, upstream kind, timeout, outcome)
 ```
 
-W3C trace context (`traceparent`) is injected into every upstream hop, so a
+W3C trace context (`traceparent`) is injected into every upstream hop, so the
 bundle's spans join the core's trace. That is the difference between "the request
-took 8s" and "the request took 8s, of which 7.6s was Chromium inside
-bundle-fetchpet".
+took 8s" and "the request took 8s, of which 7.6s was Chromium inside the bundle,
+serving fetchpet".
 
 **Metrics:** `strad.mcp.requests`, `strad.mcp.request.duration`,
 `strad.mcp.in_flight` (concurrency), `strad.mcp.auth_failures` (401, by reason),
@@ -182,20 +187,28 @@ happily on an implementation that exports nothing at all.
 
 See `src/telemetry/redact.ts`.
 
-## The bundle images
+## The supplementary images
 
-Every supplementary image (`fetchpet`, `pointsyeah`, `good-eggs`, `bundle-api`,
-`onepassword`, `bundle-google`) boots via:
+The gateway starts its own SDK in-process. A supplementary image can't — it isn't
+strad — so each one boots through a **vendored OTEL bootstrap** instead:
 
 ```dockerfile
-CMD ["node", "--import", "./otel/instrument.mjs", "remote/build/index.js"]
+CMD ["node", "--import", "/app/host/otel/instrument.mjs", "/app/host/dist/index.js"]
 ```
 
-`otel/instrument.mjs` is **vendored, byte-identical**, into each image — each image
-is its own Docker build context and cannot `COPY` from the repo root, the same
-reason `shared/` is vendored. Edit `telemetry/bundle/instrument.mjs`, run
-`npm run telemetry:sync`, and commit both; `test/telemetry.sync.test.ts` fails CI
-if a copy drifts.
+`otel/instrument.mjs` is copied **byte-identical** into every image that has one.
+Each image is its own Docker build context and cannot `COPY` from the repo root —
+the same reason the `shared/` trees are vendored. `telemetry/bundle/instrument.mjs`
+is the source of truth; `scripts/sync-telemetry.mjs` copies it to seven targets;
+`test/telemetry.sync.test.ts` fails CI if any copy drifts.
+
+Seven targets, because the per-server images (`bundle-api`, `good-eggs`, `fetchpet`,
+`pointsyeah`, `onepassword`, `bundle-google`) still exist and are still built even
+though only `strad-bundle` is deployed. See [Known limitations](/limitations/).
+
+The telemetry env vars reach a supplementary component the same way — `appspec.ts`
+forwards exactly the `OTEL_*` keys into a component that otherwise receives only its
+own secrets. `test/appspec.telemetry.test.ts` pins that.
 
 The bootstrap also publishes the Chromium hooks on `globalThis`, which the browser
 servers call through a small local shim that no-ops when the bootstrap is absent.

@@ -20,8 +20,16 @@ Every server, regardless of kind, has these base fields (from
 | `kind`                 | _(required)_ | `remote-http` \| `supplementary-image` \| `builtin`.                                  |
 | `entitlements`         | `[]`         | Roles allowed to reach this server. **Empty = nobody** (fail closed).                 |
 | `enabled`              | `true`       | Set `false` to configure without exposing.                                            |
-| `timeoutMs`            | `120000`     | Per-hop upstream timeout.                                                             |
+| `tools`                | —            | The capability policy: `{ allow?: [...], deny?: [...] }`. Omitted = every tool.       |
+| `timeoutMs`            | `120000`     | Per-hop upstream timeout. The MCP SDK's own default is 60s at every hop.              |
 | `title`, `description` | —            | Human-facing metadata.                                                                |
+
+`tools` is `.strict()` and must set at least one of `allow` / `deny`. `allow` is
+exhaustive, `deny` subtracts and wins over `allow`, and the gateway enforces the
+result on `tools/list` **and** on `tools/call` — a withheld tool is refused with
+JSON-RPC `-32600` before the adapter is touched. This is what makes a read-only and
+a read-write variant of one upstream two entries against the *same* container; see
+[Adding a server](/servers/adding/#3b-give-it-a-capability-if-it-has-one).
 
 <aside class="starlight-aside starlight-aside--tip">
 
@@ -39,7 +47,7 @@ flowchart LR
         G["core gateway"]
     end
     G -->|"remote-http:<br/>proxy over the internet,<br/>strad holds the credential"| RH["Existing MCP server<br/>on the internet"]
-    G -->|"supplementary-image:<br/>deploy as internal-only<br/>component, proxy privately"| SI["Your container image<br/>(own bundle)"]
+    G -->|"supplementary-image:<br/>deploy as internal-only<br/>component, proxy privately"| SI["A container image,<br/>one or more servers on it,<br/>each on its own path"]
     G -->|"builtin:<br/>module compiled into<br/>the strad image"| BI["In-process module<br/>(or a bundle component)"]
 ```
 
@@ -64,24 +72,29 @@ servers:
 
 ### 2. `supplementary-image`
 
-A server **published as its own container image**. strad deploys it as an
-internal-only component and proxies to it over the private network. One entry,
-one server, one container.
+A server **served by a container image**. strad deploys the image as an
+internal-only component and proxies to it over the private network.
 
-Fields: `image` (required), `bundle` (required — a supplementary image always
-owns its bundle), `path` (defaults to `/mcp`, must start with `/`), `env` and
-`headers` (maps whose values may be `${NAME}` secrets).
+One bundle runs one image, but that image may host **many** servers — each on its
+own `path`. strad's own bundle image mounts fourteen MCP servers in one process, so
+fourteen `path`s on one container.
+
+Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
+start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets).
 
 ```yaml
 servers:
-  # supplementary-image — a server published as its own container image.
-  #    strad deploys it as an internal-only component and proxies to it.
+  # supplementary-image — a server served by a container image, on one path of it.
   - slug: good-eggs
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-server-good-eggs:latest
-    bundle: bundle-browser
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /good-eggs
     entitlements: [admin]
 ```
+
+Two entries may even share a `path` — that is the capability-variant case, where
+`acme-ro` and `acme-rw` are the same upstream behind different `tools:` policies.
 
 At deploy time this component gets `internal_ports: [8080]` and **no**
 `http_port` — which is what keeps it off the public edge (see [Deploy
@@ -113,15 +126,23 @@ servers:
 
 ## Validation refuses to boot on
 
-strad validates the whole config strictly at boot (a Zod `superRefine`). It
-**refuses to start** if any of these hold:
+strad validates the whole config strictly at boot (a Zod `superRefine` in
+`src/config/schema.ts`). It **refuses to start** if any of these hold:
 
 - Two servers share a `slug`.
 - A server grants a role that isn't defined under `roles:`.
-- More than one `supplementary-image` lands in the same bundle.
-- A `supplementary-image` shares a bundle with any other server.
-- A `supplementary-image` is placed in `core`.
+- **Two servers in the same bundle name different `image`s.** One bundle is one
+  App Platform component, and a component runs one image. Many servers per bundle
+  is fine — many *images* per bundle is not.
+- A bundle holding a `supplementary-image` also holds a server of another kind.
+- A `supplementary-image` is placed in the `core` bundle.
 - A server references a `bundle` that isn't declared under `bundles:`.
+- A `tools:` policy is present but sets neither `allow` nor `deny`.
+
+Note what is deliberately **not** an error: many servers in one bundle, and two
+servers on the same `path` of one bundle. Both are load-bearing — the first is how
+fourteen MCP servers fit in one container, the second is how a read-only and a
+read-write variant share it.
 
 Failing loudly at boot is the point: a misconfigured gateway never comes up
 half-wired.

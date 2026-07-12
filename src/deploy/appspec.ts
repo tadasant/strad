@@ -91,18 +91,19 @@ const PORT = 8080;
  * images.
  *
  * This list exists because of an asymmetry that is easy to miss and silent when
- * you get it wrong. A supplementary component (fetchpet, bundle-google, ...)
- * does NOT receive the broadcast `opts.env` — look below: it gets its own scoped
- * secrets plus `opts.env.filter(e => e.type === "SECRET")`, and nothing else.
- * That is deliberate and correct for `STRAD_CONFIG_YAML` (a supplementary image
- * does not run strad and has no use for strad's server list).
+ * you get it wrong. A supplementary component (today there is exactly one, the
+ * `bundle`) does NOT receive the broadcast `opts.env` — look below: it gets its
+ * own scoped secrets plus `opts.env.filter(e => e.type === "SECRET")`, and
+ * nothing else. That is deliberate and correct for `STRAD_CONFIG_YAML` (a
+ * supplementary image does not run strad and has no use for strad's server
+ * list).
  *
  * But it means a GENERAL var like `OTEL_EXPORTER_OTLP_ENDPOINT` would reach the
- * core and every strad-image bundle, and would NOT reach the six supplementary
- * images — i.e. it would instrument everything EXCEPT the containers where
- * Chromium and the `op` CLI actually live, which are the entire reason we are
- * doing this. The failure mode is the worst kind: no error, no warning, just a
- * dashboard that is quietly missing the components you care about most.
+ * core and every strad-image bundle, and would NOT reach the supplementary image
+ * — i.e. it would instrument everything EXCEPT the one container where Chromium
+ * and the `op` CLI actually live, which is the entire reason we are doing this.
+ * The failure mode is the worst kind: no error, no warning, just a dashboard
+ * that is quietly missing the component you care about most.
  *
  * `OTEL_EXPORTER_OTLP_HEADERS` is not in this list on purpose — it is a SECRET
  * (it carries the ingestor's auth token) and so it already crosses via the
@@ -120,7 +121,8 @@ const TELEMETRY_ENV_KEYS = new Set([
 
 /**
  * The identity vars every component gets, so its telemetry can say which of the
- * ~13 processes it is. `STRAD_COMPONENT` is the one that matters: a
+ * 2 deployed processes (core, bundle) it is. `STRAD_COMPONENT` is the one that
+ * matters: a
  * supplementary image has no STRAD_BUNDLE and could not otherwise name itself.
  *
  * `STRAD_VERSION` is the deployed image's TAG, which makes `service.version` in

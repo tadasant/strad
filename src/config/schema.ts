@@ -188,12 +188,14 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * their `tools:` policy, which the GATEWAY enforces. (Before capability moved to
  * the gateway, they could not even share a container — each needed its own
  * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
- * servers' env maps. That constraint is what made 26 servers cost 12 bundles.)
+ * servers' env maps. That constraint is what made the fleet cost 12 bundles for
+ * its 26 slugs. The same fleet is 25 slugs in ONE bundle today.)
  *
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
  * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and ~25 upstream servers, so size it up, not down.
+ * also runs `op` and 14 upstream servers (which the config names as 23 slugs), so
+ * size it up, not down.
  */
 const BundleConfig = z.object({
   name: SLUG,

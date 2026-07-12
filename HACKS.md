@@ -254,6 +254,11 @@ carries only Chromium. When bumping Playwright, bump the base image tag and the
 
 ## 12. good-eggs staging bundle deployed from the session, off DOCR not ghcr
 
+**⊘ SUPERSEDED.** The component this describes no longer exists. The collapse
+(hack #24) renders exactly two components — `core` and `bundle` — and
+`bundle-goodeggs` is not one of them; good-eggs is now a mount inside
+`ghcr.io/tadasant/strad-bundle`. Kept for history. Retained below as written.
+
 **What.** Like the core (hacks #3/#4), the good-eggs `bundle-goodeggs` component
 was added to `strad-staging` from the build session (`PUT /v2/apps/{id}` with a
 rendered spec), not via `deploy-staging.yml`. And — like the core — the image it

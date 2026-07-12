@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 13 upstream MCP servers, one
- * container, one process, one Chromium.
+ * bundle — THE strad supplementary image. All 14 upstream MCP servers (14
+ * mounts, see `buildMounts`), one container, one process, one Chromium. The
+ * gateway's config names more SLUGS than that — 23 supplementary-image entries
+ * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
+ * …) are several slugs pointing at ONE mount here.
  *
  * WHAT THIS REPLACES. Eleven components: bundle-api, bundle-api-ro, bundle-gcs,
  * bundle-google-{ro,rw,rw-external}, bundle-op-{ro,rw}, bundle-goodeggs,
@@ -23,8 +26,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Thirteen servers now share a process. A crash is a
- * 13-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Fourteen servers now share a process. A crash is a
+ * 14-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -253,7 +256,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other twelve servers' readiness.
+  // login, and a slow login must not delay the other thirteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -339,7 +342,7 @@ async function loadOnePassword(): Promise<Mount | null> {
   const safety = mod.checkElicitationSafety();
   if (!safety.safe) {
     // Fail closed — but only for 1Password. The upstream exits the process here;
-    // in a 13-server container that would be an outage caused by one server's
+    // in a 14-server container that would be an outage caused by one server's
     // config. Refuse to MOUNT it instead: strad's gateway then reports it as
     // unavailable, and every other server keeps serving.
     logWarn(
@@ -381,7 +384,7 @@ async function loadOnePassword(): Promise<Mount | null> {
  * Each keeps its own login, its own context and its own cookies; only the
  * browser PROCESS is shared (browser.ts). And unlike their standalone images,
  * a login failure here degrades the one mount instead of exiting the process:
- * with twelve other servers on board, `process.exit(1)` is no longer a
+ * with thirteen other servers on board, `process.exit(1)` is no longer a
  * proportionate response to Good Eggs changing a form field.
  */
 async function loadBrowserMounts(): Promise<Mount[]> {
@@ -701,7 +704,7 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: "20mb" }));
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 13 servers behind one health check, "ok: true" alone is not information.
+  // with 14 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -727,8 +730,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of thirteen servers must not kill the other
-  // twelve. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of fourteen servers must not kill the other
+  // thirteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

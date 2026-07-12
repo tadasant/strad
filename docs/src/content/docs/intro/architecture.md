@@ -5,11 +5,14 @@ sidebar:
   order: 2
 ---
 
-strad is a small gateway process with an unusual deployment shape: the same
-binary runs in two modes, and the server list in your config decides how many
-containers exist and how they are wired to each other.
+strad is a small gateway process with an unusual deployment shape: the server list
+in your config decides how many containers exist and how they are wired to each
+other.
 
 ## The whole system
+
+This is strad's own deployment — two App Platform components, which is the whole
+of it.
 
 ```mermaid
 flowchart TB
@@ -19,29 +22,27 @@ flowchart TB
     end
 
     subgraph app["DigitalOcean App Platform"]
-        subgraph core["core (public component)"]
-            GW["strad gateway<br/>STRAD_MODE=core"]
+        subgraph core["core (the one public component)"]
+            GW["strad gateway<br/>STRAD_MODE=core<br/>ghcr.io/tadasant/strad"]
             RH["remote-http adapters"]
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BA["bundle-api<br/>STRAD_MODE=bundle<br/>builtins"]
-            BB["bundle-browser<br/>supplementary image<br/>(own container)"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>14 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
     EXT["Remote MCP servers<br/>on the internet"]
     SM["GCP Secret Manager<br/>strad-&lt;env&gt;-*"]
-    GH["ghcr.io/tadasant/strad"]
+    GH["ghcr.io"]
 
     CL -->|"/mcp?servers=… + token"| GW
     HU -->|"/console (Google OAuth)"| GW
     GW --> RH --> EXT
     GW --> BI
-    GW -->|"http://bundle-api:8080<br/>Bearer STRAD_INTERNAL_TOKEN"| BA
-    GW -->|"http://bundle-browser:8080"| BB
+    GW -->|"http://bundle:8080/&lt;path&gt;<br/>one hop per selected server"| BU
     SM -.->|"injected as SECRET env at deploy"| app
-    GH -.->|"image pulled on every restart/scale"| app
+    GH -.->|"images pulled on every restart/scale"| app
 ```
 
 ## Core and bundles
@@ -52,25 +53,45 @@ network and is never reachable from the internet. The core reaches a bundle at
 `${bundle.PRIVATE_URL}`, which resolves to `http://bundle-name:8080` — a private,
 in-VPC hop (~4ms) with no public-edge hairpin.
 
-The same image runs in two modes, selected by the `STRAD_MODE` env var:
+A bundle runs **one image**, and any number of servers may share it, each on its
+own `path`. strad's own deployment has a single bundle: one
+`ghcr.io/tadasant/strad-bundle` container that mounts fourteen MCP servers in one
+Node process. The staging config maps twenty-three `supplementary-image` entries
+onto those fourteen mounts, because capability variants of one upstream are two
+entries pointing at the same path.
 
-- **`core`** mounts `remote-http` servers and core `builtin`s directly, and
+Three numbers, three different things:
+
+| Number | What it counts                                                                      |
+| ------ | ----------------------------------------------------------------------------------- |
+| **2**  | App Platform components (`core`, `bundle`)                                          |
+| **14** | MCP servers mounted inside the bundle image                                         |
+| **25** | server slugs in `infra/strad.staging.yaml` (23 supplementary + `echo` + `deepwiki`) |
+
+### The two modes
+
+The strad image itself runs in one of two modes, selected by `STRAD_MODE`:
+
+- **`core`** mounts `remote-http` servers and `core` `builtin`s in-process, and
   proxies to every non-core bundle over private HTTP.
-- **`bundle`** mounts only the `builtin`s assigned to its `STRAD_BUNDLE`, and
-  serves them back to core over private HTTP.
+- **`bundle`** mounts only the `builtin`s assigned to its `STRAD_BUNDLE` and serves
+  them back to core. A bundle component only runs the strad image in this mode if
+  it holds `builtin` servers; a bundle of `supplementary-image` servers runs _their_
+  image instead, and `STRAD_MODE` never enters the picture.
 
-When core proxies to a bundle, it calls the bundle at
+When core proxies to a strad-image bundle, it calls
 `${base}/mcp?servers=<slug>` with `Authorization: Bearer ${STRAD_INTERNAL_TOKEN}`.
-Because a bundle is itself a strad that already namespaces its tools, the adapter
+Because that bundle is itself a strad that already namespaces its tools, the adapter
 strips and restores the inner `<slug>__` prefix so you never see
 `bundled__bundled__whoami`.
 
 <aside class="starlight-aside starlight-aside--note">
 
-**Internal network is not an authorization story.** Bundle components have no
-public route, but they still require the shared `STRAD_INTERNAL_TOKEN` (verified
-with a constant-time compare) — because anything else in the VPC could otherwise
-reach them.
+**The private network is not an authorization story.** A strad-image bundle has no
+public route, but it still requires the shared `STRAD_INTERNAL_TOKEN` (constant-time
+compare) — anything else in the VPC could otherwise reach it. The `strad-bundle`
+image is the exception, and it is an open one: it has no bearer auth of its own and
+relies on having no public route. See `HACKS.md` #13.
 
 </aside>
 
@@ -119,9 +140,14 @@ the **slug**, enforced by the **gateway**:
 
 `allow` is exhaustive; `deny` subtracts and wins over `allow`; omitting `tools:`
 means no restriction. The policy filters `tools/list` **and rejects a
-`tools/call`** for a withheld tool — before the request reaches the upstream, so
-there is no API call and no side effect. Hiding a tool from the listing alone
-would be decoration: a client can call any name it likes.
+`tools/call`** for a withheld tool with JSON-RPC `-32600` (`InvalidRequest`) —
+before the adapter is touched, so there is no API call and no side effect. Hiding a
+tool from the listing alone would be decoration: a client can call any name it saw
+on a previous request.
+
+`unmatchedAllowEntries()` logs `mcp.policy_unmatched_tools` when an `allow` entry
+names a tool the upstream doesn't offer. That is the drift alarm: an upstream that
+renames a tool would otherwise quietly shrink a read-only tier to nothing.
 
 This is why the deployment is small. Capability used to be a container env var
 (`GMAIL_ENABLED_TOOLGROUPS=readonly`), and a component's env is the union of its
@@ -141,12 +167,23 @@ The server list drives how containers are grouped:
 - **A bundle runs ONE image** — but any number of servers may share it, on
   distinct paths, and capability variants may even share a path.
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
-  peaks ~545MB RSS, and CPU — not RAM — is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (14 servers, one
-  shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: measured
-  working set is ~760MB with two browser servers logging in at once. Several
-  Chromiums in one component is the thing to avoid — share one browser and open a
-  context per server.
+  peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
+  serialises rendering. strad's own deployment puts everything (14 mounted servers,
+  one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
+  measured working set is ~760MB with two browser servers logging in at once.
+  Several Chromiums in one component is the thing to avoid — share one browser and
+  open a context per call, which is what `servers/bundle/host/src/browser.ts` does.
+
+<aside class="starlight-aside starlight-aside--caution">
+
+**One process, one core, fourteen servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all fourteen down together, and the
+single vCPU is shared with Chromium. If it turns out to be starved, the next move
+is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
+compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
+`HACKS.md` #24.
+
+</aside>
 
 ## Platform, images, and secrets
 
