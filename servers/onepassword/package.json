@@ -1,0 +1,19 @@
+{
+  "name": "strad-server-onepassword",
+  "version": "0.1.0",
+  "private": true,
+  "description": "1Password MCP server packaged as a strad supplementary-image bundle (streamable-HTTP over the shared/ tool logic, with the op CLI baked into the image).",
+  "type": "module",
+  "workspaces": [
+    "elicitation",
+    "shared",
+    "remote"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @pulsemcp/mcp-elicitation && npm run build --workspace onepassword-mcp-server-shared && npm run build --workspace onepassword-mcp-server-remote",
+    "start": "node remote/build/index.js"
+  },
+  "comments": {
+    "layout": "Three workspaces built in dependency order. `elicitation/` is @pulsemcp/mcp-elicitation, vendored from pulsemcp/mcp-servers libs/elicitation because it is NOT published to npm (shared/ imports it). `shared/` is the upstream tool logic, vendored verbatim. `remote/` is the only new logic: a streamable-HTTP entrypoint over shared/. The op CLI is NOT an npm dependency — it is a binary baked into the Docker image and invoked via child_process; see Dockerfile."
+  }
+}

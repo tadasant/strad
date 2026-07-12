@@ -174,6 +174,173 @@ both repos.
 
 ---
 
+## 9. good-eggs image is bootstrapped from the PR branch
+
+**What.** Two workflows carry a `feat/good-eggs-supplementary` bootstrap trigger:
+
+1. `release-goodeggs-image.yml` — same bootstrap as hack #1: the first
+   `ghcr.io/tadasant/strad-server-good-eggs` image has to be pushed by CI (the
+   session has no `write:packages` PAT), and the `GITHUB_TOKEN` push only works
+   from a workflow in this repo.
+2. `ci.yml` `on.push.branches` — this PR targets `feat/strad-core-platform`
+   (PR #2), and `pull_request` CI reads the **base** branch's `ci.yml`, which only
+   fires for PRs to `main`. A `push` event instead runs this branch's own
+   `ci.yml`, so the branch is listed there to get a real typecheck/lint/test/build
+   run on the PR's **strad-core** changes (appspec.ts, render-spec.ts, the new
+   test, config). `servers/**` is outside the core toolchain (eslint/prettier/tsc
+   ignore it) and is validated by `release-goodeggs-image.yml` instead.
+
+**Undo.** Delete the `feat/good-eggs-supplementary` line from `on.push.branches`
+in both `release-goodeggs-image.yml` and `ci.yml` before/after merge. Once this
+PR retargets to `main` (after PR #2 merges), `pull_request` CI covers it normally.
+
+---
+
+## 10. good-eggs `shared/` is vendored, not a dependency
+
+**What.** `servers/good-eggs/shared/` is copied **verbatim** from
+[`pulsemcp/mcp-servers` `experimental/good-eggs/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/good-eggs)
+at commit `44f32a32afe27ffe9d00f23b24934c8242730f65`. Only `remote/` (the
+streamable-HTTP entrypoint) is new; the 11 tools and all Playwright logic are
+reused unchanged via `createMCPServer()`.
+
+**Why.** The upstream package publishes a stdio `local/` server to npm; it has no
+HTTP entrypoint and isn't published as a library strad could depend on. Vendoring
+the shared source is the fastest way to reuse the tool logic without forking the
+behaviour. strad's eslint/prettier/tsc are scoped away from `servers/**` so the
+upstream code keeps its own formatting and toolchain.
+
+**Undo.** When a shared fix is needed, make it upstream in `pulsemcp/mcp-servers`
+and re-vendor (bump the commit noted in `servers/good-eggs/README.md`). Longer
+term, have upstream publish `shared` as its own package and depend on it.
+
+---
+
+## 11. good-eggs pins Playwright to the base image's Chromium
+
+**What.** `servers/good-eggs` builds `FROM mcr.microsoft.com/playwright:v1.61.1-noble`
+(Chromium already bundled) and pins Playwright to `1.61.1` via an `overrides`
+block in `servers/good-eggs/package.json`, instead of the PoC's
+`node:22-bookworm` + `npx playwright install --with-deps chromium`.
+
+**Why.** `cdn.playwright.dev` was flaky from the build environment (repeated
+30s download timeouts), and downloading a browser at image-build time is a
+needless point of failure. The Playwright base image carries a Chromium whose
+revision (1228) matches Playwright 1.61.1 exactly, so the build never downloads a
+browser. The `overrides` keeps `shared/package.json` verbatim (it declares
+`^1.49.1`) while guaranteeing the installed Playwright matches the image.
+
+**Cost.** The base image is large (~3.7GB — it ships Chromium, Firefox, and
+WebKit). Only Chromium is used.
+
+**Undo.** If image size matters, switch to `node:22-bookworm` and
+`npx playwright install --with-deps chromium` (drop the base image and the
+`overrides`), accepting the CDN dependency; or build a slimmer custom base that
+carries only Chromium. When bumping Playwright, bump the base image tag and the
+`overrides` version together so the browser revision stays matched.
+
+---
+
+## 12. good-eggs staging bundle deployed from the session, off DOCR not ghcr
+
+**What.** Like the core (hacks #3/#4), the good-eggs `bundle-goodeggs` component
+was added to `strad-staging` from the build session (`PUT /v2/apps/{id}` with a
+rendered spec), not via `deploy-staging.yml`. And — like the core — the image it
+actually **pulls** is DOCR (`registry.digitalocean.com/strad/strad-server-good-eggs:latest`),
+not the ghcr image the committed config names.
+
+**Why the DOCR detour.** `tadasant/strad` is **private**, so the pushed ghcr
+package (`ghcr.io/tadasant/strad-server-good-eggs`, built green by
+`release-goodeggs-image.yml`) inherits private visibility, and App Platform needs
+`GHCR_PULL_TOKEN` to pull it. That token is a repo secret, not available to the
+session. There is no simple REST call to flip a user package's visibility to
+public either. DOCR is same-account, so App Platform pulls it with no credential
+— exactly the reason the core is on DOCR tonight. So the session built both
+images and pushed them to the DOCR `strad` registry, and rendered the spec with
+those DOCR refs. **The committed `infra/strad.staging.yaml` still names the ghcr
+image — that is the correct, intended source; only tonight's session-pull used DOCR.**
+(The core was also rebuilt from this branch as `strad:goodeggs-e2e` and pushed to
+DOCR, so staging runs known-good core code with the supplementary-image path.)
+
+**Undo.** Merge the PR; `deploy-staging.yml` re-renders `infra/strad.staging.yaml`
+(good-eggs included) and pulls the **ghcr** image with `GHCR_PULL_TOKEN`. First
+confirm the `strad-server-good-eggs` package is in that token's scope (add it if a
+pull 403s), then delete the DOCR `strad-server-good-eggs` repo alongside the core
+one (hack #4).
+
+---
+
+## 13. good-eggs `/mcp` has no bearer auth of its own
+
+**What.** The good-eggs container serves `/mcp` unauthenticated. Its only
+protection is the network boundary: it is an internal-only App Platform component
+(`internal_ports: [8080]`, no public route), reachable solely by the core over
+the private network. This matches the proven browser-bundle PoC.
+
+**Why.** The core→supplementary proxy path does not send an internal token by
+default (unlike the builtin-in-bundle path), so wiring token auth means adding a
+`headers:` entry on the config plus a check in `remote/`. Kept minimal for the
+first cut; reachability is already gated by the private network.
+
+**Undo (hardening).** Add `headers: { Authorization: "Bearer ${STRAD_INTERNAL_TOKEN}" }`
+to the good-eggs server entry and have `remote/` reject requests without it
+(`STRAD_INTERNAL_TOKEN` is already present in the bundle's env). Then the bundle
+authenticates the core even if the private network is ever breached.
+
+---
+
+## 14. onepassword image is bootstrapped from the PR branch (stacked on good-eggs)
+
+**What.** The onepassword supplementary bundle mirrors good-eggs (hack #9). Two
+workflows carry a `feat/onepassword-supplementary` bootstrap trigger:
+
+1. `release-onepassword-image.yml` — the first
+   `ghcr.io/tadasant/strad-server-onepassword` image has to be pushed by CI (the
+   session has no `write:packages` PAT), so the branch trigger mints it into ghcr
+   now. The workflow also asserts `op --version` against the built image before
+   pushing, so a broken `op` install can never be published.
+2. `ci.yml` `on.push.branches` — this PR is **stacked on
+   `feat/good-eggs-supplementary`** (its `supplementary-image` infra — the
+   appspec.ts/render-spec.ts/config changes — is not on `main` yet), so the PR's
+   base is that feature branch, not `main`. `pull_request` CI only fires for PRs
+   to `main`, so a `push` runs this branch's own `ci.yml` to get a real
+   typecheck/lint/test/build on the PR's one core-visible change,
+   `test/onepassword.appspec.test.ts`. `servers/onepassword/**` is outside the
+   core toolchain (eslint/prettier/tsc ignore it) and is validated by
+   `release-onepassword-image.yml` instead.
+
+**Undo.** Merge good-eggs (PR #4) to `main`, then merge this PR onto `main` and
+delete the `feat/onepassword-supplementary` line from `on.push.branches` in both
+`release-onepassword-image.yml` and `ci.yml`. From then, `pull_request` CI covers
+it normally and images are cut only from `main`.
+
+---
+
+## 15. onepassword `shared/` is vendored, and its elicitation lib with it
+
+**What.** `servers/onepassword/shared/` is copied **verbatim** from
+[`pulsemcp/mcp-servers` `experimental/onepassword/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/onepassword);
+only `remote/` (the streamable-HTTP entrypoint) is new, reusing `createMCPServer()`.
+Same rationale as good-eggs (hack #10). One extra wrinkle: `shared/` depends on
+`@pulsemcp/mcp-elicitation`, which is **not published to npm** (it lives at
+`libs/elicitation` in the upstream monorepo and is consumed there by a `file:`
+path). So that library is vendored too, as `servers/onepassword/elicitation/`, a
+third workspace built before `shared/`. It has no runtime deps of its own (only
+`node:crypto`). `shared/package.json`'s dependency is repointed from the upstream
+`file:../../../libs/elicitation` to a workspace `*` — the only edit to the
+otherwise-verbatim `shared/`.
+
+**Why.** Reusing the upstream tool logic (nine tools, credential redaction,
+elicitation gating) without forking it. `op` itself is not an npm dependency at
+all — it is a pinned binary baked into the image (see `servers/onepassword/Dockerfile`,
+`ARG OP_VERSION`) and invoked via `child_process`.
+
+**Undo.** When a shared fix is needed, make it upstream and re-vendor both dirs.
+Longer term, have upstream publish `@pulsemcp/mcp-elicitation` and `shared` as
+real packages and depend on them.
+
+---
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
@@ -193,3 +360,16 @@ A consolidated checklist, cross-referenced above:
 - [ ] **DNS**: `staging.strad.tadasant.com` → the App Platform app (handled by a
       parallel session via Cloudflare; grey-cloud/DNS-only, App Platform issues
       the cert).
+- [ ] **Merge the PR**, then drop the good-eggs bootstrap branch trigger →
+      removes hacks #9 and #12.
+- [ ] **Confirm the `strad-server-good-eggs` ghcr package is pullable by
+      `GHCR_PULL_TOKEN`** (add it to the PAT scope, or set the package public)
+      → resolves the visibility watch in hack #12.
+- [ ] **Seed `strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD`
+      in GCP** (via `secrets-sync.yml`) so the CI deploy has the good-eggs
+      credentials, not just the session-driven deploy.
+- [ ] **Merge good-eggs (PR #4) to `main`, then this PR**, then drop the
+      `feat/onepassword-supplementary` bootstrap trigger → removes hack #14.
+      The onepassword token (`OP_SERVICE_ACCOUNT_TOKEN`) and its `onepassword-ro`
+      / `onepassword-rw` server configs are wired downstream in tadasant-internal,
+      not in this repo.
