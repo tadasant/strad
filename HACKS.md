@@ -176,14 +176,21 @@ both repos.
 
 ## 9. good-eggs image is bootstrapped from the PR branch
 
-**What.** `release-goodeggs-image.yml` triggers on `main` **and** on the feature
-branch `feat/good-eggs-supplementary`. Same bootstrap as hack #1, for the same
-reason: the first `ghcr.io/tadasant/strad-server-good-eggs` image has to be
-pushed by CI (the session has no `write:packages` PAT), and the built-in
-`GITHUB_TOKEN` push only works from a workflow in this repo.
+**What.** Two workflows carry a `feat/good-eggs-supplementary` bootstrap trigger:
 
-**Undo.** Delete the `feat/good-eggs-supplementary` line from
-`on.push.branches` in `release-goodeggs-image.yml` before/after merge.
+1. `release-goodeggs-image.yml` — same bootstrap as hack #1: the first
+   `ghcr.io/tadasant/strad-server-good-eggs` image has to be pushed by CI (the
+   session has no `write:packages` PAT), and the `GITHUB_TOKEN` push only works
+   from a workflow in this repo.
+2. `ci.yml` `on.push.branches` — this PR targets `feat/strad-core-platform`
+   (PR #2), and `pull_request` CI reads the **base** branch's `ci.yml`, which only
+   fires for PRs to `main`. A `push` event instead runs this branch's own
+   `ci.yml`, so the branch is listed there to get a real
+   typecheck/lint/test/build run on the good-eggs changes before merge.
+
+**Undo.** Delete the `feat/good-eggs-supplementary` line from `on.push.branches`
+in both `release-goodeggs-image.yml` and `ci.yml` before/after merge. Once this
+PR retargets to `main` (after PR #2 merges), `pull_request` CI covers it normally.
 
 ---
 
@@ -232,25 +239,32 @@ carries only Chromium. When bumping Playwright, bump the base image tag and the
 
 ---
 
-## 12. good-eggs staging bundle deployed from the agent session; ghcr visibility
+## 12. good-eggs staging bundle deployed from the session, off DOCR not ghcr
 
-**What.** Like the core (hack #3), the good-eggs `bundle-goodeggs` component was
-added to `strad-staging` directly via the DigitalOcean MCP from the build
-session, not via `deploy-staging.yml`. The image is pulled from
-`ghcr.io/tadasant/strad-server-good-eggs`.
+**What.** Like the core (hacks #3/#4), the good-eggs `bundle-goodeggs` component
+was added to `strad-staging` from the build session (`PUT /v2/apps/{id}` with a
+rendered spec), not via `deploy-staging.yml`. And — like the core — the image it
+actually **pulls** is DOCR (`registry.digitalocean.com/strad/strad-server-good-eggs:latest`),
+not the ghcr image the committed config names.
 
-**Why.** Same as hack #2b — the CI deploy path is merge-gated. This proves the
-supplementary-image path end-to-end now.
+**Why the DOCR detour.** `tadasant/strad` is **private**, so the pushed ghcr
+package (`ghcr.io/tadasant/strad-server-good-eggs`, built green by
+`release-goodeggs-image.yml`) inherits private visibility, and App Platform needs
+`GHCR_PULL_TOKEN` to pull it. That token is a repo secret, not available to the
+session. There is no simple REST call to flip a user package's visibility to
+public either. DOCR is same-account, so App Platform pulls it with no credential
+— exactly the reason the core is on DOCR tonight. So the session built both
+images and pushed them to the DOCR `strad` registry, and rendered the spec with
+those DOCR refs. **The committed `infra/strad.staging.yaml` still names the ghcr
+image — that is the correct, intended source; only tonight's session-pull used DOCR.**
+(The core was also rebuilt from this branch as `strad:goodeggs-e2e` and pushed to
+DOCR, so staging runs known-good core code with the supplementary-image path.)
 
-**Watch for (ghcr visibility).** `tadasant/strad` is a **private** repo, so the
-new package inherits private visibility. App Platform can only pull it with a
-credential in scope of `GHCR_PULL_TOKEN` (which `attach-registry-creds.mjs`
-auto-attaches to any GHCR component). If a pull 403s, either the package is not in
-the (fine-grained) PAT's scope — add it — or make the package public. The
-session-driven deploy used <SEE_DEPLOY_NOTE>.
-
-**Undo.** Merge the PR; the next CI deploy re-renders `infra/strad.staging.yaml`
-(good-eggs included) with GHCR creds from `GHCR_PULL_TOKEN`.
+**Undo.** Merge the PR; `deploy-staging.yml` re-renders `infra/strad.staging.yaml`
+(good-eggs included) and pulls the **ghcr** image with `GHCR_PULL_TOKEN`. First
+confirm the `strad-server-good-eggs` package is in that token's scope (add it if a
+pull 403s), then delete the DOCR `strad-server-good-eggs` repo alongside the core
+one (hack #4).
 
 ---
 
