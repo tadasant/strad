@@ -13,11 +13,14 @@ describe("mintToken", () => {
       label: "probe",
       roles: ["admin"],
     });
-    const parts = plaintext.split("_");
-    expect(parts).toHaveLength(4);
-    expect(parts[0]).toBe("strad");
-    expect(parts[1]).toBe("staging");
-    expect(parts[2]).toBe(record.pubid);
+    // Parse the way the real code does — NOT plaintext.split("_"). The secret is
+    // base64url and legitimately contains "_" about half the time, so a naive
+    // split yields 5+ parts and this assertion would fail at random. (It did, on
+    // CI, after passing locally — which is exactly why parseToken exists.)
+    const parsed = parseToken(plaintext);
+    expect(parsed).not.toBeNull();
+    expect(parsed).toMatchObject({ env: "staging", pubid: record.pubid });
+    expect(plaintext.startsWith("strad_staging_")).toBe(true);
   });
 
   it("never stores the plaintext", () => {
@@ -26,7 +29,9 @@ describe("mintToken", () => {
       label: "probe",
       roles: ["admin"],
     });
-    expect(JSON.stringify(record)).not.toContain(plaintext.split("_")[3]);
+    const secret = parseToken(plaintext)?.secret;
+    expect(secret).toBeTruthy();
+    expect(JSON.stringify(record)).not.toContain(secret);
     expect(record.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 
