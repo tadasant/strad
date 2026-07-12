@@ -5,10 +5,25 @@ export {
   type IGoodEggsClient,
   type ClientFactory,
   type CreateMCPServerOptions,
+  type RegisterHandlersOptions,
 } from './server.js';
 
 // Tools exports
-export { createRegisterTools } from './tools.js';
+export { createRegisterTools, type RegisterToolsOptions } from './tools.js';
+
+// MCP App (io.modelcontextprotocol/ui) exports
+export {
+  MCP_APPS_EXTENSION,
+  SEARCH_APP_URI,
+  SEARCH_APP_NAME,
+  SEARCH_APP_MIME,
+  SEARCH_APP_TOOL,
+  clientSupportsApps,
+  searchAppToolMeta,
+  serializeForScript,
+  renderSearchAppHtml,
+  type AppClientCapabilities,
+} from './appUi.js';
 
 // Types exports
 export type {

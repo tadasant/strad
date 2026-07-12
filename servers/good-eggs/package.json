@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace shared && npm run build --workspace remote",
+    "test": "npm run test --workspace shared",
     "start": "node remote/build/index.js"
   },
   "comments": {

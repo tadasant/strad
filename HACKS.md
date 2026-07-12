@@ -378,6 +378,58 @@ then flip the two servers to `enabled: true`.
 
 ---
 
+## 16. MCP Apps: gating is authoritative at the app-server, additive at the gateway
+
+The `io.modelcontextprotocol/ui` inline-UI feature spans two layers, and they
+gate differently because they are stateful in different ways.
+
+1. **good-eggs `remote/` became session-ful.** Capability gating needs the
+   client's `initialize` capabilities to govern the whole session (tools/list,
+   resources/read, and tools/call all arrive on separate POSTs). The original
+   per-POST-stateless endpoint saw the capabilities once and never again, so it
+   could not gate. `remote/src/index.ts` now keys a Server per `Mcp-Session-Id`.
+   The browser/login model is unchanged — one logged-in page in the factory
+   closure, shared across sessions. This is the AUTHORITATIVE gate: a client that
+   did not advertise the extension gets a byte-identical plain result.
+
+2. **The core gateway advertises `resources` unconditionally.** strad's `/mcp` is
+   deliberately session-LESS (it derives the toolset per request, never from a
+   session — see router.ts). So it cannot gate the initialize response by client
+   capabilities and still answer the follow-up resources/list POST, which carries
+   none — and the SDK refuses to register a resources handler for a server that
+   didn't declare the capability. The pragmatic resolution: the gateway always
+   advertises `resources` and proxies them (union on list, route on read), and
+   always advertises the UI extension to its upstreams so an app-server offers
+   its `ui://` template. A non-App client simply never renders the `ui://`
+   resource or the tool `_meta` it ignores. **Net:** through the gateway, the App
+   surface is exposed to everyone but only rendered by clients that asked for it;
+   the strict "byte-identical for non-App clients" guarantee is upheld at the
+   app-owning server (good-eggs), which is session-ful.
+
+**Undo.** If the gateway is ever made session-ful (an explicit reversal of the
+router.ts design), it could gate `resources` and tool `_meta` on the end
+client's capabilities, making the through-gateway surface byte-identical too.
+Until then, the two-layer split above is the intended design, not a stopgap.
+
+## 17. MCP-App PR stacks on the good-eggs branch; CI trigger is bootstrapped
+
+The MCP-App work extends good-eggs, which only exists on
+`feat/good-eggs-supplementary`, so its PR is STACKED on that branch (not `main`).
+For a `pull_request`, GitHub reads the `on` filter from the BASE branch's
+`ci.yml`, which only fires for base `main` — so a PR into the good-eggs branch
+gets no `pull_request` CI. Same bootstrap as hacks #1/#9 and the
+fetchpet+pointsyeah PR: `feat/good-eggs-mcp-app-ui` is added to
+`on.push.branches` so a push runs THIS branch's `ci.yml`. That file also carries
+a new `good_eggs` job that builds + runs the server's browser-free MCP-App tests,
+since `servers/**` is otherwise out of the core toolchain and only image-built on
+push.
+
+**Undo.** Once good-eggs is on `main` and this stack retargets, drop
+`feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
+it is the standing check for `servers/good-eggs`.
+
+---
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

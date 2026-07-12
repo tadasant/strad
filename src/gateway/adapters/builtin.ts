@@ -2,6 +2,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type {
   BuiltinContext,
   BuiltinModule,
+  CallContext,
   CallToolResult,
   ServerAdapter,
 } from "./types.ts";
@@ -31,10 +32,12 @@ export class BuiltinServerAdapter implements ServerAdapter {
   async callTool(
     name: string,
     args: Record<string, unknown>,
+    ctx?: CallContext,
   ): Promise<CallToolResult> {
     return this.mod.call(name, args, {
       options: this.options,
       component: this.component,
+      clientCapabilities: ctx?.clientCapabilities,
     });
   }
 

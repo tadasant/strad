@@ -28,6 +28,12 @@ on:
       # core changes (infra config, test/appspec.browser-servers.test.ts). The two
       # servers themselves are validated by their release-*-image.yml builds.
       - feat/browser-servers-fetchpet-pointsyeah
+      # BOOTSTRAP ONLY — remove before/after merge. Same reason: the MCP-App PR is
+      # STACKED on feat/good-eggs-supplementary (main does not yet carry good-eggs),
+      # so a PR to that base never fires `pull_request` CI — GitHub reads the base
+      # branch's ci.yml for the filter. A push runs THIS branch's ci.yml, which
+      # also carries the new `good_eggs` job below. See HACKS #17.
+      - feat/good-eggs-mcp-app-ui
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -60,6 +66,30 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Test
+        run: npm test
+
+  # servers/** is out of the core TS program (see eslint.config.js) and its image
+  # is only built on push, so a PR could otherwise break the good-eggs server
+  # without CI noticing. Build it (typechecks shared + remote) and run its
+  # browser-free MCP-App gating tests here. The browser download is skipped: the
+  # image ships Chromium in its base layer, and these tests never launch it.
+  good_eggs:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/good-eggs
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: Build (typecheck shared + remote)
+        working-directory: servers/good-eggs
+        run: npm run build
+      - name: Test (MCP-App gating)
+        working-directory: servers/good-eggs
         run: npm test
 
   verify_lockfile:

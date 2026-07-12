@@ -1,6 +1,19 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { ClientFactory, IGoodEggsClient } from './server.js';
+import {
+  SEARCH_APP_URI,
+  SEARCH_APP_NAME,
+  SEARCH_APP_MIME,
+  SEARCH_APP_TOOL,
+  searchAppToolMeta,
+  renderSearchAppHtml,
+} from './appUi.js';
 import {
   SearchGrocerySchema,
   GetGroceryDetailsSchema,
@@ -142,6 +155,9 @@ interface Tool {
   handler: (args: unknown) => Promise<{
     content: Array<{ type: string; text: string }>;
     isError?: boolean;
+    // Machine-readable mirror of the result, attached only for MCP-App clients
+    // so the inline UI can paint from structured data instead of re-parsing text.
+    structuredContent?: Record<string, unknown>;
   }>;
 }
 
@@ -150,10 +166,26 @@ interface Tool {
  */
 export type GetReadyClientFn = () => Promise<IGoodEggsClient>;
 
+/**
+ * Options for tool registration.
+ */
+export interface RegisterToolsOptions {
+  /**
+   * The client advertised the `io.modelcontextprotocol/ui` extension, so this
+   * connection gets the MCP-App surface: the `ui://good-eggs/search-results`
+   * resource, the `_meta` binding on `search_for_grocery`, and structured
+   * result data. When false (the default), every response is byte-identical to
+   * the plain, pre-App tool surface.
+   */
+  appUi?: boolean;
+}
+
 export function createRegisterTools(
   clientFactory: ClientFactory,
-  getReadyClient?: GetReadyClientFn
+  getReadyClient?: GetReadyClientFn,
+  options: RegisterToolsOptions = {}
 ) {
+  const appUi = options.appUi === true;
   // Create a single client instance that persists across calls
   let client: IGoodEggsClient | null = null;
   let isInitialized = false;
@@ -205,6 +237,9 @@ export function createRegisterTools(
                   text: `No groceries found for "${validated.query}". Try a different search term.`,
                 },
               ],
+              // MCP-App clients get the structured mirror even when empty, so the
+              // inline grid can render its "no products" state.
+              ...(appUi ? { structuredContent: { query: validated.query, products: [] } } : {}),
             };
           }
 
@@ -222,6 +257,11 @@ export function createRegisterTools(
                 text: `Found ${results.length} groceries for "${validated.query}":\n\n${formattedResults}`,
               },
             ],
+            // The text block above is unchanged for every client. For MCP-App
+            // clients we ADD a structured mirror the inline UI paints from — the
+            // richer product fields (imageUrl, discount, favorite) that the text
+            // summary flattens away.
+            ...(appUi ? { structuredContent: { query: validated.query, products: results } } : {}),
           };
         } catch (error) {
           return {
@@ -743,13 +783,18 @@ export function createRegisterTools(
   ];
 
   return (server: Server) => {
-    // List available tools
+    // List available tools. For MCP-App clients, the search tool carries a
+    // `_meta` pointer that binds it to the `ui://good-eggs/search-results`
+    // resource; for everyone else the listing is byte-identical to before.
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: tools.map((tool) => ({
           name: tool.name,
           description: tool.description,
           inputSchema: tool.inputSchema,
+          ...(appUi && tool.name === SEARCH_APP_TOOL
+            ? { _meta: searchAppToolMeta() }
+            : {}),
         })),
       };
     });
@@ -765,5 +810,39 @@ export function createRegisterTools(
 
       return await tool.handler(args);
     });
+
+    // --- MCP App: the ui:// resource, gated on the UI extension --------------
+    // Registered ONLY when the client advertised `io.modelcontextprotocol/ui`.
+    // A plain client never sees these handlers fire and never learns the
+    // resource exists — so its surface is unchanged.
+    if (appUi) {
+      server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+        resources: [
+          {
+            uri: SEARCH_APP_URI,
+            name: SEARCH_APP_NAME,
+            title: 'Good Eggs — Search results',
+            description:
+              'Interactive product grid for Good Eggs search results: images, prices, favorites, and add-to-cart.',
+            mimeType: SEARCH_APP_MIME,
+          },
+        ],
+      }));
+
+      server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+        if (request.params.uri !== SEARCH_APP_URI) {
+          throw new Error(`Unknown resource: ${request.params.uri}`);
+        }
+        return {
+          contents: [
+            {
+              uri: SEARCH_APP_URI,
+              mimeType: SEARCH_APP_MIME,
+              text: renderSearchAppHtml(),
+            },
+          ],
+        };
+      });
+    }
   };
 }

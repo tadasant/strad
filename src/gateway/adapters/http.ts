@@ -1,6 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  Tool,
+  Resource,
+  ReadResourceResult,
+  ClientCapabilities as SdkClientCapabilities,
+} from "@modelcontextprotocol/sdk/types.js";
+import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 
 /**
@@ -71,7 +77,18 @@ export class HttpServerAdapter implements ServerAdapter {
 
       const client = new Client(
         { name: "strad-gateway", version: "0.1.0" },
-        { capabilities: {} },
+        // Advertise MCP-Apps capability upstream so an app-server offers its
+        // `ui://` resource + tool `_meta` to the gateway, which relays them to
+        // the end client. Constant across requests, so the cached connection
+        // below stays correct for every caller (see clientCapabilities.ts).
+        //
+        // Cast: our structural ClientCapabilities is intentionally looser than
+        // the SDK's (it must let arbitrary `extensions` keys through), so we
+        // hand the SDK its own shape here.
+        {
+          capabilities:
+            GATEWAY_UPSTREAM_CAPABILITIES as unknown as SdkClientCapabilities,
+        },
       );
 
       await client.connect(transport);
@@ -123,6 +140,42 @@ export class HttpServerAdapter implements ServerAdapter {
     }
   }
 
+  /**
+   * List this upstream's resources (e.g. an MCP App's `ui://` template).
+   *
+   * A tools-only upstream never advertised the `resources` capability, so the
+   * SDK client rejects the call locally; we treat that as "no resources" rather
+   * than an error, so proxying resources never destabilises a plain server.
+   */
+  async listResources(): Promise<Resource[]> {
+    const client = await this.connect();
+    try {
+      const res = await client.listResources(
+        {},
+        { timeout: this.opts.timeoutMs },
+      );
+      return res.resources;
+    } catch (err) {
+      if (isUnsupportedCapability(err)) return [];
+      this.reset();
+      throw new UpstreamError(this.slug, err);
+    }
+  }
+
+  /** Read one resource by URI from this upstream. */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    const client = await this.connect();
+    try {
+      return await client.readResource(
+        { uri },
+        { timeout: this.opts.timeoutMs },
+      );
+    } catch (err) {
+      this.reset();
+      throw new UpstreamError(this.slug, err);
+    }
+  }
+
   /** `bundled__whoami` -> `whoami`, for a strad-bundle upstream. */
   private strip(name: string): string {
     const prefix = this.opts.innerPrefix;
@@ -148,6 +201,17 @@ export class HttpServerAdapter implements ServerAdapter {
     this.client = null;
     await client?.close().catch(() => {});
   }
+}
+
+/**
+ * The SDK client rejects a call locally when the connected server never
+ * advertised the required capability (e.g. calling resources/list on a
+ * tools-only server). That is not a failure to surface — it just means "none".
+ */
+function isUnsupportedCapability(err: unknown): boolean {
+  return (
+    err instanceof Error && /does not support resources/i.test(err.message)
+  );
 }
 
 export class UpstreamError extends Error {
