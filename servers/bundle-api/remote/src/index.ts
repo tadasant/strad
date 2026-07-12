@@ -221,18 +221,19 @@ async function buildServers(): Promise<RegisteredServer[]> {
     toggleEnvVar: "TOOL_GROUPS",
   });
 
-  // monarch-money: mirror local/'s boot-time session resolution. It reads
-  // MONARCH_* credentials from the environment and warms an encrypted session
-  // store; failure is non-fatal (the in-protocol auth tools can recover), so we
-  // log and continue rather than take the whole bundle down.
+  // monarch-money: warm the session store in the BACKGROUND. It reads MONARCH_*
+  // credentials from the environment and may perform a real network login; we
+  // deliberately do NOT await it, so a slow login never delays this component
+  // coming healthy or the other six servers' readiness. The store is the source
+  // of truth and monarch's client reloads it per call, so at worst the FIRST
+  // monarch tool call races the warm — and the in-protocol auth tools recover
+  // either way. Failure is non-fatal: log and carry on.
   const monarchSessionStore = createFileSessionStore();
-  try {
-    await resolveSession({ sessionStore: monarchSessionStore });
-  } catch (err) {
+  void resolveSession({ sessionStore: monarchSessionStore }).catch((err) => {
     log(
       `monarch-money: background session resolution failed (auth tools remain available): ${errMessage(err)}`,
     );
-  }
+  });
   servers.push({
     slug: "monarch-money",
     serverName: "mcp-server-monarch-money",
