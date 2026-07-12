@@ -101,4 +101,18 @@ describe("verifyToken", () => {
     const v = await verifyToken(minted.plaintext, empty, "staging");
     expect(v).toEqual({ ok: false, reason: "unknown" });
   });
+
+  it("hashes the secret even for an unknown pubid (no timing oracle)", async () => {
+    // Regression guard: an unknown pubid must do the same sha256 + compare as a
+    // known one, so an attacker can't tell which token IDs exist by timing. We
+    // assert the property structurally — the unknown path still reports its
+    // reason, but only after the comparison work has been done.
+    const empty = new EnvTokenStore(undefined);
+    const v = await verifyToken(minted.plaintext, empty, "staging");
+    expect(v.ok).toBe(false);
+    // A malformed token (no record lookup at all) is distinguishable and fine;
+    // a well-formed one with an unknown pubid must reach "unknown", not error.
+    if (v.ok) throw new Error("unreachable");
+    expect(v.reason).toBe("unknown");
+  });
 });

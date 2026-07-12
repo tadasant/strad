@@ -106,12 +106,21 @@ export class HttpServerAdapter implements ServerAdapter {
     args: Record<string, unknown>,
   ): Promise<CallToolResult> {
     const client = await this.connect();
-    const res = await client.callTool(
-      { name: this.restore(name), arguments: args },
-      undefined,
-      { timeout: this.opts.timeoutMs },
-    );
-    return res as unknown as CallToolResult;
+    try {
+      const res = await client.callTool(
+        { name: this.restore(name), arguments: args },
+        undefined,
+        { timeout: this.opts.timeoutMs },
+      );
+      return res as unknown as CallToolResult;
+    } catch (err) {
+      // Drop the cached client on failure, exactly as listTools does. A timeout
+      // or a dropped transport leaves the Client unusable; without this reset it
+      // stays cached and every subsequent call to this server keeps reusing the
+      // dead connection until the process restarts.
+      this.reset();
+      throw new UpstreamError(this.slug, err);
+    }
   }
 
   /** `bundled__whoami` -> `whoami`, for a strad-bundle upstream. */

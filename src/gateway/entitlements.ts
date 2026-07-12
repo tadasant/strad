@@ -24,6 +24,11 @@ export function entitledServers(
   const granted = new Set<string>();
 
   for (const roleName of principal.roles) {
+    // Object.hasOwn, not `cfg.roles[roleName]`: a token record carrying the
+    // role "__proto__" would otherwise resolve to Object.prototype (truthy),
+    // and `role.servers` would be undefined and throw. hasOwn also means an
+    // inherited property can never be mistaken for a configured role.
+    if (!Object.hasOwn(cfg.roles, roleName)) continue;
     const role = cfg.roles[roleName];
     if (!role) continue; // unknown role grants nothing
 

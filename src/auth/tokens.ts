@@ -185,11 +185,21 @@ export async function verifyToken(
   }
 
   const record = await store.get(parsed.pubid);
+
+  // Always hash and compare, even for an unknown pubid. Returning early on
+  // "not found" — before doing the sha256 + timingSafeEqual that a *known*
+  // pubid triggers — is a remotely measurable timing difference that reveals
+  // which token IDs exist. So we compare the presented secret against the real
+  // hash when we have one, and against a fixed dummy when we don't, then decide.
+  const digest = sha256(parsed.secret);
+  const matches = hashesEqual(digest, record?.hash ?? DUMMY_HASH);
+
   if (!record) return { ok: false, reason: "unknown" };
   if (record.revokedAt) return { ok: false, reason: "revoked" };
-
-  if (!hashesEqual(sha256(parsed.secret), record.hash)) {
-    return { ok: false, reason: "mismatch" };
-  }
+  if (!matches) return { ok: false, reason: "mismatch" };
   return { ok: true, record };
 }
+
+// A well-formed SHA-256 hex digest that no real secret hashes to (all zeroes).
+// Used so the unknown-pubid path performs the same work as the known path.
+const DUMMY_HASH = "0".repeat(64);

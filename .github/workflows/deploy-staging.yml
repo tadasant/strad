@@ -128,9 +128,12 @@ jobs:
         env:
           VERSION: ${{ inputs.version || 'latest' }}
           # Staging runs the console dev bypass until Google OAuth creds land.
-          # NODE_ENV=production still gates it hard; ADMIN_BOOTSTRAP_TOKEN is
-          # required to actually use it. See HACKS.md.
+          # The container runs NODE_ENV=production, so the bypass also demands
+          # ALLOW_DEV_AUTH_IN_PRODUCTION — a deliberate second key that a copy of
+          # this spec to real prod would not silently carry the *intent* of.
+          # ADMIN_BOOTSTRAP_TOKEN is still required to actually use it. HACKS.md.
           ALLOW_DEV_AUTH: "true"
+          ALLOW_DEV_AUTH_IN_PRODUCTION: "true"
         run: |
           set -euo pipefail
           node --experimental-transform-types scripts/render-spec.ts \

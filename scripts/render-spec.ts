@@ -75,15 +75,14 @@ secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
 secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
 secret("GOOGLE_CLIENT_SECRET");
 
-// The dev bypass needs this to be the literal string "true". It is not a secret
-// — it is a switch, and it should be visible in the spec as one.
-if (process.env.ALLOW_DEV_AUTH === "true") {
-  envs.push({
-    key: "ALLOW_DEV_AUTH",
-    value: "true",
-    scope: "RUN_TIME",
-    type: "GENERAL",
-  });
+// The dev-bypass switches. Not secrets — they are switches, and belong in the
+// spec as visible GENERAL vars. The container runs NODE_ENV=production, so the
+// bypass needs BOTH ALLOW_DEV_AUTH and ALLOW_DEV_AUTH_IN_PRODUCTION (see
+// src/auth/dev.ts): the second is what a copy-to-prod would fail to carry.
+for (const key of ["ALLOW_DEV_AUTH", "ALLOW_DEV_AUTH_IN_PRODUCTION"]) {
+  if (process.env[key] === "true") {
+    envs.push({ key, value: "true", scope: "RUN_TIME", type: "GENERAL" });
+  }
 }
 
 const spec = renderAppSpec({

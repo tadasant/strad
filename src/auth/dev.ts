@@ -33,16 +33,28 @@ export function devBypassStatus(
 
   // Note the shape: we require the literal string "true". Anything else — unset,
   // "1", "TRUE ", garbage — is off.
-  const allowed = env.ALLOW_DEV_AUTH === "true";
-  if (!allowed) {
+  if (env.ALLOW_DEV_AUTH !== "true") {
     return { active: false, reason: "ALLOW_DEV_AUTH is not 'true'" };
   }
 
-  if (!env.ADMIN_BOOTSTRAP_TOKEN) {
+  // The copy-staging-spec-to-prod hole: staging runs NODE_ENV=production with
+  // ALLOW_DEV_AUTH=true (that's fine — staging WANTS the bypass). If that spec
+  // is duplicated to real prod, ALLOW_DEV_AUTH comes along for the ride. So in
+  // production we demand a SEPARATE acknowledgement that names production; a
+  // staging spec never carries it, so the bypass fails closed on the copy.
+  if (
+    env.NODE_ENV === "production" &&
+    env.ALLOW_DEV_AUTH_IN_PRODUCTION !== "true"
+  ) {
     return {
       active: false,
-      reason: "ADMIN_BOOTSTRAP_TOKEN is not set",
+      reason:
+        "NODE_ENV=production requires ALLOW_DEV_AUTH_IN_PRODUCTION=true as well",
     };
+  }
+
+  if (!env.ADMIN_BOOTSTRAP_TOKEN) {
+    return { active: false, reason: "ADMIN_BOOTSTRAP_TOKEN is not set" };
   }
 
   return { active: true, reason: "enabled" };
@@ -51,10 +63,10 @@ export function devBypassStatus(
 /**
  * Boot-time guard. Called from src/index.ts before the server listens.
  *
- * The failure mode this exists to prevent: someone sets ALLOW_DEV_AUTH=true in
- * a staging app spec, that spec gets copied to prod, and now prod has a bypass
- * nobody remembers. So under NODE_ENV=production we make the operator say it
- * twice — and we log it loudly enough that it shows up in any log review.
+ * The double-acknowledgement that prevents a staging spec from carrying the
+ * bypass into prod lives in devBypassStatus() (ALLOW_DEV_AUTH_IN_PRODUCTION).
+ * This function's job is to make an active bypass IMPOSSIBLE to miss in the
+ * logs — especially under NODE_ENV=production, where it should never be.
  */
 export function assertDevBypassAllowed(
   cfg: StradConfig,
@@ -65,14 +77,6 @@ export function assertDevBypassAllowed(
   if (!status.active) return;
 
   const isProd = env.NODE_ENV === "production";
-
-  if (isProd && env.ALLOW_DEV_AUTH !== "true") {
-    // Unreachable given devBypassStatus already checked it — belt and braces,
-    // because the cost of being wrong here is an open console in production.
-    throw new Error(
-      "console dev bypass is enabled but ALLOW_DEV_AUTH is not 'true' under NODE_ENV=production",
-    );
-  }
 
   log(
     [

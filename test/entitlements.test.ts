@@ -67,6 +67,15 @@ describe("entitledServers", () => {
     const got = entitledServers(principal(["stale"]), CONFIG);
     expect([...got]).toEqual(["alpha"]);
   });
+
+  it("does not treat inherited Object properties as configured roles", () => {
+    // A token record carrying role "__proto__" or "constructor" must resolve to
+    // nothing, not to Object.prototype (which would throw on role.servers).
+    for (const evil of ["__proto__", "constructor", "toString"]) {
+      expect(() => entitledServers(principal([evil]), CONFIG)).not.toThrow();
+      expect(entitledServers(principal([evil]), CONFIG).size).toBe(0);
+    }
+  });
 });
 
 describe("resolveSelection — the query proposes, the token disposes", () => {
