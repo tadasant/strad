@@ -88,6 +88,19 @@ itself); every other bundle becomes an internal-only App Platform component on
 the private network. Bundles are how strad scales out heavy servers without
 exposing them. See [Architecture](/intro/architecture/).
 
+One bundle runs one image, but any number of servers may share it — each on its
+own `path`, and capability variants of one upstream on the _same_ path. strad's
+own deployment is two components: `core`, and one bundle holding all fourteen
+containerised servers.
+
+## Capability
+
+Which of a server's tools a slug may use, set by `tools: { allow: [...] }` /
+`{ deny: [...] }` and enforced by the gateway on `tools/list` **and**
+`tools/call` — a withheld tool is refused before it reaches the upstream. The
+capability is baked into the slug (`onepassword-ro` vs `onepassword-rw`), so
+`?servers=` selects it. Two capability variants are the same container.
+
 ## Mode
 
 Which role a running container plays: `core` (public gateway, proxies to bundles)

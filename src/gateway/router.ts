@@ -5,6 +5,8 @@ import {
   ListToolsRequestSchema,
   ListResourcesRequestSchema,
   ReadResourceRequestSchema,
+  ErrorCode,
+  McpError,
   type Tool,
   type Resource,
   type ReadResourceResult,
@@ -34,6 +36,12 @@ import {
   resolveSelection,
 } from "./entitlements.ts";
 import type { Mode, Registry } from "./registry.ts";
+import {
+  compileToolPolicies,
+  toolAllowed,
+  unmatchedAllowEntries,
+  type ToolPolicies,
+} from "./toolPolicy.ts";
 
 /**
  * The /mcp endpoint.
@@ -55,6 +63,13 @@ import type { Mode, Registry } from "./registry.ts";
  *    walk into an OAuth loop against the gateway — which is not the thing that's
  *    missing. 424 Failed Dependency says: you are fine, a thing you depend on is
  *    not ready, and here is where to go fix it.
+ *
+ * 3. CAPABILITY IS ENFORCED ON THE ACTION. A server's `tools:` policy (see
+ *    gateway/toolPolicy.ts) filters tools/list AND rejects a tools/call for a
+ *    tool it withholds. Filtering the listing alone would be decoration: a client
+ *    can call any name it likes, including one it saw last week on a different
+ *    slug. `onepassword-ro` declining to LIST a write tool and then RUNNING it
+ *    would be the worst of both worlds.
  */
 
 export interface McpHandlerOptions {
@@ -69,6 +84,9 @@ export interface McpHandlerOptions {
 export function createMcpHandler(opts: McpHandlerOptions) {
   const env = opts.env ?? process.env;
   const log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
+
+  // Compiled once: the policy is a property of the config, not of the request.
+  const policies = compileToolPolicies(opts.config);
 
   return async function handleMcp(req: Request, res: Response): Promise<void> {
     // --- telemetry: one SERVER span per /mcp request ------------------------
@@ -253,7 +271,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: await listToolsFor(selected, opts.registry),
+      tools: await listToolsFor(selected, opts.registry, policies, log),
     }));
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -270,6 +288,24 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       if (!selected.includes(parsed.slug)) {
         throw new Error(
           `server "${parsed.slug}" is not selected for this request`,
+        );
+      }
+
+      // CAPABILITY. The upstream container holds every tool the server has —
+      // read-only is this check, and nothing else. It runs BEFORE the adapter,
+      // so a withheld tool never reaches the upstream at all: no API call, no
+      // side effect, no "we only sent the write to Gmail, we didn't mean it".
+      if (!toolAllowed(policies.get(parsed.slug), parsed.tool)) {
+        log({
+          evt: "mcp.tool_denied",
+          principal: principal.id,
+          server: parsed.slug,
+          tool: parsed.tool,
+        });
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          `tool "${parsed.tool}" is not permitted on server "${parsed.slug}": ` +
+            `this server's capability policy withholds it.`,
         );
       }
 
@@ -372,7 +408,11 @@ function elapsedSeconds(startedAt: bigint): number {
 }
 
 /**
- * Merge the selected servers' tools, namespaced.
+ * Merge the selected servers' tools, namespaced, and filtered by capability.
+ *
+ * The upstream hands back everything it has — a single container now serves the
+ * read-only and read-write slugs alike — so this is where the two diverge. It is
+ * the cosmetic half of enforcement; the load-bearing half is on tools/call.
  *
  * One slow upstream must not take down the whole tools/list, so a failing
  * server contributes zero tools and a log line rather than a 500. The client
@@ -381,6 +421,8 @@ function elapsedSeconds(startedAt: bigint): number {
 async function listToolsFor(
   selected: string[],
   registry: Registry,
+  policies: ToolPolicies,
+  log: (event: Record<string, unknown>) => void,
 ): Promise<Tool[]> {
   const lists = await Promise.all(
     selected.map(async (slug) => {
@@ -388,7 +430,21 @@ async function listToolsFor(
       if (!adapter) return [];
       try {
         const tools = await adapter.listTools();
-        return tools.map((t) => ({ ...t, name: namespaced(slug, t.name) }));
+        const policy = policies.get(slug);
+
+        // An allow-list entry the upstream doesn't offer is a typo, and a typo
+        // here silently narrows a toolset by one — say so rather than shrug.
+        const unmatched = unmatchedAllowEntries(
+          policy,
+          tools.map((t) => t.name),
+        );
+        if (unmatched.length) {
+          log({ evt: "mcp.policy_unmatched_tools", slug, tools: unmatched });
+        }
+
+        return tools
+          .filter((t) => toolAllowed(policy, t.name))
+          .map((t) => ({ ...t, name: namespaced(slug, t.name) }));
       } catch (err) {
         console.error(
           JSON.stringify({

@@ -80,16 +80,20 @@ servers:
     expect(cfg.servers.map((s) => s.slug)).toEqual(["gmail", "gcal", "gdocs"]);
   });
 
-  it("rejects two servers of one image on the SAME path — the gateway can't tell them apart", () => {
-    expect(() =>
-      parseConfig(`${BASE}
+  it("accepts two slugs on the SAME path — that is a capability pair, not a collision", () => {
+    // gmail-ro and gmail-rw are ONE upstream, in ONE container, at ONE path.
+    // What differs is the gateway's `tools:` policy. Before capability moved to
+    // the gateway this could not be expressed: each variant needed its own
+    // *_ENABLED_TOOLGROUPS value, hence its own component.
+    const cfg = parseConfig(`${BASE}
 bundles:
-  - name: bundle-google
+  - name: bundle
 servers:
-  - { slug: gmail, kind: supplementary-image, image: "ghcr.io/o/g:1", bundle: bundle-google, path: /mcp, entitlements: [admin] }
-  - { slug: gcal, kind: supplementary-image, image: "ghcr.io/o/g:1", bundle: bundle-google, path: /mcp, entitlements: [admin] }
-`),
-    ).toThrow(/distinct path/);
+  - { slug: gmail-ro, kind: supplementary-image, image: "ghcr.io/o/g:1", bundle: bundle, path: /gmail, entitlements: [admin], tools: { allow: [get_email_conversation] } }
+  - { slug: gmail-rw, kind: supplementary-image, image: "ghcr.io/o/g:1", bundle: bundle, path: /gmail, entitlements: [admin] }
+`);
+    expect(cfg.servers.map((s) => s.slug)).toEqual(["gmail-ro", "gmail-rw"]);
+    expect(cfg.servers[0]?.tools?.allow).toEqual(["get_email_conversation"]);
   });
 
   it("rejects mixing a supplementary image with a builtin in one bundle", () => {

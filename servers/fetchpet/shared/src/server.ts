@@ -73,6 +73,27 @@ export interface IFetchPetClient {
 }
 
 /**
+ * A browser this server should USE rather than LAUNCH.
+ *
+ * strad's single collapsed bundle co-locates fetchpet, good-eggs and pointsyeah
+ * in one container. Three Chromiums in one 1-vCPU box is three ~545MB peaks
+ * competing for one core, so the host launches ONE Chromium (with the same
+ * playwright-extra stealth plugin applied at the browser level) and hands it to
+ * each server through this seam. Each server still opens its OWN context — the
+ * logged-in Fetch Pet session stays isolated from Good Eggs'.
+ *
+ * Unset (the default, and how the standalone fetchpet image runs): this server
+ * launches and owns its own browser exactly as before.
+ */
+export type SharedBrowserProvider = () => Promise<import('playwright').Browser>;
+
+let sharedBrowserProvider: SharedBrowserProvider | null = null;
+
+export function setSharedBrowserProvider(provider: SharedBrowserProvider | null): void {
+  sharedBrowserProvider = provider;
+}
+
+/**
  * Fetch Pet client implementation using Playwright
  */
 export class FetchPetClient implements IFetchPetClient {
@@ -81,6 +102,9 @@ export class FetchPetClient implements IFetchPetClient {
   private page: import('playwright').Page | null = null;
   private config: FetchPetConfig;
   private isInitialized = false;
+  /** False when the browser came from a host (see SharedBrowserProvider): we
+   *  close our context on teardown, never someone else's browser. */
+  private ownsBrowser = true;
 
   // Store pending claim data for submission confirmation
   private pendingClaimData: ClaimSubmissionData | null = null;
@@ -280,28 +304,41 @@ export class FetchPetClient implements IFetchPetClient {
       return;
     }
 
-    // Use playwright-extra with stealth plugin for better bot detection avoidance
-    const playwrightExtra = await import('playwright-extra');
-    const chromium = playwrightExtra.chromium;
-    const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default;
+    if (sharedBrowserProvider) {
+      // A host owns the browser (strad's collapsed bundle). It applied the same
+      // stealth plugin at launch, and stealth patches the Browser object itself,
+      // so contexts we open on it are evasion-equipped exactly as our own would be.
+      this.browser = await sharedBrowserProvider();
+      this.ownsBrowser = false;
+    } else {
+      // Use playwright-extra with stealth plugin for better bot detection avoidance
+      const playwrightExtra = await import('playwright-extra');
+      const chromium = playwrightExtra.chromium;
+      const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default;
 
-    chromium.use(StealthPlugin());
+      chromium.use(StealthPlugin());
 
-    // Timed and counted, and the returned browser gets a `disconnected` listener
-    // that reports a crash together with the container's memory pressure at that
-    // instant — which is the only way to tell an OOM-killed Chromium apart from
-    // one that died on a bad page. No-ops entirely when no telemetry bootstrap
-    // is loaded. See shared/src/telemetry.ts.
-    this.browser = await withBrowserTelemetry('fetchpet', () =>
-      chromium.launch({
-        headless: this.config.headless,
-        args: [
-          '--disable-blink-features=AutomationControlled',
-          '--disable-dev-shm-usage',
-          '--no-sandbox',
-        ],
-      }),
-    );
+      // Timed and counted, and the returned browser gets a `disconnected` listener
+      // that reports a crash together with the container's memory pressure at that
+      // instant — which is the only way to tell an OOM-killed Chromium apart from
+      // one that died on a bad page. No-ops entirely when no telemetry bootstrap
+      // is loaded. See shared/src/telemetry.ts.
+      //
+      // Only OUR OWN launch is wrapped: a browser handed to us by a host (the
+      // collapsed bundle) was launched — and instrumented — by that host, and
+      // double-counting it would report two Chromiums where one exists.
+      this.browser = await withBrowserTelemetry('fetchpet', () =>
+        chromium.launch({
+          headless: this.config.headless,
+          args: [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--no-sandbox',
+          ],
+        }),
+      );
+      this.ownsBrowser = true;
+    }
 
     this.context = await this.browser.newContext({
       viewport: { width: 1920, height: 1080 },
@@ -1383,7 +1420,10 @@ The user MUST explicitly confirm they want to submit this claim before calling s
 
   async close(): Promise<void> {
     if (this.browser) {
-      await this.browser.close();
+      // Close only what we created. A shared browser belongs to the host and may
+      // still be serving good-eggs or pointsyeah contexts.
+      if (this.ownsBrowser) await this.browser.close();
+      else await this.context?.close();
       this.browser = null;
       this.context = null;
       this.page = null;

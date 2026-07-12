@@ -64,6 +64,57 @@ jobs:
         working-directory: servers/good-eggs
         run: npm test
 
+  # THE bundle: fourteen MCP servers, six dependency trees, one Chromium and the
+  # `op` CLI in one container. It is now the only supplementary component strad
+  # deploys, so a PR that cannot build it — or that builds one where a server
+  # silently lost half its tools — is a failing PR.
+  #
+  # The smoke test is the honest half. It lists tools from every mount of the
+  # RUNNING container and asserts the full-capability counts (slack 9, tailscale
+  # 15, monarch 23, gmail 8, docs 11, calendar 7, 1Password 9, …). Those are the
+  # numbers the gateway's read-only allow-lists are carved out of, so if an
+  # upstream grows a tool, this is where we find out — not in production.
+  bundle_image:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the bundle image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/bundle/Dockerfile
+          push: false
+          load: true
+          tags: strad-bundle:ci
+          cache-from: type=gha,scope=bundle
+          cache-to: type=gha,mode=max,scope=bundle
+
+      - name: Boot it and smoke every mount
+        run: |
+          set -euo pipefail
+          # Credential-free on purpose: listing tools never calls an upstream API.
+          # DANGEROUSLY_SKIP_ELICITATIONS is what lets 1Password mount at all, and
+          # the two GCS-ish servers need their (distinct!) buckets named.
+          docker run -d --name bundle-ci \
+            -e DANGEROUSLY_SKIP_ELICITATIONS=true \
+            -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
+            -e REMOTE_FILESYSTEM_GCS_BUCKET=ci-rfs-bucket \
+            strad-bundle:ci
+          for i in $(seq 1 60); do
+            if docker exec bundle-ci node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          docker exec bundle-ci node /app/scripts/smoke.mjs
+
+      - name: The `op` CLI is really in the image
+        run: docker exec bundle-ci op --version
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f bundle-ci 2>/dev/null || true
+
   verify_lockfile:
     runs-on: self-hosted
     steps:

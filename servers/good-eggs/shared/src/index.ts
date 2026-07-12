@@ -2,6 +2,8 @@
 export {
   createMCPServer,
   GoodEggsClient,
+  setSharedBrowserProvider,
+  type SharedBrowserProvider,
   type IGoodEggsClient,
   type ClientFactory,
   type CreateMCPServerOptions,

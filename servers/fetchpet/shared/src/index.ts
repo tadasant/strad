@@ -2,6 +2,8 @@
 export {
   createMCPServer,
   FetchPetClient,
+  setSharedBrowserProvider,
+  type SharedBrowserProvider,
   type IFetchPetClient,
   type ClientFactory,
   type CreateMCPServerOptions,
