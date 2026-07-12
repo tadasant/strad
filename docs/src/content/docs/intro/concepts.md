@@ -36,7 +36,7 @@ The `?servers=` query parameter names which servers a client wants for this
 request. An **empty or absent** `?servers=` means "everything this token is
 entitled to" (sorted). A **non-empty** list narrows to those servers.
 
-Selection is a *hint*, never a grant. This is the one rule:
+Selection is a _hint_, never a grant. This is the one rule:
 
 > **The query string proposes. The token disposes.**
 
@@ -47,7 +47,7 @@ resource, so it cannot scope a token).
 ## Entitlement
 
 The set of servers a token may reach, computed **server-side** by intersecting
-two directions that must *both* agree:
+two directions that must _both_ agree:
 
 1. A **role** the token holds must name the server under `roles.<role>.servers`
    (where `["*"]` means every server), **and**
@@ -63,7 +63,7 @@ When a requested server is not in the entitled set, strad returns **`424 Failed
 Dependency`** rather than dropping it silently or returning `401`. The body names
 each unavailable server with a `status` (`not_configured`, `not_entitled`, or
 `disabled`) and an `authorize_url`. This is the fail-closed contract: a client
-always learns *which* server it couldn't get and *where* to fix it.
+always learns _which_ server it couldn't get and _where_ to fix it.
 
 ```mermaid
 flowchart TD
@@ -79,7 +79,7 @@ per request (`sessionIdGenerator: undefined`) and destroyed when the response
 closes. The toolset is a pure function of `(token, URL)`. This is both an
 operational property (any replica can serve any request) and the reason
 `?servers=` is spec-conformant under the 2026-07-28 revision, which forbids
-per-*connection* toolset variation but allows per-*request* variation.
+per-_connection_ toolset variation but allows per-_request_ variation.
 
 ## Bundle
 

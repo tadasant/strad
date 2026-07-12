@@ -14,18 +14,18 @@ there are exactly three kinds. This is the whole extension surface of strad.
 Every server, regardless of kind, has these base fields (from
 `src/config/schema.ts`):
 
-| Field | Default | Meaning |
-| --- | --- | --- |
-| `slug` | *(required)* | Identifier, `^[a-z0-9][a-z0-9-]{0,62}$`. Goes in `?servers=` and prefixes every tool. |
-| `kind` | *(required)* | `remote-http` \| `supplementary-image` \| `builtin`. |
-| `entitlements` | `[]` | Roles allowed to reach this server. **Empty = nobody** (fail closed). |
-| `enabled` | `true` | Set `false` to configure without exposing. |
-| `timeoutMs` | `120000` | Per-hop upstream timeout. |
-| `title`, `description` | — | Human-facing metadata. |
+| Field                  | Default      | Meaning                                                                               |
+| ---------------------- | ------------ | ------------------------------------------------------------------------------------- |
+| `slug`                 | _(required)_ | Identifier, `^[a-z0-9][a-z0-9-]{0,62}$`. Goes in `?servers=` and prefixes every tool. |
+| `kind`                 | _(required)_ | `remote-http` \| `supplementary-image` \| `builtin`.                                  |
+| `entitlements`         | `[]`         | Roles allowed to reach this server. **Empty = nobody** (fail closed).                 |
+| `enabled`              | `true`       | Set `false` to configure without exposing.                                            |
+| `timeoutMs`            | `120000`     | Per-hop upstream timeout.                                                             |
+| `title`, `description` | —            | Human-facing metadata.                                                                |
 
 <aside class="starlight-aside starlight-aside--tip">
 
-`entitlements` on the server is only **half** of access. A role must *also* name
+`entitlements` on the server is only **half** of access. A role must _also_ name
 the server under `roles.<role>.servers`. Both directions must agree — see
 [Auth](/auth/overview/).
 
