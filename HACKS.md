@@ -478,6 +478,34 @@ package is pullable by `GHCR_PULL_TOKEN`. Then `/ui/gcs` browses the live bucket
 
 ---
 
+## 18. An App Platform spec update DELETES any field it omits — including `domains`
+
+Not a hack so much as a loaded gun, and it went off once.
+
+`doctl apps update --spec` is a full **replace**, not a merge. A rendered spec
+that omits `domains` does not "leave the domain alone" — App Platform **detaches**
+the custom domain and stops serving and renewing its certificate. The failure is
+nasty because the app stays perfectly healthy: `strad-staging-wy9v5.ondigitalocean.app`
+kept answering 200 while `https://staging.strad.tadasant.com` started failing the
+**TLS handshake** (curl 35). Nothing is unhealthy; the hostname is simply gone.
+
+`render-spec.ts` only emitted `domains` when `--domain` was passed, and
+`deploy-staging.yml` never passed it (the prod job did). So the first real
+staging deploy silently dropped the domain.
+
+Fixed in two layers, because one is not enough:
+
+- `deploy-staging.yml` now passes `--domain staging.strad.tadasant.com`
+  explicitly, so the deploy states which hostname it is claiming.
+- `render-spec.ts` **defaults** `domains` from the config's own
+  `gateway.publicUrl` when `--domain` is absent, so a future deploy that forgets
+  the flag still cannot delete the domain. `--domain` still overrides, and a
+  `*.ondigitalocean.app` publicUrl is ignored (that is the default ingress, not a
+  custom domain). `test/render-spec.domains.test.ts` pins all of this.
+
+The general rule for anything else added to the spec later (alerts, ingress
+rules, env): **if it is not in the render, it is being deleted.**
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

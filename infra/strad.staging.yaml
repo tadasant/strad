@@ -1,9 +1,22 @@
 # strad config for the staging deployment.
 #
 # CI reads this, renders it into a DigitalOcean App Platform spec (see
-# src/deploy/appspec.ts) and injects the secret values from GCP Secret Manager.
-# It exercises all three server kinds on purpose — staging that only proves the
-# easy path is not proving much.
+# src/deploy/appspec.ts) and injects the secret values from GCP Secret Manager
+# (strad-staging-*). It exercises all three server kinds on purpose — staging
+# that only proves the easy path is not proving much.
+#
+# This file is CREDENTIAL-FREE: every secret is a ${NAME} reference resolved at
+# render time from GCP Secret Manager. A referenced ${NAME} that is not seeded
+# FAILS the render, loudly, rather than deploying a half-authenticated gateway.
+#
+# CAPABILITY VARIANTS. bundle-api and bundle-google each run ONE process hosting
+# several upstream servers at fixed paths, and their tool-group toggles are
+# read from the PROCESS env (namespaced per upstream slug). So a read-only and a
+# read-write variant of the same upstream server cannot coexist in one process —
+# each variant needs its own bundle (component), with the same image and a
+# different env. That is why bundle-api/bundle-api-ro and
+# bundle-google-{ro,rw,rw-external} exist below. The capability is baked into the
+# server SLUG, which is what `?servers=<slug>` selects.
 
 version: 1
 
@@ -33,15 +46,41 @@ roles:
     servers: [echo]
 
 bundles:
+  # Pure-API bundles: no browser, no subprocess. They are HTTP/API wrappers, so
+  # 0.5GB is ample — the browser bundles below are the ones that need 1GB.
   - name: bundle-api
-    instanceSizeSlug: apps-s-1vcpu-1gb
-  # The gcs server's bundle. It ships DISABLED here (see the server below), so
-  # this bundle emits no App Platform component and demands no secret at render —
-  # exactly like fetchpet/pointsyeah. It exists so the human /ui/gcs route has a
-  # config entry to scope to; the view renders its shell (behind the SSO gate)
-  # and reports "credentials not yet configured" until Phase 2 seeds them.
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  # The read-only halves of the bundle-api servers. Same image as bundle-api,
+  # different env: the tool-group toggles are process-wide, so read-only and
+  # read-write variants of one upstream server must live in separate components.
+  - name: bundle-api-ro
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  # gcs gets its own bundle for two reasons: in one process, `gcs` and
+  # `remote-filesystem` would share GCS_BUCKET / GCS_PROJECT_ID (see
+  # servers/bundle-api/README.md), and the human /ui/gcs route scopes to THIS
+  # server's env. Phase 2 seeds its credentials, so it is now ENABLED and the
+  # /ui view renders real objects instead of "credentials not yet configured".
   - name: bundle-gcs
-    instanceSizeSlug: apps-s-1vcpu-1gb
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  # bundle-google, once per capability tier. Each hosts gmail/docs/calendar at
+  # their fixed paths with one GMAIL_/GOOGLE_DOCS_/GOOGLE_CALENDAR_
+  # ENABLED_TOOLGROUPS value for the whole process.
+  - name: bundle-google-ro
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  - name: bundle-google-rw
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  - name: bundle-google-rw-external
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  # 1Password: one bundle per capability. The service-account TOKEN differs too,
+  # so the read-only variant cannot write even if a tool slipped through.
+  - name: bundle-op-ro
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  - name: bundle-op-rw
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+  # The builtin echo demo, in its own component (it runs the strad image in
+  # bundle mode, and a bundle may hold only ONE image).
+  - name: bundle-echo
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
   # Browser bundles. Each drives a real headless Chromium: peak ~545MB RSS, so
   # 1GB is the floor; the binding constraint is CPU (1 vCPU serialises page
   # rendering), not RAM. strad's schema enforces ONE image per bundle, so each
@@ -65,14 +104,14 @@ servers:
       greeting: "hello from the core gateway"
 
   # kind: builtin, in a SEPARATE internal component. Proves the private-network
-  # path: core reaches it at ${bundle-api.PRIVATE_URL}, which never leaves the VPC.
+  # path: core reaches it at ${bundle-echo.PRIVATE_URL}, which never leaves the VPC.
   - slug: bundled
     kind: builtin
     module: "./servers/echo.js"
-    bundle: bundle-api
+    bundle: bundle-echo
     entitlements: [admin]
     options:
-      greeting: "hello from bundle-api, over the private network"
+      greeting: "hello from bundle-echo, over the private network"
 
   # kind: remote-http. A real third-party MCP server on the public internet,
   # proxied through strad. No credential needed for this one, which is why it
@@ -82,12 +121,271 @@ servers:
     url: https://mcp.deepwiki.com/mcp
     entitlements: [admin]
 
-  # kind: supplementary-image. The first REAL one: Good Eggs, published as its
-  # own container (servers/good-eggs) and run as an internal-only component. The
-  # core reaches it at ${bundle-goodeggs.PRIVATE_URL} -> http://bundle-goodeggs:8080.
-  # It drives a headless Chromium and logs into a real Good Eggs account, so its
-  # tool calls can take a while — timeoutMs is set explicitly above the MCP SDK's
-  # silent 60s default. Credentials resolve onto THIS bundle only (see appspec.ts).
+  # ---------------------------------------------------------------------------
+  # bundle-api — seven pure-API servers in one process, each at its fixed path.
+  # This component is the READ-WRITE / all-tools tier: no tool-group env is set,
+  # so every server exposes its full tool set.
+  # ---------------------------------------------------------------------------
+  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /slack
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+
+  - slug: serpapi-hotels
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /serpapi-hotels
+    entitlements: [admin]
+    env:
+      SERPAPI_API_KEY: "${SERPAPI_API_KEY}"
+
+  - slug: tailscale-readwrite
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /tailscale
+    entitlements: [admin]
+    env:
+      TAILSCALE_API_KEY: "${TAILSCALE_API_KEY}"
+
+  - slug: monarch-money-readwrite
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /monarch-money
+    entitlements: [admin]
+    env:
+      MONARCH_SESSION_TOKEN: "${MONARCH_SESSION_TOKEN}"
+
+  # No credential at all — public endpoints. The zero-secret supplementary canary.
+  - slug: google-flights
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /google-flights
+    entitlements: [admin]
+
+  # GCS-backed filesystem, pinned to its own bucket. Lives with bundle-api (not
+  # bundle-gcs) so it owns GCS_BUCKET/GCS_CLIENT_EMAIL in this process alone.
+  - slug: remote-filesystem
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /remote-filesystem
+    entitlements: [admin]
+    env:
+      GCS_BUCKET: "remote-filesystem-tadas"
+      GCS_CLIENT_EMAIL: "${REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL}"
+      GCS_PRIVATE_KEY: "${REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY}"
+
+  # ---------------------------------------------------------------------------
+  # bundle-api-ro — the SAME image, a different env. Read-only variants of the
+  # toggled bundle-api servers, selected by slug via ?servers=<slug>-readonly.
+  # ---------------------------------------------------------------------------
+  - slug: slack-readonly
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api-ro
+    path: /slack
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+      # slack and remote-filesystem read the same upstream ENABLED_TOOLGROUPS, so
+      # the slug-namespaced override is mandatory here (bundle-api/README.md).
+      SLACK_ENABLED_TOOLGROUPS: "readonly"
+
+  - slug: tailscale-readonly
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api-ro
+    path: /tailscale
+    entitlements: [admin]
+    env:
+      TAILSCALE_API_KEY: "${TAILSCALE_API_KEY}"
+      TAILSCALE_TOOL_GROUPS: "policy_readonly,devices_readonly,keys_readonly"
+
+  - slug: monarch-money-readonly
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api-ro
+    path: /monarch-money
+    entitlements: [admin]
+    env:
+      MONARCH_SESSION_TOKEN: "${MONARCH_SESSION_TOKEN}"
+      MONARCH_MONEY_MONARCH_ENABLED_TOOL_GROUPS: "readonly"
+
+  # ---------------------------------------------------------------------------
+  # bundle-gcs — Google Cloud Storage, alone in its process so its bucket and
+  # service account do not collide with remote-filesystem's.
+  # ---------------------------------------------------------------------------
+  - slug: gcs
+    kind: supplementary-image
+    title: Google Cloud Storage
+    description: Browse the object store this server is scoped to.
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-gcs
+    path: /gcs
+    entitlements: [admin]
+    env:
+      GCS_PROJECT_ID: "pulse-443819"
+      # GCS_BUCKET pins every gcs operation to ONE bucket, and it is also what
+      # the human /ui/gcs view scopes to (src/ui/resolve.ts) — without it that
+      # view can only say "no GCS_BUCKET configured". pulse_public is the
+      # deliberate choice: the service account can reach the transcript buckets
+      # too, and an MCP endpoint pointed at "…secret-do-not-share…" by default is
+      # not a posture worth having. Widen it here if you want more.
+      GCS_BUCKET: "pulse_public"
+      GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}"
+
+  # ---------------------------------------------------------------------------
+  # bundle-google — gmail / google-docs / google-calendar, once per capability
+  # tier. Service-account auth with domain-wide delegation; the impersonated
+  # subject is itself a secret ref so this public file names no mailbox.
+  #
+  # DWD is a Workspace-admin dependency: until the service account's client ID is
+  # authorized for the scopes, tools LIST fine but tool CALLS fail. See
+  # images/bundle-google/README.md.
+  # ---------------------------------------------------------------------------
+  - slug: gmail-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-ro
+    path: /gmail
+    entitlements: [admin]
+    env:
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
+      GMAIL_ENABLED_TOOLGROUPS: "readonly"
+
+  - slug: google-docs-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-ro
+    path: /google-docs
+    entitlements: [admin]
+    env:
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
+      GOOGLE_DOCS_ENABLED_TOOLGROUPS: "readonly"
+
+  - slug: google-calendar-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-ro
+    path: /google-calendar
+    entitlements: [admin]
+    env:
+      GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GCAL_IMPERSONATE_EMAIL: "${GCAL_IMPERSONATE_EMAIL}"
+      GOOGLE_CALENDAR_ENABLED_TOOLGROUPS: "readonly"
+
+  - slug: gmail-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-rw
+    path: /gmail
+    entitlements: [admin]
+    env:
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
+      GMAIL_ENABLED_TOOLGROUPS: "readwrite"
+
+  - slug: google-docs-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-rw
+    path: /google-docs
+    entitlements: [admin]
+    env:
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
+      GOOGLE_DOCS_ENABLED_TOOLGROUPS: "readwrite"
+
+  - slug: google-calendar-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-rw
+    path: /google-calendar
+    entitlements: [admin]
+    env:
+      GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GCAL_IMPERSONATE_EMAIL: "${GCAL_IMPERSONATE_EMAIL}"
+      GOOGLE_CALENDAR_ENABLED_TOOLGROUPS: "readwrite"
+
+  # readwrite_external: the tier that may act on people OUTSIDE the org (send
+  # mail to, share docs with). google-calendar has no such tier, so it is absent
+  # from this component by design.
+  - slug: gmail-rw-external
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-rw-external
+    path: /gmail
+    entitlements: [admin]
+    env:
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
+      GMAIL_ENABLED_TOOLGROUPS: "readwrite_external"
+
+  - slug: google-docs-rw-external
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google-rw-external
+    path: /google-docs
+    entitlements: [admin]
+    env:
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
+      GOOGLE_DOCS_ENABLED_TOOLGROUPS: "readwrite_external"
+
+  # ---------------------------------------------------------------------------
+  # 1Password. The read-only variant is locked twice over: a read-only SERVICE
+  # ACCOUNT token (1Password itself refuses writes) AND ENABLED_TOOLGROUPS.
+  #
+  # The server refuses to boot without an elicitation posture. strad has no
+  # elicitation transport wired yet, so both variants skip it explicitly — the
+  # capability boundary is the token + tool groups, not a confirmation prompt.
+  # ---------------------------------------------------------------------------
+  - slug: onepassword-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-onepassword:latest
+    bundle: bundle-op-ro
+    entitlements: [admin]
+    timeoutMs: 120000
+    env:
+      OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_TADAS_RO}"
+      ENABLED_TOOLGROUPS: "readonly"
+      DANGEROUSLY_SKIP_ELICITATIONS: "true"
+
+  - slug: onepassword-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-onepassword:latest
+    bundle: bundle-op-rw
+    entitlements: [admin]
+    timeoutMs: 120000
+    env:
+      OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW}"
+      # ENABLED_TOOLGROUPS omitted on purpose: omitted == all nine tools.
+      DANGEROUSLY_SKIP_ELICITATIONS: "true"
+
+  # ---------------------------------------------------------------------------
+  # Browser-driven servers. Each drives a real headless Chromium and logs into a
+  # real account, so its tool calls can take a while — timeoutMs is set well above
+  # the MCP SDK's silent 60s default, which would otherwise kill them mid-flow.
+  # Credentials resolve onto THIS bundle only (see appspec.ts).
+  # ---------------------------------------------------------------------------
   - slug: good-eggs
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-server-good-eggs:latest
@@ -98,20 +396,11 @@ servers:
       GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
       GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"
 
-  # kind: supplementary-image. Two more browser-driven servers in the same
-  # browser-bundle family as good-eggs (each its own 1GB Chromium component). They
-  # are registered here but shipped ENABLED: FALSE — this OSS staging holds no
-  # credentials for them (real creds are wired downstream in tadasant-internal,
-  # which flips these on). A disabled server emits no component and demands no
-  # secret at render (see appspec.ts / render-spec.ts), so staging stays
-  # deployable with zero new secrets. timeoutMs is 180s: these browser flows are
-  # slower than good-eggs and the MCP SDK's silent 60s default would kill them.
   - slug: fetchpet
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-server-fetchpet:latest
     bundle: bundle-fetchpet
     entitlements: [admin]
-    enabled: false
     timeoutMs: 180000
     env:
       FETCHPET_USERNAME: "${FETCHPET_USERNAME}"
@@ -122,33 +411,6 @@ servers:
     image: ghcr.io/tadasant/strad-server-pointsyeah:latest
     bundle: bundle-pointsyeah
     entitlements: [admin]
-    enabled: false
     timeoutMs: 180000
     env:
       POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
-
-  # kind: supplementary-image. The gcs server from the bundle-api fleet, wired
-  # here so the human resource browser (/ui/gcs) has a config entry to scope to.
-  # Its env declares the bucket + credentials the way the real gcs server reads
-  # them (GCS_BUCKET, GCS_SERVICE_ACCOUNT_KEY_JSON — see servers/bundle-api). The
-  # human /ui reads exactly this to scope the browse to the mcp id.
-  #
-  # It ships ENABLED: FALSE — this OSS staging holds no per-server GCS creds
-  # (they are seeded in a later phase, in tadasant-internal). A disabled
-  # supplementary image emits no component and demands no secret at render
-  # (render-spec / appspec skip it), so staging stays deployable with zero new
-  # secrets. Until the creds land, /ui/gcs renders its shell behind the SSO gate
-  # and reports "credentials not yet configured".
-  - slug: gcs
-    kind: supplementary-image
-    title: Google Cloud Storage
-    description: Browse the object store this server is scoped to.
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-gcs
-    path: /gcs
-    entitlements: [admin]
-    enabled: false
-    env:
-      GCS_PROJECT_ID: "${GCS_PROJECT_ID}"
-      GCS_BUCKET: "${GCS_BUCKET}"
-      GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_SERVICE_ACCOUNT_KEY_JSON}"
