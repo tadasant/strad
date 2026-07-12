@@ -1340,6 +1340,25 @@ export interface CreateMCPServerOptions {
   version: string;
 }
 
+/**
+ * Per-connection options for `registerHandlers`.
+ *
+ * These are decided fresh for each MCP session, because the one thing that
+ * varies between sessions is the CLIENT: `appUi` is derived from the client's
+ * advertised `initialize` capabilities. The browser and login live in the
+ * factory closure and are shared across every session regardless.
+ */
+export interface RegisterHandlersOptions {
+  /** Override the Good Eggs client factory (tests inject a fake here). */
+  clientFactory?: ClientFactory;
+  /**
+   * The client advertised `io.modelcontextprotocol/ui`, so serve the MCP-App
+   * surface (the `ui://` resource + `_meta` binding + structured results).
+   * Defaults to false: a plain, byte-identical tool surface.
+   */
+  appUi?: boolean;
+}
+
 export function createMCPServer(options: CreateMCPServerOptions) {
   const server = new Server(
     {
@@ -1446,12 +1465,19 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     return activeClient!;
   };
 
-  const registerHandlers = async (server: Server, clientFactory?: ClientFactory) => {
+  const registerHandlers = async (
+    server: Server,
+    options: RegisterHandlersOptions = {}
+  ) => {
     // Use provided factory or create our managed client getter
-    const factory = clientFactory || (() => activeClient || createClient());
+    const factory = options.clientFactory || (() => activeClient || createClient());
 
-    // Create tools with a special async getter that waits for background login
-    const registerTools = createRegisterTools(factory, getReadyClient);
+    // Create tools with a special async getter that waits for background login.
+    // `appUi` is decided per-connection from the client's advertised
+    // capabilities (see the remote entrypoint) and gates the MCP-App surface.
+    const registerTools = createRegisterTools(factory, getReadyClient, {
+      appUi: options.appUi === true,
+    });
     registerTools(server);
   };
 

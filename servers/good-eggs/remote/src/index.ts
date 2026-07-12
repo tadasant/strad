@@ -15,22 +15,26 @@
  *     away. So the browser is launched ONCE at startup (via the shared
  *     factory's background login) and kept alive; `shared/` holds a single
  *     logged-in Good Eggs page and reuses it across every tool call.
- *   - Per HTTP request we mint a fresh, stateless MCP Server + transport. They
- *     are cheap; the expensive, stateful thing (the browser + login) lives in
- *     the factory closure and is shared across all of them.
+ *   - Per MCP SESSION we mint a cheap MCP Server + transport (see the endpoint
+ *     below for why sessions, not per-POST statelessness). They are cheap; the
+ *     expensive, stateful thing (the browser + login) lives in the factory
+ *     closure and is shared across all of them.
  *
  * Credentials: strad injects secrets as GOODEGGS_EMAIL / GOODEGGS_PASSWORD (its
  * own naming convention). The shared logic reads GOOD_EGGS_USERNAME /
  * GOOD_EGGS_PASSWORD, so we bridge them below before anything else runs.
  */
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import {
   createMCPServer,
+  clientSupportsApps,
   logServerStart,
   logError,
   logWarning,
@@ -106,27 +110,79 @@ async function main(): Promise<void> {
     res.status(200).json({ ok: true, server: 'good-eggs', version: VERSION });
   });
 
-  // The MCP endpoint. Stateless streamable-HTTP: a fresh Server + transport per
-  // request, all sharing the one browser/session held by the factory. This is
-  // the pattern proven against App Platform for a browser-backed MCP bundle.
-  app.all(MCP_PATH, async (req, res) => {
-    const server = new Server(
-      { name: 'good-eggs-mcp-server', version: VERSION },
-      { capabilities: { tools: {} } },
-    );
-    await registerHandlers(server);
+  // --- MCP endpoint: SESSION-ful streamable-HTTP ---------------------------
+  //
+  // Why session-ful (this changed from the original stateless-per-POST design):
+  // whether a connection gets the MCP-App surface is decided from the client's
+  // advertised `initialize` capabilities. Those capabilities arrive ONCE, on the
+  // initialize POST — a stateless server that mints a fresh Server per POST never
+  // sees them again on the tools/list, resources/read, tools/call that follow,
+  // so it could not gate. Binding a Server to a session lets the capabilities the
+  // client advertised at initialize govern that whole session.
+  //
+  // This does NOT change the browser model — the expensive, stateful thing (the
+  // single logged-in Good Eggs page) still lives in the factory closure and is
+  // shared across every session. A session only owns a cheap Server + transport.
+  const transports: Record<string, StreamableHTTPServerTransport> = {};
 
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-    res.on('close', () => {
-      transport.close().catch(() => {});
-      server.close().catch(() => {});
-    });
-
+  app.post(MCP_PATH, async (req, res) => {
     try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (sessionId && transports[sessionId]) {
+        // An established session: reuse its Server (which already has the
+        // capability-appropriate handlers registered).
+        await transports[sessionId]!.handleRequest(req, res, req.body);
+        return;
+      }
+
+      if (!sessionId && isInitializeRequest(req.body)) {
+        // A new session. Read the client's advertised capabilities off the RAW
+        // initialize body so opt-in `extensions` keys survive, and decide once
+        // whether this session gets the MCP-App surface.
+        const capabilities = (
+          req.body as { params?: { capabilities?: unknown } }
+        )?.params?.capabilities as
+          | { extensions?: Record<string, unknown> }
+          | undefined;
+        const appUi = clientSupportsApps(capabilities);
+
+        const server = new Server(
+          { name: 'good-eggs-mcp-server', version: VERSION },
+          {
+            capabilities: {
+              tools: {},
+              // Only advertise `resources` when we will actually serve the
+              // ui:// app resource — a plain client's capability set is unchanged.
+              ...(appUi ? { resources: {} } : {}),
+            },
+          },
+        );
+        await registerHandlers(server, { appUi });
+
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (sid) => {
+            transports[sid] = transport;
+          },
+        });
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid && transports[sid]) delete transports[sid];
+          server.close().catch(() => {});
+        };
+
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+        return;
+      }
+
+      // Not an initialize and no known session — a malformed or expired client.
+      res.status(400).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Bad Request: no valid session' },
+        id: null,
+      });
     } catch (error) {
       logError('mcp', error);
       if (!res.headersSent) {
@@ -141,6 +197,22 @@ async function main(): Promise<void> {
       }
     }
   });
+
+  // GET (server->client SSE stream) and DELETE (session teardown) are routed to
+  // the existing session's transport.
+  const handleSessionRequest = async (
+    req: express.Request,
+    res: express.Response,
+  ): Promise<void> => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    if (!sessionId || !transports[sessionId]) {
+      res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+    await transports[sessionId]!.handleRequest(req, res);
+  };
+  app.get(MCP_PATH, handleSessionRequest);
+  app.delete(MCP_PATH, handleSessionRequest);
 
   const handleShutdown = async () => {
     logWarning('shutdown', 'Received shutdown signal, closing browser...');
