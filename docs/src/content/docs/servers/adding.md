@@ -16,8 +16,9 @@ deployment you're changing — `infra/strad.staging.yaml` for staging, or
 
 - **`remote-http`** — set `url` and any `headers` (use `${SECRET}` for
   credentials).
-- **`supplementary-image`** — set `image`, give it its **own** `bundle`, plus
-  optional `env` / `path`.
+- **`supplementary-image`** — set `image` and a `bundle`, plus optional `env` /
+  `path`. Servers that share an image share the bundle (one component runs one
+  image); each gets its own `path`.
 - **`builtin`** — set `module` and `bundle` (`core` = in-process, anything else =
   a bundle component), plus optional `options`.
 
@@ -52,11 +53,47 @@ non-`core` bundle), declare that bundle:
 
 ```yaml
 bundles:
-  - name: bundle-browser
-    instanceSizeSlug: apps-s-1vcpu-1gb # Chromium peaks ~545MB; give it its own
+  - name: bundle
+    instanceSizeSlug: apps-s-1vcpu-2gb
 ```
 
 Referencing an undeclared bundle is a boot-time validation error.
+
+In practice you are probably adding to the **existing** bundle rather than making
+a new one: strad's own deployment is `core` plus one bundle
+(`ghcr.io/tadasant/strad-bundle`) holding every containerised server. A new
+bundle is a new billed component — worth it for a genuinely heavy or
+independently-scaled server, and not otherwise.
+
+## 3b. Give it a capability, if it has one
+
+If the server should ship as a read-only and a read-write variant, that is **two
+entries pointing at the same image, bundle and path** — differing only in the
+`tools:` policy the gateway enforces:
+
+```yaml
+- slug: acme-ro
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /acme
+  entitlements: [admin]
+  tools:
+    allow: [acme_list, acme_get] # exhaustive; `deny:` subtracts and wins
+
+- slug: acme-rw # same container, every tool
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /acme
+  entitlements: [admin]
+```
+
+strad enforces the policy on `tools/list` **and** on `tools/call` — a withheld
+tool is refused before the request reaches the upstream. Do **not** try to do this
+with a container-side tool-group env var: the two variants share a container now,
+so an env var would strip tools from the read-write slug as well (the bundle host
+deletes such variables at boot for exactly this reason).
 
 ## 4. Seed any secrets
 
@@ -83,8 +120,9 @@ the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (s
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
-once — a core builtin (`echo`), a bundled builtin proving the private-network hop
-(`bundled` in `bundle-api`), and a credential-free `remote-http` canary
+once — a core builtin (`echo`), twenty-three `supplementary-image` servers sharing
+ONE bundle over the private network (including every read-only / read-write pair),
+and a credential-free `remote-http` canary
 (`deepwiki` → `https://mcp.deepwiki.com/mcp`) — plus a deliberately narrow
 `echo-only` role to keep the [424 fail-closed path](/intro/concepts/#the-424-contract)
 meaningful. Read it alongside

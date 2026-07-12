@@ -43,6 +43,30 @@ const GCS_ENV = {
   privateKey: "GCS_PRIVATE_KEY",
 } as const;
 
+/**
+ * A server's env, with any SLUG-NAMESPACED variable also visible under its bare
+ * name (`REMOTE_FILESYSTEM_GCS_BUCKET` -> `GCS_BUCKET`).
+ *
+ * Namespacing exists because siblings now share a container: `gcs` and
+ * `remote-filesystem` both read `GCS_BUCKET`, and they point at DIFFERENT
+ * buckets, so one of them had to move off the bare name (see the bundle host).
+ * The bare name still wins if both are set — the namespaced form is a fallback,
+ * not an override — which keeps a server that never had a sibling unchanged.
+ */
+function withNamespacedFallback(
+  slug: string,
+  env: Record<string, string>,
+): Record<string, string> {
+  const prefix = `${slug.toUpperCase().replace(/-/g, "_")}_`;
+  const out: Record<string, string> = { ...env };
+  for (const [key, value] of Object.entries(env)) {
+    if (!key.startsWith(prefix)) continue;
+    const bare = key.slice(prefix.length);
+    out[bare] ??= value;
+  }
+  return out;
+}
+
 export function resolveServerView(
   config: StradConfig,
   slug: string,
@@ -51,7 +75,7 @@ export function resolveServerView(
   const server = config.servers.find((s) => s.slug === slug);
   if (!server) return { kind: "not_found" };
 
-  const env = serverEnv(server);
+  const env = withNamespacedFallback(server.slug, serverEnv(server));
 
   // GCS view: the server declares a bucket. That's the whole detector.
   if (env[GCS_ENV.bucket] || env[GCS_ENV.keyJson] || env[GCS_ENV.clientEmail]) {

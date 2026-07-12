@@ -1,0 +1,66 @@
+name: Release bundle image
+
+# Build THE strad bundle image — all fourteen MCP servers in one container — and
+# push it to ghcr, then roll staging onto it.
+#
+# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from six projects that
+# live in different directories (servers/bundle-api, images/bundle-google,
+# servers/onepassword, servers/{good-eggs,fetchpet,pointsyeah}), each built in its
+# own stage with its own lockfile. So `paths:` below has to watch all of them: a
+# change to any one of those servers changes this image.
+#
+# The per-server images (release-bundle-api-image.yml, release-goodeggs-image.yml,
+# …) are deliberately NOT deleted. Production still runs them — its config lives
+# in tadasant-internal and still points at ghcr.io/tadasant/strad-server-*:latest —
+# and it is re-pointed at this bundle in a follow-up. Deleting them now would mean
+# the next `main` push silently changes what production pulls. See HACKS.md #23.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "servers/bundle/**"
+      - "servers/bundle-api/**"
+      - "servers/onepassword/**"
+      - "servers/good-eggs/**"
+      - "servers/fetchpet/**"
+      - "servers/pointsyeah/**"
+      - "images/bundle-google/**"
+      - ".github/workflows/release-bundle-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: release-bundle-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/bundle/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/tadasant/strad-bundle:latest
+            ghcr.io/tadasant/strad-bundle:sha-${{ github.sha }}
+          cache-from: type=gha,scope=bundle
+          cache-to: type=gha,mode=max,scope=bundle

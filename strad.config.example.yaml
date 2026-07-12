@@ -115,10 +115,20 @@ servers:
   # servers in a single image (servers/bundle-api), each on its own path.
   #
   # Every server here is credential-free at build time; strad injects each one's
-  # secrets onto the component via `env:` (`${NAME}` refs). Several also expose a
-  # capability toggle (read-only vs write / tool groups) read from the container
-  # environment — documented per server below. This config exposes the knob; the
-  # read-only-vs-write choice is a deployment decision, not baked into the image.
+  # secrets onto the component via `env:` (`${NAME}` refs).
+  #
+  # CAPABILITY (read-only vs read-write) is NOT a container setting. It is the
+  # gateway's `tools:` policy, per SLUG:
+  #
+  #     tools:
+  #       allow: [list_things, get_thing]   # exhaustive: only these may run
+  #       deny:  [delete_thing]             # subtracts, and wins over allow
+  #
+  # strad enforces it on tools/list AND on tools/call — a withheld tool is refused
+  # before it reaches the upstream. So two slugs may point at the SAME image, the
+  # SAME bundle and the SAME path, and differ only in what they are allowed to do
+  # (see slack / slack-readonly below). That is what lets one container serve every
+  # capability variant instead of one component per variant.
   - slug: slack
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle-api:latest
@@ -127,7 +137,21 @@ servers:
     entitlements: [admin]
     env:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
-    # capability toggle: SLACK_ENABLED_TOOLGROUPS (readonly | write)
+
+  # The read-only twin of the server above: same image, same bundle, same path,
+  # same container. The ONLY difference is the policy the gateway enforces.
+  - slug: slack-readonly
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /slack
+    entitlements: [admin]
+    tools:
+      allow:
+        - slack_get_channels
+        - slack_get_channel
+        - slack_get_thread
+        - slack_download_file
 
   - slug: serpapi-hotels
     kind: supplementary-image
@@ -146,8 +170,6 @@ servers:
     entitlements: [admin]
     env:
       TAILSCALE_API_KEY: "${TAILSCALE_API_KEY}"
-    # capability toggle: TAILSCALE_TOOL_GROUPS
-    #   (policy|devices|keys, each with a _readonly variant)
 
   - slug: monarch-money
     kind: supplementary-image
@@ -159,7 +181,6 @@ servers:
       MONARCH_EMAIL: "${MONARCH_EMAIL}"
       MONARCH_PASSWORD: "${MONARCH_PASSWORD}"
       MONARCH_SESSION_PASSPHRASE: "${MONARCH_SESSION_PASSPHRASE}"
-    # capability toggle: MONARCH_MONEY_MONARCH_ENABLED_TOOL_GROUPS (readonly | manage)
 
   - slug: gcs
     kind: supplementary-image
@@ -170,7 +191,6 @@ servers:
     env:
       GCS_PROJECT_ID: "${GCS_PROJECT_ID}"
       GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_SERVICE_ACCOUNT_KEY_JSON}"
-    # capability toggle: GCS_GCS_ENABLED_TOOLGROUPS (readonly | readwrite | delete)
 
   - slug: remote-filesystem
     kind: supplementary-image
@@ -182,7 +202,6 @@ servers:
       GCS_BUCKET: "${REMOTE_FS_GCS_BUCKET}"
       GCS_CLIENT_EMAIL: "${REMOTE_FS_GCS_CLIENT_EMAIL}"
       GCS_PRIVATE_KEY: "${REMOTE_FS_GCS_PRIVATE_KEY}"
-    # capability toggle: REMOTE_FILESYSTEM_ENABLED_TOOLGROUPS (readonly | readwrite)
 
   - slug: google-flights
     kind: supplementary-image
@@ -190,7 +209,7 @@ servers:
     bundle: bundle-api
     path: /google-flights
     entitlements: [admin]
-    # no credentials, no capability toggle — public endpoints
+    # no credentials, no policy — public endpoints, every tool
 
   # A single-server image gets its OWN bundle, exactly the same way — one entry,
   # one server, one image (this is how good-eggs is wired):
@@ -207,24 +226,34 @@ servers:
 
   # onepassword (servers/onepassword) is the same shape, with the 1Password CLI
   # (`op`) baked into its image. The token env var is OP_SERVICE_ACCOUNT_TOKEN;
-  # the image ships no credential. ENABLED_TOOLGROUPS is the read-only vs
-  # read-write lever — `readonly` exposes only the five read tools; omit it for
-  # all nine. So one image ships as two configs: an `onepassword-ro` with
-  # ENABLED_TOOLGROUPS=readonly and an `onepassword-rw` without it, differing
-  # only in env. (This server also requires an elicitation posture to boot —
-  # either ELICITATION_REQUEST_URL + ELICITATION_POLL_URL, or
+  # the image ships no credential. It ships as TWO slugs — one read-only, one
+  # read-write — on ONE container, told apart by the gateway's `tools:` policy.
+  # (This server also requires an elicitation posture to serve — either
+  # ELICITATION_REQUEST_URL + ELICITATION_POLL_URL, or
   # DANGEROUSLY_SKIP_ELICITATIONS=true. See servers/onepassword/README.md.)
+  #
+  # NOTE the security trade: with one container there is one
+  # OP_SERVICE_ACCOUNT_TOKEN, and the read-write slug needs the read-write one.
+  # So `onepassword-ro` is read-only because the GATEWAY refuses the call — not
+  # because 1Password would. HACKS.md #22.
   #
   # - slug: onepassword-ro
   #   kind: supplementary-image
-  #   image: ghcr.io/tadasant/strad-server-onepassword:latest
-  #   bundle: bundle-onepassword
+  #   image: ghcr.io/tadasant/strad-bundle:latest
+  #   bundle: bundle
+  #   path: /onepassword
   #   entitlements: [admin]
   #   timeoutMs: 120000
   #   env:
   #     OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
-  #     ENABLED_TOOLGROUPS: "readonly"
   #     DANGEROUSLY_SKIP_ELICITATIONS: "true"
+  #   tools:
+  #     allow:
+  #       - onepassword_list_vaults
+  #       - onepassword_list_items
+  #       - onepassword_get_item
+  #       - onepassword_get_item_metadata
+  #       - onepassword_list_items_by_tag
   # More browser-driven servers join good-eggs as a FAMILY of 1GB Chromium
   # bundles — the schema enforces one image per bundle, so each owns its own
   # (bundle-fetchpet, bundle-pointsyeah, …), not a single shared component. They
@@ -278,8 +307,7 @@ servers:
       GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
       # OAuth2 alternative: GMAIL_OAUTH_CLIENT_ID / GMAIL_OAUTH_CLIENT_SECRET /
       # GMAIL_OAUTH_REFRESH_TOKEN
-      # Capability: readonly | readwrite | readwrite_external (default: all)
-      GMAIL_ENABLED_TOOLGROUPS: "${GMAIL_ENABLED_TOOLGROUPS}"
+      # Capability is NOT set here — see `tools:` (the gateway enforces it).
 
   - slug: google-calendar
     kind: supplementary-image
@@ -292,8 +320,7 @@ servers:
       GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL}"
       GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GCAL_SERVICE_ACCOUNT_PRIVATE_KEY}"
       GCAL_IMPERSONATE_EMAIL: "${GCAL_IMPERSONATE_EMAIL}"
-      # Capability: readonly | readwrite (default: all)
-      GOOGLE_CALENDAR_ENABLED_TOOLGROUPS: "${GOOGLE_CALENDAR_ENABLED_TOOLGROUPS}"
+      # Capability is NOT set here — see `tools:` (the gateway enforces it).
 
   - slug: google-docs
     kind: supplementary-image
@@ -308,5 +335,4 @@ servers:
       GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
       # OAuth2 alternative: GOOGLE_DOCS_OAUTH_CLIENT_ID /
       # GOOGLE_DOCS_OAUTH_CLIENT_SECRET / GOOGLE_DOCS_OAUTH_REFRESH_TOKEN
-      # Capability: readonly | readwrite | readwrite_external (default: all)
-      GOOGLE_DOCS_ENABLED_TOOLGROUPS: "${GOOGLE_DOCS_ENABLED_TOOLGROUPS}"
+      # Capability is NOT set here — see `tools:` (the gateway enforces it).

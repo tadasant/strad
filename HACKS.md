@@ -533,6 +533,98 @@ Fixed in two layers, because one is not enough:
 The general rule for anything else added to the spec later (alerts, ingress
 rules, env): **if it is not in the render, it is being deleted.**
 
+## 22. Read-only is now POLICY, not PHYSICS
+
+**This is a deliberate security-posture change, and it is the price of the
+13-components-to-2 collapse. It was chosen with eyes open. Read it before you
+lean on a `-ro` slug.**
+
+Until now, `onepassword-ro` could not write to 1Password because the _container_
+could not: it ran with `ENABLED_TOOLGROUPS=readonly`, so the write tools were not
+registered — and, for 1Password specifically, it also held a **read-only service
+account token**, so 1Password itself would have refused the write. Two locks, one
+of them outside our code.
+
+That property is exactly what made the deployment expensive. Capability was a
+container env var; a component's env is the union of its servers' env maps; so
+`gmail-ro` and `gmail-rw` could not share a container, and every variant bought
+its own billed component (12 bundles for 26 servers).
+
+Capability now lives in the gateway (`src/gateway/toolPolicy.ts`). One container
+runs every upstream at **full** capability, and a `-ro` slug is read-only because
+**strad declines the call**.
+
+What we did to make that decline airtight:
+
+- Enforcement is on the **action**, not the listing. A denied `tools/call` is
+  rejected with `-32600` **before the adapter is touched** — no upstream request,
+  no side effect. Filtering `tools/list` alone would be decoration: a client can
+  call any name it likes, including one it saw last week on a different slug.
+- `allow` is **exhaustive**. An upstream that grows a new write tool tomorrow does
+  not silently gain it on a read-only slug.
+- The bundle host **scrubs** `*_ENABLED_TOOLGROUPS`-shaped env vars at boot, so a
+  stale one cannot half-restore the old behaviour (it would strip tools from the
+  read-**write** slugs too).
+- `test/toolPolicy.test.ts` proves the rejection against a real upstream **with a
+  call counter**: if the gateway ever forwarded a denied call, the counter moves
+  and CI goes red.
+
+What we lost, precisely:
+
+- **1Password's second lock.** One container holds one `OP_SERVICE_ACCOUNT_TOKEN`,
+  and `onepassword-rw` needs the read-write one. So `onepassword-ro` is now
+  read-only _only_ because strad says so. If we ever want the token back as a
+  physical guarantee, it costs exactly one more component (a second bundle with
+  the RO token and only the `onepassword-ro` slug pointed at it) — that is the
+  price, and it is worth knowing it is available.
+- **Blast radius of a gateway bug.** A bug in `toolPolicy.ts` is now a write
+  capability, not a 500. That is why the policy is 40 lines and fail-closed.
+
+## 23. The per-server images still exist, and must, until prod is re-pointed
+
+`servers/bundle/` is now THE image, and `infra/strad.staging.yaml` uses only it.
+But `servers/good-eggs/Dockerfile`, `servers/bundle-api/Dockerfile`,
+`images/bundle-google/Dockerfile` etc. — and their release workflows — are all
+still here, still building, still pushing `:latest`.
+
+Deleting them would be the obvious tidy-up and it would be a **production
+incident**. Production's config lives in tadasant-internal and still points at
+`ghcr.io/tadasant/strad-server-*:latest`; App Platform re-pulls on every restart.
+Delete the workflow and prod keeps running a now-unbuilt tag; change the images'
+tool-group plumbing and prod's `-ro` components silently become read-write on the
+next pull.
+
+Same reason `servers/bundle-api/remote/src/index.ts` keeps its
+`registerWithToggle` machinery: prod still runs that image, and the toggle is
+still what makes prod's read-only variants read-only.
+
+**Removal order:** re-point prod at `ghcr.io/tadasant/strad-bundle` (with `tools:`
+policies) → confirm → _then_ delete the per-server images, their workflows and the
+toggle plumbing.
+
+## 24. Fourteen servers now share one process, and one Chromium
+
+The collapsed bundle is one container running fourteen MCP servers and one
+headless Chromium. An OOM there is a fourteen-server outage; it used to be a
+one-server outage.
+
+Mitigated where it could be:
+
+- a browser server whose **login fails** is marked `degraded` in `/healthz`
+  instead of exiting the process (the standalone images exit — correct for them);
+- **1Password** without an elicitation posture refuses to _mount_, not to boot;
+- an **unhandled rejection** is logged, not fatal;
+- a **dead Chromium** is relaunched on next use;
+- the three browser servers share **one** browser (a context each), so peak RSS is
+  ~1GB rather than ~1.6GB.
+
+Not mitigated: a genuine process-level failure. The instance is `apps-s-1vcpu-2gb`
+against a measured ~760MB working set with two browsers logging in at once, and
+the binding constraint is **CPU** — one shared vCPU now serialises Chromium
+rendering _and_ answers every Slack and Gmail call. If the OpenTelemetry data
+(event-loop lag, CPU, RSS-vs-limit, Chromium launches/crashes) says we are
+saturated, the next move is `apps-d-1vcpu-2gb` ($39, dedicated CPU) — not more RAM.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

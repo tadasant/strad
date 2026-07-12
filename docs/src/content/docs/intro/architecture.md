@@ -95,15 +95,58 @@ it) rather than failing the whole request with a 500. Selection is re-checked at
 client could call any tool name it saw on a prior request, so authorization is
 re-enforced on the action itself.
 
+## Capability (read-only vs read-write)
+
+A server's capability — which of its tools may actually be used — is a property of
+the **slug**, enforced by the **gateway**:
+
+```yaml
+- slug: onepassword-ro
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /onepassword
+  tools:
+    allow: [onepassword_list_vaults, onepassword_get_item, ...]
+
+- slug: onepassword-rw # same image, same path, same container
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /onepassword
+  # no `tools:` — every tool this server has
+```
+
+`allow` is exhaustive; `deny` subtracts and wins over `allow`; omitting `tools:`
+means no restriction. The policy filters `tools/list` **and rejects a
+`tools/call`** for a withheld tool — before the request reaches the upstream, so
+there is no API call and no side effect. Hiding a tool from the listing alone
+would be decoration: a client can call any name it likes.
+
+This is why the deployment is small. Capability used to be a container env var
+(`GMAIL_ENABLED_TOOLGROUPS=readonly`), and a component's env is the union of its
+servers' env maps — so a read-only and a read-write variant of one upstream could
+not share a container, and each variant cost a billed component. With the decision
+at the gateway, one container runs each upstream at full capability and the
+variants are just two config entries.
+
+The trade is real and worth stating: read-only is now **policy** (a gateway that
+declines), not **physics** (a process that lacks the tool). See HACKS.md #22.
+
 ## Sizing bundles
 
 The server list drives how containers are grouped:
 
 - **Lightweight builtins** colocate in one bundle at roughly $0 marginal cost.
-- **A `supplementary-image` server always owns its bundle** — one component runs
-  one image.
-- **Browser / Chromium bundles want their own** component: 1 vCPU serialises
-  rendering, and peak RSS runs ~545MB, so budget 1GB.
+- **A bundle runs ONE image** — but any number of servers may share it, on
+  distinct paths, and capability variants may even share a path.
+- **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
+  peaks ~545MB RSS, and CPU — not RAM — is what binds it, because 1 vCPU
+  serialises rendering. strad's own deployment puts everything (14 servers, one
+  shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: measured
+  working set is ~760MB with two browser servers logging in at once. Several
+  Chromiums in one component is the thing to avoid — share one browser and open a
+  context per server.
 
 ## Platform, images, and secrets
 

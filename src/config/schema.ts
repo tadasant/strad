@@ -36,6 +36,37 @@ const Role = z
 // Servers — the three kinds
 // ---------------------------------------------------------------------------
 
+/**
+ * Which tools of this server the gateway will expose and invoke.
+ *
+ * This is where CAPABILITY lives. It used to live in the container (a
+ * `*_ENABLED_TOOLGROUPS` env var built a process with no write tools in it),
+ * which meant a read-only and a read-write variant of one upstream could never
+ * share a container — each variant cost its own billed component. Here, one
+ * container runs the upstream at FULL capability and the gateway decides what a
+ * given slug may do, so `gmail-ro` and `gmail-rw` are two entries pointing at
+ * the same container.
+ *
+ *   - slug: gmail-ro
+ *     tools:
+ *       allow: [list_email_conversations, get_email_conversation, ...]
+ *
+ * `allow` is exhaustive (a tool must be on it). `deny` subtracts, and wins over
+ * `allow`. Omit `tools:` entirely for "every tool this server offers".
+ *
+ * Enforced on tools/call, not just tools/list — see gateway/toolPolicy.ts.
+ */
+const ToolPolicySchema = z
+  .object({
+    allow: z.array(z.string().min(1)).min(1).optional(),
+    deny: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict()
+  .refine((p) => p.allow !== undefined || p.deny !== undefined, {
+    message:
+      "tools: must set `allow` and/or `deny` (omit `tools:` for no restriction)",
+  });
+
 const ServerBase = z.object({
   /** Stable identifier. Tools are namespaced `<slug>__<tool>`. */
   slug: SLUG,
@@ -46,6 +77,8 @@ const ServerBase = z.object({
   entitlements: z.array(Role).default([]),
   /** Set false to keep the entry but stop serving it. */
   enabled: z.boolean().default(true),
+  /** Capability: the tools this slug may list AND call. Omit for all of them. */
+  tools: ToolPolicySchema.optional(),
   /** Per-request upstream timeout in ms. The MCP SDK defaults to 60s at
    *  every hop, which silently kills long tool calls; make it explicit. */
   timeoutMs: z.number().int().positive().default(120_000),
@@ -146,10 +179,21 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  *
  * Rules (enforced below):
  *   - a bundle holding a `supplementary-image` server holds ONLY supplementary
- *     images, and they must all be the SAME image on distinct paths
+ *     images, and they must all be the SAME image
  *   - `builtin` servers may share a bundle freely (that's the $0-marginal win)
- *   - browser/Chromium servers want their own bundle: 1 vCPU serialises
- *     rendering, and peak RSS is ~545MB, so budget 1GB.
+ *
+ * Two servers in one bundle MAY share a `path`. That is the capability-variant
+ * case and it is the point of the whole design: `gmail-ro` and `gmail-rw` are
+ * the same upstream at the same path in the same container, differing only in
+ * their `tools:` policy, which the GATEWAY enforces. (Before capability moved to
+ * the gateway, they could not even share a container — each needed its own
+ * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
+ * servers' env maps. That constraint is what made 26 servers cost 12 bundles.)
+ *
+ * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
+ * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
+ * serialises page rendering. Co-locating everything in one bundle means that box
+ * also runs `op` and ~25 upstream servers, so size it up, not down.
  */
 const BundleConfig = z.object({
   name: SLUG,
@@ -303,19 +347,11 @@ export const StradConfig = z
         });
       }
 
-      // When several servers share one image they must serve DISTINCT paths, or
-      // the gateway cannot tell them apart behind the single PRIVATE_URL.
-      if (images.length > 1) {
-        const paths = images.map((s) => s.path);
-        const dupPath = paths.find((p, i) => paths.indexOf(p) !== i);
-        if (dupPath !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `bundle "${bundle}" has two supplementary servers on path "${dupPath}"; each must serve a distinct path`,
-            path: ["servers"],
-          });
-        }
-      }
+      // NOTE: servers sharing a bundle MAY share a `path`. Two slugs on one path
+      // is exactly a capability pair — `gmail-ro` and `gmail-rw` proxying to the
+      // same upstream, told apart by their `tools:` policy, not by their route.
+      // Requiring distinct paths here is what used to force a component per
+      // capability tier.
 
       // A supplementary-image bundle holds ONLY supplementary images (all the
       // same one). A builtin mixed in would run a DIFFERENT image — the strad
