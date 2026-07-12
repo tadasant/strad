@@ -86,6 +86,47 @@ export interface ServiceSpec {
 
 const PORT = 8080;
 
+/**
+ * The `${NAME}` secret references a config uses that must be injected as
+ * BROADCAST SECRET env vars — a `remote-http` server's `url`/`headers` (e.g.
+ * `Authorization: "Bearer ${GRANOLA_TOKEN}"`) and a `builtin`'s `options`.
+ * These resolve IN-PROCESS at boot (secrets/index.ts `resolveRefs`) inside the
+ * core (and any strad-image bundle), and an unresolved `${…}` makes the gateway
+ * refuse to start, so render-spec must ship each as a SECRET env var.
+ *
+ * A `supplementary-image`'s `env:` is deliberately EXCLUDED: those refs are
+ * resolved at deploy time and SCOPED onto only their bundle (see the `secrets`
+ * bag threaded into `renderAppSpec`), so broadcasting them here too would
+ * un-scope a credential and double-inject it.
+ *
+ * We walk the PARSED config, never the raw YAML text: comments are stripped by
+ * the parse and never reach `resolveRefs`, so a `${NAME}` written in a comment
+ * must not be mistaken for a real reference.
+ */
+export function collectSecretRefs(config: StradConfig): string[] {
+  const REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  const out = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      for (const m of node.matchAll(REF)) {
+        const name = m[1];
+        if (name) out.add(name);
+      }
+    } else if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node && typeof node === "object") {
+      Object.values(node).forEach(walk);
+    }
+  };
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    // supplementary-image env is scoped per-bundle, not broadcast — skip it.
+    if (server.kind === "supplementary-image") continue;
+    walk(server);
+  }
+  return [...out];
+}
+
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
 

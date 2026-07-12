@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parseConfig } from "../src/config/load.ts";
 import {
+  collectSecretRefs,
   parseImage,
   renderAppSpec,
   type EnvVar,
@@ -102,6 +103,22 @@ for (const server of config.servers) {
       bundleSecrets[name] = value;
     }
   }
+}
+
+// Secrets referenced by a NON-supplementary server via ${NAME} — a remote-http
+// server's url/headers (e.g. `Authorization: "Bearer ${GRANOLA_TOKEN}"`), a
+// builtin's options. These resolve IN-PROCESS at boot (src/secrets/index.ts
+// resolveRefs) in the core and any strad-image bundle, so they belong as
+// BROADCAST SECRET env vars, not the bundle-scoped bag above. An unresolved
+// ref makes the gateway refuse to start, so fail loudly HERE, at render.
+// collectSecretRefs deliberately excludes supplementary-image env, so the two
+// paths never double-inject. Backward-compatible: a config with no such refs
+// (the default, and staging) adds nothing.
+const already = new Set(envs.map((e) => e.key));
+for (const name of collectSecretRefs(config)) {
+  if (already.has(name)) continue;
+  secret(name, true); // referenced by the config => required to boot
+  already.add(name);
 }
 
 // The dev-bypass switches. Not secrets — they are switches, and belong in the
