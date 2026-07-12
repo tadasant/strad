@@ -14,6 +14,13 @@ on:
       # build run before merge. (servers/** is out of the core toolchain and is
       # validated by release-goodeggs-image.yml instead.) See HACKS #9.
       - feat/good-eggs-supplementary
+      # BOOTSTRAP ONLY — remove before/after merge. onepassword stacks on the
+      # good-eggs branch (its supplementary infra isn't on main yet), so this PR
+      # targets feat/good-eggs-supplementary and its `pull_request` CI won't fire
+      # for a non-main base either. A `push` runs the core lint/test/build for the
+      # PR's only core-visible change, test/onepassword.appspec.test.ts.
+      # (servers/onepassword/** is validated by release-onepassword-image.yml.)
+      - feat/onepassword-supplementary
 
 concurrency:
   group: ci-${{ github.ref }}
