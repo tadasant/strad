@@ -1,0 +1,233 @@
+import { createHash, randomBytes } from "node:crypto";
+
+/**
+ * Google OAuth for the human console path.
+ *
+ * The only interesting part is `hd`. Google's `email` claim is NOT proof of
+ * Workspace membership: a personal gmail.com account can set its profile email
+ * to `someone@tadasant.com`, and `email_verified` will be true for it. The `hd`
+ * (hosted domain) claim is only ever emitted for accounts that actually belong
+ * to that Workspace domain. So we check `hd`, and we do not check the suffix.
+ *
+ * Fully implemented and ready. It activates the moment GOOGLE_CLIENT_ID and
+ * GOOGLE_CLIENT_SECRET are present; until then the console falls back to the
+ * bootstrap-token bypass (src/auth/dev.ts).
+ */
+
+const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const JWKS_URI = "https://www.googleapis.com/oauth2/v3/certs";
+const ISSUERS = new Set(["https://accounts.google.com", "accounts.google.com"]);
+
+export interface GoogleOAuthOptions {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+  /** Required Workspace domain, e.g. "tadasant.com". */
+  hostedDomain: string;
+}
+
+export interface GoogleIdentity {
+  sub: string;
+  email: string;
+  hd: string;
+  name?: string;
+  picture?: string;
+}
+
+export interface PendingAuth {
+  state: string;
+  codeVerifier: string;
+  url: string;
+}
+
+export class GoogleOAuthProvider {
+  constructor(private readonly opts: GoogleOAuthOptions) {}
+
+  /**
+   * Build the consent URL. PKCE is used even though this is a confidential
+   * client — it costs nothing and closes the auth-code interception window.
+   */
+  beginAuth(): PendingAuth {
+    const state = randomBytes(16).toString("base64url");
+    const codeVerifier = randomBytes(32).toString("base64url");
+    const codeChallenge = createHash("sha256")
+      .update(codeVerifier)
+      .digest("base64url");
+
+    const url = new URL(AUTH_ENDPOINT);
+    url.searchParams.set("client_id", this.opts.clientId);
+    url.searchParams.set("redirect_uri", this.opts.redirectUri);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("scope", "openid email profile");
+    url.searchParams.set("state", state);
+    url.searchParams.set("code_challenge", codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
+    // A hint to Google's account chooser. NOT a security control — the response
+    // is still verified against `hd` below.
+    url.searchParams.set("hd", this.opts.hostedDomain);
+
+    return { state, codeVerifier, url: url.toString() };
+  }
+
+  /** Exchange the code, verify the ID token, enforce `hd`. */
+  async completeAuth(
+    code: string,
+    codeVerifier: string,
+  ): Promise<GoogleIdentity> {
+    const body = new URLSearchParams({
+      code,
+      client_id: this.opts.clientId,
+      client_secret: this.opts.clientSecret,
+      redirect_uri: this.opts.redirectUri,
+      grant_type: "authorization_code",
+      code_verifier: codeVerifier,
+    });
+
+    const res = await fetch(TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!res.ok) {
+      throw new AuthError(`google token exchange failed: ${res.status}`);
+    }
+
+    const json = (await res.json()) as { id_token?: string };
+    if (!json.id_token) throw new AuthError("google returned no id_token");
+
+    return this.verifyIdToken(json.id_token);
+  }
+
+  async verifyIdToken(idToken: string): Promise<GoogleIdentity> {
+    const claims = await verifyGoogleJwt(idToken, this.opts.clientId);
+
+    // THE check. Not the email suffix.
+    if (claims.hd !== this.opts.hostedDomain) {
+      throw new AuthError(
+        `account is not a member of the ${this.opts.hostedDomain} Google Workspace`,
+      );
+    }
+    if (!claims.email || claims.email_verified !== true) {
+      throw new AuthError("google account has no verified email");
+    }
+
+    return {
+      sub: claims.sub,
+      email: claims.email,
+      hd: claims.hd,
+      name: claims.name,
+      picture: claims.picture,
+    };
+  }
+}
+
+export class AuthError extends Error {}
+
+interface GoogleClaims {
+  iss: string;
+  aud: string;
+  sub: string;
+  exp: number;
+  hd?: string;
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+  picture?: string;
+}
+
+interface Jwk {
+  kid: string;
+  n: string;
+  e: string;
+  alg?: string;
+  kty: string;
+}
+
+let jwksCache: { keys: Jwk[]; expiresAt: number } | null = null;
+
+async function getJwks(): Promise<Jwk[]> {
+  if (jwksCache && jwksCache.expiresAt > Date.now()) return jwksCache.keys;
+
+  const res = await fetch(JWKS_URI);
+  if (!res.ok)
+    throw new AuthError(`failed to fetch Google JWKS: ${res.status}`);
+  const json = (await res.json()) as { keys: Jwk[] };
+
+  // Honour Cache-Control; Google rotates these keys.
+  const cc = res.headers.get("cache-control") ?? "";
+  const maxAge = /max-age=(\d+)/.exec(cc)?.[1];
+  const ttlMs = maxAge ? Number(maxAge) * 1000 : 3600_000;
+
+  jwksCache = { keys: json.keys, expiresAt: Date.now() + ttlMs };
+  return json.keys;
+}
+
+/** Verify RS256 signature, issuer, audience and expiry. */
+async function verifyGoogleJwt(
+  token: string,
+  audience: string,
+): Promise<GoogleClaims> {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new AuthError("malformed id_token");
+  const [headerB64, payloadB64, signatureB64] = parts as [
+    string,
+    string,
+    string,
+  ];
+
+  const header = JSON.parse(
+    Buffer.from(headerB64, "base64url").toString("utf8"),
+  ) as { kid?: string; alg?: string };
+
+  if (header.alg !== "RS256") {
+    throw new AuthError(`unexpected id_token alg: ${header.alg}`);
+  }
+
+  const jwk = (await getJwks()).find((k) => k.kid === header.kid);
+  if (!jwk) throw new AuthError("id_token signed by an unknown key");
+
+  const { createPublicKey, createVerify } = await import("node:crypto");
+  const key = createPublicKey({ key: jwk as never, format: "jwk" });
+
+  const verifier = createVerify("RSA-SHA256");
+  verifier.update(`${headerB64}.${payloadB64}`);
+  verifier.end();
+
+  if (!verifier.verify(key, Buffer.from(signatureB64, "base64url"))) {
+    throw new AuthError("id_token signature verification failed");
+  }
+
+  const claims = JSON.parse(
+    Buffer.from(payloadB64, "base64url").toString("utf8"),
+  ) as GoogleClaims;
+
+  if (!ISSUERS.has(claims.iss)) {
+    throw new AuthError(`unexpected id_token issuer: ${claims.iss}`);
+  }
+  if (claims.aud !== audience) {
+    throw new AuthError("id_token audience mismatch");
+  }
+  if (claims.exp * 1000 <= Date.now()) {
+    throw new AuthError("id_token expired");
+  }
+
+  return claims;
+}
+
+/** Build the provider from env, or null when credentials are not yet present. */
+export function googleProviderFromEnv(
+  hostedDomain: string,
+  redirectUri: string,
+  env: NodeJS.ProcessEnv = process.env,
+): GoogleOAuthProvider | null {
+  const clientId = env.GOOGLE_CLIENT_ID;
+  const clientSecret = env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  return new GoogleOAuthProvider({
+    clientId,
+    clientSecret,
+    redirectUri,
+    hostedDomain,
+  });
+}

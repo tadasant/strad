@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Format
+        run: npm run format:check
+
+  test:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Test
+        run: npm test
+
+  verify_lockfile:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Ensure package-lock.json is up to date
+        run: |
+          npm install --package-lock-only
+          git diff --exit-code package-lock.json
+
+  # The image is the deliverable, so a PR that cannot produce one is a failing
+  # PR — not something we find out about at release time.
+  build_image:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: strad:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot the image and assert the auth gate
+        # strad is on the open internet with no network perimeter, so "does /mcp
+        # reject an anonymous caller" is not a nice-to-have test — it is THE test.
+        # Assert it against the real built artifact, not a unit-test stub.
+        run: |
+          set -euo pipefail
+          docker run -d --name strad-ci -p 8080:8080 \
+            -e STRAD_TOKENS='[]' \
+            strad:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          echo "--- /healthz"
+          curl -fsS http://127.0.0.1:8080/healthz
+
+          echo "--- /mcp with no token must be 401"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)
+          if [ "$code" != "401" ]; then
+            echo "::error::/mcp returned $code for an unauthenticated request; expected 401"
+            docker logs strad-ci
+            exit 1
+          fi
+          echo "OK: unauthenticated /mcp is 401"
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f strad-ci 2>/dev/null || true

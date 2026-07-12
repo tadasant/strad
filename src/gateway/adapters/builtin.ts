@@ -1,0 +1,95 @@
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  BuiltinContext,
+  BuiltinModule,
+  CallToolResult,
+  ServerAdapter,
+} from "./types.ts";
+
+/**
+ * An MCP server that lives inside a strad process.
+ *
+ * This is how private/internal servers ship: tadasant-internal builds its own
+ * strad image with its modules compiled in, and registers them with the same
+ * one-line config entry a public server uses. Builtins are the cheap kind —
+ * several of them colocate in one bundle component at no marginal cost.
+ */
+export class BuiltinServerAdapter implements ServerAdapter {
+  readonly kind = "builtin" as const;
+
+  constructor(
+    readonly slug: string,
+    private readonly mod: BuiltinModule,
+    private readonly options: Record<string, unknown>,
+    private readonly component: BuiltinContext["component"],
+  ) {}
+
+  async listTools(): Promise<Tool[]> {
+    return this.mod.tools;
+  }
+
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<CallToolResult> {
+    return this.mod.call(name, args, {
+      options: this.options,
+      component: this.component,
+    });
+  }
+
+  async close(): Promise<void> {
+    // In-process: nothing to tear down.
+  }
+}
+
+/**
+ * Load a builtin module by specifier.
+ *
+ * A bare specifier ("@acme/mcp-thing") is resolved as a package. A relative one
+ * ("./servers/echo.js") is resolved against the SOURCE ROOT — src/ when running
+ * from TypeScript, dist/ when running the built image — not against this file's
+ * directory, which would make every config entry start with "../../".
+ *
+ * Accepts either module shape, because both are natural to write:
+ *   export default { tools, call }
+ *   export const tools = [...]; export async function call() {}
+ */
+export async function loadBuiltin(specifier: string): Promise<BuiltinModule> {
+  const mod = (await importFromRoot(specifier)) as {
+    default?: BuiltinModule;
+    tools?: Tool[];
+    call?: BuiltinModule["call"];
+  };
+
+  const candidate = mod.default ?? (mod as unknown as BuiltinModule);
+
+  if (!Array.isArray(candidate.tools) || typeof candidate.call !== "function") {
+    throw new Error(
+      `builtin module "${specifier}" must export { tools: Tool[], call(name, args, ctx) } ` +
+        `(as a default export or as named exports)`,
+    );
+  }
+  return candidate;
+}
+
+/** src/ in development, dist/ in the built image. */
+const SOURCE_ROOT = new URL("../../", import.meta.url);
+
+async function importFromRoot(specifier: string): Promise<unknown> {
+  if (!specifier.startsWith(".")) return import(specifier);
+
+  const resolved = new URL(specifier, SOURCE_ROOT).href;
+  try {
+    return await import(resolved);
+  } catch (err) {
+    // Configs name the *built* file ("./servers/echo.js") because that is what
+    // ships. When running from source under --experimental-strip-types, that
+    // file does not exist — the .ts does. Fall back rather than making the
+    // config differ between dev and prod.
+    if ((err as NodeJS.ErrnoException).code !== "ERR_MODULE_NOT_FOUND")
+      throw err;
+    if (!resolved.endsWith(".js")) throw err;
+    return import(`${resolved.slice(0, -3)}.ts`);
+  }
+}
