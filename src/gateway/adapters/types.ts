@@ -1,4 +1,9 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  Tool,
+  Resource,
+  ReadResourceResult,
+} from "@modelcontextprotocol/sdk/types.js";
+import type { ClientCapabilities } from "../clientCapabilities.ts";
 
 /**
  * A mounted MCP server, from the gateway's point of view.
@@ -18,10 +23,35 @@ export interface ServerAdapter {
   callTool(
     name: string,
     args: Record<string, unknown>,
+    ctx?: CallContext,
   ): Promise<CallToolResult>;
+
+  /**
+   * Resources this server offers (e.g. an MCP App's `ui://` template).
+   *
+   * OPTIONAL: a server that serves no resources — every builtin today — simply
+   * omits this. The gateway treats a missing method as "no resources", which is
+   * how MCP Apps stay strictly additive: nothing about resource proxying touches
+   * a tools-only server.
+   */
+  listResources?(): Promise<Resource[]>;
+
+  /** Read one resource by URI. Present exactly when `listResources` is. */
+  readResource?(uri: string): Promise<ReadResourceResult>;
 
   /** Release upstream connections. */
   close(): Promise<void>;
+}
+
+/**
+ * Per-request context threaded from the gateway into a server call.
+ *
+ * Today it carries the client's advertised capabilities, so an in-process server
+ * can vary behaviour by what the client asked for (e.g. an MCP App). It is
+ * optional and additive — a server that ignores it behaves exactly as before.
+ */
+export interface CallContext {
+  clientCapabilities?: ClientCapabilities;
 }
 
 export interface CallToolResult {
@@ -61,6 +91,15 @@ export interface BuiltinContext {
     bundle: string;
     hostname: string;
   };
+  /**
+   * The MCP client's advertised capabilities, read from the `initialize` request
+   * (see clientCapabilities.ts). A builtin can use this to opt into MCP-App
+   * behaviour for clients that advertised `io.modelcontextprotocol/ui`.
+   *
+   * Undefined when the current request carried none — which, given strad's
+   * session-less endpoint, is every request except `initialize`.
+   */
+  clientCapabilities?: ClientCapabilities;
 }
 
 /** The separator between a server slug and its tool name: `good-eggs__search`. */

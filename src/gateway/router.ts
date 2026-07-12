@@ -3,9 +3,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   type Tool,
+  type Resource,
+  type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
+import { clientCapabilitiesFromInitialize } from "./clientCapabilities.ts";
 import {
   authenticateMcp,
   secretEquals,
@@ -131,10 +136,24 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       selected,
     });
 
+    // The client's advertised capabilities, read off the raw initialize body so
+    // opt-in `extensions` survive. Threaded into the call context below so an
+    // in-process server can vary behaviour by them. Present on the initialize
+    // request only — this endpoint is session-less, so a later tools/call POST
+    // carries none (see clientCapabilities.ts).
+    const clientCapabilities = clientCapabilitiesFromInitialize(req.body);
+
     // --- build a one-shot MCP server for exactly this request ---------------
+    // `resources` is advertised unconditionally: the gateway now proxies
+    // resources (which is how an MCP App's `ui://` template reaches the client),
+    // and the endpoint is session-less — a follow-up resources/list POST carries
+    // no capabilities to re-derive a conditional advertisement from, and the SDK
+    // refuses to register a resources handler for a server that didn't declare
+    // the capability. A selected server that serves no resources simply returns
+    // an empty list, so this stays a no-op for tools-only setups.
     const server = new Server(
       { name: opts.config.gateway.name, version: "0.1.0" },
-      { capabilities: { tools: {} } },
+      { capabilities: { tools: {}, resources: {} } },
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -164,8 +183,22 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       const result = await adapter.callTool(
         parsed.tool,
         (request.params.arguments ?? {}) as Record<string, unknown>,
+        { clientCapabilities },
       );
       return result as never;
+    });
+
+    // --- resource proxying (for MCP Apps) -----------------------------------
+    // A selected server's `ui://` template must reach the client, so the gateway
+    // relays resources the same way it relays tools: union on list, route on
+    // read, scoped to the servers selected for THIS request. A server that
+    // serves no resources (every builtin today) simply contributes none.
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: await listResourcesFor(selected, opts.registry),
+    }));
+
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      return readResourceFor(selected, opts.registry, request.params.uri);
     });
 
     const transport = new StreamableHTTPServerTransport({
@@ -213,6 +246,79 @@ async function listToolsFor(
     }),
   );
   return lists.flat();
+}
+
+/**
+ * Merge the selected servers' resources.
+ *
+ * Resource URIs are already app-namespaced by convention (`ui://<server>/…`), so
+ * unlike tools they are relayed verbatim — the URI a client sees is the one it
+ * reads back. As with tools/list, one failing upstream contributes zero
+ * resources and a log line rather than a 500.
+ */
+async function listResourcesFor(
+  selected: string[],
+  registry: Registry,
+): Promise<Resource[]> {
+  const lists = await Promise.all(
+    selected.map(async (slug) => {
+      const adapter = registry.get(slug);
+      if (!adapter?.listResources) return [];
+      try {
+        return await adapter.listResources();
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            evt: "mcp.list_resources_failed",
+            slug,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        return [];
+      }
+    }),
+  );
+  return lists.flat();
+}
+
+/**
+ * Read a resource by URI from whichever selected server owns it.
+ *
+ * Routing prefers the owner encoded in the URI: a `ui://<slug>/…` app template
+ * names its server as the authority, so we try that selected server first and
+ * fall back to the rest only if the hint misses. This matters because an
+ * upstream adapter drops its cached connection on a failed read — trying the
+ * wrong server first would needlessly churn healthy connections. Scoping to the
+ * selected set means `?servers=` applies to resources exactly as to tools: you
+ * cannot read a resource from a server you did not select.
+ */
+async function readResourceFor(
+  selected: string[],
+  registry: Registry,
+  uri: string,
+): Promise<ReadResourceResult> {
+  const hint = slugFromResourceUri(uri);
+  const order =
+    hint && selected.includes(hint)
+      ? [hint, ...selected.filter((s) => s !== hint)]
+      : selected;
+
+  for (const slug of order) {
+    const adapter = registry.get(slug);
+    if (!adapter?.readResource) continue;
+    try {
+      return await adapter.readResource(uri);
+    } catch {
+      // Not this server's resource (or it failed) — try the next selected one.
+    }
+  }
+  throw new Error(`resource "${uri}" is not offered by any selected server`);
+}
+
+/** `ui://good-eggs/search-results` -> `good-eggs` (the URI authority), else null. */
+function slugFromResourceUri(uri: string): string | null {
+  const match = /^ui:\/\/([^/]+)\//.exec(uri);
+  return match ? (match[1] ?? null) : null;
 }
 
 /**
