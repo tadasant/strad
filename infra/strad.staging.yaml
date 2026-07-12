@@ -35,7 +35,14 @@
 # sharpest edge is 1Password: the read-only variant used to also hold a read-only
 # SERVICE ACCOUNT token, so 1Password itself would refuse a write. One container
 # can hold one token, so it holds the read-write one, and `onepassword-ro` is now
-# read-only because strad says so. See HACKS.md #21.
+# read-only because strad says so. See HACKS.md #22.
+#
+# EVERY VARIANT OF A FAMILY DECLARES ITS OWN CREDENTIALS, identically. The
+# component's env is the union of its servers' env maps, so this is a no-op at
+# deploy time — and it is deliberate: with the credential declared on only one
+# variant, setting `enabled: false` on THAT variant would silently strip the
+# secret from its siblings, which would keep listing their tools and fail every
+# call with an auth error naming no cause.
 #
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 4/9 · tailscale 7/15 ·
@@ -123,6 +130,8 @@ servers:
     bundle: bundle
     path: /slack
     entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
     tools:
       allow:
         - slack_get_channels
@@ -148,6 +157,8 @@ servers:
     bundle: bundle
     path: /tailscale
     entitlements: [admin]
+    env:
+      TAILSCALE_API_KEY: "${TAILSCALE_API_KEY}"
     tools:
       allow:
         - get_policy_file
@@ -176,6 +187,8 @@ servers:
     bundle: bundle
     path: /monarch-money
     entitlements: [admin]
+    env:
+      MONARCH_SESSION_TOKEN: "${MONARCH_SESSION_TOKEN}"
     tools:
       allow:
         - check_authentication
@@ -278,6 +291,10 @@ servers:
     bundle: bundle
     path: /gmail
     entitlements: [admin]
+    env:
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
     tools:
       allow:
         - list_email_conversations
@@ -296,6 +313,10 @@ servers:
     bundle: bundle
     path: /gmail
     entitlements: [admin]
+    env:
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
     # No `tools:` — every tool this server has. The full set IS this tier.
 
   # ---------------------------------------------------------------------------
@@ -324,6 +345,10 @@ servers:
     bundle: bundle
     path: /google-docs
     entitlements: [admin]
+    env:
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
     tools:
       allow:
         - get_document
@@ -343,6 +368,10 @@ servers:
     bundle: bundle
     path: /google-docs
     entitlements: [admin]
+    env:
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
     # No `tools:` — the full 11, including share_document (the external one).
 
   # ---------------------------------------------------------------------------
@@ -371,6 +400,10 @@ servers:
     bundle: bundle
     path: /google-calendar
     entitlements: [admin]
+    env:
+      GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GCAL_IMPERSONATE_EMAIL: "${GCAL_IMPERSONATE_EMAIL}"
     # No `tools:` — all 7.
 
   # ---------------------------------------------------------------------------
@@ -411,6 +444,9 @@ servers:
     path: /onepassword
     entitlements: [admin]
     timeoutMs: 120000
+    env:
+      OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW}"
+      DANGEROUSLY_SKIP_ELICITATIONS: "true"
     # No `tools:` — all nine.
 
   # ---------------------------------------------------------------------------
