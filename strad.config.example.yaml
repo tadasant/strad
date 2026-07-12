@@ -107,3 +107,24 @@ servers:
   #   env:
   #     GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
   #     GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"
+
+  # onepassword (servers/onepassword) is the same shape, with the 1Password CLI
+  # (`op`) baked into its image. The token env var is OP_SERVICE_ACCOUNT_TOKEN;
+  # the image ships no credential. ENABLED_TOOLGROUPS is the read-only vs
+  # read-write lever — `readonly` exposes only the five read tools; omit it for
+  # all nine. So one image ships as two configs: an `onepassword-ro` with
+  # ENABLED_TOOLGROUPS=readonly and an `onepassword-rw` without it, differing
+  # only in env. (This server also requires an elicitation posture to boot —
+  # either ELICITATION_REQUEST_URL + ELICITATION_POLL_URL, or
+  # DANGEROUSLY_SKIP_ELICITATIONS=true. See servers/onepassword/README.md.)
+  #
+  # - slug: onepassword-ro
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-server-onepassword:latest
+  #   bundle: bundle-onepassword
+  #   entitlements: [admin]
+  #   timeoutMs: 120000
+  #   env:
+  #     OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
+  #     ENABLED_TOOLGROUPS: "readonly"
+  #     DANGEROUSLY_SKIP_ELICITATIONS: "true"

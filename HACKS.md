@@ -289,6 +289,58 @@ authenticates the core even if the private network is ever breached.
 
 ---
 
+## 14. onepassword image is bootstrapped from the PR branch (stacked on good-eggs)
+
+**What.** The onepassword supplementary bundle mirrors good-eggs (hack #9). Two
+workflows carry a `feat/onepassword-supplementary` bootstrap trigger:
+
+1. `release-onepassword-image.yml` — the first
+   `ghcr.io/tadasant/strad-server-onepassword` image has to be pushed by CI (the
+   session has no `write:packages` PAT), so the branch trigger mints it into ghcr
+   now. The workflow also asserts `op --version` against the built image before
+   pushing, so a broken `op` install can never be published.
+2. `ci.yml` `on.push.branches` — this PR is **stacked on
+   `feat/good-eggs-supplementary`** (its `supplementary-image` infra — the
+   appspec.ts/render-spec.ts/config changes — is not on `main` yet), so the PR's
+   base is that feature branch, not `main`. `pull_request` CI only fires for PRs
+   to `main`, so a `push` runs this branch's own `ci.yml` to get a real
+   typecheck/lint/test/build on the PR's one core-visible change,
+   `test/onepassword.appspec.test.ts`. `servers/onepassword/**` is outside the
+   core toolchain (eslint/prettier/tsc ignore it) and is validated by
+   `release-onepassword-image.yml` instead.
+
+**Undo.** Merge good-eggs (PR #4) to `main`, then merge this PR onto `main` and
+delete the `feat/onepassword-supplementary` line from `on.push.branches` in both
+`release-onepassword-image.yml` and `ci.yml`. From then, `pull_request` CI covers
+it normally and images are cut only from `main`.
+
+---
+
+## 15. onepassword `shared/` is vendored, and its elicitation lib with it
+
+**What.** `servers/onepassword/shared/` is copied **verbatim** from
+[`pulsemcp/mcp-servers` `experimental/onepassword/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/onepassword);
+only `remote/` (the streamable-HTTP entrypoint) is new, reusing `createMCPServer()`.
+Same rationale as good-eggs (hack #10). One extra wrinkle: `shared/` depends on
+`@pulsemcp/mcp-elicitation`, which is **not published to npm** (it lives at
+`libs/elicitation` in the upstream monorepo and is consumed there by a `file:`
+path). So that library is vendored too, as `servers/onepassword/elicitation/`, a
+third workspace built before `shared/`. It has no runtime deps of its own (only
+`node:crypto`). `shared/package.json`'s dependency is repointed from the upstream
+`file:../../../libs/elicitation` to a workspace `*` — the only edit to the
+otherwise-verbatim `shared/`.
+
+**Why.** Reusing the upstream tool logic (nine tools, credential redaction,
+elicitation gating) without forking it. `op` itself is not an npm dependency at
+all — it is a pinned binary baked into the image (see `servers/onepassword/Dockerfile`,
+`ARG OP_VERSION`) and invoked via `child_process`.
+
+**Undo.** When a shared fix is needed, make it upstream and re-vendor both dirs.
+Longer term, have upstream publish `@pulsemcp/mcp-elicitation` and `shared` as
+real packages and depend on them.
+
+---
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
@@ -316,3 +368,8 @@ A consolidated checklist, cross-referenced above:
 - [ ] **Seed `strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD`
       in GCP** (via `secrets-sync.yml`) so the CI deploy has the good-eggs
       credentials, not just the session-driven deploy.
+- [ ] **Merge good-eggs (PR #4) to `main`, then this PR**, then drop the
+      `feat/onepassword-supplementary` bootstrap trigger → removes hack #14.
+      The onepassword token (`OP_SERVICE_ACCOUNT_TOKEN`) and its `onepassword-ro`
+      / `onepassword-rw` server configs are wired downstream in tadasant-internal,
+      not in this repo.
