@@ -185,8 +185,10 @@ both repos.
 2. `ci.yml` `on.push.branches` — this PR targets `feat/strad-core-platform`
    (PR #2), and `pull_request` CI reads the **base** branch's `ci.yml`, which only
    fires for PRs to `main`. A `push` event instead runs this branch's own
-   `ci.yml`, so the branch is listed there to get a real
-   typecheck/lint/test/build run on the good-eggs changes before merge.
+   `ci.yml`, so the branch is listed there to get a real typecheck/lint/test/build
+   run on the PR's **strad-core** changes (appspec.ts, render-spec.ts, the new
+   test, config). `servers/**` is outside the core toolchain (eslint/prettier/tsc
+   ignore it) and is validated by `release-goodeggs-image.yml` instead.
 
 **Undo.** Delete the `feat/good-eggs-supplementary` line from `on.push.branches`
 in both `release-goodeggs-image.yml` and `ci.yml` before/after merge. Once this

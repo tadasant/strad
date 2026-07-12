@@ -85,6 +85,9 @@ const SECRET_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const bundleSecrets: Record<string, string> = {};
 for (const server of config.servers) {
   if (server.kind !== "supplementary-image") continue;
+  // appspec.ts skips disabled servers and emits no bundle for them, so don't
+  // demand their secrets here either — that would fail-close in the wrong place.
+  if (!server.enabled) continue;
   for (const raw of Object.values(server.env)) {
     for (const match of raw.matchAll(SECRET_REF)) {
       const name = match[1]!;

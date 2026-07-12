@@ -46,6 +46,15 @@ if (!process.env.GOOD_EGGS_PASSWORD && process.env.GOODEGGS_PASSWORD) {
 // A container has no display; the browser must be headless.
 if (!process.env.HEADLESS) process.env.HEADLESS = 'true';
 
+// The shared factory's background login rejects its internal loginPromise on a
+// bad credential; nothing awaits it until the first tool call, so without this
+// guard Node's default surfaces it as an unhandled rejection. Fail fast and let
+// App Platform restart us (which also retries a transient login failure).
+process.on('unhandledRejection', (reason) => {
+  logError('unhandledRejection', reason);
+  process.exit(1);
+});
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(
   readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'),
@@ -79,27 +88,21 @@ async function main(): Promise<void> {
   });
 
   // Launch Chromium and log in now, in the background, so the first real tool
-  // call doesn't also pay for a cold browser + a full sign-in flow.
-  let loginFailed = false;
-  let loginError: string | undefined;
+  // call doesn't also pay for a cold browser + a full sign-in flow. On failure,
+  // mirror the stdio server: log, clean up, and exit non-zero.
   startBackgroundLogin((error: Error) => {
-    loginFailed = true;
-    loginError = error.message;
     logError('login', `Background login to Good Eggs failed: ${error.message}`);
+    cleanup()
+      .catch((e) => logError('cleanup', e))
+      .finally(() => process.exit(1));
   });
 
   const app = express();
   app.use(express.json({ limit: '20mb' }));
 
-  // Liveness/readiness. Login failure is surfaced as 503 so the platform (and
-  // an operator) can see a bad credential without cracking open logs.
+  // Liveness. The process exits on a login failure (above), so if it is alive to
+  // answer, its browser session is starting up or ready.
   app.get('/healthz', (_req, res) => {
-    if (loginFailed) {
-      res
-        .status(503)
-        .json({ ok: false, server: 'good-eggs', version: VERSION, loginError });
-      return;
-    }
     res.status(200).json({ ok: true, server: 'good-eggs', version: VERSION });
   });
 
