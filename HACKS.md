@@ -428,6 +428,54 @@ push.
 `feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
 it is the standing check for `servers/good-eggs`.
 
+## 16. The human /ui console "session" is the bootstrap token in a cookie
+
+**What.** The human resource browser at `/ui` (and `/ui/:server`) is gated by the
+same console SSO as `/console` (see hack #2). Because a browser navigates between
+pages, once `ADMIN_BOOTSTRAP_TOKEN` is presented as `?token=…`, the gate moves it
+into an **HttpOnly, SameSite=Lax, Secure-in-prod cookie** (`strad_console`) and
+redirects to the clean URL, so the token is not left in the address bar, history
+or screenshots. That cookie is the entire "session" for now.
+
+**Crucial scope.** Identical to hack #2: this gate is `/console`-class only. It
+CANNOT authenticate `/mcp` — that endpoint takes a static system token and
+nothing else (`src/auth/index.ts`), and there is no code path from this cookie to
+it. `/ui` is HUMAN-facing HTML; it is not the agent endpoint.
+
+**Why.** Google Workspace OAuth credentials are not provisioned yet (hack #2), so
+the dev bypass is the only working door. Reusing the already-present bootstrap
+token as the cookie value avoids inventing a signing key for a throwaway session
+mechanism tonight. The cookie holds a secret the operator already has, HttpOnly
+so page JS cannot read it.
+
+**Undo.** When `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` land (hack #2 undo),
+`/ui`'s gate redirects to real OAuth and the cookie becomes a proper signed,
+expiring session (Redis or a signed cookie — same upgrade hack #7 wants for the
+OAuth `state` map). Then this token-in-a-cookie stand-in goes away with the rest
+of the dev bypass.
+
+---
+
+## 17. Real per-server GCS creds for /ui/gcs are seeded in a later phase
+
+**What.** The `gcs` server is registered in `infra/strad.staging.yaml` (its own
+`bundle-gcs` bundle) with `enabled: false` and its bucket/credentials as
+`${GCS_BUCKET}` / `${GCS_SERVICE_ACCOUNT_KEY_JSON}` refs. So `/ui/gcs` on staging
+renders its shell behind the SSO gate and reports "credentials not yet
+configured" — it does not browse a real bucket yet.
+
+**Why.** This OSS staging holds no per-server GCS credentials (same posture as
+fetchpet/pointsyeah, hack #14). A disabled supplementary image emits no App
+Platform component and demands no secret at render, so staging stays deployable
+with zero new secrets. The browse code path is proven end-to-end against a real
+bucket from the build session (a dependency-free GCS JSON-API client:
+`src/ui/gcs-client.ts`), just not wired to staging creds.
+
+**Undo.** Seed `strad-staging-GCS_PROJECT_ID` / `-GCS_BUCKET` /
+`-GCS_SERVICE_ACCOUNT_KEY_JSON` (real per-server creds live in tadasant-internal),
+flip the `gcs` server to `enabled: true`, and confirm the `strad-bundle-api` ghcr
+package is pullable by `GHCR_PULL_TOKEN`. Then `/ui/gcs` browses the live bucket.
+
 ---
 
 ## What the human still needs to provision

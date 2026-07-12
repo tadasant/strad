@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     );
   }
 
-  const app = createApp({ config, registry, tokenStore, mode, env });
+  const app = createApp({ config, registry, tokenStore, mode, env, secrets });
 
   // App Platform: a PUBLIC component sets http_port. An INTERNAL component sets
   // internal_ports and must NOT set http_port (http_port is what mints the
