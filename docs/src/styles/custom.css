@@ -1,0 +1,470 @@
+/* =========================================================================
+   Zimmer documentation theme.
+
+   Professional and restrained: one clean technical sans (IBM Plex Sans) for
+   text and headings, JetBrains Mono for code, a neutral palette, and a single
+   slate-blue accent. Effects are limited to genuinely interactive elements.
+   ========================================================================= */
+
+:root {
+  --font-sans: "IBM Plex Sans Variable", system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+
+  --sl-content-width: 46rem;
+  --sl-line-height: 1.7;
+}
+
+/* ---- Dark ---------------------------------------------------------------- */
+:root {
+  --sl-color-white: #f2f3f6; /* headings */
+  --sl-color-gray-1: #d8dbe2; /* body text */
+  --sl-color-gray-2: #b4b9c4;
+  --sl-color-gray-3: #868c99; /* muted / captions */
+  --sl-color-gray-4: #5a606d;
+  --sl-color-gray-5: #333844; /* borders */
+  --sl-color-gray-6: #1e212a; /* panels */
+  --sl-color-gray-7: #171921;
+  --sl-color-black: #0f1116; /* background */
+
+  --sl-color-accent-low: #0b2f2b;
+  --sl-color-accent: #158b7d;
+  --sl-color-accent-high: #b9e8e0;
+  --sl-color-text-accent: #5ec7b8; /* links */
+
+  --sl-color-bg: #0f1116;
+  --sl-color-bg-nav: #0f1116;
+  --sl-color-bg-sidebar: #0c0e12;
+  --sl-color-bg-inline-code: #20242e;
+}
+
+/* ---- Light --------------------------------------------------------------- */
+:root[data-theme="light"] {
+  --sl-color-white: #16181d; /* headings */
+  --sl-color-gray-1: #2a2d34; /* body text */
+  --sl-color-gray-2: #3c3f48;
+  --sl-color-gray-3: #5c616c; /* muted / captions */
+  --sl-color-gray-4: #888e9a;
+  --sl-color-gray-5: #e2e4e9; /* borders */
+  --sl-color-gray-6: #f0f1f4; /* panels */
+  --sl-color-gray-7: #f6f7f9;
+  --sl-color-black: #ffffff; /* background */
+
+  --sl-color-accent-low: #d4f0ea;
+  --sl-color-accent: #0f766e;
+  --sl-color-accent-high: #0a4a44;
+  --sl-color-text-accent: #0f766e;
+
+  --sl-color-bg: #ffffff;
+  --sl-color-bg-nav: #ffffff;
+  --sl-color-bg-sidebar: #fbfbfc;
+  --sl-color-bg-inline-code: #eef0f3;
+}
+
+/* =========================================================================
+   Typography
+   ========================================================================= */
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Body heading sizes come from Starlight's own --sl-text-h* variables rather
+   than from `h2 { font-size }` overrides. Starlight puts each heading inside a
+   .sl-heading-wrapper and sizes BOTH from --sl-text-h<n>. The anchor icon's size
+   and its negative margin-inline-start are `em`-based off the wrapper, while the
+   heading's compensating padding-inline-end is `em`-based off the heading — so
+   sizing only the heading desynchronises the pair, and the icon's negative margin
+   overshoots the heading's padding and lands on the text. Driving the variable
+   keeps wrapper and heading in step.
+
+   Scoped to .sl-markdown-content rather than :root because --sl-text-h4 also
+   sizes the header brand (SiteTitle), which keeps Starlight's size. Cards sit
+   inside the markdown content and read --sl-text-h4 too, so they pin their own
+   title size below. */
+.sl-markdown-content {
+  --sl-text-h1: 2.05rem;
+  --sl-text-h2: 1.45rem;
+  --sl-text-h3: 1.18rem;
+  --sl-text-h4: 1rem;
+}
+
+:is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  line-height: 1.25;
+}
+.sl-markdown-content h1,
+.content-panel h1 {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-size: 2.05rem;
+  line-height: 1.15;
+}
+.sl-markdown-content h4 {
+  color: var(--sl-color-white);
+}
+
+/* Section spacing goes on the wrapper: Starlight renders the heading itself as
+   `display: inline`, so a margin on the heading element is inert.
+
+   The `:not(...) + ` guard is Starlight's own, and it earns its keep: a heading
+   only gets top space when it follows actual content. A page's first heading
+   sits flush under the description, and an h3 directly beneath its h2 stays
+   tight to the section it belongs to. */
+.sl-markdown-content
+  :not(h1, h2, h3, h4, h5, h6, .sl-heading-wrapper)
+  + .sl-heading-wrapper.level-h2 {
+  margin-top: 2.6rem;
+}
+.sl-markdown-content
+  :not(h1, h2, h3, h4, h5, h6, .sl-heading-wrapper)
+  + .sl-heading-wrapper.level-h3 {
+  margin-top: 1.9rem;
+}
+
+/* A little more air between the heading text and the anchor icon than
+   Starlight's 0.25em default. */
+.sl-markdown-content .sl-heading-wrapper {
+  --sl-anchor-icon-gap: 0.4em;
+}
+
+.sl-markdown-content {
+  font-size: 1rem;
+}
+.sl-markdown-content > p:first-of-type,
+.hero .tagline {
+  color: var(--sl-color-gray-2);
+}
+.sl-markdown-content strong {
+  font-weight: 600;
+  color: var(--sl-color-white);
+}
+
+/* =========================================================================
+   Links — a plain underline, coloured on hover. Interactive only. The heading
+   anchor link (.sl-anchor-link) is excluded; it's styled separately below.
+   ========================================================================= */
+.sl-markdown-content a:not(:where(.not-content *, .sl-anchor-link)) {
+  color: var(--sl-color-text-accent);
+  text-decoration: none;
+  text-underline-offset: 0.15em;
+}
+.sl-markdown-content a:not(:where(.not-content *, .sl-anchor-link)):hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+
+/* Heading anchor link (the "copy link" affordance). Starlight's own
+   anchor-links.css handles sizing, spacing, and vertical centering — do NOT
+   override those. Only recolour it (muted, accent on hover) and drop the
+   underline. The click-to-copy checkmark is swapped in by JS (Head.astro), not
+   via ::after, which Starlight uses for the click area. */
+.sl-anchor-link {
+  color: var(--sl-color-gray-4);
+}
+.sl-anchor-link:hover,
+.sl-anchor-link:focus-visible {
+  color: var(--sl-color-text-accent);
+}
+.sl-anchor-link[data-copied] {
+  color: #34b27b; /* success green while the checkmark shows */
+  opacity: 1 !important;
+}
+
+/* Offset anchor targets so a linked heading clears the fixed header, and keep a
+   stable gutter so opening the lightbox doesn't shift the layout. */
+html {
+  scroll-padding-top: 5rem;
+  scrollbar-gutter: stable;
+}
+
+/* =========================================================================
+   Image / diagram lightbox — click any diagram or image to view it full size.
+   A native <dialog> (showModal) gives us the focus trap, Esc, and an inert
+   background for free.
+   ========================================================================= */
+.mermaid-diagram,
+.sl-markdown-content img {
+  cursor: zoom-in;
+}
+dialog.lightbox {
+  width: 100vw;
+  height: 100dvh;
+  max-width: 100vw;
+  max-height: 100dvh;
+  margin: 0;
+  padding: clamp(1rem, 4vw, 3rem);
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  cursor: zoom-out;
+}
+dialog.lightbox[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+dialog.lightbox::backdrop {
+  background: color-mix(in srgb, #05060a 88%, transparent);
+  backdrop-filter: blur(2px);
+}
+.lightbox-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.lightbox-stage :is(svg, img) {
+  background: var(--sl-color-bg);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  box-sizing: border-box;
+}
+.lightbox-close {
+  position: fixed;
+  top: clamp(0.5rem, 2vw, 1.25rem);
+  right: clamp(0.5rem, 2vw, 1.25rem);
+  width: 2.25rem;
+  height: 2.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.4rem;
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-gray-1);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.lightbox-close:hover {
+  color: var(--sl-color-white);
+  border-color: var(--sl-color-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  dialog.lightbox[open] .lightbox-stage {
+    animation: lb-in 0.16s ease-out both;
+  }
+  @keyframes lb-in {
+    from { opacity: 0; transform: scale(0.98); }
+    to { opacity: 1; transform: scale(1); }
+  }
+}
+
+/* =========================================================================
+   Code
+   ========================================================================= */
+.sl-markdown-content code:not(:where(pre *)) {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  padding: 0.1em 0.36em;
+  border-radius: 4px;
+  border: 1px solid var(--sl-color-gray-5);
+  background: var(--sl-color-bg-inline-code);
+  /* Break only genuinely-too-long tokens (paths, Ruby#methods); leave short
+     identifiers like `needs_input` intact even in narrow table columns. */
+  overflow-wrap: break-word;
+}
+
+/* =========================================================================
+   Callouts (Starlight asides) — a quiet uniform border and panel; the icon and
+   label carry severity by colour. No accent stripe, no tinted fill.
+   ========================================================================= */
+.starlight-aside {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.4rem;
+  padding: 0.9rem 1.1rem;
+  background: var(--sl-color-gray-7);
+}
+.starlight-aside__title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+.starlight-aside__icon {
+  color: var(--sl-color-asides-text-accent);
+}
+.starlight-aside--note {
+  --sl-color-asides-text-accent: #8fa1f0;
+}
+.starlight-aside--tip {
+  --sl-color-asides-text-accent: #5bc2a8;
+}
+.starlight-aside--caution {
+  --sl-color-asides-text-accent: #e0a63b;
+}
+.starlight-aside--danger {
+  --sl-color-asides-text-accent: #e5706e;
+}
+/* Light: the accents above are dark-tuned; darken per severity to clear AA. */
+:root[data-theme="light"] .starlight-aside--note {
+  --sl-color-asides-text-accent: #0f766e;
+}
+:root[data-theme="light"] .starlight-aside--tip {
+  --sl-color-asides-text-accent: #10745a;
+}
+:root[data-theme="light"] .starlight-aside--caution {
+  --sl-color-asides-text-accent: #8a5510;
+}
+:root[data-theme="light"] .starlight-aside--danger {
+  --sl-color-asides-text-accent: #b23330;
+}
+/* Keep in-callout links looking like links: use the aside's own accent, not the
+   heading colour, for both the text and the underline. */
+.starlight-aside a {
+  color: var(--sl-color-asides-text-accent);
+  text-decoration-color: color-mix(in srgb, var(--sl-color-asides-text-accent) 50%, transparent);
+}
+.starlight-aside a:hover {
+  text-decoration-color: var(--sl-color-asides-text-accent);
+}
+
+/* =========================================================================
+   Cards (CardGrid) — quiet static panels. No hover motion; the homepage
+   Card grid is not interactive.
+   ========================================================================= */
+.card {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7);
+}
+/* Card titles are pinned rather than inherited: Starlight sizes them from
+   --sl-text-h4, which the markdown content scales down to body size for h4
+   headings. A card title needs to outrank both body copy and a LinkCard title. */
+.card .title {
+  font-weight: 600;
+  font-size: 1.25rem;
+}
+.card .icon {
+  color: var(--sl-color-text-accent);
+  border-color: var(--sl-color-gray-5);
+  background: color-mix(in srgb, var(--sl-color-accent) 10%, transparent);
+}
+/* LinkCards are genuinely clickable; give only those a restrained hover. */
+.sl-link-card {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7);
+  transition: border-color 0.15s ease;
+}
+.sl-link-card:hover {
+  border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--sl-color-gray-5));
+}
+
+/* =========================================================================
+   Tables — clear header, hairline rules. No row hover.
+   ========================================================================= */
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  font-size: 0.94rem;
+  border-collapse: collapse;
+}
+.sl-markdown-content thead th {
+  font-weight: 600;
+  font-size: 0.86rem;
+  color: var(--sl-color-gray-2);
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+.sl-markdown-content :is(td, th) {
+  border-bottom: 1px solid var(--sl-color-gray-6);
+  padding: 0.5rem 0.75rem;
+}
+
+/* =========================================================================
+   Blockquote + rule
+   ========================================================================= */
+.sl-markdown-content blockquote {
+  border-left: 3px solid var(--sl-color-gray-4);
+  padding-left: 1rem;
+  color: var(--sl-color-gray-2);
+  font-style: normal;
+}
+.sl-markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--sl-color-gray-5);
+  margin: 2.2rem 0;
+}
+
+/* =========================================================================
+   Chrome — sidebar and TOC. Active states only.
+   ========================================================================= */
+header.header {
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+.site-title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+/* Active nav item: weight + accent colour, no filled pill or accent stripe. */
+.sidebar-content a[aria-current="page"] {
+  font-weight: 600;
+  color: var(--sl-color-text-accent);
+  background: transparent;
+}
+starlight-toc a[aria-current="true"] {
+  color: var(--sl-color-text-accent);
+  font-weight: 600;
+}
+
+/* =========================================================================
+   Details
+   ========================================================================= */
+::selection {
+  background: color-mix(in srgb, var(--sl-color-accent) 30%, transparent);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sl-color-gray-5) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--sl-color-gray-5);
+  border-radius: 10px;
+  border: 2px solid var(--sl-color-bg);
+}
+:where(a, button, summary, input):focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* =========================================================================
+   Mermaid diagrams — rendered client-side by src/components/Head.astro in the
+   brand palette; the panel recedes so nodes sit above it.
+   ========================================================================= */
+.mermaid-figure {
+  margin: 1.75rem 0;
+  padding: 1.25rem 1rem;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  background: var(--sl-color-gray-7);
+  overflow-x: auto;
+}
+.mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  min-height: 2rem;
+}
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.mermaid-figure figcaption {
+  margin-top: 0.75rem;
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--sl-color-gray-3);
+}
+.mermaid-error {
+  color: #e5706e;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+}

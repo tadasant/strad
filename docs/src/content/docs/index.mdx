@@ -1,0 +1,100 @@
+---
+title: strad
+description: A self-hosted MCP platform — one endpoint, many MCP servers, selected per request, proxied and namespaced and access-controlled server-side.
+template: splash
+head:
+  - tag: title
+    content: strad — One endpoint. Many MCP servers. Selected per request.
+hero:
+  tagline: Point any MCP client at one URL, present a token, ask for the servers you want with <code>?servers=</code>, and get a single merged toolset — proxied, namespaced, and access-controlled server-side.
+  image:
+    file: ../../assets/logo-dark.svg
+  actions:
+    - text: What strad is
+      link: /intro/what-strad-is/
+      icon: right-arrow
+    - text: The server-config interface
+      link: /servers/interface/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/tadasant/strad
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+
+strad is a self-hosted MCP platform. It is one endpoint in front of many MCP
+servers: a client asks for the servers it wants, presents a token, and strad
+returns exactly the tools that token is entitled to — merged, namespaced, and
+brokered server-side. The core ships with **zero** servers baked in. You attach
+them through a single config interface, and that config is the whole product
+surface.
+
+## What it does
+
+<CardGrid>
+  <Card title="One endpoint, many servers" icon="external">
+    A client hits `https://your-strad/mcp?servers=granola,deepwiki`, and strad merges
+    those upstreams into one toolset. Every tool is namespaced `server__tool`, so
+    `granola__list_meetings` never collides with anyone else.
+  </Card>
+  <Card title="The query proposes, the token disposes" icon="approve-check">
+    `?servers=` can only ever *narrow* what a token is entitled to. It is a selection
+    hint, never an authorization boundary — entitlement is computed server-side from the
+    caller's roles.
+  </Card>
+  <Card title="It fails closed" icon="warning">
+    Ask for a server you can't have and you get a `424 Failed Dependency` naming exactly
+    what's missing and where to authorize — not a `401` that marches your client into a
+    pointless OAuth loop against the gateway.
+  </Card>
+  <Card title="Stateless and spec-conformant" icon="random">
+    A fresh MCP server and transport is built per request and torn down when it closes.
+    The toolset is a pure function of `(token, URL)`, which is what keeps `?servers=`
+    conformant with the 2026-07-28 MCP spec revision.
+  </Card>
+</CardGrid>
+
+<Aside type="tip" title="These docs describe what was built">
+Everything here is re-derived from strad's own source — the config schema, the
+gateway router, the auth code, and the deploy spec. Where something is a known gap
+or a temporary shim, it is written down, inline where it bites and aggregated on
+[Known limitations](/limitations/). Read that page before you trust anything as
+finished.
+</Aside>
+
+## Where to go next
+
+<CardGrid>
+  <LinkCard
+    title="What strad is"
+    href="/intro/what-strad-is/"
+    description="The one endpoint, the one rule, 424 fail-closed, statelessness, and why it's a platform rather than a bundle of integrations."
+  />
+  <LinkCard
+    title="Architecture"
+    href="/intro/architecture/"
+    description="The core gateway, internal-only bundles over the private network, App Platform, ghcr images, and GCP Secret Manager."
+  />
+  <LinkCard
+    title="The server-config interface"
+    href="/servers/interface/"
+    description="The three kinds — remote-http, supplementary-image, builtin — with the one-line-to-add-a-server examples."
+  />
+  <LinkCard
+    title="Auth"
+    href="/auth/overview/"
+    description="Google Workspace OAuth for humans, static system tokens for agents, and why the two doors never cross."
+  />
+  <LinkCard
+    title="Deploy model"
+    href="/operate/deploy-model/"
+    description="The OSS repo mints the image; tadasant-internal consumes it plus its own config for prod. The zimmer→internal pattern."
+  />
+  <LinkCard
+    title="Known limitations"
+    href="/limitations/"
+    description="Every shim, gap, and piece of debt in the current build, straight from HACKS.md. Read this before you trust anything else."
+  />
+</CardGrid>
