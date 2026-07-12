@@ -41,21 +41,36 @@ jobs:
           cache: npm
       - run: npm ci
 
-      - name: Require the DigitalOcean token
-        # Pass secrets via env, never interpolated into a run: body — inlining
-        # `${{ secrets.* }}` is a template-injection sink and breaks on any value
-        # containing shell metacharacters.
+      - name: Preflight — are we configured to deploy?
+        # Zimmer's "safe no-op without the secret" idiom. When this runs as part
+        # of an automatic release (workflow_call) and the deploy prerequisites
+        # aren't in place yet — no DO token, or GCP Secret Manager not seeded via
+        # secrets-sync.yml — we SKIP the deploy and stay green rather than fail
+        # the release. A manual workflow_dispatch, by contrast, fails loudly:
+        # you asked for a deploy, so a missing prerequisite is an error.
+        id: pre
         env:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          GCP_KEY: ${{ secrets.GCP_SA_KEY }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
-          if [ -z "$DO_TOKEN" ]; then
-            echo "::error::DIGITALOCEAN_ACCESS_TOKEN is not set on tadasant/strad."
-            echo "::error::Add the STAGING-scoped DO token as an Actions secret."
-            exit 1
+          missing=""
+          [ -z "$DO_TOKEN" ] && missing="$missing DIGITALOCEAN_ACCESS_TOKEN"
+          [ -z "$GCP_KEY" ]  && missing="$missing GCP_SA_KEY"
+          if [ -n "$missing" ]; then
+            if [ "$MANUAL" = "true" ]; then
+              echo "::error::missing required secret(s):$missing"
+              exit 1
+            fi
+            echo "::warning::skipping staging deploy — missing:$missing"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Authenticate to GCP
+        if: steps.pre.outputs.go == 'true'
         # Prefer keyless Workload Identity Federation; fall back to the SA key.
         # Whichever is present, the runtime container never sees either — this
         # job reads the secrets and bakes their VALUES into the spec.
@@ -70,9 +85,11 @@ jobs:
         # the secret read silently loads zero secrets (the gcloud call is in a
         # process substitution, so its failure doesn't surface) and the deploy
         # then dies at render time with a confusing "STRAD_TOKENS required".
+        if: steps.pre.outputs.go == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Read staging secrets from GCP Secret Manager
+        if: steps.pre.outputs.go == 'true'
         id: secrets
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -98,6 +115,7 @@ jobs:
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
         # It is written to a file, never echoed — a rendered spec is not log-safe.
+        if: steps.pre.outputs.go == 'true'
         env:
           VERSION: ${{ inputs.version || 'latest' }}
           # Staging runs the console dev bypass until Google OAuth creds land.
@@ -121,6 +139,7 @@ jobs:
         # If App Platform later 403s pulling the image, the PAT is FINE-GRAINED
         # (package-scoped) and strad's package is not in its scope — a one-line
         # fix on the token. See HACKS.md.
+        if: steps.pre.outputs.go == 'true'
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         run: |
@@ -132,11 +151,13 @@ jobs:
           node scripts/attach-registry-creds.mjs /tmp/spec.json "tadasant:${GHCR_PULL_TOKEN}"
 
       - name: Install doctl
+        if: steps.pre.outputs.go == 'true'
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Deploy (create or update strad-staging)
+        if: steps.pre.outputs.go == 'true'
         run: |
           set -euo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
@@ -149,6 +170,7 @@ jobs:
           fi
 
       - name: Smoke-test the live endpoint
+        if: steps.pre.outputs.go == 'true'
         run: |
           set -euo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')

@@ -49,6 +49,33 @@ delete `src/auth/dev.ts` and its call sites.
 
 ---
 
+## 2b. CI-driven deploy is merge-gated (workflow_dispatch needs main)
+
+**What.** `secrets-sync.yml` and `deploy-staging.yml` are complete and correct,
+but two things about them only work once this PR merges:
+
+1. `workflow_dispatch` workflows are only invocable when the file exists on the
+   **default branch**. strad's `main` currently has just the initial commit, so
+   `gh workflow run secrets-sync.yml` returns 404 until merge.
+2. Until `secrets-sync.yml` has run, GCP Secret Manager has no `strad-staging-*`
+   secrets, so `deploy-staging.yml` has nothing to inject.
+
+So `deploy-staging.yml` **skips itself and stays green** when triggered
+automatically (from a release) without its prerequisites — zimmer's
+"safe no-op without the secret" idiom. A manual `workflow_dispatch` still fails
+loudly, because there you explicitly asked to deploy.
+
+**Why it isn't blocking tonight.** Staging is already live and proven E2E — it
+was deployed directly via the DigitalOcean MCP from the build session (see hack
+#3). The CI path is verified as far as it can go pre-merge: `build-and-push`
+publishes the ghcr image, and the deploy job authenticates to GCP correctly.
+
+**Undo.** Merge the PR. Then, once on `main`:
+`gh workflow run secrets-sync.yml -f strad_tokens='…' -f admin_bootstrap_token='…'`
+to seed GCP, and the next release deploys via CI end to end.
+
+---
+
 ## 3. Tonight's staging was deployed from the agent session, not CI
 
 **What.** The `strad-staging` App Platform app was first created directly through
