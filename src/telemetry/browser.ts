@@ -62,6 +62,7 @@ export interface BrowserAttrs {
 interface DisconnectableBrowser {
   on?(event: "disconnected", handler: () => void): unknown;
   isConnected?(): boolean;
+  close?: (...args: unknown[]) => unknown;
 }
 
 export interface BrowserTelemetryOptions {
@@ -147,13 +148,34 @@ export function installBrowserTelemetry(
       // A launched browser that later dies is the OOM story. Playwright gives us
       // `disconnected` and nothing else — no exit code, no reason — so we sample
       // the container's memory pressure right now, while it is still true.
+      //
+      // But `disconnected` ALSO fires on a deliberate `browser.close()`, which
+      // every one of these servers does on SIGTERM. Counting that as a crash would
+      // increment `strad.browser.crashes` on every single deploy, so any alert on
+      // the metric would cry wolf continuously and the actual OOM fingerprint
+      // would be buried in the noise — which is the same as not having the metric.
+      //
+      // So we wrap `close()` to mark the teardown as intentional first. What is
+      // left — a `disconnected` we did not ask for — is a real crash.
       const disconnectable = browser as DisconnectableBrowser;
       if (typeof disconnectable.on === "function") {
+        let intentional = false;
         let counted = false;
+
+        if (typeof disconnectable.close === "function") {
+          const close = disconnectable.close.bind(disconnectable);
+          disconnectable.close = (...args: unknown[]) => {
+            intentional = true;
+            return close(...args);
+          };
+        }
+
         disconnectable.on("disconnected", () => {
-          if (counted) return; // a close() during shutdown fires this too
+          if (counted) return;
           counted = true;
           active.add(-1, base);
+          if (intentional) return; // a clean shutdown is not a crash
+
           const util = memoryUtilization();
           crashes.add(1, {
             ...base,

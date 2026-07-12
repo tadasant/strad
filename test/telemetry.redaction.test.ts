@@ -59,6 +59,8 @@ const CANARY_ARG_2 = "tadas@example.com-CANARY-b7d3";
 const CANARY_TOKEN = "strad_test_CANARY-token-must-never-be-exported-4f21";
 /** An invented `?servers=` value. Unvalidated caller text on the telemetry path. */
 const CANARY_SLUG = "not-a-real-server-CANARY-e81b";
+/** A trace id the "core" would have sent us, if we were a bundle. */
+const INBOUND_TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
 
 const CONFIG = parseConfig(`
 version: 1
@@ -207,6 +209,18 @@ beforeAll(async () => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
   });
 
+  // 5. A request carrying an inbound W3C trace context, as a bundle component
+  //    receives from the core (adapters/http.ts injects it on every hop).
+  await fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${adminToken.plaintext}`,
+      "content-type": "application/json",
+      traceparent: `00-${INBOUND_TRACE_ID}-b7ad6b7169203331-01`,
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+
   await tracerProvider.forceFlush();
   await metricReader.forceFlush();
 });
@@ -311,6 +325,23 @@ describe("telemetry exports the signals we actually need", () => {
     expect(parent!.name).toBe("mcp.request");
     // Same trace, so the ingestor stitches them into one waterfall.
     expect(call!.spanContext().traceId).toBe(parent!.spanContext().traceId);
+  });
+
+  it("joins the CALLER's trace, so core -> bundle stitches into one waterfall", () => {
+    // The core injects `traceparent` into every upstream hop. A bundle is itself
+    // a strad process running this same handler, so this is the other half: if it
+    // did not EXTRACT, the bundle would open a brand-new root trace and the two
+    // halves would never join — you would have "the request took 8s" in one trace
+    // and "7.6s of Chromium" in another, with nothing connecting them. Injecting
+    // without extracting is a no-op with extra steps, and this is the test that
+    // says so.
+    const continued = spanExporter
+      .getFinishedSpans()
+      .find((s) => s.spanContext().traceId === INBOUND_TRACE_ID);
+
+    expect(continued, "the inbound traceparent was ignored").toBeDefined();
+    expect(continued!.name).toBe("mcp.request");
+    expect(continued!.parentSpanContext?.spanId).toBe("b7ad6b7169203331");
   });
 
   it("records the requested-vs-selected server sets on the request span", () => {

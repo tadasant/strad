@@ -21,6 +21,7 @@ export {
   type ErrorKind,
 } from "./redact.ts";
 export {
+  boundedTool,
   errorAttrs,
   instruments,
   resetInstruments,
@@ -88,6 +89,13 @@ export interface StartTelemetryOptions {
   browser?: boolean;
   log?: (event: Record<string, unknown>) => void;
 }
+
+/**
+ * How long the SIGTERM path will wait for a final telemetry flush before giving
+ * up on it. App Platform's grace period is finite and telemetry does not get to
+ * spend it.
+ */
+const SHUTDOWN_FLUSH_MS = 2_000;
 
 const DISABLED: Omit<TelemetryHandle, "serviceName" | "identity"> = {
   enabled: false,
@@ -170,9 +178,25 @@ export function startTelemetry(
       memoryUtilization: runtime.memoryUtilization,
       async shutdown() {
         runtime.stop();
-        // Flush what we have. A container being torn down for OOM is exactly when
-        // the last few seconds of metrics matter most.
-        await sdk.shutdown().catch(() => {});
+        // Flush what we have — but on a DEADLINE.
+        //
+        // Swallowing the exporter's errors is not the same as bounding its time.
+        // A blackholed collector (a firewalled IP, a TCP connect that never
+        // completes) makes force-flush block for the OTLP timeout, twice, plus
+        // retries — and that time is added to a SIGTERM path that App Platform
+        // does not wait long on. Exceeding the grace period means SIGKILL with
+        // in-flight requests dropped, on every deploy, caused by telemetry.
+        //
+        // A couple of seconds is enough to push the last export and cheap enough
+        // that missing it costs nothing: metrics are exported every 15s anyway, so
+        // the worst case is one lost interval. And a real OOM kill is SIGKILL —
+        // there is no flush at all — which is precisely why the export interval,
+        // not this flush, is what actually bounds data loss on the failure we care
+        // about most.
+        await Promise.race([
+          sdk.shutdown().catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, SHUTDOWN_FLUSH_MS)),
+        ]);
       },
     };
   } catch (err) {

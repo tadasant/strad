@@ -107,6 +107,39 @@ export function instruments(): GatewayInstruments {
 /** Test seam: drop the memoised instruments so a fresh meter provider is picked up. */
 export function resetInstruments(): void {
   cached = null;
+  seenTools.clear();
+}
+
+/**
+ * The most a single metric label may contribute in distinct values.
+ *
+ * A MeterProvider retains every time series it has ever observed, for the life of
+ * the process. So an unbounded label is a memory leak with extra steps, and a
+ * HISTOGRAM series (a full bucket array) is far more expensive than a counter's.
+ */
+const MAX_DISTINCT_TOOLS = 256;
+const seenTools = new Set<string>();
+
+/**
+ * Bound a tool name before it becomes a METRIC attribute.
+ *
+ * A tool name arrives from the caller, and `denamespace()` does not validate it —
+ * it splits on the first `__` and hands back whatever follows. So `mcp.tool` is
+ * caller-controlled text on a Counter and a Histogram, and a client looping
+ * `tools/call` with invented names (an attacker, or far more likely an LLM
+ * hallucinating tool names, which is the ordinary failure mode here) would mint a
+ * new time series per call until the process died of it. Telemetry causing the
+ * exact OOM it was installed to diagnose is not an outcome worth risking.
+ *
+ * Note the tool name is still recorded verbatim on the SPAN, which tolerates high
+ * cardinality and is where you want the hallucinated name for debugging. This
+ * bound applies only to metrics.
+ */
+export function boundedTool(name: string): string {
+  if (seenTools.has(name)) return name;
+  if (seenTools.size >= MAX_DISTINCT_TOOLS) return "<other>";
+  seenTools.add(name);
+  return name;
 }
 
 /** Attribute helpers. Slugs and tool names only — never arguments. See redact.ts. */

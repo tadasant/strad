@@ -126,8 +126,15 @@ const reusingPlaywrightDeps: PlaywrightSearchDeps = {
       },
       // Close the CONTEXT only; the browser is kept alive for reuse.
       close: async () => {
-        await context.close();
-        contextClosed();
+        try {
+          await context.close();
+        } finally {
+          // In a `finally`, because `context.close()` throws when the browser has
+          // already died — which is exactly the case this gauge exists to catch.
+          // Decrementing only on the happy path would leak the gauge upward on
+          // every browser crash and make "contexts are leaking" permanently true.
+          contextClosed();
+        }
       },
     };
   },

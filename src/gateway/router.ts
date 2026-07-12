@@ -9,7 +9,13 @@ import {
   type Resource,
   type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  context,
+  propagation,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import type { Request, Response } from "express";
 import { clientCapabilitiesFromInitialize } from "./clientCapabilities.ts";
 import {
@@ -22,6 +28,7 @@ import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
 import {
   argShape,
+  boundedTool,
   errorKind,
   instruments,
   resultShape,
@@ -102,14 +109,35 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     const inst = instruments();
     const startedAt = process.hrtime.bigint();
     const modeAttrs = { "strad.mode": opts.mode };
-    const span = tracer().startSpan("mcp.request", {
-      kind: SpanKind.SERVER,
-      attributes: {
-        ...modeAttrs,
-        "http.request.method": req.method,
-        "http.route": "/mcp",
+
+    // Continue the CALLER's trace if it sent one.
+    //
+    // The core injects `traceparent` into every upstream hop (see
+    // adapters/http.ts). A bundle component is itself a strad process running
+    // this same handler, so THIS is the other half of that: without the extract,
+    // the bundle would start a brand-new root trace and the two halves would
+    // never stitch — you would have "the request took 8s" in one trace and "7.6s
+    // of Chromium" in another, with nothing joining them. Injecting without
+    // extracting is a no-op with extra steps.
+    //
+    // With no SDK registered, `propagation.extract` returns the active context
+    // unchanged, so this costs nothing when telemetry is off. An untrusted client
+    // can forge a traceparent, but the worst it buys is a junk parent id on a
+    // span it already caused — no authority attaches to trace context.
+    const parentContext = propagation.extract(context.active(), req.headers);
+
+    const span = tracer().startSpan(
+      "mcp.request",
+      {
+        kind: SpanKind.SERVER,
+        attributes: {
+          ...modeAttrs,
+          "http.request.method": req.method,
+          "http.route": "/mcp",
+        },
       },
-    });
+      parentContext,
+    );
 
     inst.inFlight.add(1, modeAttrs);
 
@@ -122,9 +150,13 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     res.on("close", () => {
       inst.inFlight.add(-1, modeAttrs);
       const status = res.statusCode;
+      // An unhandled throw out of serve() never calls setOutcome, so a 500 would
+      // otherwise be counted as `outcome="ok"` — a lie on exactly the requests
+      // you would query this dimension for. Derive it from the status instead of
+      // trusting every path to have remembered.
       const attrs = {
         ...modeAttrs,
-        outcome,
+        outcome: status >= 500 ? "error" : outcome,
         "http.response.status_code": status,
       };
       inst.requests.add(1, attrs);
@@ -320,14 +352,32 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       // reference; the result is its contents. Both are one `setAttribute` away
       // from being sitting in an ingestor forever. See src/telemetry/redact.ts,
       // and test/telemetry.redaction.test.ts, which fails if this changes.
+      //
+      // The SPAN gets the tool name verbatim (spans tolerate cardinality, and a
+      // hallucinated name is exactly what you want to see when debugging). The
+      // METRICS get it through `boundedTool`, because a tool name is unvalidated
+      // caller text and an unbounded metric label is a memory leak — see
+      // instruments.ts.
+      const callSpan = tracer().startSpan("mcp.tools.call", {
+        attributes: {
+          "mcp.server": parsed.slug,
+          "mcp.tool": parsed.tool,
+          "strad.mode": opts.mode,
+        },
+      });
       const toolAttrs = {
         "mcp.server": parsed.slug,
-        "mcp.tool": parsed.tool,
+        "mcp.tool": boundedTool(parsed.tool),
         "strad.mode": opts.mode,
       };
-      const callSpan = tracer().startSpan("mcp.tools.call", {
-        attributes: { ...toolAttrs, ...argShape(args) },
-      });
+
+      // Only measure the payload when someone is actually listening. `argShape`
+      // serialises the arguments, and with no SDK registered every attribute we
+      // then set is discarded — so computing it would be pure cost on a live
+      // request path, paid by a deployment that never asked for telemetry.
+      if (callSpan.isRecording()) {
+        callSpan.setAttributes(argShape(args));
+      }
       const toolStartedAt = process.hrtime.bigint();
 
       try {
@@ -336,8 +386,10 @@ export function createMcpHandler(opts: McpHandlerOptions) {
           () => adapter.callTool(parsed.tool, args, { clientCapabilities }),
         );
 
+        // `resultShape` allocates nothing (see redact.ts), but it still walks the
+        // content blocks, and `isError` is all the metric needs.
         const shape = resultShape(result);
-        callSpan.setAttributes(shape);
+        if (callSpan.isRecording()) callSpan.setAttributes(shape);
 
         // A tool that ran and returned isError:true is not the same event as a
         // hop that blew up, and conflating them would hide the resource story

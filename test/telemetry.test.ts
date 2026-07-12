@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { boundedTool, resetInstruments } from "../src/telemetry/instruments.ts";
 import {
   argShape,
   byteSize,
@@ -163,6 +164,32 @@ describe("error classification records a KIND, never a message", () => {
   });
 });
 
+describe("metric labels are bounded (a MeterProvider never forgets a series)", () => {
+  it("collapses tool names to <other> once the distinct-value budget is spent", () => {
+    resetInstruments(); // clears the seen-tool set
+
+    // A tool name is unvalidated caller text: `denamespace()` splits on the first
+    // `__` and hands back whatever follows. A client looping tools/call with
+    // invented names — an attacker, or far more likely an LLM hallucinating tool
+    // names — would otherwise mint a new time series per call, forever, until the
+    // process died of it. Telemetry causing the exact OOM it was installed to
+    // diagnose is not a trade worth making.
+    const labels = new Set<string>();
+    for (let i = 0; i < 1000; i++) labels.add(boundedTool(`invented_${i}`));
+
+    // Bounded, not unbounded. That is the entire property.
+    expect(labels.size).toBeLessThanOrEqual(257); // 256 admitted + "<other>"
+    expect(labels.has("<other>")).toBe(true);
+  });
+
+  it("passes a real tool name straight through", () => {
+    resetInstruments();
+    expect(boundedTool("search_products")).toBe("search_products");
+    // ...and is stable for a name it has already seen.
+    expect(boundedTool("search_products")).toBe("search_products");
+  });
+});
+
 describe("shape helpers record size and count, never content", () => {
   it("counts arguments without naming or valuing them", () => {
     const shape = argShape({ password: "hunter2", vault: "op://x/y" });
@@ -184,6 +211,23 @@ describe("shape helpers record size and count, never content", () => {
     expect(shape["mcp.tool.result_blocks"]).toBe(1);
     expect(shape["mcp.tool.is_error"]).toBe(false);
     expect(JSON.stringify(shape)).not.toContain("SECRET-VALUE");
+  });
+
+  it("measures a Chromium screenshot WITHOUT copying it", () => {
+    // The browser servers return multi-MB base64 images. Measuring one by
+    // JSON.stringify-ing the whole result would allocate a second copy of it on a
+    // 1GB box — a transient doubling of peak memory, on every call, to compute a
+    // number we then discard. resultShape reads the string lengths already on the
+    // blocks instead.
+    const bigImage = "A".repeat(2_000_000); // ~2MB of base64
+    const shape = resultShape({
+      content: [{ type: "image", data: bigImage, mimeType: "image/png" }],
+    });
+
+    expect(shape["mcp.tool.result_bytes"]).toBe(2_000_000);
+    expect(shape["mcp.tool.result_blocks"]).toBe(1);
+    // And the payload itself is nowhere in the output.
+    expect(JSON.stringify(shape)).not.toContain("AAAA");
   });
 
   it("survives an unserializable payload instead of breaking the tool call", () => {

@@ -107,6 +107,22 @@ export function argShape(args: unknown): {
  * `isError` is a boolean the MCP protocol itself defines, not free text, so it
  * is safe — and it is how we separate "the tool ran and said no" from "the hop
  * blew up", which are very different resource stories.
+ *
+ * ── Why this deliberately does NOT call JSON.stringify ──────────────────────
+ *
+ * A tool result is the biggest object in the system: fetchpet, good-eggs and
+ * pointsyeah return Chromium screenshots — multi-megabyte base64 blobs.
+ * `JSON.stringify(result)` merely to MEASURE it would allocate a second copy of
+ * that blob, on a 1GB box, on every call, and then throw it away. That is a
+ * transient doubling of peak memory plus a synchronous multi-MB stringify
+ * blocking the event loop — which is to say, precisely the OOM and the
+ * saturation this telemetry exists to detect, manufactured by the telemetry
+ * itself.
+ *
+ * So we walk the content blocks and SUM the lengths of the strings already sitting
+ * in them. No allocation, no copy. The result is an ESTIMATE of payload size,
+ * which is all a resource signal needs; it is not an exact wire-byte count and
+ * does not claim to be.
  */
 export function resultShape(result: unknown): {
   "mcp.tool.result_bytes": number;
@@ -115,15 +131,31 @@ export function resultShape(result: unknown): {
 } {
   const r = result as
     { content?: unknown[]; isError?: boolean } | null | undefined;
+  const content = Array.isArray(r?.content) ? r.content : [];
+
+  let bytes = 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    // `text` on a text block, `data` on an image/audio block (base64). Both are
+    // already strings on the object — reading `.length` allocates nothing.
+    const b = block as { text?: unknown; data?: unknown };
+    if (typeof b.text === "string") bytes += b.text.length;
+    if (typeof b.data === "string") bytes += b.data.length;
+  }
+
   return {
-    "mcp.tool.result_bytes": byteSize(result),
-    "mcp.tool.result_blocks": Array.isArray(r?.content) ? r.content.length : 0,
+    "mcp.tool.result_bytes": bytes,
+    "mcp.tool.result_blocks": content.length,
     "mcp.tool.is_error": r?.isError === true,
   };
 }
 
 /**
  * Serialized size in bytes, without retaining the serialization.
+ *
+ * Used for tool ARGUMENTS only. Arguments are small — a search query, a vault
+ * item reference — unlike results; see `resultShape` for why the big side of the
+ * call is measured without serializing.
  *
  * A payload that cannot be serialized (a cycle, a BigInt) yields 0 rather than
  * throwing: telemetry must never be the thing that breaks a tool call.

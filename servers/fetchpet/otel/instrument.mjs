@@ -138,8 +138,25 @@ function start() {
     }),
   );
 
-  // Flush on the way out. When the container is being killed for OOM, the last
-  // few seconds of memory metrics ARE the diagnosis.
+  // A BEST-EFFORT flush on the way out. Read the next paragraph before relying
+  // on it, because it is weaker than it looks and it is important not to believe
+  // otherwise.
+  //
+  // This listener is registered at `--import` time, so it runs before the
+  // server's own SIGTERM handler — but every one of these images then calls
+  // `process.exit()` in that handler, which kills the unawaited shutdown below
+  // mid-flight. We cannot fix that from here without reaching into the app's
+  // shutdown path, and a telemetry bootstrap has no business doing that.
+  //
+  // It does not matter much, and here is why: the failure we actually care about
+  // is an OOM kill, and an OOM kill is SIGKILL — there is no signal, no handler,
+  // and no flush, no matter what we register. What genuinely bounds data loss is
+  // the 15s PERIODIC EXPORT above. Worst case we lose one interval, which is why
+  // that interval is 15s and not the SDK's default 60s.
+  //
+  // So: this catches what it can (a graceful shutdown whose handler awaits real
+  // work first, e.g. closing a browser, leaves time for the export to land) and
+  // claims nothing more.
   const flush = () => {
     void sdk.shutdown().catch(() => {});
   };
@@ -462,12 +479,31 @@ function installBrowserHooks(memoryUtilization) {
       // crashed on a bad page look identical. The container's memory pressure at
       // THIS instant is the only thing that separates them, and it is gone a
       // second later.
+      //
+      // But `disconnected` ALSO fires on a deliberate `browser.close()`, which
+      // every one of these servers does on SIGTERM. Counting that as a crash
+      // would increment `strad.browser.crashes` on every deploy, so any alert on
+      // it would cry wolf constantly and the real OOM fingerprint would drown in
+      // the noise. Wrap `close()` to mark an intentional teardown; what is left is
+      // a crash we did not ask for.
       if (browser && typeof browser.on === "function") {
+        let intentional = false;
         let counted = false;
+
+        if (typeof browser.close === "function") {
+          const close = browser.close.bind(browser);
+          browser.close = (...args) => {
+            intentional = true;
+            return close(...args);
+          };
+        }
+
         browser.on("disconnected", () => {
-          if (counted) return; // a deliberate close() fires this too
+          if (counted) return;
           counted = true;
           active.add(-1, base);
+          if (intentional) return; // a clean shutdown is not a crash
+
           const util = memoryUtilization();
           crashes.add(1, {
             ...base,

@@ -130,10 +130,20 @@ mcp.request                     (SERVER; mode, principal kind, requested vs sele
     └── mcp.upstream.call_tool  (CLIENT; server slug, upstream kind, timeout, outcome)
 ```
 
-W3C trace context (`traceparent`) is injected into every upstream hop, so a
-bundle's spans join the core's trace. That is the difference between "the request
-took 8s" and "the request took 8s, of which 7.6s was Chromium inside
-bundle-fetchpet".
+W3C trace context (`traceparent`) is **injected** into every upstream hop, and
+**extracted** on the way in — so a bundle running the strad image continues the
+core's trace instead of starting a new one, and the whole request reads as a
+single waterfall. (Injecting without extracting is a no-op with extra steps; a
+test pins both halves.)
+
+:::note[Scope of tracing]
+Trace stitching works for **strad-image bundles**. The six **supplementary**
+images (fetchpet, pointsyeah, good-eggs, bundle-api, onepassword, bundle-google)
+run third-party server code and emit **metrics only** — no spans of their own.
+The core's `mcp.upstream.*` span still measures each of those hops end-to-end
+from the outside, so you can see _that_ bundle-fetchpet took 7.6s; you just can't
+see inside it. Instrumenting those servers' own handlers is a separate job.
+:::
 
 **Metrics:** `strad.mcp.requests`, `strad.mcp.request.duration`,
 `strad.mcp.in_flight` (concurrency), `strad.mcp.auth_failures` (401, by reason),
