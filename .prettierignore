@@ -1,3 +1,5 @@
 dist
 node_modules
 package-lock.json
+# Vendored supplementary MCP servers keep their upstream formatting.
+servers

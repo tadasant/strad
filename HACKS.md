@@ -174,6 +174,105 @@ both repos.
 
 ---
 
+## 9. good-eggs image is bootstrapped from the PR branch
+
+**What.** `release-goodeggs-image.yml` triggers on `main` **and** on the feature
+branch `feat/good-eggs-supplementary`. Same bootstrap as hack #1, for the same
+reason: the first `ghcr.io/tadasant/strad-server-good-eggs` image has to be
+pushed by CI (the session has no `write:packages` PAT), and the built-in
+`GITHUB_TOKEN` push only works from a workflow in this repo.
+
+**Undo.** Delete the `feat/good-eggs-supplementary` line from
+`on.push.branches` in `release-goodeggs-image.yml` before/after merge.
+
+---
+
+## 10. good-eggs `shared/` is vendored, not a dependency
+
+**What.** `servers/good-eggs/shared/` is copied **verbatim** from
+[`pulsemcp/mcp-servers` `experimental/good-eggs/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/good-eggs)
+at commit `44f32a32afe27ffe9d00f23b24934c8242730f65`. Only `remote/` (the
+streamable-HTTP entrypoint) is new; the 11 tools and all Playwright logic are
+reused unchanged via `createMCPServer()`.
+
+**Why.** The upstream package publishes a stdio `local/` server to npm; it has no
+HTTP entrypoint and isn't published as a library strad could depend on. Vendoring
+the shared source is the fastest way to reuse the tool logic without forking the
+behaviour. strad's eslint/prettier/tsc are scoped away from `servers/**` so the
+upstream code keeps its own formatting and toolchain.
+
+**Undo.** When a shared fix is needed, make it upstream in `pulsemcp/mcp-servers`
+and re-vendor (bump the commit noted in `servers/good-eggs/README.md`). Longer
+term, have upstream publish `shared` as its own package and depend on it.
+
+---
+
+## 11. good-eggs pins Playwright to the base image's Chromium
+
+**What.** `servers/good-eggs` builds `FROM mcr.microsoft.com/playwright:v1.61.1-noble`
+(Chromium already bundled) and pins Playwright to `1.61.1` via an `overrides`
+block in `servers/good-eggs/package.json`, instead of the PoC's
+`node:22-bookworm` + `npx playwright install --with-deps chromium`.
+
+**Why.** `cdn.playwright.dev` was flaky from the build environment (repeated
+30s download timeouts), and downloading a browser at image-build time is a
+needless point of failure. The Playwright base image carries a Chromium whose
+revision (1228) matches Playwright 1.61.1 exactly, so the build never downloads a
+browser. The `overrides` keeps `shared/package.json` verbatim (it declares
+`^1.49.1`) while guaranteeing the installed Playwright matches the image.
+
+**Cost.** The base image is large (~3.7GB — it ships Chromium, Firefox, and
+WebKit). Only Chromium is used.
+
+**Undo.** If image size matters, switch to `node:22-bookworm` and
+`npx playwright install --with-deps chromium` (drop the base image and the
+`overrides`), accepting the CDN dependency; or build a slimmer custom base that
+carries only Chromium. When bumping Playwright, bump the base image tag and the
+`overrides` version together so the browser revision stays matched.
+
+---
+
+## 12. good-eggs staging bundle deployed from the agent session; ghcr visibility
+
+**What.** Like the core (hack #3), the good-eggs `bundle-goodeggs` component was
+added to `strad-staging` directly via the DigitalOcean MCP from the build
+session, not via `deploy-staging.yml`. The image is pulled from
+`ghcr.io/tadasant/strad-server-good-eggs`.
+
+**Why.** Same as hack #2b — the CI deploy path is merge-gated. This proves the
+supplementary-image path end-to-end now.
+
+**Watch for (ghcr visibility).** `tadasant/strad` is a **private** repo, so the
+new package inherits private visibility. App Platform can only pull it with a
+credential in scope of `GHCR_PULL_TOKEN` (which `attach-registry-creds.mjs`
+auto-attaches to any GHCR component). If a pull 403s, either the package is not in
+the (fine-grained) PAT's scope — add it — or make the package public. The
+session-driven deploy used <SEE_DEPLOY_NOTE>.
+
+**Undo.** Merge the PR; the next CI deploy re-renders `infra/strad.staging.yaml`
+(good-eggs included) with GHCR creds from `GHCR_PULL_TOKEN`.
+
+---
+
+## 13. good-eggs `/mcp` has no bearer auth of its own
+
+**What.** The good-eggs container serves `/mcp` unauthenticated. Its only
+protection is the network boundary: it is an internal-only App Platform component
+(`internal_ports: [8080]`, no public route), reachable solely by the core over
+the private network. This matches the proven browser-bundle PoC.
+
+**Why.** The core→supplementary proxy path does not send an internal token by
+default (unlike the builtin-in-bundle path), so wiring token auth means adding a
+`headers:` entry on the config plus a check in `remote/`. Kept minimal for the
+first cut; reachability is already gated by the private network.
+
+**Undo (hardening).** Add `headers: { Authorization: "Bearer ${STRAD_INTERNAL_TOKEN}" }`
+to the good-eggs server entry and have `remote/` reject requests without it
+(`STRAD_INTERNAL_TOKEN` is already present in the bundle's env). Then the bundle
+authenticates the core even if the private network is ever breached.
+
+---
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
@@ -193,3 +292,11 @@ A consolidated checklist, cross-referenced above:
 - [ ] **DNS**: `staging.strad.tadasant.com` → the App Platform app (handled by a
       parallel session via Cloudflare; grey-cloud/DNS-only, App Platform issues
       the cert).
+- [ ] **Merge the PR**, then drop the good-eggs bootstrap branch trigger →
+      removes hacks #9 and #12.
+- [ ] **Confirm the `strad-server-good-eggs` ghcr package is pullable by
+      `GHCR_PULL_TOKEN`** (add it to the PAT scope, or set the package public)
+      → resolves the visibility watch in hack #12.
+- [ ] **Seed `strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD`
+      in GCP** (via `secrets-sync.yml`) so the CI deploy has the good-eggs
+      credentials, not just the session-driven deploy.

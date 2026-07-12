@@ -1,5 +1,6 @@
 import type { StradConfig } from "../config/schema.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
+import { resolveMap } from "../secrets/index.ts";
 
 /**
  * Render a DigitalOcean App Platform spec from strad.config.yaml.
@@ -32,6 +33,13 @@ export interface RenderOptions {
   image: ImageRef;
   /** Env vars for every component. SECRET-typed ones are injected by CI. */
   env: EnvVar[];
+  /**
+   * Secret values used to resolve `${NAME}` refs in a supplementary image's
+   * per-server `env:` map. This is what scopes a credential to the ONE bundle
+   * that needs it, instead of broadcasting it to every component via `env`.
+   * A referenced name missing from this bag is a hard error (fail closed).
+   */
+  secrets?: Readonly<Record<string, string>>;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
   coreInstanceSizeSlug?: string;
@@ -152,14 +160,18 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       internal_ports: [PORT],
       envs: supplementary
         ? [
-            ...Object.entries(supplementary.env).map(
-              ([key, value]): EnvVar => ({
-                key,
-                value,
-                scope: "RUN_TIME",
-                type: "SECRET",
-              }),
-            ),
+            // Resolve `${NAME}` refs against the secret bag so the credential
+            // lands ONLY on this bundle. resolveMap throws on an unresolved
+            // ref — a supplementary image that silently shipped the literal
+            // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
+            ...Object.entries(
+              resolveMap(supplementary.env, opts.secrets ?? {}),
+            ).map(([key, value]): EnvVar => ({
+              key,
+              value,
+              scope: "RUN_TIME",
+              type: "SECRET",
+            })),
             ...opts.env.filter((e) => e.type === "SECRET"),
           ]
         : [
