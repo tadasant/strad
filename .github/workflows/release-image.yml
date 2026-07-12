@@ -19,12 +19,6 @@ on:
   push:
     branches:
       - main
-      # BOOTSTRAP ONLY — remove before merge. The very first strad image has to
-      # come from somewhere, and an agent session has no write:packages PAT to
-      # push one by hand. So this branch mints image 0.1.0 into ghcr once, which
-      # lets staging come up on a real ghcr image tonight instead of waiting for
-      # a merge. Tracked in HACKS.md.
-      - feat/strad-core-platform
     paths-ignore:
       - "**/*.md"
       - "docs/**"
