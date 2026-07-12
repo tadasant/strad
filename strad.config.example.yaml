@@ -49,6 +49,12 @@ roles:
 # becomes an internal-only App Platform component on the private network.
 bundles:
   - name: bundle-api
+    # Seven pure-API MCP servers (see servers/bundle-api) share this ONE image,
+    # each served on its own path. Being pure HTTP/API — no browser, no
+    # subprocess — they colocate in one small component at ~$0 marginal cost.
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+
+  - name: bundle-builtins
     # Several lightweight builtins colocate here at $0 marginal cost.
     instanceSizeSlug: apps-s-1vcpu-0.5gb
 
@@ -70,11 +76,11 @@ servers:
       greeting: "hello from the core"
 
   # The same builtin machinery, but hosted in a separate component. The gateway
-  # reaches it over the private network at ${bundle-api.PRIVATE_URL}.
+  # reaches it over the private network at ${bundle-builtins.PRIVATE_URL}.
   - slug: echo-bundled
     kind: builtin
     module: "./servers/echo.js"
-    bundle: bundle-api
+    bundle: bundle-builtins
     entitlements: [admin]
 
   # --- kind: remote-http ----------------------------------------------------
@@ -87,7 +93,6 @@ servers:
   #   entitlements: [admin]
   #   headers:
   #     Authorization: "Bearer ${GRANOLA_TOKEN}"
-
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an
   # internal-only component (its own bundle) and proxies to it over the private
@@ -97,6 +102,93 @@ servers:
   # generously for anything slow, e.g. a browser-driven server.
   #
   # This is exactly how good-eggs is wired in infra/strad.staging.yaml.
+  # internal-only component and proxies to it.
+  #
+  # ONE image may back MANY servers: give each entry the SAME `image` and
+  # `bundle` but a distinct `path`, and they all run in that one component (one
+  # component still runs one image). That is `bundle-api` — seven pure-API MCP
+  # servers in a single image (servers/bundle-api), each on its own path.
+  #
+  # Every server here is credential-free at build time; strad injects each one's
+  # secrets onto the component via `env:` (`${NAME}` refs). Several also expose a
+  # capability toggle (read-only vs write / tool groups) read from the container
+  # environment — documented per server below. This config exposes the knob; the
+  # read-only-vs-write choice is a deployment decision, not baked into the image.
+  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /slack
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+    # capability toggle: SLACK_ENABLED_TOOLGROUPS (readonly | write)
+
+  - slug: serpapi-hotels
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /serpapi-hotels
+    entitlements: [admin]
+    env:
+      SERPAPI_API_KEY: "${SERPAPI_API_KEY}"
+
+  - slug: tailscale
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /tailscale
+    entitlements: [admin]
+    env:
+      TAILSCALE_API_KEY: "${TAILSCALE_API_KEY}"
+    # capability toggle: TAILSCALE_TOOL_GROUPS
+    #   (policy|devices|keys, each with a _readonly variant)
+
+  - slug: monarch-money
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /monarch-money
+    entitlements: [admin]
+    env:
+      MONARCH_EMAIL: "${MONARCH_EMAIL}"
+      MONARCH_PASSWORD: "${MONARCH_PASSWORD}"
+      MONARCH_SESSION_PASSPHRASE: "${MONARCH_SESSION_PASSPHRASE}"
+    # capability toggle: MONARCH_MONEY_MONARCH_ENABLED_TOOL_GROUPS (readonly | manage)
+
+  - slug: gcs
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /gcs
+    entitlements: [admin]
+    env:
+      GCS_PROJECT_ID: "${GCS_PROJECT_ID}"
+      GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_SERVICE_ACCOUNT_KEY_JSON}"
+    # capability toggle: GCS_GCS_ENABLED_TOOLGROUPS (readonly | readwrite | delete)
+
+  - slug: remote-filesystem
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /remote-filesystem
+    entitlements: [admin]
+    env:
+      GCS_BUCKET: "${REMOTE_FS_GCS_BUCKET}"
+      GCS_CLIENT_EMAIL: "${REMOTE_FS_GCS_CLIENT_EMAIL}"
+      GCS_PRIVATE_KEY: "${REMOTE_FS_GCS_PRIVATE_KEY}"
+    # capability toggle: REMOTE_FILESYSTEM_ENABLED_TOOLGROUPS (readonly | readwrite)
+
+  - slug: google-flights
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-api:latest
+    bundle: bundle-api
+    path: /google-flights
+    entitlements: [admin]
+    # no credentials, no capability toggle — public endpoints
+
+  # A single-server image gets its OWN bundle, exactly the same way — one entry,
+  # one server, one image (this is how good-eggs is wired):
   #
   # - slug: good-eggs
   #   kind: supplementary-image

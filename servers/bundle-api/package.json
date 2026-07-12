@@ -1,0 +1,21 @@
+{
+  "name": "strad-bundle-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Seven pure-API MCP servers packaged as one strad supplementary-image bundle (streamable-HTTP over each server's vendored shared/ tool logic).",
+  "type": "module",
+  "workspaces": [
+    "upstream/slack",
+    "upstream/serpapi-hotels",
+    "upstream/tailscale",
+    "upstream/monarch-money",
+    "upstream/gcs",
+    "upstream/remote-filesystem",
+    "upstream/google-flights",
+    "remote"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=upstream/slack --workspace=upstream/serpapi-hotels --workspace=upstream/tailscale --workspace=upstream/monarch-money --workspace=upstream/gcs --workspace=upstream/remote-filesystem --workspace=upstream/google-flights && npm run build --workspace=remote",
+    "start": "node remote/build/index.js"
+  }
+}

@@ -130,8 +130,12 @@ export function collectSecretRefs(config: StradConfig): string[] {
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
 
-  // Which bundles actually need a container?
-  const imageBundles = new Map<string, ReturnType<typeof supplementaryOf>>();
+  // Which bundles actually need a container? A supplementary bundle resolves to
+  // one image plus the union of its servers' env maps.
+  const imageBundles = new Map<
+    string,
+    { image: string; env: Record<string, string> }
+  >();
   const builtinBundles = new Set<string>();
 
   for (const server of config.servers) {
@@ -139,7 +143,16 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     if (server.kind === "remote-http") continue; // no container: it's someone else's
 
     if (server.kind === "supplementary-image") {
-      imageBundles.set(server.bundle, supplementaryOf(server));
+      // Several supplementary servers may share one bundle image (bundle-api
+      // hosts a fleet from a single image, each on its own path). The schema
+      // guarantees they share the SAME image; the component's env is the union
+      // of every such server's `env:` map, so all of them get their secrets on
+      // the one component.
+      const prev = imageBundles.get(server.bundle);
+      imageBundles.set(server.bundle, {
+        image: server.image,
+        env: { ...(prev?.env ?? {}), ...server.env },
+      });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
     }
@@ -247,15 +260,6 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
 
   if (opts.domains?.length) spec.domains = opts.domains;
   return spec;
-}
-
-function supplementaryOf(
-  server: Extract<
-    StradConfig["servers"][number],
-    { kind: "supplementary-image" }
-  >,
-) {
-  return { image: server.image, env: server.env };
 }
 
 /** ghcr.io/tadasant/strad-server-good-eggs:latest -> an App Platform ImageRef */
