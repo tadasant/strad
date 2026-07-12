@@ -11,11 +11,15 @@ Cloudflare, **DNS-only** (grey cloud) — Cloudflare is not proxying the gateway
 
 ## The current names
 
-| Environment | Hostname                     | Points at                                  |
-| ----------- | ---------------------------- | ------------------------------------------ |
-| Staging     | `staging.strad.tadasant.com` | `strad-staging-wy9v5.ondigitalocean.app`   |
-| Prod        | `strad.tadasant.com`         | `strad-prod-qple6.ondigitalocean.app`      |
-| These docs  | `docs.strad.tadasant.com`    | Cloudflare Pages (**pending** — see below) |
+| Environment | Hostname                     | Points at                                |
+| ----------- | ---------------------------- | ---------------------------------------- |
+| Staging     | `staging.strad.tadasant.com` | `strad-staging-wy9v5.ondigitalocean.app` |
+| Prod        | `strad.tadasant.com`         | `strad-prod-qple6.ondigitalocean.app`    |
+| These docs  | `docs.strad.tadasant.com`    | `strad.pages.dev` (Cloudflare Pages)     |
+
+The gateway hostnames are **DNS-only**; the docs hostname is **proxied**. That
+difference is load-bearing — App Platform can only issue its own certificate if it
+sees the real TLS handshake, while Pages needs the orange cloud to serve one.
 
 `gateway.publicUrl` is not cosmetic. It builds the OAuth redirect URI
 (`…/console/oauth/callback`) and the `authorize_url` in every
@@ -55,14 +59,6 @@ happened once, to `staging.strad.tadasant.com`. `render-spec` now always emits
 The docs are the one hostname Cloudflare **does** proxy, because Pages terminates
 TLS at the Cloudflare edge rather than at an origin.
 
-:::caution[Not stood up yet]
-Creating the Pages project and its DNS record is a human step — an agent session has
-read-only Cloudflare access, and DNS writes on this zone are supervised. The settings
-below are the target, matched to how `docs.zimmer.tadasant.com` is wired today. Until
-someone creates the project, the `docs_site` CI job is what keeps this site honest,
-and you read it locally with `cd docs && npm run build && npm run preview`.
-:::
-
 | Setting        | Value                                                                 |
 | -------------- | --------------------------------------------------------------------- |
 | Pages project  | `strad`, connected to `tadasant/strad`, production branch `main`      |
@@ -70,12 +66,25 @@ and you read it locally with `cd docs && npm run build && npm run preview`.
 | Build command  | `npm ci && npm run build`                                             |
 | Build output   | `dist`                                                                |
 | Env var        | `SITE_URL = https://docs.strad.tadasant.com` (production and preview) |
-| DNS            | `CNAME docs.strad → <project>.pages.dev`, **proxied** (orange cloud)  |
+| DNS            | `CNAME docs.strad → strad.pages.dev`, **proxied** (orange cloud)      |
 
-`SITE_URL` overrides the `site` value in `docs/astro.config.mjs`, which is what
-Astro uses to build canonical URLs and the sitemap. The fallback in that file is the
-same hostname, so an unset `SITE_URL` produces a correct site — but pin it anyway,
-so the code and the deployment can't drift apart silently.
+Every branch gets a preview deployment, so a PR that changes the docs can be read
+before it merges.
+
+`SITE_URL` overrides the `site` value in `docs/astro.config.mjs`, which is what Astro
+uses to build canonical URLs and the sitemap. The fallback in that file is the same
+hostname, so an unset `SITE_URL` still produces a correct site — but pin it anyway, so
+the code and the deployment can't drift apart silently.
+
+:::caution[`SITE_URL` must be an absolute URL, scheme included]
+A malformed value (`ttps://…`, say) does not degrade gracefully. Astro passes `site`
+to `new URL()` while generating pages, so a bad one fails the build with a bare
+`Invalid URL` and a stack trace into Astro's internals — naming neither the variable
+nor the value. `astro.config.mjs` validates it up front and throws a message that
+says what to fix. If a Pages build dies on this, the typo is in **Settings → Variables
+and Secrets**, and it has to be corrected in the production _and_ preview
+environments.
+:::
 
 Preview deployments get a per-branch `*.pages.dev` hostname while `SITE_URL` stays
 fixed, so a preview build emits canonical URLs pointing at production. That is

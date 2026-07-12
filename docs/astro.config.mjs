@@ -3,11 +3,34 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import { remarkMermaid } from "./src/plugins/remark-mermaid.mjs";
 
+const DEFAULT_SITE = "https://docs.strad.tadasant.com";
+
 // The canonical public URL — what Astro builds canonical links and the sitemap
 // from. Cloudflare Pages sets SITE_URL to the same value in both the production
 // and preview environments; the fallback keeps a local build correct. See the
 // DNS & domains page for the Pages settings.
-const site = process.env.SITE_URL || "https://docs.strad.tadasant.com";
+//
+// Validate the protocol, not merely that it parses. `new URL()` happily accepts
+// any scheme, so a typo like "ttps://host" parses — but a non-special scheme has
+// no origin (`url.origin` is the string "null"), and Astro builds page URLs from
+// the origin. So the build dies much later with a bare `Invalid URL` thrown from
+// deep inside page generation, naming neither the variable nor the value. Fail
+// here instead, and say what to fix.
+const site = process.env.SITE_URL || DEFAULT_SITE;
+let protocol;
+try {
+  protocol = new URL(site).protocol;
+} catch {
+  protocol = null;
+}
+if (protocol !== "http:" && protocol !== "https:") {
+  throw new Error(
+    `SITE_URL is not a usable site URL: ${JSON.stringify(site)}\n` +
+      `It must be absolute and http(s), e.g. ${DEFAULT_SITE}\n` +
+      `On Cloudflare Pages this lives in Settings → Variables and Secrets, and it ` +
+      `must be fixed in BOTH the production and preview environments.`,
+  );
+}
 
 export default defineConfig({
   site,

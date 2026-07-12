@@ -229,17 +229,6 @@ to GCP with a long-lived `GCP_SA_KEY`.
 `tadasant/strad` and `tadasant/tadasant-internal`) so `google-github-actions/auth@v2`
 goes keyless, then delete `GCP_SA_KEY` from both repos.
 
-## Documentation
-
-### The docs site is built in CI but not yet published
-
-The `docs_site` CI job builds this site on every PR, so it cannot rot silently. The
-Cloudflare Pages project that serves it at `docs.strad.tadasant.com` is a
-human-provisioned step and may not exist yet — see
-[DNS & domains](/operate/dns/#this-docs-site-cloudflare-pages) for the exact
-settings. Until it does, the site is built and served locally
-(`cd docs && npm run build && npm run preview`).
-
 ---
 
 ## What the human still needs to provision
@@ -253,4 +242,3 @@ The one-time steps that clear most of the list above:
 - Mint a dedicated strad GHCR pull token — clears **#5**.
 - Provision Workload Identity Federation, then delete `GCP_SA_KEY` — clears **#8**.
 - Stand up a datastore and a console mint/revoke UI — clears **#6** and **#7**.
-- Create the Cloudflare Pages project for these docs.
