@@ -141,4 +141,8 @@ const spec = renderAppSpec({
   domains: values.domain?.map((d) => ({ domain: d, type: "PRIMARY" as const })),
 });
 
-process.stdout.write(JSON.stringify({ spec }, null, 2));
+// A BARE spec, not { spec }. This file is fed to `doctl apps create/update
+// --spec`, which parses an App Platform spec and rejects an unknown top-level
+// "spec" field outright ("parsing app spec: json: unknown field \"spec\"").
+// doctl is what wraps it into the API's { spec } envelope.
+process.stdout.write(JSON.stringify(spec, null, 2));

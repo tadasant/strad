@@ -115,6 +115,14 @@ jobs:
           for full in "${NAMES[@]}"; do
             key="${full#strad-staging-}"
             val=$(gcloud secrets versions access latest --project "$GCP_PROJECT_ID" --secret "$full")
+            # Register EVERY LINE, not just the whole value. The log scrubber
+            # matches within a single line, so a multi-line secret (a PEM private
+            # key) gets only its first line masked and prints its body — the part
+            # that IS the key — in clear. That is a real leak in a public repo.
+            # Short lines are skipped: masking "{" would redact half the log.
+            while IFS= read -r line; do
+              [ "${#line}" -ge 8 ] && echo "::add-mask::$line"
+            done <<< "$val"
             echo "::add-mask::$val"
             printf '%s<<STRAD_EOF\n%s\nSTRAD_EOF\n' "$key" "$val" >> "$GITHUB_ENV"
           done
