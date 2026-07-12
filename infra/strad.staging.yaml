@@ -414,7 +414,7 @@ servers:
   # container holds one token, and onepassword-rw needs the read-WRITE one — so
   # `onepassword-ro` is now read-only because the GATEWAY refuses the call, and
   # for no other reason. That is the trade this whole re-architecture makes,
-  # concentrated into one server. HACKS.md #21 records it.
+  # concentrated into one server. HACKS.md #22 records it.
   #
   # The server refuses to serve without an elicitation posture; strad has no
   # elicitation transport wired yet, so it skips them explicitly.
