@@ -6,34 +6,6 @@ on:
   push:
     branches:
       - main
-      # BOOTSTRAP ONLY — remove before/after merge. This PR targets
-      # feat/strad-core-platform (PR #2), so its `pull_request` CI reads the base
-      # branch's ci.yml, which only fires for PRs to main. A `push` event runs
-      # THIS branch's ci.yml, giving the PR's strad-core changes (appspec.ts,
-      # render-spec.ts, test/appspec.test.ts, config) a real typecheck/lint/test/
-      # build run before merge. (servers/** is out of the core toolchain and is
-      # validated by release-goodeggs-image.yml instead.) See HACKS #9.
-      - feat/good-eggs-supplementary
-      # BOOTSTRAP ONLY — remove before/after merge. onepassword stacks on the
-      # good-eggs branch (its supplementary infra isn't on main yet), so this PR
-      # targets feat/good-eggs-supplementary and its `pull_request` CI won't fire
-      # for a non-main base either. A `push` runs the core lint/test/build for the
-      # PR's only core-visible change, test/onepassword.appspec.test.ts.
-      # (servers/onepassword/** is validated by release-onepassword-image.yml.)
-      - feat/onepassword-supplementary
-      # BOOTSTRAP ONLY — remove before/after merge. Same reason as above: the
-      # fetchpet + pointsyeah PR is STACKED on feat/good-eggs-supplementary (main
-      # does not yet carry the good-eggs browser foundation), so a PR to that base
-      # never fires `pull_request` CI. A push runs THIS branch's ci.yml over the
-      # core changes (infra config, test/appspec.browser-servers.test.ts). The two
-      # servers themselves are validated by their release-*-image.yml builds.
-      - feat/browser-servers-fetchpet-pointsyeah
-      # BOOTSTRAP ONLY — remove before/after merge. Same reason: the MCP-App PR is
-      # STACKED on feat/good-eggs-supplementary (main does not yet carry good-eggs),
-      # so a PR to that base never fires `pull_request` CI — GitHub reads the base
-      # branch's ci.yml for the filter. A push runs THIS branch's ci.yml, which
-      # also carries the new `good_eggs` job below. See HACKS #17.
-      - feat/good-eggs-mcp-app-ui
 
 concurrency:
   group: ci-${{ github.ref }}

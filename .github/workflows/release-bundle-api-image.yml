@@ -15,11 +15,6 @@ on:
   push:
     branches:
       - main
-      # BOOTSTRAP ONLY — remove after merge. The very first bundle-api image has
-      # to come from somewhere, and an agent session has no write:packages PAT
-      # to push one by hand. This mints it into ghcr from the feature branch so
-      # staging can come up on a real image. Tracked in HACKS.md.
-      - feat/bundle-api-servers
     paths:
       - "servers/bundle-api/**"
       - ".github/workflows/release-bundle-api-image.yml"

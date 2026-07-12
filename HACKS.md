@@ -9,6 +9,9 @@ Ordered roughly by how much you'd want to fix it.
 
 ## 1. First ghcr image is bootstrapped from the PR branch
 
+**✅ RESOLVED.** All servers are merged to `main` and every release workflow now
+builds from `main` only — the bootstrap `feat/*` push triggers were removed.
+
 **What.** `release-image.yml` triggers on `main` **and** on the feature branch
 `feat/strad-core-platform`. That second trigger is a bootstrap.
 
@@ -181,6 +184,9 @@ both repos.
 
 ## 9. good-eggs image is bootstrapped from the PR branch
 
+**✅ RESOLVED.** Bootstrap `feat/*` push trigger removed; the image builds from
+`main` (path-filtered).
+
 **What.** Two workflows carry a `feat/good-eggs-supplementary` bootstrap trigger:
 
 1. `release-goodeggs-image.yml` — same bootstrap as hack #1: the first
@@ -295,6 +301,9 @@ authenticates the core even if the private network is ever breached.
 ---
 
 ## 14. onepassword image is bootstrapped from the PR branch (stacked on good-eggs)
+
+**✅ RESOLVED.** Bootstrap `feat/*` push trigger removed; the image builds from
+`main` (path-filtered).
 
 **What.** The onepassword supplementary bundle mirrors good-eggs (hack #9). Two
 workflows carry a `feat/onepassword-supplementary` bootstrap trigger:
@@ -423,6 +432,8 @@ client's capabilities, making the through-gateway surface byte-identical too.
 Until then, the two-layer split above is the intended design, not a stopgap.
 
 ## 17. MCP-App PR stacks on the good-eggs branch; CI trigger is bootstrapped
+
+**✅ RESOLVED.** Merged to `main`; the bootstrap CI branch trigger was removed.
 
 The MCP-App work extends good-eggs, which only exists on
 `feat/good-eggs-supplementary`, so its PR is STACKED on that branch (not `main`).
