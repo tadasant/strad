@@ -54,6 +54,34 @@ servers:
     ).toThrow(/one component runs one image/);
   });
 
+  it("accepts many supplementary servers sharing ONE image in one bundle", () => {
+    // bundle-api hosts a fleet of pure-API servers from a single image, each on
+    // its own path. Same image, many servers is exactly what must be allowed.
+    const cfg = parseConfig(`${BASE}
+bundles:
+  - name: bundle-api
+servers:
+  - { slug: a, kind: supplementary-image, image: "ghcr.io/o/bundle:1", bundle: bundle-api, path: /a, entitlements: [admin] }
+  - { slug: b, kind: supplementary-image, image: "ghcr.io/o/bundle:1", bundle: bundle-api, path: /b, entitlements: [admin] }
+  - { slug: c, kind: supplementary-image, image: "ghcr.io/o/bundle:1", bundle: bundle-api, path: /c, entitlements: [admin] }
+`);
+    expect(cfg.servers.map((s) => s.slug)).toEqual(["a", "b", "c"]);
+  });
+
+  it("rejects a supplementary image sharing a bundle with a builtin", () => {
+    // A supplementary image owns its component; a builtin needs the strad image,
+    // and one component runs one image.
+    expect(() =>
+      parseConfig(`${BASE}
+bundles:
+  - name: bundle-x
+servers:
+  - { slug: a, kind: supplementary-image, image: "ghcr.io/o/a:1", bundle: bundle-x, entitlements: [admin] }
+  - { slug: b, kind: builtin, module: "./servers/echo.js", bundle: bundle-x, entitlements: [admin] }
+`),
+    ).toThrow(/mixes a supplementary image/);
+  });
+
   it("rejects a supplementary image in the core bundle", () => {
     expect(() =>
       parseConfig(`${BASE}
@@ -167,6 +195,64 @@ servers:
 
   it("never writes its own ingress rules — App Platform generates them", () => {
     expect(spec).not.toHaveProperty("ingress");
+  });
+});
+
+describe("renderAppSpec — bundle-api (many servers, one image)", () => {
+  const cfg = parseConfig(`${BASE}
+bundles:
+  - { name: bundle-api, instanceSizeSlug: apps-s-1vcpu-0.5gb }
+servers:
+  - { slug: slack, kind: supplementary-image, image: "ghcr.io/tadasant/strad-bundle-api:latest", bundle: bundle-api, path: /slack, entitlements: [admin], env: { SLACK_BOT_TOKEN: "\${SLACK_BOT_TOKEN}" } }
+  - { slug: tailscale, kind: supplementary-image, image: "ghcr.io/tadasant/strad-bundle-api:latest", bundle: bundle-api, path: /tailscale, entitlements: [admin], env: { TAILSCALE_API_KEY: "\${TAILSCALE_API_KEY}" } }
+  - { slug: google-flights, kind: supplementary-image, image: "ghcr.io/tadasant/strad-bundle-api:latest", bundle: bundle-api, path: /google-flights, entitlements: [admin] }
+`);
+
+  const spec = renderAppSpec({
+    config: cfg,
+    appName: "strad-staging",
+    region: "nyc",
+    image: parseImage("ghcr.io/tadasant/strad:0.1.0"),
+    env: [],
+  });
+
+  it("renders exactly ONE internal component for the shared-image bundle", () => {
+    expect(spec.services.map((s) => s.name).sort()).toEqual([
+      "bundle-api",
+      "core",
+    ]);
+    const b = spec.services.find((s) => s.name === "bundle-api")!;
+    expect(b.http_port).toBeUndefined();
+    expect(b.internal_ports).toEqual([8080]);
+    expect(b.instance_size_slug).toBe("apps-s-1vcpu-0.5gb");
+  });
+
+  it("runs the one shared image, not the strad image", () => {
+    const b = spec.services.find((s) => s.name === "bundle-api")!;
+    expect(b.image).toEqual({
+      registry_type: "GHCR",
+      registry: "tadasant",
+      repository: "strad-bundle-api",
+      tag: "latest",
+    });
+  });
+
+  it("unions every server's env onto the one component", () => {
+    const b = spec.services.find((s) => s.name === "bundle-api")!;
+    const envs = Object.fromEntries(b.envs.map((e) => [e.key, e.value]));
+    expect(envs.SLACK_BOT_TOKEN).toBe("${SLACK_BOT_TOKEN}");
+    expect(envs.TAILSCALE_API_KEY).toBe("${TAILSCALE_API_KEY}");
+    for (const e of b.envs.filter((e) =>
+      ["SLACK_BOT_TOKEN", "TAILSCALE_API_KEY"].includes(e.key),
+    )) {
+      expect(e.type).toBe("SECRET");
+    }
+  });
+
+  it("binds the bundle-api PRIVATE_URL into core", () => {
+    const core = spec.services.find((s) => s.name === "core")!;
+    const envs = Object.fromEntries(core.envs.map((e) => [e.key, e.value]));
+    expect(envs.STRAD_BUNDLE_URL_BUNDLE_API).toBe("${bundle-api.PRIVATE_URL}");
   });
 });
 

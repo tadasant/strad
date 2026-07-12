@@ -282,14 +282,22 @@ export const StradConfig = z
     }
     for (const [bundle, servers] of byBundle) {
       const images = servers.filter((s) => s.kind === "supplementary-image");
-      if (images.length > 1) {
+      const distinctImages = new Set(images.map((s) => s.image));
+      // A component runs ONE image — but several servers may share that one
+      // image, each served on its own `path`. That is how bundle-api hosts a
+      // fleet of pure-API servers from a single image. So the constraint is on
+      // the number of DISTINCT images, not the number of servers.
+      if (distinctImages.size > 1) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `bundle "${bundle}" has ${images.length} supplementary images; one component runs one image`,
+          message: `bundle "${bundle}" has ${distinctImages.size} distinct supplementary images; one component runs one image`,
           path: ["bundles"],
         });
       }
-      if (images.length === 1 && servers.length > 1) {
+      // A supplementary image owns its component outright: no builtins may share
+      // the bundle (they would need the strad image, and a component is one
+      // image). Multiple supplementary servers on the same image are fine.
+      if (images.length > 0 && images.length < servers.length) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `bundle "${bundle}" mixes a supplementary image with other servers; give the image its own bundle`,
