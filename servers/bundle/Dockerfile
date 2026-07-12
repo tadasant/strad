@@ -139,6 +139,13 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     test "$(op --version)" = "${OP_VERSION}"
 
+# SIZE, honestly: ~3.9GB, and the Playwright base is ~85% of it (it ships Firefox
+# and WebKit, which nothing here launches). `rm -rf`ing them buys nothing — the
+# layer that contains them is still pulled. Slimming this means a `node:22-slim`
+# runtime with Chromium and its system libraries copied in, which is a real piece
+# of work and a real risk of a missing .so surfacing only in staging. It is a
+# follow-up, and the trade is stated here rather than pretended away. Note the
+# fleet-wide footprint still fell: this replaces THREE Playwright-based images.
 ENV NODE_ENV=production
 WORKDIR /app
 
