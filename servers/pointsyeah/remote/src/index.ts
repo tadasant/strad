@@ -32,6 +32,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser } from 'playwright';
 import express from 'express';
+import { trackBrowserContext, withBrowserTelemetry } from './telemetry.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
@@ -74,10 +75,17 @@ let browser: Browser | null = null;
 async function getBrowser(): Promise<Browser> {
   if (browser && browser.isConnected()) return browser;
   const { chromium } = await import('playwright');
-  browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-dev-shm-usage'],
-  });
+  // Timed and counted. Because getBrowser() self-heals — it relaunches whenever
+  // the browser process has died — the launch COUNTER is also strad's Chromium
+  // crash-loop detector: in steady state this fires once, at boot. A launch rate
+  // above zero means Chromium keeps dying, and the crash counter's
+  // `memory.pressure` attribute says whether it was the OOM killer that did it.
+  browser = await withBrowserTelemetry('pointsyeah', () =>
+    chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    }),
+  );
   return browser;
 }
 
@@ -91,6 +99,11 @@ const reusingPlaywrightDeps: PlaywrightSearchDeps = {
   launchBrowser: async () => {
     const b = await getBrowser();
     const context = await b.newContext();
+    // A context is opened per SEARCH and closed at the end of it, so this gauge
+    // should sit at ~0 between calls. If it climbs, contexts are leaking, and a
+    // leaked Chromium context is a slow memory leak that ends in an OOM kill —
+    // exactly the failure the collapse makes more likely.
+    const contextClosed = trackBrowserContext('pointsyeah');
     return {
       addCookies: (cookies) => context.addCookies(cookies),
       newPage: async () => {
@@ -114,6 +127,7 @@ const reusingPlaywrightDeps: PlaywrightSearchDeps = {
       // Close the CONTEXT only; the browser is kept alive for reuse.
       close: async () => {
         await context.close();
+        contextClosed();
       },
     };
   },

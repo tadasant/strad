@@ -57,10 +57,17 @@ RUN npm ci --no-audit --no-fund
 COPY elicitation ./elicitation
 COPY shared ./shared
 COPY remote ./remote
+
+# The telemetry bootstrap. Vendored (each image is its own build context, so it
+# cannot COPY from the repo root); keep it in sync with `npm run telemetry:sync`.
+COPY otel ./otel
 RUN npm run build
 
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["node", "remote/build/index.js"]
+# --import runs the telemetry bootstrap to completion before the server starts.
+# With no OTEL_EXPORTER_OTLP_ENDPOINT it starts no SDK and the server runs exactly
+# as it did before.
+CMD ["node", "--import", "./otel/instrument.mjs", "remote/build/index.js"]

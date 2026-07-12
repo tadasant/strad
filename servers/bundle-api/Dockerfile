@@ -37,6 +37,10 @@ RUN npm ci --no-audit --no-fund
 # Sources, then build every vendored shared/ workspace, then the remote host.
 COPY upstream ./upstream
 COPY remote ./remote
+
+# The telemetry bootstrap. Vendored (each image is its own build context, so it
+# cannot COPY from the repo root); keep it in sync with `npm run telemetry:sync`.
+COPY otel ./otel
 RUN npm run build
 
 ENV NODE_ENV=production
@@ -46,4 +50,7 @@ EXPOSE 8080
 # node:22-slim ships a `node` user at uid 1000. Nothing here needs root.
 USER 1000:1000
 
-CMD ["node", "remote/build/index.js"]
+# --import runs the telemetry bootstrap to completion before the server starts.
+# With no OTEL_EXPORTER_OTLP_ENDPOINT it starts no SDK and the server runs exactly
+# as it did before.
+CMD ["node", "--import", "./otel/instrument.mjs", "remote/build/index.js"]
