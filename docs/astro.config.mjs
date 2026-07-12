@@ -3,9 +3,10 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import { remarkMermaid } from "./src/plugins/remark-mermaid.mjs";
 
-// The canonical public URL. Override with SITE_URL at build time (Cloudflare
-// Pages preview deployments get a per-branch hostname). Hosting this at
-// docs.strad.tadasant.com is a follow-up — see the DNS & domains page.
+// The canonical public URL — what Astro builds canonical links and the sitemap
+// from. Cloudflare Pages sets SITE_URL to the same value in both the production
+// and preview environments; the fallback keeps a local build correct. See the
+// DNS & domains page for the Pages settings.
 const site = process.env.SITE_URL || "https://docs.strad.tadasant.com";
 
 export default defineConfig({

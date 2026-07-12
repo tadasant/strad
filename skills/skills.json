@@ -1,0 +1,13 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/skills.schema.json",
+  "sync-docs": {
+    "id": "sync-docs",
+    "title": "Sync Docs",
+    "description": "Pre-PR step: review strad's documentation against the branch diff and update whatever has gone stale — README.md, AGENTS.md / CLAUDE.md, docs/, HACKS.md, strad.config.example.yaml — so docs ship in the same PR and never drift from code. Default, always-on: run it as the final routine before opening a PR. Vendored copy of the central Reframe sync-docs skill, adapted to strad's documentation surface.",
+    "path": "sync-docs",
+    "category": "strad",
+    "user_invocable": true,
+    "default_in_roots": ["strad"],
+    "references": ["brand", "brand-voice", "anti-slop-rubric"]
+  }
+}

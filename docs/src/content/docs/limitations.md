@@ -5,96 +5,252 @@ sidebar:
   order: 1
 ---
 
-These docs are honest about what's finished and what isn't. The list below is
-drawn straight from the repo's [`HACKS.md`](https://github.com/tadasant/strad/blob/main/HACKS.md),
-ordered roughly by fix priority. Each item names the shim, why it exists, and how
-it gets undone.
+These docs are honest about what's finished and what isn't. The list below tracks
+the repo's [`HACKS.md`](https://github.com/tadasant/strad/blob/main/HACKS.md), and
+the numbers match its entries so you can cross-reference. Each item names the shim,
+why it exists, and how it gets undone.
 
-## 1. First ghcr image bootstrapped from a PR branch
+If you only read one section, read the first.
 
-`release-image.yml` temporarily also triggers on `feat/strad-core-platform` to
-mint `0.1.0` once. No `write:packages` PAT was available, and the push path uses
-the built-in `GITHUB_TOKEN`, which only works in-repo. **Undo:** delete the
-`feat/strad-core-platform` line from `on.push.branches` around merge; thereafter
-images cut only from `main`.
+## Where a guarantee is weaker than it looks
 
-## 2. Console dev bypass stands in for Google OAuth
+### 22. Capability is policy, not physics
 
-`/console` is currently enterable with `ADMIN_BOOTSTRAP_TOKEN`. It is
-triple-guarded, hard-disabled under `NODE_ENV=production` unless `ALLOW_DEV_AUTH`
-is explicitly true, and logs loudly. **It cannot authenticate `/mcp`.** The Google
-provider — including the `hd` claim check — is fully built and tested. **Undo:**
-provide `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as `strad-staging-*`, set
-`auth.google.enabled: true` and `consoleDevBypass.enabled: false` (or unset
-`ALLOW_DEV_AUTH`), and delete `src/auth/dev.ts` and its call sites. See
-[Auth](/auth/overview/#console-dev-bypass-temporary).
+Read-only versus read-write is a `tools: { allow: [...] }` list on a config entry,
+enforced by the **gateway**: a withheld tool is refused with JSON-RPC `-32600` on
+`tools/call`, before the request reaches the upstream. That is a real boundary, and
+it is a weaker one than what it replaced.
 
-## 2b. CI-driven deploy is merge-gated
+It used to be physics. `GMAIL_ENABLED_TOOLGROUPS=readonly` meant the read-only
+container _did not have_ the write tools — the process could not perform the write
+if it tried. Now `gmail-ro` and `gmail-rw` are two entries pointing at the same
+container, which holds full-capability credentials, and the only thing standing
+between the read-only slug and a write is a gateway that declines.
 
-`workflow_dispatch` workflows are only invocable from the default branch, and
-Secret Manager isn't seeded until `secrets-sync.yml` runs — so
-`deploy-staging.yml` [skips-and-stays-green](/operate/operations/#deploy-stagingyml--put-it-on-app-platform)
-on an auto-release without prerequisites (a manual dispatch fails loudly).
-**Undo:** merge the PR, then run `secrets-sync.yml`.
+The consequence is concrete: a bug in `toolPolicy.ts`, or a config entry that
+forgets its `tools:` block, silently promotes a read-only slug to read-write. The
+container's own credential is no longer a backstop. `unmatchedAllowEntries()` logs
+`mcp.policy_unmatched_tools` when an allow-list names a tool the upstream doesn't
+offer, which catches upstream renames, and `test/staging-config.test.ts` asserts
+each tier is a subset of the one above it. Neither of those makes the boundary
+physical.
 
-## 3. Tonight's staging deployed from an agent session, not CI
+**Why anyway:** it is what collapsed thirteen billed App Platform components into
+two. **Undo:** there is no clean one. Restoring physics means one container per
+capability tier, which is the topology that was deliberately removed.
 
-`strad-staging` was first created via the DigitalOcean MCP with a hand-rendered
-spec and locally-minted tokens. **Undo:** merge, then let `release-image.yml` →
-`deploy-staging.yml` rebuild from `infra/strad.staging.yaml` on the ghcr image;
-never hand-deploy again.
+### 13. The bundle serves `/mcp` with no bearer auth of its own
 
-## 4. Staging runs a DOCR image; the target is ghcr
+The `strad-bundle` container serves its mounts unauthenticated. Its only protection
+is that it is an internal-only App Platform component — `internal_ports: [8080]`, no
+public route — reachable solely by the core over the private network. Anything else
+that got into the VPC could talk to it directly.
 
-The live app currently pulls `registry.digitalocean.com/strad/strad:0.1.0` (DOCR),
-because the build session had DO access but no `write:packages` PAT. **Undo:** the
-first CI release publishes to ghcr; the deploy repoints to
-`ghcr.io/tadasant/strad` with `GHCR_PULL_TOKEN`; then **delete the DOCR `strad`
-registry** (~$5/mo) via `doctl registry delete strad`.
+A strad-image bundle (one holding `builtin` servers) does _not_ have this problem;
+it requires `STRAD_INTERNAL_TOKEN` with a constant-time compare. The supplementary
+path never grew the equivalent.
 
-## 5. GHCR pull tokens shared between zimmer and strad
+**Undo:** add `headers: { Authorization: "Bearer ${STRAD_INTERNAL_TOKEN}" }` to the
+server entries and have the bundle host reject requests without it. The token is
+already in the component's environment.
+
+### 16. The gateway can't gate MCP Apps on client capabilities
+
+strad's `/mcp` is deliberately stateless, so it sees a client's `initialize`
+capabilities once and never again on the follow-up POSTs. That means it cannot
+withhold the `resources` capability from a client that didn't ask for it. The
+gateway therefore advertises `resources` unconditionally, proxies them, and always
+advertises the `io.modelcontextprotocol/ui` extension upstream.
+
+The strict "byte-identical result for a non-App client" guarantee is upheld one
+layer down, at `good-eggs`, which _is_ session-ful. Through the gateway, the App
+surface is exposed to every client and rendered only by the ones that asked for it.
+
+This is the intended design given statelessness, not a stopgap — but it is a real
+difference between calling `good-eggs` directly and calling it through strad.
+
+## Auth and identity
+
+### 2. The console dev bypass stands in for Google OAuth
+
+`/console` is enterable with `ADMIN_BOOTSTRAP_TOKEN`. It is triple-guarded (requires
+`auth.consoleDevBypass.enabled`, `ALLOW_DEV_AUTH=true`, and either a non-production
+`NODE_ENV` or `ALLOW_DEV_AUTH_IN_PRODUCTION`), and it logs loudly.
+
+**It cannot authenticate `/mcp`.** That endpoint takes a static system token and
+nothing else; there is no code path from a console session to it. The Google
+provider, including the `hd` hosted-domain claim check, is fully built and tested —
+it is waiting on credentials.
+
+**Undo:** provide `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, set
+`auth.google.enabled: true` and `consoleDevBypass.enabled: false`, and delete
+`src/auth/dev.ts` and its call sites. See [Auth](/auth/overview/#console-dev-bypass-temporary).
+
+### 20. The `/ui` console "session" is the bootstrap token in a cookie
+
+`/ui` and `/ui/:server` sit behind the same dev-bypass gate. Because a browser
+navigates between pages, the gate moves the presented `ADMIN_BOOTSTRAP_TOKEN` into
+an HttpOnly, `SameSite=Lax`, Secure-in-prod cookie (`strad_console`) and redirects
+to a clean URL, so the token isn't left in the address bar or in screenshots. That
+cookie is the whole session mechanism.
+
+Same scope as #2: it is console-class only and cannot reach `/mcp`.
+
+**Undo:** it goes away with the dev bypass, replaced by a real signed, expiring
+session once OAuth lands.
+
+### 6. Token records live in an env var, not a database
+
+`STRAD_TOKENS` is a JSON array of token records (SHA-256 hashes only — the plaintext
+is shown once at mint and never stored). Minting or revoking a token means editing
+the secret and redeploying.
+
+**Undo:** implement a DB-backed `TokenStore` — the interface is already the right
+shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. See
+[Auth](/auth/overview/#mcp--static-system-tokens-agents).
+
+### 7. Console OAuth state is in-memory
+
+The OAuth `state → codeVerifier` map is a plain `Map` in `src/http/app.ts`. It does
+not survive a restart and does not span replicas, so a login started on one instance
+cannot complete on another.
+
+**Undo:** back it with Redis or a signed expiring cookie before running a
+multi-instance console.
+
+## The deployment
+
+### 24. Fourteen servers share one process and one CPU
+
+The `bundle` component runs one Node process that mounts fourteen MCP servers and
+launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
+fourteen down together, and Chromium contends with every other server for the single
+vCPU.
+
+Measured working set is ~760MB with two browser servers logging in at once, against
+a 2GB limit — so memory has headroom. Compute is the suspected binding constraint,
+which is why the [telemetry](/operate/telemetry/) exists: `strad.eventloop.delay.p99`
+and `strad.container.memory.utilization` are there to answer "is this thing starved,
+and of what."
+
+**This is an accepted risk, not a proven design.** If it turns out to be starved, the
+next move is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM.
+
+### 18. An App Platform spec update deletes any field it omits
+
+A spec update is a **full replace**. Omitting `domains` detaches the custom domain —
+and the app then stays perfectly healthy on its `*.ondigitalocean.app` ingress while
+the real hostname fails its TLS handshake, so no health check fires. This has already
+happened once, to `staging.strad.tadasant.com`.
+
+`render-spec` now always emits `domains`, defaulting from `gateway.publicUrl`.
+The gun is still loaded for every other field.
+
+**Undo:** none available — it is how the API works. Verify both custom domains serve
+a 200 after every deploy.
+
+### 23. The per-server images still exist, and must
+
+`strad-bundle-api`, `strad-server-good-eggs`, `strad-server-fetchpet`,
+`strad-server-pointsyeah`, `strad-server-onepassword`, and
+`strad-server-bundle-google` are still built and still pushed to `:latest` on every
+relevant change, even though staging deploys only the one collapsed
+`ghcr.io/tadasant/strad-bundle`.
+
+They cannot be deleted yet: production, in `tadasant-internal`, still points at them,
+and App Platform re-pulls `:latest` on every restart and scale event. Deleting the
+images or their release workflows would be an outage, not a cleanup.
+
+**Undo, in order:** re-point prod at `strad-bundle` → confirm it serves → then delete
+the per-server release workflows and images.
+
+### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
+
+`strad-staging` was originally created with a hand-rendered spec from a build session
+rather than by `deploy-staging.yml`. Separately, `workflow_dispatch` workflows are
+only invocable from the default branch, and Secret Manager isn't seeded until
+`secrets-sync.yml` has run — so `deploy-staging.yml`
+[skips and stays green](/operate/operations/#deploy-stagingyml--put-it-on-app-platform)
+on an automatic release without prerequisites, while a manual dispatch fails loudly.
+
+**Undo:** let `release-image.yml` → `deploy-staging.yml` rebuild staging from
+`infra/strad.staging.yaml`, and never hand-deploy again.
+
+:::note[HACKS #12 is superseded]
+`HACKS.md` #12 describes the `bundle-goodeggs` component being hand-deployed off
+DOCR. That component no longer exists — the collapse renders exactly two components,
+`core` and `bundle`. The entry is kept in `HACKS.md` for history.
+:::
+
+## Supply chain and build
+
+### 10 & 15. The `shared/` trees are vendored, not depended on
+
+`servers/good-eggs/shared/` and `servers/onepassword/shared/` are copied verbatim
+from [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers). Only the
+`remote/` streamable-HTTP entrypoints are new; the tool logic is reused unchanged.
+1Password drags one more thing along: its `@pulsemcp/mcp-elicitation` dependency
+isn't published to npm either, so that library is vendored as a third workspace.
+
+**Why:** the upstream packages publish stdio servers, not libraries strad could
+depend on. strad's ESLint, Prettier, and TypeScript are scoped away from
+`servers/**` so the vendored code keeps its own toolchain.
+
+**Undo:** land shared fixes upstream and re-vendor; longer term, have upstream
+publish `shared` and the elicitation library as real packages.
+
+### 11. Playwright is pinned to the base image's Chromium
+
+The browser images build `FROM mcr.microsoft.com/playwright:v1.61.1-noble` and pin
+Playwright to `1.61.1` with an `overrides` block, rather than downloading a browser
+at build time — `cdn.playwright.dev` was flaky from the build environment, and the
+base image's Chromium revision matches 1.61.1 exactly.
+
+**Cost:** the base image is large, and the bundle image lands around 3.9GB, ~85% of
+which is that base. **When bumping Playwright,** bump the base image tag and the
+`overrides` version together, or the browser revision stops matching.
+
+### 5. GHCR pull tokens are shared with zimmer
 
 Staging uses `GHCR_PULL_TOKEN`; prod reuses zimmer's
-`GHCR_PULL_TOKEN_ZIMMER_TADASANT_INTERNAL` (a classic PAT with `read:packages` is
-account-wide). **Undo:** mint a dedicated
-`GHCR_PULL_TOKEN_STRAD_TADASANT_INTERNAL` for hygiene. **Watch:** a 403 on pull
-means the PAT is fine-grained and strad's package isn't in its scope — add it.
+`GHCR_PULL_TOKEN_ZIMMER_TADASANT_INTERNAL` — a classic PAT with `read:packages` is
+account-wide, so it works.
 
-## 6. Static token records live in an env var, not a database
+**Undo:** mint a dedicated `GHCR_PULL_TOKEN_STRAD_TADASANT_INTERNAL`. **Watch:** a
+403 on pull means the PAT is fine-grained and strad's package isn't in its scope.
 
-Token records are a JSON array in `STRAD_TOKENS` (SHA-256 hashes only). Mint or
-revoke means editing the secret and redeploying. **Undo:** implement a DB-backed
-`TokenStore` (the interface is already the right shape) plus a `/console`
-mint/revoke UI, and drop `STRAD_TOKENS`. See [Auth](/auth/overview/#mcp--static-system-tokens-agents).
+### 8. Deploy-time GCP auth uses a long-lived key
 
-## 7. Console OAuth state is in-memory
+The runtime container holds no cloud credential — that part is the intended design,
+not a hack. The debt is that `secrets-sync.yml` and `deploy-staging.yml` authenticate
+to GCP with a long-lived `GCP_SA_KEY`.
 
-The OAuth `state → codeVerifier` map is a plain `Map` in `src/http/app.ts`; it
-doesn't survive a restart or span replicas. **Undo:** back it with Redis or signed
-expiring cookies before running a multi-instance console.
+**Undo:** provision Workload Identity Federation (a pool + provider bound to
+`tadasant/strad` and `tadasant/tadasant-internal`) so `google-github-actions/auth@v2`
+goes keyless, then delete `GCP_SA_KEY` from both repos.
 
-## 8. Secret backend: env at runtime, GCP at deploy time
+## Documentation
 
-This is **not really a hack** — it's the intended design (the container holds no
-GCP credential). It's listed only because `secrets-sync.yml` and
-`deploy-staging.yml` authenticate to GCP with a long-lived `GCP_SA_KEY`. **The
-real debt / undo:** provision **Workload Identity Federation** (a pool + provider
-bound to `tadasant/strad` and `tadasant/tadasant-internal`) so
-`google-github-actions/auth@v2` goes keyless, then **delete `GCP_SA_KEY`** from
-both repos.
+### The docs site is built in CI but not yet published
+
+The `docs_site` CI job builds this site on every PR, so it cannot rot silently. The
+Cloudflare Pages project that serves it at `docs.strad.tadasant.com` is a
+human-provisioned step and may not exist yet — see
+[DNS & domains](/operate/dns/#this-docs-site-cloudflare-pages) for the exact
+settings. Until it does, the site is built and served locally
+(`cd docs && npm run build && npm run preview`).
 
 ---
 
-## Human-provisioning checklist
+## What the human still needs to provision
 
-The one-time human steps that clear most of the list above:
+The one-time steps that clear most of the list above:
 
-- Provide Google OAuth secrets — removes **#2**.
-- Merge the PR and drop the bootstrap-branch trigger — **#1**, **#3**.
-- Confirm staging is on ghcr, then delete the DOCR registry — **#4**.
-- Mint a dedicated strad GHCR pull token — **#5**.
-- Provision WIF, then delete `GCP_SA_KEY` — **#8**.
-- Stand up a datastore + a console mint/revoke UI — **#6**, **#7**.
-- Add the Cloudflare DNS record `staging.strad.tadasant.com` → the App Platform
-  app (DNS-only; App Platform issues the cert) — see [DNS &
-  domains](/operate/dns/).
+- Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) — clears
+  **#2** and **#20**.
+- Re-point prod at the collapsed bundle, then delete the per-server images and
+  workflows — clears **#23**.
+- Mint a dedicated strad GHCR pull token — clears **#5**.
+- Provision Workload Identity Federation, then delete `GCP_SA_KEY` — clears **#8**.
+- Stand up a datastore and a console mint/revoke UI — clears **#6** and **#7**.
+- Create the Cloudflare Pages project for these docs.

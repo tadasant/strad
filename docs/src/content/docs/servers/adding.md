@@ -90,10 +90,15 @@ entries pointing at the same image, bundle and path** — differing only in the
 ```
 
 strad enforces the policy on `tools/list` **and** on `tools/call` — a withheld
-tool is refused before the request reaches the upstream. Do **not** try to do this
-with a container-side tool-group env var: the two variants share a container now,
-so an env var would strip tools from the read-write slug as well (the bundle host
-deletes such variables at boot for exactly this reason).
+tool is refused with JSON-RPC `-32600` before the request reaches the upstream. Do
+**not** try to do this with a container-side tool-group env var: the two variants
+share a container, so an env var would strip tools from the read-write slug as well.
+The bundle host deletes any `*_ENABLED_TOOLGROUPS`-shaped variable at boot for
+exactly this reason.
+
+Keep the tiers nested — a read-only allow-list should be a subset of the tier above
+it. `test/staging-config.test.ts` asserts that for staging, and it is the property
+that makes "read-only" mean something predictable.
 
 ## 4. Seed any secrets
 
@@ -120,11 +125,13 @@ the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (s
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
-once — a core builtin (`echo`), twenty-three `supplementary-image` servers sharing
-ONE bundle over the private network (including every read-only / read-write pair),
-and a credential-free `remote-http` canary
-(`deepwiki` → `https://mcp.deepwiki.com/mcp`) — plus a deliberately narrow
-`echo-only` role to keep the [424 fail-closed path](/intro/concepts/#the-424-contract)
-meaningful. Read it alongside
+once. It declares twenty-five server slugs: a core builtin (`echo`), a
+credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
+and twenty-three `supplementary-image` entries sharing ONE bundle over the private
+network — which resolve onto the bundle image's fourteen mounts, because every
+read-only / read-write pair is two entries on one path. It also keeps a deliberately
+narrow `echo-only` role, so the
+[424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read it
+alongside
 [`strad.config.example.yaml`](https://github.com/tadasant/strad/blob/main/strad.config.example.yaml)
 as your two references.

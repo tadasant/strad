@@ -5,27 +5,41 @@ sidebar:
   order: 2
 ---
 
-strad's operations are four GitHub Actions workflows. Together they enforce one
-premise: **the image is the deliverable**, so a PR that can't produce a bootable
-image is a failing PR.
+strad's operations are a set of GitHub Actions workflows on self-hosted runners.
+They enforce one premise: **the image is the deliverable**, so a PR that can't
+produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main` (self-hosted runners):
+Runs on PRs and pushes to `main`. Six jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
+- **`good_eggs`** — `servers/**` is outside the core TypeScript program, and the
+  good-eggs image only builds on push, so a PR could otherwise break that server
+  without CI noticing. This job builds it and runs its browser-free MCP-App gating
+  tests.
+- **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
+  and runs `scripts/smoke.mjs` against every mount of the running image, asserting
+  the full-capability tool count for each (slack 9, tailscale 15, monarch-money 23,
+  gmail 8, google-docs 11, google-calendar 7, 1Password 9, …). Those counts are the
+  numbers the gateway's read-only allow-lists are carved out of, so if an upstream
+  grows or renames a tool, this is where it surfaces. It also asserts the `op` CLI
+  is really in the image.
 - **`verify_lockfile`** — `npm install --package-lock-only` then
   `git diff --exit-code`, so `package-lock.json` can't drift.
-- **`build_image`** — builds the Docker image, boots it with `STRAD_TOKENS='[]'`,
-  and asserts two things: `/healthz` is up, and **`/mcp` with no token returns
-  `401`**. That last check is _the_ test given strad's open-internet posture — an
-  unauthenticated MCP endpoint that ever returned tools would be the whole ball
-  game.
+- **`build_image`** — builds the core Docker image, boots it with
+  `STRAD_TOKENS='[]'`, and asserts two things: `/healthz` is up, and **`/mcp` with
+  no token returns `401`**. That last check is _the_ test given strad's
+  open-internet posture — an unauthenticated MCP endpoint that ever returned tools
+  would be the whole ball game.
+- **`docs_site`** — `npm ci && npm run build` in `docs/`. The documentation site is
+  meant to stay true commit-by-commit, so a broken link, bad frontmatter, or a page
+  missing from the `sidebar` array fails the PR rather than the deploy.
 
 ## `release-image.yml` — mint and ship
 
-Runs on push to `main` (plus a temporary bootstrap branch and `workflow_dispatch`):
+Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`:
 
 1. Compute the [effective version](/operate/deploy-model/#versioning).
 2. Log in to GHCR and build + push `ghcr.io/tadasant/strad:<version>` (+ `:latest`,
@@ -83,20 +97,55 @@ gh workflow run secrets-sync.yml \
   [-f internal_token='<token>']
 ```
 
+## The image workflows
+
+Each container image strad publishes has its own release workflow, path-filtered
+so a change to one server doesn't rebuild the rest:
+
+| Workflow                        | Publishes                                        | Triggered by a change under                                                                                                                                 |
+| ------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release-image.yml`             | `ghcr.io/tadasant/strad`                         | the repo root / `src/`                                                                                                                                      |
+| `release-bundle-image.yml`      | `ghcr.io/tadasant/strad-bundle` — **the** bundle | `servers/bundle/`, `servers/bundle-api/`, `servers/onepassword/`, `servers/good-eggs/`, `servers/fetchpet/`, `servers/pointsyeah/`, `images/bundle-google/` |
+| `release-bundle-api-image.yml`  | `ghcr.io/tadasant/strad-bundle-api`              | `servers/bundle-api/`                                                                                                                                       |
+| `release-goodeggs-image.yml`    | `ghcr.io/tadasant/strad-server-good-eggs`        | `servers/good-eggs/`                                                                                                                                        |
+| `release-fetchpet-image.yml`    | `ghcr.io/tadasant/strad-server-fetchpet`         | `servers/fetchpet/`                                                                                                                                         |
+| `release-pointsyeah-image.yml`  | `ghcr.io/tadasant/strad-server-pointsyeah`       | `servers/pointsyeah/`                                                                                                                                       |
+| `release-onepassword-image.yml` | `ghcr.io/tadasant/strad-server-onepassword`      | `servers/onepassword/`                                                                                                                                      |
+| `bundle-google-release.yml`     | `ghcr.io/tadasant/strad-server-bundle-google`    | `images/bundle-google/`                                                                                                                                     |
+
+Everything below `release-bundle-image.yml` in that table is a **per-server image
+that staging no longer deploys** — staging runs the one collapsed bundle. They are
+still built and still pushed on purpose: production, in `tadasant-internal`, has not
+been re-pointed at the collapsed bundle yet, and App Platform re-pulls `:latest` on
+every restart. Deleting them before prod moves would be an outage, not a cleanup.
+See [Known limitations](/limitations/).
+
+`bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the
+`bundle-google` image on any PR touching `images/bundle-google/`.
+
 ## The staging config
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
-exercises all three server kinds so the deploy path is proven end-to-end:
+exercises all three server kinds so the deploy path is proven end-to-end. It
+declares twenty-five server slugs:
 
-- `echo` — a `builtin` in `core`.
-- `bundled` — a `builtin` in `bundle-api`, proving the private-network hop.
+- `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
+- twenty-three `supplementary-image` entries, all on the one `bundle` component
+  running `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's fourteen
+  mounts, because a read-only and a read-write variant of one upstream are two
+  entries sharing one `path`.
 
 Roles are `admin: ["*"]` and a deliberately narrow `echo-only: [echo]`, which
 keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful.
 `google.enabled` is `false` (it flips true when OAuth creds land) and
 `consoleDevBypass.enabled` is `true`.
+
+`test/staging-config.test.ts` is the guard on all of this: it asserts the config
+renders to exactly `["core", "bundle"]`, that the bundle is `apps-s-1vcpu-2gb`, that
+no server carries a container-side capability toggle, and that each read-only
+allow-list is a subset of the tier above it.
 
 ## Health and console surface
 
@@ -104,5 +153,8 @@ keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful.
   `servers` — used by the App Platform health check and the deploy smoke test.
 - **`/mcp`** is handled by `app.all("/mcp", …)` and always requires a token.
 - **`/console`** and `/console/oauth/callback` are mounted only in `core` mode.
-  The OAuth `state → codeVerifier` map is currently in-memory (see [Known
+  The OAuth `state → codeVerifier` map is in-memory (see [Known
+  limitations](/limitations/)).
+- **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console.
+  Its "session" is the bootstrap token in a cookie, which is a shim (see [Known
   limitations](/limitations/)).

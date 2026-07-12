@@ -12,7 +12,12 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. TWO COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This used to be twelve bundles for twenty-six servers, and the reason was
+# This file declares twenty-five server SLUGS: twenty-three supplementary-image
+# entries (which land on fourteen upstream mounts inside the one bundle image,
+# because capability variants share a mount), the `echo` builtin in core, and the
+# `deepwiki` remote-http canary.
+#
+# It used to be twelve bundles for twenty-six slugs, and the reason was
 # small and stupid: a server's capability was a CONTAINER env var
 # (`GMAIL_ENABLED_TOOLGROUPS=readonly`). A component's env is the union of its
 # servers' env maps, so gmail-ro (=readonly) and gmail-rw (=readwrite) wanted two

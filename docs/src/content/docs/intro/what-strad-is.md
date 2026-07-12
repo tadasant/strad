@@ -74,6 +74,21 @@ is downstream authorization. And it avoids silently omitting the server, because
 "a client that asked for slack and got a toolset without it looks like a broken
 Slack integration." Fail closed, loudly, with a pointer to the fix.
 
+## Capability is a policy the gateway enforces
+
+Entitlement decides which _servers_ a token can reach. A second, narrower decision
+is which _tools_ it can use on a server it has already reached — read-only versus
+read-write. That is a `tools: { allow: [...] }` list on the server entry, and the
+gateway enforces it on `tools/list` **and** on `tools/call`: a withheld tool is
+refused with JSON-RPC `-32600` before the request reaches the upstream.
+
+Because the decision lives at the gateway, `gmail-ro` and `gmail-rw` are two config
+entries pointing at the same container on the same path. They differ only in the
+policy. That is what makes the deployment small, and it is worth naming what it
+costs: capability is now policy, not physics. A gateway that declines is not the
+same guarantee as a process that lacks the tool. See
+[Known limitations](/limitations/).
+
 ## Stateless, and spec-conformant because of it
 
 strad is **stateless**. It builds a fresh MCP `Server` and transport for every
@@ -100,10 +115,13 @@ only thing standing between a caller and the tools:
 
 See [Auth](/auth/overview/) for the full model.
 
-## What it is not
+## Scope
 
-It is not a hosted product — there is no SaaS. You deploy it yourself on
-DigitalOcean App Platform (see [Deploy model](/operate/deploy-model/)). It is not
-a bundle of pre-wired integrations — the core has no servers until you add them.
-And it is not multi-tenant in the SaaS sense: it is a single circle of trust,
-governed by roles you define.
+There is no hosted strad. You deploy it yourself on DigitalOcean App Platform (see
+[Deploy model](/operate/deploy-model/)), with your own config, your own servers, and
+your own credentials.
+
+The access model is roles and tokens, and that is the whole of it. There are no
+accounts, no organizations, and no per-user gating: a role names the servers it can
+reach, a token holds roles, and a server names the roles it admits. If you need to
+mediate distrust between the people using it, strad is the wrong tool.

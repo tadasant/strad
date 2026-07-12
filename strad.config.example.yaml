@@ -7,6 +7,10 @@
 # boot — and those env vars are injected by CI from GCP Secret Manager
 # (`strad-<env>-<NAME>`) as App Platform SECRET env vars. The container itself
 # holds no cloud credentials.
+#
+# This file is an EXAMPLE: it shows every shape the schema allows, with fewer
+# servers than a real deployment. infra/strad.staging.yaml is the real one — 25
+# server slugs across 2 App Platform components.
 
 version: 1
 
@@ -38,59 +42,61 @@ auth:
 
 # A role names the servers it may reach. `*` means every configured server.
 # Both directions must agree: the role must name the server, AND the server must
-# list the role under `entitlements`. Neither side can grant access alone.
+# list the role under `entitlements`. Neither side can grant access alone — see
+# `readonly` below, which names `slack-readonly`, and `slack-readonly`, which
+# names `readonly` back.
 roles:
   admin:
     servers: ["*"]
   readonly:
-    servers: [echo]
+    servers: [echo, slack-readonly]
 
 # Deployment groups. `core` is implicit (the public gateway); every bundle below
 # becomes an internal-only App Platform component on the private network.
+#
+# There is exactly ONE here, and that is the whole shape of the current design:
+# every supplementary MCP server runs in one container, off one image, and the
+# gateway proxies to each on its own path. strad deploys 2 components in total —
+# `core` and this.
 bundles:
-  - name: bundle-api
-    # Seven pure-API MCP servers (see servers/bundle-api) share this ONE image,
-    # each served on its own path. Being pure HTTP/API — no browser, no
-    # subprocess — they colocate in one small component at ~$0 marginal cost.
-    instanceSizeSlug: apps-s-1vcpu-0.5gb
-
-  - name: bundle-builtins
-    # Several lightweight builtins colocate here at $0 marginal cost.
-    instanceSizeSlug: apps-s-1vcpu-0.5gb
-
-  - name: bundle-browser
-    # Chromium peaks ~545MB and 1 vCPU serialises rendering, so it gets its own.
-    instanceSizeSlug: apps-s-1vcpu-1gb
-
-  - name: bundle-google
-    # One image, three pure-API Google Workspace servers (gmail, calendar,
-    # docs). No browser, no subprocess — modest CPU/RAM.
-    instanceSizeSlug: apps-s-1vcpu-1gb
+  - name: bundle
+    # 2GB because this container holds a real Chromium (the browser servers share
+    # ONE, ~940MB RSS for its process tree) alongside every API server, and 1GB is
+    # one bad page render from an OOM that takes every server down with it. The
+    # binding constraint is CPU, not RAM: 1 shared vCPU serialises Chromium's
+    # rendering while the same box answers every Slack call. If the telemetry
+    # shows event-loop lag, the next move is a dedicated CPU (apps-d-1vcpu-2gb),
+    # not more memory.
+    instanceSizeSlug: apps-s-1vcpu-2gb
 
 servers:
   # --- kind: builtin --------------------------------------------------------
   # Compiled into the strad image. This is how private/internal servers ship:
   # tadasant-internal builds its own image with its modules and registers them
   # with entries exactly like this one.
+  #
+  # `bundle: core` runs it inside the gateway process. Naming another bundle
+  # instead puts it in a component running the strad image in bundle mode, which
+  # the gateway reaches at ${<bundle>.PRIVATE_URL} — useful for isolating a
+  # builtin, and costs a component.
   - slug: echo
     kind: builtin
     module: "./servers/echo.js"
-    bundle: core # in the gateway process itself
+    bundle: core
     entitlements: [admin, readonly]
     options:
       greeting: "hello from the core"
 
-  # The same builtin machinery, but hosted in a separate component. The gateway
-  # reaches it over the private network at ${bundle-builtins.PRIVATE_URL}.
-  - slug: echo-bundled
-    kind: builtin
-    module: "./servers/echo.js"
-    bundle: bundle-builtins
-    entitlements: [admin]
-
   # --- kind: remote-http ----------------------------------------------------
   # Proxy an MCP server that already exists on the internet. strad holds the
-  # credential; the client never sees it.
+  # credential; the client never sees it. deepwiki needs none, which is what
+  # makes it a good canary.
+  - slug: deepwiki
+    kind: remote-http
+    url: https://mcp.deepwiki.com/mcp
+    entitlements: [admin]
+  #
+  # With a credential, it is the same entry plus `headers:`:
   #
   # - slug: granola
   #   kind: remote-http
@@ -98,26 +104,27 @@ servers:
   #   entitlements: [admin]
   #   headers:
   #     Authorization: "Bearer ${GRANOLA_TOKEN}"
+
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an
-  # internal-only component (its own bundle) and proxies to it over the private
-  # network. One entry, one server. `env:` values that are `${NAME}` refs
-  # resolve onto THIS bundle only, so a credential isn't broadcast to every
-  # component. `timeoutMs` overrides the MCP SDK's silent 60s default — set it
-  # generously for anything slow, e.g. a browser-driven server.
+  # internal-only component and proxies to it over the private network.
   #
-  # This is exactly how good-eggs is wired in infra/strad.staging.yaml.
-  # internal-only component and proxies to it.
+  # ONE image backs MANY servers: give each entry the SAME `image` and `bundle`
+  # but a distinct `path`, and they all run in that one component (a component
+  # still runs exactly one image). That is `ghcr.io/tadasant/strad-bundle:latest`
+  # — 14 MCP servers in one Node process, one shared Chromium, served at /slack,
+  # /gmail, /onepassword and so on. Every entry below points at it.
   #
-  # ONE image may back MANY servers: give each entry the SAME `image` and
-  # `bundle` but a distinct `path`, and they all run in that one component (one
-  # component still runs one image). That is `bundle-api` — seven pure-API MCP
-  # servers in a single image (servers/bundle-api), each on its own path.
+  # `env:` maps a container env var to a `${NAME}` ref, and those values resolve
+  # onto THIS bundle only, so a credential is not broadcast to every component. A
+  # bare string is used literally (see `GCS_BUCKET`); only `${NAME}` is a secret
+  # lookup.
   #
-  # Every server here is credential-free at build time; strad injects each one's
-  # secrets onto the component via `env:` (`${NAME}` refs).
+  # `timeoutMs` overrides the MCP SDK's silent 60s default, which otherwise kills
+  # a slow tool call and presents as a mysterious platform failure. Set it
+  # generously for anything browser-driven.
   #
-  # CAPABILITY (read-only vs read-write) is NOT a container setting. It is the
+  # CAPABILITY (read-only vs read-write) is not a container setting. It is the
   # gateway's `tools:` policy, per SLUG:
   #
   #     tools:
@@ -126,26 +133,38 @@ servers:
   #
   # strad enforces it on tools/list AND on tools/call — a withheld tool is refused
   # before it reaches the upstream. So two slugs may point at the SAME image, the
-  # SAME bundle and the SAME path, and differ only in what they are allowed to do
-  # (see slack / slack-readonly below). That is what lets one container serve every
-  # capability variant instead of one component per variant.
+  # SAME bundle and the SAME path, and differ only in what they may do. The pair
+  # below is the worked example.
+  #
+  # The trade is worth stating: read-only used to be physics (a container built
+  # without the write tools in it) and is now policy (a gateway that declines).
+  # For 1Password that is sharp — one container holds one service-account token,
+  # and it has to be the read-write one — so a read-only 1Password slug is
+  # read-only because strad says so, not because 1Password would refuse. See
+  # HACKS.md #22.
   - slug: slack
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
     path: /slack
     entitlements: [admin]
     env:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
 
   # The read-only twin of the server above: same image, same bundle, same path,
-  # same container. The ONLY difference is the policy the gateway enforces.
+  # same container, same credential. The ONLY difference is the policy the gateway
+  # enforces. Declare the credential on BOTH variants: a component's env is the
+  # union of its servers' env maps, so this is a no-op at deploy time, and it
+  # means `enabled: false` on one variant cannot silently strip the secret from
+  # its twin.
   - slug: slack-readonly
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
     path: /slack
-    entitlements: [admin]
+    entitlements: [admin, readonly]
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
     tools:
       allow:
         - slack_get_channels
@@ -153,186 +172,79 @@ servers:
         - slack_get_thread
         - slack_download_file
 
-  - slug: serpapi-hotels
+  # No credential at all — public endpoints, every tool.
+  - slug: google-flights
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
-    path: /serpapi-hotels
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-flights
     entitlements: [admin]
-    env:
-      SERPAPI_API_KEY: "${SERPAPI_API_KEY}"
-
-  - slug: tailscale
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
-    path: /tailscale
-    entitlements: [admin]
-    env:
-      TAILSCALE_API_KEY: "${TAILSCALE_API_KEY}"
 
   - slug: monarch-money
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
     path: /monarch-money
     entitlements: [admin]
     env:
-      MONARCH_EMAIL: "${MONARCH_EMAIL}"
-      MONARCH_PASSWORD: "${MONARCH_PASSWORD}"
-      MONARCH_SESSION_PASSPHRASE: "${MONARCH_SESSION_PASSPHRASE}"
+      # A session token, minted out-of-band. The server does not log in from
+      # credentials here.
+      MONARCH_SESSION_TOKEN: "${MONARCH_SESSION_TOKEN}"
 
+  # `title`/`description` are what a human sees in /console. GCS_BUCKET pins every
+  # operation to one bucket — a literal value, not a secret, and it is also what
+  # the human /ui/gcs view scopes to.
   - slug: gcs
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
+    title: Google Cloud Storage
+    description: Browse the object store this server is scoped to.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
     path: /gcs
     entitlements: [admin]
     env:
-      GCS_PROJECT_ID: "${GCS_PROJECT_ID}"
+      GCS_PROJECT_ID: "my-project"
+      GCS_BUCKET: "my-public-bucket"
       GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_SERVICE_ACCOUNT_KEY_JSON}"
 
-  - slug: remote-filesystem
+  # The 1Password CLI (`op`) is baked into the image; the image ships no
+  # credential. The server refuses to serve without an elicitation posture, and
+  # strad has no elicitation transport wired yet, so it skips them explicitly.
+  # See servers/onepassword/README.md.
+  - slug: onepassword-rw
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
-    path: /remote-filesystem
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /onepassword
     entitlements: [admin]
+    timeoutMs: 120000
     env:
-      GCS_BUCKET: "${REMOTE_FS_GCS_BUCKET}"
-      GCS_CLIENT_EMAIL: "${REMOTE_FS_GCS_CLIENT_EMAIL}"
-      GCS_PRIVATE_KEY: "${REMOTE_FS_GCS_PRIVATE_KEY}"
+      OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
+      DANGEROUSLY_SKIP_ELICITATIONS: "true"
 
-  - slug: google-flights
+  # Browser-driven. It drives a real headless Chromium and logs into a real
+  # account, so a tool call can take minutes — hence the raised `timeoutMs`. It
+  # does NOT launch its own browser: the bundle host owns ONE Chromium and hands
+  # each browser server a context on it (servers/bundle/host/src/browser.ts), so
+  # adding another one costs a context, not another 545MB peak.
+  - slug: good-eggs
     kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-api
-    path: /google-flights
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /good-eggs
     entitlements: [admin]
-    # no credentials, no policy — public endpoints, every tool
-
-  # A single-server image gets its OWN bundle, exactly the same way — one entry,
-  # one server, one image (this is how good-eggs is wired):
-  #
-  # - slug: good-eggs
-  #   kind: supplementary-image
-  #   image: ghcr.io/tadasant/strad-server-good-eggs:latest
-  #   bundle: bundle-goodeggs
-  #   entitlements: [admin]
-  #   timeoutMs: 120000
-  #   env:
-  #     GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
-  #     GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"
-
-  # onepassword (servers/onepassword) is the same shape, with the 1Password CLI
-  # (`op`) baked into its image. The token env var is OP_SERVICE_ACCOUNT_TOKEN;
-  # the image ships no credential. It ships as TWO slugs — one read-only, one
-  # read-write — on ONE container, told apart by the gateway's `tools:` policy.
-  # (This server also requires an elicitation posture to serve — either
-  # ELICITATION_REQUEST_URL + ELICITATION_POLL_URL, or
-  # DANGEROUSLY_SKIP_ELICITATIONS=true. See servers/onepassword/README.md.)
-  #
-  # NOTE the security trade: with one container there is one
-  # OP_SERVICE_ACCOUNT_TOKEN, and the read-write slug needs the read-write one.
-  # So `onepassword-ro` is read-only because the GATEWAY refuses the call — not
-  # because 1Password would. HACKS.md #22.
-  #
-  # - slug: onepassword-ro
-  #   kind: supplementary-image
-  #   image: ghcr.io/tadasant/strad-bundle:latest
-  #   bundle: bundle
-  #   path: /onepassword
-  #   entitlements: [admin]
-  #   timeoutMs: 120000
-  #   env:
-  #     OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
-  #     DANGEROUSLY_SKIP_ELICITATIONS: "true"
-  #   tools:
-  #     allow:
-  #       - onepassword_list_vaults
-  #       - onepassword_list_items
-  #       - onepassword_get_item
-  #       - onepassword_get_item_metadata
-  #       - onepassword_list_items_by_tag
-  # More browser-driven servers join good-eggs as a FAMILY of 1GB Chromium
-  # bundles — the schema enforces one image per bundle, so each owns its own
-  # (bundle-fetchpet, bundle-pointsyeah, …), not a single shared component. They
-  # all launch ONE long-lived Chromium and reuse it (a browser context per
-  # request); `timeoutMs` is bumped to 180s because these flows are slow.
-  #
-  # - slug: fetchpet
-  #   kind: supplementary-image
-  #   image: ghcr.io/tadasant/strad-server-fetchpet:latest
-  #   bundle: bundle-fetchpet
-  #   entitlements: [admin]
-  #   timeoutMs: 180000
-  #   env:
-  #     FETCHPET_USERNAME: "${FETCHPET_USERNAME}"
-  #     FETCHPET_PASSWORD: "${FETCHPET_PASSWORD}"
-  #
-  # - slug: pointsyeah
-  #   kind: supplementary-image
-  #   image: ghcr.io/tadasant/strad-server-pointsyeah:latest
-  #   bundle: bundle-pointsyeah
-  #   entitlements: [admin]
-  #   timeoutMs: 180000
-  #   env:
-  #     # Optional: the server boots without it and exposes set_refresh_token.
-  #     POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
-  #     GOOD_EGGS_SESSION: "${GOOD_EGGS_SESSION}"
-
-  # Three servers, ONE image. bundle-google (images/bundle-google/) packages the
-  # gmail, google-calendar and google-docs MCP servers into a single container
-  # that serves each on its own path. They share `image` + `bundle` and differ
-  # only by `path` — the gateway proxies ?servers=gmail to
-  # ${bundle-google.PRIVATE_URL}/gmail, etc. The image is CREDENTIAL-FREE; the
-  # secrets below are injected downstream (tadasant-internal) as SECRET env vars.
-  #
-  # Each server accepts TWO auth modes — service-account (Workspace domain-wide
-  # delegation) OR OAuth2 (refresh token) — and a capability toggle. Set only
-  # the vars for the mode you use. See images/bundle-google/README.md for the
-  # full matrix. NOTE: google-calendar is service-account ONLY (no OAuth path),
-  # and all three REQUIRE a Workspace admin to authorize domain-wide delegation
-  # for service-account mode.
-  - slug: gmail
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-server-bundle-google:latest
-    bundle: bundle-google
-    path: /gmail
-    entitlements: [admin]
+    timeoutMs: 120000
     env:
-      # Service-account (domain-wide delegation):
-      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL}"
-      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY}"
-      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
-      # OAuth2 alternative: GMAIL_OAUTH_CLIENT_ID / GMAIL_OAUTH_CLIENT_SECRET /
-      # GMAIL_OAUTH_REFRESH_TOKEN
-      # Capability is NOT set here — see `tools:` (the gateway enforces it).
+      GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
+      GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"
 
-  - slug: google-calendar
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-server-bundle-google:latest
-    bundle: bundle-google
-    path: /google-calendar
-    entitlements: [admin]
-    env:
-      # Service-account ONLY (no OAuth mode for calendar):
-      GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL}"
-      GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GCAL_SERVICE_ACCOUNT_PRIVATE_KEY}"
-      GCAL_IMPERSONATE_EMAIL: "${GCAL_IMPERSONATE_EMAIL}"
-      # Capability is NOT set here — see `tools:` (the gateway enforces it).
-
-  - slug: google-docs
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-server-bundle-google:latest
-    bundle: bundle-google
-    path: /google-docs
-    entitlements: [admin]
-    env:
-      # Service-account (domain-wide delegation; docs also needs FULL Drive scope):
-      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
-      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY}"
-      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
-      # OAuth2 alternative: GOOGLE_DOCS_OAUTH_CLIENT_ID /
-      # GOOGLE_DOCS_OAUTH_CLIENT_SECRET / GOOGLE_DOCS_OAUTH_REFRESH_TOKEN
-      # Capability is NOT set here — see `tools:` (the gateway enforces it).
+  # A server that ships as its OWN image is the same entry with a different
+  # `image`, and it needs its own bundle, because one component runs one image:
+  #
+  # - slug: my-server
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-server-my-server:latest
+  #   bundle: bundle-my-server      # declared under bundles:
+  #   entitlements: [admin]
+  #   env:
+  #     MY_SERVER_TOKEN: "${MY_SERVER_TOKEN}"

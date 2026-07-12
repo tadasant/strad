@@ -8,12 +8,13 @@ import type { Resource } from "@opentelemetry/resources";
 /**
  * Who is emitting this telemetry?
  *
- * strad runs the SAME image as ~13 different processes (one core + a bundle per
- * component), and the whole question we are trying to answer — "which one is
- * dying, and of what" — is unanswerable if they all report as "strad". So the
- * resource has to say precisely which component this is.
+ * strad deploys 2 App Platform components (core + bundle), and the whole
+ * question we are trying to answer — "which one is dying, and of what" — is
+ * unanswerable if they both report as "strad". So the resource has to say
+ * precisely which component this is. (Nothing here assumes 2: a config with more
+ * bundles gets more components, and each names itself the same way.)
  *
- * The one attribute that matters most for the imminent collapse-into-one-bundle
+ * The one attribute that matters most now that everything shares one bundle
  * is `service.instance.id`: it is regenerated on every process start, so
  * `count(distinct service.instance.id)` over a window IS the restart count. App
  * Platform restarts a component on OOM and tells you almost nothing; a new
@@ -61,7 +62,7 @@ export function identityFromEnv(
  *
  * `OTEL_SERVICE_NAME` wins when the operator sets it — that is the standard
  * knob and we do not get to override it. Otherwise we derive one PER COMPONENT
- * (`strad-core`, `strad-bundle-fetchpet`), because 13 processes sharing one
+ * (`strad-core`, `strad-bundle`), because the core and the bundle sharing one
  * service name would average their way out of exactly the signal we need.
  */
 export function serviceName(

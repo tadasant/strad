@@ -1,0 +1,18 @@
+{
+  "$schema": "https://pulsemcp.github.io/air/schemas/references.schema.json",
+  "brand": {
+    "title": "strad Brand & Philosophy",
+    "description": "What strad is (a self-hosted MCP gateway: one endpoint, many MCP servers, selected per request), who it's for, and the opinions that follow: selection is not authorization, it fails closed with 424, auth is the only gate because there is no perimeter, a platform rather than a bundle of integrations, and honest about which guarantees are policy rather than physics. Read before writing anything user-facing.",
+    "file": "BRAND.md"
+  },
+  "brand-voice": {
+    "title": "strad Brand Voice",
+    "description": "How strad sounds in writing (docs, README, console copy, PRs): plain, direct, honest, specific — lowercase 'strad', counts that agree across pages, and no AI-slop tells. Downstream of the brand reference; apply it to all prose.",
+    "file": "BRAND_VOICE.md"
+  },
+  "anti-slop-rubric": {
+    "title": "Anti-slop Rubric",
+    "description": "A gradeable per-page checklist for keeping the docs from reading or looking AI-generated: voice tells (contrast framing, rule of three, hype words, emphasis-bold, count drift) and design tells (colored stripes, tinted-pill nav, line noise, colored glows). Use it to grade and fix prose and theme.",
+    "file": "ANTI_SLOP_RUBRIC.md"
+  }
+}

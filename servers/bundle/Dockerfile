@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Thirteen MCP servers, one container.
+# bundle — THE strad supplementary image. Fourteen MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
 # assembled from six existing projects that live in different places:
@@ -117,7 +117,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 13 MCP servers (API, Google, 1Password, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 14 MCP servers (API, Google, 1Password, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
