@@ -414,29 +414,3 @@ servers:
     timeoutMs: 180000
     env:
       POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
-
-  # kind: supplementary-image. The gcs server from the bundle-api fleet, wired
-  # here so the human resource browser (/ui/gcs) has a config entry to scope to.
-  # Its env declares the bucket + credentials the way the real gcs server reads
-  # them (GCS_BUCKET, GCS_SERVICE_ACCOUNT_KEY_JSON — see servers/bundle-api). The
-  # human /ui reads exactly this to scope the browse to the mcp id.
-  #
-  # It ships ENABLED: FALSE — this OSS staging holds no per-server GCS creds
-  # (they are seeded in a later phase, in tadasant-internal). A disabled
-  # supplementary image emits no component and demands no secret at render
-  # (render-spec / appspec skip it), so staging stays deployable with zero new
-  # secrets. Until the creds land, /ui/gcs renders its shell behind the SSO gate
-  # and reports "credentials not yet configured".
-  - slug: gcs
-    kind: supplementary-image
-    title: Google Cloud Storage
-    description: Browse the object store this server is scoped to.
-    image: ghcr.io/tadasant/strad-bundle-api:latest
-    bundle: bundle-gcs
-    path: /gcs
-    entitlements: [admin]
-    enabled: false
-    env:
-      GCS_PROJECT_ID: "${GCS_PROJECT_ID}"
-      GCS_BUCKET: "${GCS_BUCKET}"
-      GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_SERVICE_ACCOUNT_KEY_JSON}"

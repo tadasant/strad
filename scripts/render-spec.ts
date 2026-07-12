@@ -131,6 +131,33 @@ for (const key of ["ALLOW_DEV_AUTH", "ALLOW_DEV_AUTH_IN_PRODUCTION"]) {
   }
 }
 
+// An App Platform spec update is a full REPLACE, so an omitted field is a
+// DELETION, not a no-op: rendering without `domains` does not leave the app's
+// custom domain alone, it DETACHES it, and App Platform stops serving and
+// renewing that hostname's certificate. (This is exactly how a staging deploy
+// took https://staging.strad.tadasant.com from 200 to a TLS handshake failure
+// while the app itself stayed perfectly healthy on its *.ondigitalocean.app
+// ingress.)
+//
+// So the domain must be on EVERY render, not only the ones that remember to
+// pass --domain. Default it from the config's own gateway.publicUrl — the host
+// this deployment already declares it is served at — and let --domain override.
+function resolveDomains() {
+  const flagged = values.domain?.map((d) => ({ domain: d, type: "PRIMARY" as const }));
+  if (flagged?.length) return flagged;
+
+  let host: string | undefined;
+  try {
+    host = new URL(config.gateway.publicUrl ?? "").hostname;
+  } catch {
+    host = undefined;
+  }
+  // *.ondigitalocean.app is the DEFAULT ingress, not a custom domain — App
+  // Platform rejects it as one.
+  if (!host || host.endsWith(".ondigitalocean.app")) return undefined;
+  return [{ domain: host, type: "PRIMARY" as const }];
+}
+
 const spec = renderAppSpec({
   config,
   appName: values.app,
@@ -138,7 +165,7 @@ const spec = renderAppSpec({
   image: parseImage(values.image),
   env: envs,
   secrets: bundleSecrets,
-  domains: values.domain?.map((d) => ({ domain: d, type: "PRIMARY" as const })),
+  domains: resolveDomains(),
 });
 
 // A BARE spec, not { spec }. This file is fed to `doctl apps create/update
