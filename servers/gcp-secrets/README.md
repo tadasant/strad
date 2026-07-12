@@ -21,10 +21,10 @@ never reaches the MCP container**.
 Three locks, in order of how much they are worth:
 
 1. **IAM (the real one).** The MCP component's service account holds
-   `roles/secretmanager.viewer`, conditioned on the managed name prefix. That role
-   grants `secrets.get`, `secrets.list`, `versions.get`, `versions.list` — and
-   **not** `secretmanager.versions.access`, the only permission that returns a
-   payload. A bug, a bad merge or a prompt injection that reaches for a value gets
+   `roles/secretmanager.viewer` on the secrets project. That role grants
+   `secrets.get`, `secrets.list`, `versions.get`, `versions.list` — and **not**
+   `secretmanager.versions.access`, the only permission that returns a payload. A
+   bug, a bad merge or a prompt injection that reaches for a value gets
    `403 PERMISSION_DENIED`.
 2. **No code path.** `shared/src/client.ts` has one HTTP verb (`get`) and no
    value-reading method. There is nothing to call.
@@ -65,20 +65,44 @@ no other component. The console also refuses to **fall back** to the viewer key 
 the admin key is missing: a console silently running as the viewer would 403, and
 the tempting "fix" for that 403 is to widen the MCP server's IAM.
 
-## Namespaces
+## Namespaces, and where the blast radius actually comes from
 
 GCP secret ids are flat (`[A-Za-z0-9_-]{1,255}`), so a namespace is a **name
-prefix** — `mcp-`. It is the same string as the IAM condition on both role
-bindings, and that is deliberate: the server can only ever list what its
-credential can see.
+prefix** — `mcp-`. The server refuses to list an unmanaged namespace, and the
+console refuses to act on a name outside one.
 
-It is also the blast-radius bound. strad's **own** secrets live in the same Secret
-Manager under `strad-staging-*` (including `STRAD_TOKENS`). Neither service
-account has a binding that reaches them, the server refuses to list an unmanaged
-namespace, and the console refuses to act on a name outside it.
+**But be honest about what that prefix is worth: it is a code-level guard, not an
+IAM boundary.** The IAM boundary is the **GCP project**.
 
-`GCP_SECRETS_NAMESPACES` is **required**. An unset one would mean the empty
-prefix — every secret in the project — so the server refuses to mount instead.
+It is tempting to make the prefix load-bearing with an IAM condition
+(`resource.name.startsWith("projects/N/secrets/mcp-")`). Do not. Google evaluates
+a condition against the resource the permission is checked on, and the two
+permissions this server lives or dies by are checked on the **parent project**,
+not on a secret:
+
+| operation | permission | checked on |
+| --- | --- | --- |
+| `list_secrets` (MCP) | `secretmanager.secrets.list` | `projects/N` |
+| create (console) | `secretmanager.secrets.create` | `projects/N` |
+
+`"projects/N"` does not start with `"projects/N/secrets/mcp-"`, so a conditional
+binding is liable to deny exactly the two calls that matter — and a security
+control you have not verified end to end is not a control. Conditions do work for
+per-secret operations (`versions.access`, `versions.add`), so they remain useful
+as **extra** hardening, but they are not the fence.
+
+**So the fence is the project.** Put the `mcp-` secrets in a **project of their
+own**, separate from the one holding strad's own `strad-<env>-*` secrets
+(`STRAD_TOKENS` among them). Then the project-level bindings below *are* the blast
+radius, unambiguously and without a caveat:
+
+- the viewer SA can list and describe **every secret in that project** — and read
+  the value of **none of them**, ever;
+- the admin SA can do anything **in that project** — and cannot see strad's own
+  secrets at all, because they are somewhere else.
+
+`GCP_SECRETS_NAMESPACES` is still **required**. An unset one would mean the empty
+prefix, so the server refuses to mount rather than defaulting to "everything".
 
 ## Notes, and why they are annotations
 
@@ -163,34 +187,34 @@ at `/gcp-secrets`), which is what every other server in that image is too.
 This is the part a deploy cannot do for you. Run it once, per environment, with an
 operator credential.
 
-```bash
-PROJECT=<the project that will hold the mcp- secrets>
-NUM=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+Use a **dedicated project** for the managed secrets (see above — the project, not
+the name prefix, is the real fence). It must **not** be the project that holds
+strad's own `strad-<env>-*` secrets.
 
+```bash
+PROJECT=strad-secrets-staging      # a project that holds ONLY the mcp- secrets
 gcloud services enable secretmanager.googleapis.com --project "$PROJECT"
 
 # 1. The MCP container's identity: list/describe, and NOTHING that reads a value.
 gcloud iam service-accounts create strad-secrets-viewer \
   --display-name "strad gcp-secrets (MCP, read-only metadata)" --project "$PROJECT"
 
-# 2. The console's identity: full admin, but ONLY on the mcp- namespace.
+# 2. The console's identity: add / rotate / reveal / delete, for a signed-in human.
 gcloud iam service-accounts create strad-secrets-admin \
   --display-name "strad gcp-secrets (console, human writes)" --project "$PROJECT"
 
-# The bindings. BOTH are conditioned on the mcp- prefix, so neither account can
-# touch strad's own strad-<env>-* secrets living in the same project.
+# roles/secretmanager.viewer grants secrets.get/list + versions.get/list, and NOT
+# secretmanager.versions.access. That single omission is the whole security model.
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:strad-secrets-viewer@$PROJECT.iam.gserviceaccount.com" \
-  --role roles/secretmanager.viewer \
-  --condition "title=mcp-namespace-only,expression=resource.name.startsWith('projects/$NUM/secrets/mcp-')"
+  --role roles/secretmanager.viewer
 
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com" \
-  --role roles/secretmanager.admin \
-  --condition "title=mcp-namespace-only,expression=resource.name.startsWith('projects/$NUM/secrets/mcp-')"
+  --role roles/secretmanager.admin
 ```
 
-**Verify the split before trusting it.** The viewer must be refused a value:
+**Verify the split before trusting it.** This is the whole claim; check it.
 
 ```bash
 gcloud secrets create mcp-canary --replication-policy=automatic --project "$PROJECT"
@@ -200,25 +224,27 @@ gcloud iam service-accounts keys create /tmp/viewer.json \
   --iam-account "strad-secrets-viewer@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT"
 gcloud auth activate-service-account --key-file /tmp/viewer.json
 
-gcloud secrets list --project "$PROJECT" --filter="name:mcp-"        # -> mcp-canary   ✅
+gcloud secrets list --project "$PROJECT" --filter="name:mcp-"        # -> mcp-canary   ✅ names
 gcloud secrets versions access latest --secret mcp-canary --project "$PROJECT"
 #   PERMISSION_DENIED: Permission 'secretmanager.versions.access' denied   ✅ THE PROOF
 ```
 
-The viewer role must **not** be paired with any other binding that grants
-`versions.access` (`roles/secretmanager.secretAccessor`, `roles/editor`,
-`roles/owner`). Check with:
+The viewer must hold **no other binding** that grants `versions.access` —
+`roles/secretmanager.secretAccessor`, `roles/editor` and `roles/owner` all do, and
+any one of them silently undoes the entire design:
 
 ```bash
 gcloud projects get-iam-policy "$PROJECT" \
   --flatten="bindings[].members" \
   --filter="bindings.members:strad-secrets-viewer@$PROJECT.iam.gserviceaccount.com" \
   --format="table(bindings.role)"
+# Expect exactly one row: roles/secretmanager.viewer
 ```
 
-Then seed the two key files into Secret Manager as `strad-<env>-GCP_SECRETS_VIEWER_KEY_JSON`,
-`strad-<env>-GCP_SECRETS_ADMIN_KEY_JSON` and `strad-<env>-GCP_SECRETS_PROJECT_ID`,
-which is where `deploy-staging.yml` reads them from.
+Then seed the two key files into the *strad* Secret Manager project as
+`strad-<env>-GCP_SECRETS_VIEWER_KEY_JSON`, `strad-<env>-GCP_SECRETS_ADMIN_KEY_JSON`
+and `strad-<env>-GCP_SECRETS_PROJECT_ID`, which is where `deploy-staging.yml` reads
+them from.
 
 ## Test
 

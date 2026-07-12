@@ -66,6 +66,9 @@ const DEFAULT_API_BASE = "https://secretmanager.googleapis.com";
 /** The annotation that carries a secret's note. See the README on why not a label. */
 export const NOTE_ANNOTATION = "note";
 
+/** How many version-metadata lookups to run at once. See listSecrets(). */
+const VERSION_FANOUT = 10;
+
 export class SecretManagerError extends Error {
   constructor(
     message: string,
@@ -117,23 +120,30 @@ export class SecretManagerReadClient implements SecretsReader {
     // and no payload: it is `versions.get`, a permission the viewer role DOES
     // hold. It answers "does this secret have a value yet, and how old is it" —
     // which is the useful thing an agent can know without knowing the value.
-    await Promise.all(
-      out.map(async (meta) => {
-        try {
-          const latest = (await this.get(
-            `${parent}/secrets/${encodeURIComponent(meta.name)}/versions/latest`,
-          )) as { name?: string; createTime?: string; state?: string };
-          if (latest.name && latest.state === "ENABLED") {
-            meta.latestVersion = latest.name.split("/").pop();
-            meta.latestVersionTime = latest.createTime;
+    //
+    // One request per secret, in bounded batches. An unbounded Promise.all over a
+    // namespace of 500 secrets would open 500 concurrent connections to Secret
+    // Manager in one tool call and earn a 429; a human's secret store is small,
+    // but "small" is not something this code gets to assume.
+    for (let i = 0; i < out.length; i += VERSION_FANOUT) {
+      await Promise.all(
+        out.slice(i, i + VERSION_FANOUT).map(async (meta) => {
+          try {
+            const latest = (await this.get(
+              `${parent}/secrets/${encodeURIComponent(meta.name)}/versions/latest`,
+            )) as { name?: string; createTime?: string; state?: string };
+            if (latest.name && latest.state === "ENABLED") {
+              meta.latestVersion = latest.name.split("/").pop();
+              meta.latestVersionTime = latest.createTime;
+            }
+          } catch (err) {
+            // A secret with no version 404s. That is a state, not a failure.
+            if (err instanceof SecretManagerError && err.status === 404) return;
+            throw err;
           }
-        } catch (err) {
-          // A secret with no version 404s. That is a state, not a failure.
-          if (err instanceof SecretManagerError && err.status === 404) return;
-          throw err;
-        }
-      }),
-    );
+        }),
+      );
+    }
 
     out.sort((a, b) => a.name.localeCompare(b.name));
     return out;

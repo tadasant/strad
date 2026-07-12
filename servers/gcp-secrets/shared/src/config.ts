@@ -13,14 +13,18 @@ export interface GcpSecretsConfig {
    * The secret-name prefixes this server manages, e.g. ["mcp-"].
    *
    * GCP secret ids are flat (`[A-Za-z0-9_-]{1,255}`) — there is no folder — so a
-   * "namespace" is a prefix, and it is the SAME string the IAM condition on the
-   * service account's role binding uses:
+   * "namespace" is a prefix.
    *
-   *   resource.name.startsWith("projects/<num>/secrets/mcp-")
+   * Be precise about what it is worth: this is a CODE-LEVEL guard, not the IAM
+   * boundary. An IAM condition on `resource.name` cannot carry it, because
+   * `secretmanager.secrets.list` is checked against the PARENT PROJECT, whose
+   * name never starts with ".../secrets/mcp-" — a conditional binding would deny
+   * the listing outright. The IAM boundary is the PROJECT: point this server at a
+   * project that holds only these secrets. See the README.
    *
-   * Keeping the two in lockstep is the point. The server can only ever LIST what
-   * its credential can see; configuring a namespace it has no binding for yields
-   * an empty list, not an escalation.
+   * What the prefix DOES buy: the server will not list, and the console will not
+   * write, outside it — so a second tenant's secrets in the same project stay out
+   * of this server's answers.
    */
   namespaces: string[];
   account: ServiceAccount | null;

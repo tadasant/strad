@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -6,6 +7,7 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 import {
+  createSecretsAdmin,
   validateNote,
   validateSecretName,
   type SecretMeta,
@@ -382,6 +384,120 @@ describe("the secrets console, end to end", () => {
     const re = new RegExp(`^${pattern}$`, "v");
     expect(re.test("mcp-openai_key-1")).toBe(true);
     expect(re.test("mcp bad")).toBe(false);
+  });
+
+  it("rotate/note/delete refuse a malformed name, not just an unmanaged one", async () => {
+    resetStore();
+    // In the managed namespace, but not a legal Secret Manager id. Before this
+    // check only `create` validated the charset; the other four actions handed
+    // the name to Google and surfaced whatever it said.
+    const res = await post("/ui/gcp-secrets/rotate", {
+      name: "mcp-x/versions/1",
+      value: "v",
+    });
+    expect(await res.text()).toContain("not a valid Secret Manager name");
+    expect(store.size).toBe(1);
+  });
+
+  it("the REAL client rolls back the empty secret when addVersion fails", async () => {
+    // Drives createSecretsAdmin itself over a stub fetch, so the rollback is
+    // asserted on the code that ships, not on a test double of it.
+    const calls: string[] = [];
+    const stubFetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/token")) {
+        return new Response(
+          JSON.stringify({ access_token: "t", expires_in: 3600 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      calls.push(`${method} ${url.replace(/^http:\/\/sm/, "")}`);
+      if (url.includes(":addVersion")) {
+        return new Response(JSON.stringify({ error: { code: 503 } }), {
+          status: 503,
+        });
+      }
+      return new Response(
+        JSON.stringify({ name: "projects/p/secrets/mcp-x" }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    const admin = createSecretsAdmin(
+      {
+        projectId: "p",
+        // A REAL key: the client signs a JWT, so a placeholder PEM would fail in
+        // the signer before it ever reached the rollback path under test.
+        account: {
+          client_email: "admin@demo.iam.gserviceaccount.com",
+          private_key: generateKeyPairSync("rsa", { modulusLength: 2048 })
+            .privateKey.export({ type: "pkcs8", format: "pem" })
+            .toString(),
+        },
+        apiBase: "http://sm",
+        tokenUrl: "http://sm/token",
+      },
+      stubFetch,
+    );
+
+    await expect(admin.create({ name: "mcp-x", value: "v" })).rejects.toThrow(
+      /503/,
+    );
+
+    expect(calls).toEqual([
+      "POST /v1/projects/p/secrets?secretId=mcp-x",
+      "POST /v1/projects/p/secrets/mcp-x:addVersion",
+      "DELETE /v1/projects/p/secrets/mcp-x", // <- the rollback
+    ]);
+  });
+
+  it("CREATE rolls back the empty secret when its first version fails", async () => {
+    resetStore();
+    // The real client is two calls (create, then addVersion). A failure between
+    // them used to leave a valueless secret behind — so the user's retry hit
+    // "already exists" and they were stuck.
+    const failing: SecretsAdmin = {
+      ...fakeAdmin,
+      async create({ name }) {
+        store.set(name, { versions: [], createTime: "2026-07-12T00:00:00Z" });
+        store.delete(name); // the rollback the real client performs
+        throw new Error("addVersion failed: 503");
+      },
+    };
+    const app = createApp({
+      config: CONFIG,
+      registry: await Registry.build({
+        config: CONFIG,
+        secrets: SECRETS,
+        mode: "core",
+        env,
+      }),
+      tokenStore: tokenStoreFromConfig(CONFIG, env),
+      mode: "core",
+      env,
+      secrets: SECRETS,
+      secretsAdmin: () => failing,
+    });
+    const s2 = app.listen(0);
+    const addr = s2.address() as { port: number };
+    const res = await fetch(
+      `http://127.0.0.1:${addr.port}/ui/gcp-secrets/create`,
+      {
+        method: "POST",
+        headers: {
+          ...auth,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ name: "mcp-doomed", value: "v" }),
+      },
+    );
+    expect(await res.text()).toContain("addVersion failed");
+    expect(store.has("mcp-doomed")).toBe(false); // no orphan left behind
+    s2.close();
   });
 
   it("a bad name is a form error, not a 500 and not a write", async () => {

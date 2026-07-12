@@ -74,6 +74,9 @@ export const NOTE_ANNOTATION = "note";
  */
 export const MAX_NOTE_BYTES = 4096;
 
+/** How many version-metadata lookups to run at once. See list(). */
+const VERSION_FANOUT = 10;
+
 const SCOPE = "https://www.googleapis.com/auth/cloud-platform";
 const DEFAULT_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_API_BASE = "https://secretmanager.googleapis.com";
@@ -186,28 +189,32 @@ export function createSecretsAdmin(
       // payload comes back, and it is a permission the read-only MCP service
       // account holds too. A secret with no version yet 404s; that is a state,
       // not an error.
-      await Promise.all(
-        out.map(async (meta) => {
-          try {
-            const latest = (await call(
-              "GET",
-              `${parent}/secrets/${encodeURIComponent(meta.name)}/versions/latest`,
-            )) as { name?: string; createTime?: string; state?: string };
-            if (latest.name && latest.state === "ENABLED") {
-              meta.latestVersion = latest.name.split("/").pop();
-              meta.latestVersionTime = latest.createTime;
+      // Bounded fan-out: a namespace of 500 secrets must not open 500 concurrent
+      // connections to Secret Manager to render one page.
+      for (let i = 0; i < out.length; i += VERSION_FANOUT) {
+        await Promise.all(
+          out.slice(i, i + VERSION_FANOUT).map(async (meta) => {
+            try {
+              const latest = (await call(
+                "GET",
+                `${parent}/secrets/${encodeURIComponent(meta.name)}/versions/latest`,
+              )) as { name?: string; createTime?: string; state?: string };
+              if (latest.name && latest.state === "ENABLED") {
+                meta.latestVersion = latest.name.split("/").pop();
+                meta.latestVersionTime = latest.createTime;
+              }
+            } catch (err) {
+              if (
+                err instanceof SecretManagerError &&
+                (err.status === 404 || err.status === 403)
+              ) {
+                return; // no version yet, or not visible — render it as "no value"
+              }
+              throw err;
             }
-          } catch (err) {
-            if (
-              err instanceof SecretManagerError &&
-              (err.status === 404 || err.status === 403)
-            ) {
-              return; // no version yet, or not visible — render it as "no value"
-            }
-            throw err;
-          }
-        }),
-      );
+          }),
+        );
+      }
 
       out.sort((a, b) => a.name.localeCompare(b.name));
       return out;
@@ -227,7 +234,26 @@ export function createSecretsAdmin(
         },
       )) as RawSecret;
 
-      await this.addVersion(name, value);
+      // "Create a secret" is TWO API calls — the secret, then its first version —
+      // and a failure between them leaves a valueless secret behind. That is not
+      // merely untidy: the user sees an error, believes nothing happened, retries,
+      // and gets "That secret already exists." Roll the empty secret back so the
+      // retry works. Best-effort: if the rollback itself fails, the ORIGINAL error
+      // is still what we throw, because that is the one that explains the failure.
+      try {
+        await call(
+          "POST",
+          `${parent}/secrets/${encodeURIComponent(name)}:addVersion`,
+          { payload: { data: Buffer.from(value, "utf8").toString("base64") } },
+        );
+      } catch (err) {
+        await call(
+          "DELETE",
+          `${parent}/secrets/${encodeURIComponent(name)}`,
+        ).catch(() => {});
+        throw err;
+      }
+
       return toMeta(created) ?? { name, note, labels: {} };
     },
 
@@ -376,6 +402,13 @@ export function validateSecretName(
   if (!name) return "A name is required.";
   if (!name.startsWith(namespace)) {
     return `The name must start with the managed namespace "${namespace}".`;
+  }
+  // The prefix alone is not a name. Without this, submitting the pre-filled
+  // field unchanged creates a secret literally called "mcp-" — a
+  // namespace-shaped secret that sorts first in every listing and reads like a
+  // folder rather than a credential.
+  if (name === namespace) {
+    return `The name needs something after the "${namespace}" namespace.`;
   }
   if (name.length > 255) return "A name may be at most 255 characters.";
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {

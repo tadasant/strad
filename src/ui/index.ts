@@ -423,33 +423,66 @@ async function renderSecretsPage(
     );
 }
 
+/**
+ * The admin client, MEMOISED per (server, service account).
+ *
+ * It must not be rebuilt per request. The client caches its OAuth access token
+ * for an hour (minting one costs an RSA signature and a round trip to Google),
+ * and a fresh instance per call throws that cache away — which is exactly what
+ * happened before this cache existed: every mutating request built one client in
+ * handleSecretAction and a second in renderSecretsPage, so a single "save note"
+ * cost two JWT signings and two token exchanges.
+ *
+ * createGcsLister() is constructed once in mountConsoleUi for the same reason;
+ * this is the secrets equivalent, keyed because the credential can differ per
+ * server slug (and must be re-keyed if it is ever rotated under us).
+ */
+const adminCache = new Map<string, SecretsAdmin>();
+
 function adminFor(
   view: Extract<ServerView, { kind: "secrets" }>,
   opts: ConsoleUiOptions,
 ): SecretsAdmin | null {
   if (opts.secretsAdmin) return opts.secretsAdmin(view);
   if (!view.account) return null;
-  return createSecretsAdmin({
+
+  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
+  const cached = adminCache.get(key);
+  if (cached) return cached;
+
+  const admin = createSecretsAdmin({
     projectId: view.projectId,
     account: view.account,
     apiBase: view.apiBase,
     tokenUrl: view.tokenUrl,
   });
+  adminCache.set(key, admin);
+  return admin;
 }
 
 /**
- * The console may only act on a secret inside a managed namespace.
+ * The console may only act on a WELL-FORMED name inside a managed namespace.
  *
- * The service account's IAM condition already scopes it to the same prefix, so
- * this is the second lock, not the only one — but it turns "Google says 403" into
+ * The service account's project scope already bounds what it can touch, so this
+ * is the second lock, not the only one — but it turns "Google says 403/404" into
  * a sentence a human can act on, and it keeps a hand-crafted form POST from
- * naming `strad-staging-STRAD_TOKENS` and getting a confusing error.
+ * naming `strad-staging-STRAD_TOKENS`, or a path-shaped `mcp-x/versions/1`, and
+ * getting an opaque Secret Manager error back.
+ *
+ * It runs on rotate / note / reveal / delete. `create` runs the same charset
+ * check through validateSecretName, which additionally reports WHICH rule was
+ * broken so the form can say so.
  */
 function assertManaged(name: string, namespaces: string[]): void {
   if (!name) throw new Error("A secret name is required.");
   if (!namespaces.some((ns) => name.startsWith(ns))) {
     throw new Error(
       `"${name}" is outside this server's managed namespace (${namespaces.join(", ")}).`,
+    );
+  }
+  if (!/^[A-Za-z0-9_-]{1,255}$/.test(name)) {
+    throw new Error(
+      `"${name}" is not a valid Secret Manager name (letters, digits, underscores and dashes only).`,
     );
   }
 }

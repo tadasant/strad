@@ -275,12 +275,11 @@ servers:
   #   consoleEnv:  GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  -> CORE, only
   #
   # `env:` lands on the container that answers /mcp. It gets a service account
-  # holding roles/secretmanager.viewer, conditioned on the `mcp-` name prefix:
-  # secrets.list, secrets.get, versions.list, versions.get — and NOT
-  # secretmanager.versions.access. So the MCP path can see that a secret exists
-  # and what a human noted on it, and Google will refuse it the value. Not
-  # "strad declines to expose it" — the credential cannot fetch it. A prompt
-  # injection that talks a tool into reading a secret gets a 403.
+  # holding roles/secretmanager.viewer: secrets.list, secrets.get, versions.list,
+  # versions.get — and NOT secretmanager.versions.access. So the MCP path can see
+  # that a secret exists and what a human noted on it, and Google will refuse it
+  # the value. Not "strad declines to expose it" — the credential cannot fetch it.
+  # A prompt injection that talks a tool into reading a secret gets a 403.
   #
   # `consoleEnv:` lands on the CORE component and nowhere else (appspec.ts is
   # explicit about it; a broadcast SECRET would have reached the bundle too). It
@@ -288,11 +287,20 @@ servers:
   # and which is only ever driven by a human clicking a button on /ui/gcp-secrets,
   # behind the console SSO gate. There is no code path from /mcp to it.
   #
-  # NAMESPACE. `mcp-` is not decoration: it is the same prefix the IAM condition
-  # on both role bindings uses (resource.name.startsWith(".../secrets/mcp-")). It
-  # is what keeps this server away from strad's OWN secrets, which live in the
-  # same Secret Manager under `strad-staging-` — including STRAD_TOKENS. Neither
-  # service account has any binding that reaches those.
+  # NAMESPACE, AND WHERE THE FENCE ACTUALLY IS. `mcp-` is a code-level guard: the
+  # server refuses to list an unmanaged namespace and the console refuses to write
+  # outside one. It is NOT the IAM boundary, and pretending otherwise would be the
+  # dangerous kind of wrong — an IAM condition on resource.name cannot carry it,
+  # because `secrets.list` and `secrets.create` are checked against the PARENT
+  # PROJECT, whose name never starts with ".../secrets/mcp-".
+  #
+  # The IAM boundary is THE PROJECT. GCP_SECRETS_PROJECT_ID must name a project
+  # that holds ONLY these mcp- secrets — NOT the project holding strad's own
+  # strad-staging-* secrets (STRAD_TOKENS among them). Then the two bindings below
+  # are exactly the blast radius: the viewer can describe everything in that
+  # project and read the value of nothing; the admin can do anything in that
+  # project and cannot see strad's own secrets at all, because they are elsewhere.
+  # See servers/gcp-secrets/README.md.
   #
   # NOTE. Every secret can carry a free-form note, stored as the `note` ANNOTATION
   # on the Secret resource (annotations are arbitrary metadata, < 16 KiB total;
