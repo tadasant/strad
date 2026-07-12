@@ -31,7 +31,9 @@ servers:
     entitlements: [admin]
 `;
 
-function render(args: string[]): { domains?: { domain: string; type?: string }[] } {
+function render(args: string[]): {
+  domains?: { domain: string; type?: string }[];
+} {
   const dir = mkdtempSync(join(tmpdir(), "strad-domains-"));
   const cfg = join(dir, "cfg.yaml");
   writeFileSync(cfg, CONFIG);

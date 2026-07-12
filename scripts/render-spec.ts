@@ -143,7 +143,10 @@ for (const key of ["ALLOW_DEV_AUTH", "ALLOW_DEV_AUTH_IN_PRODUCTION"]) {
 // pass --domain. Default it from the config's own gateway.publicUrl — the host
 // this deployment already declares it is served at — and let --domain override.
 function resolveDomains() {
-  const flagged = values.domain?.map((d) => ({ domain: d, type: "PRIMARY" as const }));
+  const flagged = values.domain?.map((d) => ({
+    domain: d,
+    type: "PRIMARY" as const,
+  }));
   if (flagged?.length) return flagged;
 
   let host: string | undefined;
