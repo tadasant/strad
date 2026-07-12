@@ -95,6 +95,11 @@ Secret Manager. After that, never hand-deploy again.
 
 ## 4. Staging currently runs a DOCR image; target is ghcr
 
+**✅ RESOLVED (Phase 2).** Staging now deploys **ghcr** images via the CI deploy
+path (`infra/strad.staging.yaml` references `ghcr.io/tadasant/…`). The DOCR
+`strad` registry itself is still provisioned and still costs ~$5/mo — deleting
+it is tracked in issue #8.
+
 **What.** The live staging app pulls `registry.digitalocean.com/strad/strad:0.1.0`
 from a DigitalOcean Container Registry named `strad`, not from ghcr.
 
@@ -339,7 +344,13 @@ all — it is a pinned binary baked into the image (see `servers/onepassword/Doc
 Longer term, have upstream publish `@pulsemcp/mcp-elicitation` and `shared` as
 real packages and depend on them.
 
-## 14. fetchpet + pointsyeah are stacked on the good-eggs branch, and disabled in staging
+## 19. fetchpet + pointsyeah were stacked on the good-eggs branch
+
+**✅ RESOLVED (Phase 2).** The branch stacking was linearized onto `main`, and
+both servers are now **enabled with real credentials** in staging and prod —
+proven with live tool calls (fetchpet: 15 real claims; pointsyeah: real search
+history, refresh token not stale). Kept here only as a record of the original
+bootstrap.
 
 **What.** The fetchpet + pointsyeah browser servers were added on top of
 `feat/good-eggs-supplementary`, and the PR targets **that branch**, not `main`.
@@ -428,7 +439,7 @@ push.
 `feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
 it is the standing check for `servers/good-eggs`.
 
-## 16. The human /ui console "session" is the bootstrap token in a cookie
+## 20. The human /ui console "session" is the bootstrap token in a cookie
 
 **What.** The human resource browser at `/ui` (and `/ui/:server`) is gated by the
 same console SSO as `/console` (see hack #2). Because a browser navigates between
@@ -456,7 +467,12 @@ of the dev bypass.
 
 ---
 
-## 17. Real per-server GCS creds for /ui/gcs are seeded in a later phase
+## 21. Real per-server GCS creds for /ui/gcs are seeded in a later phase
+
+**✅ RESOLVED (Phase 2).** That later phase happened. `gcs` is `enabled: true`,
+scoped to `GCS_BUCKET: pulse_public`, with its service-account key seeded into
+GCP Secret Manager for staging and prod. `/ui/gcs` browses a real bucket behind
+the SSO gate (401 unauthenticated on both envs, verified).
 
 **What.** The `gcs` server is registered in `infra/strad.staging.yaml` (its own
 `bundle-gcs` bundle) with `enabled: false` and its bucket/credentials as
