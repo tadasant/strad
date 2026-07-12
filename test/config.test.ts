@@ -42,7 +42,7 @@ servers:
     ).toThrow(/duplicate server slug: a/);
   });
 
-  it("rejects two container images in one bundle — a component runs one image", () => {
+  it("rejects two DISTINCT container images in one bundle — a component runs one image", () => {
     expect(() =>
       parseConfig(`${BASE}
 bundles:
@@ -71,6 +71,31 @@ servers:
   it("rejects a supplementary image sharing a bundle with a builtin", () => {
     // A supplementary image owns its component; a builtin needs the strad image,
     // and one component runs one image.
+  it("accepts several servers sharing ONE image on distinct paths (bundle-google)", () => {
+    const cfg = parseConfig(`${BASE}
+bundles:
+  - name: bundle-google
+servers:
+  - { slug: gmail, kind: supplementary-image, image: "ghcr.io/tadasant/strad-server-bundle-google:latest", bundle: bundle-google, path: /gmail, entitlements: [admin] }
+  - { slug: gcal, kind: supplementary-image, image: "ghcr.io/tadasant/strad-server-bundle-google:latest", bundle: bundle-google, path: /google-calendar, entitlements: [admin] }
+  - { slug: gdocs, kind: supplementary-image, image: "ghcr.io/tadasant/strad-server-bundle-google:latest", bundle: bundle-google, path: /google-docs, entitlements: [admin] }
+`);
+    expect(cfg.servers.map((s) => s.slug)).toEqual(["gmail", "gcal", "gdocs"]);
+  });
+
+  it("rejects two servers of one image on the SAME path — the gateway can't tell them apart", () => {
+    expect(() =>
+      parseConfig(`${BASE}
+bundles:
+  - name: bundle-google
+servers:
+  - { slug: gmail, kind: supplementary-image, image: "ghcr.io/o/g:1", bundle: bundle-google, path: /mcp, entitlements: [admin] }
+  - { slug: gcal, kind: supplementary-image, image: "ghcr.io/o/g:1", bundle: bundle-google, path: /mcp, entitlements: [admin] }
+`),
+    ).toThrow(/distinct path/);
+  });
+
+  it("rejects mixing a supplementary image with a builtin in one bundle", () => {
     expect(() =>
       parseConfig(`${BASE}
 bundles:
@@ -206,6 +231,14 @@ servers:
   - { slug: slack, kind: supplementary-image, image: "ghcr.io/tadasant/strad-bundle-api:latest", bundle: bundle-api, path: /slack, entitlements: [admin], env: { SLACK_BOT_TOKEN: "\${SLACK_BOT_TOKEN}" } }
   - { slug: tailscale, kind: supplementary-image, image: "ghcr.io/tadasant/strad-bundle-api:latest", bundle: bundle-api, path: /tailscale, entitlements: [admin], env: { TAILSCALE_API_KEY: "\${TAILSCALE_API_KEY}" } }
   - { slug: google-flights, kind: supplementary-image, image: "ghcr.io/tadasant/strad-bundle-api:latest", bundle: bundle-api, path: /google-flights, entitlements: [admin] }
+describe("renderAppSpec — one image, several servers (bundle-google)", () => {
+  const cfg = parseConfig(`${BASE}
+bundles:
+  - { name: bundle-google, instanceSizeSlug: apps-s-1vcpu-1gb }
+servers:
+  - { slug: gmail, kind: supplementary-image, image: "ghcr.io/tadasant/strad-server-bundle-google:latest", bundle: bundle-google, path: /gmail, entitlements: [admin], env: { GMAIL_IMPERSONATE_EMAIL: "\${GMAIL_IMPERSONATE_EMAIL}" } }
+  - { slug: gcal, kind: supplementary-image, image: "ghcr.io/tadasant/strad-server-bundle-google:latest", bundle: bundle-google, path: /google-calendar, entitlements: [admin], env: { GCAL_IMPERSONATE_EMAIL: "\${GCAL_IMPERSONATE_EMAIL}" } }
+  - { slug: gdocs, kind: supplementary-image, image: "ghcr.io/tadasant/strad-server-bundle-google:latest", bundle: bundle-google, path: /google-docs, entitlements: [admin], env: { GOOGLE_DOCS_IMPERSONATE_EMAIL: "\${GOOGLE_DOCS_IMPERSONATE_EMAIL}" } }
 `);
 
   const spec = renderAppSpec({
@@ -261,6 +294,28 @@ servers:
     const core = spec.services.find((s) => s.name === "core")!;
     const envs = Object.fromEntries(core.envs.map((e) => [e.key, e.value]));
     expect(envs.STRAD_BUNDLE_URL_BUNDLE_API).toBe("${bundle-api.PRIVATE_URL}");
+  });
+
+  it("collapses the three servers into ONE internal component", () => {
+    expect(spec.services.map((s) => s.name).sort()).toEqual([
+      "bundle-google",
+      "core",
+    ]);
+    const b = spec.services.find((s) => s.name === "bundle-google")!;
+    expect(b.http_port).toBeUndefined();
+    expect(b.internal_ports).toEqual([8080]);
+    expect(b.image.repository).toBe("strad-server-bundle-google");
+  });
+
+  it("unions the env of every server sharing the image", () => {
+    const b = spec.services.find((s) => s.name === "bundle-google")!;
+    const envs = Object.fromEntries(b.envs.map((e) => [e.key, e.value]));
+    // All three servers' env vars land on the single component.
+    expect(envs.GMAIL_IMPERSONATE_EMAIL).toBe("${GMAIL_IMPERSONATE_EMAIL}");
+    expect(envs.GCAL_IMPERSONATE_EMAIL).toBe("${GCAL_IMPERSONATE_EMAIL}");
+    expect(envs.GOOGLE_DOCS_IMPERSONATE_EMAIL).toBe(
+      "${GOOGLE_DOCS_IMPERSONATE_EMAIL}",
+    );
   });
 });
 

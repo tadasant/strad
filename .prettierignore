@@ -3,3 +3,6 @@ node_modules
 package-lock.json
 # Vendored supplementary MCP servers keep their upstream formatting.
 servers
+# Supplementary-image sources (bundle-google, …) are self-contained projects
+# with their own formatting; they are not part of the core format check.
+images

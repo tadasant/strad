@@ -1,0 +1,35 @@
+{
+  "name": "strad-server-bundle-google",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad supplementary image: gmail, google-calendar and google-docs MCP servers served over Streamable HTTP from one container.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "vendor/mcp-elicitation",
+    "vendor/gmail-shared",
+    "vendor/google-calendar-shared",
+    "vendor/google-docs-shared"
+  ],
+  "scripts": {
+    "build:deps": "npm run build -w @pulsemcp/mcp-elicitation -w gmail-workspace-mcp-server-shared -w google-calendar-workspace-mcp-server-shared -w google-docs-workspace-mcp-server-shared",
+    "build": "npm run build:deps && tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^4.21.2",
+    "gmail-workspace-mcp-server-shared": "*",
+    "google-calendar-workspace-mcp-server-shared": "*",
+    "google-docs-workspace-mcp-server-shared": "*"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3"
+  }
+}

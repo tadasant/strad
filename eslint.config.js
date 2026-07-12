@@ -3,10 +3,11 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  // servers/** are vendored, self-contained supplementary MCP servers with
-  // their own toolchains (see servers/*). They are built and linted in
-  // their own image build, not by the core's TS program.
-  { ignores: ["dist/**", "node_modules/**", "servers/**"] },
+  // servers/** and images/** are vendored, self-contained supplementary MCP
+  // servers with their own toolchains (servers/* and images/bundle-google).
+  // They are built and linted in their own image builds, not by the core's TS
+  // program.
+  { ignores: ["dist/**", "node_modules/**", "servers/**", "images/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
