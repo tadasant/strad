@@ -1,6 +1,7 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
 import type { ServerView } from "./resolve.ts";
+import type { SecretMeta } from "./secretmanager-client.ts";
 
 /**
  * Server-rendered HTML for the human resource browser.
@@ -65,7 +66,7 @@ ${opts.body}
 <footer class="foot">
   <span>strad · human console</span>
   <span class="foot-sep">·</span>
-  <span>SSO-gated · read-only</span>
+  <span>SSO-gated · humans only</span>
 </footer>
 </body>
 </html>`;
@@ -96,13 +97,19 @@ ${cards || `<p class="empty">No servers are configured on this gateway.</p>`}
 
 function serverCard(server: ServerConfig): string {
   const hasGcs = serverLooksGcs(server);
+  const hasSecrets = serverLooksSecrets(server);
+  const hasView = hasGcs || hasSecrets;
   const kindLabel = server.kind;
   const title = server.title ?? server.slug;
   const desc =
     server.description ??
-    (hasGcs
-      ? "Browse the object store this server is scoped to."
-      : "No browser view for this server kind yet.");
+    (hasSecrets
+      ? "Add, rotate, reveal and delete the secret values this server can only see the names of."
+      : hasGcs
+        ? "Browse the object store this server is scoped to."
+        : "No browser view for this server kind yet.");
+
+  const cta = hasSecrets ? "Manage →" : "Browse →";
 
   const inner = `
     <div class="card-head">
@@ -113,10 +120,10 @@ function serverCard(server: ServerConfig): string {
     <p class="card-desc">${esc(desc)}</p>
     <div class="card-foot">
       <code>${esc(server.slug)}</code>
-      ${hasGcs ? `<span class="card-cta">Browse →</span>` : `<span class="card-muted">No view</span>`}
+      ${hasView ? `<span class="card-cta">${cta}</span>` : `<span class="card-muted">No view</span>`}
     </div>`;
 
-  return hasGcs
+  return hasView
     ? `<a class="card card-link" href="/ui/${encodeURIComponent(server.slug)}">${inner}</a>`
     : `<div class="card">${inner}</div>`;
 }
@@ -247,6 +254,155 @@ function breadcrumb(
 }
 
 // ---------------------------------------------------------------------------
+// The secrets view — the human half of the gcp-secrets server.
+// ---------------------------------------------------------------------------
+
+export interface SecretsViewOptions {
+  view: Extract<ServerView, { kind: "secrets" }>;
+  secrets: SecretMeta[];
+  signedInAs?: string;
+  /** A one-shot banner after an action ("created mcp-foo"). */
+  flash?: { tone: "ok" | "error"; message: string };
+  /**
+   * A revealed value, shown ONCE, in response to an explicit click.
+   *
+   * It is rendered into the page and nowhere else: never logged, never in a
+   * URL (the reveal is a POST, so it cannot be bookmarked or land in a proxy
+   * log), never in telemetry. Reloading the page loses it, which is correct.
+   */
+  revealed?: { name: string; value: string };
+}
+
+export function renderSecrets(opts: SecretsViewOptions): string {
+  const { view, secrets } = opts;
+  const slug = view.server.slug;
+  const action = `/ui/${encodeURIComponent(slug)}`;
+  const defaultNs = view.namespaces[0] ?? "";
+
+  const rows = secrets
+    .map((s) => {
+      const has = s.latestVersion != null;
+      return `
+      <div class="row secret-row">
+        <span class="row-icon">${KEY_SVG}</span>
+        <span class="row-name" title="${esc(s.name)}">${esc(s.name)}</span>
+        <span class="row-note">${s.note ? esc(s.note) : `<span class="row-nonote">no note</span>`}</span>
+        <span class="row-ver">${
+          has
+            ? `<span class="chip chip-ok">v${esc(s.latestVersion ?? "")}</span>`
+            : `<span class="chip chip-off">no value</span>`
+        }</span>
+        <span class="row-time">${s.latestVersionTime ? esc(formatTime(s.latestVersionTime)) : s.createTime ? esc(formatTime(s.createTime)) : "—"}</span>
+        <span class="row-actions">
+          <form method="post" action="${action}/reveal" class="inline">
+            <input type="hidden" name="name" value="${esc(s.name)}" />
+            <button class="btn btn-ghost" ${has ? "" : "disabled"}>Reveal</button>
+          </form>
+          <form method="post" action="${action}/rotate" class="inline rotate-form">
+            <input type="hidden" name="name" value="${esc(s.name)}" />
+            <input class="in in-sm" type="password" name="value" placeholder="new value" autocomplete="off" required />
+            <button class="btn btn-ghost">Rotate</button>
+          </form>
+          <form method="post" action="${action}/note" class="inline">
+            <input type="hidden" name="name" value="${esc(s.name)}" />
+            <input class="in in-sm" type="text" name="note" placeholder="note…" value="${esc(s.note ?? "")}" maxlength="512" />
+            <button class="btn btn-ghost">Save note</button>
+          </form>
+          <form method="post" action="${action}/delete" class="inline"
+                onsubmit="return confirm('Delete ${esc(s.name)} and every version of it? This cannot be undone.')">
+            <input type="hidden" name="name" value="${esc(s.name)}" />
+            <button class="btn btn-danger">Delete</button>
+          </form>
+        </span>
+      </div>`;
+    })
+    .join("\n");
+
+  const listing = secrets.length
+    ? `<div class="listing">
+         <div class="group-label objects-label">
+           <span>Secrets · ${secrets.length}</span>
+           <span class="col-labels"><span>note</span><span>version</span><span>updated</span><span>actions</span></span>
+         </div>
+         ${rows}
+       </div>`
+    : `<div class="state">
+         <div class="state-icon">${KEY_SVG}</div>
+         <p class="state-title">No secrets in this namespace yet</p>
+         <p class="state-sub">Add one below. Agents will be able to see its name and note — never its value.</p>
+       </div>`;
+
+  const reveal = opts.revealed
+    ? `<section class="reveal">
+         <div class="reveal-head">
+           <span class="reveal-title">${esc(opts.revealed.name)}</span>
+           <span class="reveal-warn">shown once · not logged · reload to clear</span>
+         </div>
+         <pre class="reveal-value">${esc(opts.revealed.value)}</pre>
+       </section>`
+    : "";
+
+  const flash = opts.flash
+    ? `<div class="flash flash-${opts.flash.tone}">${esc(opts.flash.message)}</div>`
+    : "";
+
+  const body = `
+<nav class="breadcrumb"><a href="/ui" class="crumb">resource browser</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+
+<section class="browse-head">
+  <div class="stat"><span class="stat-n">${secrets.length}</span><span class="stat-l">secrets</span></div>
+  <div class="stat"><span class="stat-n">${secrets.filter((s) => s.latestVersion != null).length}</span><span class="stat-l">with a value</span></div>
+  <div class="scope">
+    <span class="scope-l">project</span><code>${esc(view.projectId)}</code>
+    <span class="scope-l">namespace</span><code>${esc(view.namespaces.join(", "))}</code>
+  </div>
+</section>
+
+<p class="posture">
+  <strong>Values live here and only here.</strong> The <code>${esc(slug)}</code> MCP server
+  runs as a service account with <code>roles/secretmanager.viewer</code> — it can list names,
+  notes and versions, and it holds no <code>secretmanager.versions.access</code>, so no tool,
+  bug or prompt injection can pull a value through <code>/mcp</code>. Adding, rotating,
+  revealing and deleting happen on this page, as a human, behind SSO.
+</p>
+
+${flash}
+${reveal}
+${listing}
+
+<section class="addbox">
+  <h2 class="addbox-title">Add a secret</h2>
+  <form method="post" action="${action}/create" class="addform">
+    <label class="field">
+      <span class="field-l">Name</span>
+      <input class="in" type="text" name="name" value="${esc(defaultNs)}" required
+             pattern="[A-Za-z0-9_\\-]+" placeholder="${esc(defaultNs)}my-api-key" />
+      <span class="field-h">Must start with <code>${esc(defaultNs)}</code>. Letters, digits, <code>_</code> and <code>-</code>.</span>
+    </label>
+    <label class="field">
+      <span class="field-l">Note <span class="field-opt">optional</span></span>
+      <input class="in" type="text" name="note" maxlength="512"
+             placeholder="What is this for? Who issued it? When should it rotate?" />
+      <span class="field-h">Stored as the <code>note</code> annotation on the secret. Agents CAN read this.</span>
+    </label>
+    <label class="field">
+      <span class="field-l">Value</span>
+      <input class="in" type="password" name="value" required autocomplete="off" />
+      <span class="field-h">Agents can never read this. It goes straight to Secret Manager.</span>
+    </label>
+    <button class="btn btn-primary">Create secret</button>
+  </form>
+</section>`;
+
+  return layout({
+    title: `${slug} · secrets`,
+    serverSlug: slug,
+    signedInAs: opts.signedInAs,
+    body,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // States: no viewer, credentials missing, error, not found.
 // ---------------------------------------------------------------------------
 
@@ -293,6 +449,17 @@ export function renderSignIn(reason: string): string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** The gcp-secrets detector: it declares a Secret Manager project. */
+export function serverLooksSecrets(server: ServerConfig): boolean {
+  const env =
+    server.kind === "supplementary-image"
+      ? { ...server.env, ...server.consoleEnv }
+      : server.kind === "builtin"
+        ? server.options
+        : {};
+  return Object.keys(env).includes("GCP_SECRETS_PROJECT_ID");
+}
 
 export function serverLooksGcs(server: ServerConfig): boolean {
   const env =
@@ -373,6 +540,8 @@ const FOLDER_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" 
 const FILE_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 3.5h7L18.5 9v11a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V5A1.5 1.5 0 0 1 6 3.5Z" stroke="currentColor" stroke-width="1.5"/><path d="M13 3.5V9h5.5" stroke="currentColor" stroke-width="1.5"/></svg>`;
 
 const LOCK_SVG = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="9.5" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5" stroke="currentColor" stroke-width="1.5"/></svg>`;
+
+const KEY_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M12 12h8M17.5 12v3M20 12v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
 const INFO_SVG = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v5M12 8h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 
@@ -492,6 +661,47 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .state-error .state-icon{color:#e5706e}
 .signin code{font-size:.8em}
 .empty{color:var(--g3)}
+
+/* Secrets view — the only WRITE surface in the console. */
+.posture{margin:0 0 1.2rem;padding:.75rem 1rem;border:1px solid var(--g5);border-left:3px solid var(--accent);
+  border-radius:.4rem;background:var(--g7);color:var(--g2);font-size:.85rem;line-height:1.5}
+.posture strong{color:var(--white)}
+.secret-row{gap:.6rem;flex-wrap:wrap}
+.secret-row .row-name{flex:0 0 15rem;color:var(--white);font-weight:500}
+.row-note{flex:1;min-width:8rem;color:var(--g2);font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-nonote{color:var(--g4);font-style:italic}
+.row-ver{flex:none;width:5.5rem;text-align:right}
+.row-actions{display:flex;align-items:center;gap:.35rem;flex:none;flex-wrap:wrap}
+.chip-ok{color:var(--text-accent);border-color:var(--accent)}
+form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
+.btn{font:inherit;font-size:.76rem;padding:.32rem .6rem;border-radius:.35rem;cursor:pointer;
+  border:1px solid var(--g5);background:var(--g6);color:var(--g1);white-space:nowrap}
+.btn:hover:not(:disabled){border-color:var(--accent);color:var(--white)}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-size:.85rem;padding:.5rem 1rem;font-weight:600}
+.btn-primary:hover{background:var(--accent-high);color:#fff}
+.btn-danger:hover{border-color:#e5706e;color:#e5706e}
+.in{font:inherit;font-size:.85rem;padding:.45rem .6rem;border-radius:.35rem;border:1px solid var(--g5);
+  background:var(--bg);color:var(--white);width:100%;font-family:var(--font-mono)}
+.in:focus{outline:none;border-color:var(--accent)}
+.in-sm{font-size:.74rem;padding:.28rem .4rem;width:8.5rem}
+.addbox{margin-top:1.5rem;border:1px solid var(--g5);border-radius:.6rem;background:var(--g7);padding:1.2rem 1.4rem}
+.addbox-title{margin:0 0 .9rem;font-size:1rem;color:var(--white)}
+.addform{display:flex;flex-direction:column;gap:.9rem;max-width:34rem}
+.field{display:flex;flex-direction:column;gap:.3rem}
+.field-l{font-size:.78rem;color:var(--g2);font-weight:600}
+.field-opt{color:var(--g4);font-weight:400;text-transform:uppercase;font-size:.66rem;letter-spacing:.05em}
+.field-h{font-size:.72rem;color:var(--g4)}
+.flash{padding:.6rem .9rem;border-radius:.4rem;margin-bottom:1rem;font-size:.85rem;border:1px solid}
+.flash-ok{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent);color:var(--white)}
+.flash-error{border-color:#e5706e;background:color-mix(in srgb,#e5706e 10%,transparent);color:var(--white)}
+.reveal{border:1px solid #e0a63b;border-radius:.6rem;padding:.9rem 1.1rem;margin-bottom:1.2rem;
+  background:color-mix(in srgb,#e0a63b 8%,transparent)}
+.reveal-head{display:flex;justify-content:space-between;align-items:center;gap:1rem;margin-bottom:.5rem;flex-wrap:wrap}
+.reveal-title{font-family:var(--font-mono);font-size:.9rem;color:var(--white);font-weight:600}
+.reveal-warn{font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:#e0a63b}
+.reveal-value{margin:0;padding:.6rem .8rem;border-radius:.35rem;background:var(--bg-code);color:var(--white);
+  font-family:var(--font-mono);font-size:.85rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all}
 
 /* Footer */
 .foot{max-width:60rem;margin:0 auto;padding:1.2rem 1.5rem;width:100%;

@@ -45,6 +45,42 @@ export interface RenderOptions {
   coreInstanceSizeSlug?: string;
 }
 
+/**
+ * Resolve a supplementary server's `consoleEnv:` onto the CORE component only.
+ *
+ * Note what this is NOT: it is not `opts.env`. A SECRET-typed entry in `opts.env`
+ * is BROADCAST — look at the bundle branch below, which forwards
+ * `opts.env.filter(e => e.type === "SECRET")` to every supplementary component.
+ * So the ordinary way to give the core gateway a credential also hands it to the
+ * container that answers /mcp, which for gcp-secrets would put the value-reading
+ * service-account key inside the process an agent talks to. The IAM split would
+ * then be a lie: the MCP credential could not read a value, but a stronger one
+ * would be sitting in the same environment.
+ *
+ * `consoleEnv:` is therefore resolved HERE and appended to core's envs alone.
+ * test/appspec.consoleEnv.test.ts asserts the key appears on core and on no
+ * other component.
+ */
+function consoleEnvVars(
+  config: StradConfig,
+  secrets: Readonly<Record<string, string>>,
+): EnvVar[] {
+  const merged: Record<string, string> = {};
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    Object.assign(merged, server.consoleEnv);
+  }
+  return Object.entries(resolveMap(merged, secrets)).map(
+    ([key, value]): EnvVar => ({
+      key,
+      value,
+      scope: "RUN_TIME",
+      type: "SECRET",
+    }),
+  );
+}
+
 export interface ImageRef {
   registry_type: "GHCR" | "DOCR" | "DOCKER_HUB";
   registry?: string;
@@ -263,6 +299,9 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         ...identityEnvs("core", config.gateway.env, opts.image.tag),
         ...bundleUrlEnvs,
         ...opts.env,
+        // Core-only credentials. Deliberately NOT part of opts.env, which is
+        // broadcast — see consoleEnvVars().
+        ...consoleEnvVars(config, opts.secrets ?? {}),
       ],
       health_check: { http_path: "/healthz", initial_delay_seconds: 10 },
     },

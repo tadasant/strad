@@ -8,6 +8,7 @@ import type { Mode, Registry } from "../gateway/registry.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
+import type { ConsoleUiOptions } from "../ui/index.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -23,6 +24,8 @@ export interface AppOptions {
   secrets?: SecretBag;
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
+  /** Test seam: substitute the Secret Manager admin surface behind the console UI. */
+  secretsAdmin?: ConsoleUiOptions["secretsAdmin"];
 }
 
 export function createApp(opts: AppOptions): Express {
@@ -67,6 +70,7 @@ export function createApp(opts: AppOptions): Express {
       secrets: opts.secrets ?? {},
       env,
       gcsList: opts.gcsList,
+      secretsAdmin: opts.secretsAdmin,
     });
   }
 

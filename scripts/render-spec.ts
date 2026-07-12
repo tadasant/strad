@@ -132,16 +132,22 @@ for (const name of collectSecretRefs(config)) {
 // renderer. A referenced-but-unset secret is a hard error: better a failed
 // deploy than a browser bundle that can't log in.
 const SECRET_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-const bundleSecrets: Record<string, string> = {};
+const scopedSecrets: Record<string, string> = {};
 for (const server of config.servers) {
   if (server.kind !== "supplementary-image") continue;
   // appspec.ts skips disabled servers and emits no bundle for them, so don't
   // demand their secrets here either — that would fail-close in the wrong place.
   if (!server.enabled) continue;
-  for (const raw of Object.values(server.env)) {
+  // `consoleEnv:` is resolved from the SAME bag, but appspec.ts puts it on the
+  // core component only — never on the bundle. That asymmetry is what keeps a
+  // value-reading credential out of the container that answers /mcp.
+  for (const raw of [
+    ...Object.values(server.env),
+    ...Object.values(server.consoleEnv),
+  ]) {
     for (const match of raw.matchAll(SECRET_REF)) {
       const name = match[1]!;
-      if (name in bundleSecrets) continue;
+      if (name in scopedSecrets) continue;
       const value = process.env[name];
       if (!value) {
         console.error(
@@ -149,7 +155,7 @@ for (const server of config.servers) {
         );
         process.exit(1);
       }
-      bundleSecrets[name] = value;
+      scopedSecrets[name] = value;
     }
   }
 }
@@ -200,7 +206,7 @@ const spec = renderAppSpec({
   region: values.region ?? "nyc",
   image: parseImage(values.image),
   env: envs,
-  secrets: bundleSecrets,
+  secrets: scopedSecrets,
   domains: resolveDomains(),
 });
 

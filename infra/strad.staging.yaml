@@ -266,6 +266,64 @@ servers:
       GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
+  # gcp-secrets — the secrets store whose MCP surface CANNOT read a value.
+  #
+  # THIS ENTRY IS THE SECURITY BOUNDARY. Read the two credentials below carefully,
+  # because the difference between them is the entire design:
+  #
+  #   env:         GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON        -> the BUNDLE
+  #   consoleEnv:  GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  -> CORE, only
+  #
+  # `env:` lands on the container that answers /mcp. It gets a service account
+  # holding roles/secretmanager.viewer, conditioned on the `mcp-` name prefix:
+  # secrets.list, secrets.get, versions.list, versions.get — and NOT
+  # secretmanager.versions.access. So the MCP path can see that a secret exists
+  # and what a human noted on it, and Google will refuse it the value. Not
+  # "strad declines to expose it" — the credential cannot fetch it. A prompt
+  # injection that talks a tool into reading a secret gets a 403.
+  #
+  # `consoleEnv:` lands on the CORE component and nowhere else (appspec.ts is
+  # explicit about it; a broadcast SECRET would have reached the bundle too). It
+  # carries the admin service account, which CAN add, rotate, reveal and delete —
+  # and which is only ever driven by a human clicking a button on /ui/gcp-secrets,
+  # behind the console SSO gate. There is no code path from /mcp to it.
+  #
+  # NAMESPACE. `mcp-` is not decoration: it is the same prefix the IAM condition
+  # on both role bindings uses (resource.name.startsWith(".../secrets/mcp-")). It
+  # is what keeps this server away from strad's OWN secrets, which live in the
+  # same Secret Manager under `strad-staging-` — including STRAD_TOKENS. Neither
+  # service account has any binding that reaches those.
+  #
+  # NOTE. Every secret can carry a free-form note, stored as the `note` ANNOTATION
+  # on the Secret resource (annotations are arbitrary metadata, < 16 KiB total;
+  # labels are not — they restrict the charset). Agents CAN read the note. That is
+  # the point: "which key is this, and when does it rotate" is exactly what an
+  # agent should be able to tell you without holding the key.
+  #
+  # SEEDING (not yet done — see the PR): the two keys must exist in Secret Manager
+  # as strad-staging-GCP_SECRETS_VIEWER_KEY_JSON and
+  # strad-staging-GCP_SECRETS_ADMIN_KEY_JSON before this deploys.
+  - slug: gcp-secrets
+    kind: supplementary-image
+    title: Secrets (Google Secret Manager)
+    description: Add, rotate, reveal and delete secret values. The MCP server can only see their names and notes.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gcp-secrets
+    entitlements: [admin]
+    env:
+      GCP_SECRETS_PROJECT_ID: "${GCP_SECRETS_PROJECT_ID}"
+      GCP_SECRETS_NAMESPACES: "mcp-"
+      GCP_SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/gcp-secrets"
+      # roles/secretmanager.viewer — NO versions.access. This is the lock.
+      GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${GCP_SECRETS_VIEWER_KEY_JSON}"
+    consoleEnv:
+      GCP_SECRETS_PROJECT_ID: "${GCP_SECRETS_PROJECT_ID}"
+      GCP_SECRETS_NAMESPACES: "mcp-"
+      # roles/secretmanager.admin on the mcp- prefix. Core only. Humans only.
+      GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${GCP_SECRETS_ADMIN_KEY_JSON}"
+
+  # ---------------------------------------------------------------------------
   # Gmail — 8 tools full, 7 read-write, 5 read-only. THREE slugs, ONE container.
   #
   # DWD is a Workspace-admin dependency: until the service account's client ID is

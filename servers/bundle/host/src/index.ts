@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 14 upstream MCP servers (14
+ * bundle — THE strad supplementary image. All 15 upstream MCP servers (15
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 23 supplementary-image entries
+ * gateway's config names more SLUGS than that — 24 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
@@ -205,6 +205,21 @@ async function buildMounts(): Promise<Mount[]> {
     },
   });
 
+  // --- gcp-secrets ----------------------------------------------------------
+  // The odd one out, and deliberately so: this server's CREDENTIAL is what makes
+  // it safe, not its code. It runs against Google Cloud Secret Manager with a
+  // service account holding roles/secretmanager.viewer — list and describe, and
+  // NOT secretmanager.versions.access. So it can tell an agent that
+  // `mcp-openai-api-key` exists and what a human noted about it, and it cannot
+  // tell the agent what it says. Not "does not"; cannot. Google refuses.
+  //
+  // Values are written and read in strad's SSO-gated console, which holds a
+  // different service account that never reaches this container (see the
+  // `consoleEnv:` scope in src/config/schema.ts). Nothing about this mount can
+  // undo that: there is no write tool here, and no key that could perform one.
+  const secretsMount = await loadGcpSecrets();
+  if (secretsMount) mounts.push(secretsMount);
+
   // --- onepassword ----------------------------------------------------------
   // The `op` CLI is baked into this image (see the Dockerfile) and shelled out to
   // per call. The upstream refuses to start without an elicitation posture; here
@@ -326,6 +341,43 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     gmail: gmail.createMCPServer,
     calendar: calendar.createMCPServer,
     docs: docs.createMCPServer,
+  };
+}
+
+/**
+ * gcp-secrets. Not mounted when it is not configured — the same posture as
+ * 1Password: one server's missing config must not take the other fourteen down.
+ */
+async function loadGcpSecrets(): Promise<Mount | null> {
+  const mod = (await loadFromTree("gcp-secrets", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+    loadConfig: (env?: NodeJS.ProcessEnv) => unknown;
+  };
+
+  let config: unknown;
+  try {
+    config = mod.loadConfig();
+  } catch (err) {
+    logWarn(
+      `gcp-secrets NOT mounted: ${errMessage(err)}. ` +
+        `It needs GCP_SECRETS_PROJECT_ID and GCP_SECRETS_NAMESPACES; ` +
+        `an unscoped secrets server would see every secret in the project.`,
+    );
+    return null;
+  }
+
+  const created = mod.createMCPServer({ version: VERSION, config });
+  const hasKey = Boolean(process.env.GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON);
+
+  return {
+    slug: "gcp-secrets",
+    tree: "gcp-secrets",
+    serverName: "gcp-secrets-mcp-server",
+    capabilities: { tools: {} },
+    degraded: hasKey
+      ? null
+      : "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON is not set; tools will list but list_secrets will fail",
+    register: (s) => created.registerHandlers(s),
   };
 }
 

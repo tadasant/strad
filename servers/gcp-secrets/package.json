@@ -1,0 +1,14 @@
+{
+  "name": "strad-server-gcp-secrets",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Google Cloud Secret Manager MCP server (read-only: names, notes, metadata) — a tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

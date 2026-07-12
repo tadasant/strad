@@ -69,6 +69,9 @@ describe("staging config", () => {
           "FETCHPET_USERNAME",
           "FETCHPET_PASSWORD",
           "POINTSYEAH_REFRESH_TOKEN",
+          "GCP_SECRETS_PROJECT_ID",
+          "GCP_SECRETS_VIEWER_KEY_JSON",
+          "GCP_SECRETS_ADMIN_KEY_JSON",
         ].map((name) => [name, "x"]),
       ),
     });
@@ -98,13 +101,35 @@ describe("staging config", () => {
     );
     expect(bundle.envs.some((e) => e.key === "STRAD_ENV")).toBe(true);
     expect(bundle.envs.some((e) => e.key === "STRAD_VERSION")).toBe(true);
+
+    // THE IAM SPLIT, as it actually ships. gcp-secrets' two service accounts must
+    // land on DIFFERENT components, or the whole posture is decorative:
+    //
+    //   viewer (no versions.access) -> the bundle, which answers /mcp
+    //   admin  (reads and writes)   -> core, which serves the SSO-gated console
+    //
+    // The failure this pins is not hypothetical: every other way of giving core a
+    // credential (a broadcast SECRET env var) ALSO gives it to the bundle, because
+    // appspec forwards SECRET-typed broadcast vars to every component.
+    const core = spec.services[0]!;
+    const ADMIN = "GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON";
+    const VIEWER = "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON";
+
+    expect(core.envs.some((e) => e.key === ADMIN)).toBe(true);
+    expect(bundle.envs.some((e) => e.key === ADMIN)).toBe(false);
+
+    expect(bundle.envs.some((e) => e.key === VIEWER)).toBe(true);
+    expect(core.envs.some((e) => e.key === VIEWER)).toBe(false);
+
+    // And the admin key is SECRET-typed, so DigitalOcean encrypts it at rest.
+    expect(core.envs.find((e) => e.key === ADMIN)?.type).toBe("SECRET");
   });
 
   it("every containerised server runs the ONE image, in the ONE bundle", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(23);
+    expect(supplementary.length).toBe(24);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       expect(server.bundle).toBe("bundle");

@@ -32,6 +32,29 @@ export type ServerView =
       account: ServiceAccount | null;
       /** Why creds are missing, for a graceful empty state. */
       accountReason?: string;
+    }
+  | {
+      kind: "secrets";
+      server: ServerConfig;
+      projectId: string;
+      /** The managed name prefixes. The first is the default for new secrets. */
+      namespaces: string[];
+      /**
+       * The ADMIN service account — the console's own credential, and the only
+       * one in strad that can read or write a secret value.
+       *
+       * It is resolved from `consoleEnv:`, which appspec.ts injects onto the
+       * CORE component alone. The MCP container gets a different key (a viewer,
+       * from `env:`) and never sees this one. If this is null the console
+       * degrades to read-only-of-nothing rather than pretending: the whole point
+       * is that the two credentials are distinct, so falling back to the MCP
+       * server's key would be exactly the wrong thing to do.
+       */
+      account: ServiceAccount | null;
+      accountReason?: string;
+      /** Test seams, when the deployment points at a stub Secret Manager. */
+      apiBase?: string;
+      tokenUrl?: string;
     };
 
 /** The env keys the two GCS-backed servers use (gcs and remote-filesystem). */
@@ -41,6 +64,29 @@ const GCS_ENV = {
   keyJson: "GCS_SERVICE_ACCOUNT_KEY_JSON",
   clientEmail: "GCS_CLIENT_EMAIL",
   privateKey: "GCS_PRIVATE_KEY",
+} as const;
+
+/**
+ * The env keys the gcp-secrets server uses.
+ *
+ * Note which side each lives on. `projectId` / `namespaces` are plain config and
+ * appear in BOTH the container's `env:` and the console's `consoleEnv:` — they
+ * are not secret and both halves need them. The two KEYS are the split:
+ *
+ *   GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON        env:        viewer  (MCP)
+ *   GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  consoleEnv: admin   (console)
+ *
+ * The console reads ONLY the admin key. It will not fall back to the viewer key,
+ * because a console that silently ran as the viewer would render an empty page
+ * and a confusing 403 — and because the fallback, once written, is the thing
+ * someone later "fixes" by handing the viewer more permissions.
+ */
+const SECRETS_ENV = {
+  projectId: "GCP_SECRETS_PROJECT_ID",
+  namespaces: "GCP_SECRETS_NAMESPACES",
+  adminKeyJson: "GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+  apiBase: "GCP_SECRETS_API_BASE",
+  tokenUrl: "GCP_SECRETS_TOKEN_URL",
 } as const;
 
 /**
@@ -77,12 +123,71 @@ export function resolveServerView(
 
   const env = withNamespacedFallback(server.slug, serverEnv(server));
 
+  // Secrets view: the server declares a Secret Manager project. Checked FIRST —
+  // a gcp-secrets server declares no bucket, so the two detectors cannot collide,
+  // but the ordering says which concept owns the slug if one ever did.
+  if (env[SECRETS_ENV.projectId]) {
+    return resolveSecretsView(server, env, secrets);
+  }
+
   // GCS view: the server declares a bucket. That's the whole detector.
   if (env[GCS_ENV.bucket] || env[GCS_ENV.keyJson] || env[GCS_ENV.clientEmail]) {
     return resolveGcsView(server, env, secrets);
   }
 
   return { kind: "no_viewer", server };
+}
+
+function resolveSecretsView(
+  server: ServerConfig,
+  env: Record<string, string>,
+  secrets: SecretBag,
+): ServerView {
+  const projectId = tryResolve(env[SECRETS_ENV.projectId] ?? "", secrets) ?? "";
+  const namespaces = (
+    tryResolve(env[SECRETS_ENV.namespaces] ?? "", secrets) ?? ""
+  )
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const adminRaw = env[SECRETS_ENV.adminKeyJson];
+  const adminJson = adminRaw ? tryResolve(adminRaw, secrets) : undefined;
+
+  let account: ServiceAccount | null = null;
+  let accountReason: string | undefined;
+
+  if (!adminJson) {
+    accountReason = adminRaw
+      ? `${SECRETS_ENV.adminKeyJson} is declared under consoleEnv: but is not injected on this deployment`
+      : `${SECRETS_ENV.adminKeyJson} is not declared under this server's consoleEnv:`;
+  } else {
+    try {
+      const parsed = JSON.parse(adminJson) as Partial<ServiceAccount>;
+      if (parsed.client_email && parsed.private_key) {
+        account = {
+          client_email: parsed.client_email,
+          private_key: parsed.private_key,
+        };
+      } else {
+        accountReason = `${SECRETS_ENV.adminKeyJson} is missing client_email/private_key`;
+      }
+    } catch {
+      // Never echo the value: it is a private key.
+      accountReason = `${SECRETS_ENV.adminKeyJson} is not valid JSON`;
+    }
+  }
+
+  return {
+    kind: "secrets",
+    server,
+    projectId,
+    namespaces,
+    account,
+    accountReason,
+    apiBase: tryResolve(env[SECRETS_ENV.apiBase] ?? "", secrets) || undefined,
+    tokenUrl: tryResolve(env[SECRETS_ENV.tokenUrl] ?? "", secrets) || undefined,
+  };
 }
 
 function resolveGcsView(
@@ -175,9 +280,21 @@ function resolveAccount(
   };
 }
 
-/** A server's static env/options map, or {} for kinds that have none. */
+/**
+ * A server's static env/options map, or {} for kinds that have none.
+ *
+ * `consoleEnv:` is merged in for a supplementary image, and this is the ONLY
+ * place that happens: the console is the half of that server which runs in this
+ * process, so its keys are the ones this file may resolve. The container's
+ * `env:` is here too — but only its non-secret parts ever resolve, because a
+ * `${REF}` scoped to the bundle is not in core's secret bag (appspec.ts never
+ * broadcasts it), so tryResolve returns undefined and the view degrades.
+ * That is the design working, not a gap.
+ */
 function serverEnv(server: ServerConfig): Record<string, string> {
-  if (server.kind === "supplementary-image") return server.env;
+  if (server.kind === "supplementary-image") {
+    return { ...server.env, ...server.consoleEnv };
+  }
   if (server.kind === "builtin") {
     // A builtin's options are `unknown`; keep only the string-valued ones, which
     // is all a GCS config would be.

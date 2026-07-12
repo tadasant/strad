@@ -64,16 +64,35 @@ jobs:
         working-directory: servers/good-eggs
         run: npm test
 
-  # THE bundle: fourteen MCP servers, six dependency trees, one Chromium and the
+  # gcp-secrets is the one server whose TESTS are the security review: they assert
+  # that no tool can return a secret value, and that the credential it runs as is
+  # refused one by Secret Manager itself. Run them on every PR, like good-eggs'.
+  gcp_secrets:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/gcp-secrets
+        run: npm ci
+      - name: Test (build + the no-value-ever suite)
+        working-directory: servers/gcp-secrets
+        run: npm test
+
+  # THE bundle: fifteen MCP servers, seven dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.
   #
   # The smoke test is the honest half. It lists tools from every mount of the
   # RUNNING container and asserts the full-capability counts (slack 9, tailscale
-  # 15, monarch 23, gmail 8, docs 11, calendar 7, 1Password 9, …). Those are the
-  # numbers the gateway's read-only allow-lists are carved out of, so if an
-  # upstream grows a tool, this is where we find out — not in production.
+  # 15, monarch 23, gmail 8, docs 11, calendar 7, 1Password 9, gcp-secrets 3, …).
+  # Those are the numbers the gateway's read-only allow-lists are carved out of, so
+  # if an upstream grows a tool, this is where we find out — not in production. For
+  # gcp-secrets the count is a security assertion: a FOURTH tool on a server whose
+  # entire contract is "no tool returns a value" is exactly what CI should catch.
   bundle_image:
     runs-on: self-hosted
     steps:
@@ -97,10 +116,14 @@ jobs:
           # Credential-free on purpose: listing tools never calls an upstream API.
           # DANGEROUSLY_SKIP_ELICITATIONS is what lets 1Password mount at all, and
           # the two GCS-ish servers need their (distinct!) buckets named.
+          # gcp-secrets refuses to mount without a project and a namespace — an
+          # unscoped secrets server would see every secret in the project — so CI
+          # names both. Still credential-free: listing tools calls no API.
           docker run -d --name bundle-ci \
             -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_GCS_BUCKET=ci-rfs-bucket \
+            -e GCP_SECRETS_PROJECT_ID=ci -e GCP_SECRETS_NAMESPACES=mcp- \
             strad-bundle:ci
           for i in $(seq 1 60); do
             if docker exec bundle-ci node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi

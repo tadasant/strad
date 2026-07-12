@@ -131,6 +131,27 @@ const SupplementaryImageServer = ServerBase.extend({
   path: z.string().startsWith("/").default("/mcp"),
   /** Env passed to the component. Values may be `${SECRET_REF}`. */
   env: z.record(SecretRef).default({}),
+  /**
+   * Env for the CORE gateway only — the human console's half of this server.
+   * It is NOT injected into the server's container, and that asymmetry is the
+   * whole point.
+   *
+   * `env:` above lands on the component that answers /mcp. Anything in it is a
+   * credential the AGENT path holds. `consoleEnv:` lands on core, which serves
+   * the SSO-gated /ui and nothing an agent can reach.
+   *
+   * gcp-secrets is why this exists: its MCP container runs as a service account
+   * with `roles/secretmanager.viewer` (list/describe — no `versions.access`), so
+   * no tool, no bug and no prompt injection can pull a secret VALUE through
+   * /mcp, because the credential it would have to use cannot. The console needs
+   * a second, stronger service account to add/reveal/delete values — and that
+   * one must never reach the MCP container, or the IAM split is theatre.
+   *
+   * (A plain broadcast SECRET env var would NOT do: appspec.ts forwards every
+   * SECRET-typed broadcast var to every component, supplementary images
+   * included. `consoleEnv:` is the only scope that reaches core and stops.)
+   */
+  consoleEnv: z.record(SecretRef).default({}),
   /** Headers strad sends when proxying to it (e.g. a shared internal token). */
   headers: HeaderMap,
 });
