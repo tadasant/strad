@@ -93,6 +93,7 @@ jobs:
         id: secrets
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           # List first, on its own line, so a gcloud failure fails the step
@@ -101,8 +102,15 @@ jobs:
             --filter="name:strad-staging-" --format="value(name)")
           mapfile -t NAMES < <(printf '%s\n' "$LIST" | grep -v '^$' || true)
           if [ "${#NAMES[@]}" -eq 0 ]; then
-            echo "::error::no strad-staging-* secrets found. Run secrets-sync.yml first."
-            exit 1
+            # Not yet seeded via secrets-sync.yml. On a manual deploy that's an
+            # error; on an automatic release, skip the rest and stay green.
+            if [ "$MANUAL" = "true" ]; then
+              echo "::error::no strad-staging-* secrets found. Run secrets-sync.yml first."
+              exit 1
+            fi
+            echo "::warning::no strad-staging-* secrets found; skipping deploy. Run secrets-sync.yml."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           for full in "${NAMES[@]}"; do
             key="${full#strad-staging-}"
@@ -110,12 +118,13 @@ jobs:
             echo "::add-mask::$val"
             printf '%s<<STRAD_EOF\n%s\nSTRAD_EOF\n' "$key" "$val" >> "$GITHUB_ENV"
           done
+          echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "Loaded ${#NAMES[@]} secret(s) from Secret Manager."
 
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
         # It is written to a file, never echoed — a rendered spec is not log-safe.
-        if: steps.pre.outputs.go == 'true'
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         env:
           VERSION: ${{ inputs.version || 'latest' }}
           # Staging runs the console dev bypass until Google OAuth creds land.
@@ -139,7 +148,7 @@ jobs:
         # If App Platform later 403s pulling the image, the PAT is FINE-GRAINED
         # (package-scoped) and strad's package is not in its scope — a one-line
         # fix on the token. See HACKS.md.
-        if: steps.pre.outputs.go == 'true'
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         run: |
@@ -151,13 +160,13 @@ jobs:
           node scripts/attach-registry-creds.mjs /tmp/spec.json "tadasant:${GHCR_PULL_TOKEN}"
 
       - name: Install doctl
-        if: steps.pre.outputs.go == 'true'
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
       - name: Deploy (create or update strad-staging)
-        if: steps.pre.outputs.go == 'true'
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         run: |
           set -euo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
@@ -170,7 +179,7 @@ jobs:
           fi
 
       - name: Smoke-test the live endpoint
-        if: steps.pre.outputs.go == 'true'
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         run: |
           set -euo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
