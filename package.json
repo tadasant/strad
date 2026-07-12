@@ -21,10 +21,19 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "token:mint": "node --experimental-transform-types src/cli.ts token mint",
-    "spec:render": "node --experimental-transform-types src/cli.ts spec render"
+    "spec:render": "node --experimental-transform-types src/cli.ts spec render",
+    "telemetry:sync": "node scripts/sync-telemetry.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-proto": "^0.220.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
+    "@opentelemetry/resources": "^2.9.0",
+    "@opentelemetry/sdk-metrics": "^2.9.0",
+    "@opentelemetry/sdk-node": "^0.220.0",
+    "@opentelemetry/sdk-trace-base": "^2.9.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "express": "^4.21.2",
     "yaml": "^2.6.1",
     "zod": "^3.24.1"

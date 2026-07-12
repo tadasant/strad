@@ -1,5 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createRegisterTools } from './tools.js';
+import { withBrowserTelemetry } from './telemetry.js';
 import type {
   FetchPetConfig,
   Claim,
@@ -286,14 +287,21 @@ export class FetchPetClient implements IFetchPetClient {
 
     chromium.use(StealthPlugin());
 
-    this.browser = await chromium.launch({
-      headless: this.config.headless,
-      args: [
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-sandbox',
-      ],
-    });
+    // Timed and counted, and the returned browser gets a `disconnected` listener
+    // that reports a crash together with the container's memory pressure at that
+    // instant — which is the only way to tell an OOM-killed Chromium apart from
+    // one that died on a bad page. No-ops entirely when no telemetry bootstrap
+    // is loaded. See shared/src/telemetry.ts.
+    this.browser = await withBrowserTelemetry('fetchpet', () =>
+      chromium.launch({
+        headless: this.config.headless,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--disable-dev-shm-usage',
+          '--no-sandbox',
+        ],
+      }),
+    );
 
     this.context = await this.browser.newContext({
       viewport: { width: 1920, height: 1080 },

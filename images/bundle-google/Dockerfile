@@ -43,6 +43,15 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/vendor ./vendor
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+
+# The telemetry bootstrap. Vendored, because each image is its own Docker build
+# context and cannot COPY from the repo root; `npm run telemetry:sync` keeps the
+# copies identical and a test fails CI if one drifts.
+#
+# It is plain ESM with no build step, so it is copied straight into the runtime
+# stage rather than through the builder. Its OTel dependencies are PROD deps, so
+# they survive the `npm ci --omit=dev` prune above.
+COPY otel ./otel
 # Ship the smoke test so CI (and anyone) can self-check the running container
 # with `docker exec <c> node scripts/smoke.mjs`.
 COPY scripts ./scripts
@@ -60,4 +69,7 @@ ENV BUNDLE_GOOGLE_VERSION=${BUNDLE_GOOGLE_VERSION}
 ENV PORT=8080
 EXPOSE 8080
 
-CMD ["node", "dist/index.js"]
+# --import runs the telemetry bootstrap to completion before the server starts,
+# so process and container metrics cover the boot itself. With no
+# OTEL_EXPORTER_OTLP_ENDPOINT it starts no SDK and this is a no-op.
+CMD ["node", "--import", "./otel/instrument.mjs", "dist/index.js"]

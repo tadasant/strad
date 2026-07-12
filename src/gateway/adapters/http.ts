@@ -6,7 +6,15 @@ import type {
   ReadResourceResult,
   ClientCapabilities as SdkClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  context,
+  propagation,
+  SpanKind,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
+import { errorKind, instruments, tracer } from "../../telemetry/index.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 
 /**
@@ -72,7 +80,29 @@ export class HttpServerAdapter implements ServerAdapter {
     this.connecting = (async () => {
       const transport = new StreamableHTTPClientTransport(
         new URL(this.opts.url),
-        { requestInit: { headers: this.opts.headers } },
+        {
+          requestInit: { headers: this.opts.headers },
+          // Inject W3C trace context (`traceparent`) into every upstream request.
+          //
+          // This is what makes a bundle's spans join the core's trace instead of
+          // floating free, and it is the difference between "the request took 8s"
+          // and "the request took 8s, of which 7.6s was Chromium inside
+          // bundle-fetchpet". After the collapse — when one container holds
+          // everything — an unstitched trace would be nearly useless, because the
+          // only way to attribute the shared 1 vCPU is to see the whole waterfall.
+          //
+          // `requestInit.headers` above is static (it is the auth header, set at
+          // construction), so the per-request context has to be injected here.
+          // When no SDK is registered, `propagation.inject` is a no-op and this
+          // adds exactly one empty object to each call.
+          fetch: (url, init) => {
+            const headers = new Headers(init?.headers);
+            propagation.inject(context.active(), headers, {
+              set: (h, k, v) => h.set(k, v),
+            });
+            return fetch(url, { ...init, headers });
+          },
+        },
       );
 
       const client = new Client(
@@ -91,7 +121,11 @@ export class HttpServerAdapter implements ServerAdapter {
         },
       );
 
-      await client.connect(transport);
+      // The handshake is a hop like any other, and on a saturated box it is
+      // often the FIRST thing to get slow — a bundle too busy to answer
+      // `initialize` inside the timeout looks, from the client's side, like a
+      // server that does not exist.
+      await this.hop("connect", () => client.connect(transport));
       this.client = client;
       return client;
     })();
@@ -107,10 +141,68 @@ export class HttpServerAdapter implements ServerAdapter {
     }
   }
 
+  /**
+   * One instrumented hop to this upstream.
+   *
+   * Every network round-trip strad makes on a client's behalf goes through here,
+   * which is what gives us a per-server latency histogram — the thing that
+   * answers "which server is starving the others" when 26 of them share a box.
+   *
+   * Timeouts get their own counter, deliberately. The MCP SDK's request timeout
+   * defaults to 60s and applies at EVERY hop, so a slow tool behind the gateway
+   * dies at exactly 60s and presents as a mysterious platform failure. Counting
+   * them separately from other upstream errors turns that into a one-glance
+   * diagnosis.
+   */
+  private async hop<T>(op: string, run: () => Promise<T>): Promise<T> {
+    const inst = instruments();
+    const attrs = {
+      "mcp.server": this.slug,
+      "mcp.upstream.kind": this.kind,
+      "mcp.upstream.op": op,
+    };
+    const span = tracer().startSpan(`mcp.upstream.${op}`, {
+      kind: SpanKind.CLIENT,
+      attributes: { ...attrs, "mcp.upstream.timeout_ms": this.opts.timeoutMs },
+    });
+    const startedAt = process.hrtime.bigint();
+
+    try {
+      const result = await context.with(
+        trace.setSpan(context.active(), span),
+        run,
+      );
+      inst.upstreamDuration.record(elapsedSeconds(startedAt), {
+        ...attrs,
+        outcome: "ok",
+      });
+      return result;
+    } catch (err) {
+      const kind = errorKind(err);
+      span.setAttribute("error.kind", kind);
+      // No recordException — an upstream's error message is not ours to export.
+      // See src/telemetry/redact.ts.
+      span.setStatus({ code: SpanStatusCode.ERROR });
+
+      inst.upstreamDuration.record(elapsedSeconds(startedAt), {
+        ...attrs,
+        outcome: "error",
+      });
+      inst.upstreamErrors.add(1, { ...attrs, "error.kind": kind });
+      if (kind === "timeout") inst.upstreamTimeouts.add(1, attrs);
+
+      throw err;
+    } finally {
+      span.end();
+    }
+  }
+
   async listTools(): Promise<Tool[]> {
     const client = await this.connect();
     try {
-      const res = await client.listTools({}, { timeout: this.opts.timeoutMs });
+      const res = await this.hop("list_tools", () =>
+        client.listTools({}, { timeout: this.opts.timeoutMs }),
+      );
       return res.tools.map((t) => ({ ...t, name: this.strip(t.name) }));
     } catch (err) {
       this.reset();
@@ -124,10 +216,12 @@ export class HttpServerAdapter implements ServerAdapter {
   ): Promise<CallToolResult> {
     const client = await this.connect();
     try {
-      const res = await client.callTool(
-        { name: this.restore(name), arguments: args },
-        undefined,
-        { timeout: this.opts.timeoutMs },
+      const res = await this.hop("call_tool", () =>
+        client.callTool(
+          { name: this.restore(name), arguments: args },
+          undefined,
+          { timeout: this.opts.timeoutMs },
+        ),
       );
       return res as unknown as CallToolResult;
     } catch (err) {
@@ -150,9 +244,8 @@ export class HttpServerAdapter implements ServerAdapter {
   async listResources(): Promise<Resource[]> {
     const client = await this.connect();
     try {
-      const res = await client.listResources(
-        {},
-        { timeout: this.opts.timeoutMs },
+      const res = await this.hop("list_resources", () =>
+        client.listResources({}, { timeout: this.opts.timeoutMs }),
       );
       return res.resources;
     } catch (err) {
@@ -166,9 +259,12 @@ export class HttpServerAdapter implements ServerAdapter {
   async readResource(uri: string): Promise<ReadResourceResult> {
     const client = await this.connect();
     try {
-      return await client.readResource(
-        { uri },
-        { timeout: this.opts.timeoutMs },
+      // The URI is NOT recorded as an attribute. A `ui://` app template is
+      // harmless, but readResource is a general-purpose read and a URI can name
+      // a file path or an object key. Identifier-shaped is not the same as
+      // safe-to-export, and this one is not worth the argument.
+      return await this.hop("read_resource", () =>
+        client.readResource({ uri }, { timeout: this.opts.timeoutMs }),
       );
     } catch (err) {
       this.reset();
@@ -201,6 +297,11 @@ export class HttpServerAdapter implements ServerAdapter {
     this.client = null;
     await client?.close().catch(() => {});
   }
+}
+
+/** Seconds elapsed since an `hrtime.bigint()` mark. */
+function elapsedSeconds(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1e9;
 }
 
 /**

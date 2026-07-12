@@ -87,6 +87,74 @@ export interface ServiceSpec {
 const PORT = 8080;
 
 /**
+ * Telemetry env vars that must reach EVERY component, including supplementary
+ * images.
+ *
+ * This list exists because of an asymmetry that is easy to miss and silent when
+ * you get it wrong. A supplementary component (fetchpet, bundle-google, ...)
+ * does NOT receive the broadcast `opts.env` — look below: it gets its own scoped
+ * secrets plus `opts.env.filter(e => e.type === "SECRET")`, and nothing else.
+ * That is deliberate and correct for `STRAD_CONFIG_YAML` (a supplementary image
+ * does not run strad and has no use for strad's server list).
+ *
+ * But it means a GENERAL var like `OTEL_EXPORTER_OTLP_ENDPOINT` would reach the
+ * core and every strad-image bundle, and would NOT reach the six supplementary
+ * images — i.e. it would instrument everything EXCEPT the containers where
+ * Chromium and the `op` CLI actually live, which are the entire reason we are
+ * doing this. The failure mode is the worst kind: no error, no warning, just a
+ * dashboard that is quietly missing the components you care about most.
+ *
+ * `OTEL_EXPORTER_OTLP_HEADERS` is not in this list on purpose — it is a SECRET
+ * (it carries the ingestor's auth token) and so it already crosses via the
+ * SECRET filter, on the same path as every other credential.
+ */
+const TELEMETRY_ENV_KEYS = new Set([
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_SERVICE_NAME",
+  "OTEL_RESOURCE_ATTRIBUTES",
+  "OTEL_METRIC_EXPORT_INTERVAL",
+  "OTEL_TRACES_SAMPLER",
+  "OTEL_TRACES_SAMPLER_ARG",
+]);
+
+/**
+ * The identity vars every component gets, so its telemetry can say which of the
+ * ~13 processes it is. `STRAD_COMPONENT` is the one that matters: a
+ * supplementary image has no STRAD_BUNDLE and could not otherwise name itself.
+ *
+ * `STRAD_VERSION` is the deployed image's TAG, which makes `service.version` in
+ * the ingestor the thing that is actually running rather than whatever was in
+ * the VERSION file at build time.
+ */
+function identityEnvs(
+  component: string,
+  environment: string,
+  imageTag: string,
+): EnvVar[] {
+  return [
+    {
+      key: "STRAD_COMPONENT",
+      value: component,
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+    {
+      key: "STRAD_ENV",
+      value: environment,
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+    {
+      key: "STRAD_VERSION",
+      value: imageTag,
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+  ];
+}
+
+/**
  * The `${NAME}` secret references a config uses that must be injected as
  * BROADCAST SECRET env vars — a `remote-http` server's `url`/`headers` (e.g.
  * `Authorization: "Bearer ${GRANOLA_TOKEN}"`) and a `builtin`'s `options`.
@@ -190,6 +258,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
           scope: "RUN_TIME",
           type: "GENERAL",
         },
+        ...identityEnvs("core", config.gateway.env, opts.image.tag),
         ...bundleUrlEnvs,
         ...opts.env,
       ],
@@ -200,10 +269,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   for (const name of bundleNames) {
     const declared = config.bundles.find((b) => b.name === name);
     const supplementary = imageBundles.get(name);
+    const componentImage = supplementary
+      ? parseImage(supplementary.image)
+      : opts.image;
 
     services.push({
       name,
-      image: supplementary ? parseImage(supplementary.image) : opts.image, // a builtin bundle runs the strad image in bundle mode
+      image: componentImage, // a builtin bundle runs the strad image in bundle mode
       instance_size_slug:
         declared?.instanceSizeSlug ??
         // Chromium peaks around 545MB RSS. 1GB is the floor for a browser
@@ -226,7 +298,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               scope: "RUN_TIME",
               type: "SECRET",
             })),
-            ...opts.env.filter((e) => e.type === "SECRET"),
+            ...identityEnvs(name, config.gateway.env, componentImage.tag),
+            ...opts.env.filter(
+              (e) => e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key),
+            ),
           ]
         : [
             {
@@ -247,6 +322,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               scope: "RUN_TIME",
               type: "GENERAL",
             },
+            ...identityEnvs(name, config.gateway.env, componentImage.tag),
             ...opts.env,
           ],
     });

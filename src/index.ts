@@ -4,6 +4,7 @@ import { configPathFromEnv, loadConfig } from "./config/load.ts";
 import { Registry, type Mode } from "./gateway/registry.ts";
 import { createApp } from "./http/app.ts";
 import { loadSecrets } from "./secrets/index.ts";
+import { startTelemetry } from "./telemetry/index.ts";
 
 async function main(): Promise<void> {
   const env = process.env;
@@ -18,6 +19,24 @@ async function main(): Promise<void> {
   }
 
   const config = await loadConfig(configPathFromEnv(env));
+
+  // Telemetry starts FIRST — before the registry connects to anything and before
+  // we listen — so that a slow or failing boot is itself observable. A boot that
+  // dies in Registry.build() because a bundle is unreachable is exactly the kind
+  // of thing you want a trace for, and starting telemetry afterwards would mean
+  // the only boots we can see are the ones that succeeded.
+  //
+  // With no OTEL_EXPORTER_OTLP_ENDPOINT this starts no SDK, logs one line, and
+  // returns a handle whose shutdown() is a no-op. It cannot fail the boot: every
+  // error inside is caught (see src/telemetry/index.ts).
+  const telemetry = startTelemetry({
+    env,
+    identity: {
+      mode,
+      component: bundleName ?? "core",
+      environment: config.gateway.env,
+    },
+  });
 
   // Secrets are already env vars by the time we boot: CI read them from GCP
   // Secret Manager and injected them as App Platform SECRET env vars. The
@@ -65,6 +84,7 @@ async function main(): Promise<void> {
         env: config.gateway.env,
         servers: registry.slugs,
         tokens: tokenCount,
+        telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
       }),
     );
   });
@@ -74,6 +94,12 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ evt: "strad.shutdown", signal }));
     server.close();
     await registry.close();
+    // Flush telemetry LAST and before exit. When App Platform OOM-kills this
+    // container, the final few seconds of memory metrics are the entire
+    // diagnosis, and an unflushed exporter throws them away. This is bounded:
+    // shutdown() swallows its own errors, so a dead collector cannot wedge the
+    // SIGTERM path and get us SIGKILLed instead.
+    await telemetry.shutdown();
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

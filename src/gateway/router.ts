@@ -9,6 +9,7 @@ import {
   type Resource,
   type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
+import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { Request, Response } from "express";
 import { clientCapabilitiesFromInitialize } from "./clientCapabilities.ts";
 import {
@@ -19,6 +20,13 @@ import {
 } from "../auth/index.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
+import {
+  argShape,
+  errorKind,
+  instruments,
+  resultShape,
+  tracer,
+} from "../telemetry/index.ts";
 import { denamespace, namespaced } from "./adapters/types.ts";
 import {
   entitledServers,
@@ -63,6 +71,60 @@ export function createMcpHandler(opts: McpHandlerOptions) {
   const log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
 
   return async function handleMcp(req: Request, res: Response): Promise<void> {
+    // --- telemetry: one SERVER span per /mcp request ------------------------
+    // Everything below runs inside this span's context, so the tool-call and
+    // upstream-hop spans nest under it and a slow request can be read as a
+    // waterfall rather than a pile of unrelated timings.
+    //
+    // Attributes are slugs, counts and statuses. Never the token, never the
+    // body, never a header. See src/telemetry/redact.ts.
+    const inst = instruments();
+    const startedAt = process.hrtime.bigint();
+    const modeAttrs = { "strad.mode": opts.mode };
+    const span = tracer().startSpan("mcp.request", {
+      kind: SpanKind.SERVER,
+      attributes: {
+        ...modeAttrs,
+        "http.request.method": req.method,
+        "http.route": "/mcp",
+      },
+    });
+
+    inst.inFlight.add(1, modeAttrs);
+
+    // `close` always fires — on a clean finish and on an aborted connection
+    // alike — which is what makes it the right place to close the books. Doing
+    // this on `finish` would leak the in-flight gauge upward on every client
+    // that hangs up mid-stream, and a permanently-climbing concurrency number is
+    // worse than none.
+    let outcome = "ok";
+    res.on("close", () => {
+      inst.inFlight.add(-1, modeAttrs);
+      const status = res.statusCode;
+      const attrs = {
+        ...modeAttrs,
+        outcome,
+        "http.response.status_code": status,
+      };
+      inst.requests.add(1, attrs);
+      inst.requestDuration.record(elapsedSeconds(startedAt), attrs);
+      span.setAttribute("http.response.status_code", status);
+      if (status >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+      span.end();
+    });
+
+    await context.with(trace.setSpan(context.active(), span), () =>
+      serve(req, res, span, (o) => (outcome = o)),
+    );
+  };
+
+  async function serve(
+    req: Request,
+    res: Response,
+    span: import("@opentelemetry/api").Span,
+    setOutcome: (outcome: string) => void,
+  ): Promise<void> {
+    const inst = instruments();
     let principal: Principal;
 
     try {
@@ -81,6 +143,15 @@ export function createMcpHandler(opts: McpHandlerOptions) {
           reason: err.reason,
           ip: req.ip,
         });
+        // `err.reason` is one of a fixed set of enum-ish strings we author
+        // ("no_internal_token", "internal_token_mismatch", ...) — never the
+        // presented token, and never anything derived from it.
+        setOutcome("unauthenticated");
+        inst.authFailures.add(1, {
+          "strad.mode": opts.mode,
+          "auth.failure_reason": err.reason,
+        });
+        span.setAttribute("auth.failure_reason", err.reason);
         // WWW-Authenticate points a spec-compliant client at where to get a
         // token, without leaking whether the one it sent was close.
         res
@@ -94,6 +165,8 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       }
       throw err;
     }
+
+    span.setAttribute("mcp.principal.kind", principal.kind);
 
     // --- selection: the query string proposes, the token disposes -----------
     const requested = parseServersParam(req.query.servers);
@@ -117,6 +190,20 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         requested,
         unavailable: selection.unavailable.map((u) => u.slug),
       });
+      // The 424 fail-closed path. Worth its own counter rather than being folded
+      // into "4xx": a 424 is not a client error in the usual sense, it is strad
+      // telling a correctly-authenticated client that a server it asked for is
+      // not available to it. A spike here means an entitlement or a config is
+      // wrong, which is a completely different investigation from a spike in 401s.
+      setOutcome("unavailable");
+      const unavailable = selection.unavailable.map((u) => u.slug);
+      for (const slug of unavailable) {
+        inst.unavailable.add(1, {
+          "strad.mode": opts.mode,
+          "mcp.server": slug,
+        });
+      }
+      span.setAttribute("mcp.servers.unavailable", unavailable);
       res.status(424).json({
         error: "downstream_not_authenticated",
         message:
@@ -134,6 +221,15 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       kind: principal.kind,
       requested: requested.length ? requested : "*",
       selected,
+    });
+
+    // Requested vs selected, both as slug arrays. This pair is the whole story of
+    // what `?servers=` did: asking for three and getting one is invisible in a
+    // status code and obvious here.
+    span.setAttributes({
+      "mcp.servers.requested": requested,
+      "mcp.servers.selected": selected,
+      "mcp.servers.selected_count": selected.length,
     });
 
     // The client's advertised capabilities, read off the raw initialize body so
@@ -180,12 +276,67 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       const adapter = opts.registry.get(parsed.slug);
       if (!adapter) throw new Error(`server "${parsed.slug}" is not mounted`);
 
-      const result = await adapter.callTool(
-        parsed.tool,
-        (request.params.arguments ?? {}) as Record<string, unknown>,
-        { clientCapabilities },
-      );
-      return result as never;
+      const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+      // The tool-call span.
+      //
+      // NOTE WHAT IS AND IS NOT HERE. The server slug and the tool name are
+      // identifiers from our own config and the tool's own schema, so they are
+      // recorded. The ARGUMENTS are not — only their count and byte size — and
+      // neither is the RESULT. `args` for a 1Password tool call is a vault item
+      // reference; the result is its contents. Both are one `setAttribute` away
+      // from being sitting in an ingestor forever. See src/telemetry/redact.ts,
+      // and test/telemetry.redaction.test.ts, which fails if this changes.
+      const toolAttrs = {
+        "mcp.server": parsed.slug,
+        "mcp.tool": parsed.tool,
+        "strad.mode": opts.mode,
+      };
+      const callSpan = tracer().startSpan("mcp.tools.call", {
+        attributes: { ...toolAttrs, ...argShape(args) },
+      });
+      const toolStartedAt = process.hrtime.bigint();
+
+      try {
+        const result = await context.with(
+          trace.setSpan(context.active(), callSpan),
+          () => adapter.callTool(parsed.tool, args, { clientCapabilities }),
+        );
+
+        const shape = resultShape(result);
+        callSpan.setAttributes(shape);
+
+        // A tool that ran and returned isError:true is not the same event as a
+        // hop that blew up, and conflating them would hide the resource story
+        // under a pile of ordinary "no results found" responses.
+        const toolOutcome = shape["mcp.tool.is_error"] ? "tool_error" : "ok";
+        inst.toolCalls.add(1, { ...toolAttrs, outcome: toolOutcome });
+        inst.toolCallDuration.record(elapsedSeconds(toolStartedAt), {
+          ...toolAttrs,
+          outcome: toolOutcome,
+        });
+        return result as never;
+      } catch (err) {
+        const kind = errorKind(err);
+        callSpan.setAttribute("error.kind", kind);
+        // setStatus, NOT recordException: recordException writes the exception
+        // MESSAGE and STACK as span-event attributes, and an upstream MCP
+        // server's error message is arbitrary text we did not author. See
+        // redact.ts.
+        callSpan.setStatus({ code: SpanStatusCode.ERROR });
+        inst.toolCalls.add(1, {
+          ...toolAttrs,
+          outcome: "error",
+          "error.kind": kind,
+        });
+        inst.toolCallDuration.record(elapsedSeconds(toolStartedAt), {
+          ...toolAttrs,
+          outcome: "error",
+        });
+        throw err;
+      } finally {
+        callSpan.end();
+      }
     });
 
     // --- resource proxying (for MCP Apps) -----------------------------------
@@ -212,7 +363,12 @@ export function createMcpHandler(opts: McpHandlerOptions) {
 
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-  };
+  }
+}
+
+/** Seconds elapsed since an `hrtime.bigint()` mark. */
+function elapsedSeconds(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1e9;
 }
 
 /**

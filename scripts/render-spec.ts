@@ -76,6 +76,39 @@ secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
 secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
 secret("GOOGLE_CLIENT_SECRET");
 
+// --- telemetry (OTLP) -------------------------------------------------------
+//
+// All of this is OPTIONAL, and that is the point: with no OTEL_EXPORTER_OTLP_
+// ENDPOINT set, nothing below is emitted into the spec, no component gets a
+// telemetry env var, and every strad process boots with telemetry off. Staging
+// and prod are live; an observability change must not be able to take them down,
+// so "not configured" has to be a first-class, fully-supported state.
+//
+// The OTLP auth header is a SECRET and travels the SAME path as every other
+// credential: seeded into GCP Secret Manager as `strad-<env>-OTEL_EXPORTER_OTLP_
+// HEADERS`, read by deploy-staging.yml into the job env (it loads every
+// strad-<env>-* secret), picked up here from process.env, and injected as a
+// SECRET-typed env var that DigitalOcean encrypts at rest. It is never written
+// to a log and never reaches the repo. No workflow change is needed to add it —
+// seeding the secret is the whole job.
+secret("OTEL_EXPORTER_OTLP_HEADERS"); // e.g. "Authorization=Bearer <token>"
+
+// The endpoint and the sampler knobs are NOT secrets — a collector URL is not a
+// credential — so they ship as GENERAL vars, visible in the App Platform console
+// where an operator can actually see what the deployment is pointed at.
+for (const key of [
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_PROTOCOL",
+  "OTEL_SERVICE_NAME",
+  "OTEL_RESOURCE_ATTRIBUTES",
+  "OTEL_METRIC_EXPORT_INTERVAL",
+  "OTEL_TRACES_SAMPLER",
+  "OTEL_TRACES_SAMPLER_ARG",
+]) {
+  const value = process.env[key];
+  if (value) envs.push({ key, value, scope: "RUN_TIME", type: "GENERAL" });
+}
+
 // Secrets referenced by a NON-supplementary server via ${NAME} — a remote-http
 // server's url/headers (e.g. `Authorization: "Bearer ${GRANOLA_TOKEN}"`), a
 // builtin's options. These resolve IN-PROCESS at boot (src/secrets/index.ts
