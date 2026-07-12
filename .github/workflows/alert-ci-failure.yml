@@ -53,12 +53,19 @@ jobs:
     timeout-minutes: 5
 
     # Alert on genuine main-branch CI failures, and nothing else:
-    #   conclusion == 'failure'   -- exactly failure, never `!= 'success'`. A cancelled
-    #                                run must stay quiet, and cancellations are routine
-    #                                here: ci.yml sets `cancel-in-progress`, so two
-    #                                pushes to main in quick succession cancel the
-    #                                first run. Paging on that would train everyone to
-    #                                ignore #alerts within a week.
+    #   conclusion in (...)       -- an ALLOWLIST of conclusions, never `!= 'success'`.
+    #                                A cancelled or skipped run must stay quiet, and
+    #                                cancellations are routine here: ci.yml sets
+    #                                `cancel-in-progress`, so two pushes to main in
+    #                                quick succession cancel the first run. Paging on
+    #                                that would train everyone to ignore #alerts within
+    #                                a week. `startup_failure` and `timed_out` are in
+    #                                the list because neither is a `failure` and both
+    #                                are otherwise SILENT deaths: a workflow whose YAML
+    #                                is invalid on main never gets as far as a job, so
+    #                                nobody is told, and a hung job that hits its
+    #                                timeout would sail straight past a bare
+    #                                `== 'failure'` gate.
     #   head_branch == 'main'     -- feature branches are the author's problem.
     #   event != 'pull_request'   -- a PR's own red check is already in front of its
     #                                author; #alerts is for main.
@@ -76,7 +83,7 @@ jobs:
     #                                itself, which is loud and obvious.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      ( github.event.workflow_run.conclusion == 'failure' &&
+      ( contains(fromJSON('["failure","startup_failure","timed_out"]'), github.event.workflow_run.conclusion) &&
         github.event.workflow_run.head_branch == 'main' &&
         github.event.workflow_run.event != 'pull_request' &&
         github.event.workflow_run.name != 'CI failure alert' )
