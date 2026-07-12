@@ -1,0 +1,61 @@
+name: bundle-google CI
+
+# The bundle-google supplementary image is a deliverable in its own right, so a
+# PR that cannot build and boot it is a failing PR. Scoped to its own directory
+# so it only runs when that image actually changes.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "images/bundle-google/**"
+      - ".github/workflows/bundle-google-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "images/bundle-google/**"
+      - ".github/workflows/bundle-google-ci.yml"
+
+concurrency:
+  group: bundle-google-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_smoke:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: images/bundle-google
+          push: false
+          load: true
+          tags: strad-server-bundle-google:ci
+          cache-from: type=gha,scope=bundle-google
+          cache-to: type=gha,mode=max,scope=bundle-google
+
+      - name: Boot the image and smoke-test all three servers
+        # Credential-free contract: with NO Google secrets set, every server must
+        # still boot, handshake over Streamable HTTP, and enumerate its tools.
+        # Everything runs INSIDE the container (node is there; curl is not, and no
+        # host port publishing is needed): the health probe uses node's fetch and
+        # the baked-in smoke test connects a real MCP client to all three paths.
+        run: |
+          set -euo pipefail
+          docker run -d --name bundle-google-ci strad-server-bundle-google:ci
+
+          probe='fetch("http://127.0.0.1:8080/healthz").then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>{console.log(t)}).catch(()=>process.exit(1))'
+          for i in $(seq 1 30); do
+            if docker exec bundle-google-ci node -e "$probe"; then break; fi
+            sleep 1
+          done
+
+          echo "--- smoke: list tools on /gmail, /google-calendar, /google-docs"
+          docker exec bundle-google-ci node scripts/smoke.mjs
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f bundle-google-ci 2>/dev/null || true

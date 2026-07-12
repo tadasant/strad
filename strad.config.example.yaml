@@ -62,6 +62,11 @@ bundles:
     # Chromium peaks ~545MB and 1 vCPU serialises rendering, so it gets its own.
     instanceSizeSlug: apps-s-1vcpu-1gb
 
+  - name: bundle-google
+    # One image, three pure-API Google Workspace servers (gmail, calendar,
+    # docs). No browser, no subprocess — modest CPU/RAM.
+    instanceSizeSlug: apps-s-1vcpu-1gb
+
 servers:
   # --- kind: builtin --------------------------------------------------------
   # Compiled into the strad image. This is how private/internal servers ship:
@@ -245,3 +250,63 @@ servers:
   #   env:
   #     # Optional: the server boots without it and exposes set_refresh_token.
   #     POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
+  #     GOOD_EGGS_SESSION: "${GOOD_EGGS_SESSION}"
+
+  # Three servers, ONE image. bundle-google (images/bundle-google/) packages the
+  # gmail, google-calendar and google-docs MCP servers into a single container
+  # that serves each on its own path. They share `image` + `bundle` and differ
+  # only by `path` — the gateway proxies ?servers=gmail to
+  # ${bundle-google.PRIVATE_URL}/gmail, etc. The image is CREDENTIAL-FREE; the
+  # secrets below are injected downstream (tadasant-internal) as SECRET env vars.
+  #
+  # Each server accepts TWO auth modes — service-account (Workspace domain-wide
+  # delegation) OR OAuth2 (refresh token) — and a capability toggle. Set only
+  # the vars for the mode you use. See images/bundle-google/README.md for the
+  # full matrix. NOTE: google-calendar is service-account ONLY (no OAuth path),
+  # and all three REQUIRE a Workspace admin to authorize domain-wide delegation
+  # for service-account mode.
+  - slug: gmail
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google
+    path: /gmail
+    entitlements: [admin]
+    env:
+      # Service-account (domain-wide delegation):
+      GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GMAIL_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GMAIL_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GMAIL_IMPERSONATE_EMAIL: "${GMAIL_IMPERSONATE_EMAIL}"
+      # OAuth2 alternative: GMAIL_OAUTH_CLIENT_ID / GMAIL_OAUTH_CLIENT_SECRET /
+      # GMAIL_OAUTH_REFRESH_TOKEN
+      # Capability: readonly | readwrite | readwrite_external (default: all)
+      GMAIL_ENABLED_TOOLGROUPS: "${GMAIL_ENABLED_TOOLGROUPS}"
+
+  - slug: google-calendar
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google
+    path: /google-calendar
+    entitlements: [admin]
+    env:
+      # Service-account ONLY (no OAuth mode for calendar):
+      GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GCAL_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GCAL_SERVICE_ACCOUNT_PRIVATE_KEY: "${GCAL_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GCAL_IMPERSONATE_EMAIL: "${GCAL_IMPERSONATE_EMAIL}"
+      # Capability: readonly | readwrite (default: all)
+      GOOGLE_CALENDAR_ENABLED_TOOLGROUPS: "${GOOGLE_CALENDAR_ENABLED_TOOLGROUPS}"
+
+  - slug: google-docs
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-bundle-google:latest
+    bundle: bundle-google
+    path: /google-docs
+    entitlements: [admin]
+    env:
+      # Service-account (domain-wide delegation; docs also needs FULL Drive scope):
+      GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL: "${GOOGLE_DOCS_SERVICE_ACCOUNT_CLIENT_EMAIL}"
+      GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY: "${GOOGLE_DOCS_SERVICE_ACCOUNT_PRIVATE_KEY}"
+      GOOGLE_DOCS_IMPERSONATE_EMAIL: "${GOOGLE_DOCS_IMPERSONATE_EMAIL}"
+      # OAuth2 alternative: GOOGLE_DOCS_OAUTH_CLIENT_ID /
+      # GOOGLE_DOCS_OAUTH_CLIENT_SECRET / GOOGLE_DOCS_OAUTH_REFRESH_TOKEN
+      # Capability: readonly | readwrite | readwrite_external (default: all)
+      GOOGLE_DOCS_ENABLED_TOOLGROUPS: "${GOOGLE_DOCS_ENABLED_TOOLGROUPS}"

@@ -87,9 +87,14 @@ const RemoteHttpServer = ServerBase.extend({
 const SupplementaryImageServer = ServerBase.extend({
   kind: z.literal("supplementary-image"),
   image: z.string().min(1),
-  /** Deployment group. A supplementary image always owns its bundle. */
+  /**
+   * Deployment group. A supplementary image owns its bundle — but several
+   * servers backed by the SAME image may share one bundle, each on its own
+   * `path` (e.g. bundle-google serves gmail, calendar and docs from one image).
+   */
   bundle: SLUG,
-  /** Path the image serves MCP on, inside the container. */
+  /** Path the image serves MCP on, inside the container. Must be unique among
+   *  servers sharing a bundle. */
   path: z.string().startsWith("/").default("/mcp"),
   /** Env passed to the component. Values may be `${SECRET_REF}`. */
   env: z.record(SecretRef).default({}),
@@ -140,7 +145,8 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * and reached over the private network via ${bundle-name.PRIVATE_URL}.
  *
  * Rules (enforced below):
- *   - a bundle holding a `supplementary-image` server holds ONLY that server
+ *   - a bundle holding a `supplementary-image` server holds ONLY supplementary
+ *     images, and they must all be the SAME image on distinct paths
  *   - `builtin` servers may share a bundle freely (that's the $0-marginal win)
  *   - browser/Chromium servers want their own bundle: 1 vCPU serialises
  *     rendering, and peak RSS is ~545MB, so budget 1GB.
@@ -282,22 +288,39 @@ export const StradConfig = z
     }
     for (const [bundle, servers] of byBundle) {
       const images = servers.filter((s) => s.kind === "supplementary-image");
+
+      // One component runs ONE image. Several supplementary-image servers may
+      // still share a bundle — but only when they are the SAME image serving
+      // different paths (a bundle-google container hosting gmail, calendar and
+      // docs on /gmail, /google-calendar, /google-docs). Distinct images cannot
+      // colocate.
       const distinctImages = new Set(images.map((s) => s.image));
-      // A component runs ONE image — but several servers may share that one
-      // image, each served on its own `path`. That is how bundle-api hosts a
-      // fleet of pure-API servers from a single image. So the constraint is on
-      // the number of DISTINCT images, not the number of servers.
       if (distinctImages.size > 1) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `bundle "${bundle}" has ${distinctImages.size} distinct supplementary images; one component runs one image`,
+          message: `bundle "${bundle}" has ${distinctImages.size} distinct images; one component runs one image`,
           path: ["bundles"],
         });
       }
-      // A supplementary image owns its component outright: no builtins may share
-      // the bundle (they would need the strad image, and a component is one
-      // image). Multiple supplementary servers on the same image are fine.
-      if (images.length > 0 && images.length < servers.length) {
+
+      // When several servers share one image they must serve DISTINCT paths, or
+      // the gateway cannot tell them apart behind the single PRIVATE_URL.
+      if (images.length > 1) {
+        const paths = images.map((s) => s.path);
+        const dupPath = paths.find((p, i) => paths.indexOf(p) !== i);
+        if (dupPath !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `bundle "${bundle}" has two supplementary servers on path "${dupPath}"; each must serve a distinct path`,
+            path: ["servers"],
+          });
+        }
+      }
+
+      // A supplementary-image bundle holds ONLY supplementary images (all the
+      // same one). A builtin mixed in would run a DIFFERENT image — the strad
+      // image in bundle mode — which is "one component, one image" again.
+      if (images.length >= 1 && servers.length > images.length) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: `bundle "${bundle}" mixes a supplementary image with other servers; give the image its own bundle`,
