@@ -21,6 +21,13 @@ on:
       # PR's only core-visible change, test/onepassword.appspec.test.ts.
       # (servers/onepassword/** is validated by release-onepassword-image.yml.)
       - feat/onepassword-supplementary
+      # BOOTSTRAP ONLY — remove before/after merge. Same reason as above: the
+      # fetchpet + pointsyeah PR is STACKED on feat/good-eggs-supplementary (main
+      # does not yet carry the good-eggs browser foundation), so a PR to that base
+      # never fires `pull_request` CI. A push runs THIS branch's ci.yml over the
+      # core changes (infra config, test/appspec.browser-servers.test.ts). The two
+      # servers themselves are validated by their release-*-image.yml builds.
+      - feat/browser-servers-fetchpet-pointsyeah
 
 concurrency:
   group: ci-${{ github.ref }}
