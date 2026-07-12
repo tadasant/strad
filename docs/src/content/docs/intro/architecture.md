@@ -84,7 +84,7 @@ All three server kinds are unified behind a single `ServerAdapter` interface
 - **`BuiltinServerAdapter`** runs a builtin module in-process.
 
 Adapters are built **once at boot** — they hold long-lived upstream connections.
-Only the *toolset* is resolved per request, from the caller's entitlements
+Only the _toolset_ is resolved per request, from the caller's entitlements
 intersected with `?servers=`. Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
@@ -112,6 +112,6 @@ The server list drives how containers are grouped:
   topology. See [Deploy model](/operate/deploy-model/).
 - **Images:** published to **ghcr** (`ghcr.io/tadasant/strad`).
 - **Secrets:** stored in **GCP Secret Manager** as `strad-<env>-<NAME>`, and
-  injected as App Platform SECRET env vars *at deploy time*. The runtime
+  injected as App Platform SECRET env vars _at deploy time_. The runtime
   container holds **no cloud credentials** — it simply reads `process.env`, and
   the secret source is pluggable behind `loadSecrets()` in `src/secrets/`.

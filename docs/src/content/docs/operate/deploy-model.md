@@ -59,7 +59,7 @@ On each release, strad fires a cross-repo `repository_dispatch` to
 - `event_type: strad-image-published`, payload `{ version, sha }`.
 - Sent via `GH_STRAD_SYNC_TOKEN_TADASANT_INTERNAL`.
 
-The dispatch is **best-effort**: a no-op if the token is unset, and a *warning*
+The dispatch is **best-effort**: a no-op if the token is unset, and a _warning_
 (never a build failure) if it's rejected — "tadasant-internal polls on its own
 schedule." The OSS release never depends on the private repo being reachable.
 
@@ -78,7 +78,7 @@ flowchart LR
 job env, then renders SECRET-typed env vars into the App Platform spec (encrypted
 at rest by DigitalOcean). The container just reads `process.env`. `render-spec`'s
 output contains secret values, so it is written to a file and **never logged**.
-`collectSecretRefs` walks the *parsed* config (not raw YAML — so `${…}` inside a
+`collectSecretRefs` walks the _parsed_ config (not raw YAML — so `${…}` inside a
 comment isn't mistaken for a real ref), and an unresolved `${…}` fails the render
 loudly instead of producing a crash-looping deploy.
 
@@ -87,7 +87,7 @@ loudly instead of producing a crash-looping deploy.
 These are encoded in `src/deploy/appspec.ts` because each one cost something to
 learn:
 
-- **Internal components use `internal_ports: [8080]` and must *omit*
+- **Internal components use `internal_ports: [8080]` and must _omit_
   `http_port`.** `http_port` is what mints a public route; setting both is a hard
   API rejection. Omitting it is what keeps a bundle private.
 - **Don't hand-write `ingress` rules** — let App Platform derive them.

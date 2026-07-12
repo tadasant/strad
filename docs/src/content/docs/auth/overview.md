@@ -69,7 +69,7 @@ strad checks `hd`, not the string after the `@`.
 
 The verification is a full RS256 JWT check — JWKS with a `Cache-Control`-honoring
 cache, plus issuer / audience / expiry checks — and PKCE (S256) is used even
-though strad is a confidential client. `hd` is *also* passed as an account-chooser
+though strad is a confidential client. `hd` is _also_ passed as an account-chooser
 hint on the auth URL, but that hint is **not** the security control; the verified
 claim is. Any verified member gets the roles from `auth.google.roles`.
 
@@ -117,6 +117,6 @@ This is worth stating on its own, because it is the load-bearing idea:
 `?servers=` can only ever **narrow** the token-derived entitled set. A token
 minted for `/mcp` is valid at `?servers=anything` — the query string cannot widen
 access. The grounding is RFC 8707: resource indicators bind a token to a
-*resource*, and a query string is not one, so it cannot function as a credential
-scope. It is a convenience for selecting *which* of your entitled servers you want
+_resource_, and a query string is not one, so it cannot function as a credential
+scope. It is a convenience for selecting _which_ of your entitled servers you want
 this request — nothing more.

@@ -36,13 +36,13 @@ There is a single invariant that everything else follows from:
 
 > **The query string proposes. The token disposes.**
 
-The `?servers=` parameter can only ever *narrow* what a caller is already
+The `?servers=` parameter can only ever _narrow_ what a caller is already
 entitled to. It is **never an authorization boundary**. A token minted for `/mcp`
 is valid at `?servers=anything`; the query string cannot widen access, only
 select within it. Entitlement is computed server-side from the caller's roles and
 the config — nothing the caller sends can grow it.
 
-The justification is RFC 8707: resource indicators bind a token to a *resource*,
+The justification is RFC 8707: resource indicators bind a token to a _resource_,
 and a query string is not one. So `?servers=` is treated as a **selection hint**,
 not a credential scope. See [Auth](/auth/overview/) for how the entitled set is
 actually computed.
@@ -58,7 +58,11 @@ what's missing and where to authorize it:
   "error": "downstream_not_authenticated",
   "message": "One or more requested servers are unavailable to this token.",
   "servers": [
-    { "slug": "slack", "status": "not_entitled", "authorize_url": "https://…/console/servers/slack" }
+    {
+      "slug": "slack",
+      "status": "not_entitled",
+      "authorize_url": "https://…/console/servers/slack"
+    }
   ]
 }
 ```
@@ -79,7 +83,7 @@ function of `(token, URL)` — it is never derived from session state.
 
 That is exactly what keeps `?servers=` conformant with the **2026-07-28 MCP spec
 revision**, which removes sessions and forbids a server from varying its toolset
-per *connection* — while explicitly allowing variation by per-request *input*.
+per _connection_ — while explicitly allowing variation by per-request _input_.
 Because `?servers=` is request input and there are no sessions, selecting servers
 per request is squarely within spec.
 

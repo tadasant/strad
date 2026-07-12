@@ -7,9 +7,10 @@
    ========================================================================= */
 
 :root {
-  --font-sans: "IBM Plex Sans Variable", system-ui, -apple-system, "Segoe UI",
-    sans-serif;
-  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans:
+    "IBM Plex Sans Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 
   --sl-font: var(--font-sans);
   --sl-font-mono: var(--font-mono);
@@ -250,8 +251,14 @@ dialog.lightbox::backdrop {
     animation: lb-in 0.16s ease-out both;
   }
   @keyframes lb-in {
-    from { opacity: 0; transform: scale(0.98); }
-    to { opacity: 1; transform: scale(1); }
+    from {
+      opacity: 0;
+      transform: scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 }
 
@@ -316,7 +323,11 @@ dialog.lightbox::backdrop {
    heading colour, for both the text and the underline. */
 .starlight-aside a {
   color: var(--sl-color-asides-text-accent);
-  text-decoration-color: color-mix(in srgb, var(--sl-color-asides-text-accent) 50%, transparent);
+  text-decoration-color: color-mix(
+    in srgb,
+    var(--sl-color-asides-text-accent) 50%,
+    transparent
+  );
 }
 .starlight-aside a:hover {
   text-decoration-color: var(--sl-color-asides-text-accent);
@@ -351,7 +362,11 @@ dialog.lightbox::backdrop {
   transition: border-color 0.15s ease;
 }
 .sl-link-card:hover {
-  border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--sl-color-gray-5));
+  border-color: color-mix(
+    in srgb,
+    var(--sl-color-accent) 45%,
+    var(--sl-color-gray-5)
+  );
 }
 
 /* =========================================================================

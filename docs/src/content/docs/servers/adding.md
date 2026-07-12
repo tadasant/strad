@@ -23,22 +23,22 @@ deployment you're changing — `infra/strad.staging.yaml` for staging, or
 
 ## 2. Wire entitlements — both directions
 
-Access requires **two** agreements. Grant the role on the server *and* name the
+Access requires **two** agreements. Grant the role on the server _and_ name the
 server on the role:
 
 ```yaml
 roles:
   admin:
-    servers: ["*"]        # admin can reach every server…
+    servers: ["*"] # admin can reach every server…
   readonly:
-    servers: [echo]       # …readonly can reach only echo
+    servers: [echo] # …readonly can reach only echo
 
 servers:
   - slug: echo
     kind: builtin
     module: "./servers/echo.js"
     bundle: core
-    entitlements: [admin, readonly]   # …and echo lets both in
+    entitlements: [admin, readonly] # …and echo lets both in
 ```
 
 If either half is missing, the server is unreachable and a request for it returns
@@ -53,7 +53,7 @@ non-`core` bundle), declare that bundle:
 ```yaml
 bundles:
   - name: bundle-browser
-    instanceSizeSlug: apps-s-1vcpu-1gb   # Chromium peaks ~545MB; give it its own
+    instanceSizeSlug: apps-s-1vcpu-1gb # Chromium peaks ~545MB; give it its own
 ```
 
 Referencing an undeclared bundle is a boot-time validation error.
@@ -65,7 +65,7 @@ must resolve to an env var at boot. Those values live in **GCP Secret Manager** 
 `strad-<env>-<NAME>` and are injected as App Platform SECRET env vars at deploy
 time — the container itself holds no cloud credentials.
 
-`render-spec` walks the *parsed* config for `${NAME}` refs and injects each as a
+`render-spec` walks the _parsed_ config for `${NAME}` refs and injects each as a
 required SECRET; an unresolved `${…}` makes render fail loudly rather than letting
 the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (see
 [Operations & CI](/operate/operations/#seeding-secrets)).

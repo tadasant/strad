@@ -19,7 +19,7 @@ Runs on PRs and pushes to `main` (self-hosted runners):
   `git diff --exit-code`, so `package-lock.json` can't drift.
 - **`build_image`** — builds the Docker image, boots it with `STRAD_TOKENS='[]'`,
   and asserts two things: `/healthz` is up, and **`/mcp` with no token returns
-  `401`**. That last check is *the* test given strad's open-internet posture — an
+  `401`**. That last check is _the_ test given strad's open-internet posture — an
   unauthenticated MCP endpoint that ever returned tools would be the whole ball
   game.
 

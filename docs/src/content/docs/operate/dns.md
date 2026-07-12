@@ -11,10 +11,10 @@ Cloudflare, **DNS-only** (grey cloud) — Cloudflare is not proxying.
 
 ## The current names
 
-| Environment | Hostname | Notes |
-| --- | --- | --- |
-| Staging | `https://staging.strad.tadasant.com` | `gateway.publicUrl` in `infra/strad.staging.yaml`. |
-| Prod | `https://strad-prod-qple6.ondigitalocean.app` | Custom domain `strad.tadasant.com` is DNS-pending. |
+| Environment | Hostname                                      | Notes                                              |
+| ----------- | --------------------------------------------- | -------------------------------------------------- |
+| Staging     | `https://staging.strad.tadasant.com`          | `gateway.publicUrl` in `infra/strad.staging.yaml`. |
+| Prod        | `https://strad-prod-qple6.ondigitalocean.app` | Custom domain `strad.tadasant.com` is DNS-pending. |
 
 `gateway.publicUrl` is not just cosmetic — it is used to build the OAuth redirect
 URI (`…/console/oauth/callback`) and the `authorize_url` in every

@@ -22,7 +22,7 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard, Aside } from "@astrojs/starlight/components";
 
 strad is a self-hosted MCP platform. It is one endpoint in front of many MCP
 servers: a client asks for the servers it wants, presents a token, and strad
@@ -35,33 +35,33 @@ surface.
 
 <CardGrid>
   <Card title="One endpoint, many servers" icon="external">
-    A client hits `https://your-strad/mcp?servers=granola,deepwiki`, and strad merges
-    those upstreams into one toolset. Every tool is namespaced `server__tool`, so
-    `granola__list_meetings` never collides with anyone else.
+    A client hits `https://your-strad/mcp?servers=granola,deepwiki`, and strad
+    merges those upstreams into one toolset. Every tool is namespaced
+    `server__tool`, so `granola__list_meetings` never collides with anyone else.
   </Card>
   <Card title="The query proposes, the token disposes" icon="approve-check">
-    `?servers=` can only ever *narrow* what a token is entitled to. It is a selection
-    hint, never an authorization boundary — entitlement is computed server-side from the
-    caller's roles.
+    `?servers=` can only ever *narrow* what a token is entitled to. It is a
+    selection hint, never an authorization boundary — entitlement is computed
+    server-side from the caller's roles.
   </Card>
   <Card title="It fails closed" icon="warning">
-    Ask for a server you can't have and you get a `424 Failed Dependency` naming exactly
-    what's missing and where to authorize — not a `401` that marches your client into a
-    pointless OAuth loop against the gateway.
+    Ask for a server you can't have and you get a `424 Failed Dependency` naming
+    exactly what's missing and where to authorize — not a `401` that marches
+    your client into a pointless OAuth loop against the gateway.
   </Card>
   <Card title="Stateless and spec-conformant" icon="random">
-    A fresh MCP server and transport is built per request and torn down when it closes.
-    The toolset is a pure function of `(token, URL)`, which is what keeps `?servers=`
-    conformant with the 2026-07-28 MCP spec revision.
+    A fresh MCP server and transport is built per request and torn down when it
+    closes. The toolset is a pure function of `(token, URL)`, which is what
+    keeps `?servers=` conformant with the 2026-07-28 MCP spec revision.
   </Card>
 </CardGrid>
 
 <Aside type="tip" title="These docs describe what was built">
-Everything here is re-derived from strad's own source — the config schema, the
-gateway router, the auth code, and the deploy spec. Where something is a known gap
-or a temporary shim, it is written down, inline where it bites and aggregated on
-[Known limitations](/limitations/). Read that page before you trust anything as
-finished.
+  Everything here is re-derived from strad's own source — the config schema, the
+  gateway router, the auth code, and the deploy spec. Where something is a known
+  gap or a temporary shim, it is written down, inline where it bites and
+  aggregated on [Known limitations](/limitations/). Read that page before you
+  trust anything as finished.
 </Aside>
 
 ## Where to go next

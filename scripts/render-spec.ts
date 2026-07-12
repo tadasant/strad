@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parseConfig } from "../src/config/load.ts";
 import {
+  collectSecretRefs,
   parseImage,
   renderAppSpec,
   type EnvVar,
@@ -75,6 +76,21 @@ secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
 secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
 secret("GOOGLE_CLIENT_SECRET");
 
+// Secrets referenced by a NON-supplementary server via ${NAME} — a remote-http
+// server's url/headers (e.g. `Authorization: "Bearer ${GRANOLA_TOKEN}"`), a
+// builtin's options. These resolve IN-PROCESS at boot (src/secrets/index.ts
+// resolveRefs) in the core and any strad-image bundle, so they belong as
+// BROADCAST SECRET env vars. An unresolved ref makes the gateway refuse to
+// start, so fail loudly HERE, at render. collectSecretRefs deliberately
+// excludes supplementary-image env (those resolve deploy-time, scoped per
+// bundle — see the good-eggs path). Backward-compatible: a config with no such
+// refs (the default, and staging) adds nothing.
+const already = new Set(envs.map((e) => e.key));
+for (const name of collectSecretRefs(config)) {
+  if (already.has(name)) continue;
+  secret(name, true); // referenced by the config => required to boot
+  already.add(name);
+}
 // The dev-bypass switches. Not secrets — they are switches, and belong in the
 // spec as visible GENERAL vars. The container runs NODE_ENV=production, so the
 // bypass needs BOTH ALLOW_DEV_AUTH and ALLOW_DEV_AUTH_IN_PRODUCTION (see
