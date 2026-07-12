@@ -214,6 +214,13 @@ servers:
     region: "nyc",
     image: parseImage("ghcr.io/tadasant/strad:0.1.0"),
     env: [],
+    // Supplementary env `${NAME}` refs resolve against the secrets bag (or throw
+    // — see resolveMap). render-spec supplies these from the environment; a unit
+    // test must supply them too.
+    secrets: {
+      SLACK_BOT_TOKEN: "xoxb-test-slack",
+      TAILSCALE_API_KEY: "tskey-test-tailscale",
+    },
   });
 
   it("renders exactly ONE internal component for the shared-image bundle", () => {
@@ -240,8 +247,9 @@ servers:
   it("unions every server's env onto the one component", () => {
     const b = spec.services.find((s) => s.name === "bundle-api")!;
     const envs = Object.fromEntries(b.envs.map((e) => [e.key, e.value]));
-    expect(envs.SLACK_BOT_TOKEN).toBe("${SLACK_BOT_TOKEN}");
-    expect(envs.TAILSCALE_API_KEY).toBe("${TAILSCALE_API_KEY}");
+    // The literal ref resolves to the secret value; it must NOT survive verbatim.
+    expect(envs.SLACK_BOT_TOKEN).toBe("xoxb-test-slack");
+    expect(envs.TAILSCALE_API_KEY).toBe("tskey-test-tailscale");
     for (const e of b.envs.filter((e) =>
       ["SLACK_BOT_TOKEN", "TAILSCALE_API_KEY"].includes(e.key),
     )) {
