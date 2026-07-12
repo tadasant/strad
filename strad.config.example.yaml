@@ -1,0 +1,101 @@
+# strad configuration
+#
+# The core ships with ZERO MCP servers. This file is the ONLY place you attach
+# them, and attaching one is a single entry under `servers:`.
+#
+# Secret VALUES never appear here. `${NAME}` resolves against the environment at
+# boot — and those env vars are injected by CI from GCP Secret Manager
+# (`strad-<env>-<NAME>`) as App Platform SECRET env vars. The container itself
+# holds no cloud credentials.
+
+version: 1
+
+gateway:
+  name: strad
+  env: staging
+  publicUrl: https://staging.strad.tadasant.com
+
+auth:
+  # Humans. Verified against the Google Workspace `hd` claim — NOT the email
+  # suffix, which a personal account can spell however it likes.
+  google:
+    enabled: true
+    hostedDomain: tadasant.com
+    roles: [admin]
+
+  # Machines. `strad_<env>_<pubid>_<secret>`; only the SHA-256 is stored.
+  # Mint with: npm run token:mint -- --label "my agent" --roles admin
+  staticTokens:
+    enabled: true
+    store: env
+
+  # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while
+  # Google OAuth credentials are being provisioned. Requires ALLOW_DEV_AUTH=true.
+  # It CANNOT authenticate /mcp. Delete once OAuth lands — see HACKS.md.
+  consoleDevBypass:
+    enabled: true
+    roles: [admin]
+
+# A role names the servers it may reach. `*` means every configured server.
+# Both directions must agree: the role must name the server, AND the server must
+# list the role under `entitlements`. Neither side can grant access alone.
+roles:
+  admin:
+    servers: ["*"]
+  readonly:
+    servers: [echo]
+
+# Deployment groups. `core` is implicit (the public gateway); every bundle below
+# becomes an internal-only App Platform component on the private network.
+bundles:
+  - name: bundle-api
+    # Several lightweight builtins colocate here at $0 marginal cost.
+    instanceSizeSlug: apps-s-1vcpu-0.5gb
+
+  - name: bundle-browser
+    # Chromium peaks ~545MB and 1 vCPU serialises rendering, so it gets its own.
+    instanceSizeSlug: apps-s-1vcpu-1gb
+
+servers:
+  # --- kind: builtin --------------------------------------------------------
+  # Compiled into the strad image. This is how private/internal servers ship:
+  # tadasant-internal builds its own image with its modules and registers them
+  # with entries exactly like this one.
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core # in the gateway process itself
+    entitlements: [admin, readonly]
+    options:
+      greeting: "hello from the core"
+
+  # The same builtin machinery, but hosted in a separate component. The gateway
+  # reaches it over the private network at ${bundle-api.PRIVATE_URL}.
+  - slug: echo-bundled
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: bundle-api
+    entitlements: [admin]
+
+  # --- kind: remote-http ----------------------------------------------------
+  # Proxy an MCP server that already exists on the internet. strad holds the
+  # credential; the client never sees it.
+  #
+  # - slug: granola
+  #   kind: remote-http
+  #   url: https://mcp.granola.ai/mcp
+  #   entitlements: [admin]
+  #   headers:
+  #     Authorization: "Bearer ${GRANOLA_TOKEN}"
+
+  # --- kind: supplementary-image --------------------------------------------
+  # A server published as its own container image. strad deploys it as an
+  # internal-only component and proxies to it. One entry, one server.
+  #
+  # - slug: good-eggs
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-server-good-eggs:latest
+  #   bundle: bundle-browser
+  #   entitlements: [admin]
+  #   env:
+  #     GOOD_EGGS_SESSION: "${GOOD_EGGS_SESSION}"

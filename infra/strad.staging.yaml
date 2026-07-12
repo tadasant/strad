@@ -1,0 +1,65 @@
+# strad config for the staging deployment.
+#
+# CI reads this, renders it into a DigitalOcean App Platform spec (see
+# src/deploy/appspec.ts) and injects the secret values from GCP Secret Manager.
+# It exercises all three server kinds on purpose — staging that only proves the
+# easy path is not proving much.
+
+version: 1
+
+gateway:
+  name: strad
+  env: staging
+  publicUrl: https://staging.strad.tadasant.com
+
+auth:
+  google:
+    enabled: false # flips to true the moment GOOGLE_CLIENT_ID/SECRET land
+    hostedDomain: tadasant.com
+    roles: [admin]
+  staticTokens:
+    enabled: true
+    store: env
+  consoleDevBypass:
+    enabled: true
+    roles: [admin]
+
+roles:
+  admin:
+    servers: ["*"]
+  # A deliberately narrow role. The 424 fail-closed path is only meaningful if
+  # something is actually withheld from someone.
+  echo-only:
+    servers: [echo]
+
+bundles:
+  - name: bundle-api
+    instanceSizeSlug: apps-s-1vcpu-1gb
+
+servers:
+  # kind: builtin, in the gateway process.
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin, echo-only]
+    options:
+      greeting: "hello from the core gateway"
+
+  # kind: builtin, in a SEPARATE internal component. Proves the private-network
+  # path: core reaches it at ${bundle-api.PRIVATE_URL}, which never leaves the VPC.
+  - slug: bundled
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: bundle-api
+    entitlements: [admin]
+    options:
+      greeting: "hello from bundle-api, over the private network"
+
+  # kind: remote-http. A real third-party MCP server on the public internet,
+  # proxied through strad. No credential needed for this one, which is why it
+  # makes a good staging canary.
+  - slug: deepwiki
+    kind: remote-http
+    url: https://mcp.deepwiki.com/mcp
+    entitlements: [admin]

@@ -1,0 +1,27 @@
+# The default config baked into the stock strad image.
+#
+# It has ZERO servers, and that is the point: the OSS core is a platform, not a
+# bundle of integrations. Nothing is reachable through it until you say so.
+#
+# A deployment overrides this wholesale by setting STRAD_CONFIG_YAML (the app
+# spec does exactly that), or by baking its own file in and pointing
+# STRAD_CONFIG at it.
+#
+# See strad.config.example.yaml for a config with all three server kinds.
+
+version: 1
+
+gateway:
+  name: strad
+  env: dev
+
+auth:
+  staticTokens:
+    enabled: true
+    store: env
+
+roles: {}
+
+bundles: []
+
+servers: []
