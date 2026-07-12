@@ -65,17 +65,27 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+      - name: Set up gcloud
+        # The self-hosted runner has no gcloud on PATH; install it. Without this
+        # the secret read silently loads zero secrets (the gcloud call is in a
+        # process substitution, so its failure doesn't surface) and the deploy
+        # then dies at render time with a confusing "STRAD_TOKENS required".
+        uses: google-github-actions/setup-gcloud@v2
+
       - name: Read staging secrets from GCP Secret Manager
         id: secrets
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -euo pipefail
-          # Each strad-staging-<NAME> secret becomes $NAME in $GITHUB_ENV, masked.
-          mapfile -t NAMES < <(gcloud secrets list --project "$GCP_PROJECT_ID" \
+          # List first, on its own line, so a gcloud failure fails the step
+          # instead of hiding inside a process substitution.
+          LIST=$(gcloud secrets list --project "$GCP_PROJECT_ID" \
             --filter="name:strad-staging-" --format="value(name)")
+          mapfile -t NAMES < <(printf '%s\n' "$LIST" | grep -v '^$' || true)
           if [ "${#NAMES[@]}" -eq 0 ]; then
-            echo "::warning::no strad-staging-* secrets found. Run secrets-sync.yml first."
+            echo "::error::no strad-staging-* secrets found. Run secrets-sync.yml first."
+            exit 1
           fi
           for full in "${NAMES[@]}"; do
             key="${full#strad-staging-}"
@@ -90,7 +100,10 @@ jobs:
         # It is written to a file, never echoed — a rendered spec is not log-safe.
         env:
           VERSION: ${{ inputs.version || 'latest' }}
-          ALLOW_DEV_AUTH: ${{ env.ALLOW_DEV_AUTH }}
+          # Staging runs the console dev bypass until Google OAuth creds land.
+          # NODE_ENV=production still gates it hard; ADMIN_BOOTSTRAP_TOKEN is
+          # required to actually use it. See HACKS.md.
+          ALLOW_DEV_AUTH: "true"
         run: |
           set -euo pipefail
           node --experimental-transform-types scripts/render-spec.ts \
