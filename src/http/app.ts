@@ -5,6 +5,9 @@ import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
+import type { SecretBag } from "../secrets/index.ts";
+import { mountConsoleUi } from "../ui/index.ts";
+import type { GcsLister } from "../ui/gcs-client.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -12,6 +15,14 @@ export interface AppOptions {
   tokenStore: TokenStore;
   mode: Mode;
   env?: NodeJS.ProcessEnv;
+  /**
+   * The injected secret bag, used by the human console UI to resolve a server's
+   * `${SECRET}` config refs (bucket, credentials) exactly as the registry does.
+   * Optional so existing test call sites need not supply it.
+   */
+  secrets?: SecretBag;
+  /** Test seam: substitute the GCS listing surface behind the console UI. */
+  gcsList?: GcsLister;
 }
 
 export function createApp(opts: AppOptions): Express {
@@ -50,6 +61,13 @@ export function createApp(opts: AppOptions): Express {
 
   if (opts.mode === "core") {
     mountConsole(app, opts, env);
+    // The human, SSO-gated resource browser. Same gate as /console; not /mcp.
+    mountConsoleUi(app, {
+      config: opts.config,
+      secrets: opts.secrets ?? {},
+      env,
+      gcsList: opts.gcsList,
+    });
   }
 
   return app;
