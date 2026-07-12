@@ -1,0 +1,22 @@
+{
+  "name": "strad-server-pointsyeah",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PointsYeah MCP server packaged as a strad supplementary-image bundle (streamable-HTTP over the shared/ tool logic).",
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "remote"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared && npm run build --workspace remote",
+    "start": "node remote/build/index.js"
+  },
+  "comments": {
+    "overrides": "Pin Playwright to the exact version whose bundled Chromium (rev 1228) ships in the mcr.microsoft.com/playwright:v1.61.1-noble base image, so the container never has to download a browser at build time. shared/ declares ^1.58.2 and remote/ ^1.58.2; 1.61.1 satisfies both while guaranteeing the runtime matches the image."
+  },
+  "overrides": {
+    "playwright": "1.61.1",
+    "playwright-core": "1.61.1"
+  }
+}

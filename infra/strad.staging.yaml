@@ -35,10 +35,16 @@ roles:
 bundles:
   - name: bundle-api
     instanceSizeSlug: apps-s-1vcpu-1gb
-  # The good-eggs bundle drives a real Chromium. It peaks ~545MB RSS, so 1GB is
-  # the floor; the binding constraint is CPU (1 vCPU serialises page rendering),
-  # not RAM.
+  # Browser bundles. Each drives a real headless Chromium: peak ~545MB RSS, so
+  # 1GB is the floor; the binding constraint is CPU (1 vCPU serialises page
+  # rendering), not RAM. strad's schema enforces ONE image per bundle, so each
+  # browser server owns its own bundle — good-eggs, fetchpet and pointsyeah are a
+  # FAMILY of colocated 1GB Chromium bundles, not one shared component.
   - name: bundle-goodeggs
+    instanceSizeSlug: apps-s-1vcpu-1gb
+  - name: bundle-fetchpet
+    instanceSizeSlug: apps-s-1vcpu-1gb
+  - name: bundle-pointsyeah
     instanceSizeSlug: apps-s-1vcpu-1gb
 
 servers:
@@ -84,3 +90,32 @@ servers:
     env:
       GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
       GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"
+
+  # kind: supplementary-image. Two more browser-driven servers in the same
+  # browser-bundle family as good-eggs (each its own 1GB Chromium component). They
+  # are registered here but shipped ENABLED: FALSE — this OSS staging holds no
+  # credentials for them (real creds are wired downstream in tadasant-internal,
+  # which flips these on). A disabled server emits no component and demands no
+  # secret at render (see appspec.ts / render-spec.ts), so staging stays
+  # deployable with zero new secrets. timeoutMs is 180s: these browser flows are
+  # slower than good-eggs and the MCP SDK's silent 60s default would kill them.
+  - slug: fetchpet
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-fetchpet:latest
+    bundle: bundle-fetchpet
+    entitlements: [admin]
+    enabled: false
+    timeoutMs: 180000
+    env:
+      FETCHPET_USERNAME: "${FETCHPET_USERNAME}"
+      FETCHPET_PASSWORD: "${FETCHPET_PASSWORD}"
+
+  - slug: pointsyeah
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-pointsyeah:latest
+    bundle: bundle-pointsyeah
+    entitlements: [admin]
+    enabled: false
+    timeoutMs: 180000
+    env:
+      POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"

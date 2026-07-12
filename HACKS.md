@@ -339,6 +339,43 @@ all — it is a pinned binary baked into the image (see `servers/onepassword/Doc
 Longer term, have upstream publish `@pulsemcp/mcp-elicitation` and `shared` as
 real packages and depend on them.
 
+## 14. fetchpet + pointsyeah are stacked on the good-eggs branch, and disabled in staging
+
+**What.** The fetchpet + pointsyeah browser servers were added on top of
+`feat/good-eggs-supplementary`, and the PR targets **that branch**, not `main`.
+
+**Why.** `main` does not yet carry the good-eggs browser foundation: the
+supplementary-image machinery (`render-spec.ts` bundle-secret injection, the
+`servers/good-eggs/` scaffold, the release/CI wiring) lives on
+`feat/good-eggs-supplementary`, which diverged from `main` before it merged.
+These two servers reuse that exact foundation (same `supplementary-image` kind,
+same per-bundle secret scoping, same Playwright base image), so they stack on it
+rather than re-introducing it. When the good-eggs stack lands on `main`, this PR
+comes with it.
+
+**Also.** Both servers are registered in `infra/strad.staging.yaml` with
+`enabled: false`. This OSS staging holds no credentials for them (real creds are
+wired downstream in tadasant-internal, which flips them on). A disabled
+supplementary image emits no App Platform component and demands no secret at
+render (verified: `render-spec` skips it), so staging stays deployable with zero
+new secrets. Their images are therefore **not** bootstrap-pushed from the PR
+branch (unlike good-eggs in hack #9) — the `release-fetchpet-image.yml` /
+`release-pointsyeah-image.yml` workflows fire on `main` + path only. `ci.yml`
+carries a `feat/browser-servers-fetchpet-pointsyeah` push bootstrap for the same
+reason as hack #9 (a PR to a non-`main` base doesn't fire `pull_request` CI).
+
+**Note (pointsyeah browser reuse).** Upstream pointsyeah launches a fresh
+Chromium on every `search_flights` call. On App Platform gVisor that ~1s launch
+is pure waste, so `servers/pointsyeah/remote/` injects a browser-reusing
+`PlaywrightSearchDeps` (one browser at startup, a new context per search) via the
+shared factory's DI seam — `shared/` is left verbatim (see hack #10).
+
+**Undo.** Once the good-eggs stack + this PR reach `main`: delete the
+`feat/browser-servers-fetchpet-pointsyeah` line from `ci.yml on.push.branches`;
+seed `strad-staging-FETCHPET_USERNAME` / `_PASSWORD` and
+`strad-staging-POINTSYEAH_REFRESH_TOKEN` (or leave them to tadasant-internal),
+then flip the two servers to `enabled: true`.
+
 ---
 
 ## What the human still needs to provision
@@ -373,3 +410,12 @@ A consolidated checklist, cross-referenced above:
       The onepassword token (`OP_SERVICE_ACCOUNT_TOKEN`) and its `onepassword-ro`
       / `onepassword-rw` server configs are wired downstream in tadasant-internal,
       not in this repo.
+- [ ] **Land the good-eggs stack + the fetchpet/pointsyeah PR on `main`**, then
+      drop the `feat/browser-servers-fetchpet-pointsyeah` bootstrap trigger →
+      removes hack #14.
+- [ ] **To activate fetchpet / pointsyeah**: seed
+      `strad-staging-FETCHPET_USERNAME` / `_PASSWORD` and
+      `strad-staging-POINTSYEAH_REFRESH_TOKEN` (real creds live in
+      tadasant-internal), confirm the two `strad-server-*` ghcr packages are
+      pullable by `GHCR_PULL_TOKEN`, then flip both to `enabled: true` in
+      `infra/strad.staging.yaml`.

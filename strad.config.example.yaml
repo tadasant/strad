@@ -128,3 +128,28 @@ servers:
   #     OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
   #     ENABLED_TOOLGROUPS: "readonly"
   #     DANGEROUSLY_SKIP_ELICITATIONS: "true"
+  # More browser-driven servers join good-eggs as a FAMILY of 1GB Chromium
+  # bundles — the schema enforces one image per bundle, so each owns its own
+  # (bundle-fetchpet, bundle-pointsyeah, …), not a single shared component. They
+  # all launch ONE long-lived Chromium and reuse it (a browser context per
+  # request); `timeoutMs` is bumped to 180s because these flows are slow.
+  #
+  # - slug: fetchpet
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-server-fetchpet:latest
+  #   bundle: bundle-fetchpet
+  #   entitlements: [admin]
+  #   timeoutMs: 180000
+  #   env:
+  #     FETCHPET_USERNAME: "${FETCHPET_USERNAME}"
+  #     FETCHPET_PASSWORD: "${FETCHPET_PASSWORD}"
+  #
+  # - slug: pointsyeah
+  #   kind: supplementary-image
+  #   image: ghcr.io/tadasant/strad-server-pointsyeah:latest
+  #   bundle: bundle-pointsyeah
+  #   entitlements: [admin]
+  #   timeoutMs: 180000
+  #   env:
+  #     # Optional: the server boots without it and exposes set_refresh_token.
+  #     POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
