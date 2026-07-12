@@ -90,12 +90,20 @@ servers:
 
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an
-  # internal-only component and proxies to it. One entry, one server.
+  # internal-only component (its own bundle) and proxies to it over the private
+  # network. One entry, one server. `env:` values that are `${NAME}` refs
+  # resolve onto THIS bundle only, so a credential isn't broadcast to every
+  # component. `timeoutMs` overrides the MCP SDK's silent 60s default — set it
+  # generously for anything slow, e.g. a browser-driven server.
+  #
+  # This is exactly how good-eggs is wired in infra/strad.staging.yaml.
   #
   # - slug: good-eggs
   #   kind: supplementary-image
   #   image: ghcr.io/tadasant/strad-server-good-eggs:latest
-  #   bundle: bundle-browser
+  #   bundle: bundle-goodeggs
   #   entitlements: [admin]
+  #   timeoutMs: 120000
   #   env:
-  #     GOOD_EGGS_SESSION: "${GOOD_EGGS_SESSION}"
+  #     GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
+  #     GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"

@@ -75,6 +75,35 @@ secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
 secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
 secret("GOOGLE_CLIENT_SECRET");
 
+// A supplementary image's `env:` map may reference `${NAME}` secrets. Unlike the
+// SECRETs above (which broadcast to every component), these resolve onto ONLY
+// the bundle that names them — see appspec.ts. Collect every referenced name
+// from the config, pull it from the environment, and hand the bag to the
+// renderer. A referenced-but-unset secret is a hard error: better a failed
+// deploy than a browser bundle that can't log in.
+const SECRET_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+const bundleSecrets: Record<string, string> = {};
+for (const server of config.servers) {
+  if (server.kind !== "supplementary-image") continue;
+  // appspec.ts skips disabled servers and emits no bundle for them, so don't
+  // demand their secrets here either — that would fail-close in the wrong place.
+  if (!server.enabled) continue;
+  for (const raw of Object.values(server.env)) {
+    for (const match of raw.matchAll(SECRET_REF)) {
+      const name = match[1]!;
+      if (name in bundleSecrets) continue;
+      const value = process.env[name];
+      if (!value) {
+        console.error(
+          `::error::${name} is referenced by server "${server.slug}" env but is not set`,
+        );
+        process.exit(1);
+      }
+      bundleSecrets[name] = value;
+    }
+  }
+}
+
 // The dev-bypass switches. Not secrets — they are switches, and belong in the
 // spec as visible GENERAL vars. The container runs NODE_ENV=production, so the
 // bypass needs BOTH ALLOW_DEV_AUTH and ALLOW_DEV_AUTH_IN_PRODUCTION (see
@@ -91,6 +120,7 @@ const spec = renderAppSpec({
   region: values.region ?? "nyc",
   image: parseImage(values.image),
   env: envs,
+  secrets: bundleSecrets,
   domains: values.domain?.map((d) => ({ domain: d, type: "PRIMARY" as const })),
 });
 

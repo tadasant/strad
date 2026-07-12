@@ -4,7 +4,16 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches:
+      - main
+      # BOOTSTRAP ONLY — remove before/after merge. This PR targets
+      # feat/strad-core-platform (PR #2), so its `pull_request` CI reads the base
+      # branch's ci.yml, which only fires for PRs to main. A `push` event runs
+      # THIS branch's ci.yml, giving the PR's strad-core changes (appspec.ts,
+      # render-spec.ts, test/appspec.test.ts, config) a real typecheck/lint/test/
+      # build run before merge. (servers/** is out of the core toolchain and is
+      # validated by release-goodeggs-image.yml instead.) See HACKS #9.
+      - feat/good-eggs-supplementary
 
 concurrency:
   group: ci-${{ github.ref }}
