@@ -1,0 +1,31 @@
+{
+  "name": "onepassword-mcp-server-shared",
+  "version": "0.1.1",
+  "description": "Shared code for 1Password MCP server implementations",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@pulsemcp/mcp-elicitation": "*",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3"
+  },
+  "keywords": [
+    "mcp",
+    "1password",
+    "password-manager",
+    "secrets"
+  ],
+  "author": "PulseMCP",
+  "license": "MIT"
+}

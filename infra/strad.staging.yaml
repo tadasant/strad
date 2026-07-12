@@ -35,6 +35,11 @@ roles:
 bundles:
   - name: bundle-api
     instanceSizeSlug: apps-s-1vcpu-1gb
+  # The good-eggs bundle drives a real Chromium. It peaks ~545MB RSS, so 1GB is
+  # the floor; the binding constraint is CPU (1 vCPU serialises page rendering),
+  # not RAM.
+  - name: bundle-goodeggs
+    instanceSizeSlug: apps-s-1vcpu-1gb
 
 servers:
   # kind: builtin, in the gateway process.
@@ -63,3 +68,19 @@ servers:
     kind: remote-http
     url: https://mcp.deepwiki.com/mcp
     entitlements: [admin]
+
+  # kind: supplementary-image. The first REAL one: Good Eggs, published as its
+  # own container (servers/good-eggs) and run as an internal-only component. The
+  # core reaches it at ${bundle-goodeggs.PRIVATE_URL} -> http://bundle-goodeggs:8080.
+  # It drives a headless Chromium and logs into a real Good Eggs account, so its
+  # tool calls can take a while — timeoutMs is set explicitly above the MCP SDK's
+  # silent 60s default. Credentials resolve onto THIS bundle only (see appspec.ts).
+  - slug: good-eggs
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-server-good-eggs:latest
+    bundle: bundle-goodeggs
+    entitlements: [admin]
+    timeoutMs: 120000
+    env:
+      GOODEGGS_EMAIL: "${GOODEGGS_EMAIL}"
+      GOODEGGS_PASSWORD: "${GOODEGGS_PASSWORD}"

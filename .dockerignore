@@ -6,3 +6,6 @@ test
 docs
 *.md
 .env*
+# Supplementary servers ship as their own images; keep them out of the core's
+# build context.
+servers

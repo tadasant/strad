@@ -1,0 +1,23 @@
+{
+  "name": "onepassword-mcp-server-remote",
+  "version": "0.1.0",
+  "description": "Streamable-HTTP entrypoint for the 1Password MCP server (strad supplementary-image).",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.2.1",
+    "onepassword-mcp-server-shared": "*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3"
+  },
+  "author": "PulseMCP",
+  "license": "MIT"
+}
