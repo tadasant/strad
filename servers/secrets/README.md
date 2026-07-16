@@ -184,8 +184,11 @@ viewer identity and bind it to Parameter Manager viewer **and nothing that grant
 `secretmanager.versions.access`**:
 
 ```bash
-PROJECT=strad-params-staging
-gcloud services enable parametermanager.googleapis.com secretmanager.googleapis.com --project "$PROJECT"
+PROJECT=strad-secrets-staging
+# A brand-new project needs billing linked before these two managed APIs will
+# enable, and creating it under an org needs --organization.
+gcloud services enable parametermanager.googleapis.com secretmanager.googleapis.com \
+  iam.googleapis.com --project "$PROJECT"
 
 gcloud iam service-accounts create strad-secrets-viewer \
   --display-name "strad secrets (MCP, viewer: parameters + non-secret values)" --project "$PROJECT"
@@ -195,6 +198,19 @@ gcloud iam service-accounts create strad-secrets-viewer \
 gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:strad-secrets-viewer@$PROJECT.iam.gserviceaccount.com" \
   --role roles/parametermanager.parameterViewer
+
+# The console's ADMIN identity (a DIFFERENT service account, never on the MCP
+# container). The predefined role is roles/parametermanager.admin — there is no
+# `parameterAdmin`. Pair it with roles/secretmanager.admin so it can write secret
+# values too.
+gcloud iam service-accounts create strad-secrets-admin \
+  --display-name "strad secrets (console admin: read/write both stores)" --project "$PROJECT"
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com" \
+  --role roles/parametermanager.admin
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "serviceAccount:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com" \
+  --role roles/secretmanager.admin
 ```
 
 **Verify the split before trusting it.** Create a secret and a secret parameter
@@ -209,9 +225,12 @@ gcloud auth activate-service-account --key-file /tmp/viewer.json
 
 The viewer must hold **no other binding** that grants `versions.access`
 (`roles/secretmanager.secretAccessor`, `roles/editor`, `roles/owner` all do). Then
-seed the viewer key and project id into the *strad* Secret Manager project as
-`strad-<env>-SECRETS_VIEWER_KEY_JSON` and `strad-<env>-SECRETS_PROJECT_ID`, which
-is where the deploy reads them from.
+seed ONLY the two SA keys into the *strad* Secret Manager project (the one the
+deploy reads, where `SLACK_BOT_TOKEN` and friends live — NOT this params project)
+as `strad-<env>-SECRETS_VIEWER_KEY_JSON` and `strad-<env>-SECRETS_ADMIN_KEY_JSON`.
+The project id and namespace are non-secret config LITERALS in
+`infra/strad.<env>.yaml` (like the `gcs` server's `GCS_PROJECT_ID`) — they are not
+seeded anywhere.
 
 ## Test
 

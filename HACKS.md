@@ -665,15 +665,21 @@ A consolidated checklist, cross-referenced above:
 - [ ] **The secrets/parameters GCP project + three service accounts** (hack #25):
       a project holding ONLY the `/strad/staging/mcp/*` parameters (its id is a
       LITERAL in `infra/strad.staging.yaml`, `strad-secrets-staging` — not a
-      seeded secret, since a project id is not a credential); a VIEWER SA
-      (Parameter Manager viewer, NO `secretmanager.versions.access`) → seed its
-      key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; an ADMIN SA (Parameter
-      Manager + Secret Manager admin) → `strad-staging-SECRETS_ADMIN_KEY_JSON`; a
-      RESOLVER SA (read values of both stores) →
-      `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed
-      for the deploy-time param injection of `remote-filesystem-tmp-public`). Only
-      the SA KEYS are secret. Then set both
-      `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
+      seeded secret, since a project id is not a credential). A fresh project needs
+      billing linked (`gcloud billing projects link`) and `--organization`, plus
+      `parametermanager` / `secretmanager` / `iam` enabled, before the SAs can be
+      created. Exact predefined roles, verified live: the VIEWER SA gets
+      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`)
+      → seed key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; the ADMIN SA gets
+      `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
+      plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the
+      RESOLVER SA gets `roles/parametermanager.parameterViewer` plus
+      `roles/secretmanager.secretAccessor` →
+      `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed for
+      the deploy-time param injection of `remote-filesystem-tmp-public`). Only the SA
+      KEYS are secret; seed them into strad's existing `strad-staging-*` Secret
+      Manager project (where SLACK_BOT_TOKEN lives), not the params project. Then set
+      both `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
