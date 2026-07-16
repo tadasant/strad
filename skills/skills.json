@@ -9,5 +9,14 @@
     "user_invocable": true,
     "default_in_roots": ["strad"],
     "references": ["brand", "brand-voice", "anti-slop-rubric"]
+  },
+  "strad-deploy-staging": {
+    "id": "strad-deploy-staging",
+    "title": "Deploy strad to Staging",
+    "description": "Deploy a strad change to the staging environment. The `Deploy staging` workflow deploys a PRE-BUILT published image tag (ghcr.io/tadasant/strad:<version>) to the strad-staging App Platform app rendered from infra/strad.staging.yaml — it does not build from source, so the normal path is a merge to main (which builds the image and then deploys it) and a manual workflow_dispatch re-pins staging to a specific tag (rollback/re-deploy). Covers dispatching the run, staging the unmerged branch via release-image.yml, the App-Platform full-replace hazard, verifying the public 401-gated host, rollback, and what an agent session can and cannot do without DO/GCP credentials. Production is NOT deployed from this repo — it lives in tadasant-internal.",
+    "path": "strad-deploy-staging",
+    "category": "strad",
+    "user_invocable": true,
+    "default_in_roots": ["strad"]
   }
 }
