@@ -25,9 +25,14 @@ an App Platform spec update, not a rebuild of a host.
 The single most important thing to internalize: **strad staging deploys a
 pre-built image tag, not a branch.** `.github/workflows/deploy-staging.yml` takes
 a `version` input (an image tag like `0.1.7`, defaulting to `latest`) and points
-`strad-staging` at `ghcr.io/tadasant/strad:<version>`. It never checks out or
-builds your code. So "deploy my change to staging" is really two questions: _does
-an image of my change exist yet_, and _is staging pointed at it_.
+`strad-staging` at `ghcr.io/tadasant/strad:<version>`. It never builds your code
+into an image — it checks out the repo only to render the App Platform spec from
+`infra/strad.staging.yaml`, and a bare `workflow_dispatch` (no `--ref`) renders it
+from the **default branch**. So a deploy has two layers, and a change reaches
+staging through whichever one it lives in: an **image-layer** change (anything in
+the built image) reaches staging via a published `version` tag; a **spec-layer**
+change (`infra/strad.staging.yaml`, `scripts/render-spec.ts`) reaches it only once
+it lands on `main` (or via a `--ref` dispatch — see below).
 
 ## The critical facts
 
@@ -72,7 +77,7 @@ an image of my change exist yet_, and _is staging pointed at it_.
   actually bitten: omitting `domains` from an update _detaches the custom domain_,
   and the app stays healthy on its `*.ondigitalocean.app` ingress while
   `staging.strad.tadasant.com` fails its TLS handshake, so nothing alerts.
-  `render-spec` now always emits `domains` (defaulted from `gateway.publicUrl`,
+  `render-spec` always emits `domains` (defaulted from `gateway.publicUrl`,
   and the deploy passes `--domain staging.strad.tadasant.com` explicitly). **Verify
   the custom domain still serves after any deploy.** See `HACKS.md` #18 and
   `docs/src/content/docs/operate/deploy-model.md`.
@@ -133,8 +138,8 @@ gh run watch "$(gh run list --workflow=deploy-staging.yml --limit 1 --json datab
 
 What the run does, in order (all on a `self-hosted` runner, in the `staging`
 environment, under the `staging-deploy` concurrency group): **preflight** the
-prerequisites → authenticate to GCP (Workload Identity Federation, falling back to
-`GCP_SA_KEY`) → read `strad-staging-*` from Secret Manager (masked, into
+prerequisites → authenticate to GCP (via `GCP_SA_KEY`) → read `strad-staging-*`
+from Secret Manager (masked, into
 `$GITHUB_ENV`) → **render the App Platform spec** with `scripts/render-spec.ts`
 from `infra/strad.staging.yaml` (`--image ghcr.io/tadasant/strad:<version>`,
 `--app strad-staging`, `--region nyc`, `--domain staging.strad.tadasant.com`) to
