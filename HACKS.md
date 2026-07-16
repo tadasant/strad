@@ -663,12 +663,16 @@ boots without its resolved parameters and degrades gracefully.
 A consolidated checklist, cross-referenced above:
 
 - [ ] **The secrets/parameters GCP project + three service accounts** (hack #25):
-      a project holding ONLY the `/strad/staging/mcp/*` parameters; a VIEWER SA
-      (Parameter Manager viewer, NO `secretmanager.versions.access`) → seed as
-      `strad-staging-SECRETS_VIEWER_KEY_JSON`; an ADMIN SA (Parameter Manager +
-      Secret Manager admin) → `strad-staging-SECRETS_ADMIN_KEY_JSON`; a RESOLVER
-      SA (read values of both stores) → `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`;
-      plus `strad-staging-SECRETS_PROJECT_ID`. Then set both
+      a project holding ONLY the `/strad/staging/mcp/*` parameters (its id is a
+      LITERAL in `infra/strad.staging.yaml`, `strad-secrets-staging` — not a
+      seeded secret, since a project id is not a credential); a VIEWER SA
+      (Parameter Manager viewer, NO `secretmanager.versions.access`) → seed its
+      key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; an ADMIN SA (Parameter
+      Manager + Secret Manager admin) → `strad-staging-SECRETS_ADMIN_KEY_JSON`; a
+      RESOLVER SA (read values of both stores) →
+      `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed
+      for the deploy-time param injection of `remote-filesystem-tmp-public`). Only
+      the SA KEYS are secret. Then set both
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 

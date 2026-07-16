@@ -312,9 +312,13 @@ servers:
   # anything in that project and cannot see strad's own secrets, because they are
   # elsewhere. See servers/secrets/README.md.
   #
-  # SEEDING (not yet done — see the PR): the two keys must exist in Secret Manager
-  # as strad-staging-SECRETS_VIEWER_KEY_JSON and strad-staging-SECRETS_ADMIN_KEY_JSON
-  # before this deploys.
+  # The project id and namespace are NON-SECRET config, so they are LITERALS here
+  # (like `gcs`'s GCS_PROJECT_ID above) — not `${refs}`. Only the two service-
+  # account KEYS are secret. SEEDING (not yet done — see the PR): seed just the
+  # keys in Secret Manager as strad-staging-SECRETS_VIEWER_KEY_JSON and
+  # strad-staging-SECRETS_ADMIN_KEY_JSON before this deploys. If you named the
+  # secrets project something other than `strad-secrets-staging`, edit the two
+  # SECRETS_PROJECT_ID literals below.
   - slug: secrets
     kind: supplementary-image
     title: Secrets & parameters
@@ -324,13 +328,13 @@ servers:
     path: /secrets
     entitlements: [admin]
     env:
-      SECRETS_PROJECT_ID: "${SECRETS_PROJECT_ID}"
+      SECRETS_PROJECT_ID: "strad-secrets-staging"
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
       # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
-      SECRETS_PROJECT_ID: "${SECRETS_PROJECT_ID}"
+      SECRETS_PROJECT_ID: "strad-secrets-staging"
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
       # Parameter Manager admin + Secret Manager admin. Core only. Humans only.
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"

@@ -253,13 +253,13 @@ servers:
     path: /secrets
     entitlements: [admin]
     env:
-      SECRETS_PROJECT_ID: "${SECRETS_PROJECT_ID}"
+      SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
       # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
-      SECRETS_PROJECT_ID: "${SECRETS_PROJECT_ID}"
+      SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
       # Parameter Manager admin + Secret Manager admin. Core only. Humans only.
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
