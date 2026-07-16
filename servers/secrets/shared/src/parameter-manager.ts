@@ -154,7 +154,7 @@ export class ParameterManagerError extends Error {
  */
 export function parameterId(path: string): string {
   let id = path
-    .replace(/^\//, "")
+    .replace(/^\/+/, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
@@ -261,7 +261,41 @@ export class ParameterManagerReadClient implements ParametersReader {
   }
 
   /**
-   * Read one parameter's latest version and decode its envelope.
+   * The id of the greatest ENABLED version of a parameter, or undefined.
+   *
+   * Parameter Manager's `parameterVersions.get` has NO `latest` alias (that is a
+   * Secret Manager feature) — so the current version has to be found by
+   * enumerating. This is byte-for-byte the same choice the admin/resolver half
+   * makes (src/secrets/parameters/gcp.ts `currentVersionId`): list the versions,
+   * skip the disabled ones, and take the greatest `v{n}` by numeric suffix, so
+   * all three roles read the same version of the same parameter.
+   */
+  private async currentVersionId(id: string): Promise<string | undefined> {
+    const versions: RawVersion[] = [];
+    let pageToken: string | undefined;
+    do {
+      const qs = new URLSearchParams({ pageSize: "100" });
+      if (pageToken) qs.set("pageToken", pageToken);
+      const page = (await this.get(
+        `${this.parent}/parameters/${encodeURIComponent(id)}/versions?${qs.toString()}`,
+      )) as { parameterVersions?: RawVersion[]; nextPageToken?: string };
+      versions.push(...(page.parameterVersions ?? []));
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+
+    let best: { vid: string; n: number } | undefined;
+    for (const v of versions) {
+      if (v.disabled) continue;
+      const vid = v.name?.split("/").pop();
+      if (!vid) continue;
+      const n = Number(/(\d+)$/.exec(vid)?.[1] ?? "0");
+      if (!best || n > best.n) best = { vid, n };
+    }
+    return best?.vid;
+  }
+
+  /**
+   * Read one parameter's current version and decode its envelope.
    *
    * This is `parametermanager.parameterVersions.get` — the version's PAYLOAD, not
    * a `:render`. For a non-secret parameter the payload is the literal value; for
@@ -269,17 +303,19 @@ export class ParameterManagerReadClient implements ParametersReader {
    * the secret. The viewer may read either; it can deref neither.
    */
   private async readVersion(id: string): Promise<ParameterRecord | null> {
+    const vid = await this.currentVersionId(id);
+    // No enabled version -> nothing to describe. That is a state, not a failure.
+    if (!vid) return null;
     let raw: RawVersion;
     try {
       raw = (await this.get(
-        `${this.parent}/parameters/${encodeURIComponent(id)}/versions/latest`,
+        `${this.parent}/parameters/${encodeURIComponent(id)}/versions/${encodeURIComponent(vid)}`,
       )) as RawVersion;
     } catch (err) {
-      // A parameter with no version 404s. That is a state, not a failure.
+      // A version that vanished between list and get 404s. Treat as no value.
       if (err instanceof ParameterManagerError && err.status === 404) return null;
       throw err;
     }
-    if (raw.disabled) return null;
     const b64 = raw.payload?.data;
     if (!b64) return null;
     const envelope = JSON.parse(
@@ -287,7 +323,7 @@ export class ParameterManagerReadClient implements ParametersReader {
     ) as ParameterEnvelope;
     return {
       envelope,
-      latestVersion: raw.name?.split("/").pop(),
+      latestVersion: raw.name?.split("/").pop() ?? vid,
       latestVersionTime: raw.createTime,
     };
   }

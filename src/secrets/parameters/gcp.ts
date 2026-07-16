@@ -269,11 +269,17 @@ export function createGcpParameterStore(
       envelopeValue = secretRef(cfg.projectId, id);
     }
 
-    await pm("POST", `${pmParent}/parameters?parameter_id=${id}`, {
-      format: "JSON",
-      labels: { "managed-by": "strad", secret: String(input.secret) },
-    });
+    // Both Parameter Manager writes — the parameter and its first version — are
+    // inside the rollback, along with the Secret Manager secret written above.
+    // A failure at ANY of them must leave nothing behind, or a retry meets a 409
+    // ("already exists") on whichever resource did get created. In particular the
+    // parameter-create itself can fail (transient 5xx, a leftover) AFTER the
+    // secret exists, which would otherwise orphan the secret.
     try {
+      await pm("POST", `${pmParent}/parameters?parameter_id=${id}`, {
+        format: "JSON",
+        labels: { "managed-by": "strad", secret: String(input.secret) },
+      });
       await addVersion(id, {
         path: input.path,
         secret: input.secret,
@@ -281,8 +287,8 @@ export function createGcpParameterStore(
         value: envelopeValue,
       });
     } catch (err) {
-      // Two-call create failed between the parameter and its version: roll the
-      // empty parameter (and any secret) back so the user's retry works.
+      // Best-effort rollback; each DELETE is 404-tolerant, so it is safe whether
+      // or not that resource was created before the failure.
       await pm("DELETE", `${pmParent}/parameters/${id}`).catch(() => {});
       if (input.secret)
         await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
@@ -348,15 +354,27 @@ export function createGcpParameterStore(
 
   async function destroy(path: string): Promise<void> {
     const id = parameterId(path);
-    const cur = await currentEnvelope(id).catch(() => null);
-    // Delete the Parameter Manager parameter's versions then the parameter, then
-    // the Secret Manager secret if this was a secret parameter.
+    // Whether this is a secret parameter is read from the PARAMETER'S label, not
+    // its version envelope: the label survives even if the latest version is
+    // unreadable, so a transient read glitch cannot make us skip the Secret
+    // Manager delete and orphan the secret. If even the label is unreadable, we
+    // still attempt the secret delete (it is 404-tolerant) rather than leave one
+    // behind.
+    const isSecret = await pm("GET", `${pmParent}/parameters/${id}`)
+      .then(
+        (p) =>
+          (p as { labels?: Record<string, string> }).labels?.secret === "true",
+      )
+      .catch(() => true);
+
+    // Delete the Parameter Manager parameter's versions, then the parameter,
+    // then (for a secret parameter) its Secret Manager secret.
     await deleteAllVersions(id);
     await pm("DELETE", `${pmParent}/parameters/${id}`).catch((err) => {
       if (err instanceof ParameterStoreError && err.status === 404) return;
       throw err;
     });
-    if (cur?.envelope.secret) {
+    if (isSecret) {
       await sm("DELETE", `${smParent}/secrets/${id}`).catch((err) => {
         if (err instanceof ParameterStoreError && err.status === 404) return;
         throw err;

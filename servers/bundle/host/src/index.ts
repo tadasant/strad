@@ -26,8 +26,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Fourteen servers now share a process. A crash is a
- * 14-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Fifteen servers now share a process. A crash is a
+ * 15-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -273,7 +273,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other thirteen servers' readiness.
+  // login, and a slow login must not delay the other fourteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -348,7 +348,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
 
 /**
  * secrets. Not mounted when it is not configured — the same posture as
- * 1Password: one server's missing config must not take the other fourteen down.
+ * 1Password: one server's missing config must not take the other fifteen down.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
@@ -438,7 +438,7 @@ async function loadOnePassword(): Promise<Mount | null> {
  * Each keeps its own login, its own context and its own cookies; only the
  * browser PROCESS is shared (browser.ts). And unlike their standalone images,
  * a login failure here degrades the one mount instead of exiting the process:
- * with thirteen other servers on board, `process.exit(1)` is no longer a
+ * with fourteen other servers on board, `process.exit(1)` is no longer a
  * proportionate response to Good Eggs changing a form field.
  */
 async function loadBrowserMounts(): Promise<Mount[]> {
@@ -758,7 +758,7 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: "20mb" }));
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 14 servers behind one health check, "ok: true" alone is not information.
+  // with 15 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -784,8 +784,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of fourteen servers must not kill the other
-  // thirteen. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of fifteen servers must not kill the other
+  // fourteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

@@ -306,6 +306,59 @@ test("the read client has no value-reading method — not on the surface, not at
   await close();
 });
 
+test("the viewer enumerates versions and reads the greatest ENABLED one", async () => {
+  // Parameter Manager has no `latest` alias, so the reader lists versions and
+  // picks the greatest enabled `v{n}`. Seed a parameter whose NEWEST version
+  // (v2) is disabled: the current value must come from v1, not v2.
+  const projectId = "test-project";
+  const path = "/strad/staging/mcp/echo/static/ECHO_PREFIX";
+  const id = parameterId(path);
+  const v1 = JSON.stringify({ path, secret: false, note: "the live one", value: "hello" });
+  const v2 = JSON.stringify({ path, secret: false, note: "rolled back", value: "SUPERSEDED" });
+
+  const fake = await startFakeParameterManager({
+    projectId,
+    parameters: new Map([
+      [
+        id,
+        {
+          labels: { "managed-by": "strad", secret: "false" },
+          createTime: "2026-05-01T00:00:00Z",
+          versions: [v1, v2],
+          disabledVersions: [2], // v2 is disabled
+        },
+      ],
+    ]),
+  });
+
+  const config = {
+    projectId,
+    namespaces: ["/strad/staging/mcp/"],
+    account: VIEWER_ACCOUNT,
+    apiBase: fake.apiBase,
+    tokenUrl: fake.tokenUrl,
+  };
+  const { server, registerHandlers } = createMCPServer({ version: "0.0.0-test", config });
+  await registerHandlers(server);
+  const c = new Client({ name: "t", version: "0.0.0" }, { capabilities: {} });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(st), c.connect(ct)]);
+
+  const res = await c.callTool({ name: "get_parameter", arguments: { name: path } });
+  const payload = JSON.parse(res.content[0].text);
+  assert.equal(payload.value, "hello", "must read the greatest ENABLED version, not the disabled newer one");
+  assert.equal(payload.note, "the live one");
+  assert.ok(!JSON.stringify(res).includes("SUPERSEDED"));
+
+  const listed = await c.callTool({
+    name: "list_parameters",
+    arguments: { namespace: "/strad/staging/mcp/" },
+  });
+  const lp = JSON.parse(listed.content[0].text).parameters[0];
+  assert.equal(lp.latestVersion, "v1");
+  await fake.close();
+});
+
 test("parameterId is deterministic, legal, and hash-truncates long paths", () => {
   const legal = (id) => /^[a-z][a-z0-9-]*$/.test(id) && id.length <= 63;
 

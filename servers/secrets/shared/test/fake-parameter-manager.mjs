@@ -124,7 +124,7 @@ export async function startFakeParameterManager({
       return send(404, { error: { code: 404 } });
     }
 
-    const rest = url.pathname.slice(prefix.length); // "" | "/<id>" | "/<id>/versions/latest"
+    const rest = url.pathname.slice(prefix.length); // "" | "/<id>" | "/<id>/versions" | "/<id>/versions/v<n>"
 
     const paramMeta = (id, p) => ({
       name: `projects/${projectId}/locations/global/parameters/${id}`,
@@ -141,30 +141,46 @@ export async function startFakeParameterManager({
       });
     }
 
-    // --- versions/latest (the envelope) — viewer CAN do this ------------------
-    const version = rest.match(/^\/([^/]+)\/versions\/latest$/);
+    // --- :render — the deref of a secret ref. VIEWER IS DENIED. ---------------
+    // The client has no code path here at all; a test may reach for it ON PURPOSE
+    // to show what would happen if it did. (Checked before the plain version GET
+    // so a `:render` suffix is never mistaken for a version id.)
+    const render = rest.match(/^\/([^/]+)\/versions\/([^/:]+):render$/);
+    if (render && req.method === "GET") {
+      return denied("secretmanager.versions.access");
+    }
+
+    // --- versions LIST — viewer CAN do this -----------------------------------
+    // Parameter Manager has no `latest` alias; a reader enumerates the versions
+    // and picks the greatest enabled one. Versions are `v1..vN` in seed order.
+    const versionsList = rest.match(/^\/([^/]+)\/versions$/);
+    if (versionsList && req.method === "GET") {
+      const p = parameters.get(decodeURIComponent(versionsList[1]));
+      if (!p) return send(404, { error: { code: 404 } });
+      const list = (p.versions ?? []).map((_, i) => ({
+        name: `projects/${projectId}/locations/global/parameters/${versionsList[1]}/versions/v${i + 1}`,
+        createTime: p.createTime ?? "2026-03-01T10:00:00Z",
+        disabled: (p.disabledVersions ?? []).includes(i + 1),
+      }));
+      return send(200, { parameterVersions: list });
+    }
+
+    // --- explicit version GET (the envelope) — viewer CAN do this -------------
+    const version = rest.match(/^\/([^/]+)\/versions\/v(\d+)$/);
     if (version && req.method === "GET") {
       const p = parameters.get(decodeURIComponent(version[1]));
-      if (!p || !p.versions || p.versions.length === 0) {
+      const n = Number(version[2]);
+      if (!p || !p.versions || n < 1 || n > p.versions.length) {
         return send(404, { error: { code: 404 } });
       }
-      const n = p.versions.length;
       return send(200, {
-        name: `projects/${projectId}/locations/global/parameters/${version[1]}/versions/${n}`,
+        name: `projects/${projectId}/locations/global/parameters/${version[1]}/versions/v${n}`,
         payload: {
           data: Buffer.from(p.versions[n - 1], "utf8").toString("base64"),
         },
         createTime: p.createTime ?? "2026-03-01T10:00:00Z",
-        disabled: false,
+        disabled: (p.disabledVersions ?? []).includes(n),
       });
-    }
-
-    // --- :render — the deref of a secret ref. VIEWER IS DENIED. ---------------
-    // The client has no code path here at all; a test may reach for it ON PURPOSE
-    // to show what would happen if it did.
-    const render = rest.match(/^\/([^/]+)\/versions\/([^/:]+):render$/);
-    if (render && req.method === "GET") {
-      return denied("secretmanager.versions.access");
     }
 
     // --- GET one --------------------------------------------------------------

@@ -198,6 +198,53 @@ describe("two-store create rollback", () => {
     );
     expect(calls).toContain(`DELETE projects/p/secrets/${id}`);
   });
+
+  it("rolls back the Secret Manager secret when the PARAMETER create fails", async () => {
+    // The subtle case: the Secret Manager secret + version succeed, but the very
+    // next call — creating the Parameter Manager parameter — fails. The secret
+    // must still be rolled back, or a retry hits a 409 on the orphaned secret.
+    const calls: string[] = [];
+    const stub = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/token")) {
+        return jsonRes({ access_token: "t", expires_in: 3600 });
+      }
+      const path = url.split("/v1/")[1] ?? "";
+      calls.push(`${method} ${path.split("?")[0]}`);
+      // Fail the Parameter Manager PARAMETER create (not the version).
+      if (
+        method === "POST" &&
+        /locations\/global\/parameters$/.test(path.split("?")[0] ?? "")
+      ) {
+        return jsonRes({ error: { code: 503 } }, 503);
+      }
+      return jsonRes({ name: path });
+    }) as typeof fetch;
+
+    const store = createGcpParameterStore({
+      projectId: "p",
+      account: {
+        client_email: "admin@demo.iam.gserviceaccount.com",
+        private_key: generateKeyPairSync("rsa", { modulusLength: 2048 })
+          .privateKey.export({ type: "pkcs8", format: "pem" })
+          .toString(),
+      },
+      pmApiBase: "http://pm",
+      smApiBase: "http://sm",
+      tokenUrl: "http://token/token",
+      fetchImpl: stub,
+    });
+
+    await expect(
+      store.create({ path: keyPath, secret: true, value: "v" }),
+    ).rejects.toThrow(/503/);
+
+    // The orphaned Secret Manager secret is rolled back.
+    expect(calls).toContain(
+      `DELETE projects/p/secrets/${parameterId(keyPath)}`,
+    );
+  });
 });
 
 function jsonRes(body: unknown, status = 200): Response {

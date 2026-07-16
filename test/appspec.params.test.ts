@@ -53,6 +53,9 @@ describe("deploy-time parameter injection", () => {
             "svc@demo.iam.gserviceaccount.com",
           REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY:
             "-----BEGIN KEY-----secret-----END-----",
+          // A resolved value that literally contains `${...}` must survive
+          // verbatim — it is NOT an unresolved ref (resolveMap must not touch it).
+          REMOTE_FS_SCREENSHOTS_GCS_PASSPHRASE: "pass${GCS_BUCKET}phrase",
         },
       },
     });
@@ -70,6 +73,11 @@ describe("deploy-time parameter injection", () => {
     expect(email?.value).toBe("svc@demo.iam.gserviceaccount.com");
     expect(email?.type).toBe("SECRET");
     expect(key?.type).toBe("SECRET");
+    // The `${...}`-containing value is passed through untouched (not ref-resolved).
+    expect(
+      bundle.envs.find((e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_PASSPHRASE")
+        ?.value,
+    ).toBe("pass${GCS_BUCKET}phrase");
     // The literal bucket from env: is still there, alongside the resolved params.
     expect(
       bundle.envs.some((e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_BUCKET"),

@@ -251,7 +251,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   // one image plus the union of its servers' env maps.
   const imageBundles = new Map<
     string,
-    { image: string; env: Record<string, string> }
+    {
+      image: string;
+      /** `env:` maps, whose `${REF}` values are resolved against opts.secrets. */
+      env: Record<string, string>;
+      /** Resolved managed parameters — ALREADY literal, so NOT ref-resolved. */
+      params: Record<string, string>;
+    }
   >();
   const builtinBundles = new Set<string>();
 
@@ -265,15 +271,17 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // guarantees they share the SAME image; the component's env is the union
       // of every such server's `env:` map, so all of them get their secrets on
       // the one component.
-      // A `params: true` server's resolved managed parameters are merged in
-      // alongside its `env:` — they are literal values (already dereferenced by
-      // the resolver at deploy time), so resolveMap below passes them straight
-      // through and they land as SECRET env vars on this bundle.
+      // A `params: true` server's resolved managed parameters are kept SEPARATE
+      // from `env:`. They are already literal values (dereferenced by the resolver
+      // at deploy time), so they must NOT go through resolveMap below: a resolved
+      // value that happened to contain `${NAME}` would otherwise be treated as an
+      // unresolved ref and either fail the render or be silently corrupted.
       const params = opts.resolvedParams?.[server.slug] ?? {};
       const prev = imageBundles.get(server.bundle);
       imageBundles.set(server.bundle, {
         image: server.image,
-        env: { ...(prev?.env ?? {}), ...server.env, ...params },
+        env: { ...(prev?.env ?? {}), ...server.env },
+        params: { ...(prev?.params ?? {}), ...params },
       });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
@@ -355,6 +363,17 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               scope: "RUN_TIME",
               type: "SECRET",
             })),
+            // Resolved managed parameters are already literal — emit them as
+            // SECRET env vars directly, WITHOUT resolveMap, so a value containing
+            // `${…}` cannot be mistaken for an unresolved ref.
+            ...Object.entries(supplementary.params).map(
+              ([key, value]): EnvVar => ({
+                key,
+                value,
+                scope: "RUN_TIME",
+                type: "SECRET",
+              }),
+            ),
             ...identityEnvs(name, config.gateway.env, componentImage.tag),
             ...opts.env.filter(
               (e) => e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key),
