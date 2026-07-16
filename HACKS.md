@@ -607,10 +607,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Fourteen servers now share one process, and one Chromium
+## 24. Fifteen servers now share one process, and one Chromium
 
-The collapsed bundle is one container running fourteen MCP servers and one
-headless Chromium. An OOM there is a fourteen-server outage; it used to be a
+The collapsed bundle is one container running fifteen MCP servers and one
+headless Chromium. An OOM there is a fifteen-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -630,9 +630,47 @@ rendering _and_ answers every Slack and Gmail call. If the OpenTelemetry data
 (event-loop lag, CPU, RSS-vs-limit, Chromium launches/crashes) says we are
 saturated, the next move is `apps-d-1vcpu-2gb` ($39, dedicated CPU) — not more RAM.
 
+## 25. The secrets/parameters system is wired end-to-end but not yet live
+
+strad now has a store-agnostic secrets/parameters system: Parameter Manager is
+the index of everything, Secret Manager backs the secret parts, and everything is
+addressed by the path `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` (kind `static`
+today; an `oauth` kind is issue #32). Three roles touch it, and they are three
+DIFFERENT credentials on purpose:
+
+- the MCP **viewer** (`secrets` server, on the bundle) — lists parameters, reads
+  notes and NON-secret values, and cannot read a secret value (no
+  `secretmanager.versions.access`);
+- the console **admin** (core only, from `consoleEnv:`, behind SSO) — reads and
+  writes both kinds;
+- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads both stores'
+  values to inject a `params: true` server's env, never over MCP.
+
+What is NOT done, and needs a human with GCP access (see the checklist below and
+`docs/.../limitations.md`): the secrets project, the three service accounts and
+their keys, and the seeded parameter values. Everything above is tested against an
+in-memory fake, so the logic ships proven; the live-GCP staging e2e is deferred.
+
+Posture nuance worth stating plainly: the resolver credential runs at DEPLOY time
+(in CI / `render-spec`), NOT in the container, so "the running container holds no
+cloud credential" still holds — the resolved values reach the bundle as ordinary
+SECRET env vars, exactly like every other secret. Until the resolver service
+account exists, a `params: true` supplementary server (`remote-fs-screenshots`)
+boots without its resolved parameters and degrades gracefully.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
+
+- [ ] **The secrets/parameters GCP project + three service accounts** (hack #25):
+      a project holding ONLY the `/strad/staging/mcp/*` parameters; a VIEWER SA
+      (Parameter Manager viewer, NO `secretmanager.versions.access`) → seed as
+      `strad-staging-SECRETS_VIEWER_KEY_JSON`; an ADMIN SA (Parameter Manager +
+      Secret Manager admin) → `strad-staging-SECRETS_ADMIN_KEY_JSON`; a RESOLVER
+      SA (read values of both stores) → `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`;
+      plus `strad-staging-SECRETS_PROJECT_ID`. Then set both
+      `REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL` (non-secret) and
+      `REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2.

@@ -10,7 +10,7 @@ import { collectSecretRefs, renderAppSpec } from "../src/deploy/appspec.ts";
  * list is forwarded to EVERY component (appspec.ts: the supplementary branch
  * takes `opts.env.filter(e => e.type === "SECRET")`), so the "console's"
  * credential would also be sitting in the environment of the container that
- * answers /mcp. For gcp-secrets that would put a service account which CAN read
+ * answers /mcp. For the `secrets` server that would put a service account which CAN read
  * secret values inside the process an agent talks to — and the IAM split, which
  * is the entire security story, would be worth nothing.
  *
@@ -29,19 +29,19 @@ roles:
 bundles:
   - name: bundle
 servers:
-  - slug: gcp-secrets
+  - slug: secrets
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /gcp-secrets
+    path: /secrets
     entitlements: [admin]
     env:
-      GCP_SECRETS_PROJECT_ID: "proj"
-      GCP_SECRETS_NAMESPACES: "mcp-"
-      GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON: "\${VIEWER_KEY}"
+      SECRETS_PROJECT_ID: "proj"
+      SECRETS_NAMESPACES: "/strad/test/mcp/"
+      SECRETS_SERVICE_ACCOUNT_KEY_JSON: "\${VIEWER_KEY}"
     consoleEnv:
-      GCP_SECRETS_PROJECT_ID: "proj"
-      GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${ADMIN_KEY}"
+      SECRETS_PROJECT_ID: "proj"
+      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${ADMIN_KEY}"
 `;
 
 const SECRETS = { VIEWER_KEY: "viewer-json", ADMIN_KEY: "admin-json" };
@@ -69,9 +69,7 @@ describe("consoleEnv", () => {
     const bundle = spec.services.find((s) => s.name === "bundle")!;
 
     const adminOn = (svc: typeof core) =>
-      svc.envs.find(
-        (e) => e.key === "GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
-      );
+      svc.envs.find((e) => e.key === "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON");
 
     expect(adminOn(core)?.value).toBe("admin-json");
     expect(adminOn(core)?.type).toBe("SECRET");
@@ -91,11 +89,11 @@ describe("consoleEnv", () => {
     const bundle = spec.services.find((s) => s.name === "bundle")!;
 
     expect(
-      bundle.envs.find((e) => e.key === "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON")
+      bundle.envs.find((e) => e.key === "SECRETS_SERVICE_ACCOUNT_KEY_JSON")
         ?.value,
     ).toBe("viewer-json");
     expect(
-      core.envs.some((e) => e.key === "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON"),
+      core.envs.some((e) => e.key === "SECRETS_SERVICE_ACCOUNT_KEY_JSON"),
     ).toBe(false);
   });
 
@@ -140,6 +138,6 @@ describe("consoleEnv", () => {
       secrets: SECRETS,
     });
     const core = spec.services.find((s) => s.name === "core")!;
-    expect(core.envs.some((e) => e.key.startsWith("GCP_SECRETS_"))).toBe(false);
+    expect(core.envs.some((e) => e.key.startsWith("SECRETS_"))).toBe(false);
   });
 });

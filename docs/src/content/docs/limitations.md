@@ -120,11 +120,11 @@ multi-instance console.
 
 ## The deployment
 
-### 24. Fourteen servers share one process and one CPU
+### 24. Fifteen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts fourteen MCP servers and
+The `bundle` component runs one Node process that mounts fifteen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-fourteen down together, and Chromium contends with every other server for the single
+fifteen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -163,6 +163,34 @@ images or their release workflows would be an outage, not a cleanup.
 
 **Undo, in order:** re-point prod at `strad-bundle` → confirm it serves → then delete
 the per-server release workflows and images.
+
+### 25. The secrets/parameters system is wired but not yet live on GCP
+
+strad has a store-agnostic [secrets and parameters
+system](/intro/architecture/#the-secrets-and-parameters-system): Parameter Manager
+indexes everything, Secret Manager backs the secret parts, and three deliberately
+different credentials touch it — the MCP **viewer** (can't read a secret value), the
+console **admin** (reads and writes both kinds, behind SSO), and the deploy-time
+**resolver** (injects a `params: true` server's env). All of it is tested against an
+in-memory fake, so the logic ships proven.
+
+What is **deferred** is the live-GCP staging end-to-end, because it needs a human
+with GCP access to provision: a dedicated project holding only the
+`/strad/staging/mcp/*` parameters, the three service accounts (viewer, admin,
+resolver) and their keys seeded as `strad-staging-*` secrets, and the seeded
+parameter values. Until the **resolver** service account exists, a `params: true`
+supplementary server — `remote-fs-screenshots` — boots **without** its resolved
+parameters and degrades gracefully rather than failing the deploy.
+
+The posture is intact throughout: the resolver credential runs at **deploy time**
+(in CI / `render-spec`), never in the container, so "the running container holds no
+cloud credential" still holds — the resolved values reach the bundle as ordinary
+SECRET env vars, exactly like every other secret.
+
+**Undo:** provision the project, the three service accounts and their keys, then set
+`REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL` (non-secret) and
+`REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
+`HACKS.md` #25 for the full checklist.
 
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
@@ -235,6 +263,9 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 
 The one-time steps that clear most of the list above:
 
+- The secrets/parameters GCP project plus its three service accounts (viewer,
+  admin, resolver) and seeded keys, then the `remote-fs-screenshots` values in
+  `/ui/secrets` — clears **#25**.
 - Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) — clears
   **#2** and **#20**.
 - Re-point prod at the collapsed bundle, then delete the per-server images and

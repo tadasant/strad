@@ -76,11 +76,25 @@ A server **served by a container image**. strad deploys the image as an
 internal-only component and proxies to it over the private network.
 
 One bundle runs one image, but that image may host **many** servers — each on its
-own `path`. strad's own bundle image mounts fourteen MCP servers in one process, so
-fourteen `path`s on one container.
+own `path`. strad's own bundle image mounts fifteen MCP servers in one process, so
+fifteen `path`s on one container.
 
 Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
-start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets).
+start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets),
+plus two that shape how this server gets its values:
+
+- **`consoleEnv`** — env for the **core gateway only**, the human console's half of
+  this server. `env:` lands on the component that answers `/mcp`; `consoleEnv:`
+  lands on core, which serves the SSO-gated `/ui` and nothing an agent can reach.
+  That asymmetry is what lets the `secrets` server hold a viewer key on the bundle
+  and a stronger admin key on core, with the two never meeting. See [Adding a
+  server](/servers/adding/#4b-a-credential-the-agent-must-not-hold--consoleenv).
+- **`params`** (default `false`) — opt into parameter resolution. When `true`,
+  everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
+  system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and
+  injected as this server's env — for a supplementary image at deploy time, scoped
+  onto its bundle. It is the modern alternative to hand-writing `${REF}` entries in
+  `env:`.
 
 ```yaml
 servers:
@@ -111,7 +125,9 @@ Fields: `module` (a specifier resolved at boot; must default-export a
 `BuiltinModule` = `{ tools, call(name, args, ctx) }`), `bundle` (defaults to
 `core` = in the gateway process; any other value runs the strad image in bundle
 mode as a separate component), `options` (an arbitrary map passed to the module;
-may contain `${SECRET}` refs).
+may contain `${SECRET}` refs), and `params` (default `false` — when `true`, the
+server's `/strad/{env}/mcp/{slug}/static/*` parameters are resolved and merged into
+`options` at launch; for a `core` builtin that happens in-process at runtime).
 
 ```yaml
 servers:
@@ -141,7 +157,7 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 
 Note what is deliberately **not** an error: many servers in one bundle, and two
 servers on the same `path` of one bundle. Both are load-bearing — the first is how
-fourteen MCP servers fit in one container, the second is how a read-only and a
+fifteen MCP servers fit in one container, the second is how a read-only and a
 read-write variant share it.
 
 Failing loudly at boot is the point: a misconfigured gateway never comes up

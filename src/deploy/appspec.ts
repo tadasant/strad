@@ -40,6 +40,17 @@ export interface RenderOptions {
    * A referenced name missing from this bag is a hard error (fail closed).
    */
   secrets?: Readonly<Record<string, string>>;
+  /**
+   * Resolved managed parameters, keyed by server slug -> VARIABLE -> value.
+   *
+   * A supplementary server with `params: true` has its `/strad/{env}/mcp/{slug}/
+   * static/*` parameters resolved from the secrets system at DEPLOY time (see
+   * scripts/render-spec.ts, which holds the resolver credential — the container
+   * does not) and passed in here. They land as SECRET env vars on that server's
+   * bundle, exactly like its `env:` refs, so the running container reads them from
+   * process.env and holds no cloud credential of its own.
+   */
+  resolvedParams?: Readonly<Record<string, Record<string, string>>>;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
   coreInstanceSizeSlug?: string;
@@ -52,7 +63,7 @@ export interface RenderOptions {
  * is BROADCAST — look at the bundle branch below, which forwards
  * `opts.env.filter(e => e.type === "SECRET")` to every supplementary component.
  * So the ordinary way to give the core gateway a credential also hands it to the
- * container that answers /mcp, which for gcp-secrets would put the value-reading
+ * container that answers /mcp, which for the `secrets` server would put the value-reading
  * service-account key inside the process an agent talks to. The IAM split would
  * then be a lie: the MCP credential could not read a value, but a stronger one
  * would be sitting in the same environment.
@@ -254,10 +265,15 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // guarantees they share the SAME image; the component's env is the union
       // of every such server's `env:` map, so all of them get their secrets on
       // the one component.
+      // A `params: true` server's resolved managed parameters are merged in
+      // alongside its `env:` — they are literal values (already dereferenced by
+      // the resolver at deploy time), so resolveMap below passes them straight
+      // through and they land as SECRET env vars on this bundle.
+      const params = opts.resolvedParams?.[server.slug] ?? {};
       const prev = imageBundles.get(server.bundle);
       imageBundles.set(server.bundle, {
         image: server.image,
-        env: { ...(prev?.env ?? {}), ...server.env },
+        env: { ...(prev?.env ?? {}), ...server.env, ...params },
       });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);

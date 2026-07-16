@@ -82,6 +82,25 @@ output contains secret values, so it is written to a file and **never logged**.
 comment isn't mistaken for a real ref), and an unresolved `${…}` fails the render
 loudly instead of producing a crash-looping deploy.
 
+### Deploy-time parameter resolution
+
+A `supplementary-image` server with `params: true` gets its managed parameters —
+everything under `/strad/{env}/mcp/{slug}/static/*` in the [parameters
+system](/intro/architecture/#the-secrets-and-parameters-system) — resolved **here,
+at render time**, by the **resolver** credential (`STRAD_PARAMS_*`, read from the
+deploy environment). `render-spec` calls `resolveServerParams()` for each such
+server, pulling non-secret values from Parameter Manager and secret values from
+Secret Manager, and hands the resulting map to `renderAppSpec` as `resolvedParams`.
+Those values land as SECRET env vars **scoped onto that server's bundle** — the same
+per-bundle scoping as a `${REF}` in `env:`, and the running container still holds no
+cloud credential.
+
+The resolver is **optional by design**: with no `STRAD_PARAMS_*` credential set,
+`resolverFromEnv()` returns `null`, resolution is a no-op, and a `params: true`
+server boots without those values rather than failing the render. That is what lets
+the feature ship ahead of the resolver service account existing — see [Known
+limitations](/limitations/).
+
 ## App Platform: the hard-won facts
 
 These are encoded in `src/deploy/appspec.ts` because each one cost something to
@@ -109,9 +128,11 @@ learn:
 - **What a bundle component gets depends on whose image it runs.** A bundle of
   `builtin` servers runs the strad image and gets `STRAD_MODE=bundle` +
   `STRAD_BUNDLE=<name>`. A bundle of `supplementary-image` servers runs _their_
-  image and gets only its own resolved `env:` map (SECRET-typed), the identity vars
+  image and gets only its own resolved `env:` map (SECRET-typed), any
+  `params: true`-resolved parameters (also SECRET-typed), the identity vars
   (`STRAD_COMPONENT`, `STRAD_ENV`, `STRAD_VERSION`), and the telemetry vars — never
-  `STRAD_MODE`, never the config, never the token secrets it has no use for. The
+  `STRAD_MODE`, never the config, never the token secrets it has no use for. A
+  server's `consoleEnv:` is pointedly **not** here — it lands on core alone. The
   blast radius of a compromised upstream image is bounded by what it was handed.
   (`parseImage` handles GHCR / DOCR / Docker Hub refs.)
 

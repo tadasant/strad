@@ -23,16 +23,16 @@ const EXPECT = {
   tailscale: 15,
   "monarch-money": 23,
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
-  "remote-filesystem": 5,
+  "remote-fs-screenshots": 5,
   "google-flights": 3,
   gmail: 8,
   "google-calendar": 7,
   "google-docs": 11,
   onepassword: 9,
-  // Three tools, and not one of them can return a secret value — that is the
-  // whole server. If this number ever GROWS, someone added a tool to a secrets
-  // server, and that is a thing CI should stop.
-  "gcp-secrets": 3,
+  // Four tools, and not one of them can return a SECRET value. If this number
+  // ever GROWS, someone added a tool to a secrets server, and that is a thing CI
+  // should stop.
+  secrets: 4,
   "good-eggs": null, // browser servers vary with their app surface; just list
   fetchpet: null,
   pointsyeah: null,

@@ -22,10 +22,12 @@ import { createSign } from "node:crypto";
  * been resolved from config + injected secrets at the call site (see resolve.ts).
  */
 
-export interface ServiceAccount {
-  client_email: string;
-  private_key: string;
-}
+// The service-account shape and JWT plumbing are store-neutral and live in one
+// place (src/secrets/parameters/service-account.ts). This browser re-exports the
+// type for its own callers; it does NOT define its own, so "the GCS file" is not
+// where the secrets store gets its ServiceAccount from.
+export type { ServiceAccount } from "../secrets/parameters/service-account.ts";
+import type { ServiceAccount } from "../secrets/parameters/service-account.ts";
 
 /** One object in a bucket. Field names mirror the GCS JSON API. */
 export interface GcsObject {

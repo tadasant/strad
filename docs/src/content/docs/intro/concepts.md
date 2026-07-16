@@ -91,7 +91,7 @@ exposing them. See [Architecture](/intro/architecture/).
 One bundle runs one image, but any number of servers may share it — each on its
 own `path`, and capability variants of one upstream on the _same_ path. strad's
 own deployment is two components: `core`, and one bundle whose image mounts
-fourteen MCP servers in a single process.
+fifteen MCP servers in a single process.
 
 ## Capability
 
@@ -106,6 +106,43 @@ Capability is therefore **policy** — a gateway that declines — and not **phy
 a process that lacks the tool. It is a real boundary and a weaker one than the
 container-level tool-group env vars it replaced, and strad says so rather than
 letting you assume the stronger guarantee. See `HACKS.md` #22.
+
+## Parameter
+
+A named value strad manages for one server — a bucket name, a service-account
+email, a private key. A parameter is **either** non-secret (safe to read back) or
+**secret** (write-and-inject-only), and it is addressed by one canonical path:
+
+```
+/strad/{env}/mcp/{server-slug}/{kind}/{VARIABLE_NAME}
+```
+
+`kind` is `static` today; an `oauth` kind is a future ticket ([issue
+#32](https://github.com/tadasant/strad/issues/32)). A **namespace** is a prefix of
+that path (e.g. `/strad/staging/mcp/`) — the `secrets` server is scoped to one and
+refuses to act outside it. Parameters live behind a store-agnostic interface; GCP
+(Parameter Manager indexing everything, Secret Manager backing the secret parts) is
+the first backend. See [Architecture](/intro/architecture/#the-secrets-and-parameters-system).
+
+## `consoleEnv`
+
+Env for the **core gateway only** — the human console's half of a
+`supplementary-image` server. `env:` lands on the component that answers `/mcp`, so
+anything in it is a credential the agent path holds. `consoleEnv:` lands on core,
+which serves the SSO-gated `/ui` and nothing an agent can reach. The asymmetry is
+the point: the `secrets` server's viewer key (which cannot read a secret value) is
+in `env:`, and its admin key (which can) is in `consoleEnv:`, so the two never meet.
+The deploy layer keeps `consoleEnv:` off every other component — a broadcast SECRET
+would have reached the bundle too. See [Auth](/auth/overview/#the-secrets-console-three-credentials).
+
+## `params`
+
+A boolean opt-in on a `builtin` or `supplementary-image` server. When `true`,
+everything under `/strad/{env}/mcp/{slug}/static/*` is resolved from the parameters
+system and injected as that server's environment — for a `core` builtin in-process
+at runtime, for a supplementary image at **deploy time** onto its bundle. It is the
+modern alternative to hand-writing `${REF}` entries in `env:`. The resolved values
+reach the child process only, never a tool result.
 
 ## Mode
 

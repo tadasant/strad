@@ -149,16 +149,18 @@ async function buildMounts(): Promise<Mount[]> {
   });
 
   mounts.push({
-    slug: "remote-filesystem",
+    // The strad slug is `remote-fs-screenshots` (it stores screenshots on a GCS
+    // bucket); the vendored upstream is still pulsemcp's `remote-filesystem`.
+    slug: "remote-fs-screenshots",
     tree: "bundle-api",
     serverName: "remote-filesystem-mcp-server",
     capabilities: { resources: {}, tools: {} },
-    // THE collision this collapse had to solve. gcs and remote-filesystem both
-    // read `GCS_BUCKET` from the environment, and they point at DIFFERENT buckets
-    // — which is why gcs used to need a component of its own. One process cannot
-    // hold two values of one variable, so remote-filesystem stops reading the
-    // environment at all: we hand it an explicit client built from its own
-    // slug-namespaced vars (REMOTE_FILESYSTEM_GCS_*). No env, no collision.
+    // THE collision this collapse had to solve. gcs and remote-fs-screenshots
+    // both read `GCS_BUCKET` from the environment, and they point at DIFFERENT
+    // buckets — which is why gcs used to need a component of its own. One process
+    // cannot hold two values of one variable, so remote-fs-screenshots stops
+    // reading the environment at all: we hand it an explicit client built from
+    // its own slug-namespaced vars (REMOTE_FS_SCREENSHOTS_GCS_*). No collision.
     register: (s) => api.remoteFs.registerHandlers(s, remoteFsClientFactory()),
   });
 
@@ -205,19 +207,19 @@ async function buildMounts(): Promise<Mount[]> {
     },
   });
 
-  // --- gcp-secrets ----------------------------------------------------------
+  // --- secrets --------------------------------------------------------------
   // The odd one out, and deliberately so: this server's CREDENTIAL is what makes
-  // it safe, not its code. It runs against Google Cloud Secret Manager with a
-  // service account holding roles/secretmanager.viewer — list and describe, and
-  // NOT secretmanager.versions.access. So it can tell an agent that
-  // `mcp-openai-api-key` exists and what a human noted about it, and it cannot
-  // tell the agent what it says. Not "does not"; cannot. Google refuses.
+  // it safe, not its code. It runs against Google Cloud Parameter Manager (the
+  // index of everything) with a viewer service account — it can list parameters
+  // and read NON-SECRET values, and it holds no secretmanager.versions.access, so
+  // it cannot read a SECRET value. Not "does not"; cannot. Google refuses.
   //
-  // Values are written and read in strad's SSO-gated console, which holds a
-  // different service account that never reaches this container (see the
-  // `consoleEnv:` scope in src/config/schema.ts). Nothing about this mount can
-  // undo that: there is no write tool here, and no key that could perform one.
-  const secretsMount = await loadGcpSecrets();
+  // Secret values live in Secret Manager, written and read in strad's SSO-gated
+  // console, which holds a different (admin) service account that never reaches
+  // this container (see the `consoleEnv:` scope in src/config/schema.ts). Nothing
+  // about this mount can undo that: there is no write tool here, and no key that
+  // could perform one.
+  const secretsMount = await loadSecrets();
   if (secretsMount) mounts.push(secretsMount);
 
   // --- onepassword ----------------------------------------------------------
@@ -293,24 +295,24 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 }
 
-/** remote-filesystem's GCS client, built from ITS OWN env names. See the mount. */
+/** remote-fs-screenshots' GCS client, built from ITS OWN env names. See the mount. */
 function remoteFsClientFactory(): () => unknown {
   return () => {
-    const bucket = process.env.REMOTE_FILESYSTEM_GCS_BUCKET;
+    const bucket = process.env.REMOTE_FS_SCREENSHOTS_GCS_BUCKET;
     if (!bucket) {
       throw new Error(
-        "REMOTE_FILESYSTEM_GCS_BUCKET must be configured. (In this bundle, " +
-          "remote-filesystem does NOT read GCS_BUCKET — that name belongs to the " +
-          "gcs server, which points at a different bucket.)",
+        "REMOTE_FS_SCREENSHOTS_GCS_BUCKET must be configured. (In this bundle, " +
+          "remote-fs-screenshots does NOT read GCS_BUCKET — that name belongs to " +
+          "the gcs server, which points at a different bucket.)",
       );
     }
     return new remoteFsGcsClient({
       bucket,
-      projectId: process.env.REMOTE_FILESYSTEM_GCS_PROJECT_ID,
-      clientEmail: process.env.REMOTE_FILESYSTEM_GCS_CLIENT_EMAIL,
-      privateKey: process.env.REMOTE_FILESYSTEM_GCS_PRIVATE_KEY,
-      rootPath: process.env.REMOTE_FILESYSTEM_GCS_ROOT_PATH,
-      makePublic: process.env.REMOTE_FILESYSTEM_GCS_MAKE_PUBLIC === "true",
+      projectId: process.env.REMOTE_FS_SCREENSHOTS_GCS_PROJECT_ID,
+      clientEmail: process.env.REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL,
+      privateKey: process.env.REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY,
+      rootPath: process.env.REMOTE_FS_SCREENSHOTS_GCS_ROOT_PATH,
+      makePublic: process.env.REMOTE_FS_SCREENSHOTS_GCS_MAKE_PUBLIC === "true",
     });
   };
 }
@@ -345,11 +347,11 @@ async function loadGoogleTree(): Promise<GoogleTree> {
 }
 
 /**
- * gcp-secrets. Not mounted when it is not configured — the same posture as
+ * secrets. Not mounted when it is not configured — the same posture as
  * 1Password: one server's missing config must not take the other fourteen down.
  */
-async function loadGcpSecrets(): Promise<Mount | null> {
-  const mod = (await loadFromTree("gcp-secrets", "shared/build/index.js")) as {
+async function loadSecrets(): Promise<Mount | null> {
+  const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
     createMCPServer: Factory;
     loadConfig: (env?: NodeJS.ProcessEnv) => unknown;
   };
@@ -359,24 +361,24 @@ async function loadGcpSecrets(): Promise<Mount | null> {
     config = mod.loadConfig();
   } catch (err) {
     logWarn(
-      `gcp-secrets NOT mounted: ${errMessage(err)}. ` +
-        `It needs GCP_SECRETS_PROJECT_ID and GCP_SECRETS_NAMESPACES; ` +
-        `an unscoped secrets server would see every secret in the project.`,
+      `secrets NOT mounted: ${errMessage(err)}. ` +
+        `It needs SECRETS_PROJECT_ID and SECRETS_NAMESPACES; ` +
+        `an unscoped secrets server would see every parameter in the project.`,
     );
     return null;
   }
 
   const created = mod.createMCPServer({ version: VERSION, config });
-  const hasKey = Boolean(process.env.GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON);
+  const hasKey = Boolean(process.env.SECRETS_SERVICE_ACCOUNT_KEY_JSON);
 
   return {
-    slug: "gcp-secrets",
-    tree: "gcp-secrets",
-    serverName: "gcp-secrets-mcp-server",
+    slug: "secrets",
+    tree: "secrets",
+    serverName: "secrets-mcp-server",
     capabilities: { tools: {} },
     degraded: hasKey
       ? null
-      : "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON is not set; tools will list but list_secrets will fail",
+      : "SECRETS_SERVICE_ACCOUNT_KEY_JSON is not set; tools will list but list_parameters will fail",
     register: (s) => created.registerHandlers(s),
   };
 }

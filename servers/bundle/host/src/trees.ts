@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 /**
  * The collapsed bundle is ONE image assembled from SEVEN existing npm projects —
- * bundle-api, bundle-google, onepassword, gcp-secrets, good-eggs, fetchpet,
+ * bundle-api, bundle-google, onepassword, secrets, good-eggs, fetchpet,
  * pointsyeah — each of which is copied in, installed and built exactly as its own
  * image builds it, keeping its own `node_modules` and its own lockfile.
  *
@@ -27,7 +27,7 @@ export type TreeName =
   | "bundle-api"
   | "bundle-google"
   | "onepassword"
-  | "gcp-secrets"
+  | "secrets"
   | "good-eggs"
   | "fetchpet"
   | "pointsyeah";

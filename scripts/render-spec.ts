@@ -24,6 +24,10 @@ import {
   renderAppSpec,
   type EnvVar,
 } from "../src/deploy/appspec.ts";
+import {
+  resolverFromEnv,
+  resolveServerParams,
+} from "../src/secrets/parameters/index.ts";
 
 const { values } = parseArgs({
   options: {
@@ -160,6 +164,35 @@ for (const server of config.servers) {
   }
 }
 
+// A supplementary server with `params: true` gets its managed parameters —
+// everything under /strad/{env}/mcp/{slug}/static/* — resolved from the secrets
+// system HERE, at deploy time, by the RESOLVER credential (STRAD_PARAMS_*). The
+// resolved values (non-secret from Parameter Manager, secret from Secret Manager)
+// are handed to renderAppSpec, which lands them as SECRET env vars on the bundle;
+// the running container holds no cloud credential, exactly like every other
+// secret. When no resolver is configured (e.g. before the resolver service
+// account exists), this is a no-op and those servers boot without the params —
+// which they already degrade on gracefully — rather than failing the render.
+const resolvedParams: Record<string, Record<string, string>> = {};
+const resolver = resolverFromEnv(process.env);
+for (const server of config.servers) {
+  if (server.kind !== "supplementary-image" || !server.enabled) continue;
+  if (!server.params) continue;
+  if (!resolver) {
+    console.error(
+      `[render-spec] server "${server.slug}" has params: true but no resolver ` +
+        `credential (STRAD_PARAMS_*) is configured; its managed parameters are ` +
+        `not injected on this render.`,
+    );
+    continue;
+  }
+  resolvedParams[server.slug] = await resolveServerParams(
+    resolver,
+    config.gateway.env,
+    server.slug,
+  );
+}
+
 // The dev-bypass switches. Not secrets — they are switches, and belong in the
 // spec as visible GENERAL vars. The container runs NODE_ENV=production, so the
 // bypass needs BOTH ALLOW_DEV_AUTH and ALLOW_DEV_AUTH_IN_PRODUCTION (see
@@ -207,6 +240,7 @@ const spec = renderAppSpec({
   image: parseImage(values.image),
   env: envs,
   secrets: scopedSecrets,
+  resolvedParams,
   domains: resolveDomains(),
 });
 

@@ -1,6 +1,9 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
-import type { ServiceAccount } from "./gcs-client.ts";
+import {
+  parseServiceAccount,
+  type ServiceAccount,
+} from "../secrets/parameters/service-account.ts";
 
 /**
  * Resolve "what does the human UI show for THIS server?".
@@ -14,7 +17,7 @@ import type { ServiceAccount } from "./gcs-client.ts";
  *
  * This is deliberately a small dispatch table, not a hardcode: a server "has a
  * GCS view" because its config declares a GCS bucket, not because its slug is
- * "gcs". A second GCS-backed server (remote-filesystem is one) lights up the same
+ * "gcs". A second GCS-backed server (remote-fs-screenshots is one) lights up the same
  * view with zero new code. Non-GCS servers resolve to `no_viewer` today — the
  * seam where other server kinds grow their own views later.
  */
@@ -37,11 +40,13 @@ export type ServerView =
       kind: "secrets";
       server: ServerConfig;
       projectId: string;
-      /** The managed name prefixes. The first is the default for new secrets. */
+      /** Parameter Manager location. `global` unless the deployment overrides it. */
+      location?: string;
+      /** The managed namespace path prefixes. The first is the default for new params. */
       namespaces: string[];
       /**
        * The ADMIN service account — the console's own credential, and the only
-       * one in strad that can read or write a secret value.
+       * one in strad that can WRITE a parameter or read a SECRET value.
        *
        * It is resolved from `consoleEnv:`, which appspec.ts injects onto the
        * CORE component alone. The MCP container gets a different key (a viewer,
@@ -52,12 +57,13 @@ export type ServerView =
        */
       account: ServiceAccount | null;
       accountReason?: string;
-      /** Test seams, when the deployment points at a stub Secret Manager. */
-      apiBase?: string;
+      /** Test seams, when the deployment points at stub Parameter/Secret Managers. */
+      pmApiBase?: string;
+      smApiBase?: string;
       tokenUrl?: string;
     };
 
-/** The env keys the two GCS-backed servers use (gcs and remote-filesystem). */
+/** The env keys the two GCS-backed servers use (gcs and remote-fs-screenshots). */
 const GCS_ENV = {
   bucket: "GCS_BUCKET",
   prefix: "GCS_ROOT_PATH",
@@ -67,14 +73,15 @@ const GCS_ENV = {
 } as const;
 
 /**
- * The env keys the gcp-secrets server uses.
+ * The env keys the `secrets` server uses.
  *
- * Note which side each lives on. `projectId` / `namespaces` are plain config and
- * appear in BOTH the container's `env:` and the console's `consoleEnv:` — they
- * are not secret and both halves need them. The two KEYS are the split:
+ * Note which side each lives on. `projectId` / `location` / `namespaces` are
+ * plain config and appear in BOTH the container's `env:` and the console's
+ * `consoleEnv:` — they are not secret and both halves need them. The two KEYS are
+ * the split:
  *
- *   GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON        env:        viewer  (MCP)
- *   GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  consoleEnv: admin   (console)
+ *   SECRETS_SERVICE_ACCOUNT_KEY_JSON        env:        viewer  (MCP)
+ *   SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  consoleEnv: admin   (console)
  *
  * The console reads ONLY the admin key. It will not fall back to the viewer key,
  * because a console that silently ran as the viewer would render an empty page
@@ -82,19 +89,21 @@ const GCS_ENV = {
  * someone later "fixes" by handing the viewer more permissions.
  */
 const SECRETS_ENV = {
-  projectId: "GCP_SECRETS_PROJECT_ID",
-  namespaces: "GCP_SECRETS_NAMESPACES",
-  adminKeyJson: "GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
-  apiBase: "GCP_SECRETS_API_BASE",
-  tokenUrl: "GCP_SECRETS_TOKEN_URL",
+  projectId: "SECRETS_PROJECT_ID",
+  location: "SECRETS_LOCATION",
+  namespaces: "SECRETS_NAMESPACES",
+  adminKeyJson: "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+  pmApiBase: "SECRETS_PM_API_BASE",
+  smApiBase: "SECRETS_SM_API_BASE",
+  tokenUrl: "SECRETS_TOKEN_URL",
 } as const;
 
 /**
  * A server's env, with any SLUG-NAMESPACED variable also visible under its bare
- * name (`REMOTE_FILESYSTEM_GCS_BUCKET` -> `GCS_BUCKET`).
+ * name (`REMOTE_FS_SCREENSHOTS_GCS_BUCKET` -> `GCS_BUCKET`).
  *
  * Namespacing exists because siblings now share a container: `gcs` and
- * `remote-filesystem` both read `GCS_BUCKET`, and they point at DIFFERENT
+ * `remote-fs-screenshots` both read `GCS_BUCKET`, and they point at DIFFERENT
  * buckets, so one of them had to move off the bare name (see the bundle host).
  * The bare name still wins if both are set — the namespaced form is a fallback,
  * not an override — which keeps a server that never had a sibling unchanged.
@@ -123,8 +132,8 @@ export function resolveServerView(
 
   const env = withNamespacedFallback(server.slug, serverEnv(server));
 
-  // Secrets view: the server declares a Secret Manager project. Checked FIRST —
-  // a gcp-secrets server declares no bucket, so the two detectors cannot collide,
+  // Secrets view: the server declares a secrets project. Checked FIRST — a
+  // `secrets` server declares no bucket, so the two detectors cannot collide,
   // but the ordering says which concept owns the slug if one ever did.
   if (env[SECRETS_ENV.projectId]) {
     return resolveSecretsView(server, env, secrets);
@@ -144,6 +153,8 @@ function resolveSecretsView(
   secrets: SecretBag,
 ): ServerView {
   const projectId = tryResolve(env[SECRETS_ENV.projectId] ?? "", secrets) ?? "";
+  const location =
+    tryResolve(env[SECRETS_ENV.location] ?? "", secrets) || undefined;
   const namespaces = (
     tryResolve(env[SECRETS_ENV.namespaces] ?? "", secrets) ?? ""
   )
@@ -162,30 +173,26 @@ function resolveSecretsView(
       ? `${SECRETS_ENV.adminKeyJson} is declared under consoleEnv: but is not injected on this deployment`
       : `${SECRETS_ENV.adminKeyJson} is not declared under this server's consoleEnv:`;
   } else {
-    try {
-      const parsed = JSON.parse(adminJson) as Partial<ServiceAccount>;
-      if (parsed.client_email && parsed.private_key) {
-        account = {
-          client_email: parsed.client_email,
-          private_key: parsed.private_key,
-        };
-      } else {
-        accountReason = `${SECRETS_ENV.adminKeyJson} is missing client_email/private_key`;
-      }
-    } catch {
-      // Never echo the value: it is a private key.
-      accountReason = `${SECRETS_ENV.adminKeyJson} is not valid JSON`;
-    }
+    // parseServiceAccount reports a malformed key by SHAPE, never content — it is
+    // a private key.
+    const parsed = parseServiceAccount(adminJson);
+    account = parsed.account;
+    if (!account)
+      accountReason = `${SECRETS_ENV.adminKeyJson} ${parsed.reason}`;
   }
 
   return {
     kind: "secrets",
     server,
     projectId,
+    location,
     namespaces,
     account,
     accountReason,
-    apiBase: tryResolve(env[SECRETS_ENV.apiBase] ?? "", secrets) || undefined,
+    pmApiBase:
+      tryResolve(env[SECRETS_ENV.pmApiBase] ?? "", secrets) || undefined,
+    smApiBase:
+      tryResolve(env[SECRETS_ENV.smApiBase] ?? "", secrets) || undefined,
     tokenUrl: tryResolve(env[SECRETS_ENV.tokenUrl] ?? "", secrets) || undefined,
   };
 }
@@ -230,7 +237,7 @@ function resolveGcsView(
 /**
  * Two credential conventions, both used by the bundle-api fleet:
  *   - gcs:               GCS_SERVICE_ACCOUNT_KEY_JSON  (a full key file, inline)
- *   - remote-filesystem: GCS_CLIENT_EMAIL + GCS_PRIVATE_KEY (the two fields only)
+ *   - remote-fs-screenshots: GCS_CLIENT_EMAIL + GCS_PRIVATE_KEY (two fields only)
  * Support both so the same view scopes to either server.
  */
 function resolveAccount(

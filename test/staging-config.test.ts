@@ -8,7 +8,7 @@ import { renderAppSpec } from "../src/deploy/appspec.ts";
  *
  * Two things are checked here, and they are the two things that would rot:
  *
- *   1. COMPONENT COUNT. 25 servers must render as exactly TWO components —
+ *   1. COMPONENT COUNT. 26 servers must render as exactly TWO components —
  *      core + one bundle. A stray `bundle:` name in the config is a $5-$25/month
  *      regression that nobody would otherwise notice.
  *
@@ -69,9 +69,9 @@ describe("staging config", () => {
           "FETCHPET_USERNAME",
           "FETCHPET_PASSWORD",
           "POINTSYEAH_REFRESH_TOKEN",
-          "GCP_SECRETS_PROJECT_ID",
-          "GCP_SECRETS_VIEWER_KEY_JSON",
-          "GCP_SECRETS_ADMIN_KEY_JSON",
+          "SECRETS_PROJECT_ID",
+          "SECRETS_VIEWER_KEY_JSON",
+          "SECRETS_ADMIN_KEY_JSON",
         ].map((name) => [name, "x"]),
       ),
     });
@@ -83,7 +83,7 @@ describe("staging config", () => {
     // Internal-only: internal_ports and NO http_port (both is an API rejection).
     expect(bundle.internal_ports).toEqual([8080]);
     expect(bundle.http_port).toBeUndefined();
-    // The credentials of all fourteen upstream servers, unioned onto the one box
+    // The credentials of all fifteen upstream servers, unioned onto the one box
     // — and every one of them SECRET-typed, so App Platform encrypts it at rest.
     const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
@@ -93,7 +93,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and fourteen servers now share a
+    // exists for — it is where Chromium, `op` and fifteen servers now share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -102,18 +102,18 @@ describe("staging config", () => {
     expect(bundle.envs.some((e) => e.key === "STRAD_ENV")).toBe(true);
     expect(bundle.envs.some((e) => e.key === "STRAD_VERSION")).toBe(true);
 
-    // THE IAM SPLIT, as it actually ships. gcp-secrets' two service accounts must
+    // THE IAM SPLIT, as it actually ships. secrets' two service accounts must
     // land on DIFFERENT components, or the whole posture is decorative:
     //
-    //   viewer (no versions.access) -> the bundle, which answers /mcp
-    //   admin  (reads and writes)   -> core, which serves the SSO-gated console
+    //   viewer (no secretmanager.versions.access) -> the bundle, which answers /mcp
+    //   admin  (reads and writes both stores)     -> core, the SSO-gated console
     //
     // The failure this pins is not hypothetical: every other way of giving core a
     // credential (a broadcast SECRET env var) ALSO gives it to the bundle, because
     // appspec forwards SECRET-typed broadcast vars to every component.
     const core = spec.services[0]!;
-    const ADMIN = "GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON";
-    const VIEWER = "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON";
+    const ADMIN = "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON";
+    const VIEWER = "SECRETS_SERVICE_ACCOUNT_KEY_JSON";
 
     expect(core.envs.some((e) => e.key === ADMIN)).toBe(true);
     expect(bundle.envs.some((e) => e.key === ADMIN)).toBe(false);

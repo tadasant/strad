@@ -1,4 +1,4 @@
-import type { ServiceAccount } from "./client.js";
+import type { ServiceAccount } from "./parameter-manager.js";
 
 /**
  * The server's configuration, read from the environment.
@@ -7,24 +7,24 @@ import type { ServiceAccount } from "./client.js";
  * `env:` map). The image itself is credential-free, like every other server in
  * this repo.
  */
-export interface GcpSecretsConfig {
+export interface SecretsConfig {
   projectId: string;
   /**
-   * The secret-name prefixes this server manages, e.g. ["mcp-"].
+   * The canonical-path prefixes this server manages, e.g.
+   * ["/strad/staging/mcp/"].
    *
-   * GCP secret ids are flat (`[A-Za-z0-9_-]{1,255}`) — there is no folder — so a
-   * "namespace" is a prefix.
+   * A parameter is addressed by a canonical path
+   * `/strad/{env}/mcp/{server-slug}/{kind}/{VARIABLE_NAME}`, and a "namespace" is
+   * a prefix of that path. The prefix is stored inside each parameter's envelope,
+   * so listing filters on the envelope's own path — not on a decoded id.
    *
    * Be precise about what it is worth: this is a CODE-LEVEL guard, not the IAM
-   * boundary. An IAM condition on `resource.name` cannot carry it, because
-   * `secretmanager.secrets.list` is checked against the PARENT PROJECT, whose
-   * name never starts with ".../secrets/mcp-" — a conditional binding would deny
-   * the listing outright. The IAM boundary is the PROJECT: point this server at a
-   * project that holds only these secrets. See the README.
+   * boundary. The IAM boundary is the PROJECT — point this server at a project
+   * that holds only these parameters. See the README.
    *
-   * What the prefix DOES buy: the server will not list, and the console will not
-   * write, outside it — so a second tenant's secrets in the same project stay out
-   * of this server's answers.
+   * What the prefix DOES buy: the server will not list, and get_parameter will
+   * not read, outside it — so strad's own parameters (or a second tenant's) in
+   * the same project stay out of this server's answers.
    */
   namespaces: string[];
   account: ServiceAccount | null;
@@ -36,17 +36,15 @@ export interface GcpSecretsConfig {
 }
 
 export const ENV = {
-  projectId: "GCP_SECRETS_PROJECT_ID",
-  namespaces: "GCP_SECRETS_NAMESPACES",
-  keyJson: "GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON",
-  consoleUrl: "GCP_SECRETS_CONSOLE_URL",
-  apiBase: "GCP_SECRETS_API_BASE",
-  tokenUrl: "GCP_SECRETS_TOKEN_URL",
+  projectId: "SECRETS_PROJECT_ID",
+  namespaces: "SECRETS_NAMESPACES",
+  keyJson: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+  consoleUrl: "SECRETS_CONSOLE_URL",
+  apiBase: "SECRETS_PM_API_BASE",
+  tokenUrl: "SECRETS_TOKEN_URL",
 } as const;
 
-export function loadConfig(
-  env: NodeJS.ProcessEnv = process.env,
-): GcpSecretsConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): SecretsConfig {
   const projectId = env[ENV.projectId];
   if (!projectId) {
     throw new Error(`${ENV.projectId} must be configured`);
@@ -58,12 +56,12 @@ export function loadConfig(
     .filter(Boolean);
 
   if (namespaces.length === 0) {
-    // Fail closed. An empty namespace list would mean "" — every secret in the
-    // project, including strad's own STRAD_TOKENS — and that is precisely the
-    // blast radius this server exists to bound.
+    // Fail closed. An empty namespace list would mean "" — every parameter in
+    // the project, including strad's own — and that is precisely the blast
+    // radius this server exists to bound.
     throw new Error(
-      `${ENV.namespaces} must name at least one prefix (e.g. "mcp-"). ` +
-        `An unset namespace would scope this server to EVERY secret in the project.`,
+      `${ENV.namespaces} must name at least one path prefix (e.g. "/strad/staging/mcp/"). ` +
+        `An unset namespace would scope this server to EVERY parameter in the project.`,
     );
   }
 
@@ -97,10 +95,7 @@ export function parseAccount(raw: string | undefined): ServiceAccount | null {
   return { client_email: parsed.client_email, private_key: parsed.private_key };
 }
 
-/** Is this secret id inside one of the managed namespaces? */
-export function inManagedNamespace(
-  name: string,
-  namespaces: string[],
-): boolean {
+/** Is this canonical path inside one of the managed namespaces? */
+export function inManagedNamespace(name: string, namespaces: string[]): boolean {
   return namespaces.some((ns) => name.startsWith(ns));
 }

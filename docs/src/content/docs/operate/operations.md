@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Six jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Eight jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -19,13 +19,19 @@ Runs on PRs and pushes to `main`. Six jobs, all `runs-on: self-hosted`:
   good-eggs image only builds on push, so a PR could otherwise break that server
   without CI noticing. This job builds it and runs its browser-free MCP-App gating
   tests.
+- **`secrets`** — the same shape as `good_eggs`, for the `secrets` server tree. Its
+  tests _are_ the security review: they drive the server through a real MCP client
+  against a fake Parameter Manager that models the two-store split, and assert that
+  no tool can return a secret value and that the viewer credential cannot reach one.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 9, tailscale 15, monarch-money 23,
-  gmail 8, google-docs 11, google-calendar 7, 1Password 9, …). Those counts are the
-  numbers the gateway's read-only allow-lists are carved out of, so if an upstream
-  grows or renames a tool, this is where it surfaces. It also asserts the `op` CLI
-  is really in the image.
+  gmail 8, google-docs 11, google-calendar 7, 1Password 9, secrets 4, …). Those
+  counts are the numbers the gateway's read-only allow-lists are carved out of, so
+  if an upstream grows or renames a tool, this is where it surfaces. For `secrets`
+  the count of 4 is a security assertion: a fifth tool on a server whose contract is
+  "no tool returns a secret value" is what CI should catch. It also asserts the `op`
+  CLI is really in the image.
 - **`verify_lockfile`** — `npm install --package-lock-only` then
   `git diff --exit-code`, so `package-lock.json` can't drift.
 - **`build_image`** — builds the core Docker image, boots it with
@@ -127,13 +133,13 @@ See [Known limitations](/limitations/).
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all three server kinds so the deploy path is proven end-to-end. It
-declares twenty-five server slugs:
+declares twenty-six server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
-- twenty-three `supplementary-image` entries, all on the one `bundle` component
-  running `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's fourteen
+- twenty-four `supplementary-image` entries, all on the one `bundle` component
+  running `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's fifteen
   mounts, because a read-only and a read-write variant of one upstream are two
   entries sharing one `path`.
 

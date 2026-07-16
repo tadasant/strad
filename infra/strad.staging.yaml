@@ -12,8 +12,8 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. TWO COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares twenty-five server SLUGS: twenty-three supplementary-image
-# entries (which land on fourteen upstream mounts inside the one bundle image,
+# This file declares twenty-six server SLUGS: twenty-four supplementary-image
+# entries (which land on fifteen upstream mounts inside the one bundle image,
 # because capability variants share a mount), the `echo` builtin in core, and the
 # `deepwiki` remote-http canary.
 #
@@ -82,7 +82,7 @@ roles:
     servers: [echo]
 
 bundles:
-  # THE bundle. One image, one component, fourteen upstream MCP servers — the
+  # THE bundle. One image, one component, fifteen upstream MCP servers — the
   # bundle-api fleet, the Google trio, 1Password (with the `op` CLI baked in) and
   # the three browser servers, which share ONE Chromium (never one per server:
   # see servers/bundle/host/src/browser.ts).
@@ -90,8 +90,8 @@ bundles:
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with fourteen servers registered adds ~200MB. 0.5GB is absurd here;
-  # 1GB would be one bad page render from an OOM that takes all 25 slugs down
+  # and Node with fifteen servers registered adds ~200MB. 0.5GB is absurd here;
+  # 1GB would be one bad page render from an OOM that takes all 26 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
   # the OpenTelemetry data shows event-loop lag or CPU saturation, the next move
@@ -227,26 +227,35 @@ servers:
     path: /google-flights
     entitlements: [admin]
 
-  # GCS-backed filesystem, pinned to its own bucket.
+  # GCS-backed screenshot store, pinned to its own bucket.
   #
   # ITS ENV IS SLUG-NAMESPACED, and that is load-bearing: `gcs` (below) and
-  # `remote-filesystem` both read `GCS_BUCKET` from the process environment, and
-  # they point at DIFFERENT buckets. That collision is why gcs used to need a
+  # `remote-fs-screenshots` both read `GCS_BUCKET` from the process environment,
+  # and they point at DIFFERENT buckets. That collision is why gcs used to need a
   # component of its own. In one container it cannot be resolved by env at all,
-  # so the bundle host hands remote-filesystem an explicit client built from
-  # these REMOTE_FILESYSTEM_* names and it stops reading the bare ones.
-  - slug: remote-filesystem
+  # so the bundle host hands remote-fs-screenshots an explicit client built from
+  # these REMOTE_FS_SCREENSHOTS_* names and it stops reading the bare ones.
+  #
+  # ITS TWO CREDENTIALS COME FROM THE SECRETS SYSTEM, not from hand-written
+  # `${REF}` secrets. `params: true` opts this server into parameter resolution:
+  # at deploy time render-spec resolves everything under
+  # `/strad/staging/mcp/remote-fs-screenshots/static/*` — the non-secret
+  # REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL from Parameter Manager and the secret
+  # REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY from Secret Manager — and injects them
+  # as SECRET env vars onto this bundle. A human sets both in the console
+  # (/ui/secrets); the container holds no cloud credential. The bucket is
+  # deployment config, not a credential, so it stays a literal here.
+  - slug: remote-fs-screenshots
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /remote-filesystem
+    path: /remote-fs-screenshots
     entitlements: [admin]
+    params: true
     env:
-      REMOTE_FILESYSTEM_GCS_BUCKET: "remote-filesystem-tadas"
-      REMOTE_FILESYSTEM_GCS_CLIENT_EMAIL: "${REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL}"
-      REMOTE_FILESYSTEM_GCS_PRIVATE_KEY: "${REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY}"
+      REMOTE_FS_SCREENSHOTS_GCS_BUCKET: "remote-filesystem-tadas"
 
-  # Google Cloud Storage. Keeps the bare GCS_* names (remote-filesystem is the
+  # Google Cloud Storage. Keeps the bare GCS_* names (remote-fs-screenshots is the
   # one that moved). GCS_BUCKET pins every operation to ONE bucket and is also
   # what the human /ui/gcs view scopes to (src/ui/resolve.ts). pulse_public is the
   # deliberate choice: the service account can reach the transcript buckets too,
@@ -266,70 +275,65 @@ servers:
       GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
-  # gcp-secrets — the secrets store whose MCP surface CANNOT read a value.
+  # secrets — the store-agnostic parameters manager. Parameter Manager indexes
+  # everything; Secret Manager backs the secret parts. Its MCP surface CANNOT
+  # return a SECRET value.
   #
-  # THIS ENTRY IS THE SECURITY BOUNDARY. Read the two credentials below carefully,
-  # because the difference between them is the entire design:
+  # THIS ENTRY IS THE SECURITY BOUNDARY. Three credentials, three roles:
   #
-  #   env:         GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON        -> the BUNDLE
-  #   consoleEnv:  GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  -> CORE, only
+  #   env:         SECRETS_SERVICE_ACCOUNT_KEY_JSON        -> the BUNDLE (viewer)
+  #   consoleEnv:  SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON  -> CORE only (admin)
+  #   STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON       -> DEPLOY only (resolver)
   #
-  # `env:` lands on the container that answers /mcp. It gets a service account
-  # holding roles/secretmanager.viewer: secrets.list, secrets.get, versions.list,
-  # versions.get — and NOT secretmanager.versions.access. So the MCP path can see
-  # that a secret exists and what a human noted on it, and Google will refuse it
-  # the value. Not "strad declines to expose it" — the credential cannot fetch it.
-  # A prompt injection that talks a tool into reading a secret gets a 403.
+  # `env:` lands on the container that answers /mcp. It gets the VIEWER service
+  # account: Parameter Manager list/get and parameterVersions.access (so it can
+  # read the index and NON-SECRET values) and NOT secretmanager.versions.access.
+  # A secret parameter's value lives in Secret Manager, which this credential
+  # cannot reach, so the MCP path can see that a parameter exists, its kind and
+  # note, and read a non-secret value — and Google refuses it a secret value. A
+  # prompt injection that talks a tool into reading a secret gets a 403.
   #
   # `consoleEnv:` lands on the CORE component and nowhere else (appspec.ts is
   # explicit about it; a broadcast SECRET would have reached the bundle too). It
-  # carries the admin service account, which CAN add, rotate, reveal and delete —
-  # and which is only ever driven by a human clicking a button on /ui/gcp-secrets,
-  # behind the console SSO gate. There is no code path from /mcp to it.
+  # carries the ADMIN service account, which CAN add, rotate, reveal and delete
+  # both kinds — driven only by a human on /ui/secrets, behind the console SSO
+  # gate. There is no code path from /mcp to it.
   #
-  # NAMESPACE, AND WHERE THE FENCE ACTUALLY IS. `mcp-` is a code-level guard: the
-  # server refuses to list an unmanaged namespace and the console refuses to write
-  # outside one. It is NOT the IAM boundary, and pretending otherwise would be the
-  # dangerous kind of wrong — an IAM condition on resource.name cannot carry it,
-  # because `secrets.list` and `secrets.create` are checked against the PARENT
-  # PROJECT, whose name never starts with ".../secrets/mcp-".
+  # The RESOLVER account (STRAD_PARAMS_*, set in the deploy environment, NOT here)
+  # reads both stores' values at deploy time to inject a `params: true` server's
+  # env. It writes nothing and never reaches a running container.
   #
-  # The IAM boundary is THE PROJECT. GCP_SECRETS_PROJECT_ID must name a project
-  # that holds ONLY these mcp- secrets — NOT the project holding strad's own
-  # strad-staging-* secrets (STRAD_TOKENS among them). Then the two bindings below
-  # are exactly the blast radius: the viewer can describe everything in that
-  # project and read the value of nothing; the admin can do anything in that
-  # project and cannot see strad's own secrets at all, because they are elsewhere.
-  # See servers/gcp-secrets/README.md.
-  #
-  # NOTE. Every secret can carry a free-form note, stored as the `note` ANNOTATION
-  # on the Secret resource (annotations are arbitrary metadata, < 16 KiB total;
-  # labels are not — they restrict the charset). Agents CAN read the note. That is
-  # the point: "which key is this, and when does it rotate" is exactly what an
-  # agent should be able to tell you without holding the key.
+  # NAMESPACE, AND WHERE THE FENCE ACTUALLY IS. The path prefix
+  # `/strad/staging/mcp/` is a code-level guard: the server refuses to list an
+  # unmanaged namespace and the console refuses to write outside one. It is NOT
+  # the IAM boundary — put these parameters in a project that holds ONLY them, not
+  # the project holding strad's own strad-staging-* secrets. Then the viewer can
+  # describe everything in that project and read no secret value; the admin can do
+  # anything in that project and cannot see strad's own secrets, because they are
+  # elsewhere. See servers/secrets/README.md.
   #
   # SEEDING (not yet done — see the PR): the two keys must exist in Secret Manager
-  # as strad-staging-GCP_SECRETS_VIEWER_KEY_JSON and
-  # strad-staging-GCP_SECRETS_ADMIN_KEY_JSON before this deploys.
-  - slug: gcp-secrets
+  # as strad-staging-SECRETS_VIEWER_KEY_JSON and strad-staging-SECRETS_ADMIN_KEY_JSON
+  # before this deploys.
+  - slug: secrets
     kind: supplementary-image
-    title: Secrets (Google Secret Manager)
-    description: Add, rotate, reveal and delete secret values. The MCP server can only see their names and notes.
+    title: Secrets & parameters
+    description: Add, rotate, reveal and delete non-secret and secret parameters. The MCP server can never return a secret value.
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /gcp-secrets
+    path: /secrets
     entitlements: [admin]
     env:
-      GCP_SECRETS_PROJECT_ID: "${GCP_SECRETS_PROJECT_ID}"
-      GCP_SECRETS_NAMESPACES: "mcp-"
-      GCP_SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/gcp-secrets"
-      # roles/secretmanager.viewer — NO versions.access. This is the lock.
-      GCP_SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${GCP_SECRETS_VIEWER_KEY_JSON}"
+      SECRETS_PROJECT_ID: "${SECRETS_PROJECT_ID}"
+      SECRETS_NAMESPACES: "/strad/staging/mcp/"
+      SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
+      # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
+      SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
-      GCP_SECRETS_PROJECT_ID: "${GCP_SECRETS_PROJECT_ID}"
-      GCP_SECRETS_NAMESPACES: "mcp-"
-      # roles/secretmanager.admin on the mcp- prefix. Core only. Humans only.
-      GCP_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${GCP_SECRETS_ADMIN_KEY_JSON}"
+      SECRETS_PROJECT_ID: "${SECRETS_PROJECT_ID}"
+      SECRETS_NAMESPACES: "/strad/staging/mcp/"
+      # Parameter Manager admin + Secret Manager admin. Core only. Humans only.
+      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
   # Gmail — 8 tools full, 7 read-write, 5 read-only. THREE slugs, ONE container.

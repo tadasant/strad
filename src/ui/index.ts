@@ -4,13 +4,13 @@ import type { SecretBag } from "../secrets/index.ts";
 import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
 import {
-  createSecretsAdmin,
-  SecretManagerError,
-  validateNote,
-  validateSecretName,
-  type SecretsAdmin,
-  type SecretMeta,
-} from "./secretmanager-client.ts";
+  createGcpParameterStore,
+  ParameterStoreError,
+  validateVariableName,
+  variableOf,
+  type ParameterMeta,
+  type ParameterStore,
+} from "../secrets/parameters/index.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import {
   renderGcsBrowse,
@@ -24,13 +24,13 @@ import {
  *
  * Routes:
  *   GET  /ui                    — index of every configured server
- *   GET  /ui/:server            — the per-server view (GCS browser, secrets
+ *   GET  /ui/:server            — the per-server view (GCS browser, parameters
  *                                 manager, or a "no view yet" notice)
  *   POST /ui/:server/create     — ┐
- *   POST /ui/:server/rotate     — │ the gcp-secrets WRITE surface. Humans only.
+ *   POST /ui/:server/rotate     — │ the `secrets` WRITE surface. Humans only.
  *   POST /ui/:server/note       — │ There is no MCP equivalent of any of these,
- *   POST /ui/:server/reveal     — │ and the credential that performs them is
- *   POST /ui/:server/delete     — ┘ injected on THIS component alone.
+ *   POST /ui/:server/reveal     — │ and the admin credential that performs them
+ *   POST /ui/:server/delete     — ┘ is injected on THIS component alone.
  *
  * This is HUMAN-facing HTML behind the console SSO gate. It is NOT the /mcp
  * agent endpoint and shares no auth with it (see console-auth.ts). Only mounted
@@ -41,13 +41,23 @@ import {
  * so a third-party page cannot drive these endpoints on a signed-in admin's
  * behalf — the request arrives unauthenticated and the gate 401s it.
  *
- * WHY NO VALUE IS EVER LOGGED. A value appears in exactly two places: the body
- * of a POST (create/rotate), and the one-shot reveal panel. It is never put in a
- * URL (so it cannot reach an access log, a proxy, a Referer header or a
+ * WHY NO SECRET VALUE IS EVER LOGGED. A value appears in exactly two places: the
+ * body of a POST (create/rotate), and the one-shot reveal panel. It is never put
+ * in a URL (so it cannot reach an access log, a proxy, a Referer header or a
  * bookmark), never interpolated into an error, and never handed to telemetry —
  * strad's telemetry records shape and identity only (src/telemetry/redact.ts),
  * and nothing here calls it.
  */
+
+/** A note may be at most this many bytes (kept small; it is metadata, not prose). */
+const MAX_NOTE_BYTES = 4096;
+
+function validateNote(note: string): string | null {
+  if (Buffer.byteLength(note, "utf8") > MAX_NOTE_BYTES) {
+    return `A note may be at most ${MAX_NOTE_BYTES} bytes.`;
+  }
+  return null;
+}
 
 export interface ConsoleUiOptions {
   config: StradConfig;
@@ -56,17 +66,17 @@ export interface ConsoleUiOptions {
   env: NodeJS.ProcessEnv;
   /** Override the GCS listing surface. Defaults to the real JSON-API client. */
   gcsList?: GcsLister;
-  /** Override the Secret Manager admin surface. Defaults to the real REST client. */
-  secretsAdmin?: (
+  /** Override the parameter store. Defaults to the real Parameter/Secret Manager client. */
+  parametersStore?: (
     view: Extract<ServerView, { kind: "secrets" }>,
-  ) => SecretsAdmin;
+  ) => ParameterStore;
 }
 
 export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   const gate = requireConsoleUi({ config: opts.config, env: opts.env });
   const gcsList = opts.gcsList ?? createGcsLister();
 
-  // The secrets forms are urlencoded. Scoped to /ui so it cannot change how
+  // The parameter forms are urlencoded. Scoped to /ui so it cannot change how
   // /mcp parses a body.
   const form = express.urlencoded({ extended: false, limit: "64kb" });
 
@@ -205,7 +215,7 @@ async function handleServerView(
 }
 
 // ---------------------------------------------------------------------------
-// The secrets page, and the five actions that mutate it.
+// The parameters page, and the five actions that mutate it.
 // ---------------------------------------------------------------------------
 
 type SecretAction = "create" | "rotate" | "note" | "reveal" | "delete";
@@ -229,7 +239,7 @@ async function handleSecretAction(
           title: "Not found",
           signedInAs,
           heading: "No such secrets server",
-          sub: `"${slug}" is not a secrets-backed server on this gateway.`,
+          sub: `"${slug}" is not a parameters-backed server on this gateway.`,
           tone: "warn",
           breadcrumbToIndex: true,
         }),
@@ -237,71 +247,73 @@ async function handleSecretAction(
     return;
   }
 
-  const admin = adminFor(view, opts);
-  if (!admin) {
+  const store = storeFor(view, opts);
+  if (!store) {
     await renderSecretsPage(res, view, opts, { signedInAs });
     return;
   }
 
   const body = req.body as Record<string, unknown>;
-  const name = typeof body.name === "string" ? body.name.trim() : "";
   // A value is read into a local and never leaves this function except toward
-  // Secret Manager, or into the one-shot reveal panel.
+  // the parameter store, or into the one-shot reveal panel.
   const value = typeof body.value === "string" ? body.value : "";
   const note = typeof body.note === "string" ? body.note.trim() : "";
+  // A parameter is a SECRET one when the create form's checkbox is ticked.
+  const secret = body.secret === "on" || body.secret === "true";
+  // rotate/note/reveal/delete address an existing parameter by its canonical path.
+  const path = typeof body.path === "string" ? body.path.trim() : "";
   const namespace = view.namespaces[0] ?? "";
+
+  const fail = (message: string, status = 400) =>
+    renderSecretsPage(res, view, opts, {
+      signedInAs,
+      flash: { tone: "error", message },
+      status,
+    });
 
   try {
     switch (action) {
       case "create": {
-        const nameError = validateSecretName(name, namespace);
+        const variable =
+          typeof body.variable === "string" ? body.variable.trim() : "";
+        const varError = validateVariableName(variable);
         const noteError = validateNote(note);
-        if (nameError ?? noteError) {
-          await renderSecretsPage(res, view, opts, {
-            signedInAs,
-            flash: {
-              tone: "error",
-              message: (nameError ?? noteError) as string,
-            },
-            status: 400,
-          });
+        if (varError ?? noteError) {
+          await fail((varError ?? noteError) as string);
           return;
         }
         if (!value) {
-          await renderSecretsPage(res, view, opts, {
-            signedInAs,
-            flash: { tone: "error", message: "A value is required." },
-            status: 400,
-          });
+          await fail("A value is required.");
           return;
         }
-        await admin.create({ name, value, note: note || undefined });
+        await store.create({
+          path: `${namespace}${variable}`,
+          secret,
+          value,
+          note: note || undefined,
+        });
         await renderSecretsPage(res, view, opts, {
           signedInAs,
-          flash: { tone: "ok", message: `Created ${name}.` },
+          flash: {
+            tone: "ok",
+            message: `Created ${variable} (${secret ? "secret" : "non-secret"}).`,
+          },
         });
         return;
       }
 
       case "rotate": {
         if (!value) {
-          await renderSecretsPage(res, view, opts, {
-            signedInAs,
-            flash: {
-              tone: "error",
-              message: "A new value is required to rotate.",
-            },
-            status: 400,
-          });
+          await fail("A new value is required to rotate.");
           return;
         }
-        assertManaged(name, view.namespaces);
-        await admin.addVersion(name, value);
+        assertManaged(path, view.namespaces);
+        await store.rotate(path, value);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           flash: {
             tone: "ok",
-            message: `Rotated ${name}: a new version is now current.`,
+            message: `Rotated ${variableOf(path)}: a new value is now current.`,
           },
         });
         return;
@@ -310,45 +322,41 @@ async function handleSecretAction(
       case "note": {
         const noteError = validateNote(note);
         if (noteError) {
-          await renderSecretsPage(res, view, opts, {
-            signedInAs,
-            flash: { tone: "error", message: noteError },
-            status: 400,
-          });
+          await fail(noteError);
           return;
         }
-        assertManaged(name, view.namespaces);
-        await admin.setNote(name, note);
+        assertManaged(path, view.namespaces);
+        await store.setNote(path, note);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           flash: {
             tone: "ok",
             message: note
-              ? `Note saved on ${name}.`
-              : `Note cleared on ${name}.`,
+              ? `Note saved on ${variableOf(path)}.`
+              : `Note cleared on ${variableOf(path)}.`,
           },
         });
         return;
       }
 
       case "reveal": {
-        assertManaged(name, view.namespaces);
-        const revealed = await admin.accessLatest(name);
+        assertManaged(path, view.namespaces);
+        const revealed = await store.reveal(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
-          revealed: { name, value: revealed },
+          revealed: { name: variableOf(path), value: revealed },
         });
         return;
       }
 
       case "delete": {
-        assertManaged(name, view.namespaces);
-        await admin.destroy(name);
+        assertManaged(path, view.namespaces);
+        await store.destroy(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           flash: {
             tone: "ok",
-            message: `Deleted ${name} and all of its versions.`,
+            message: `Deleted ${variableOf(path)} and all of its versions.`,
           },
         });
         return;
@@ -356,13 +364,9 @@ async function handleSecretAction(
     }
   } catch (err) {
     // Whatever went wrong, the message describes the OPERATION, never the value:
-    // SecretManagerError carries a status and a path, and this file never
+    // ParameterStoreError carries a status and a resource, and this file never
     // interpolates `value` into a string.
-    await renderSecretsPage(res, view, opts, {
-      signedInAs,
-      flash: { tone: "error", message: describe(err) },
-      status: 502,
-    });
+    await fail(describe(err), 502);
   }
 }
 
@@ -380,9 +384,9 @@ async function renderSecretsPage(
   extras: PageExtras,
 ): Promise<void> {
   const slug = view.server.slug;
-  const admin = adminFor(view, opts);
+  const store = storeFor(view, opts);
 
-  if (!admin) {
+  if (!store) {
     res.type("html").send(
       renderMessage({
         title: `${slug} · not configured`,
@@ -390,10 +394,10 @@ async function renderSecretsPage(
         signedInAs: extras.signedInAs,
         heading: "The console's admin credential is not configured",
         sub:
-          `This server manages secrets in Google Cloud Secret Manager, but the console's own ` +
-          `service account is not injected on this deployment. It is deliberately a DIFFERENT ` +
-          `credential from the one the MCP container holds — the MCP one cannot read a value — ` +
-          `so the console cannot fall back to it. Detail: ${view.accountReason ?? "no credential"}`,
+          `This server manages parameters in Google Cloud Parameter Manager and Secret ` +
+          `Manager, but the console's own service account is not injected on this deployment. ` +
+          `It is deliberately a DIFFERENT credential from the one the MCP container holds — the ` +
+          `MCP one cannot read a secret value — so the console cannot fall back to it. Detail: ${view.accountReason ?? "no credential"}`,
         tone: "warn",
         breadcrumbToIndex: true,
       }),
@@ -401,10 +405,10 @@ async function renderSecretsPage(
     return;
   }
 
-  let secrets: SecretMeta[] = [];
+  let parameters: ParameterMeta[] = [];
   let flash = extras.flash;
   try {
-    secrets = await admin.list(view.namespaces[0] ?? "");
+    parameters = await store.list(view.namespaces[0] ?? "");
   } catch (err) {
     flash = flash ?? { tone: "error", message: describe(err) };
   }
@@ -415,7 +419,7 @@ async function renderSecretsPage(
     .send(
       renderSecrets({
         view,
-        secrets,
+        parameters,
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
@@ -424,76 +428,64 @@ async function renderSecretsPage(
 }
 
 /**
- * The admin client, MEMOISED per (server, service account).
+ * The parameter store, MEMOISED per (server, service account).
  *
  * It must not be rebuilt per request. The client caches its OAuth access token
  * for an hour (minting one costs an RSA signature and a round trip to Google),
- * and a fresh instance per call throws that cache away — which is exactly what
- * happened before this cache existed: every mutating request built one client in
- * handleSecretAction and a second in renderSecretsPage, so a single "save note"
- * cost two JWT signings and two token exchanges.
- *
- * createGcsLister() is constructed once in mountConsoleUi for the same reason;
- * this is the secrets equivalent, keyed because the credential can differ per
- * server slug (and must be re-keyed if it is ever rotated under us).
+ * and a fresh instance per call throws that cache away. It is keyed because the
+ * credential can differ per server slug (and must be re-keyed if rotated under us).
  */
-const adminCache = new Map<string, SecretsAdmin>();
+const storeCache = new Map<string, ParameterStore>();
 
-function adminFor(
+function storeFor(
   view: Extract<ServerView, { kind: "secrets" }>,
   opts: ConsoleUiOptions,
-): SecretsAdmin | null {
-  if (opts.secretsAdmin) return opts.secretsAdmin(view);
+): ParameterStore | null {
+  if (opts.parametersStore) return opts.parametersStore(view);
   if (!view.account) return null;
 
-  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
-  const cached = adminCache.get(key);
+  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
+  const cached = storeCache.get(key);
   if (cached) return cached;
 
-  const admin = createSecretsAdmin({
+  const store = createGcpParameterStore({
     projectId: view.projectId,
+    location: view.location,
     account: view.account,
-    apiBase: view.apiBase,
+    pmApiBase: view.pmApiBase,
+    smApiBase: view.smApiBase,
     tokenUrl: view.tokenUrl,
   });
-  adminCache.set(key, admin);
-  return admin;
+  storeCache.set(key, store);
+  return store;
 }
 
 /**
- * The console may only act on a WELL-FORMED name inside a managed namespace.
- *
- * The service account's project scope already bounds what it can touch, so this
- * is the second lock, not the only one — but it turns "Google says 403/404" into
- * a sentence a human can act on, and it keeps a hand-crafted form POST from
- * naming `strad-staging-STRAD_TOKENS`, or a path-shaped `mcp-x/versions/1`, and
- * getting an opaque Secret Manager error back.
- *
- * It runs on rotate / note / reveal / delete. `create` runs the same charset
- * check through validateSecretName, which additionally reports WHICH rule was
- * broken so the form can say so.
+ * The console may only act on a WELL-FORMED canonical path inside a managed
+ * namespace. The service account's project scope already bounds what it can
+ * touch, so this is the second lock — but it turns "GCP says 403/404" into a
+ * sentence a human can act on, and it keeps a hand-crafted form POST from naming
+ * a path outside the namespace and getting an opaque backend error back.
  */
-function assertManaged(name: string, namespaces: string[]): void {
-  if (!name) throw new Error("A secret name is required.");
-  if (!namespaces.some((ns) => name.startsWith(ns))) {
+function assertManaged(path: string, namespaces: string[]): void {
+  if (!path) throw new Error("A parameter path is required.");
+  if (!namespaces.some((ns) => path.startsWith(ns))) {
     throw new Error(
-      `"${name}" is outside this server's managed namespace (${namespaces.join(", ")}).`,
+      `"${path}" is outside this server's managed namespace (${namespaces.join(", ")}).`,
     );
   }
-  if (!/^[A-Za-z0-9_-]{1,255}$/.test(name)) {
-    throw new Error(
-      `"${name}" is not a valid Secret Manager name (letters, digits, underscores and dashes only).`,
-    );
+  if (validateVariableName(variableOf(path))) {
+    throw new Error(`"${path}" does not end in a valid variable name.`);
   }
 }
 
 /** An error message that describes the failure and never the payload. */
 function describe(err: unknown): string {
-  if (err instanceof SecretManagerError) {
+  if (err instanceof ParameterStoreError) {
     if (err.status === 403) {
-      return `Secret Manager denied the request (403). The console's service account needs roles/secretmanager.admin on this namespace.`;
+      return `The store denied the request (403). The console's service account needs write access to this namespace's Parameter Manager and Secret Manager.`;
     }
-    if (err.status === 409) return `That secret already exists.`;
+    if (err.status === 409) return `That parameter already exists.`;
     return `${err.message}`;
   }
   return err instanceof Error ? err.message : String(err);

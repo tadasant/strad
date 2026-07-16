@@ -3,8 +3,8 @@
 Fifteen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
-/slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem
-/google-flights /gmail /google-calendar /google-docs /onepassword /gcp-secrets
+/slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-fs-screenshots
+/google-flights /gmail /google-calendar /google-docs /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
@@ -38,10 +38,10 @@ different places:
 
 | tree | source | servers |
 | --- | --- | --- |
-| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-filesystem, google-flights |
+| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-fs-screenshots, google-flights |
 | `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
-| `gcp-secrets` | `servers/gcp-secrets` | gcp-secrets (read-only Google Secret Manager) |
+| `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
 | `pointsyeah` | `servers/pointsyeah` | pointsyeah |
@@ -77,26 +77,27 @@ instance in `infra/strad.staging.yaml`.
 
 ## The GCS_BUCKET collision
 
-`gcs` and `remote-filesystem` **both read `GCS_BUCKET`**, and they point at
+`gcs` and `remote-fs-screenshots` **both read `GCS_BUCKET`**, and they point at
 different buckets. That is why `gcs` used to need a component to itself, and it is
 the one thing gateway-side capability does *not* solve — it is a credential, not a
 capability.
 
-One process cannot hold two values of one variable, so `remote-filesystem` stops
-reading the environment: the host hands it an explicit client built from
-`REMOTE_FILESYSTEM_GCS_*`. `gcs` keeps the bare names.
+One process cannot hold two values of one variable, so `remote-fs-screenshots`
+stops reading the environment: the host hands it an explicit client built from
+`REMOTE_FS_SCREENSHOTS_GCS_*`. `gcs` keeps the bare names.
 
 ## The one server whose safety is not in this image
 
-`gcp-secrets` lists secret NAMES and NOTES from Google Secret Manager, and can
-never return a VALUE — but not because of anything in this container. It is because
-the service account strad injects here holds `roles/secretmanager.viewer` and NOT
-`secretmanager.versions.access`, so Google refuses. The credential that CAN read a
-value lives on the **core** component, behind the console's SSO gate, and never
-reaches this process (see `consoleEnv:` in `src/config/schema.ts`).
+`secrets` lists parameter NAMES, KINDS and NOTES from Google Parameter Manager,
+and reads NON-SECRET values — but it can never return a SECRET value, and not
+because of anything in this container. It is because the service account strad
+injects here holds Parameter Manager viewer access and NOT
+`secretmanager.versions.access`, so Google refuses the secret. The credential that
+CAN read a secret value lives on the **core** component, behind the console's SSO
+gate, and never reaches this process (see `consoleEnv:` in `src/config/schema.ts`).
 
 This host must not undo that. There is no write tool to add, and no key here that
-could perform one. See [`servers/gcp-secrets/README.md`](../gcp-secrets/README.md).
+could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
@@ -108,8 +109,8 @@ that *can* be made survivable is:
   when the process *is* the server, catastrophic when it is fourteen others too.)
 - **1Password without an elicitation posture** refuses to mount, rather than
   refusing to boot.
-- **gcp-secrets without a managed namespace** refuses to mount — an unscoped
-  secrets server would see every secret in the project — rather than mounting
+- **secrets without a managed namespace** refuses to mount — an unscoped
+  secrets server would see every parameter in the project — rather than mounting
   wide open.
 - an **unhandled rejection** is logged, not fatal.
 - a **dead Chromium** is relaunched on next use.
@@ -125,6 +126,6 @@ docker exec <container> node /app/scripts/smoke.mjs [--tools]
 ```
 
 Lists tools from every mount and asserts the full-capability counts. It needs no
-credentials, which is why CI runs it on every PR. For `gcp-secrets` the count (3)
-is a security assertion: a fourth tool on a server whose contract is "no tool
-returns a value" is exactly what CI should catch.
+credentials, which is why CI runs it on every PR. For `secrets` the count (4)
+is a security assertion: a fifth tool on a server whose contract is "no tool
+returns a SECRET value" is exactly what CI should catch.

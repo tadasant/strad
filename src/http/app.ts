@@ -24,8 +24,8 @@ export interface AppOptions {
   secrets?: SecretBag;
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
-  /** Test seam: substitute the Secret Manager admin surface behind the console UI. */
-  secretsAdmin?: ConsoleUiOptions["secretsAdmin"];
+  /** Test seam: substitute the parameter store behind the console UI. */
+  parametersStore?: ConsoleUiOptions["parametersStore"];
 }
 
 export function createApp(opts: AppOptions): Express {
@@ -70,7 +70,7 @@ export function createApp(opts: AppOptions): Express {
       secrets: opts.secrets ?? {},
       env,
       gcsList: opts.gcsList,
-      secretsAdmin: opts.secretsAdmin,
+      parametersStore: opts.parametersStore,
     });
   }
 

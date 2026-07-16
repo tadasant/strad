@@ -9,7 +9,7 @@
 #                           gcs, remote-filesystem, google-flights
 #   images/bundle-google    gmail, google-calendar, google-docs
 #   servers/onepassword     onepassword            (+ the `op` CLI, baked below)
-#   servers/gcp-secrets     gcp-secrets            (read-only Secret Manager)
+#   servers/secrets         secrets                (Parameter + Secret Manager viewer)
 #   servers/good-eggs       good-eggs              ┐
 #   servers/fetchpet        fetchpet               ├ one shared Chromium
 #   servers/pointsyeah      pointsyeah             ┘
@@ -74,15 +74,16 @@ COPY servers/onepassword/shared ./shared
 COPY servers/onepassword/remote ./remote
 RUN npm run build && npm prune --omit=dev
 
-# ---- gcp-secrets --------------------------------------------------------------
-# Read-only Google Cloud Secret Manager: names, notes and metadata. Its client is
-# fetch + node:crypto, so this tree's only dependency is the MCP SDK.
-FROM ${PW} AS build-gcpsecrets
+# ---- secrets ------------------------------------------------------------------
+# Google Cloud Parameter Manager + Secret Manager (viewer): parameter names,
+# kinds, notes and non-secret values. Its client is fetch + node:crypto, so this
+# tree's only dependency is the MCP SDK.
+FROM ${PW} AS build-secrets
 WORKDIR /src
-COPY servers/gcp-secrets/package.json servers/gcp-secrets/package-lock.json ./
-COPY servers/gcp-secrets/shared/package.json ./shared/
+COPY servers/secrets/package.json servers/secrets/package-lock.json ./
+COPY servers/secrets/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
-COPY servers/gcp-secrets/shared ./shared
+COPY servers/secrets/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
@@ -129,7 +130,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 15 MCP servers (API, Google, 1Password, Secret Manager, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 15 MCP servers (API, Google, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -165,7 +166,7 @@ WORKDIR /app
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
-COPY --from=build-gcpsecrets /src /app/trees/gcp-secrets
+COPY --from=build-secrets /src /app/trees/secrets
 COPY --from=build-goodeggs /src /app/trees/good-eggs
 COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah

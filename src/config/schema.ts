@@ -132,6 +132,17 @@ const SupplementaryImageServer = ServerBase.extend({
   /** Env passed to the component. Values may be `${SECRET_REF}`. */
   env: z.record(SecretRef).default({}),
   /**
+   * Opt this server into PARAMETER RESOLUTION. When true, everything under
+   * `/strad/{env}/mcp/{slug}/static/*` in the secrets system (non-secret values
+   * from Parameter Manager, secret values from Secret Manager) is resolved and
+   * injected as this server's environment — see src/secrets/parameters. For a
+   * supplementary image that resolution happens at DEPLOY time (render-spec, with
+   * the resolver credential, scoped onto the bundle); the container itself holds
+   * no cloud credential. It is the modern alternative to hand-writing `${REF}`
+   * entries in `env:`.
+   */
+  params: z.boolean().default(false),
+  /**
    * Env for the CORE gateway only — the human console's half of this server.
    * It is NOT injected into the server's container, and that asymmetry is the
    * whole point.
@@ -140,7 +151,7 @@ const SupplementaryImageServer = ServerBase.extend({
    * credential the AGENT path holds. `consoleEnv:` lands on core, which serves
    * the SSO-gated /ui and nothing an agent can reach.
    *
-   * gcp-secrets is why this exists: its MCP container runs as a service account
+   * The `secrets` server is why this exists: its MCP container runs as a viewer
    * with `roles/secretmanager.viewer` (list/describe — no `versions.access`), so
    * no tool, no bug and no prompt injection can pull a secret VALUE through
    * /mcp, because the credential it would have to use cannot. The console needs
@@ -180,6 +191,14 @@ const BuiltinServer = ServerBase.extend({
   bundle: SLUG.default("core"),
   /** Options handed to the builtin's factory. May contain `${SECRET_REF}`. */
   options: z.record(z.unknown()).default({}),
+  /**
+   * Opt into PARAMETER RESOLUTION. When true, everything under
+   * `/strad/{env}/mcp/{slug}/static/*` is resolved from the secrets system and
+   * merged into this builtin's `options` at launch (see gateway/registry.ts). For
+   * a `core` builtin this happens in-process, at runtime — the concrete
+   * "resolve, then inject into the child" path. See src/secrets/parameters.
+   */
+  params: z.boolean().default(false),
 });
 
 export const ServerConfig = z.discriminatedUnion("kind", [
