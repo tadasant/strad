@@ -152,20 +152,20 @@ Set `params: true`, and everything a human has stored under
 environment:
 
 ```yaml
-- slug: remote-fs-screenshots
+- slug: remote-filesystem-tmp-public
   kind: supplementary-image
   image: ghcr.io/tadasant/strad-bundle:latest
   bundle: bundle
-  path: /remote-fs-screenshots
+  path: /remote-filesystem-tmp-public
   entitlements: [admin]
-  params: true # resolve /strad/{env}/mcp/remote-fs-screenshots/static/* into env
+  params: true # resolve /strad/{env}/mcp/remote-filesystem-tmp-public/static/* into env
   env:
-    REMOTE_FS_SCREENSHOTS_GCS_BUCKET: "my-screenshots" # a literal is fine; not a secret
+    REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "my-screenshots" # a literal is fine; not a secret
 ```
 
 The two credentials this server needs — a non-secret
-`REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL` and a secret
-`REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY` — are **not** in the config. A human sets
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a secret
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` — are **not** in the config. A human sets
 them once in `/ui/secrets`, and the resolver injects them: for a supplementary image
 at deploy time (`render-spec`, with the `STRAD_PARAMS_*` resolver credential),
 scoped onto that bundle. The container holds no cloud credential, exactly as with a
@@ -192,7 +192,7 @@ and twenty-four `supplementary-image` entries sharing ONE bundle over the privat
 network — which resolve onto the bundle image's fifteen mounts, because every
 read-only / read-write pair is two entries on one path. One of those, `secrets`,
 is also the worked example for the split `env:` / `consoleEnv:` credentials from
-step 4b, and `remote-fs-screenshots` is the `params: true` example from step 4c. It
+step 4b, and `remote-filesystem-tmp-public` is the `params: true` example from step 4c. It
 also keeps a deliberately narrow `echo-only` role, so
 the [424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read
 it alongside

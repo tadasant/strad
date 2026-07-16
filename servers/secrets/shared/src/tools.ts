@@ -88,7 +88,7 @@ export function toolDefinitions(config: SecretsConfig) {
           name: {
             type: "string",
             description:
-              "The canonical path, e.g. \"/strad/staging/mcp/remote-fs-screenshots/static/REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL\".",
+              "The canonical path, e.g. \"/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL\".",
           },
         },
         required: ["name"],

@@ -3,7 +3,7 @@
 Fifteen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
-/slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-fs-screenshots
+/slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
 /google-flights /gmail /google-calendar /google-docs /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
@@ -38,7 +38,7 @@ different places:
 
 | tree | source | servers |
 | --- | --- | --- |
-| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-fs-screenshots, google-flights |
+| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-filesystem-tmp-public, google-flights |
 | `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
@@ -77,14 +77,14 @@ instance in `infra/strad.staging.yaml`.
 
 ## The GCS_BUCKET collision
 
-`gcs` and `remote-fs-screenshots` **both read `GCS_BUCKET`**, and they point at
+`gcs` and `remote-filesystem-tmp-public` **both read `GCS_BUCKET`**, and they point at
 different buckets. That is why `gcs` used to need a component to itself, and it is
 the one thing gateway-side capability does *not* solve — it is a credential, not a
 capability.
 
-One process cannot hold two values of one variable, so `remote-fs-screenshots`
+One process cannot hold two values of one variable, so `remote-filesystem-tmp-public`
 stops reading the environment: the host hands it an explicit client built from
-`REMOTE_FS_SCREENSHOTS_GCS_*`. `gcs` keeps the bare names.
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_*`. `gcs` keeps the bare names.
 
 ## The one server whose safety is not in this image
 

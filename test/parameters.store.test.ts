@@ -19,9 +19,9 @@ import {
  */
 
 const ENV = "staging";
-const SLUG = "remote-fs-screenshots";
-const EMAIL_VAR = "REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL";
-const KEY_VAR = "REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY";
+const SLUG = "remote-filesystem-tmp-public";
+const EMAIL_VAR = "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL";
+const KEY_VAR = "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY";
 const emailPath = parameterPath(ENV, SLUG, EMAIL_VAR);
 const keyPath = parameterPath(ENV, SLUG, KEY_VAR);
 

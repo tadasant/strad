@@ -122,7 +122,7 @@ jobs:
           docker run -d --name bundle-ci \
             -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
-            -e REMOTE_FS_SCREENSHOTS_GCS_BUCKET=ci-rfs-bucket \
+            -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
             strad-bundle:ci
           for i in $(seq 1 60); do

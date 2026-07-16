@@ -149,18 +149,18 @@ async function buildMounts(): Promise<Mount[]> {
   });
 
   mounts.push({
-    // The strad slug is `remote-fs-screenshots` (it stores screenshots on a GCS
+    // The strad slug is `remote-filesystem-tmp-public` (it stores screenshots on a GCS
     // bucket); the vendored upstream is still pulsemcp's `remote-filesystem`.
-    slug: "remote-fs-screenshots",
+    slug: "remote-filesystem-tmp-public",
     tree: "bundle-api",
     serverName: "remote-filesystem-mcp-server",
     capabilities: { resources: {}, tools: {} },
-    // THE collision this collapse had to solve. gcs and remote-fs-screenshots
+    // THE collision this collapse had to solve. gcs and remote-filesystem-tmp-public
     // both read `GCS_BUCKET` from the environment, and they point at DIFFERENT
     // buckets — which is why gcs used to need a component of its own. One process
-    // cannot hold two values of one variable, so remote-fs-screenshots stops
+    // cannot hold two values of one variable, so remote-filesystem-tmp-public stops
     // reading the environment at all: we hand it an explicit client built from
-    // its own slug-namespaced vars (REMOTE_FS_SCREENSHOTS_GCS_*). No collision.
+    // its own slug-namespaced vars (REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_*). No collision.
     register: (s) => api.remoteFs.registerHandlers(s, remoteFsClientFactory()),
   });
 
@@ -295,24 +295,24 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 }
 
-/** remote-fs-screenshots' GCS client, built from ITS OWN env names. See the mount. */
+/** remote-filesystem-tmp-public' GCS client, built from ITS OWN env names. See the mount. */
 function remoteFsClientFactory(): () => unknown {
   return () => {
-    const bucket = process.env.REMOTE_FS_SCREENSHOTS_GCS_BUCKET;
+    const bucket = process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET;
     if (!bucket) {
       throw new Error(
-        "REMOTE_FS_SCREENSHOTS_GCS_BUCKET must be configured. (In this bundle, " +
-          "remote-fs-screenshots does NOT read GCS_BUCKET — that name belongs to " +
+        "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET must be configured. (In this bundle, " +
+          "remote-filesystem-tmp-public does NOT read GCS_BUCKET — that name belongs to " +
           "the gcs server, which points at a different bucket.)",
       );
     }
     return new remoteFsGcsClient({
       bucket,
-      projectId: process.env.REMOTE_FS_SCREENSHOTS_GCS_PROJECT_ID,
-      clientEmail: process.env.REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL,
-      privateKey: process.env.REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY,
-      rootPath: process.env.REMOTE_FS_SCREENSHOTS_GCS_ROOT_PATH,
-      makePublic: process.env.REMOTE_FS_SCREENSHOTS_GCS_MAKE_PUBLIC === "true",
+      projectId: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PROJECT_ID,
+      clientEmail: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL,
+      privateKey: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY,
+      rootPath: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_ROOT_PATH,
+      makePublic: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_MAKE_PUBLIC === "true",
     });
   };
 }

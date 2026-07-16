@@ -230,32 +230,32 @@ servers:
   # GCS-backed screenshot store, pinned to its own bucket.
   #
   # ITS ENV IS SLUG-NAMESPACED, and that is load-bearing: `gcs` (below) and
-  # `remote-fs-screenshots` both read `GCS_BUCKET` from the process environment,
+  # `remote-filesystem-tmp-public` both read `GCS_BUCKET` from the process environment,
   # and they point at DIFFERENT buckets. That collision is why gcs used to need a
   # component of its own. In one container it cannot be resolved by env at all,
-  # so the bundle host hands remote-fs-screenshots an explicit client built from
-  # these REMOTE_FS_SCREENSHOTS_* names and it stops reading the bare ones.
+  # so the bundle host hands remote-filesystem-tmp-public an explicit client built from
+  # these REMOTE_FILESYSTEM_TMP_PUBLIC_* names and it stops reading the bare ones.
   #
   # ITS TWO CREDENTIALS COME FROM THE SECRETS SYSTEM, not from hand-written
   # `${REF}` secrets. `params: true` opts this server into parameter resolution:
   # at deploy time render-spec resolves everything under
-  # `/strad/staging/mcp/remote-fs-screenshots/static/*` — the non-secret
-  # REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL from Parameter Manager and the secret
-  # REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY from Secret Manager — and injects them
+  # `/strad/staging/mcp/remote-filesystem-tmp-public/static/*` — the non-secret
+  # REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL from Parameter Manager and the secret
+  # REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY from Secret Manager — and injects them
   # as SECRET env vars onto this bundle. A human sets both in the console
   # (/ui/secrets); the container holds no cloud credential. The bucket is
   # deployment config, not a credential, so it stays a literal here.
-  - slug: remote-fs-screenshots
+  - slug: remote-filesystem-tmp-public
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /remote-fs-screenshots
+    path: /remote-filesystem-tmp-public
     entitlements: [admin]
     params: true
     env:
-      REMOTE_FS_SCREENSHOTS_GCS_BUCKET: "remote-filesystem-tadas"
+      REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "remote-filesystem-tadas"
 
-  # Google Cloud Storage. Keeps the bare GCS_* names (remote-fs-screenshots is the
+  # Google Cloud Storage. Keeps the bare GCS_* names (remote-filesystem-tmp-public is the
   # one that moved). GCS_BUCKET pins every operation to ONE bucket and is also
   # what the human /ui/gcs view scopes to (src/ui/resolve.ts). pulse_public is the
   # deliberate choice: the service account can reach the transcript buckets too,

@@ -23,7 +23,7 @@ const EXPECT = {
   tailscale: 15,
   "monarch-money": 23,
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
-  "remote-fs-screenshots": 5,
+  "remote-filesystem-tmp-public": 5,
   "google-flights": 3,
   gmail: 8,
   "google-calendar": 7,

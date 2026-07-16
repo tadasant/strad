@@ -655,7 +655,7 @@ Posture nuance worth stating plainly: the resolver credential runs at DEPLOY tim
 (in CI / `render-spec`), NOT in the container, so "the running container holds no
 cloud credential" still holds — the resolved values reach the bundle as ordinary
 SECRET env vars, exactly like every other secret. Until the resolver service
-account exists, a `params: true` supplementary server (`remote-fs-screenshots`)
+account exists, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
 boots without its resolved parameters and degrades gracefully.
 
 ## What the human still needs to provision
@@ -669,8 +669,8 @@ A consolidated checklist, cross-referenced above:
       Secret Manager admin) → `strad-staging-SECRETS_ADMIN_KEY_JSON`; a RESOLVER
       SA (read values of both stores) → `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`;
       plus `strad-staging-SECRETS_PROJECT_ID`. Then set both
-      `REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL` (non-secret) and
-      `REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
+      `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
+      `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2.

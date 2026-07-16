@@ -179,7 +179,7 @@ with GCP access to provision: a dedicated project holding only the
 `/strad/staging/mcp/*` parameters, the three service accounts (viewer, admin,
 resolver) and their keys seeded as `strad-staging-*` secrets, and the seeded
 parameter values. Until the **resolver** service account exists, a `params: true`
-supplementary server — `remote-fs-screenshots` — boots **without** its resolved
+supplementary server — `remote-filesystem-tmp-public` — boots **without** its resolved
 parameters and degrades gracefully rather than failing the deploy.
 
 The posture is intact throughout: the resolver credential runs at **deploy time**
@@ -188,8 +188,8 @@ cloud credential" still holds — the resolved values reach the bundle as ordina
 SECRET env vars, exactly like every other secret.
 
 **Undo:** provision the project, the three service accounts and their keys, then set
-`REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL` (non-secret) and
-`REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
 `HACKS.md` #25 for the full checklist.
 
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
@@ -264,7 +264,7 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 The one-time steps that clear most of the list above:
 
 - The secrets/parameters GCP project plus its three service accounts (viewer,
-  admin, resolver) and seeded keys, then the `remote-fs-screenshots` values in
+  admin, resolver) and seeded keys, then the `remote-filesystem-tmp-public` values in
   `/ui/secrets` — clears **#25**.
 - Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) — clears
   **#2** and **#20**.

@@ -21,15 +21,15 @@ roles:
 bundles:
   - name: bundle
 servers:
-  - slug: remote-fs-screenshots
+  - slug: remote-filesystem-tmp-public
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /remote-fs-screenshots
+    path: /remote-filesystem-tmp-public
     entitlements: [admin]
     params: true
     env:
-      REMOTE_FS_SCREENSHOTS_GCS_BUCKET: "a-bucket"
+      REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "a-bucket"
 `);
 
 const IMAGE = {
@@ -48,14 +48,15 @@ describe("deploy-time parameter injection", () => {
       image: IMAGE,
       env: [],
       resolvedParams: {
-        "remote-fs-screenshots": {
-          REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL:
+        "remote-filesystem-tmp-public": {
+          REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL:
             "svc@demo.iam.gserviceaccount.com",
-          REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY:
+          REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY:
             "-----BEGIN KEY-----secret-----END-----",
           // A resolved value that literally contains `${...}` must survive
           // verbatim — it is NOT an unresolved ref (resolveMap must not touch it).
-          REMOTE_FS_SCREENSHOTS_GCS_PASSPHRASE: "pass${GCS_BUCKET}phrase",
+          REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PASSPHRASE:
+            "pass${GCS_BUCKET}phrase",
         },
       },
     });
@@ -64,10 +65,10 @@ describe("deploy-time parameter injection", () => {
     const bundle = spec.services.find((s) => s.name === "bundle")!;
 
     const email = bundle.envs.find(
-      (e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL",
+      (e) => e.key === "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL",
     );
     const key = bundle.envs.find(
-      (e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY",
+      (e) => e.key === "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY",
     );
 
     expect(email?.value).toBe("svc@demo.iam.gserviceaccount.com");
@@ -75,17 +76,22 @@ describe("deploy-time parameter injection", () => {
     expect(key?.type).toBe("SECRET");
     // The `${...}`-containing value is passed through untouched (not ref-resolved).
     expect(
-      bundle.envs.find((e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_PASSPHRASE")
-        ?.value,
+      bundle.envs.find(
+        (e) => e.key === "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PASSPHRASE",
+      )?.value,
     ).toBe("pass${GCS_BUCKET}phrase");
     // The literal bucket from env: is still there, alongside the resolved params.
     expect(
-      bundle.envs.some((e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_BUCKET"),
+      bundle.envs.some(
+        (e) => e.key === "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET",
+      ),
     ).toBe(true);
 
     // Scoped to the bundle: the resolved secret value never lands on core.
     expect(
-      core.envs.some((e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY"),
+      core.envs.some(
+        (e) => e.key === "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY",
+      ),
     ).toBe(false);
   });
 
@@ -101,7 +107,7 @@ describe("deploy-time parameter injection", () => {
     // Only the literal bucket — the creds are resolved at deploy, deferred here.
     expect(
       bundle.envs.some(
-        (e) => e.key === "REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL",
+        (e) => e.key === "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL",
       ),
     ).toBe(false);
   });

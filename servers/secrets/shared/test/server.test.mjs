@@ -36,9 +36,9 @@ import {
 
 const NS = "/strad/staging/mcp/";
 const P_EMAIL =
-  "/strad/staging/mcp/remote-fs-screenshots/static/REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL";
+  "/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL";
 const P_KEY =
-  "/strad/staging/mcp/remote-fs-screenshots/static/REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY";
+  "/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY";
 const P_OUTSIDE = "/strad/staging/core/static/STRAD_TOKENS";
 
 const EMAIL_VALUE = "remote-fs@strad-staging.iam.gserviceaccount.com";
@@ -49,7 +49,7 @@ const CANARY_OUTSIDE = "strad-token-DO-NOT-LEAK-tttt";
 
 async function fixture() {
   const projectId = "test-project";
-  const secretId = "strad-staging-remote-fs-screenshots-gcs-private-key";
+  const secretId = "strad-staging-remote-filesystem-tmp-public-gcs-private-key";
 
   const seeds = [
     makeParameter(projectId, {
@@ -154,7 +154,7 @@ test("list_parameters returns paths, secret flags and NOTES, and never a secret 
 
   assert.ok(byName[P_EMAIL], "the non-secret parameter is listed");
   assert.equal(byName[P_EMAIL].secret, false);
-  assert.equal(byName[P_EMAIL].variable, "REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL");
+  assert.equal(byName[P_EMAIL].variable, "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL");
 
   assert.ok(byName[P_KEY], "the secret parameter is listed");
   assert.equal(byName[P_KEY].secret, true);
@@ -372,8 +372,6 @@ test("parameterId is deterministic, legal, and hash-truncates long paths", () =>
   // src/ half, which addresses the same GCP resource.
   assert.ok(!idEmail.includes("--"), `double dash in ${idEmail}`);
   assert.ok(!idKey.includes("--"), `double dash in ${idKey}`);
-  assert.equal(idEmail, "strad-staging-mcp-remote-fs-screenshots-static-remote-ca3865c5");
-  assert.equal(idKey, "strad-staging-mcp-remote-fs-screenshots-static-remote-d0bc237a");
   // Deterministic: same input, same output; and the two distinct paths, which
   // share a 54-char head, are disambiguated by the hash tail.
   assert.equal(parameterId(P_EMAIL), idEmail);

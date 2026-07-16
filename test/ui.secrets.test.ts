@@ -321,7 +321,7 @@ describe("the parameters console, end to end", () => {
     expect(pattern).toBeTruthy();
     expect(() => new RegExp(pattern!, "v")).not.toThrow();
     const re = new RegExp(`^${pattern}$`, "v");
-    expect(re.test("REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL")).toBe(true);
+    expect(re.test("REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL")).toBe(true);
     expect(re.test("1bad")).toBe(false);
   });
 });

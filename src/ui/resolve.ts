@@ -17,7 +17,7 @@ import {
  *
  * This is deliberately a small dispatch table, not a hardcode: a server "has a
  * GCS view" because its config declares a GCS bucket, not because its slug is
- * "gcs". A second GCS-backed server (remote-fs-screenshots is one) lights up the same
+ * "gcs". A second GCS-backed server (remote-filesystem-tmp-public is one) lights up the same
  * view with zero new code. Non-GCS servers resolve to `no_viewer` today — the
  * seam where other server kinds grow their own views later.
  */
@@ -63,7 +63,7 @@ export type ServerView =
       tokenUrl?: string;
     };
 
-/** The env keys the two GCS-backed servers use (gcs and remote-fs-screenshots). */
+/** The env keys the two GCS-backed servers use (gcs and remote-filesystem-tmp-public). */
 const GCS_ENV = {
   bucket: "GCS_BUCKET",
   prefix: "GCS_ROOT_PATH",
@@ -100,10 +100,10 @@ const SECRETS_ENV = {
 
 /**
  * A server's env, with any SLUG-NAMESPACED variable also visible under its bare
- * name (`REMOTE_FS_SCREENSHOTS_GCS_BUCKET` -> `GCS_BUCKET`).
+ * name (`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET` -> `GCS_BUCKET`).
  *
  * Namespacing exists because siblings now share a container: `gcs` and
- * `remote-fs-screenshots` both read `GCS_BUCKET`, and they point at DIFFERENT
+ * `remote-filesystem-tmp-public` both read `GCS_BUCKET`, and they point at DIFFERENT
  * buckets, so one of them had to move off the bare name (see the bundle host).
  * The bare name still wins if both are set — the namespaced form is a fallback,
  * not an override — which keeps a server that never had a sibling unchanged.
@@ -237,7 +237,7 @@ function resolveGcsView(
 /**
  * Two credential conventions, both used by the bundle-api fleet:
  *   - gcs:               GCS_SERVICE_ACCOUNT_KEY_JSON  (a full key file, inline)
- *   - remote-fs-screenshots: GCS_CLIENT_EMAIL + GCS_PRIVATE_KEY (two fields only)
+ *   - remote-filesystem-tmp-public: GCS_CLIENT_EMAIL + GCS_PRIVATE_KEY (two fields only)
  * Support both so the same view scopes to either server.
  */
 function resolveAccount(

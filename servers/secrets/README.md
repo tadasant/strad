@@ -30,8 +30,8 @@ A **parameter** is one managed variable, addressed by a canonical namespace path
 `kind` is always `static` for now. Two examples for one server:
 
 ```
-/strad/staging/mcp/remote-fs-screenshots/static/REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL   (non-secret)
-/strad/staging/mcp/remote-fs-screenshots/static/REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY     (secret)
+/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL   (non-secret)
+/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY     (secret)
 ```
 
 **Parameter Manager is the index of everything.** Each variable is one Parameter

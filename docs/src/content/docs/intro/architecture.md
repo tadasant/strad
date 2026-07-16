@@ -256,7 +256,7 @@ flowchart LR
 A baked server opts into resolution with `params: true`. Everything under
 `/strad/{env}/mcp/{slug}/static/*` is resolved and injected as that server's
 environment — for a `core` builtin in-process at runtime, for a `supplementary-image`
-at deploy time onto its bundle. `remote-fs-screenshots` is the worked example: it
-authenticates to GCS with a non-secret `REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL` and a
-secret `REMOTE_FS_SCREENSHOTS_GCS_PRIVATE_KEY`, both set by a human in `/ui/secrets`
+at deploy time onto its bundle. `remote-filesystem-tmp-public` is the worked example: it
+authenticates to GCS with a non-secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a
+secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`, both set by a human in `/ui/secrets`
 and delivered by the resolver.

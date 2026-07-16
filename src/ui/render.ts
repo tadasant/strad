@@ -383,7 +383,7 @@ ${listing}
     <label class="field">
       <span class="field-l">Variable name</span>
       <input class="in" type="text" name="variable" required autocapitalize="off" autocomplete="off"
-             pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="REMOTE_FS_SCREENSHOTS_GCS_CLIENT_EMAIL" />
+             pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL" />
       <span class="field-h">A valid environment variable name. Stored at <code>${esc(defaultNs)}&lt;VARIABLE&gt;</code>.</span>
     </label>
     <label class="field field-check">
