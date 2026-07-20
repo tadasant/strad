@@ -65,10 +65,18 @@ export function createApp(opts: AppOptions): Express {
     // slugs /healthz already returns to anyone, and links only to surfaces that
     // enforce their own gate. See src/ui/landing.ts for what it withholds.
     // Core only — a bundle component is internal and has no front door.
-    app.get("/", (_req, res) => {
-      res
-        .type("html")
-        .send(renderLanding({ config: opts.config, consoleMounted: true }));
+    app.get("/", (req, res) => {
+      // Only used when gateway.publicUrl is unset. `trust proxy` is on, so
+      // req.protocol/host reflect the X-Forwarded-* the edge set, not the
+      // container's own http://…:8080.
+      const host = req.get("host");
+      res.type("html").send(
+        renderLanding({
+          config: opts.config,
+          consoleMounted: true,
+          requestOrigin: host ? `${req.protocol}://${host}` : undefined,
+        }),
+      );
     });
 
     mountConsole(app, opts, env);

@@ -511,7 +511,7 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
   margin-bottom:.85rem;border-bottom:1px solid var(--g5);padding-bottom:.45rem}
 .panel-head h2{font-size:1rem;margin:0;letter-spacing:.01em}
 .panel-note{font-family:var(--font-mono);font-size:.74rem;color:var(--g4)}
-.copy-row,.tile-url{display:flex;gap:.4rem}
+.copy-row{display:flex;gap:.4rem}
 .copy-url{flex:1;min-width:0;font-family:var(--font-mono);font-size:.82rem;
   background:var(--bg-code);color:var(--g1);border:1px solid var(--g5);border-radius:6px;
   padding:.45rem .6rem}
@@ -530,8 +530,6 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .tile-slug code{font-size:.82rem;color:var(--text-accent);word-break:break-all}
 .tile-actions{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
   margin-top:auto;padding-top:.2rem}
-.disabled-wrap{margin-top:1.1rem}
-.disabled-wrap summary{cursor:pointer;color:var(--g3);font-size:.85rem;margin-bottom:.8rem}
 
 /* Footer */
 .foot{max-width:60rem;margin:0 auto;padding:1.2rem 1.5rem;width:100%;

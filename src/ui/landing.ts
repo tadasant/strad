@@ -15,34 +15,55 @@ import { esc, layout, serverLooksGcs } from "./render.ts";
  * system token, `/ui` still demands console SSO. Listing a server here grants
  * nothing.
  *
- * WHY IT IS PUBLIC. It reveals the set of configured slugs, which `/healthz`
- * already returns unauthenticated to anyone who asks, so this adds no disclosure
- * that the gateway did not already make. What it does NOT publish is the part
- * that would be new: a `remote-http` server's upstream `url`, any `headers:`,
- * the `env:`/`consoleEnv:` maps, and the `entitlements` — i.e. everything that
- * says how to reach a server or who may. Keep it that way. If this gateway ever
- * wants the slug list itself to be private, gating this route is one line in
- * `src/http/app.ts` — but `/healthz` has to be dealt with in the same breath, or
- * the tightening is theatre.
+ * WHY IT IS PUBLIC, stated precisely, because the loose version of this claim is
+ * wrong. `/healthz` already returns the ENABLED slugs unauthenticated, so those
+ * are not new. This page does add `title`, `description` and `kind` on top of
+ * them — `kind` being the one worth naming, since it tells a reader which slugs
+ * are `remote-http` and therefore front a third-party upstream. That is judged an
+ * acceptable trade for a navigable gateway.
+ *
+ * DISABLED servers are deliberately NOT rendered. `Registry.build` skips them, so
+ * they never appear in `/healthz`, and listing them here would disclose a set that
+ * is otherwise entirely private — plus a connect URL the gateway would reject.
+ *
+ * What is never published, on any tile: a `remote-http` server's upstream `url`,
+ * any `headers:`, the `env:` map, the `image` ref, `bundle`, `path`, `module`,
+ * `tools:` policy, and `entitlements` — i.e. everything that says how to reach a
+ * server directly, or who may. test/landing.test.ts asserts each absence.
+ *
+ * If this gateway ever wants the slug list itself private, gating this route is
+ * one line in `src/http/app.ts` — but `/healthz` has to be dealt with in the same
+ * breath, or the tightening is theatre.
  */
 
 export interface LandingOptions {
   config: StradConfig;
   /** Whether the console UI is mounted, i.e. whether `/ui` is worth linking. */
   consoleMounted: boolean;
+  /**
+   * Origin the request arrived on, e.g. "https://staging.strad.example.com".
+   * Used only when `gateway.publicUrl` is unset.
+   */
+  requestOrigin?: string;
 }
 
 export function renderLanding(opts: LandingOptions): string {
   const { config } = opts;
   const gateway = config.gateway;
-  // publicUrl is optional in the schema. Falling back to a relative path keeps
-  // every link on this page correct even when it is unset — a copyable absolute
-  // URL is nicer, but a wrong one is worse than a relative one.
-  const base = (gateway.publicUrl ?? "").replace(/\/$/, "");
+  // publicUrl is optional in the schema, and the entire point of this panel is a
+  // string you can paste into an MCP client. A relative "/mcp" is pasteable
+  // nowhere, so fall back to the origin the request actually arrived on — the app
+  // sets `trust proxy`, so behind App Platform that is the public hostname.
+  // Config still wins: it is the deployment's own declaration of where it lives.
+  const base = (gateway.publicUrl ?? opts.requestOrigin ?? "").replace(
+    /\/$/,
+    "",
+  );
   const mcpUrl = `${base}/mcp`;
 
+  // Disabled servers are omitted entirely — see the header comment. They are
+  // absent from /healthz, and a connect URL for one would be rejected anyway.
   const enabled = config.servers.filter((s) => s.enabled);
-  const disabled = config.servers.filter((s) => !s.enabled);
 
   const body = `
 <section class="intro">
@@ -75,26 +96,14 @@ ${consoleCards(opts.consoleMounted).join("\n")}
 <section class="panel">
   <div class="panel-head">
     <h2>Servers</h2>
-    <span class="panel-note">${enabled.length} enabled${
-      disabled.length ? ` · ${disabled.length} disabled` : ""
-    }</span>
+    <span class="panel-note">${enabled.length} enabled</span>
   </div>
-  <div class="card-grid">
 ${
   enabled.length
-    ? enabled.map((s) => serverTile(s, mcpUrl)).join("\n")
-    : `<p class="empty">No servers are configured on this gateway.</p>`
-}
-  </div>
-${
-  disabled.length
-    ? `<details class="disabled-wrap">
-  <summary>${disabled.length} disabled server${disabled.length === 1 ? "" : "s"}</summary>
-  <div class="card-grid">
-${disabled.map((s) => serverTile(s, mcpUrl)).join("\n")}
-  </div>
-</details>`
-    : ""
+    ? `  <div class="card-grid">
+${enabled.map((s) => serverTile(s, mcpUrl)).join("\n")}
+  </div>`
+    : `  <p class="empty">No servers are enabled on this gateway.</p>`
 }
 </section>
 ${COPY_SCRIPT}`;
@@ -115,7 +124,7 @@ function copyRow(url: string, note: string): string {
   return `
   <div class="copy-row">
     <input class="copy-url" readonly value="${esc(url)}" aria-label="${esc(url)}" />
-    <button class="btn copy-btn" type="button" data-copy>Copy</button>
+    <button class="copy-btn" type="button" data-copy>Copy</button>
   </div>
   <p class="copy-note">${esc(note)}</p>`;
 }
@@ -169,14 +178,13 @@ function consoleCards(consoleMounted: boolean): string[] {
 function serverTile(server: ServerConfig, mcpUrl: string): string {
   const title = server.title ?? server.slug;
   const desc = server.description ?? "";
-  const browsable = server.enabled && serverLooksGcs(server);
+  const browsable = serverLooksGcs(server);
   const selectUrl = `${mcpUrl}?servers=${encodeURIComponent(server.slug)}`;
 
   return `    <div class="card server-tile">
       <div class="card-head">
         <span class="card-title">${esc(title)}</span>
         <span class="chip chip-${esc(server.kind)}">${esc(server.kind)}</span>
-        ${server.enabled ? "" : `<span class="chip chip-off">disabled</span>`}
       </div>
       ${desc ? `<p class="card-desc">${esc(desc)}</p>` : ""}
       ${
@@ -187,7 +195,7 @@ function serverTile(server: ServerConfig, mcpUrl: string): string {
           : `<div class="tile-slug"><code>${esc(server.slug)}</code></div>`
       }
       <div class="tile-actions">
-        <button class="btn btn-ghost" type="button" data-copy data-url="${esc(selectUrl)}"
+        <button class="btn-ghost" type="button" data-copy data-url="${esc(selectUrl)}"
           title="${esc(selectUrl)}">Copy URL</button>
         ${
           browsable
