@@ -234,6 +234,16 @@ allow-list is a subset of the tier above it.
 
 ## Health and console surface
 
+- **`/`** is the front door: a public, server-rendered directory of the gateway's
+  endpoint, its consoles, and every configured server, with a copy button for each
+  server's `?servers=` URL. Core-only — a bundle component is internal and has no
+  front door. It is **unauthenticated on purpose**: it publishes the same slug list
+  `/healthz` already returns to anyone, and it deliberately withholds the things
+  that would be a new disclosure — a `remote-http` server's upstream `url`, any
+  `headers:`, the `env:`/`consoleEnv:` maps, and `entitlements`. It grants nothing;
+  every surface it links to still enforces its own gate. If the slug list ever
+  needs to be private, gate this route **and** `/healthz` together, or the
+  tightening is theatre.
 - **`/healthz`** is dependency-free and returns `mode`, `bundle`, `env`, and
   `servers` — used by the App Platform health check and the deploy smoke test.
 - **`/mcp`** is handled by `app.all("/mcp", …)` and always requires a token.

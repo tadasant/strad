@@ -22,6 +22,15 @@ export interface LayoutOptions {
   serverSlug?: string;
   signedInAs?: string;
   body: string;
+  /** Where the brand mark links. Defaults to the resource browser. */
+  brandHref?: string;
+  /** The word beside the brand mark. Defaults to "resource browser". */
+  brandSub?: string;
+  /**
+   * Right-hand footer text. Defaults to the gated browser's own claim, which
+   * would be a lie on the public landing page — hence the parameter.
+   */
+  footNote?: string;
 }
 
 export function layout(opts: LayoutOptions): string {
@@ -40,10 +49,10 @@ export function layout(opts: LayoutOptions): string {
 <body>
 <header class="topbar">
   <div class="topbar-inner">
-    <a class="brand" href="/ui">
+    <a class="brand" href="${esc(opts.brandHref ?? "/ui")}">
       ${LOGO_SVG}
       <span class="brand-name">strad</span>
-      <span class="brand-sub">resource browser</span>
+      <span class="brand-sub">${esc(opts.brandSub ?? "resource browser")}</span>
     </a>
     <div class="topbar-right">
       ${
@@ -65,7 +74,7 @@ ${opts.body}
 <footer class="foot">
   <span>strad · human console</span>
   <span class="foot-sep">·</span>
-  <span>SSO-gated · read-only</span>
+  <span>${esc(opts.footNote ?? "SSO-gated · read-only")}</span>
 </footer>
 </body>
 </html>`;
@@ -492,6 +501,37 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .state-error .state-icon{color:#e5706e}
 .signin code{font-size:.8em}
 .empty{color:var(--g3)}
+
+/* Landing page (/) */
+.env-badge{font-family:var(--font-mono);font-size:.55em;text-transform:uppercase;letter-spacing:.06em;
+  vertical-align:middle;border:1px solid var(--g5);border-radius:4px;padding:.15rem .45rem;
+  color:var(--text-accent);margin-left:.5rem}
+.panel{margin-top:2.1rem}
+.panel-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;
+  margin-bottom:.85rem;border-bottom:1px solid var(--g5);padding-bottom:.45rem}
+.panel-head h2{font-size:1rem;margin:0;letter-spacing:.01em}
+.panel-note{font-family:var(--font-mono);font-size:.74rem;color:var(--g4)}
+.copy-row,.tile-url{display:flex;gap:.4rem}
+.copy-url{flex:1;min-width:0;font-family:var(--font-mono);font-size:.82rem;
+  background:var(--bg-code);color:var(--g1);border:1px solid var(--g5);border-radius:6px;
+  padding:.45rem .6rem}
+.copy-url:focus{outline:2px solid var(--accent);outline-offset:1px}
+.copy-btn{white-space:nowrap;cursor:pointer;font-size:.82rem;font-weight:600;
+  background:var(--accent);color:#fff;border:1px solid var(--accent);border-radius:6px;
+  padding:.45rem .75rem}
+.copy-btn:hover{background:var(--accent-high)}
+.copy-note{color:var(--g3);font-size:.82rem;margin:.35rem 0 1rem}
+.btn-ghost{cursor:pointer;font-size:.78rem;font-weight:600;font-family:var(--font-mono);
+  background:transparent;color:var(--g2);border:1px solid var(--g5);border-radius:6px;
+  padding:.3rem .6rem}
+.btn-ghost:hover{border-color:var(--accent);color:var(--text-accent)}
+.server-tile{gap:.5rem}
+.tile-slug{min-width:0}
+.tile-slug code{font-size:.82rem;color:var(--text-accent);word-break:break-all}
+.tile-actions{display:flex;align-items:center;justify-content:space-between;gap:.6rem;
+  margin-top:auto;padding-top:.2rem}
+.disabled-wrap{margin-top:1.1rem}
+.disabled-wrap summary{cursor:pointer;color:var(--g3);font-size:.85rem;margin-bottom:.8rem}
 
 /* Footer */
 .foot{max-width:60rem;margin:0 auto;padding:1.2rem 1.5rem;width:100%;
