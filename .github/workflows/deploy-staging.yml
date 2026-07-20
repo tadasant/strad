@@ -338,3 +338,40 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/mcp")
           [ "$code" = "401" ] || { echo "::error::/mcp not gated (got $code)"; exit 1; }
           echo "OK: staging healthy and /mcp gated."
+
+      - name: Dump the failing container's logs
+        # A failed deploy reports a `godo` progress struct and the sentence
+        # "container exited with a non-zero exit code" — which component died,
+        # and nothing about why. The why is in the container's own log, and
+        # nobody reading the run has it. This fetches it.
+        #
+        # It sits LAST on purpose. `failure()` is job-scoped, so from here it
+        # covers the smoke test too — a deploy that "succeeded" into a wedged
+        # container is exactly the case where these logs matter most.
+        #
+        # Masks registered while reading Secret Manager persist for the whole
+        # job, so literal secret values stay redacted. A boot error that prints a
+        # DERIVED value (a parsed URL, a decoded field) matches no mask and would
+        # print in clear — the reason the rendered spec is never echoed. Nothing
+        # here has done that so far; if it ever does, redact at the source rather
+        # than deleting this step.
+        if: failure() && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
+          [ -z "$APP_ID" ] && { echo "no strad-staging app; nothing to dump."; exit 0; }
+          # Sort on the creation timestamp rather than trusting list order:
+          # doctl does not contract newest-first, and silently dumping a
+          # months-old deployment is worse evidence than none.
+          DEPLOY_ID=$(doctl apps list-deployments "$APP_ID" --format ID,Created --no-header \
+            | sort -k2 -r | head -1 | awk '{print $1}')
+          echo "app=$APP_ID deployment=${DEPLOY_ID:-<none>}"
+          [ -z "$DEPLOY_ID" ] && { echo "no deployments found."; exit 0; }
+          for comp in core bundle; do
+            for kind in run deploy; do
+              echo "::group::${comp} (${kind})"
+              doctl apps logs "$APP_ID" "$comp" --deployment "$DEPLOY_ID" --type "$kind" --tail 60 2>&1
+              echo "::endgroup::"
+            done
+          done
