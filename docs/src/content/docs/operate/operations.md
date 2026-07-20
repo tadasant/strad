@@ -234,26 +234,25 @@ allow-list is a subset of the tier above it.
 
 ## Health and console surface
 
-- **`/`** is the front door: a public, server-rendered directory of the gateway's
-  endpoint, its consoles, and every **enabled** server, with a copy button for each
-  server's `?servers=` URL. Core-only — a bundle component is internal and has no
-  front door. It is **unauthenticated on purpose**, and the precise claim is worth
-  stating because the loose one is wrong: `/healthz` already returns the enabled
-  slugs to anyone, so those are not new; this page adds `title`, `description` and
-  `kind` on top of them. **Disabled** servers are omitted deliberately — the
-  registry skips them so they never reach `/healthz`, and listing them would
-  disclose an otherwise-private set. Never published: a `remote-http` server's
-  upstream `url`, any `headers:`, the `env:` map, the `image` ref, `bundle`,
-  `path`, `module`, `tools:` policy, and `entitlements`. It grants nothing; every
-  surface it links to still enforces its own gate. If the slug list ever needs to
-  be private, gate this route **and** `/healthz` together, or the tightening is
-  theatre.
+- **`/`** is the front door: a server-rendered directory of the gateway's
+  endpoint, its consoles, and every **enabled** server, with a copy button for
+  each server's `?servers=` URL. Core-only — a bundle component is internal and
+  has no front door. It sits behind the **same SSO gate as `/ui` and `/console`**,
+  never a softer door: strad requires identity before exposing anything, and an
+  index of what the gateway fronts is something. Today that means the bootstrap
+  token; once `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` land it is Google sign-in
+  restricted to the configured `auth.google.hostedDomain`, with no code change.
+  Behind the gate it still withholds anything credential-shaped — a `remote-http`
+  server's upstream `url`, `headers:`, the `env:` map, the `image` ref, `bundle`,
+  `path`, `module`, `tools:` policy, and `entitlements` — as defence in depth.
+  **Disabled** servers are omitted: the page answers "what can I connect to", and
+  a connect URL for a disabled server is one the gateway would reject.
 - **`/healthz`** is dependency-free and returns `mode`, `bundle`, `env`, and
   `servers` — used by the App Platform health check and the deploy smoke test.
 - **`/mcp`** is handled by `app.all("/mcp", …)` and always requires a token.
 - **`/console`** and `/console/oauth/callback` are mounted only in `core` mode.
   The OAuth `state → codeVerifier` map is in-memory (see [Known
   limitations](/limitations/)).
-- **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console.
-  Its "session" is the bootstrap token in a cookie, which is a shim (see [Known
-  limitations](/limitations/)).
+- **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console,
+  behind the same gate as `/`. The shared "session" is the bootstrap token in a
+  cookie, which is a shim (see [Known limitations](/limitations/)).

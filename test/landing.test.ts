@@ -6,19 +6,19 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 
 /**
- * The public front door at `/`.
+ * The front door at `/`.
  *
- * It exists to make the gateway navigable, so the tests that matter are about
- * what it must NOT do. It is unauthenticated, which is defensible only while it
- * stays a directory: it may publish the ENABLED slugs, because /healthz already
- * does, and it may publish nothing else — not disabled slugs, not upstream URLs,
- * headers, env, images, bundles, module paths, tool policy, or entitlements.
+ * The first thing to hold is the gate: strad requires identity before exposing
+ * anything, and an index of what this gateway fronts is something. `/` is behind
+ * the SAME `requireConsoleUi` as `/ui` and `/console` — never a softer door — and
+ * the first test here is that an anonymous request gets a sign-in wall and no
+ * content, not a 200.
  *
- * The leak assertions below are the enforcement: if someone renders a richer
- * card later, they trip here rather than in production. Each is written against
- * what the renderer could actually emit, not against a bare word that also
- * appears in the inlined stylesheet — a loose toContain() on this page passes
- * for the wrong reason more often than it catches anything.
+ * The leak assertions are defence in depth behind that gate, and they are what
+ * would have to be revisited before this page could ever be opened up. Each is
+ * written against what the renderer could actually emit, not against a bare word
+ * that also appears in the inlined stylesheet — a loose toContain() on this page
+ * passes for the wrong reason more often than it catches anything.
  */
 
 const CONFIG = parseConfig(`
@@ -77,12 +77,16 @@ const SECRETS = {
   DEEPWIKI_TOKEN: "dw-super-secret",
 };
 
+const BOOTSTRAP = "bootstrap-secret-xyz";
+
 const env: NodeJS.ProcessEnv = {
   ALLOW_DEV_AUTH: "true",
-  ADMIN_BOOTSTRAP_TOKEN: "bootstrap-secret-xyz",
+  ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
   STRAD_BUNDLE_URL_BUNDLE_GCS: "http://127.0.0.1:1",
   STRAD_TOKENS: "[]",
 };
+
+const AUTH = { authorization: `Bearer ${BOOTSTRAP}` };
 
 let server: Server;
 let baseUrl: string;
@@ -134,14 +138,65 @@ beforeAll(async () => {
   const addr = server.address();
   if (typeof addr === "string" || !addr) throw new Error("no port");
   baseUrl = `http://127.0.0.1:${addr.port}`;
-  html = await (await fetch(`${baseUrl}/`)).text();
+  html = await (await fetch(`${baseUrl}/`, { headers: AUTH })).text();
 });
 
 afterAll(() => server?.close());
 
-describe("GET /", () => {
-  it("serves HTML with no credential at all", async () => {
+describe("GET / SSO gate", () => {
+  it("401s an anonymous request and leaks NO content", async () => {
     const res = await fetch(`${baseUrl}/`, { redirect: "manual" });
+    expect(res.status).toBe(401);
+    const body = await res.text();
+    expect(body).toContain("Sign in required");
+    // Not one slug, not the endpoint, not a server title.
+    for (const s of ["deepwiki", "Object store", "servers=", "gcs"]) {
+      expect(body).not.toContain(s);
+    }
+  });
+
+  it("401s a WRONG token rather than falling open", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { authorization: "Bearer not-the-token" },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("is the SAME gate as /ui — neither is a softer door", async () => {
+    const [root, ui] = await Promise.all([
+      fetch(`${baseUrl}/`, { redirect: "manual" }),
+      fetch(`${baseUrl}/ui`, { redirect: "manual" }),
+    ]);
+    expect(root.status).toBe(ui.status);
+  });
+
+  it("accepts the session cookie the /ui sign-in flow sets", async () => {
+    // Regression guard: the cookie was scoped path=/ui, so it was NOT sent to
+    // "/" and a signed-in human hit the sign-in wall on the front page.
+    const signIn = await fetch(`${baseUrl}/ui?token=${BOOTSTRAP}`, {
+      redirect: "manual",
+    });
+    const setCookie = signIn.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("Path=/");
+    expect(setCookie).not.toContain("Path=/ui");
+
+    const cookie = setCookie.split(";")[0]!;
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { cookie },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("deepwiki");
+  });
+});
+
+describe("GET /", () => {
+  it("serves HTML to a signed-in human", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: AUTH,
+      redirect: "manual",
+    });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
   });
@@ -252,7 +307,9 @@ describe("GET / without gateway.publicUrl", () => {
     const cfg = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
-auth: { staticTokens: { enabled: true } }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
 roles: { admin: { servers: ["*"] } }
 servers:
   - slug: echo
@@ -261,7 +318,7 @@ servers:
     entitlements: [admin]
 `);
     const { url, close } = await boot(cfg);
-    const body = await (await fetch(url)).text();
+    const body = await (await fetch(url, { headers: AUTH })).text();
     // The host header the request actually arrived on.
     const origin = url.replace(/\/$/, "");
     expect(body).toContain(`data-url="${origin}/mcp?servers=echo"`);
@@ -275,7 +332,9 @@ describe("GET / with no enabled servers", () => {
     const cfg = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
-auth: { staticTokens: { enabled: true } }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
 roles: { admin: { servers: ["*"] } }
 servers:
   - slug: off-server
@@ -285,7 +344,7 @@ servers:
     entitlements: [admin]
 `);
     const { url, close } = await boot(cfg);
-    const body = await (await fetch(url)).text();
+    const body = await (await fetch(url, { headers: AUTH })).text();
     expect(body).toContain("No servers are enabled on this gateway.");
     expect(body).toContain('<span class="panel-note">0 enabled</span>');
     expect(body).not.toContain("off-server");
@@ -313,7 +372,10 @@ describe("GET / in bundle mode", () => {
     await new Promise<void>((r) => s.on("listening", () => r()));
     const addr = s.address();
     if (typeof addr === "string" || !addr) throw new Error("no port");
+    // WITH a valid credential, so a 404 unambiguously means "not mounted"
+    // rather than "gated" — the point is that no front door exists here at all.
     const res = await fetch(`http://127.0.0.1:${addr.port}/`, {
+      headers: AUTH,
       redirect: "manual",
     });
     expect(res.status).toBe(404);

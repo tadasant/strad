@@ -7,7 +7,6 @@ import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { mountConsoleUi } from "../ui/index.ts";
-import { renderLanding } from "../ui/landing.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 
 export interface AppOptions {
@@ -61,26 +60,9 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.mode === "core") {
-    // The front door. PUBLIC by design and by precedent: it lists the same
-    // slugs /healthz already returns to anyone, and links only to surfaces that
-    // enforce their own gate. See src/ui/landing.ts for what it withholds.
-    // Core only — a bundle component is internal and has no front door.
-    app.get("/", (req, res) => {
-      // Only used when gateway.publicUrl is unset. `trust proxy` is on, so
-      // req.protocol/host reflect the X-Forwarded-* the edge set, not the
-      // container's own http://…:8080.
-      const host = req.get("host");
-      res.type("html").send(
-        renderLanding({
-          config: opts.config,
-          consoleMounted: true,
-          requestOrigin: host ? `${req.protocol}://${host}` : undefined,
-        }),
-      );
-    });
-
     mountConsole(app, opts, env);
-    // The human, SSO-gated resource browser. Same gate as /console; not /mcp.
+    // The human, SSO-gated surfaces: the landing page at "/" and the resource
+    // browser at /ui. Same gate as /console; not /mcp.
     mountConsoleUi(app, {
       config: opts.config,
       secrets: opts.secrets ?? {},

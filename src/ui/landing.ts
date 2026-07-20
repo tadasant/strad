@@ -10,30 +10,25 @@ import { esc, layout, serverLooksGcs } from "./render.ts";
  * browser view while `deepwiki` does not. This page is the index that makes the
  * gateway navigable from a bookmark of its own hostname.
  *
- * WHAT IT DELIBERATELY DOES NOT DO: it is a directory, not a door. Every link on
- * it lands on a surface that enforces its own gate — `/mcp` still demands a
- * system token, `/ui` still demands console SSO. Listing a server here grants
- * nothing.
+ * IT IS GATED, like every other human surface. strad's model is that Google
+ * identity comes before anything is exposed, and an index of what this gateway
+ * fronts — the slugs, what each is, which have a browser view — is something.
+ * The route sits behind `requireConsoleUi` in `src/ui/index.ts`, the same gate as
+ * `/ui` and `/console`: today the bootstrap-token wall, and `hostedDomain`-checked
+ * Google SSO (tadasant.com) the moment the OAuth credentials land, with no change
+ * needed here. This page only ever asks whether the gate resolved a Principal.
  *
- * WHY IT IS PUBLIC, stated precisely, because the loose version of this claim is
- * wrong. `/healthz` already returns the ENABLED slugs unauthenticated, so those
- * are not new. This page does add `title`, `description` and `kind` on top of
- * them — `kind` being the one worth naming, since it tells a reader which slugs
- * are `remote-http` and therefore front a third-party upstream. That is judged an
- * acceptable trade for a navigable gateway.
+ * That gate is the security boundary, so the tile contents are a UX decision
+ * rather than a disclosure one. They are still kept narrow, because there is no
+ * reason for a directory to carry credentials: no `url`, `headers:`, `env:`,
+ * `image`, `bundle`, `path`, `module`, `tools:` policy, or `entitlements`.
+ * test/landing.test.ts asserts each absence — defence in depth behind the gate,
+ * and the thing that would have to be revisited before this could ever be opened
+ * up.
  *
- * DISABLED servers are deliberately NOT rendered. `Registry.build` skips them, so
- * they never appear in `/healthz`, and listing them here would disclose a set that
- * is otherwise entirely private — plus a connect URL the gateway would reject.
- *
- * What is never published, on any tile: a `remote-http` server's upstream `url`,
- * any `headers:`, the `env:` map, the `image` ref, `bundle`, `path`, `module`,
- * `tools:` policy, and `entitlements` — i.e. everything that says how to reach a
- * server directly, or who may. test/landing.test.ts asserts each absence.
- *
- * If this gateway ever wants the slug list itself private, gating this route is
- * one line in `src/http/app.ts` — but `/healthz` has to be dealt with in the same
- * breath, or the tightening is theatre.
+ * DISABLED servers are not rendered. Not for secrecy — the gate handles that —
+ * but because this page answers "what can I connect to", and a connect URL for a
+ * disabled server is one the gateway would reject.
  */
 
 export interface LandingOptions {
@@ -45,6 +40,8 @@ export interface LandingOptions {
    * Used only when `gateway.publicUrl` is unset.
    */
   requestOrigin?: string;
+  /** Identity the gate resolved, shown in the header. */
+  signedInAs?: string;
 }
 
 export function renderLanding(opts: LandingOptions): string {
@@ -61,8 +58,8 @@ export function renderLanding(opts: LandingOptions): string {
   );
   const mcpUrl = `${base}/mcp`;
 
-  // Disabled servers are omitted entirely — see the header comment. They are
-  // absent from /healthz, and a connect URL for one would be rejected anyway.
+  // Disabled servers are omitted — see the header comment. A connect URL for
+  // one is a URL the gateway would reject.
   const enabled = config.servers.filter((s) => s.enabled);
 
   const body = `
@@ -113,9 +110,10 @@ ${COPY_SCRIPT}`;
     // render "strad · strad" on the common configuration.
     title: `${gateway.env} gateway`,
     body,
+    signedInAs: opts.signedInAs,
     brandHref: "/",
     brandSub: "gateway",
-    footNote: "public directory · every link is gated",
+    footNote: "SSO-gated · humans only",
   });
 }
 
