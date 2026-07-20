@@ -164,7 +164,27 @@ images or their release workflows would be an outage, not a cleanup.
 **Undo, in order:** re-point prod at `strad-bundle` → confirm it serves → then delete
 the per-server release workflows and images.
 
-### 25. The secrets/parameters system is wired but not yet live on GCP
+### 25. The bundle image cannot be rolled back to a published tag
+
+A staging deploy can pin the **core** to any published tag (`-f version=0.1.6`, or
+a `sha-<sha>`), because the core image is a render-time argument. The **bundle**
+image is written into `infra/strad.staging.yaml`, and the only override —
+`--bundle-image` — is passed solely for a branch build. So staging's bundle is
+either whatever `strad-bundle:latest` points at, or a branch build. There is no
+"the bundle from three commits ago", even though `release-bundle-image.yml`
+publishes `:sha-<sha>` for exactly that.
+
+This is a deliberate omission rather than an oversight: the core and the bundle
+are meant to move together, and rolling one back alone produces a spec that routes
+paths the running bundle no longer serves.
+
+Branch tags also accumulate in GHCR with nothing pruning them.
+
+**Undo:** add a `bundle_version` input that renders
+`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` — the render-side override
+already exists.
+
+### 26. The secrets/parameters system is wired but not yet live on GCP
 
 strad has a store-agnostic [secrets and parameters
 system](/intro/architecture/#the-secrets-and-parameters-system): Parameter Manager
@@ -174,23 +194,22 @@ console **admin** (reads and writes both kinds, behind SSO), and the deploy-time
 **resolver** (injects a `params: true` server's env). All of it is tested against an
 in-memory fake, so the logic ships proven.
 
-What is **deferred** is the live-GCP staging end-to-end, because it needs a human
-with GCP access to provision: a dedicated project holding only the
-`/strad/staging/mcp/*` parameters, the three service accounts (viewer, admin,
-resolver) and their keys seeded as `strad-staging-*` secrets, and the seeded
-parameter values. Until the **resolver** service account exists, a `params: true`
-supplementary server — `remote-filesystem-tmp-public` — boots **without** its resolved
-parameters and degrades gracefully rather than failing the deploy.
+What is **deferred** is the last of the GCP provisioning: the dedicated
+`strad-secrets-staging` project and the viewer and admin service accounts exist, but
+the **resolver** service account and the seeded parameter values do not. Until the
+resolver exists, a `params: true` supplementary server —
+`remote-filesystem-tmp-public` — boots **without** its resolved parameters and
+degrades gracefully rather than failing the deploy.
 
 The posture is intact throughout: the resolver credential runs at **deploy time**
 (in CI / `render-spec`), never in the container, so "the running container holds no
 cloud credential" still holds — the resolved values reach the bundle as ordinary
 SECRET env vars, exactly like every other secret.
 
-**Undo:** provision the project, the three service accounts and their keys, then set
+**Undo:** provision the resolver service account and its key, then set
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
-`HACKS.md` #25 for the full checklist.
+`HACKS.md` #26 for the full checklist.
 
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 

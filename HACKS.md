@@ -630,7 +630,32 @@ rendering _and_ answers every Slack and Gmail call. If the OpenTelemetry data
 (event-loop lag, CPU, RSS-vs-limit, Chromium launches/crashes) says we are
 saturated, the next move is `apps-d-1vcpu-2gb` ($39, dedicated CPU) — not more RAM.
 
-## 25. The secrets/parameters system is wired end-to-end but not yet live
+## 25. The bundle image cannot be rolled back to a published tag
+
+**What.** `deploy-staging.yml` can pin the **core** to any published tag
+(`-f version=0.1.6`, `sha-<sha>`), because the core image is a render-time
+argument. The bundle image is not: it is written into `infra/strad.staging.yaml`,
+and the only thing that overrides it is `--bundle-image`, which the workflow
+passes solely for a branch build. So staging's bundle is either whatever
+`strad-bundle:latest` currently points at, or a branch build — never "the bundle
+from three commits ago", even though `release-bundle-image.yml` does publish
+`:sha-<sha>` for exactly that purpose.
+
+**Why.** A `bundle_version` input is a second dimension on every deploy, and the
+core/bundle pair is meant to move together. Rolling the core back without the
+bundle is how you get a spec that routes paths the running bundle no longer
+serves — the same skew this whole branch-deploy feature exists to avoid.
+
+**Undo.** Add a `bundle_version` input that renders
+`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>`; the render-side override
+already exists and needs no change. Do it when a bundle rollback is actually
+needed, and decide then whether pinning one without the other should be allowed
+at all.
+
+**Also.** Branch tags accumulate in GHCR with no garbage collection. They are
+cheap and nothing depends on them, but nothing prunes them either.
+
+## 26. The secrets/parameters system is wired end-to-end but not yet live
 
 strad now has a store-agnostic secrets/parameters system: Parameter Manager is
 the index of everything, Secret Manager backs the secret parts, and everything is
@@ -647,9 +672,10 @@ DIFFERENT credentials on purpose:
   values to inject a `params: true` server's env, never over MCP.
 
 What is NOT done, and needs a human with GCP access (see the checklist below and
-`docs/.../limitations.md`): the secrets project, the three service accounts and
-their keys, and the seeded parameter values. Everything above is tested against an
-in-memory fake, so the logic ships proven; the live-GCP staging e2e is deferred.
+`docs/.../limitations.md`): the resolver service account and its key, and the
+seeded parameter values. The project and the viewer/admin service accounts are
+provisioned. Everything above is tested against an in-memory fake, so the logic
+ships proven.
 
 Posture nuance worth stating plainly: the resolver credential runs at DEPLOY time
 (in CI / `render-spec`), NOT in the container, so "the running container holds no
@@ -662,7 +688,7 @@ boots without its resolved parameters and degrades gracefully.
 
 A consolidated checklist, cross-referenced above:
 
-- [ ] **The secrets/parameters GCP project + three service accounts** (hack #25):
+- [ ] **The secrets/parameters GCP project + three service accounts** (hack #26):
       a project holding ONLY the `/strad/staging/mcp/*` parameters (its id is a
       LITERAL in `infra/strad.staging.yaml`, `strad-secrets-staging` — not a
       seeded secret, since a project id is not a credential). A fresh project needs

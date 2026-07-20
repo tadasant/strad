@@ -45,14 +45,28 @@ Runs on PRs and pushes to `main`. Eight jobs, all `runs-on: self-hosted`:
 
 ## `release-image.yml` — mint and ship
 
-Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`:
+Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`.
+It is the **release** path, and it **refuses to run on any ref but `main`** — it
+moves `:latest` and notifies prod, and neither should ever happen for unreviewed
+code. To put a branch on staging, see [deploying a
+branch](#deploying-a-branch-to-staging) below. `release-bundle-image.yml` carries
+the same guard for the same reason.
 
 1. Compute the [effective version](/operate/deploy-model/#versioning).
 2. Log in to GHCR and build + push `ghcr.io/tadasant/strad:<version>` (+ `:latest`,
    `:sha-<sha>`).
-3. Fire the cross-repo `repository_dispatch` to `tadasant-internal`
+3. Go back to the registry and check that all three tags resolve to the digest
+   that was just built.
+4. Fire the cross-repo `repository_dispatch` to `tadasant-internal`
    (best-effort).
-4. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
+5. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
+
+`:latest` is mutable, `deploy-staging.yml` deploys it by default, and App Platform
+re-pulls it on every restart and scale event. A `:latest` that has drifted off the
+commit it was built from therefore boots old code against new config and rolls the
+deploy back, hours later and far from the change that caused it. A release that
+pushed successfully but left `:latest` somewhere else is a failed release, and step
+3 makes the run go red.
 
 ## `deploy-staging.yml` — put it on App Platform
 
@@ -74,12 +88,64 @@ credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` 
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
 `401`).
 
+If any of that fails, a last step dumps the `core` and `bundle` containers' own
+logs for the newest deployment. App Platform reports only which component exited
+non-zero, never why; the why is in the container's log. The step never fails the
+job — the deploy already did — it only adds the evidence.
+
 <aside class="starlight-aside starlight-aside--note">
 
 **Why a durable pull token?** App Platform re-pulls the private image on every
 restart and scale event, so it needs a long-lived credential
 (`scripts/attach-registry-creds.mjs` attaches `tadasant:${GHCR_PULL_TOKEN}`), not
 the ephemeral `GITHUB_TOKEN` that only exists during the workflow run.
+
+</aside>
+
+### Deploying a branch to staging
+
+Staging normally runs `main`'s config against `main`'s images. To put a **feature
+branch** on it — config _and_ binary — dispatch `deploy-staging.yml` on that
+branch with `build: true`:
+
+```bash
+gh workflow run deploy-staging.yml --ref my-branch -f build=true
+```
+
+That adds a `build` job ahead of the deploy. It builds **both** images — the core
+and the bundle — from the dispatched ref and pushes them as
+`ghcr.io/tadasant/strad:branch-<slug>-<sha12>` and
+`ghcr.io/tadasant/strad-bundle:branch-<slug>-<sha12>`. The deploy then renders the
+branch's own `infra/strad.staging.yaml` against those two tags, passing the bundle
+one as `--bundle-image` so the config's 23 `image:` lines need no edit.
+
+Three properties make this safe to hand to anyone, and each is **structural**
+rather than a matter of passing the right input:
+
+- **No `:latest` is ever moved.** The tag list is derived from the ref and
+  asserted not to be `latest` before a push happens. The release tags live only in
+  `release-image.yml` / `release-bundle-image.yml`, which refuse to run off
+  `main`.
+- **Prod is never notified.** `deploy-staging.yml` contains no
+  `repository_dispatch` step at all, so a branch build cannot fire one.
+- **The release path cannot trigger a build.** `build` is declared only on
+  `workflow_dispatch`, not on `workflow_call`, so `release-image.yml` has no way
+  to reach the build job.
+
+A branch build also reads the shared buildx cache but never writes it, so it
+cannot affect what `main` builds from.
+
+**Restoring staging to `main`** needs no teardown: dispatch `deploy-staging.yml`
+on `main` with `build` left off. It renders `main`'s config against `:latest`,
+which is exactly what the release path does — so the next merge to `main` restores
+staging on its own regardless.
+
+<aside class="starlight-aside starlight-aside--caution">
+
+Never push a branch bundle to `strad-bundle:latest`. Live staging pulls that tag
+on every restart, and a bundle whose mounts have moved will serve paths the
+_deployed_ spec does not route. Build and deploy have to happen together, which is
+what the `build: true` dispatch does.
 
 </aside>
 
