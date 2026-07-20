@@ -85,13 +85,19 @@ the ephemeral `GITHUB_TOKEN` that only exists during the workflow run.
 <aside class="starlight-aside starlight-aside--note">
 
 **Why `doctl` is installed without a token.** `digitalocean/action-doctl` will run
-`doctl auth init` for you, which stashes the token in ambient per-machine state —
-the keyring, falling back to `$HOME/.config/doctl/config.yaml`. The action has no
-`post:` step to tear that down, and the runners are `self-hosted` with a shared
-`/home/runner`, so a concurrent job can clobber it mid-run. The workflow installs
-the binary with `no_auth: "true"` and passes `DIGITALOCEAN_ACCESS_TOKEN` in the
-`env:` of every step that invokes `doctl`; doctl reads that variable natively and
-skips the config file and keyring entirely.
+`doctl auth init` for you, which writes the token in cleartext to
+`$HOME/.config/doctl/config.yaml`. The action has no `post:` step to tear that
+file down, and the runners are `self-hosted` with a shared `/home/runner`. A
+concurrent job can clobber it mid-run. So the workflow installs the binary with
+`no_auth: "true"` and gives every step that invokes `doctl` its own
+`DIGITALOCEAN_ACCESS_TOKEN`, which doctl reads natively.
+
+Those steps also set `DIGITALOCEAN_CONTEXT: default`, which is load-bearing.
+doctl only honors the token from the environment on the `default` context. On any
+other context it reads that context's entry in the config file and ignores the
+environment. A concurrent `doctl auth init --context <name>` writes a top-level
+`context:` key into the shared file, which is enough to make a step send another
+job's token. Pinning the context keeps the explicit token authoritative.
 
 </aside>
 
