@@ -164,6 +164,26 @@ images or their release workflows would be an outage, not a cleanup.
 **Undo, in order:** re-point prod at `strad-bundle` → confirm it serves → then delete
 the per-server release workflows and images.
 
+### 25. The bundle image cannot be rolled back to a published tag
+
+A staging deploy can pin the **core** to any published tag (`-f version=0.1.6`, or
+a `sha-<sha>`), because the core image is a render-time argument. The **bundle**
+image is written into `infra/strad.staging.yaml`, and the only override —
+`--bundle-image` — is passed solely for a branch build. So staging's bundle is
+either whatever `strad-bundle:latest` points at, or a branch build. There is no
+"the bundle from three commits ago", even though `release-bundle-image.yml`
+publishes `:sha-<sha>` for exactly that.
+
+This is a deliberate omission rather than an oversight: the core and the bundle
+are meant to move together, and rolling one back alone produces a spec that routes
+paths the running bundle no longer serves.
+
+Branch tags also accumulate in GHCR with nothing pruning them.
+
+**Undo:** add a `bundle_version` input that renders
+`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` — the render-side override
+already exists.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session

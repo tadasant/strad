@@ -37,7 +37,11 @@ flowchart LR
   built-in `GITHUB_TOKEN` — which can write packages owned by the repo, so no
   personal access token is needed for the push.
 - **`tadasant/strad` also runs staging** from the same image, via
-  `deploy-staging.yml`, using `infra/strad.staging.yaml` as its config.
+  `deploy-staging.yml`, using `infra/strad.staging.yaml` as its config. Dispatched
+  on a feature branch with `build: true`, the same workflow builds that branch's
+  core and bundle images under branch-scoped tags and deploys them — without
+  moving `:latest` or touching the handshake below. See [deploying a
+  branch](/operate/operations/#deploying-a-branch-to-staging).
 - **`tadasant-internal` runs prod.** It is a separate, deliberate act with a
   different DigitalOcean token. It consumes the published image plus its **own
   internal config** — private `builtin` modules baked into its own image, or a

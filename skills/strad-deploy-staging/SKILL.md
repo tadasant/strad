@@ -4,15 +4,16 @@ title: Deploy strad to Staging
 description: >
   Deploy a strad change to the staging environment. Staging is a DigitalOcean App
   Platform app (`strad-staging`) rendered from `infra/strad.staging.yaml`. The
-  `Deploy staging` workflow deploys a PRE-BUILT published image tag
-  (`ghcr.io/tadasant/strad:<version>`) — it does not build from source — so the
-  normal path is a merge to `main` (which builds the image and then deploys it),
-  and a manual `workflow_dispatch` re-pins staging to a specific published tag
-  (rollback / re-deploy). Covers dispatching the run, how a change actually
-  reaches staging, the App-Platform full-replace hazard, verifying the live host,
-  rollback, and what an agent session can and cannot do without DO/GCP
-  credentials. Production is NOT deployed from this repo — it lives in
-  tadasant-internal.
+  `Deploy staging` workflow deploys a published image tag
+  (`ghcr.io/tadasant/strad:<version>`, default `latest`) — so the normal path is a
+  merge to `main`, which builds the image and then deploys it — and a manual
+  `workflow_dispatch` either re-pins staging to an existing tag (rollback) or,
+  with `build: true`, builds the dispatched BRANCH's core and bundle images under
+  branch-scoped tags and deploys those. Covers dispatching the run, deploying an
+  unmerged branch and restoring `main`, the App-Platform full-replace hazard,
+  verifying the live host, rollback, and what an agent session can and cannot do
+  without DO/GCP credentials. Production is NOT deployed from this repo — it lives
+  in tadasant-internal.
 user-invocable: true
 ---
 
@@ -22,26 +23,22 @@ Staging is a **DigitalOcean App Platform** app named `strad-staging`, rendered
 from `infra/strad.staging.yaml` into a spec and pushed with `doctl`. A deploy is
 an App Platform spec update, not a rebuild of a host.
 
-The single most important thing to internalize: **strad staging deploys a
-pre-built image tag, not a branch.** `.github/workflows/deploy-staging.yml` takes
-a `version` input (an image tag like `0.1.7`, defaulting to `latest`) and points
-`strad-staging` at `ghcr.io/tadasant/strad:<version>`. It never builds your code
-into an image — it checks out the repo only to render the App Platform spec from
-`infra/strad.staging.yaml`, and a bare `workflow_dispatch` (no `--ref`) renders it
-from the **default branch**. So a deploy has two layers, and a change reaches
-staging through whichever one it lives in: an **image-layer** change (anything in
-the built image) reaches staging via a published `version` tag; a **spec-layer**
-change (`infra/strad.staging.yaml`, `scripts/render-spec.ts`) reaches it only once
-it lands on `main` (or via a `--ref` dispatch — see below).
+The single most important thing to internalize: **a deploy has two layers**, and a
+change reaches staging through whichever one it lives in. The **spec layer**
+(`infra/strad.staging.yaml`, `scripts/render-spec.ts`) is rendered from the ref
+the workflow runs on. The **image layer** (everything inside the built container)
+comes from an image tag. By default those two can disagree — a bare
+`workflow_dispatch` renders the default branch's spec against whatever `:latest`
+points at — and keeping them in step is what `build: true` is for.
 
 ## The critical facts
 
-- **`Deploy staging` deploys an image tag, not a ref.**
+- **`Deploy staging` deploys an image tag by default, and can build a branch.**
   `.github/workflows/deploy-staging.yml` (workflow name: **`Deploy staging`**) is
-  `workflow_call` + `workflow_dispatch`. Its only input is `version` — the
-  `ghcr.io/tadasant/strad` tag to deploy — defaulting to `latest`. This is the key
-  difference from zimmer's staging deploy, which takes a `ref` and builds a branch.
-  strad's deploy step is downstream of the image being built.
+  `workflow_call` + `workflow_dispatch`. `version` selects an already-published
+  `ghcr.io/tadasant/strad` tag, defaulting to `latest`. The `build` input (dispatch
+  only) instead builds **both** images — core and bundle — from the dispatched ref
+  and deploys those, which is how an unmerged branch gets onto staging.
 
 - **The normal path to staging is a merge to `main`.** `release-image.yml` runs on
   push to `main` (ignoring `**/*.md` and `docs/**`): it computes the
@@ -51,27 +48,38 @@ it lands on `main` (or via a `--ref` dispatch — see below).
   So merging to `main` builds the image _and_ rolls staging onto it in one chain.
   No manual step is required for the happy path.
 
-- **A manual `Deploy staging` re-pins staging to an existing published tag.** Use
-  it to redeploy the current image, or to roll staging back to an earlier tag. It
-  will fail if the tag was never published — it does not build anything.
+- **With `build` left off, a manual `Deploy staging` re-pins staging to an
+  existing published tag.** Use it to redeploy the current image, or to roll
+  staging back to an earlier tag. It will fail if the tag was never published —
+  in that mode it builds nothing.
 
   ```bash
   gh workflow run deploy-staging.yml -f version=<image-tag>   # e.g. 0.1.6, or omit to use latest
   ```
 
-- **To stage an UNMERGED branch, build its image first via `release-image.yml`.**
-  `release-image.yml` is also `workflow_dispatch`, so dispatching it on a feature
-  branch builds that branch's code into an image _and_ (via its `deploy-staging`
-  job) deploys it:
+- **To stage an UNMERGED branch, dispatch `Deploy staging` on it with
+  `build: true`.** That is the whole procedure — one workflow, one run:
 
   ```bash
-  gh workflow run release-image.yml --ref "$(git rev-parse --abbrev-ref HEAD)"
+  gh workflow run deploy-staging.yml --ref "$(git rev-parse --abbrev-ref HEAD)" -f build=true
   ```
 
-  Caveat: `release-image.yml` also moves the `:latest` tag, and the next push to
-  `main` will move it back — so use this to _exercise_ an unmerged branch on
-  staging, not as a durable state. Prefer merging to `main` for anything meant to
-  stick.
+  It builds the core **and** bundle images from that ref, pushes them as
+  `branch-<slug>-<sha12>` on `ghcr.io/tadasant/strad` and
+  `ghcr.io/tadasant/strad-bundle`, and renders the branch's own
+  `infra/strad.staging.yaml` against both (the bundle via `--bundle-image`, so the
+  config's 23 `image:` lines need no edit). It moves **no** `:latest` tag
+  and fires **no** `repository_dispatch` at `tadasant-internal`.
+
+  **Do not dispatch `release-image.yml` (or `release-bundle-image.yml`) on a
+  branch to do this.** Those are the release path: they move `:latest` and notify
+  prod. Both refuse to run on any ref but `main`, so the attempt fails fast.
+
+- **Restoring staging to `main` needs no teardown.** Dispatch `Deploy staging` on
+  `main` with `build` left off, and it renders `main`'s config against `:latest` —
+  identical to what the release path does. The next merge to `main` also restores
+  it on its own. A branch deploy is not durable state; nothing has to be cleaned
+  up.
 
 - **A deploy is a full spec REPLACE — an omitted field is a deletion.** This has
   actually bitten: omitting `domains` from an update _detaches the custom domain_,
@@ -123,11 +131,15 @@ runner holds the DigitalOcean and GCP credentials, not your session.
 # Re-deploy staging on the latest published image (or a specific tag):
 gh workflow run deploy-staging.yml                     # version defaults to "latest"
 gh workflow run deploy-staging.yml -f version=0.1.6    # a specific published tag
+
+# Build and deploy a branch, config and binary together:
+gh workflow run deploy-staging.yml --ref my-branch -f build=true
 ```
 
-Because the workflow is `workflow_dispatch`, GitHub reads the workflow
-_definition_ from the default branch; the `version` **input** selects which
-already-published image to deploy.
+Without `--ref`, GitHub reads the workflow _definition_ and renders the spec from
+the default branch, and the `version` **input** selects which already-published
+image to deploy. With `--ref`, both the definition and the spec come from that
+ref — and `build=true` makes the images come from it too.
 
 Watch the run:
 
@@ -137,12 +149,15 @@ gh run watch "$(gh run list --workflow=deploy-staging.yml --limit 1 --json datab
 ```
 
 What the run does, in order (all on a `self-hosted` runner, in the `staging`
-environment, under the `staging-deploy` concurrency group): **preflight** the
+environment, under the `staging-deploy` concurrency group): optionally **build**
+the branch's core and bundle images (only when `build: true`; skipped otherwise,
+which is why the deploy job runs on `always()`) → **preflight** the
 prerequisites → authenticate to GCP (via `GCP_SA_KEY`) → read `strad-staging-*`
 from Secret Manager (masked, into
 `$GITHUB_ENV`) → **render the App Platform spec** with `scripts/render-spec.ts`
-from `infra/strad.staging.yaml` (`--image ghcr.io/tadasant/strad:<version>`,
-`--app strad-staging`, `--region nyc`, `--domain staging.strad.tadasant.com`) to
+from `infra/strad.staging.yaml` (`--image ghcr.io/tadasant/strad:<version>`, plus
+`--bundle-image` when a branch was built, `--app strad-staging`, `--region nyc`,
+`--domain staging.strad.tadasant.com`) to
 `/tmp/spec.json`, which is **never echoed** because it inlines secret values →
 attach the durable GHCR pull credential → install `doctl` → `doctl apps
 create/update --spec /tmp/spec.json --wait` for `strad-staging` → **smoke-test**
@@ -181,7 +196,13 @@ gh workflow run deploy-staging.yml -f version=<known-good-tag>   # e.g. 0.1.5 or
 ```
 
 `release-image.yml` publishes `:sha-<sha>` on every release, so any past `main`
-commit has a durable, addressable image tag to roll back to.
+commit has a durable, addressable **core** image tag to roll back to.
+
+The **bundle** does not roll back this way. `version` pins only the core; the
+bundle image comes from `infra/strad.staging.yaml` (`strad-bundle:latest`) and the
+workflow's `--bundle-image` override is used only for a branch build. Rolling the
+core back far enough that it disagrees with the live bundle will produce routes
+the bundle no longer serves. See `HACKS.md` #25.
 
 ## Production is NOT deployed from this repo
 

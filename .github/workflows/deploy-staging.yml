@@ -8,7 +8,19 @@ name: Deploy staging
 # container holds NO GCP credential; by the time it boots, its secrets are just
 # environment variables.
 
+#
+# Deploying a BRANCH: dispatch this workflow on the branch with `build: true`.
+# It builds the core AND bundle images from that ref, pushes them under
+# branch-scoped tags ONLY, and deploys the branch's own config against them.
+# To put staging back on `main`, dispatch this workflow on `main` with
+# `build: false` (the default) — it renders main's config against `:latest`,
+# which is exactly what the release path does. There is nothing to clean up.
+
 on:
+  # `build` is deliberately NOT declared here. Leaving it off the workflow_call
+  # surface is what makes "the release path cannot build a branch" structural
+  # rather than a convention: release-image.yml has no input to pass. Do not
+  # "tidy" the two input blocks into agreement.
   workflow_call:
     inputs:
       version:
@@ -21,6 +33,13 @@ on:
         description: Image tag to deploy (e.g. 0.1.3). Defaults to latest.
         type: string
         required: false
+      build:
+        description: >-
+          Build core+bundle images from THIS ref and deploy them under
+          branch-scoped tags. Never moves :latest, never notifies prod.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: staging-deploy
@@ -30,7 +49,95 @@ permissions:
   contents: read
 
 jobs:
+  # Build the dispatched ref into branch-scoped images.
+  #
+  # The safety properties of a branch deploy are STRUCTURAL, not a matter of the
+  # caller passing the right input:
+  #   - The tag is `branch-<slug>-<sha>`, so it CANNOT collide with `latest`,
+  #     and the step below asserts that before anything is pushed.
+  #   - This workflow contains no repository_dispatch step at all, so a branch
+  #     build cannot notify tadasant-internal. Only release-image.yml can, and
+  #     that step is gated to `main` (see that file).
+  # `workflow_call` cannot reach this job: `inputs.build` is undefined for the
+  # release path, so an automatic release never builds anything here.
+  build:
+    if: inputs.build
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      core_image: ${{ steps.tags.outputs.core_image }}
+      bundle_image: ${{ steps.tags.outputs.bundle_image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute branch-scoped tags
+        id: tags
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # A ref name may contain "/", uppercase, and other characters a Docker
+          # tag may not. Squash to [a-z0-9._-] and truncate: a tag is capped at
+          # 128 chars, and the sha below is what makes it unique anyway.
+          SLUG=$(printf '%s' "$REF_NAME" | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9._-]/-/g' | cut -c1-60)
+          SHORT=$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)
+          TAG="branch-${SLUG}-${SHORT}"
+          CORE="ghcr.io/tadasant/strad:${TAG}"
+          BUNDLE="ghcr.io/tadasant/strad-bundle:${TAG}"
+          # Assert the thing that actually gets pushed, not the ingredients.
+          # The `branch-` prefix is what makes a collision with `latest`
+          # impossible; this refuses to push if that ever stops being true.
+          for ref in "$CORE" "$BUNDLE"; do
+            case "$ref" in
+              *:latest) echo "::error::refusing to push '$ref'"; exit 1 ;;
+            esac
+          done
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "core_image=${CORE}" >> "$GITHUB_OUTPUT"
+          echo "bundle_image=${BUNDLE}" >> "$GITHUB_OUTPUT"
+          echo "Branch images: strad:${TAG} and strad-bundle:${TAG}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the core image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.core_image }}
+          cache-from: type=gha
+          # Read the release path's cache, never write it: a branch build must
+          # not be able to poison what `main` builds from.
+          cache-to: ""
+
+      - name: Build and push the bundle image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: servers/bundle/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.bundle_image }}
+          cache-from: type=gha,scope=bundle
+          cache-to: ""
+
   deploy:
+    needs: build
+    # `needs` on a skipped job would skip this one too, so opt back in: deploy
+    # runs whether or not we built, and only aborts if a requested build failed.
+    # `!cancelled()` rather than `always()` — `always()` would keep replacing the
+    # staging spec after a human hit Cancel, which is the one moment they most
+    # want it to stop.
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     runs-on: self-hosted
     environment: staging
     steps:
@@ -134,7 +241,13 @@ jobs:
         # It is written to a file, never echoed — a rendered spec is not log-safe.
         if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         env:
-          VERSION: ${{ inputs.version || 'latest' }}
+          # A branch build wins over `version`: if we just built this ref, that
+          # is unambiguously the code the dispatcher asked to see on staging.
+          CORE_IMAGE: ${{ needs.build.outputs.core_image || format('ghcr.io/tadasant/strad:{0}', inputs.version || 'latest') }}
+          # Empty on the release path, which leaves the config's own
+          # `image:` lines (…/strad-bundle:latest) untouched.
+          BUNDLE_IMAGE: ${{ needs.build.outputs.bundle_image || '' }}
+          BUILT: ${{ inputs.build && 'true' || 'false' }}
           # Staging runs the console dev bypass until Google OAuth creds land.
           # The container runs NODE_ENV=production, so the bypass also demands
           # ALLOW_DEV_AUTH_IN_PRODUCTION — a deliberate second key that a copy of
@@ -149,9 +262,24 @@ jobs:
           # and its certificate. render-spec now also defaults this from
           # gateway.publicUrl, but pass it explicitly so the deploy says out loud
           # which hostname it is claiming.
+          # A branch deploy that lost its images would fall back to `:latest`
+          # for BOTH components and look like a success while running main's
+          # code end to end. Refuse instead.
+          if [ "$BUILT" = "true" ]; then
+            case "${CORE_IMAGE}|${BUNDLE_IMAGE}" in
+              *:branch-*\|*:branch-*) ;;
+              *) echo "::error::build was requested but produced no branch images (core='${CORE_IMAGE}' bundle='${BUNDLE_IMAGE}')"; exit 1 ;;
+            esac
+          fi
+          BUNDLE_ARG=()
+          if [ -n "$BUNDLE_IMAGE" ]; then
+            BUNDLE_ARG=(--bundle-image "$BUNDLE_IMAGE")
+          fi
+          echo "Deploying core=${CORE_IMAGE} bundle=${BUNDLE_IMAGE:-<from config>}"
           node --experimental-transform-types scripts/render-spec.ts \
             --config infra/strad.staging.yaml \
-            --image "ghcr.io/tadasant/strad:${VERSION}" \
+            --image "$CORE_IMAGE" \
+            ${BUNDLE_ARG[@]+"${BUNDLE_ARG[@]}"} \
             --app strad-staging \
             --region nyc \
             --domain staging.strad.tadasant.com > /tmp/spec.json
