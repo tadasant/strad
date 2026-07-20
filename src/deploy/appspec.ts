@@ -42,15 +42,21 @@ export interface RenderOptions {
   secrets?: Readonly<Record<string, string>>;
   /**
    * Override the image a supplementary component runs, without editing the
-   * config's two dozen `image:` lines. This is what makes a BRANCH deployable:
+   * config's 23 `image:` lines. This is what makes a BRANCH deployable:
    * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
    * the deploy renders the branch's own config against that tag.
    *
    * The override is REPOSITORY-SCOPED, not blanket: it replaces only those
-   * supplementary images whose registry+repository match the override's own.
-   * A config that mounts some other supplementary image is left alone. If it
-   * matches nothing, `renderAppSpec` throws — a branch deploy that silently
-   * fell back to `:latest` is the failure this whole feature exists to prevent.
+   * supplementary images whose registry+repository match the override's own, so
+   * a config mounting some OTHER supplementary image keeps it — and that other
+   * image stays on whatever tag the config names, since a branch build produces
+   * one bundle image, not one per repository.
+   *
+   * Two ways to get this wrong both throw rather than deploy something that
+   * merely looks right, because the failure this feature exists to prevent is a
+   * green branch deploy that silently ran `strad-bundle:latest`:
+   *   - a ref that matches no supplementary server (wrong repository), and
+   *   - a ref whose tag is `latest`, explicitly or by omission.
    */
   supplementaryImage?: string;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
@@ -225,6 +231,15 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   const override = opts.supplementaryImage
     ? parseImage(opts.supplementaryImage)
     : undefined;
+  // `parseImage` defaults a tag-less ref to `latest`, so an override of
+  // "ghcr.io/tadasant/strad-bundle" would match, apply, and deploy `:latest`
+  // while reading as a branch override. Refuse the whole shape.
+  if (override && override.tag === "latest") {
+    throw new Error(
+      `supplementaryImage "${opts.supplementaryImage}" resolves to the tag "latest". ` +
+        `Pass an explicit branch-scoped tag — overriding to :latest is what this flag exists to avoid.`,
+    );
+  }
   let overrideApplied = false;
 
   // Which bundles actually need a container? A supplementary bundle resolves to

@@ -48,9 +48,10 @@ points at — and keeping them in step is what `build: true` is for.
   So merging to `main` builds the image _and_ rolls staging onto it in one chain.
   No manual step is required for the happy path.
 
-- **A manual `Deploy staging` re-pins staging to an existing published tag.** Use
-  it to redeploy the current image, or to roll staging back to an earlier tag. It
-  will fail if the tag was never published — it does not build anything.
+- **With `build` left off, a manual `Deploy staging` re-pins staging to an
+  existing published tag.** Use it to redeploy the current image, or to roll
+  staging back to an earlier tag. It will fail if the tag was never published —
+  in that mode it builds nothing.
 
   ```bash
   gh workflow run deploy-staging.yml -f version=<image-tag>   # e.g. 0.1.6, or omit to use latest
@@ -67,7 +68,7 @@ points at — and keeping them in step is what `build: true` is for.
   `branch-<slug>-<sha12>` on `ghcr.io/tadasant/strad` and
   `ghcr.io/tadasant/strad-bundle`, and renders the branch's own
   `infra/strad.staging.yaml` against both (the bundle via `--bundle-image`, so the
-  config's two dozen `image:` lines need no edit). It moves **no** `:latest` tag
+  config's 23 `image:` lines need no edit). It moves **no** `:latest` tag
   and fires **no** `repository_dispatch` at `tadasant-internal`.
 
   **Do not dispatch `release-image.yml` (or `release-bundle-image.yml`) on a
@@ -195,7 +196,13 @@ gh workflow run deploy-staging.yml -f version=<known-good-tag>   # e.g. 0.1.5 or
 ```
 
 `release-image.yml` publishes `:sha-<sha>` on every release, so any past `main`
-commit has a durable, addressable image tag to roll back to.
+commit has a durable, addressable **core** image tag to roll back to.
+
+The **bundle** does not roll back this way. `version` pins only the core; the
+bundle image comes from `infra/strad.staging.yaml` (`strad-bundle:latest`) and the
+workflow's `--bundle-image` override is used only for a branch build. Rolling the
+core back far enough that it disagrees with the live bundle will produce routes
+the bundle no longer serves. See `HACKS.md` #25.
 
 ## Production is NOT deployed from this repo
 

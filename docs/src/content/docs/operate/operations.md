@@ -97,7 +97,7 @@ and the bundle — from the dispatched ref and pushes them as
 `ghcr.io/tadasant/strad:branch-<slug>-<sha12>` and
 `ghcr.io/tadasant/strad-bundle:branch-<slug>-<sha12>`. The deploy then renders the
 branch's own `infra/strad.staging.yaml` against those two tags, passing the bundle
-one as `--bundle-image` so the config's two dozen `image:` lines need no edit.
+one as `--bundle-image` so the config's 23 `image:` lines need no edit.
 
 Three properties make this safe to hand to anyone, and each is **structural**
 rather than a matter of passing the right input:

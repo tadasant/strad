@@ -17,6 +17,10 @@ name: Deploy staging
 # which is exactly what the release path does. There is nothing to clean up.
 
 on:
+  # `build` is deliberately NOT declared here. Leaving it off the workflow_call
+  # surface is what makes "the release path cannot build a branch" structural
+  # rather than a convention: release-image.yml has no input to pass. Do not
+  # "tidy" the two input blocks into agreement.
   workflow_call:
     inputs:
       version:
@@ -49,11 +53,11 @@ jobs:
   #
   # The safety properties of a branch deploy are STRUCTURAL, not a matter of the
   # caller passing the right input:
-  #   - This job's tag list is computed from the ref and asserted to contain no
-  #     `latest` before anything is pushed.
+  #   - The tag is `branch-<slug>-<sha>`, so it CANNOT collide with `latest`,
+  #     and the step below asserts that before anything is pushed.
   #   - This workflow contains no repository_dispatch step at all, so a branch
   #     build cannot notify tadasant-internal. Only release-image.yml can, and
-  #     that step is now gated to `main` (see that file).
+  #     that step is gated to `main` (see that file).
   # `workflow_call` cannot reach this job: `inputs.build` is undefined for the
   # release path, so an automatic release never builds anything here.
   build:
@@ -81,15 +85,19 @@ jobs:
             | sed 's/[^a-z0-9._-]/-/g' | cut -c1-60)
           SHORT=$(printf '%s' "${GITHUB_SHA}" | cut -c1-12)
           TAG="branch-${SLUG}-${SHORT}"
-          # Structural guard. If the slug logic above ever produced "latest" —
-          # a branch literally named `latest` would — refuse to push rather
-          # than move the tag that staging and prod both track.
-          case "$TAG" in
-            latest|*:latest) echo "::error::refusing to push tag '$TAG'"; exit 1 ;;
-          esac
+          CORE="ghcr.io/tadasant/strad:${TAG}"
+          BUNDLE="ghcr.io/tadasant/strad-bundle:${TAG}"
+          # Assert the thing that actually gets pushed, not the ingredients.
+          # The `branch-` prefix is what makes a collision with `latest`
+          # impossible; this refuses to push if that ever stops being true.
+          for ref in "$CORE" "$BUNDLE"; do
+            case "$ref" in
+              *:latest) echo "::error::refusing to push '$ref'"; exit 1 ;;
+            esac
+          done
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "core_image=ghcr.io/tadasant/strad:${TAG}" >> "$GITHUB_OUTPUT"
-          echo "bundle_image=ghcr.io/tadasant/strad-bundle:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "core_image=${CORE}" >> "$GITHUB_OUTPUT"
+          echo "bundle_image=${BUNDLE}" >> "$GITHUB_OUTPUT"
           echo "Branch images: strad:${TAG} and strad-bundle:${TAG}"
 
       - name: Log in to GHCR
@@ -126,7 +134,10 @@ jobs:
     needs: build
     # `needs` on a skipped job would skip this one too, so opt back in: deploy
     # runs whether or not we built, and only aborts if a requested build failed.
-    if: always() && needs.build.result != 'failure' && needs.build.result != 'cancelled'
+    # `!cancelled()` rather than `always()` — `always()` would keep replacing the
+    # staging spec after a human hit Cancel, which is the one moment they most
+    # want it to stop.
+    if: ${{ !cancelled() && needs.build.result != 'failure' }}
     runs-on: self-hosted
     environment: staging
     steps:
@@ -236,6 +247,7 @@ jobs:
           # Empty on the release path, which leaves the config's own
           # `image:` lines (…/strad-bundle:latest) untouched.
           BUNDLE_IMAGE: ${{ needs.build.outputs.bundle_image || '' }}
+          BUILT: ${{ inputs.build && 'true' || 'false' }}
           # Staging runs the console dev bypass until Google OAuth creds land.
           # The container runs NODE_ENV=production, so the bypass also demands
           # ALLOW_DEV_AUTH_IN_PRODUCTION — a deliberate second key that a copy of
@@ -250,6 +262,15 @@ jobs:
           # and its certificate. render-spec now also defaults this from
           # gateway.publicUrl, but pass it explicitly so the deploy says out loud
           # which hostname it is claiming.
+          # A branch deploy that lost its images would fall back to `:latest`
+          # for BOTH components and look like a success while running main's
+          # code end to end. Refuse instead.
+          if [ "$BUILT" = "true" ]; then
+            case "${CORE_IMAGE}|${BUNDLE_IMAGE}" in
+              *:branch-*\|*:branch-*) ;;
+              *) echo "::error::build was requested but produced no branch images (core='${CORE_IMAGE}' bundle='${BUNDLE_IMAGE}')"; exit 1 ;;
+            esac
+          fi
           BUNDLE_ARG=()
           if [ -n "$BUNDLE_IMAGE" ]; then
             BUNDLE_ARG=(--bundle-image "$BUNDLE_IMAGE")
@@ -258,7 +279,7 @@ jobs:
           node --experimental-transform-types scripts/render-spec.ts \
             --config infra/strad.staging.yaml \
             --image "$CORE_IMAGE" \
-            "${BUNDLE_ARG[@]}" \
+            ${BUNDLE_ARG[@]+"${BUNDLE_ARG[@]}"} \
             --app strad-staging \
             --region nyc \
             --domain staging.strad.tadasant.com > /tmp/spec.json

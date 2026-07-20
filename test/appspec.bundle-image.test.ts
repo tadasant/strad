@@ -6,7 +6,7 @@ import { renderAppSpec, type ImageRef } from "../src/deploy/appspec.ts";
 /**
  * Deploying a BRANCH to staging means running the branch's own config against
  * the branch's own images. The core image was always a render-time argument;
- * the bundle image was not — it is written into the config, on two dozen
+ * the bundle image was not — it is written into the config, on 23
  * `image:` lines. `supplementaryImage` is the override that closes that gap.
  *
  * The property that matters here is not "it swaps the tag". It is that it
@@ -98,6 +98,98 @@ describe("supplementaryImage override", () => {
       /matched no supplementary server/,
     );
   });
+
+  it("THROWS on a tag-less ref, which parseImage would resolve to :latest", () => {
+    expect(() => render("ghcr.io/tadasant/strad-bundle")).toThrow(
+      /resolves to the tag "latest"/,
+    );
+  });
+
+  it("THROWS on an explicit :latest, the exact thing the flag exists to avoid", () => {
+    expect(() => render("ghcr.io/tadasant/strad-bundle:latest")).toThrow(
+      /resolves to the tag "latest"/,
+    );
+  });
+
+  it("leaves a DIFFERENT supplementary repository on its configured tag", () => {
+    // The override is repository-scoped. A second supplementary image keeps the
+    // tag its config names — a branch build produces ONE bundle image, so there
+    // is nothing branch-scoped to give it.
+    const config = parseConfig(`
+version: 1
+gateway: { name: strad, env: staging }
+auth: { staticTokens: { enabled: true, store: env } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+  - name: other
+servers:
+  - slug: a
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /a
+    entitlements: [admin]
+  - slug: z
+    kind: supplementary-image
+    image: ghcr.io/tadasant/some-other:v9
+    bundle: other
+    path: /z
+    entitlements: [admin]
+`);
+    const spec = renderAppSpec({
+      config,
+      appName: "strad-staging",
+      region: "nyc",
+      image: CORE,
+      env: [],
+      supplementaryImage: "ghcr.io/tadasant/strad-bundle:branch-x",
+    });
+    expect(spec.services.find((s) => s.name === "bundle")!.image.tag).toBe(
+      "branch-x",
+    );
+    expect(spec.services.find((s) => s.name === "other")!.image).toEqual({
+      registry_type: "GHCR",
+      registry: "tadasant",
+      repository: "some-other",
+      tag: "v9",
+    });
+  });
+
+  it("matches a DOCR ref, where ImageRef carries no registry field", () => {
+    // parseImage omits `registry` entirely for DOCR, so sameRepository compares
+    // undefined against undefined. Left unnormalised that is still equal — but
+    // this pins the behaviour rather than assuming it.
+    const config = parseConfig(`
+version: 1
+gateway: { name: strad, env: staging }
+auth: { staticTokens: { enabled: true, store: env } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+servers:
+  - slug: a
+    kind: supplementary-image
+    image: registry.digitalocean.com/strad/strad-bundle:v1
+    bundle: bundle
+    path: /a
+    entitlements: [admin]
+`);
+    const spec = renderAppSpec({
+      config,
+      appName: "strad-staging",
+      region: "nyc",
+      image: CORE,
+      env: [],
+      supplementaryImage:
+        "registry.digitalocean.com/strad/strad-bundle:branch-x",
+    });
+    expect(spec.services.find((s) => s.name === "bundle")!.image).toEqual({
+      registry_type: "DOCR",
+      repository: "strad-bundle",
+      tag: "branch-x",
+    });
+  });
 });
 
 describe("the real staging config", () => {
@@ -129,6 +221,9 @@ describe("the real staging config", () => {
       secrets,
       supplementaryImage: "ghcr.io/tadasant/strad-bundle:branch-x",
     });
+    // Still exactly two components — the count this repo cares most about, and
+    // the one a bundle-image change could silently split.
+    expect(spec.services.map((s) => s.name)).toEqual(["core", "bundle"]);
     // Nothing anywhere in the rendered spec still points at the bundle's
     // `:latest` — that is the whole "no config edit needed" claim.
     const images = spec.services.map(
