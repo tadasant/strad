@@ -44,9 +44,18 @@ Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispa
 1. Compute the [effective version](/operate/deploy-model/#versioning).
 2. Log in to GHCR and build + push `ghcr.io/tadasant/strad:<version>` (+ `:latest`,
    `:sha-<sha>`).
-3. Fire the cross-repo `repository_dispatch` to `tadasant-internal`
+3. Go back to the registry and check that all three tags resolve to the digest
+   that was just built.
+4. Fire the cross-repo `repository_dispatch` to `tadasant-internal`
    (best-effort).
-4. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
+5. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
+
+`:latest` is mutable, `deploy-staging.yml` deploys it by default, and App Platform
+re-pulls it on every restart and scale event. A `:latest` that has drifted off the
+commit it was built from therefore boots old code against new config and rolls the
+deploy back, hours later and far from the change that caused it. A release that
+pushed successfully but left `:latest` somewhere else is a failed release, and step
+3 makes the run go red.
 
 ## `deploy-staging.yml` — put it on App Platform
 
@@ -67,6 +76,11 @@ renders the spec to `/tmp/spec.json` (never echoed), attaches a durable GHCR pul
 credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` for
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
 `401`).
+
+If any of that fails, a last step dumps the `core` and `bundle` containers' own
+logs for the newest deployment. App Platform reports only which component exited
+non-zero, never why; the why is in the container's log. The step never fails the
+job — the deploy already did — it only adds the evidence.
 
 <aside class="starlight-aside starlight-aside--note">
 

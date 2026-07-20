@@ -67,6 +67,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -77,6 +78,75 @@ jobs:
             ghcr.io/tadasant/strad:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify the three tags resolve to one digest
+        # `:latest` is a MUTABLE tag and staging deploys it by default, so a
+        # `:latest` that has drifted off the commit we just built is an outage
+        # waiting for the next App Platform restart — the container boots old
+        # code against new config and rolls back. The push above claims to write
+        # all three tags from one digest; this step goes back to the registry and
+        # checks that it did, and that nothing else has since moved them.
+        #
+        # A build that pushed successfully but left `:latest` pointing elsewhere
+        # is a FAILED release: better a red run here than a silent rollback in
+        # staging hours later.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILT: ${{ steps.build.outputs.digest }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Assert the SHAPE of the expected digest before trusting it. An empty
+          # BUILT (an action upgrade renames the output, a `push: false`
+          # regression) would compare equal to an empty unresolvable tag, and the
+          # one check this step exists to make would pass while verifying nothing.
+          case "${BUILT:-}" in
+            sha256:*) ;;
+            *) echo "::error::the build step produced no image digest ('${BUILT:-}')"; exit 1 ;;
+          esac
+          # Credentials go in through curl's stdin config, never argv: this is a
+          # shared self-hosted runner and argv is readable by anything that can
+          # run `ps`. `|| true` keeps `set -e` from killing the step before the
+          # diagnostic below can say what actually went wrong.
+          TOKEN=$(printf 'user = "%s:%s"\n' "$ACTOR" "$GH_TOKEN" \
+            | curl -sS -K - "https://ghcr.io/token?service=ghcr.io&scope=repository:tadasant/strad:pull" 2>/dev/null \
+            | jq -r '.token // empty' || true)
+          if [ -z "$TOKEN" ]; then
+            echo "::error::could not obtain a ghcr pull token to verify the tags"
+            exit 1
+          fi
+          ACCEPT='application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+          # Retries because this runs immediately after the push: GHCR gives no
+          # read-after-write guarantee, and a single CDN blip must not turn a
+          # good release red. Returns an empty digest once the attempts are spent,
+          # which the caller reports as a mismatch.
+          resolve() {
+            for attempt in 1 2 3; do
+              got=$(curl -sS -I -H "Authorization: Bearer $TOKEN" -H "Accept: $ACCEPT" \
+                "https://ghcr.io/v2/tadasant/strad/manifests/$1" 2>/dev/null \
+                | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}' || true)
+              case "$got" in sha256:*) printf '%s' "$got"; return 0 ;; esac
+              sleep "$attempt"
+            done
+            printf ''
+          }
+          echo "built digest: ${BUILT}"
+          bad=0
+          for tag in "$VERSION" latest "sha-${SHA}"; do
+            got=$(resolve "$tag")
+            echo "  ${tag} -> ${got:-<unresolved>}"
+            if [ -z "$got" ]; then
+              echo "::error::tag ${tag} did not resolve (no Docker-Content-Digest after 3 attempts)"
+              bad=1
+            elif [ "$got" != "$BUILT" ]; then
+              echo "::error::tag ${tag} resolves to ${got}, expected ${BUILT}"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+          echo "OK: :${VERSION}, :latest and :sha-${SHA} all resolve to ${BUILT}."
 
       - name: Notify tadasant-internal that a new image exists
         # A no-op until the dispatch token is set, and a warning (never a
