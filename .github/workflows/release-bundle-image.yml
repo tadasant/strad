@@ -42,6 +42,17 @@ jobs:
   build-and-push:
     runs-on: self-hosted
     steps:
+      - name: Refuse to release from anything but main
+        # This pushes `strad-bundle:latest`, which live staging tracks. A branch
+        # bundle belongs on a branch-scoped tag: dispatch deploy-staging.yml on
+        # the branch with `build: true`, which builds and deploys the bundle
+        # together — pushing a branch bundle to `:latest` on its own breaks the
+        # running staging, whose spec still routes the old paths.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::release-bundle-image only runs on main (got ${GITHUB_REF}). Use deploy-staging.yml with build:true to test a branch."
+          exit 1
+
       - uses: actions/checkout@v4
 
       - name: Log in to GHCR

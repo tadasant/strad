@@ -66,6 +66,17 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: Refuse to release from anything but main
+        # This workflow is the release path: it moves `:latest` and notifies
+        # prod. Dispatching it on a feature branch would do both for unreviewed
+        # code. To put a branch on staging, dispatch deploy-staging.yml on that
+        # branch with `build: true` — it builds branch-scoped tags and touches
+        # neither `:latest` nor tadasant-internal.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::release-image only runs on main (got ${GITHUB_REF}). Use deploy-staging.yml with build:true to test a branch."
+          exit 1
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:

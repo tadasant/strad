@@ -40,6 +40,19 @@ export interface RenderOptions {
    * A referenced name missing from this bag is a hard error (fail closed).
    */
   secrets?: Readonly<Record<string, string>>;
+  /**
+   * Override the image a supplementary component runs, without editing the
+   * config's two dozen `image:` lines. This is what makes a BRANCH deployable:
+   * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
+   * the deploy renders the branch's own config against that tag.
+   *
+   * The override is REPOSITORY-SCOPED, not blanket: it replaces only those
+   * supplementary images whose registry+repository match the override's own.
+   * A config that mounts some other supplementary image is left alone. If it
+   * matches nothing, `renderAppSpec` throws — a branch deploy that silently
+   * fell back to `:latest` is the failure this whole feature exists to prevent.
+   */
+  supplementaryImage?: string;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
   coreInstanceSizeSlug?: string;
@@ -197,8 +210,22 @@ export function collectSecretRefs(config: StradConfig): string[] {
   return [...out];
 }
 
+/** Same registry and repository, ignoring the tag. */
+function sameRepository(a: ImageRef, b: ImageRef): boolean {
+  return (
+    a.registry_type === b.registry_type &&
+    (a.registry ?? "") === (b.registry ?? "") &&
+    a.repository === b.repository
+  );
+}
+
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
+
+  const override = opts.supplementaryImage
+    ? parseImage(opts.supplementaryImage)
+    : undefined;
+  let overrideApplied = false;
 
   // Which bundles actually need a container? A supplementary bundle resolves to
   // one image plus the union of its servers' env maps.
@@ -271,9 +298,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   for (const name of bundleNames) {
     const declared = config.bundles.find((b) => b.name === name);
     const supplementary = imageBundles.get(name);
-    const componentImage = supplementary
+    let componentImage = supplementary
       ? parseImage(supplementary.image)
       : opts.image;
+    if (supplementary && override && sameRepository(componentImage, override)) {
+      componentImage = override;
+      overrideApplied = true;
+    }
 
     services.push({
       name,
@@ -328,6 +359,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
             ...opts.env,
           ],
     });
+  }
+
+  if (override && !overrideApplied) {
+    throw new Error(
+      `supplementaryImage "${opts.supplementaryImage}" matched no supplementary server in the config. ` +
+        `Check the registry and repository — only the tag is meant to differ.`,
+    );
   }
 
   const spec: AppSpec = {

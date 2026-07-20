@@ -39,7 +39,12 @@ Runs on PRs and pushes to `main`. Six jobs, all `runs-on: self-hosted`:
 
 ## `release-image.yml` — mint and ship
 
-Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`:
+Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`.
+It is the **release** path, and it **refuses to run on any ref but `main`** — it
+moves `:latest` and notifies prod, and neither should ever happen for unreviewed
+code. To put a branch on staging, see [deploying a
+branch](#deploying-a-branch-to-staging) below. `release-bundle-image.yml` carries
+the same guard for the same reason.
 
 1. Compute the [effective version](/operate/deploy-model/#versioning).
 2. Log in to GHCR and build + push `ghcr.io/tadasant/strad:<version>` (+ `:latest`,
@@ -74,6 +79,53 @@ credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` 
 restart and scale event, so it needs a long-lived credential
 (`scripts/attach-registry-creds.mjs` attaches `tadasant:${GHCR_PULL_TOKEN}`), not
 the ephemeral `GITHUB_TOKEN` that only exists during the workflow run.
+
+</aside>
+
+### Deploying a branch to staging
+
+Staging normally runs `main`'s config against `main`'s images. To put a **feature
+branch** on it — config _and_ binary — dispatch `deploy-staging.yml` on that
+branch with `build: true`:
+
+```bash
+gh workflow run deploy-staging.yml --ref my-branch -f build=true
+```
+
+That adds a `build` job ahead of the deploy. It builds **both** images — the core
+and the bundle — from the dispatched ref and pushes them as
+`ghcr.io/tadasant/strad:branch-<slug>-<sha12>` and
+`ghcr.io/tadasant/strad-bundle:branch-<slug>-<sha12>`. The deploy then renders the
+branch's own `infra/strad.staging.yaml` against those two tags, passing the bundle
+one as `--bundle-image` so the config's two dozen `image:` lines need no edit.
+
+Three properties make this safe to hand to anyone, and each is **structural**
+rather than a matter of passing the right input:
+
+- **No `:latest` is ever moved.** The tag list is derived from the ref and
+  asserted not to be `latest` before a push happens. The release tags live only in
+  `release-image.yml` / `release-bundle-image.yml`, which refuse to run off
+  `main`.
+- **Prod is never notified.** `deploy-staging.yml` contains no
+  `repository_dispatch` step at all, so a branch build cannot fire one.
+- **The release path cannot trigger a build.** `build` is declared only on
+  `workflow_dispatch`, not on `workflow_call`, so `release-image.yml` has no way
+  to reach the build job.
+
+A branch build also reads the shared buildx cache but never writes it, so it
+cannot affect what `main` builds from.
+
+**Restoring staging to `main`** needs no teardown: dispatch `deploy-staging.yml`
+on `main` with `build` left off. It renders `main`'s config against `:latest`,
+which is exactly what the release path does — so the next merge to `main` restores
+staging on its own regardless.
+
+<aside class="starlight-aside starlight-aside--caution">
+
+Never push a branch bundle to `strad-bundle:latest`. Live staging pulls that tag
+on every restart, and a bundle whose mounts have moved will serve paths the
+_deployed_ spec does not route. Build and deploy have to happen together, which is
+what the `build: true` dispatch does.
 
 </aside>
 

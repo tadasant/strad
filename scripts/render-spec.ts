@@ -13,6 +13,10 @@
  *     --image registry.digitalocean.com/strad/strad:0.1.0 \
  *     --app strad-staging > /tmp/spec.json
  *
+ * `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` overrides the image on
+ * every supplementary component that shares that repository, which is how a
+ * feature branch gets deployed without editing the config's `image:` lines.
+ *
  * The output contains secret values. Never echo it into a build log.
  */
 import { readFileSync } from "node:fs";
@@ -29,6 +33,7 @@ const { values } = parseArgs({
   options: {
     config: { type: "string" },
     image: { type: "string" },
+    "bundle-image": { type: "string" },
     app: { type: "string" },
     region: { type: "string" },
     domain: { type: "string", multiple: true },
@@ -199,6 +204,9 @@ const spec = renderAppSpec({
   appName: values.app,
   region: values.region ?? "nyc",
   image: parseImage(values.image),
+  // --bundle-image swaps the supplementary components onto a branch-scoped
+  // bundle tag at render time, so a branch deploy needs no config edit.
+  supplementaryImage: values["bundle-image"],
   env: envs,
   secrets: bundleSecrets,
   domains: resolveDomains(),
