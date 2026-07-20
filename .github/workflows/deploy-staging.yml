@@ -305,13 +305,23 @@ jobs:
           node scripts/attach-registry-creds.mjs /tmp/spec.json "tadasant:${GHCR_PULL_TOKEN}"
 
       - name: Install doctl
+        # Binary only. Given a token this action runs `doctl auth init`, which
+        # stashes it in ambient per-machine state (the keyring, falling back to
+        # $HOME/.config/doctl/config.yaml in cleartext). The action ships no
+        # `post:` step, so nothing scopes that state to the job — and on
+        # `self-hosted` every runner process on the box shares /home/runner.
+        # `no_auth` skips the write; each doctl step below supplies the token
+        # through its own env.
         if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         uses: digitalocean/action-doctl@v2
         with:
-          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          no_auth: "true"
 
       - name: Deploy (create or update strad-staging)
         if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        env:
+          # doctl reads this natively — see the smoke-test step below.
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
@@ -325,6 +335,15 @@ jobs:
 
       - name: Smoke-test the live endpoint
         if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        env:
+          # Every doctl step carries its own token rather than reading the
+          # machine-wide state `doctl auth init` would have left behind. That
+          # state is unscoped — the action has no `post:` step to tear it down,
+          # and it lives in a $HOME shared with every other runner on the box —
+          # so a step that relies on it can find it gone. The prod workflow hit
+          # exactly that: the deploy ran doctl fine, then this step failed 45s
+          # later with "access token is required" against a healthy deploy.
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')

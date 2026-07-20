@@ -82,6 +82,19 @@ the ephemeral `GITHUB_TOKEN` that only exists during the workflow run.
 
 </aside>
 
+<aside class="starlight-aside starlight-aside--note">
+
+**Why `doctl` is installed without a token.** `digitalocean/action-doctl` will run
+`doctl auth init` for you, which stashes the token in ambient per-machine state —
+the keyring, falling back to `$HOME/.config/doctl/config.yaml`. The action has no
+`post:` step to tear that down, and the runners are `self-hosted` with a shared
+`/home/runner`, so a concurrent job can clobber it mid-run. The workflow installs
+the binary with `no_auth: "true"` and passes `DIGITALOCEAN_ACCESS_TOKEN` in the
+`env:` of every step that invokes `doctl`; doctl reads that variable natively and
+skips the config file and keyring entirely.
+
+</aside>
+
 ### Deploying a branch to staging
 
 Staging normally runs `main`'s config against `main`'s images. To put a **feature
