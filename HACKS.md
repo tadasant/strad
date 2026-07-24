@@ -607,10 +607,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Fourteen servers now share one process, and one Chromium
+## 24. Fifteen servers now share one process, and one Chromium
 
-The collapsed bundle is one container running fourteen MCP servers and one
-headless Chromium. An OOM there is a fourteen-server outage; it used to be a
+The collapsed bundle is one container running fifteen MCP servers and one
+headless Chromium. An OOM there is a fifteen-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -655,9 +655,58 @@ at all.
 **Also.** Branch tags accumulate in GHCR with no garbage collection. They are
 cheap and nothing depends on them, but nothing prunes them either.
 
+## 26. The secrets/parameters system is wired end-to-end but not yet live
+
+strad now has a store-agnostic secrets/parameters system: Parameter Manager is
+the index of everything, Secret Manager backs the secret parts, and everything is
+addressed by the path `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` (kind `static`
+today; an `oauth` kind is issue #32). Three roles touch it, and they are three
+DIFFERENT credentials on purpose:
+
+- the MCP **viewer** (`secrets` server, on the bundle) — lists parameters, reads
+  notes and NON-secret values, and cannot read a secret value (no
+  `secretmanager.versions.access`);
+- the console **admin** (core only, from `consoleEnv:`, behind SSO) — reads and
+  writes both kinds;
+- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads both stores'
+  values to inject a `params: true` server's env, never over MCP.
+
+What is NOT done, and needs a human with GCP access (see the checklist below and
+`docs/.../limitations.md`): the resolver service account and its key, and the
+seeded parameter values. The project and the viewer/admin service accounts are
+provisioned. Everything above is tested against an in-memory fake, so the logic
+ships proven.
+
+Posture nuance worth stating plainly: the resolver credential runs at DEPLOY time
+(in CI / `render-spec`), NOT in the container, so "the running container holds no
+cloud credential" still holds — the resolved values reach the bundle as ordinary
+SECRET env vars, exactly like every other secret. Until the resolver service
+account exists, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
+boots without its resolved parameters and degrades gracefully.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
+
+- [ ] **The secrets/parameters GCP project + three service accounts** (hack #26):
+      a project holding ONLY the `/strad/staging/mcp/*` parameters (its id is a
+      LITERAL in `infra/strad.staging.yaml`, `strad-secrets-staging` — not a
+      seeded secret, since a project id is not a credential). A fresh project needs
+      billing linked (`gcloud billing projects link`) and `--organization`, plus
+      `parametermanager` / `secretmanager` / `iam` enabled, before the SAs can be
+      created. Exact predefined roles, verified live: the VIEWER SA gets
+      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`)
+      → seed key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; the ADMIN SA gets
+      `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
+      plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the
+      RESOLVER SA gets `roles/parametermanager.parameterViewer` plus
+      `roles/secretmanager.secretAccessor` →
+      `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed for
+      the deploy-time param injection of `remote-filesystem-tmp-public`). Only the SA
+      KEYS are secret; seed them into strad's existing `strad-staging-*` Secret
+      Manager project (where SLACK_BOT_TOKEN lives), not the params project. Then set
+      both `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
+      `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2.

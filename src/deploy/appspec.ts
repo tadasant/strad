@@ -41,8 +41,19 @@ export interface RenderOptions {
    */
   secrets?: Readonly<Record<string, string>>;
   /**
+   * Resolved managed parameters, keyed by server slug -> VARIABLE -> value.
+   *
+   * A supplementary server with `params: true` has its `/strad/{env}/mcp/{slug}/
+   * static/*` parameters resolved from the secrets system at DEPLOY time (see
+   * scripts/render-spec.ts, which holds the resolver credential — the container
+   * does not) and passed in here. They land as SECRET env vars on that server's
+   * bundle, exactly like its `env:` refs, so the running container reads them from
+   * process.env and holds no cloud credential of its own.
+   */
+  resolvedParams?: Readonly<Record<string, Record<string, string>>>;
+  /**
    * Override the image a supplementary component runs, without editing the
-   * config's 23 `image:` lines. This is what makes a BRANCH deployable:
+   * config's 24 `image:` lines. This is what makes a BRANCH deployable:
    * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
    * the deploy renders the branch's own config against that tag.
    *
@@ -62,6 +73,42 @@ export interface RenderOptions {
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
   coreInstanceSizeSlug?: string;
+}
+
+/**
+ * Resolve a supplementary server's `consoleEnv:` onto the CORE component only.
+ *
+ * Note what this is NOT: it is not `opts.env`. A SECRET-typed entry in `opts.env`
+ * is BROADCAST — look at the bundle branch below, which forwards
+ * `opts.env.filter(e => e.type === "SECRET")` to every supplementary component.
+ * So the ordinary way to give the core gateway a credential also hands it to the
+ * container that answers /mcp, which for the `secrets` server would put the value-reading
+ * service-account key inside the process an agent talks to. The IAM split would
+ * then be a lie: the MCP credential could not read a value, but a stronger one
+ * would be sitting in the same environment.
+ *
+ * `consoleEnv:` is therefore resolved HERE and appended to core's envs alone.
+ * test/appspec.consoleEnv.test.ts asserts the key appears on core and on no
+ * other component.
+ */
+function consoleEnvVars(
+  config: StradConfig,
+  secrets: Readonly<Record<string, string>>,
+): EnvVar[] {
+  const merged: Record<string, string> = {};
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    Object.assign(merged, server.consoleEnv);
+  }
+  return Object.entries(resolveMap(merged, secrets)).map(
+    ([key, value]): EnvVar => ({
+      key,
+      value,
+      scope: "RUN_TIME",
+      type: "SECRET",
+    }),
+  );
 }
 
 export interface ImageRef {
@@ -246,7 +293,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   // one image plus the union of its servers' env maps.
   const imageBundles = new Map<
     string,
-    { image: string; env: Record<string, string> }
+    {
+      image: string;
+      /** `env:` maps, whose `${REF}` values are resolved against opts.secrets. */
+      env: Record<string, string>;
+      /** Resolved managed parameters — ALREADY literal, so NOT ref-resolved. */
+      params: Record<string, string>;
+    }
   >();
   const builtinBundles = new Set<string>();
 
@@ -260,10 +313,17 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // guarantees they share the SAME image; the component's env is the union
       // of every such server's `env:` map, so all of them get their secrets on
       // the one component.
+      // A `params: true` server's resolved managed parameters are kept SEPARATE
+      // from `env:`. They are already literal values (dereferenced by the resolver
+      // at deploy time), so they must NOT go through resolveMap below: a resolved
+      // value that happened to contain `${NAME}` would otherwise be treated as an
+      // unresolved ref and either fail the render or be silently corrupted.
+      const params = opts.resolvedParams?.[server.slug] ?? {};
       const prev = imageBundles.get(server.bundle);
       imageBundles.set(server.bundle, {
         image: server.image,
         env: { ...(prev?.env ?? {}), ...server.env },
+        params: { ...(prev?.params ?? {}), ...params },
       });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
@@ -305,6 +365,9 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         ...identityEnvs("core", config.gateway.env, opts.image.tag),
         ...bundleUrlEnvs,
         ...opts.env,
+        // Core-only credentials. Deliberately NOT part of opts.env, which is
+        // broadcast — see consoleEnvVars().
+        ...consoleEnvVars(config, opts.secrets ?? {}),
       ],
       health_check: { http_path: "/healthz", initial_delay_seconds: 10 },
     },
@@ -346,6 +409,17 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               scope: "RUN_TIME",
               type: "SECRET",
             })),
+            // Resolved managed parameters are already literal — emit them as
+            // SECRET env vars directly, WITHOUT resolveMap, so a value containing
+            // `${…}` cannot be mistaken for an unresolved ref.
+            ...Object.entries(supplementary.params).map(
+              ([key, value]): EnvVar => ({
+                key,
+                value,
+                scope: "RUN_TIME",
+                type: "SECRET",
+              }),
+            ),
             ...identityEnvs(name, config.gateway.env, componentImage.tag),
             ...opts.env.filter(
               (e) => e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key),

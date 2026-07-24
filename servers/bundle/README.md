@@ -1,10 +1,10 @@
 # bundle — THE strad supplementary image
 
-Fourteen MCP servers. One container. One Chromium. One `op` binary.
+Fifteen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
-/slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem
-/google-flights /gmail /google-calendar /google-docs /onepassword
+/slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
+/google-flights /gmail /google-calendar /google-docs /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
@@ -31,23 +31,24 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How six projects become one image
+## How seven projects become one image
 
-`Dockerfile`'s build context is the **repo root**, because the servers live in six
+`Dockerfile`'s build context is the **repo root**, because the servers live in seven
 different places:
 
 | tree | source | servers |
 | --- | --- | --- |
-| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-filesystem, google-flights |
+| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-filesystem-tmp-public, google-flights |
 | `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
+| `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
 | `pointsyeah` | `servers/pointsyeah` | pointsyeah |
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging six dependency trees is how you
+`/app/trees/<name>`. Nothing is merged. Merging seven dependency trees is how you
 find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -76,25 +77,41 @@ instance in `infra/strad.staging.yaml`.
 
 ## The GCS_BUCKET collision
 
-`gcs` and `remote-filesystem` **both read `GCS_BUCKET`**, and they point at
+`gcs` and `remote-filesystem-tmp-public` **both read `GCS_BUCKET`**, and they point at
 different buckets. That is why `gcs` used to need a component to itself, and it is
 the one thing gateway-side capability does *not* solve — it is a credential, not a
 capability.
 
-One process cannot hold two values of one variable, so `remote-filesystem` stops
-reading the environment: the host hands it an explicit client built from
-`REMOTE_FILESYSTEM_GCS_*`. `gcs` keeps the bare names.
+One process cannot hold two values of one variable, so `remote-filesystem-tmp-public`
+stops reading the environment: the host hands it an explicit client built from
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_*`. `gcs` keeps the bare names.
+
+## The one server whose safety is not in this image
+
+`secrets` lists parameter NAMES, KINDS and NOTES from Google Parameter Manager,
+and reads NON-SECRET values — but it can never return a SECRET value, and not
+because of anything in this container. It is because the service account strad
+injects here holds Parameter Manager viewer access and NOT
+`secretmanager.versions.access`, so Google refuses the secret. The credential that
+CAN read a secret value lives on the **core** component, behind the console's SSO
+gate, and never reaches this process (see `consoleEnv:` in `src/config/schema.ts`).
+
+This host must not undo that. There is no write tool to add, and no key here that
+could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Fourteen servers share a process. A crash is a fourteen-server outage. Everything
+Fifteen servers share a process. A crash is a fifteen-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is thirteen others too.)
+  when the process *is* the server, catastrophic when it is fourteen others too.)
 - **1Password without an elicitation posture** refuses to mount, rather than
   refusing to boot.
+- **secrets without a managed namespace** refuses to mount — an unscoped
+  secrets server would see every parameter in the project — rather than mounting
+  wide open.
 - an **unhandled rejection** is logged, not fatal.
 - a **dead Chromium** is relaunched on next use.
 
@@ -109,4 +126,6 @@ docker exec <container> node /app/scripts/smoke.mjs [--tools]
 ```
 
 Lists tools from every mount and asserts the full-capability counts. It needs no
-credentials, which is why CI runs it on every PR.
+credentials, which is why CI runs it on every PR. For `secrets` the count (4)
+is a security assertion: a fifth tool on a server whose contract is "no tool
+returns a SECRET value" is exactly what CI should catch.

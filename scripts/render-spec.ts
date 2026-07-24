@@ -28,6 +28,10 @@ import {
   renderAppSpec,
   type EnvVar,
 } from "../src/deploy/appspec.ts";
+import {
+  resolverFromEnv,
+  resolveServerParams,
+} from "../src/secrets/parameters/index.ts";
 
 const { values } = parseArgs({
   options: {
@@ -137,16 +141,22 @@ for (const name of collectSecretRefs(config)) {
 // renderer. A referenced-but-unset secret is a hard error: better a failed
 // deploy than a browser bundle that can't log in.
 const SECRET_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-const bundleSecrets: Record<string, string> = {};
+const scopedSecrets: Record<string, string> = {};
 for (const server of config.servers) {
   if (server.kind !== "supplementary-image") continue;
   // appspec.ts skips disabled servers and emits no bundle for them, so don't
   // demand their secrets here either — that would fail-close in the wrong place.
   if (!server.enabled) continue;
-  for (const raw of Object.values(server.env)) {
+  // `consoleEnv:` is resolved from the SAME bag, but appspec.ts puts it on the
+  // core component only — never on the bundle. That asymmetry is what keeps a
+  // value-reading credential out of the container that answers /mcp.
+  for (const raw of [
+    ...Object.values(server.env),
+    ...Object.values(server.consoleEnv),
+  ]) {
     for (const match of raw.matchAll(SECRET_REF)) {
       const name = match[1]!;
-      if (name in bundleSecrets) continue;
+      if (name in scopedSecrets) continue;
       const value = process.env[name];
       if (!value) {
         console.error(
@@ -154,9 +164,38 @@ for (const server of config.servers) {
         );
         process.exit(1);
       }
-      bundleSecrets[name] = value;
+      scopedSecrets[name] = value;
     }
   }
+}
+
+// A supplementary server with `params: true` gets its managed parameters —
+// everything under /strad/{env}/mcp/{slug}/static/* — resolved from the secrets
+// system HERE, at deploy time, by the RESOLVER credential (STRAD_PARAMS_*). The
+// resolved values (non-secret from Parameter Manager, secret from Secret Manager)
+// are handed to renderAppSpec, which lands them as SECRET env vars on the bundle;
+// the running container holds no cloud credential, exactly like every other
+// secret. When no resolver is configured (e.g. before the resolver service
+// account exists), this is a no-op and those servers boot without the params —
+// which they already degrade on gracefully — rather than failing the render.
+const resolvedParams: Record<string, Record<string, string>> = {};
+const resolver = resolverFromEnv(process.env);
+for (const server of config.servers) {
+  if (server.kind !== "supplementary-image" || !server.enabled) continue;
+  if (!server.params) continue;
+  if (!resolver) {
+    console.error(
+      `[render-spec] server "${server.slug}" has params: true but no resolver ` +
+        `credential (STRAD_PARAMS_*) is configured; its managed parameters are ` +
+        `not injected on this render.`,
+    );
+    continue;
+  }
+  resolvedParams[server.slug] = await resolveServerParams(
+    resolver,
+    config.gateway.env,
+    server.slug,
+  );
 }
 
 // The dev-bypass switches. Not secrets — they are switches, and belong in the
@@ -208,7 +247,8 @@ const spec = renderAppSpec({
   // bundle tag at render time, so a branch deploy needs no config edit.
   supplementaryImage: values["bundle-image"],
   env: envs,
-  secrets: bundleSecrets,
+  secrets: scopedSecrets,
+  resolvedParams,
   domains: resolveDomains(),
 });
 

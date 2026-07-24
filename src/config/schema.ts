@@ -131,6 +131,38 @@ const SupplementaryImageServer = ServerBase.extend({
   path: z.string().startsWith("/").default("/mcp"),
   /** Env passed to the component. Values may be `${SECRET_REF}`. */
   env: z.record(SecretRef).default({}),
+  /**
+   * Opt this server into PARAMETER RESOLUTION. When true, everything under
+   * `/strad/{env}/mcp/{slug}/static/*` in the secrets system (non-secret values
+   * from Parameter Manager, secret values from Secret Manager) is resolved and
+   * injected as this server's environment — see src/secrets/parameters. For a
+   * supplementary image that resolution happens at DEPLOY time (render-spec, with
+   * the resolver credential, scoped onto the bundle); the container itself holds
+   * no cloud credential. It is the modern alternative to hand-writing `${REF}`
+   * entries in `env:`.
+   */
+  params: z.boolean().default(false),
+  /**
+   * Env for the CORE gateway only — the human console's half of this server.
+   * It is NOT injected into the server's container, and that asymmetry is the
+   * whole point.
+   *
+   * `env:` above lands on the component that answers /mcp. Anything in it is a
+   * credential the AGENT path holds. `consoleEnv:` lands on core, which serves
+   * the SSO-gated /ui and nothing an agent can reach.
+   *
+   * The `secrets` server is why this exists: its MCP container runs as a viewer
+   * with `roles/secretmanager.viewer` (list/describe — no `versions.access`), so
+   * no tool, no bug and no prompt injection can pull a secret VALUE through
+   * /mcp, because the credential it would have to use cannot. The console needs
+   * a second, stronger service account to add/reveal/delete values — and that
+   * one must never reach the MCP container, or the IAM split is theatre.
+   *
+   * (A plain broadcast SECRET env var would NOT do: appspec.ts forwards every
+   * SECRET-typed broadcast var to every component, supplementary images
+   * included. `consoleEnv:` is the only scope that reaches core and stops.)
+   */
+  consoleEnv: z.record(SecretRef).default({}),
   /** Headers strad sends when proxying to it (e.g. a shared internal token). */
   headers: HeaderMap,
 });
@@ -159,6 +191,14 @@ const BuiltinServer = ServerBase.extend({
   bundle: SLUG.default("core"),
   /** Options handed to the builtin's factory. May contain `${SECRET_REF}`. */
   options: z.record(z.unknown()).default({}),
+  /**
+   * Opt into PARAMETER RESOLUTION. When true, everything under
+   * `/strad/{env}/mcp/{slug}/static/*` is resolved from the secrets system and
+   * merged into this builtin's `options` at launch (see gateway/registry.ts). For
+   * a `core` builtin this happens in-process, at runtime — the concrete
+   * "resolve, then inject into the child" path. See src/secrets/parameters.
+   */
+  params: z.boolean().default(false),
 });
 
 export const ServerConfig = z.discriminatedUnion("kind", [
@@ -189,12 +229,12 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * the gateway, they could not even share a container — each needed its own
  * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
  * servers' env maps. That constraint is what made the fleet cost 12 bundles for
- * its 26 slugs. The same fleet is 25 slugs in ONE bundle today.)
+ * its 26 slugs. The same fleet is 26 slugs in ONE bundle today.)
  *
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
  * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and 14 upstream servers (which the config names as 23 slugs), so
+ * also runs `op` and 15 upstream servers (which the config names as 24 slugs), so
  * size it up, not down.
  */
 const BundleConfig = z.object({

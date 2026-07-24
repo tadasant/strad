@@ -120,3 +120,37 @@ access. The grounding is RFC 8707: resource indicators bind a token to a
 _resource_, and a query string is not one, so it cannot function as a credential
 scope. It is a convenience for selecting _which_ of your entitled servers you want
 this request — nothing more.
+
+## The secrets console: three credentials
+
+The [secrets and parameters
+system](/intro/architecture/#the-secrets-and-parameters-system) is where the
+two-doors rule pays off most concretely. Managing a secret value touches a store
+through **three** credentials, and they are three different service accounts on
+purpose — the split is the security posture, not an accident of deployment.
+
+| Role         | Lives on                         | Reached via          | Can read a secret value?         |
+| ------------ | -------------------------------- | -------------------- | -------------------------------- |
+| **viewer**   | the bundle (answers `/mcp`)      | the `secrets` server | **no** — lacks `versions.access` |
+| **admin**    | core only (behind SSO)           | `/ui/secrets`        | yes — that is "reveal"           |
+| **resolver** | deploy-time (CI / `render-spec`) | never a request      | yes — to inject a child's env    |
+
+- The **viewer** is the agent path. The `secrets` MCP server lists parameters,
+  reads notes, and reads non-secret values. It **cannot** read a secret value: its
+  service account holds Parameter Manager viewer access and not
+  `secretmanager.versions.access`, so Google answers `403` to the only call that
+  would return one. A bug, a bad merge, or a prompt injection that reaches for a
+  secret value hits that wall — the credential in the process cannot fetch one.
+- The **admin** is the human path. It reads and writes both kinds (add, rotate,
+  reveal, delete) from the SSO-gated `/ui/secrets`. Its key arrives through
+  `consoleEnv:`, which the deploy layer puts on **core alone**. The bundle never
+  holds it, so there is no code path from `/mcp` to a secret value. A plain
+  broadcast SECRET would not do — that reaches every component; `consoleEnv:` is the
+  scope that reaches core and stops.
+- The **resolver** injects a `params: true` server's env at deploy time. It reads
+  both stores' resolved values and hands them to the child process as SECRET env
+  vars, never over strad's own MCP channel. Its `STRAD_PARAMS_*` credential runs in
+  CI, so the running container still holds no cloud credential.
+
+If the admin or resolver key ever reached the bundle, the viewer's "cannot read a
+secret" guarantee would be gone. Keeping them apart is the whole design.

@@ -17,7 +17,8 @@ deployment you're changing — `infra/strad.staging.yaml` for staging, or
 - **`remote-http`** — set `url` and any `headers` (use `${SECRET}` for
   credentials).
 - **`supplementary-image`** — set `image` and a `bundle`, plus optional `env` /
-  `path`. Servers that share an image share the bundle (one component runs one
+  `path` (and `consoleEnv` for a credential only the human console may hold — see
+  step 4b). Servers that share an image share the bundle (one component runs one
   image); each gets its own `path`.
 - **`builtin`** — set `module` and `bundle` (`core` = in-process, anything else =
   a bundle component), plus optional `options`.
@@ -112,6 +113,66 @@ required SECRET; an unresolved `${…}` makes render fail loudly rather than let
 the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (see
 [Operations & CI](/operate/operations/#seeding-secrets)).
 
+## 4b. A credential the AGENT must not hold — `consoleEnv:`
+
+`env:` on a `supplementary-image` lands on the **container that answers `/mcp`**.
+Anything in it is a credential the agent path holds. That is usually what you want.
+
+Sometimes it is exactly what you do not. `consoleEnv:` is the scope that lands on
+the **core gateway only** — the component that serves the SSO-gated `/ui`, and
+nothing an agent can reach:
+
+```yaml
+- slug: secrets
+  kind: supplementary-image
+  env: # -> the bundle. This is the agent's (viewer) credential.
+    SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+  consoleEnv: # -> core ONLY. Humans, behind SSO.
+    SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
+```
+
+The `secrets` server is why this exists. Its MCP container runs as a Parameter
+Manager **viewer** service account — no `secretmanager.versions.access` — so **no
+tool, bug or prompt injection can pull a secret value through `/mcp`**: Google
+refuses the credential, not just the code. The console needs a stronger account to
+add and reveal values, and that one must never reach the MCP container or the split
+is theatre. (The name is `secrets`, not `gcp-secrets`: the store is an
+implementation detail, and other backends can sit behind the same interface.)
+
+Note that a plain broadcast SECRET env var would **not** do: `render-spec` injects
+those into every component, supplementary images included. `consoleEnv:` is the
+only scope that reaches core and stops there.
+
+## 4c. Let a server draw its env from the parameters system — `params: true`
+
+The alternative to hand-writing `${REF}` entries in `env:` is to opt the server
+into [parameter resolution](/intro/architecture/#the-secrets-and-parameters-system).
+Set `params: true`, and everything a human has stored under
+`/strad/{env}/mcp/{slug}/static/*` is resolved and injected as this server's
+environment:
+
+```yaml
+- slug: remote-filesystem-tmp-public
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /remote-filesystem-tmp-public
+  entitlements: [admin]
+  params: true # resolve /strad/{env}/mcp/remote-filesystem-tmp-public/static/* into env
+  env:
+    REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "my-screenshots" # a literal is fine; not a secret
+```
+
+The two credentials this server needs — a non-secret
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a secret
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` — are **not** in the config. A human sets
+them once in `/ui/secrets`, and the resolver injects them: for a supplementary image
+at deploy time (`render-spec`, with the `STRAD_PARAMS_*` resolver credential),
+scoped onto that bundle. The container holds no cloud credential, exactly as with a
+`${REF}` secret. When no resolver credential is configured, a `params: true` server
+simply boots without those values and degrades gracefully — see [Known
+limitations](/limitations/).
+
 ## 5. Deploy
 
 - **Stock image (`remote-http` / `supplementary-image`):** no rebuild. The config
@@ -125,13 +186,15 @@ the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (s
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
-once. It declares twenty-five server slugs: a core builtin (`echo`), a
+once. It declares twenty-six server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
-and twenty-three `supplementary-image` entries sharing ONE bundle over the private
-network — which resolve onto the bundle image's fourteen mounts, because every
-read-only / read-write pair is two entries on one path. It also keeps a deliberately
-narrow `echo-only` role, so the
-[424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read it
-alongside
+and twenty-four `supplementary-image` entries sharing ONE bundle over the private
+network — which resolve onto the bundle image's fifteen mounts, because every
+read-only / read-write pair is two entries on one path. One of those, `secrets`,
+is also the worked example for the split `env:` / `consoleEnv:` credentials from
+step 4b, and `remote-filesystem-tmp-public` is the `params: true` example from step 4c. It
+also keeps a deliberately narrow `echo-only` role, so
+the [424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read
+it alongside
 [`strad.config.example.yaml`](https://github.com/tadasant/strad/blob/main/strad.config.example.yaml)
 as your two references.

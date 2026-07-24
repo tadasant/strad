@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>14 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>15 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -55,9 +55,9 @@ in-VPC hop (~4ms) with no public-edge hairpin.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has a single bundle: one
-`ghcr.io/tadasant/strad-bundle` container that mounts fourteen MCP servers in one
-Node process. The staging config maps twenty-three `supplementary-image` entries
-onto those fourteen mounts, because capability variants of one upstream are two
+`ghcr.io/tadasant/strad-bundle` container that mounts fifteen MCP servers in one
+Node process. The staging config maps twenty-four `supplementary-image` entries
+onto those fifteen mounts, because capability variants of one upstream are two
 entries pointing at the same path.
 
 Three numbers, three different things:
@@ -65,8 +65,8 @@ Three numbers, three different things:
 | Number | What it counts                                                                      |
 | ------ | ----------------------------------------------------------------------------------- |
 | **2**  | App Platform components (`core`, `bundle`)                                          |
-| **14** | MCP servers mounted inside the bundle image                                         |
-| **25** | server slugs in `infra/strad.staging.yaml` (23 supplementary + `echo` + `deepwiki`) |
+| **15** | MCP servers mounted inside the bundle image                                         |
+| **26** | server slugs in `infra/strad.staging.yaml` (24 supplementary + `echo` + `deepwiki`) |
 
 ### The two modes
 
@@ -168,7 +168,7 @@ The server list drives how containers are grouped:
   distinct paths, and capability variants may even share a path.
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (14 mounted servers,
+  serialises rendering. strad's own deployment puts everything (15 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -176,8 +176,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, fourteen servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all fourteen down together, and the
+**One process, one core, fifteen servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all fifteen down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
@@ -195,3 +195,68 @@ compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
   injected as App Platform SECRET env vars _at deploy time_. The runtime
   container holds **no cloud credentials** — it simply reads `process.env`, and
   the secret source is pluggable behind `loadSecrets()` in `src/secrets/`.
+
+## The secrets and parameters system
+
+The `strad-<env>-*` secrets above configure the gateway itself. A separate,
+store-agnostic system manages the values a proxied server needs — a bucket name, a
+service-account email, a private key — as **parameters** addressed by one canonical
+path (`src/secrets/parameters`):
+
+```
+/strad/{env}/mcp/{server-slug}/{kind}/{VARIABLE_NAME}
+```
+
+`kind` is `static` today; an `oauth` kind is a future ticket ([issue
+#32](https://github.com/tadasant/strad/issues/32)). A parameter is **either**
+non-secret (a value safe to read back) **or** secret (write-and-inject-only). GCP
+is the first backend behind the interface; a second store implements the same
+`ParameterStore` and nothing else changes.
+
+**Two stores (GCP).** Parameter Manager is the index of everything. A non-secret
+parameter's value lives directly in Parameter Manager. A secret parameter's value
+lives in Secret Manager, and Parameter Manager holds a `__REF__(...)` pointer at the
+Secret Manager version; a `:render` dereferences it, for a credential that can reach
+Secret Manager.
+
+**Three credentials, deliberately different.** The whole design is that reading a
+secret value is a power the agent path does not have:
+
+```mermaid
+flowchart LR
+    subgraph stores["The two stores (one GCP project)"]
+        PM["Parameter Manager<br/>index + non-secret values + __REF__"]
+        SM["Secret Manager<br/>secret values"]
+        PM -->|"__REF__ → :render"| SM
+    end
+    V["viewer<br/>secrets server, on the bundle, answers /mcp"] -->|"list · read notes ·<br/>read NON-secret values"| PM
+    V -. "no secretmanager.versions.access → 403" .-> SM
+    A["admin<br/>console, core only, behind SSO"] -->|"add · rotate · reveal · delete<br/>both kinds"| PM
+    A --> SM
+    R["resolver<br/>deploy-time, render-spec"] -->|"read resolved values →<br/>inject a server's env"| PM
+    R --> SM
+```
+
+- The **viewer** is the `secrets` MCP server, mounted on the bundle. It lists
+  parameters, reads notes, and reads non-secret values — and **cannot read a secret
+  value**, because its service account lacks `secretmanager.versions.access`, so
+  Google answers `403` to the only call that would return one. Its four tools are
+  `list_managed_namespaces`, `list_parameters`, `get_parameter` (non-secret values
+  only; it refuses a secret), and `open_secrets_manager` (a deep link that hands a
+  human the console URL).
+- The **admin** is the SSO-gated console (`/ui/secrets`), on the core component
+  only. It reads and writes both kinds. Its credential arrives via `consoleEnv:`,
+  which the deploy layer puts on core and nowhere else — the bundle never sees it.
+- The **resolver** injects a server's env at **deploy time** (see [Deploy
+  model](/operate/deploy-model/#deploy-time-parameter-resolution)). It reads both
+  stores' resolved values, hands them to the child process as SECRET env vars, and
+  never returns a value over strad's own MCP channel. The running container still
+  holds no cloud credential.
+
+A baked server opts into resolution with `params: true`. Everything under
+`/strad/{env}/mcp/{slug}/static/*` is resolved and injected as that server's
+environment — for a `core` builtin in-process at runtime, for a `supplementary-image`
+at deploy time onto its bundle. `remote-filesystem-tmp-public` is the worked example: it
+authenticates to GCS with a non-secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a
+secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`, both set by a human in `/ui/secrets`
+and delivered by the resolver.

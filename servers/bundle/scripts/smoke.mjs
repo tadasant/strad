@@ -9,7 +9,7 @@
  * touches an upstream API, so this passes on a container with no secrets — which
  * is exactly what CI has.
  *
- * What it is really checking is that fourteen servers, six dependency trees and
+ * What it is really checking is that fifteen servers, seven dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  */
@@ -23,12 +23,16 @@ const EXPECT = {
   tailscale: 15,
   "monarch-money": 23,
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
-  "remote-filesystem": 5,
+  "remote-filesystem-tmp-public": 5,
   "google-flights": 3,
   gmail: 8,
   "google-calendar": 7,
   "google-docs": 11,
   onepassword: 9,
+  // Four tools, and not one of them can return a SECRET value. If this number
+  // ever GROWS, someone added a tool to a secrets server, and that is a thing CI
+  // should stop.
+  secrets: 4,
   "good-eggs": null, // browser servers vary with their app surface; just list
   fetchpet: null,
   pointsyeah: null,

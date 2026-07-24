@@ -123,11 +123,11 @@ multi-instance console.
 
 ## The deployment
 
-### 24. Fourteen servers share one process and one CPU
+### 24. Fifteen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts fourteen MCP servers and
+The `bundle` component runs one Node process that mounts fifteen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-fourteen down together, and Chromium contends with every other server for the single
+fifteen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -186,6 +186,33 @@ Branch tags also accumulate in GHCR with nothing pruning them.
 **Undo:** add a `bundle_version` input that renders
 `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` — the render-side override
 already exists.
+
+### 26. The secrets/parameters system is wired but not yet live on GCP
+
+strad has a store-agnostic [secrets and parameters
+system](/intro/architecture/#the-secrets-and-parameters-system): Parameter Manager
+indexes everything, Secret Manager backs the secret parts, and three deliberately
+different credentials touch it — the MCP **viewer** (can't read a secret value), the
+console **admin** (reads and writes both kinds, behind SSO), and the deploy-time
+**resolver** (injects a `params: true` server's env). All of it is tested against an
+in-memory fake, so the logic ships proven.
+
+What is **deferred** is the last of the GCP provisioning: the dedicated
+`strad-secrets-staging` project and the viewer and admin service accounts exist, but
+the **resolver** service account and the seeded parameter values do not. Until the
+resolver exists, a `params: true` supplementary server —
+`remote-filesystem-tmp-public` — boots **without** its resolved parameters and
+degrades gracefully rather than failing the deploy.
+
+The posture is intact throughout: the resolver credential runs at **deploy time**
+(in CI / `render-spec`), never in the container, so "the running container holds no
+cloud credential" still holds — the resolved values reach the bundle as ordinary
+SECRET env vars, exactly like every other secret.
+
+**Undo:** provision the resolver service account and its key, then set
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
+`HACKS.md` #26 for the full checklist.
 
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
@@ -258,6 +285,9 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 
 The one-time steps that clear most of the list above:
 
+- The secrets/parameters GCP project plus its three service accounts (viewer,
+  admin, resolver) and seeded keys, then the `remote-filesystem-tmp-public` values in
+  `/ui/secrets` — clears **#25**.
 - Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) — clears
   **#2** and **#20**.
 - Re-point prod at the collapsed bundle, then delete the per-server images and

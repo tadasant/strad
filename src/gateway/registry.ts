@@ -1,5 +1,9 @@
 import type { StradConfig } from "../config/schema.ts";
 import { resolveMap, resolveRefs, type SecretBag } from "../secrets/index.ts";
+import {
+  resolveServerParams,
+  type ParameterResolver,
+} from "../secrets/parameters/index.ts";
 import { BuiltinServerAdapter, loadBuiltin } from "./adapters/builtin.ts";
 import { HttpServerAdapter } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
@@ -27,6 +31,15 @@ export interface RegistryOptions {
   mode: Mode;
   bundleName?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Optional runtime parameter resolver. When a builtin server sets `params:
+   * true`, its `/strad/{env}/mcp/{slug}/static/*` parameters are resolved through
+   * this and injected into the builtin's `options` at launch — the concrete
+   * "resolve, then inject into the child process" path. Absent (the default) =
+   * no resolution, and the core holds no cloud credential. See
+   * src/secrets/parameters and resolverFromEnv().
+   */
+  resolver?: ParameterResolver | null;
 }
 
 export class Registry {
@@ -62,6 +75,25 @@ export class Registry {
       hostname: env.HOSTNAME ?? "unknown",
     };
 
+    // A builtin's factory options are its `options:` map with `${SECRET}` refs
+    // resolved, PLUS — when it opts into `params:` — its resolved managed
+    // parameters injected on top. That resolution reads secret values (to build
+    // the child's env), which is exactly why it uses the RESOLVER credential and
+    // not the MCP one; the values are handed to the builtin's process and never
+    // returned over /mcp.
+    const optionsFor = async (
+      server: Extract<StradConfig["servers"][number], { kind: "builtin" }>,
+    ): Promise<Record<string, unknown>> => {
+      const base = resolveOptions(server.options, secrets);
+      if (!server.params || !opts.resolver) return base;
+      const params = await resolveServerParams(
+        opts.resolver,
+        config.gateway.env,
+        server.slug,
+      );
+      return { ...base, ...params };
+    };
+
     for (const server of config.servers) {
       if (!server.enabled) continue;
 
@@ -75,7 +107,7 @@ export class Registry {
           new BuiltinServerAdapter(
             server.slug,
             await loadBuiltin(server.module),
-            resolveOptions(server.options, secrets),
+            await optionsFor(server),
             component,
           ),
         );
@@ -127,7 +159,7 @@ export class Registry {
               new BuiltinServerAdapter(
                 server.slug,
                 await loadBuiltin(server.module),
-                resolveOptions(server.options, secrets),
+                await optionsFor(server),
                 component,
               ),
             );

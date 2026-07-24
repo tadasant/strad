@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 14 upstream MCP servers (14
+ * bundle — THE strad supplementary image. All 15 upstream MCP servers (15
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 23 supplementary-image entries
+ * gateway's config names more SLUGS than that — 24 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
@@ -26,8 +26,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Fourteen servers now share a process. A crash is a
- * 14-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Fifteen servers now share a process. A crash is a
+ * 15-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -149,16 +149,18 @@ async function buildMounts(): Promise<Mount[]> {
   });
 
   mounts.push({
-    slug: "remote-filesystem",
+    // The strad slug is `remote-filesystem-tmp-public` (it stores screenshots on a GCS
+    // bucket); the vendored upstream is still pulsemcp's `remote-filesystem`.
+    slug: "remote-filesystem-tmp-public",
     tree: "bundle-api",
     serverName: "remote-filesystem-mcp-server",
     capabilities: { resources: {}, tools: {} },
-    // THE collision this collapse had to solve. gcs and remote-filesystem both
-    // read `GCS_BUCKET` from the environment, and they point at DIFFERENT buckets
-    // — which is why gcs used to need a component of its own. One process cannot
-    // hold two values of one variable, so remote-filesystem stops reading the
-    // environment at all: we hand it an explicit client built from its own
-    // slug-namespaced vars (REMOTE_FILESYSTEM_GCS_*). No env, no collision.
+    // THE collision this collapse had to solve. gcs and remote-filesystem-tmp-public
+    // both read `GCS_BUCKET` from the environment, and they point at DIFFERENT
+    // buckets — which is why gcs used to need a component of its own. One process
+    // cannot hold two values of one variable, so remote-filesystem-tmp-public stops
+    // reading the environment at all: we hand it an explicit client built from
+    // its own slug-namespaced vars (REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_*). No collision.
     register: (s) => api.remoteFs.registerHandlers(s, remoteFsClientFactory()),
   });
 
@@ -204,6 +206,21 @@ async function buildMounts(): Promise<Mount[]> {
       await google.docs({ version: VERSION }).registerHandlers(s);
     },
   });
+
+  // --- secrets --------------------------------------------------------------
+  // The odd one out, and deliberately so: this server's CREDENTIAL is what makes
+  // it safe, not its code. It runs against Google Cloud Parameter Manager (the
+  // index of everything) with a viewer service account — it can list parameters
+  // and read NON-SECRET values, and it holds no secretmanager.versions.access, so
+  // it cannot read a SECRET value. Not "does not"; cannot. Google refuses.
+  //
+  // Secret values live in Secret Manager, written and read in strad's SSO-gated
+  // console, which holds a different (admin) service account that never reaches
+  // this container (see the `consoleEnv:` scope in src/config/schema.ts). Nothing
+  // about this mount can undo that: there is no write tool here, and no key that
+  // could perform one.
+  const secretsMount = await loadSecrets();
+  if (secretsMount) mounts.push(secretsMount);
 
   // --- onepassword ----------------------------------------------------------
   // The `op` CLI is baked into this image (see the Dockerfile) and shelled out to
@@ -256,7 +273,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other thirteen servers' readiness.
+  // login, and a slow login must not delay the other fourteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -278,24 +295,24 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 }
 
-/** remote-filesystem's GCS client, built from ITS OWN env names. See the mount. */
+/** remote-filesystem-tmp-public' GCS client, built from ITS OWN env names. See the mount. */
 function remoteFsClientFactory(): () => unknown {
   return () => {
-    const bucket = process.env.REMOTE_FILESYSTEM_GCS_BUCKET;
+    const bucket = process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET;
     if (!bucket) {
       throw new Error(
-        "REMOTE_FILESYSTEM_GCS_BUCKET must be configured. (In this bundle, " +
-          "remote-filesystem does NOT read GCS_BUCKET — that name belongs to the " +
-          "gcs server, which points at a different bucket.)",
+        "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET must be configured. (In this bundle, " +
+          "remote-filesystem-tmp-public does NOT read GCS_BUCKET — that name belongs to " +
+          "the gcs server, which points at a different bucket.)",
       );
     }
     return new remoteFsGcsClient({
       bucket,
-      projectId: process.env.REMOTE_FILESYSTEM_GCS_PROJECT_ID,
-      clientEmail: process.env.REMOTE_FILESYSTEM_GCS_CLIENT_EMAIL,
-      privateKey: process.env.REMOTE_FILESYSTEM_GCS_PRIVATE_KEY,
-      rootPath: process.env.REMOTE_FILESYSTEM_GCS_ROOT_PATH,
-      makePublic: process.env.REMOTE_FILESYSTEM_GCS_MAKE_PUBLIC === "true",
+      projectId: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PROJECT_ID,
+      clientEmail: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL,
+      privateKey: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY,
+      rootPath: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_ROOT_PATH,
+      makePublic: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_MAKE_PUBLIC === "true",
     });
   };
 }
@@ -326,6 +343,43 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     gmail: gmail.createMCPServer,
     calendar: calendar.createMCPServer,
     docs: docs.createMCPServer,
+  };
+}
+
+/**
+ * secrets. Not mounted when it is not configured — the same posture as
+ * 1Password: one server's missing config must not take the other fifteen down.
+ */
+async function loadSecrets(): Promise<Mount | null> {
+  const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+    loadConfig: (env?: NodeJS.ProcessEnv) => unknown;
+  };
+
+  let config: unknown;
+  try {
+    config = mod.loadConfig();
+  } catch (err) {
+    logWarn(
+      `secrets NOT mounted: ${errMessage(err)}. ` +
+        `It needs SECRETS_PROJECT_ID and SECRETS_NAMESPACES; ` +
+        `an unscoped secrets server would see every parameter in the project.`,
+    );
+    return null;
+  }
+
+  const created = mod.createMCPServer({ version: VERSION, config });
+  const hasKey = Boolean(process.env.SECRETS_SERVICE_ACCOUNT_KEY_JSON);
+
+  return {
+    slug: "secrets",
+    tree: "secrets",
+    serverName: "secrets-mcp-server",
+    capabilities: { tools: {} },
+    degraded: hasKey
+      ? null
+      : "SECRETS_SERVICE_ACCOUNT_KEY_JSON is not set; tools will list but list_parameters will fail",
+    register: (s) => created.registerHandlers(s),
   };
 }
 
@@ -384,7 +438,7 @@ async function loadOnePassword(): Promise<Mount | null> {
  * Each keeps its own login, its own context and its own cookies; only the
  * browser PROCESS is shared (browser.ts). And unlike their standalone images,
  * a login failure here degrades the one mount instead of exiting the process:
- * with thirteen other servers on board, `process.exit(1)` is no longer a
+ * with fourteen other servers on board, `process.exit(1)` is no longer a
  * proportionate response to Good Eggs changing a form field.
  */
 async function loadBrowserMounts(): Promise<Mount[]> {
@@ -704,7 +758,7 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: "20mb" }));
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 14 servers behind one health check, "ok: true" alone is not information.
+  // with 15 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -730,8 +784,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of fourteen servers must not kill the other
-  // thirteen. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of fifteen servers must not kill the other
+  // fourteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

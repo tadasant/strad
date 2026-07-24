@@ -61,9 +61,9 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------ |
 | **2**      | App Platform components: `core` and `bundle`                                               |
-| **14**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
-| **23**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
-| **25**     | total server slugs in staging (23 + the `echo` builtin + the `deepwiki` remote-http)       |
+| **15**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
+| **24**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
+| **26**     | total server slugs in staging (24 + the `echo` builtin + the `deepwiki` remote-http)       |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.

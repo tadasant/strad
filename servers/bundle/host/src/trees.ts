@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * The collapsed bundle is ONE image assembled from SIX existing npm projects —
- * bundle-api, bundle-google, onepassword, good-eggs, fetchpet, pointsyeah — each
- * of which is copied in, installed and built exactly as its own image builds it,
- * keeping its own `node_modules` and its own lockfile.
+ * The collapsed bundle is ONE image assembled from SEVEN existing npm projects —
+ * bundle-api, bundle-google, onepassword, secrets, good-eggs, fetchpet,
+ * pointsyeah — each of which is copied in, installed and built exactly as its own
+ * image builds it, keeping its own `node_modules` and its own lockfile.
  *
- * WHY NOT ONE FLAT npm PROJECT. Because merging six dependency trees into one
+ * WHY NOT ONE FLAT npm PROJECT. Because merging seven dependency trees into one
  * is how you find out, in production, that fetchpet pinned playwright-extra and
  * bundle-google pinned express 4 and someone's transitive zod moved. Each tree
  * stays byte-for-byte the tree its own CI already proves; this host just imports
@@ -20,13 +20,14 @@ import { pathToFileURL } from "node:url";
  * is deliberate: three browsers on one vCPU is the thing we are trying not to do.
  */
 
-/** Where the Dockerfile lays the six trees down. */
+/** Where the Dockerfile lays the seven trees down. */
 export const TREES_DIR = process.env.STRAD_TREES_DIR ?? "/app/trees";
 
 export type TreeName =
   | "bundle-api"
   | "bundle-google"
   | "onepassword"
+  | "secrets"
   | "good-eggs"
   | "fetchpet"
   | "pointsyeah";

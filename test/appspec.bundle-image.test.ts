@@ -6,7 +6,7 @@ import { renderAppSpec, type ImageRef } from "../src/deploy/appspec.ts";
 /**
  * Deploying a BRANCH to staging means running the branch's own config against
  * the branch's own images. The core image was always a render-time argument;
- * the bundle image was not — it is written into the config, on 23
+ * the bundle image was not — it is written into the config, on 24
  * `image:` lines. `supplementaryImage` is the override that closes that gap.
  *
  * The property that matters here is not "it swaps the tag". It is that it
@@ -204,10 +204,13 @@ describe("the real staging config", () => {
     const secrets = Object.fromEntries(
       config.servers.flatMap((s) =>
         s.kind === "supplementary-image" && s.enabled
-          ? Object.values(s.env).flatMap((v) =>
-              [...v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(
-                (m) => [m[1]!, "x"] as const,
-              ),
+          ? // Both maps, exactly as scripts/render-spec.ts collects them:
+            // `consoleEnv:` refs resolve from the SAME bag (onto core only).
+            [...Object.values(s.env), ...Object.values(s.consoleEnv)].flatMap(
+              (v) =>
+                [...v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(
+                  (m) => [m[1]!, "x"] as const,
+                ),
             )
           : [],
       ),

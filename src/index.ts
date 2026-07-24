@@ -4,6 +4,7 @@ import { configPathFromEnv, loadConfig } from "./config/load.ts";
 import { Registry, type Mode } from "./gateway/registry.ts";
 import { createApp } from "./http/app.ts";
 import { loadSecrets } from "./secrets/index.ts";
+import { resolverFromEnv } from "./secrets/parameters/index.ts";
 import { startTelemetry } from "./telemetry/index.ts";
 
 async function main(): Promise<void> {
@@ -46,12 +47,19 @@ async function main(): Promise<void> {
   // Boot-time guard, before anything can serve a request.
   assertDevBypassAllowed(config, env);
 
+  // The runtime parameter resolver, if this deployment is configured with a
+  // resolver credential (STRAD_PARAMS_*). Null otherwise, in which case a
+  // `params:`-enabled builtin resolves to nothing and the core holds no cloud
+  // credential — the default, unchanged posture.
+  const resolver = resolverFromEnv(env);
+
   const registry = await Registry.build({
     config,
     secrets,
     mode,
     bundleName,
     env,
+    resolver,
   });
 
   const tokenStore = tokenStoreFromConfig(config, env);
