@@ -98,7 +98,15 @@ function setSessionCookie(
     sameSite: "lax",
     // Staging runs NODE_ENV=production behind TLS; require Secure there.
     secure: env.NODE_ENV === "production",
-    path: "/ui",
+    // Scoped to "/" rather than "/ui" because the gate now also covers the
+    // landing page at "/". A cookie scoped to /ui is simply not sent to /, so a
+    // signed-in human would have hit the sign-in wall on the front page.
+    //
+    // Widening it does mean the cookie now rides along to /mcp. That is inert:
+    // /mcp authenticates from the Authorization header via a static token store
+    // and never reads cookies — there is no code path from this bypass to /mcp
+    // (HACKS.md #2). It stays HttpOnly, SameSite=Lax, and Secure in production.
+    path: "/",
     maxAge: 12 * 60 * 60 * 1000,
   });
 }

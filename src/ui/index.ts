@@ -3,6 +3,7 @@ import type { StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
+import { renderLanding } from "./landing.ts";
 import { resolveServerView } from "./resolve.ts";
 import { renderGcsBrowse, renderIndex, renderMessage } from "./render.ts";
 
@@ -31,6 +32,25 @@ export interface ConsoleUiOptions {
 export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   const gate = requireConsoleUi({ config: opts.config, env: opts.env });
   const gcsList = opts.gcsList ?? createGcsLister();
+
+  // The front door. Behind the SAME gate as every other console surface: strad
+  // requires Google identity before exposing anything, and the index of what
+  // this gateway fronts is something. Once GOOGLE_CLIENT_ID/SECRET land, this
+  // is tadasant.com-only SSO with no further change here — the gate resolves a
+  // Principal and this route only ever asks whether it got one.
+  app.get("/", gate, (req, res) => {
+    const host = req.get("host");
+    res.type("html").send(
+      renderLanding({
+        config: opts.config,
+        consoleMounted: true,
+        signedInAs: signedInLabel(res),
+        // Only used when gateway.publicUrl is unset. `trust proxy` is on, so
+        // this is the public hostname, not the container's own host:port.
+        requestOrigin: host ? `${req.protocol}://${host}` : undefined,
+      }),
+    );
+  });
 
   app.get("/ui", gate, (_req, res) => {
     res.type("html").send(renderIndex(opts.config, signedInLabel(res)));

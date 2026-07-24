@@ -61,7 +61,8 @@ export function createApp(opts: AppOptions): Express {
 
   if (opts.mode === "core") {
     mountConsole(app, opts, env);
-    // The human, SSO-gated resource browser. Same gate as /console; not /mcp.
+    // The human, SSO-gated surfaces: the landing page at "/" and the resource
+    // browser at /ui. Same gate as /console; not /mcp.
     mountConsoleUi(app, {
       config: opts.config,
       secrets: opts.secrets ?? {},
