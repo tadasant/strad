@@ -273,6 +273,16 @@ servers:
       GCS_PROJECT_ID: "pulse-443819"
       GCS_BUCKET: "pulse_public"
       GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}"
+    # The SAME key, additionally scoped to core, because /ui/gcs renders THERE.
+    # `env:` lands on the bundle only, so without this the console resolves the
+    # ${ref} against a bag that does not contain it and degrades to "credentials
+    # are declared but not injected" — while the MCP tools work fine, which is a
+    # confusing pair of symptoms. Unlike the `secrets` server, where the console
+    # deliberately holds a STRONGER credential than the bundle, this is the same
+    # value in both places: the browse view reads exactly the bucket the server
+    # is already scoped to.
+    consoleEnv:
+      GCS_SERVICE_ACCOUNT_KEY_JSON: "${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
   # secrets — the store-agnostic parameters manager. Parameter Manager indexes

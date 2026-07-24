@@ -278,12 +278,18 @@ function resolveAccount(
     return { account: { client_email: clientEmail, private_key: privateKey } };
   }
 
-  // Creds declared as ${refs} but not injected — the expected Phase 2 state.
+  // Declared as ${refs} but not resolvable HERE. The overwhelmingly likely cause
+  // is scope, not a missing secret: a supplementary server's `env:` lands on the
+  // BUNDLE, while this view renders in CORE, so a credential the MCP tools use
+  // happily is invisible to the console unless the config also lists it under
+  // `consoleEnv:`. Say that, because the older wording ("seeded in a later
+  // phase") sent people looking for a secret that was already seeded.
   return {
     account: null,
     reason:
-      "GCS credentials are declared but not yet injected " +
-      "(real per-server GCS creds are seeded in a later phase)",
+      "GCS credentials are declared but not resolvable in the console. " +
+      "A supplementary server's `env:` is scoped to its bundle; add the same " +
+      "key under `consoleEnv:` so the core component can resolve it too.",
   };
 }
 

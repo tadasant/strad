@@ -125,6 +125,42 @@ describe("staging config", () => {
     expect(core.envs.find((e) => e.key === ADMIN)?.type).toBe("SECRET");
   });
 
+  it("gives the console the gcs key too, or /ui/gcs cannot resolve it", () => {
+    // `env:` is scoped to the bundle. The browse view renders in CORE, so a
+    // credential listed ONLY under `env:` produces the confusing pair of
+    // symptoms this test exists to prevent: the MCP tools work, and the human
+    // console reports the credentials as unavailable.
+    const gcs = CONFIG.servers.find((s) => s.slug === "gcs");
+    if (gcs?.kind !== "supplementary-image") throw new Error("gcs not found");
+    const KEY = "GCS_SERVICE_ACCOUNT_KEY_JSON";
+    expect(gcs.env[KEY]).toBeDefined();
+    // The SAME ref in both scopes — not a second, stronger credential.
+    expect(gcs.consoleEnv[KEY]).toBe(gcs.env[KEY]);
+
+    const spec = renderAppSpec({
+      config: CONFIG,
+      appName: "strad-staging",
+      region: "nyc",
+      image: { registry_type: "GHCR", repository: "strad", tag: "test" },
+      env: [],
+      secrets: Object.fromEntries(
+        CONFIG.servers.flatMap((s) =>
+          s.kind === "supplementary-image" && s.enabled
+            ? [...Object.values(s.env), ...Object.values(s.consoleEnv)].flatMap(
+                (v) =>
+                  [...v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(
+                    (m) => [m[1]!, "resolved-value"] as const,
+                  ),
+              )
+            : [],
+        ),
+      ),
+    });
+    const core = spec.services.find((s) => s.name === "core")!;
+    expect(core.envs.find((e) => e.key === KEY)?.value).toBe("resolved-value");
+    expect(core.envs.find((e) => e.key === KEY)?.type).toBe("SECRET");
+  });
+
   it("every containerised server runs the ONE image, in the ONE bundle", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",

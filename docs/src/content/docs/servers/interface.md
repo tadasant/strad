@@ -89,6 +89,13 @@ plus two that shape how this server gets its values:
   That asymmetry is what lets the `secrets` server hold a viewer key on the bundle
   and a stronger admin key on core, with the two never meeting. See [Adding a
   server](/servers/adding/#4b-a-credential-the-agent-must-not-hold--consoleenv).
+
+  It has a second, duller use: if this server has a **browser view** in `/ui`, that
+  view renders in core and needs the credential too. Repeat the same `${REF}` under
+  `consoleEnv:` — the same value in both scopes, not a stronger one. Omit it and you
+  get a confusing pair of symptoms: the MCP tools work fine while the console reports
+  the credentials as unavailable, because the key is on the bundle and the page is
+  not. `gcs` in `infra/strad.staging.yaml` is the worked example.
 - **`params`** (default `false`) — opt into parameter resolution. When `true`,
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
   system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and

@@ -11,6 +11,7 @@ import {
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
+import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import {
   renderGcsBrowse,
@@ -79,6 +80,25 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // The parameter forms are urlencoded. Scoped to /ui so it cannot change how
   // /mcp parses a body.
   const form = express.urlencoded({ extended: false, limit: "64kb" });
+
+  // The front door. Behind the SAME gate as every other console surface: strad
+  // requires Google identity before exposing anything, and the index of what
+  // this gateway fronts is something. Once GOOGLE_CLIENT_ID/SECRET land, this
+  // is tadasant.com-only SSO with no further change here — the gate resolves a
+  // Principal and this route only ever asks whether it got one.
+  app.get("/", gate, (req, res) => {
+    const host = req.get("host");
+    res.type("html").send(
+      renderLanding({
+        config: opts.config,
+        consoleMounted: true,
+        signedInAs: signedInLabel(res),
+        // Only used when gateway.publicUrl is unset. `trust proxy` is on, so
+        // this is the public hostname, not the container's own host:port.
+        requestOrigin: host ? `${req.protocol}://${host}` : undefined,
+      }),
+    );
+  });
 
   app.get("/ui", gate, (_req, res) => {
     res.type("html").send(renderIndex(opts.config, signedInLabel(res)));
@@ -162,15 +182,20 @@ async function handleServerView(
     return;
   }
 
-  // GCS view. Credentials may not be injected yet (Phase 2) — render the shell.
+  // GCS view with no resolvable credential. Render the shell — and say WHY,
+  // using the reason resolve.ts computed rather than a generic apology. The
+  // usual cause is scope (env: is bundle-only; the console needs consoleEnv:),
+  // not an unseeded secret, and the two need different fixes.
   if (!view.account) {
     res.type("html").send(
       renderMessage({
-        title: `${slug} · not configured`,
+        title: `${slug} · credentials unavailable`,
         serverSlug: slug,
         signedInAs,
-        heading: "Credentials not yet configured",
-        sub: `This server is scoped to a GCS bucket, but its credentials are not injected on this deployment. Real per-server GCS credentials are seeded in a later phase; the view lights up once they are.`,
+        heading: "Credentials not available to the console",
+        sub:
+          view.accountReason ??
+          "This server is scoped to a GCS bucket, but the console cannot resolve its credentials.",
         tone: "warn",
         breadcrumbToIndex: true,
       }),

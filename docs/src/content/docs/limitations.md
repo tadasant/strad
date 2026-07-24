@@ -86,13 +86,16 @@ it is waiting on credentials.
 `auth.google.enabled: true` and `consoleDevBypass.enabled: false`, and delete
 `src/auth/dev.ts` and its call sites. See [Auth](/auth/overview/#console-dev-bypass-temporary).
 
-### 20. The `/ui` console "session" is the bootstrap token in a cookie
+### 20. The console "session" is the bootstrap token in a cookie
 
-`/ui` and `/ui/:server` sit behind the same dev-bypass gate. Because a browser
+`/`, `/ui` and `/ui/:server` sit behind the same dev-bypass gate. Because a browser
 navigates between pages, the gate moves the presented `ADMIN_BOOTSTRAP_TOKEN` into
 an HttpOnly, `SameSite=Lax`, Secure-in-prod cookie (`strad_console`) and redirects
 to a clean URL, so the token isn't left in the address bar or in screenshots. That
-cookie is the whole session mechanism.
+cookie is the whole session mechanism. It is scoped to `/` rather than `/ui`, since
+the gate now also covers the landing page; it therefore rides along to `/mcp`,
+where it is inert — that endpoint reads the `Authorization` header via the static
+token store and never looks at cookies.
 
 Same scope as #2: it is console-class only and cannot reach `/mcp`.
 
