@@ -3,7 +3,8 @@ import { authenticateConsoleBypass, devBypassStatus } from "../auth/dev.ts";
 import type { Principal } from "../auth/index.ts";
 import {
   principalFromSession,
-  readCookie,
+  readCookies,
+  unsealCookie,
   SESSION_COOKIE,
   type ConsoleSessionPayload,
   type ConsoleSessions,
@@ -38,7 +39,8 @@ import { renderSignIn } from "./render.ts";
  * carry no secret in the address bar.
  */
 
-const COOKIE = "strad_console";
+/** The dev bypass's cookie. Exported so /console/logout can drop it too. */
+export const BYPASS_COOKIE = "strad_console";
 
 export interface ConsoleAuthDeps {
   config: StradConfig;
@@ -121,8 +123,10 @@ export function googlePrincipal(
   config: StradConfig,
 ): Principal | null {
   if (!sessions) return null;
-  const payload = sessions.session.unseal<ConsoleSessionPayload>(
-    readCookie(cookieHeader, SESSION_COOKIE),
+  const payload = unsealCookie<ConsoleSessionPayload>(
+    sessions.session,
+    cookieHeader,
+    SESSION_COOKIE,
   );
   if (!payload) return null;
   return principalFromSession(payload, config);
@@ -139,8 +143,13 @@ function bypassPrincipal(
   config: StradConfig,
   env: NodeJS.ProcessEnv,
 ): Principal | null {
-  const token = readCookie(cookieHeader, COOKIE) ?? fromHeader;
-  return token ? authenticateConsoleBypass(token, config, env) : null;
+  const candidates = readCookies(cookieHeader, BYPASS_COOKIE);
+  if (fromHeader) candidates.push(fromHeader);
+  for (const token of candidates) {
+    const p = authenticateConsoleBypass(token, config, env);
+    if (p) return p;
+  }
+  return null;
 }
 
 function setSessionCookie(
@@ -148,7 +157,7 @@ function setSessionCookie(
   value: string,
   env: NodeJS.ProcessEnv,
 ): void {
-  res.cookie(COOKIE, value, {
+  res.cookie(BYPASS_COOKIE, value, {
     httpOnly: true,
     sameSite: "lax",
     // Staging runs NODE_ENV=production behind TLS; require Secure there.

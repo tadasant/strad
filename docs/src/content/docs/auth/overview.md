@@ -88,13 +88,25 @@ GET /console/oauth/callback                → verify hd, mint strad_console_ses
                                            → 302 /ui/secrets
 ```
 
-The **authorized redirect URI** to register on the OAuth client is
-`${gateway.publicUrl}/console/oauth/callback` — for prod,
-`https://strad.tadasant.com/console/oauth/callback`.
+The **authorized redirect URI** to register on the OAuth client is derived from
+`gateway.publicUrl`, so it is per-deployment: `${gateway.publicUrl}/console/oauth/callback`.
+For prod that is `https://strad.tadasant.com/console/oauth/callback`; for staging,
+whose `publicUrl` is `https://staging.strad.tadasant.com` (`infra/strad.staging.yaml`),
+it is `https://staging.strad.tadasant.com/console/oauth/callback`. Register each
+deployment's own URI — a client that names only prod's fails staging with
+`redirect_uri_mismatch`. strad prints the exact string at boot when sign-in is
+live, so there is something to compare against.
 
-`next` is sanitised to a same-origin absolute path; a scheme-relative `//host`, a
-full URL, a backslash or a CR/LF all fall back to `/ui`, so the callback cannot be
-turned into an open redirect.
+`gateway.publicUrl` is therefore **required** for Google sign-in. Without it the
+redirect URI would be the relative string `/console/oauth/callback`, which Google
+rejects, so an unset `publicUrl` keeps the gate on its 401 rather than sending
+anyone into that.
+
+`next` is sanitised to a same-origin absolute path. A scheme-relative `//host`, a
+full URL, a backslash, or **any** C0 control character or DEL falls back to `/ui`
+— not just CR/LF, because a browser also strips TAB and FF while parsing a URL, so
+`/<TAB>/host` would resolve as `//host`. The callback cannot be turned into an
+open redirect.
 
 ### The console session
 
@@ -118,8 +130,9 @@ Three things bound it.
 - The 12-hour absolute lifetime.
 - `hd` is re-checked against the **current** config on every request, and roles are
   read from the **current** `auth.google.roles` rather than from the cookie. The
-  cookie carries identity (`sub`, `email`, `hd`) and nothing else — tightening
-  `auth.google` takes effect immediately for sessions already issued.
+  cookie carries a verified identity (`sub`, `email`, `hd`, an optional `name`)
+  plus `v`, `iat` and `exp` — no grant of any kind. Re-pointing `hostedDomain`
+  invalidates every session already issued, on the next request.
 - Rotating the signing key invalidates every session at once. That is the kill
   switch, and it is a secret rotation rather than a deploy of new code.
 
@@ -128,16 +141,25 @@ The signing key is `CONSOLE_SESSION_SECRET` when set, and otherwise **derived**
 there is a Google login to sign — so sign-in works the moment the OAuth client is
 provisioned, with no second secret to seed and no silent "signed in, but the
 cookie never verifies" state. Set `CONSOLE_SESSION_SECRET` when you want to
-invalidate sessions without touching the OAuth client. The session key and the
+invalidate sessions without touching the OAuth client — but make it long. Key
+material under 24 characters is **refused**, not weakened-and-accepted: the cookie
+format is public, so a short key is brute-forced offline against a cookie the
+attacker already holds and every session becomes forgeable. A rejected key leaves
+the gate on its 401 and says so at boot. The session key and the
 OAuth-transaction key are two separate HKDF derivations, so a value sealed for one
 is unforgeable garbage to the other.
 
 **CSRF on the callback** is the `state` parameter bound to the browser: it is
 sealed into `strad_oauth_tx`, and the callback requires the cookie to verify _and_
-its `state` to constant-time match the one in the URL. The cookie is cleared
-before the code exchange, so a captured callback URL cannot be replayed. A
-callback with no transaction cookie — a stale tab, a forged link — is a `400`, not
-a login.
+its `state` to constant-time match the one in the URL. A callback with no
+transaction cookie — a stale tab, a forged link, a login begun more than ten
+minutes ago — is a `400`, not a login.
+
+The cookie is cleared before the code exchange, which spends the transaction for
+the browser: a stale tab cannot re-enter the flow, and the PKCE verifier stops
+being live. That is a `Set-Cookie` on the response, so it binds a browser and not
+a script that kept the value — what actually makes a captured callback URL
+useless is Google's authorization code being single-use.
 
 `auth.google.enabled` alone is **not** enough to make the gate redirect to Google.
 The OAuth client credentials and a session key must both be present; otherwise the
@@ -145,7 +167,20 @@ gate keeps its honest `401` sign-in page and strad warns at boot. The alternativ
 is worse than the `401`: a half-configured deployment that redirects to Google and
 dead-ends there is a console reachable by nobody, with nothing to point at.
 
-`GET /console/logout` drops the session.
+`GET /console/logout` drops both console cookies — the Google session and the dev
+bypass's — so "sign out" means signed out however the human got in.
+
+### What the gate checks, and what it does not
+
+The console gate asks whether a request resolves to a **Principal**, not what that
+principal may do. Any verified member of `hostedDomain` therefore reaches every
+console surface, `/ui/secrets` included, whatever `auth.google.roles` says — a
+`roles: []` that reads like "signed in, no permissions" grants the same console as
+`roles: [admin]`. Roles are carried on the Principal and consumed by
+`entitledServers()` for the `/mcp` selection; they are not a console ACL, and the
+dev bypass's `consoleDevBypass.roles` has always worked the same way. Treat
+`hostedDomain` as the console's authorization boundary, and keep the Workspace
+membership that clears it tight.
 
 ### Console dev bypass (temporary)
 

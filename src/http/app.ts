@@ -13,14 +13,15 @@ import {
   issueOauthTxCookie,
   issueSessionCookie,
   OAUTH_TX_COOKIE,
-  readCookie,
   sanitizeNext,
+  sessionKeyProblem,
   stateMatches,
+  unsealCookie,
   type ConsoleSessions,
   type OauthTxPayload,
 } from "../auth/session.ts";
 import type { TokenStore } from "../auth/tokens.ts";
-import { googlePrincipal } from "../ui/console-auth.ts";
+import { BYPASS_COOKIE, googlePrincipal } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
@@ -151,7 +152,12 @@ export function resolveConsoleAuth(
         : null;
 
   const sessions = consoleSessionsFromEnv(env);
-  const ready = enabled && google !== null && sessions !== null;
+  // Without publicUrl the redirect URI is the relative string
+  // "/console/oauth/callback", which Google rejects with invalid_request. That
+  // is a dead end with no fallback, so it fails the readiness check like any
+  // other missing half.
+  const ready =
+    enabled && google !== null && sessions !== null && publicUrl !== "";
 
   if (ready) {
     // The one detail that cannot be verified from inside the process: whether
@@ -168,12 +174,16 @@ export function resolveConsoleAuth(
     // Both env vars are optional in scripts/render-spec.ts, so a typo'd secret
     // name is otherwise a SILENT no-op: the provider comes back null and the
     // console quietly has no front door.
+    const why =
+      google === null
+        ? "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are not both set"
+        : (sessionKeyProblem(env) ??
+          (publicUrl === ""
+            ? "gateway.publicUrl is unset, so there is no redirect URI to send Google"
+            : "unknown"));
     log(
-      "[strad] auth.google.enabled is true but Google sign-in cannot complete: " +
-        (google === null
-          ? "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are not both set"
-          : "no session key (set CONSOLE_SESSION_SECRET or GOOGLE_CLIENT_SECRET)") +
-        ". The console falls back to the dev bypass.",
+      `[strad] auth.google.enabled is true but Google sign-in cannot complete: ${why}. ` +
+        "The console falls back to the dev bypass.",
     );
   }
 
@@ -300,11 +310,16 @@ function mountConsole(
       return;
     }
 
-    const tx = sessions.tx.unseal<OauthTxPayload>(
-      readCookie(req.headers.cookie, OAUTH_TX_COOKIE),
+    const tx = unsealCookie<OauthTxPayload>(
+      sessions.tx,
+      req.headers.cookie,
+      OAUTH_TX_COOKIE,
     );
-    // One-shot: whatever happens next, this transaction is spent. Clearing it
-    // before the exchange means a replayed callback cannot re-run the exchange.
+    // Spend the transaction, whatever happens next. This is a Set-Cookie on the
+    // RESPONSE, so it binds a browser and not a script that kept the value —
+    // what actually stops a replayed callback is Google's authorization code
+    // being single-use. Clearing it is still right: it keeps a stale tab from
+    // re-entering the flow and bounds how long the verifier lives.
     clearOauthTxCookie(res, env);
 
     // No transaction cookie is a stale tab, a cross-origin forgery, or a login
@@ -338,6 +353,14 @@ function mountConsole(
   app.get("/console/logout", (_req, res) => {
     clearSessionCookie(res, env);
     clearOauthTxCookie(res, env);
+    // The bypass cookie too, or "sign out" leaves every human who entered with
+    // the bootstrap token — which is all of staging — still signed in.
+    res.clearCookie(BYPASS_COOKIE, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: env.NODE_ENV === "production",
+      path: "/",
+    });
     res.redirect(302, "/");
   });
 }

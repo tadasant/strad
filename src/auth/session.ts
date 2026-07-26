@@ -102,7 +102,7 @@ export class Sealer {
   }
 
   /** Returns null for anything that is not a currently-valid sealed payload. */
-  unseal<T extends { exp: number }>(
+  unseal<T extends { v: 1; exp: number }>(
     token: string | undefined,
     now: number = Date.now(),
   ): T | null {
@@ -126,6 +126,9 @@ export class Sealer {
     }
 
     if (typeof payload?.exp !== "number" || payload.exp <= now) return null;
+    // The version tag exists so a future v2 payload cannot be read as a v1 one
+    // under the same key. Enforcing it is what makes it worth carrying.
+    if (payload.v !== 1) return null;
     return payload;
   }
 
@@ -140,20 +143,46 @@ export interface ConsoleSessions {
 }
 
 /**
- * Build the sealers, or null when there is no key material to derive from.
+ * The shortest key material we will derive from.
+ *
+ * HKDF spreads its input over 32 bytes but does not create entropy: the cookie
+ * format is public in this file, so a weak key is brute-forced offline against
+ * any cookie the attacker already holds, and forging one is then trivial. A
+ * Google client secret is 35 characters, comfortably clear of this.
+ */
+const MIN_KEY_CHARS = 24;
+
+/**
+ * Build the sealers, or null when there is no usable key material.
  *
  * Null is a hard "no console session can exist" — the gate must then not offer
- * a Google sign-in it cannot complete.
+ * a Google sign-in it cannot complete. Failing closed on a SHORT key matters as
+ * much as failing closed on a missing one: `CONSOLE_SESSION_SECRET=dev` would
+ * otherwise sign sessions an attacker can forge outright.
  */
 export function consoleSessionsFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): ConsoleSessions | null {
   const ikm = env.CONSOLE_SESSION_SECRET || env.GOOGLE_CLIENT_SECRET;
-  if (!ikm) return null;
+  if (!ikm || ikm.length < MIN_KEY_CHARS) return null;
   return {
     session: new Sealer(ikm, INFO_SESSION),
     tx: new Sealer(ikm, INFO_TX),
   };
+}
+
+/** Why `consoleSessionsFromEnv` returned null, for the boot warning. */
+export function sessionKeyProblem(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const ikm = env.CONSOLE_SESSION_SECRET || env.GOOGLE_CLIENT_SECRET;
+  if (!ikm) {
+    return "no session key (set CONSOLE_SESSION_SECRET or GOOGLE_CLIENT_SECRET)";
+  }
+  if (ikm.length < MIN_KEY_CHARS) {
+    return `the session key is shorter than ${MIN_KEY_CHARS} characters and is refused as forgeable`;
+  }
+  return null;
 }
 
 /**
@@ -170,7 +199,11 @@ export function principalFromSession(
 ): Principal | null {
   const google = cfg.auth.google;
   if (!google?.enabled) return null;
-  // The check that mattered at sign-in still has to hold now. Re-pointing the
+  // The MAC proves we sealed it; it does not prove the shape, and a Principal
+  // built from a missing field would be a nameless one.
+  if (typeof payload.sub !== "string" || payload.sub === "") return null;
+  if (typeof payload.email !== "string" || payload.email === "") return null;
+  // The check that mattered at sign-in still has to hold. Re-pointing the
   // deployment at another Workspace must not leave the old one signed in.
   if (payload.hd !== google.hostedDomain) return null;
 
@@ -278,24 +311,63 @@ export function sanitizeNext(raw: unknown, fallback = "/ui"): string {
   if (typeof raw !== "string" || raw === "") return fallback;
   if (!raw.startsWith("/")) return fallback;
   if (raw.startsWith("//") || raw.startsWith("/\\")) return fallback;
-  if (raw.includes("\\") || raw.includes("\n") || raw.includes("\r")) {
-    return fallback;
+  if (raw.includes("\\")) return fallback;
+  // Every C0 control and DEL, not just CR/LF: a browser strips TAB, LF, FF and
+  // CR while parsing a URL, so `/<TAB>/evil.example` would resolve as
+  // `//evil.example`. Express's encodeUrl() happens to escape them on the way
+  // out, but the guard should not lean on a downstream layer.
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (c <= 0x1f || c === 0x7f) return fallback;
   }
   return raw;
 }
 
-/** Read one cookie out of a raw `Cookie` header. */
-export function readCookie(
+/**
+ * Every value sent under `name`, in header order.
+ *
+ * ALL of them, not the first: anything that can set a cookie on a sibling
+ * subdomain can send `Domain=.strad.tadasant.com; Path=/ui`, and RFC 6265 orders
+ * the longer path first. Taking only the first would let that shadow the real
+ * session — not a forgery, since the shadow cannot pass the MAC, but a lockout
+ * the human cannot clear without emptying their cookie jar. Callers try each and
+ * keep the one that verifies.
+ *
+ * The value is attacker-controlled and `decodeURIComponent` throws a URIError on
+ * a stray `%`. Unhandled, that is a 500 from the gate and — on the async callback
+ * route, which Express 4 does not catch — an unhandled rejection that takes the
+ * process down. An undecodable value is passed through raw instead; nothing
+ * downstream trusts it either way.
+ */
+export function readCookies(
   header: string | undefined,
   name: string,
-): string | undefined {
-  if (!header) return undefined;
+): string[] {
+  if (!header) return [];
+  const out: string[] = [];
   for (const part of header.split(";")) {
     const eq = part.indexOf("=");
     if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === name) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
+    if (part.slice(0, eq).trim() !== name) continue;
+    const raw = part.slice(eq + 1).trim();
+    try {
+      out.push(decodeURIComponent(raw));
+    } catch {
+      out.push(raw);
     }
   }
-  return undefined;
+  return out;
+}
+
+/** The first value under `name` that this sealer accepts, or null. */
+export function unsealCookie<T extends { v: 1; exp: number }>(
+  sealer: Sealer,
+  header: string | undefined,
+  name: string,
+): T | null {
+  for (const value of readCookies(header, name)) {
+    const payload = sealer.unseal<T>(value);
+    if (payload) return payload;
+  }
+  return null;
 }

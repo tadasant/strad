@@ -94,16 +94,16 @@ call sites. `src/ui/console-auth.ts` imports from that module; deleting it befor
 Google sign-in is verified leaves `/ui` with no fallback authenticator. See
 [Auth](/auth/overview/#console-dev-bypass-temporary).
 
-### 20. The dev-bypass "session" is still the bootstrap token in a cookie
+### 20. The dev-bypass "session" is the bootstrap token in a cookie
 
 A Google login mints a real signed, expiring session — see
 [Auth](/auth/overview/#the-console-session). The **bypass** half of the gate is
-what still isn't one: when `ADMIN_BOOTSTRAP_TOKEN` is presented as `?token=`, the
+not one: when `ADMIN_BOOTSTRAP_TOKEN` is presented as `?token=`, the
 gate moves it into an HttpOnly, `SameSite=Lax`, Secure-in-prod cookie
 (`strad_console`) and redirects to a clean URL, so the token isn't left in the
 address bar or in screenshots — but the cookie **is** the standing credential,
 re-validated on every request rather than a session in its own right. It is scoped
-to `/` rather than `/ui`, since the gate also covers the landing page; it therefore
+to `/` rather than `/ui`, since the gate covers the landing page too; it therefore
 rides along to `/mcp`, where it is inert — that endpoint reads the `Authorization`
 header via the static token store and never looks at cookies.
 

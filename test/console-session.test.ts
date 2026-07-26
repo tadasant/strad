@@ -8,6 +8,7 @@ import {
   sanitizeNext,
   Sealer,
   SESSION_TTL_MS,
+  sessionKeyProblem,
   stateMatches,
   type ConsoleSessionPayload,
 } from "../src/auth/session.ts";
@@ -98,17 +99,24 @@ describe("Sealer", () => {
   const s = new Sealer("ikm", "info.a");
 
   it("round-trips a payload", () => {
-    const token = s.seal({ hello: "world", exp: Date.now() + 1000 });
-    expect(s.unseal<{ hello: string; exp: number }>(token)?.hello).toBe(
+    const token = s.seal({ v: 1, hello: "world", exp: Date.now() + 1000 });
+    expect(s.unseal<{ v: 1; hello: string; exp: number }>(token)?.hello).toBe(
       "world",
     );
   });
 
+  it("refuses a payload of another version, sealed or not", () => {
+    // The version tag is what stops a future v2 being read as a v1 under the
+    // same key. It only earns its place if unseal enforces it.
+    expect(s.unseal(s.seal({ v: 2, exp: Date.now() + 1000 }))).toBeNull();
+    expect(s.unseal(s.seal({ exp: Date.now() + 1000 }))).toBeNull();
+  });
+
   it("rejects a tampered payload", () => {
-    const token = s.seal({ role: "viewer", exp: Date.now() + 1000 });
+    const token = s.seal({ v: 1, role: "viewer", exp: Date.now() + 1000 });
     const [body, mac] = token.split(".") as [string, string];
     const forged = Buffer.from(
-      JSON.stringify({ role: "admin", exp: Date.now() + 1000 }),
+      JSON.stringify({ v: 1, role: "admin", exp: Date.now() + 1000 }),
       "utf8",
     ).toString("base64url");
     expect(s.unseal(`${forged}.${mac}`)).toBeNull();
@@ -118,14 +126,13 @@ describe("Sealer", () => {
   });
 
   it("rejects an expired payload", () => {
-    const token = s.seal({ exp: Date.now() - 1 });
-    expect(s.unseal(token)).toBeNull();
+    expect(s.unseal(s.seal({ v: 1, exp: Date.now() - 1 }))).toBeNull();
   });
 
   it("rejects a payload sealed under a different key or a different purpose", () => {
     const other = new Sealer("ikm", "info.b");
     const otherIkm = new Sealer("different", "info.a");
-    const token = s.seal({ exp: Date.now() + 1000 });
+    const token = s.seal({ v: 1, exp: Date.now() + 1000 });
     expect(other.unseal(token)).toBeNull();
     expect(otherIkm.unseal(token)).toBeNull();
   });
@@ -136,15 +143,33 @@ describe("consoleSessionsFromEnv", () => {
     expect(consoleSessionsFromEnv({})).toBeNull();
   });
 
+  it("refuses a key short enough to brute-force, rather than signing with it", () => {
+    // The payload format is public in session.ts, so a weak key is a forgery
+    // oracle. Failing closed is the only safe answer.
+    expect(
+      consoleSessionsFromEnv({ CONSOLE_SESSION_SECRET: "dev" }),
+    ).toBeNull();
+    expect(sessionKeyProblem({ CONSOLE_SESSION_SECRET: "dev" })).toContain(
+      "forgeable",
+    );
+    // A real Google client secret (GOCSPX- + 28 chars) clears the floor.
+    expect(
+      consoleSessionsFromEnv({
+        GOOGLE_CLIENT_SECRET: "GOCSPX-0123456789abcdefghijklmnop",
+      }),
+    ).not.toBeNull();
+    expect(sessionKeyProblem(ENV)).toBeNull();
+  });
+
   it("derives from GOOGLE_CLIENT_SECRET, and CONSOLE_SESSION_SECRET overrides it", () => {
     const a = consoleSessionsFromEnv({ GOOGLE_CLIENT_SECRET: CLIENT_SECRET });
     const b = consoleSessionsFromEnv({
       GOOGLE_CLIENT_SECRET: CLIENT_SECRET,
-      CONSOLE_SESSION_SECRET: "explicit",
+      CONSOLE_SESSION_SECRET: "an-explicitly-rotated-console-key",
     });
     expect(a).not.toBeNull();
     expect(b).not.toBeNull();
-    const token = a!.session.seal({ exp: Date.now() + 1000 });
+    const token = a!.session.seal({ v: 1, exp: Date.now() + 1000 });
     // Rotating the key invalidates every session — the kill switch.
     expect(b!.session.unseal(token)).toBeNull();
   });
@@ -185,6 +210,10 @@ describe("sanitizeNext", () => {
     expect(sanitizeNext("https://evil.example")).toBe("/ui");
     expect(sanitizeNext("/\\evil.example")).toBe("/ui");
     expect(sanitizeNext("/ui\r\nSet-Cookie: x=1")).toBe("/ui");
+    // A browser strips TAB while parsing, so this would resolve as
+    // "//evil.example" — the guard must not lean on Express escaping it.
+    expect(sanitizeNext("/\t/evil.example")).toBe("/ui");
+    expect(sanitizeNext("/ui\f")).toBe("/ui");
     expect(sanitizeNext(undefined)).toBe("/ui");
     expect(sanitizeNext(42)).toBe("/ui");
   });
@@ -414,6 +443,23 @@ describe("the callback mints a session", () => {
     }
   });
 
+  it("treats a malformed cookie as no cookie, not as a 500", async () => {
+    // `decodeURIComponent` throws on a stray `%`, and the gate reads cookies on
+    // every request — an undecodable one must be a sign-in wall, not a crash.
+    for (const cookie of [
+      "strad_console_session=abc%",
+      "strad_oauth_tx=%E0%A4%A",
+      "strad_console=%",
+    ]) {
+      const res = await fetch(`${baseUrl}/ui`, {
+        headers: { cookie },
+        redirect: "manual",
+      });
+      expect(res.status, cookie).toBe(302);
+      expect(res.headers.get("location")).toContain("/console/login");
+    }
+  });
+
   it("refuses a callback with no transaction cookie (stale tab, or CSRF)", async () => {
     const res = await fetch(
       `${baseUrl}/console/oauth/callback?code=c&state=state-999`,
@@ -451,7 +497,11 @@ describe("the callback mints a session", () => {
     }
   });
 
-  it("cannot be replayed: the transaction cookie is one-shot", async () => {
+  it("spends the transaction cookie, so a browser cannot re-enter the flow", async () => {
+    // Precisely what this buys: the SERVER tells the browser to drop the
+    // cookie, so a stale tab cannot re-run the exchange. It is not a server-side
+    // one-shot — a script that kept the value can present it again, and what
+    // stops that replay is Google's authorization code being single-use.
     const begin = await fetch(`${baseUrl}/console/login`, {
       redirect: "manual",
     });
@@ -466,10 +516,12 @@ describe("the callback mints a session", () => {
       headers: { cookie: tx },
     });
     expect(first.status).toBe(302);
-    // A real browser drops the cookie on the clear; an attacker replaying the
-    // captured URL without it gets nothing.
-    const replay = await fetch(url, { redirect: "manual" });
-    expect(replay.status).toBe(400);
+    const cleared = setCookieFor(first, "strad_oauth_tx") ?? "";
+    expect(cleared).toContain("strad_oauth_tx=;");
+    expect(cleared).toContain("Expires=Thu, 01 Jan 1970");
+    // Which is to say: the browser that followed that instruction has nothing
+    // left to replay with.
+    expect(cookieJar(first)).not.toContain("strad_oauth_tx=");
   });
 });
 
@@ -580,10 +632,17 @@ describe("the session is a first-class console principal", () => {
     expect(res.status).toBe(302);
   });
 
-  it("signs out", async () => {
+  it("signs out of BOTH credentials, not just the Google one", async () => {
+    // A human who entered with the bootstrap token — which is everyone on
+    // staging today — must not be left signed in by "sign out".
     const { cookie } = await signIn();
+    const bypass = await fetch(`${baseUrl}/ui?token=${BOOTSTRAP}`, {
+      redirect: "manual",
+    });
+    const both = `${cookie}; ${cookieJar(bypass)}`;
+
     const out = await fetch(`${baseUrl}/console/logout`, {
-      headers: { cookie },
+      headers: { cookie: both },
       redirect: "manual",
     });
     expect(out.status).toBe(302);
@@ -591,6 +650,28 @@ describe("the session is a first-class console principal", () => {
     expect(setCookieFor(out, "strad_console_session")).toContain(
       "strad_console_session=;",
     );
+    expect(setCookieFor(out, "strad_console")).toContain("strad_console=;");
+
+    // And the jar the browser is left holding opens nothing.
+    const after = await fetch(`${baseUrl}/ui`, {
+      headers: { cookie: cookieJar(out) },
+      redirect: "manual",
+    });
+    expect(after.status).toBe(302);
+    expect(after.headers.get("location")).toContain("/console/login");
+  });
+
+  it("a shadowing duplicate cookie cannot lock a signed-in human out", async () => {
+    // Anything holding a sibling subdomain can set Domain=.strad.tadasant.com
+    // with a longer Path, and RFC 6265 sends that one FIRST. Reading only the
+    // first value would turn that into a lockout.
+    const { cookie } = await signIn();
+    const res = await fetch(`${baseUrl}/ui`, {
+      headers: { cookie: `strad_console_session=garbage; ${cookie}` },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("tadas@tadasant.com");
   });
 });
 
