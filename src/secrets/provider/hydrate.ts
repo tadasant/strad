@@ -12,8 +12,9 @@ import type { SecretProvider } from "./types.ts";
  *   - `STRAD_TOKENS`        the static token store, built once at boot
  *   - `STRAD_INTERNAL_TOKEN` core <-> bundle auth; both sides must agree, so a
  *                            live rotation would need a coordinated rollout
- *   - `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
- *                            console sign-in, read when the auth layer is built
+ *   - `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+ *     `CONSOLE_SESSION_SECRET`  console sign-in and the key that signs its
+ *                            session cookie, read when the auth layer is built
  *   - `OTEL_EXPORTER_OTLP_HEADERS`  read by the OpenTelemetry SDK, from env, on
  *                            the SDK's own terms
  *
@@ -57,6 +58,7 @@ export const CORE_BOOT_ENV_KEYS = [
   "ADMIN_BOOTSTRAP_TOKEN",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
+  "CONSOLE_SESSION_SECRET",
   "OTEL_EXPORTER_OTLP_HEADERS",
 ] as const;
 
@@ -72,7 +74,9 @@ export const CORE_BOOT_ENV_KEYS = [
  *
  * Everything else in `CORE_BOOT_ENV_KEYS` is genuinely optional — a deployment
  * with no console has no `GOOGLE_CLIENT_SECRET`, and demanding one would fail
- * deploys that are correct.
+ * deploys that are correct. `CONSOLE_SESSION_SECRET` is optional twice over: the
+ * session key falls back to deriving from `GOOGLE_CLIENT_SECRET`, which is
+ * hydrated here, so a store-backed console signs people in without it.
  */
 export const REQUIRED_BOOT_ENV_KEYS = [
   "STRAD_TOKENS",

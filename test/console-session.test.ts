@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import type { GoogleIdentity, PendingAuth } from "../src/auth/google.ts";
 import {
   consoleSessionsFromEnv,
@@ -296,7 +297,7 @@ async function listen(
 beforeAll(async () => {
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: {},
+    secrets: new EnvSecretProvider({}),
     mode: "core",
     env: ENV,
   });
@@ -317,7 +318,7 @@ beforeAll(async () => {
       config: CONFIG,
       registry: await Registry.build({
         config: CONFIG,
-        secrets: {},
+        secrets: new EnvSecretProvider({}),
         mode: "core",
         env: bareEnv,
       }),
@@ -425,7 +426,7 @@ describe("the callback mints a session", () => {
       config: CONFIG,
       registry: await Registry.build({
         config: CONFIG,
-        secrets: {},
+        secrets: new EnvSecretProvider({}),
         mode: "core",
         env: prodEnv,
       }),
