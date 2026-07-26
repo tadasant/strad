@@ -124,6 +124,20 @@ refuses to act outside it. Parameters live behind a store-agnostic interface; GC
 (Parameter Manager indexing everything, Secret Manager backing the secret parts) is
 the first backend. See [Architecture](/intro/architecture/#the-secrets-and-parameters-system).
 
+`/strad/{env}/gateway/static/` sits beside `mcp/` and holds what belongs to the
+deployment rather than to one server — the `${NAME}` references a config makes,
+and the gateway's own keys. It is what `gateway.secrets.provider:
+gcp-parameter-store` reads at runtime. See [Secrets](/operate/secrets/).
+
+## Secret provider
+
+Where a running strad resolves `${NAME}` from, and **when**. `env` (the default)
+reads the process environment, so a secret is fixed for the life of the container
+and changing one needs a deploy. `gcp-parameter-store` reads the parameter store
+while the gateway runs, so a rotation lands within `ttlSeconds` and an addition
+within `negativeTtlSeconds` — no deploy. One provider per deployment, because two
+ways to manage a credential means one is stale and nobody knows which.
+
 ## `consoleEnv`
 
 Env for the **core gateway only** — the human console's half of a
@@ -140,9 +154,10 @@ would have reached the bundle too. See [Auth](/auth/overview/#the-secrets-consol
 A boolean opt-in on a `builtin` or `supplementary-image` server. When `true`,
 everything under `/strad/{env}/mcp/{slug}/static/*` is resolved from the parameters
 system and injected as that server's environment — for a `core` builtin in-process
-at runtime, for a supplementary image at **deploy time** onto its bundle. It is the
-modern alternative to hand-writing `${REF}` entries in `env:`. The resolved values
-reach the child process only, never a tool result.
+**on every call**, so a changed parameter reaches it without a restart; for a
+supplementary image at **deploy time** onto its bundle, because that is a container
+strad does not run. It is the modern alternative to hand-writing `${REF}` entries in
+`env:`. The resolved values reach the child process only, never a tool result.
 
 ## Mode
 

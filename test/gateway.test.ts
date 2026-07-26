@@ -7,6 +7,7 @@ import { mintToken } from "../src/auth/tokens.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
  * End-to-end through a REAL MCP client against the real Express app.
@@ -52,7 +53,7 @@ let baseUrl: string;
 beforeAll(async () => {
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: {},
+    secrets: new EnvSecretProvider({}),
     mode: "core",
     env,
   });

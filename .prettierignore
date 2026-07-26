@@ -1,6 +1,10 @@
 dist
 node_modules
 package-lock.json
+# Astro's generated types/manifests. Build output, not source — and it only
+# exists after a local `cd docs && npm run build`, so format:check would pass in
+# CI and fail on the machine that just built the docs.
+docs/.astro
 # Vendored supplementary MCP servers keep their upstream formatting.
 servers
 # Supplementary-image sources (bundle-google, …) are self-contained projects

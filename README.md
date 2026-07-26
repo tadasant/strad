@@ -155,10 +155,38 @@ Requires Node 22 (uses native TypeScript execution).
 
 ## Secrets
 
-The runtime container holds **no cloud credentials.** Secrets live in Google
-Cloud Secret Manager (`strad-<env>-<NAME>`); CI reads them and injects them as
-App Platform SECRET env vars at deploy time. The process reads `process.env` — the
-source is pluggable behind `loadSecrets()` (`src/secrets/`).
+One model per deployment, declared in the config as `gateway.secrets.provider`.
+There is no second way inside strad — two ways to manage a credential means one
+of them is out of date and nobody knows which. (Scoped to what strad controls: a
+deployment may keep secrets in other systems, and strad does not speak for those.
+What it promises is that every `${NAME}` a strad config references resolves
+through exactly one provider, named in the config rather than inferred.)
+
+**`env` (the default).** `${NAME}` resolves from the process environment. No
+vendor, no cloud account: `npm run dev` and CI both run on this. Secrets reach
+the container as deploy-time App Platform SECRET env vars, and the container
+holds no cloud credential. The cost is that rotating one does nothing until the
+deploy runs again.
+
+**`gcp-parameter-store`.** `${NAME}` resolves from the parameter store while the
+gateway is **running**. Add or rotate a secret and it reaches production with no
+deploy — a rotation within `ttlSeconds` (default 60s), an addition within
+`negativeTtlSeconds` (default 10s), and instantly for a change written through
+strad's own console. The gateway then needs exactly **one** secret in the app
+spec: the key it uses to reach the store. A key cannot be kept behind the lock it
+opens; that is the only exception. (A `supplementary-image` server's `env:` and a
+server's `consoleEnv:` are still baked — they are another container's environment
+and the console's store-admin credential — but they are read _from the store_, so
+they are still managed in one place.)
+
+Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`
+against the store and fails the deploy on a missing one — reading metadata only,
+never a value.
+
+The seam is `src/secrets/provider/` (`SecretProvider`: `get`, `invalidate`), over
+the store-agnostic `ParameterResolver` in `src/secrets/parameters/`. No secret
+value is ever logged. Full model, including what still needs a redeploy and why:
+[docs/operate/secrets](https://strad.tadasant.com/operate/secrets/).
 
 ## Telemetry
 

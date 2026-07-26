@@ -8,6 +8,7 @@ import type { GcsLister } from "../src/ui/gcs-client.ts";
 import { resolveServerView, normalisePrefix } from "../src/ui/resolve.ts";
 import { sanitizePrefix } from "../src/ui/index.ts";
 import { humanSize, serverLooksGcs } from "../src/ui/render.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
  * The human, SSO-gated resource browser.
@@ -153,7 +154,7 @@ let baseUrl: string;
 beforeAll(async () => {
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: SECRETS,
+    secrets: new EnvSecretProvider(SECRETS),
     mode: "core",
     env,
   });

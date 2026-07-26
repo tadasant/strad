@@ -31,6 +31,8 @@ export {
 
 export {
   staticNamespace,
+  gatewayNamespace,
+  gatewayParameterPath,
   parameterPath,
   parameterId,
   variableOf,

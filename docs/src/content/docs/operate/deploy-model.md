@@ -69,7 +69,11 @@ schedule." The OSS release never depends on the private repo being reachable.
 
 ## The secrets seam
 
-Secrets never live in the repo or in a running container's credentials:
+Secrets never live in the repo. Which of two paths they take is declared by the
+config's `gateway.secrets.provider`, and a deployment gets exactly one — see
+[Secrets](/operate/secrets/) for the full model.
+
+### `provider: env` (the default)
 
 ```mermaid
 flowchart LR
@@ -85,6 +89,29 @@ output contains secret values, so it is written to a file and **never logged**.
 `collectSecretRefs` walks the _parsed_ config (not raw YAML — so `${…}` inside a
 comment isn't mistaken for a real ref), and an unresolved `${…}` fails the render
 loudly instead of producing a crash-looping deploy.
+
+The cost of this path is that **a rotated secret does nothing until the deploy
+workflow runs again.** The value is in the spec, not read at boot.
+
+### `provider: gcp-parameter-store`
+
+```mermaid
+flowchart LR
+    SPEC["App Platform spec<br/>one gateway secret:<br/>the store credential"] -->|"process.env"| RUN["running container"]
+    RUN -->|"reads at runtime, cached with a TTL"| PS["Parameter Manager + Secret Manager<br/>/strad/&lt;env&gt;/gateway/static/*"]
+    PS -.->|"preflight: which names EXIST?<br/>(metadata only, no value read)"| CI["render-spec"]
+```
+
+The gateway needs one credential in the spec — the service-account key it uses to
+reach the store. Everything the gateway resolves is read while it runs, so adding
+or rotating one of those needs no deploy: a rotation lands
+within `ttlSeconds` (default 60s), an addition within `negativeTtlSeconds`
+(default 10s).
+
+`render-spec` still fails loudly on a reference to a secret that does not exist —
+that is the **preflight**, which asks the store which names exist and never asks
+for a value. What it does not do is bake one: a baked copy would silently outrank
+a rotated stored one, and there would be two ways again.
 
 ### Deploy-time parameter resolution
 
@@ -104,6 +131,12 @@ The resolver is **optional by design**: with no `STRAD_PARAMS_*` credential set,
 server boots without those values rather than failing the render. That is what lets
 the feature ship ahead of the resolver service account existing — see [Known
 limitations](/limitations/).
+
+Deploy-time is the _only_ option for a supplementary image, and the reason is
+architectural rather than incidental: its `env:` is the environment of a container
+the gateway process does not run, so nothing inside strad can change it while it
+runs. A `bundle: core` builtin with `params: true` resolves **at runtime**, on
+every call, and does pick up a change without a restart.
 
 ## App Platform: the hard-won facts
 

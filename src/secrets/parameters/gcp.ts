@@ -48,10 +48,24 @@ export interface GcpParameterStoreConfig {
   smApiBase?: string;
   tokenUrl?: string;
   fetchImpl?: FetchLike;
+  /**
+   * Per-request deadline. Default 10s.
+   *
+   * A request that HANGS is worse than one that fails, and it is the case a
+   * caller cannot defend against on its own: the runtime provider serves stale
+   * values when a refresh REJECTS, but a never-settling promise gives it nothing
+   * to react to — the single-flight it shares would pin every concurrent reader
+   * behind it, and `/mcp` would stop answering because a secret store went quiet.
+   * The whole "a store outage must not take the gateway down" property rests on
+   * every read eventually settling, so it is enforced here, at the one place
+   * every read passes through.
+   */
+  timeoutMs?: number;
 }
 
 const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
 const DEFAULT_SM_BASE = "https://secretmanager.googleapis.com";
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 export function createGcpParameterStore(
   cfg: GcpParameterStoreConfig,
@@ -62,6 +76,7 @@ export function createGcpParameterStore(
   const smBase = cfg.smApiBase ?? DEFAULT_SM_BASE;
   const pmParent = `projects/${cfg.projectId}/locations/${location}`;
   const smParent = `projects/${cfg.projectId}`;
+  const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let cached: MintedToken | undefined;
 
   async function token(): Promise<string> {
@@ -87,6 +102,9 @@ export function createGcpParameterStore(
         "content-type": "application/json",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      // Bound every call. See `timeoutMs` above: an unbounded read is the one
+      // failure the runtime provider cannot degrade around.
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) {
       // The path names a resource; it never carries a value (values travel in

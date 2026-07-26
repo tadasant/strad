@@ -7,6 +7,7 @@ import { createApp } from "../src/http/app.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 import { serverLooksSecrets } from "../src/ui/render.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
  * The console's parameters manager — the ONLY write surface for a parameter in
@@ -136,7 +137,7 @@ beforeAll(async () => {
   fake = createFakeGcp();
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: SECRETS,
+    secrets: new EnvSecretProvider(SECRETS),
     mode: "core",
     env,
   });

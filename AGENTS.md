@@ -109,9 +109,19 @@ opening any PR.
 - No temporal comments ("now", "used to be") — write code and docs as the
   canonical current state.
 - Don't add backwards-compat shims during refactors; update all call sites.
-- Never commit secrets. Secrets live in GCP Secret Manager as `strad-<env>-<NAME>`
-  and reach the container as App Platform SECRET env vars at deploy time. The
-  running container holds no cloud credential.
+- Never commit secrets. How they reach the container depends on
+  `gateway.secrets.provider` (see `docs/.../operate/secrets.md`), and there is one
+  path per deployment:
+  - `env` (the default) — secrets arrive as App Platform SECRET env vars at
+    deploy time, and the running container holds no cloud credential.
+  - `gcp-parameter-store` — the container holds exactly ONE credential, the
+    resolver key that reaches the store, and reads everything else at runtime.
+    The resolver identity is `parametermanager.parameterViewer` +
+    `secretmanager.secretAccessor` — never the `secrets` server's viewer key,
+    never the console's admin key, never CI's `GCP_SA_KEY`.
+    A credential that only strad's own process needs must be scoped to the strad
+    image (`STRAD_IMAGE_ONLY_SECRET_KEYS` in `src/deploy/appspec.ts`): a plain
+    SECRET in the app spec is BROADCAST to every supplementary container.
 - Telemetry never records tool arguments or results. See `src/telemetry/redact.ts`;
   `test/telemetry.redaction.test.ts` is the canary that enforces it.
 

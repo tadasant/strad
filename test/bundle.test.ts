@@ -5,6 +5,7 @@ import { mintToken } from "../src/auth/tokens.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { bundleUrlEnvName, Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
  * Core -> bundle, the real two-process path.
@@ -46,7 +47,7 @@ beforeAll(async () => {
   const bundleEnv: NodeJS.ProcessEnv = { STRAD_INTERNAL_TOKEN: INTERNAL };
   const bundleRegistry = await Registry.build({
     config: CONFIG,
-    secrets: {},
+    secrets: new EnvSecretProvider({}),
     mode: "bundle",
     bundleName: "bundle-api",
     env: bundleEnv,
@@ -73,7 +74,7 @@ beforeAll(async () => {
   };
   const coreRegistry = await Registry.build({
     config: CONFIG,
-    secrets: {},
+    secrets: new EnvSecretProvider({}),
     mode: "core",
     env: coreEnv,
   });

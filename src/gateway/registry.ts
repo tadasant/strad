@@ -1,9 +1,15 @@
 import type { StradConfig } from "../config/schema.ts";
-import { resolveMap, resolveRefs, type SecretBag } from "../secrets/index.ts";
 import {
-  resolveServerParams,
+  resolveMapAsync,
+  resolveOptionsAsync,
+  resolveRefsAsync,
+  type SecretProvider,
+} from "../secrets/provider/index.ts";
+import {
+  staticNamespace,
   type ParameterResolver,
 } from "../secrets/parameters/index.ts";
+import { SnapshotCache } from "../secrets/provider/snapshot.ts";
 import { BuiltinServerAdapter, loadBuiltin } from "./adapters/builtin.ts";
 import { HttpServerAdapter } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
@@ -11,17 +17,25 @@ import type { ServerAdapter } from "./adapters/types.ts";
 /**
  * Config -> live adapters.
  *
- * This is where the three kinds are reconciled into one runtime surface, and
- * where `${SECRET}` refs are resolved. Built once at boot: an adapter is a
- * long-lived upstream connection, not a per-request object. (The *toolset* is
- * still resolved per request — see router.ts. Only the plumbing is shared.)
+ * This is where the three kinds are reconciled into one runtime surface. Built
+ * once at boot: an adapter is a long-lived upstream connection, not a
+ * per-request object. (The *toolset* is still resolved per request — see
+ * router.ts. Only the plumbing is shared.)
+ *
+ * What is NOT built once is the SECRETS. Each adapter is handed a thunk that
+ * resolves its `${SECRET}` refs when they are needed, against the runtime
+ * provider. Resolving them here, into constructor arguments, is what makes
+ * "rotate a credential" mean "redeploy the gateway": the values a boot happened
+ * to see would live as long as the process. The process holds the reference; the
+ * provider holds the value.
  */
 
 export type Mode = "core" | "bundle";
 
 export interface RegistryOptions {
   config: StradConfig;
-  secrets: SecretBag;
+  /** The runtime secret provider. See src/secrets/provider. */
+  secrets: SecretProvider;
   /**
    * "core"   — the public gateway. Mounts remote-http + core builtins directly,
    *            and proxies to every non-core bundle over the private network.
@@ -34,9 +48,9 @@ export interface RegistryOptions {
   /**
    * Optional runtime parameter resolver. When a builtin server sets `params:
    * true`, its `/strad/{env}/mcp/{slug}/static/*` parameters are resolved through
-   * this and injected into the builtin's `options` at launch — the concrete
-   * "resolve, then inject into the child process" path. Absent (the default) =
-   * no resolution, and the core holds no cloud credential. See
+   * this and merged into the builtin's `options` — on every call, so a parameter
+   * changed in the store reaches the builtin without a restart. Absent (the
+   * default) = no resolution, and the process holds no cloud credential. See
    * src/secrets/parameters and resolverFromEnv().
    */
   resolver?: ParameterResolver | null;
@@ -77,22 +91,36 @@ export class Registry {
 
     // A builtin's factory options are its `options:` map with `${SECRET}` refs
     // resolved, PLUS — when it opts into `params:` — its resolved managed
-    // parameters injected on top. That resolution reads secret values (to build
+    // parameters merged on top. That resolution reads secret values (to build
     // the child's env), which is exactly why it uses the RESOLVER credential and
     // not the MCP one; the values are handed to the builtin's process and never
     // returned over /mcp.
-    const optionsFor = async (
-      server: Extract<StradConfig["servers"][number], { kind: "builtin" }>,
-    ): Promise<Record<string, unknown>> => {
-      const base = resolveOptions(server.options, secrets);
-      if (!server.params || !opts.resolver) return base;
-      const params = await resolveServerParams(
-        opts.resolver,
-        config.gateway.env,
-        server.slug,
-      );
-      return { ...base, ...params };
-    };
+    //
+    // `params:` resolution is a NETWORK read — one list plus a render per
+    // parameter — and the thunk below runs on every tool call, so it must not
+    // reach the store every time. This is the same TTL/single-flight/stale-on-
+    // error cache the secret provider uses, keyed by namespace.
+    const resolver = opts.resolver;
+    const paramCache = resolver
+      ? new SnapshotCache((namespace) => resolver.resolve(namespace), {
+          ttlMs: config.gateway.secrets.ttlSeconds * 1000,
+          label: "server parameters",
+        })
+      : null;
+
+    // This returns a THUNK, not a value: it is invoked per tool call, so a
+    // rotated `${SECRET}` or a re-set parameter is picked up by a running
+    // process.
+    const optionsFor =
+      (server: Extract<StradConfig["servers"][number], { kind: "builtin" }>) =>
+      async (): Promise<Record<string, unknown>> => {
+        const base = await resolveOptionsAsync(server.options, secrets);
+        if (!server.params || !paramCache) return base;
+        const params = await paramCache.get(
+          staticNamespace(config.gateway.env, server.slug),
+        );
+        return { ...base, ...params };
+      };
 
     for (const server of config.servers) {
       if (!server.enabled) continue;
@@ -107,7 +135,7 @@ export class Registry {
           new BuiltinServerAdapter(
             server.slug,
             await loadBuiltin(server.module),
-            await optionsFor(server),
+            optionsFor(server),
             component,
           ),
         );
@@ -123,8 +151,13 @@ export class Registry {
             new HttpServerAdapter({
               slug: server.slug,
               kind: "remote-http",
-              url: resolveRefs(server.url, secrets),
-              headers: resolveMap(server.headers, secrets),
+              // The url AND the headers are re-resolved per operation: a
+              // third-party bearer token is the single most likely thing in a
+              // strad config to be rotated, and it lives right here.
+              endpoint: async () => ({
+                url: await resolveRefsAsync(server.url, secrets),
+                headers: await resolveMapAsync(server.headers, secrets),
+              }),
               timeoutMs: server.timeoutMs,
             }),
           );
@@ -143,8 +176,10 @@ export class Registry {
             new HttpServerAdapter({
               slug: server.slug,
               kind: "supplementary-image",
-              url: joinUrl(base, server.path),
-              headers: resolveMap(server.headers, secrets),
+              endpoint: async () => ({
+                url: joinUrl(base, server.path),
+                headers: await resolveMapAsync(server.headers, secrets),
+              }),
               timeoutMs: server.timeoutMs,
             }),
           );
@@ -159,7 +194,7 @@ export class Registry {
               new BuiltinServerAdapter(
                 server.slug,
                 await loadBuiltin(server.module),
-                await optionsFor(server),
+                optionsFor(server),
                 component,
               ),
             );
@@ -175,8 +210,14 @@ export class Registry {
               new HttpServerAdapter({
                 slug: server.slug,
                 kind: "supplementary-image",
-                url,
-                headers: internalHeaders(env),
+                // core <-> bundle auth is a deploy-injected env var on BOTH
+                // sides, so it cannot rotate without a redeploy of the pair
+                // anyway. Read it per call regardless — one env lookup, and it
+                // keeps every endpoint on the same code path.
+                endpoint: async () => ({
+                  url,
+                  headers: internalHeaders(env),
+                }),
                 timeoutMs: server.timeoutMs,
                 // The upstream is another strad, so its tools arrive already
                 // namespaced. Tell the adapter to unwrap them.
@@ -228,15 +269,4 @@ export function internalHeaders(
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-function resolveOptions(
-  options: Record<string, unknown>,
-  secrets: SecretBag,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(options)) {
-    out[k] = typeof v === "string" ? resolveRefs(v, secrets) : v;
-  }
-  return out;
 }

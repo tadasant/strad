@@ -22,6 +22,22 @@ import type { ParameterStore } from "./types.ts";
 export interface FakeGcp {
   store: ParameterStore;
   fetchImpl: FetchLike;
+  /**
+   * The addresses and credential the fake answers on.
+   *
+   * Exposed so a test can put the fake behind a real HTTP server and point a
+   * SUBPROCESS at it — which is how `render-spec` gets exercised against a store
+   * without a live GCP project. In-process tests use `fetchImpl` and ignore this.
+   */
+  endpoints: {
+    projectId: string;
+    location: string;
+    pmApiBase: string;
+    smApiBase: string;
+    tokenUrl: string;
+    /** A service-account key JSON that `parseServiceAccount` accepts. */
+    keyJson: string;
+  };
   /** The Parameter Manager map: parameterId -> { labels, versions }. */
   parameters: Map<string, FakeParameter>;
   /** The Secret Manager map: secretId -> string[] (versions, newest last). */
@@ -270,6 +286,14 @@ export function createFakeGcp(): FakeGcp {
   return {
     store,
     fetchImpl,
+    endpoints: {
+      projectId: PROJECT,
+      location: LOCATION,
+      pmApiBase: PM_BASE,
+      smApiBase: SM_BASE,
+      tokenUrl: TOKEN_URL,
+      keyJson: JSON.stringify(ACCOUNT),
+    },
     parameters,
     secrets,
     pmPayloads: () =>

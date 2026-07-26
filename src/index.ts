@@ -5,6 +5,10 @@ import { Registry, type Mode } from "./gateway/registry.ts";
 import { createApp } from "./http/app.ts";
 import { loadSecrets } from "./secrets/index.ts";
 import { resolverFromEnv } from "./secrets/parameters/index.ts";
+import {
+  buildSecretProvider,
+  hydrateBootEnv,
+} from "./secrets/provider/index.ts";
 import { startTelemetry } from "./telemetry/index.ts";
 
 async function main(): Promise<void> {
@@ -21,11 +25,45 @@ async function main(): Promise<void> {
 
   const config = await loadConfig(configPathFromEnv(env));
 
-  // Telemetry starts FIRST — before the registry connects to anything and before
-  // we listen — so that a slow or failing boot is itself observable. A boot that
+  // The runtime secret provider, built from what the config declares. With
+  // `gateway.secrets.provider: env` (the default) this is a wrapper around
+  // process.env and no cloud client is constructed; with `gcp-parameter-store`
+  // it is a cached, TTL'd reader over the parameter store, and the container
+  // holds exactly one credential — the one that reaches the store.
+  //
+  // This is built BEFORE telemetry because hydration below supplies
+  // OTEL_EXPORTER_OTLP_HEADERS, which the OpenTelemetry SDK reads from the
+  // environment on its own terms.
+  const resolver = resolverFromEnv(env);
+  const secretProvider = buildSecretProvider({ config, env, resolver });
+
+  // Fill in the handful of env vars that are read once, by code with no provider
+  // in scope (the token store, the console's OAuth client, the OTLP header).
+  // Under the env provider this finds everything already set and does nothing.
+  // A bundle asks for strictly less than core — see hydrate.ts.
+  const hydrated = await hydrateBootEnv(secretProvider, mode, env);
+  if (hydrated.length > 0) {
+    // Names only. Never a value, and never a name paired with one.
+    console.log(
+      JSON.stringify({
+        evt: "strad.secrets_hydrated",
+        provider: secretProvider.name,
+        keys: hydrated,
+      }),
+    );
+  }
+
+  // Telemetry starts before the registry connects to anything and before we
+  // listen, so that a slow or failing boot is itself observable. A boot that
   // dies in Registry.build() because a bundle is unreachable is exactly the kind
   // of thing you want a trace for, and starting telemetry afterwards would mean
   // the only boots we can see are the ones that succeeded.
+  //
+  // Exactly one thing precedes it: hydration, above, which is what SUPPLIES
+  // `OTEL_EXPORTER_OTLP_HEADERS` to a store-backed deployment. The window this
+  // opens is bounded rather than open-ended — every store read carries a
+  // deadline (see parameters/gcp.ts) and hydration swallows its own failures —
+  // so a sick store delays this boot by seconds, it does not hang it forever.
   //
   // With no OTEL_EXPORTER_OTLP_ENDPOINT this starts no SDK, logs one line, and
   // returns a handle whose shutdown() is a no-op. It cannot fail the boot: every
@@ -39,23 +77,22 @@ async function main(): Promise<void> {
     },
   });
 
-  // Secrets are already env vars by the time we boot: CI read them from GCP
-  // Secret Manager and injected them as App Platform SECRET env vars. The
-  // container holds no GCP credentials. See src/secrets/index.ts.
+  // The boot-time bag, read AFTER hydration so it reflects anything the provider
+  // supplied. It backs the console's `consoleEnv:` resolution (src/ui) — a
+  // snapshot is right there, because the console's own store credential is a
+  // bootstrap credential, not a managed secret.
+  //
+  // Every `${NAME}` a SERVER references goes through `secretProvider` instead,
+  // on the request path. That is the difference between a secret you must
+  // redeploy to change and one you do not.
   const secrets = await loadSecrets();
 
   // Boot-time guard, before anything can serve a request.
   assertDevBypassAllowed(config, env);
 
-  // The runtime parameter resolver, if this deployment is configured with a
-  // resolver credential (STRAD_PARAMS_*). Null otherwise, in which case a
-  // `params:`-enabled builtin resolves to nothing and the core holds no cloud
-  // credential — the default, unchanged posture.
-  const resolver = resolverFromEnv(env);
-
   const registry = await Registry.build({
     config,
-    secrets,
+    secrets: secretProvider,
     mode,
     bundleName,
     env,

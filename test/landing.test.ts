@@ -4,6 +4,7 @@ import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
  * The front door at `/`.
@@ -98,7 +99,7 @@ async function boot(
 ): Promise<{ url: string; close: () => void }> {
   const registry = await Registry.build({
     config,
-    secrets: SECRETS,
+    secrets: new EnvSecretProvider(SECRETS),
     mode: "core",
     env,
   });
@@ -120,7 +121,7 @@ async function boot(
 beforeAll(async () => {
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: SECRETS,
+    secrets: new EnvSecretProvider(SECRETS),
     mode: "core",
     env,
   });
@@ -356,7 +357,7 @@ describe("GET / in bundle mode", () => {
   it("is not served — a bundle component is internal and has no front door", async () => {
     const registry = await Registry.build({
       config: CONFIG,
-      secrets: SECRETS,
+      secrets: new EnvSecretProvider(SECRETS),
       mode: "bundle",
       env: { ...env, STRAD_BUNDLE: "bundle-gcs" },
     });

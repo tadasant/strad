@@ -1,7 +1,7 @@
 import { createGcpParameterStore } from "./gcp.ts";
 import { parseServiceAccount } from "./service-account.ts";
 import { staticNamespace } from "./namespace.ts";
-import type { ParameterResolver } from "./types.ts";
+import type { ParameterResolver, ParameterStore } from "./types.ts";
 
 /**
  * The runtime resolver: turn a server's managed parameters into the environment
@@ -40,15 +40,23 @@ export const RESOLVER_ENV = {
 } as const;
 
 /**
- * Build a resolver from the environment, or return null when it is not
+ * Build a store client from the environment, or return null when it is not
  * configured. Null is not an error: a deployment that seeds a server's env the
  * old way (deploy-time `${REF}` secrets) simply does not set these, and the
  * caller falls back to whatever it had. This is what lets the resolver be wired
  * in ahead of the resolver service account existing.
+ *
+ * The return type is the FULL `ParameterStore`, not just `ParameterResolver`,
+ * because two callers need more than `resolve()`: the runtime provider needs the
+ * resolver half, and the deploy-time preflight needs `list()` — which reads
+ * metadata and, for a secret parameter, an envelope holding a `__REF__` pointer
+ * rather than a value. Widening the type does not widen the CREDENTIAL: what the
+ * service account may do is still decided by IAM, and the resolver role has no
+ * write permission whatever this interface offers.
  */
 export function resolverFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-): ParameterResolver | null {
+): ParameterStore | null {
   const projectId = env[RESOLVER_ENV.projectId];
   const keyJson = env[RESOLVER_ENV.keyJson];
   if (!projectId || !keyJson) return null;
