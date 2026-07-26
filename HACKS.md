@@ -502,6 +502,16 @@ scoped to `GCS_BUCKET: pulse_public`, with its service-account key seeded into
 GCP Secret Manager for staging and prod. `/ui/gcs` browses a real bucket behind
 the SSO gate (401 unauthenticated on both envs, verified).
 
+**Correction (hack #28's fix).** The seeding was done and the credential really
+did land on core — but the console could not READ it. It resolved
+`consoleEnv:`'s `${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}` against core's
+environment, where the RENDERER had filed the value under the KEY
+`GCS_SERVICE_ACCOUNT_KEY_JSON` and never under the ref name. So `/ui/gcs` reported
+"credentials are declared but not resolvable in the console" on a deployment that
+had every credential in place, exactly as `/ui/secrets` did. The claim above was
+true of the provisioning and false of the page until `src/ui/resolve.ts` learned to
+read `consoleEnv:` by key.
+
 **What.** The `gcs` server is registered in `infra/strad.staging.yaml` (its own
 `bundle-gcs` bundle) with `enabled: false` and its bucket/credentials as
 `${GCS_BUCKET}` / `${GCS_SERVICE_ACCOUNT_KEY_JSON}` refs. So `/ui/gcs` on staging
@@ -759,10 +769,11 @@ over all three configs in this repo; the internal repo runs it over
 `strad.prod.yaml` (tadasant-internal#206).
 
 **The residue.** Detection is a diff of the source document against the parse
-result, so it cannot flag a typo'd key inside an OPEN map — `env:`, `consoleEnv:`,
-`roles:`, a builtin's `options:` — because the schema keeps every key there by
-design. A misspelled ENV VAR name is still silent. Only a misspelled CONFIG key is
-caught. The "did you mean" suggestion is likewise best-effort: it can only name keys
+result, so it cannot flag a typo'd key inside an OPEN map — an `env:` /
+`consoleEnv:` variable name, a builtin's `options:`, or a role NAME under `roles:`
+— because the schema keeps every key there by design. A misspelled ENV VAR name is
+still silent. Only a misspelled CONFIG key is caught, and a role's own fields count
+as config keys: `roles.admin.serverz` is reported. The "did you mean" suggestion is likewise best-effort: it can only name keys
 the parse result carries, so an omitted optional key is not suggestable (the
 unknown key is still reported).
 

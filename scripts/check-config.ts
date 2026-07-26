@@ -29,18 +29,19 @@
  *   2. UNKNOWN KEYS. The check the others cannot do. Zod strips what it does not
  *      recognise, so `consoleEnvs:` for `consoleEnv:` passes every other check in
  *      this list and does nothing at runtime. See src/config/strict.ts.
- *   3. RENDER. The full `renderAppSpec`, so a config that is individually valid
- *      but cannot produce a spec (a bundle with two images, a `:latest`
- *      supplementary override) fails here rather than mid-deploy.
- *   4. CONSOLE SCOPE. Every key a server declares under `consoleEnv:` must
- *      actually appear on the rendered `core` component. That is a real bug this
- *      repo shipped, in the other direction: the key was emitted and the console
- *      read it by the wrong name, and `/ui/secrets` reported a credential missing
- *      that was sitting in its own environment.
+ *   3. RENDER. The full `renderAppSpec` — a smoke test that the config the schema
+ *      accepted can actually produce a spec, and the step that gives checks 4 a
+ *      real spec to inspect rather than an assumption about one.
+ *   4. CONSOLE SCOPE. Every key a server declares under `consoleEnv:` must reach
+ *      the `core` component, and no two servers may claim one key with different
+ *      values. Both are silent failures with a visible symptom much later: the
+ *      first is a console reporting a credential missing that the config plainly
+ *      declares, the second is a console running as the wrong identity.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parseConfig } from "../src/config/load.ts";
+import type { StradConfig } from "../src/config/schema.ts";
 import { formatUnknownKey, unknownConfigKeys } from "../src/config/strict.ts";
 import {
   collectSecretRefs,
@@ -48,15 +49,10 @@ import {
   renderAppSpec,
   type AppSpec,
 } from "../src/deploy/appspec.ts";
-import { bakedSecretNames } from "../src/deploy/preflight.ts";
-
-const { values } = parseArgs({
-  options: {
-    config: { type: "string" },
-    image: { type: "string" },
-    app: { type: "string" },
-  },
-});
+import {
+  bakedSecretNames,
+  consoleScopeProblems,
+} from "../src/deploy/preflight.ts";
 
 function usage(message: string): never {
   console.error(`::error::${message}`);
@@ -64,6 +60,23 @@ function usage(message: string): never {
     "usage: check-config --config <path> [--image <ref>] [--app <name>]",
   );
   process.exit(2);
+}
+
+// A typo'd flag is exit 2, not exit 1. `parseArgs` throws on an unknown option
+// or a stray positional, and a tool whose whole job is catching typos should not
+// answer `--conifg` with a stack trace and the exit code that means "your config
+// is broken".
+let values: { config?: string; image?: string; app?: string };
+try {
+  ({ values } = parseArgs({
+    options: {
+      config: { type: "string" },
+      image: { type: "string" },
+      app: { type: "string" },
+    },
+  }));
+} catch (err) {
+  usage((err as Error).message);
 }
 
 if (!values.config) usage("--config is required");
@@ -98,13 +111,15 @@ function verdict(): never {
 //
 // A config that does not parse cannot be checked any further: there is nothing
 // to diff against and nothing to render. Report and stop.
-let config;
-try {
-  config = parseConfig(raw, values.config);
-} catch (err) {
-  problem((err as Error).message);
-  verdict();
+function parseOrReport(): StradConfig {
+  try {
+    return parseConfig(raw, values.config);
+  } catch (err) {
+    problem((err as Error).message);
+    verdict();
+  }
 }
+const config = parseOrReport();
 
 // --- 2. unknown keys --------------------------------------------------------
 for (const unknown of unknownConfigKeys(raw, config)) {
@@ -143,18 +158,7 @@ try {
 
 // --- 4. console scope -------------------------------------------------------
 if (spec) {
-  const core = spec.services.find((s) => s.name === "core");
-  const onCore = new Set(core?.envs.map((e) => e.key) ?? []);
-  for (const server of config.servers) {
-    if (server.kind !== "supplementary-image" || !server.enabled) continue;
-    for (const key of Object.keys(server.consoleEnv)) {
-      if (onCore.has(key)) continue;
-      problem(
-        `server "${server.slug}" declares ${key} under consoleEnv: but it does ` +
-          `not land on the core component — the console cannot read it`,
-      );
-    }
-  }
+  for (const message of consoleScopeProblems(config, spec)) problem(message);
 }
 
 // --- what the deployment must seed ------------------------------------------

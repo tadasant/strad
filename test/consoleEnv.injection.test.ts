@@ -157,6 +157,86 @@ describe("consoleEnv: render -> run", () => {
     expect(view.accountReason).toMatch(/not injected on this deployment/);
   });
 
+  it("never hands one server's console credential to another server's view", () => {
+    // Core's environment is ONE namespace: consoleEnvVars() merges every enabled
+    // supplementary server's consoleEnv into it. So `gcs-private`, which scopes
+    // its credential to the bundle and declares no consoleEnv, must NOT resolve
+    // the key `gcs` filed on core under the same name — or /ui/gcs-private would
+    // browse a private bucket as the OTHER server's service account, silently.
+    // The two already collide on the bare GCS_* names by design.
+    const twoServers = parseConfig(`
+version: 1
+gateway: { name: strad, env: prod }
+auth: { staticTokens: { enabled: true, store: env } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+servers:
+  - slug: gcs
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gcs
+    entitlements: [admin]
+    env:
+      GCS_BUCKET: "public_bucket"
+      GCS_SERVICE_ACCOUNT_KEY_JSON: "\${GCS_A_KEY}"
+    consoleEnv:
+      GCS_BUCKET: "public_bucket"
+      GCS_SERVICE_ACCOUNT_KEY_JSON: "\${GCS_A_KEY}"
+  - slug: gcs-private
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /gcs-private
+    entitlements: [admin]
+    env:
+      GCS_BUCKET: "private_bucket"
+      GCS_SERVICE_ACCOUNT_KEY_JSON: "\${GCS_B_KEY}"
+`);
+    const spec = renderAppSpec({
+      config: twoServers,
+      appName: "strad-prod",
+      region: "nyc",
+      image: {
+        registry_type: "GHCR",
+        registry: "tadasant",
+        repository: "strad",
+        tag: "0.1.29",
+      },
+      env: [],
+      secrets: {
+        GCS_A_KEY: JSON.stringify({
+          client_email: "a@a.iam.gserviceaccount.com",
+          private_key:
+            "-----BEGIN PRIVATE KEY-----\na\n-----END PRIVATE KEY-----",
+        }),
+        GCS_B_KEY: JSON.stringify({
+          client_email: "b@b.iam.gserviceaccount.com",
+          private_key:
+            "-----BEGIN PRIVATE KEY-----\nb\n-----END PRIVATE KEY-----",
+        }),
+      },
+    });
+    const core: Record<string, string> = {};
+    for (const e of spec.services.find((s) => s.name === "core")!.envs) {
+      core[e.key] = e.value;
+    }
+    // The premise: A's key IS on core, under the same key name B declares.
+    expect(core.GCS_SERVICE_ACCOUNT_KEY_JSON).toContain("a@a.iam");
+
+    const mine = resolveServerView(twoServers, "gcs", core);
+    expect(mine.kind === "gcs" && mine.account?.client_email).toBe(
+      "a@a.iam.gserviceaccount.com",
+    );
+
+    const theirs = resolveServerView(twoServers, "gcs-private", core);
+    expect(theirs.kind).toBe("gcs");
+    if (theirs.kind !== "gcs") return;
+    expect(theirs.account).toBeNull();
+    expect(theirs.accountReason).toMatch(/consoleEnv/);
+  });
+
   it("keeps a bundle-scoped credential unreadable from the console", () => {
     // `env:` lands on the bundle only. The console must not resolve it — not via
     // the ref (not in core's bag) and not via the key (not on core either) — and

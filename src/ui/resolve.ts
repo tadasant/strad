@@ -133,7 +133,7 @@ export function resolveServerView(
   const declared = withNamespacedFallback(server.slug, serverEnv(server));
   const value = withNamespacedFallback(
     server.slug,
-    resolveEnv(serverEnv(server), secrets),
+    resolveEnv(serverEnv(server), consoleEnvKeys(server), secrets),
   );
 
   // Secrets view: the server declares a secrets project. Checked FIRST — a
@@ -315,6 +315,13 @@ function serverEnv(server: ServerConfig): Record<string, string> {
   return {};
 }
 
+/** The keys THIS server declares under `consoleEnv:`, and no others. */
+function consoleEnvKeys(server: ServerConfig): Set<string> {
+  return new Set(
+    server.kind === "supplementary-image" ? Object.keys(server.consoleEnv) : [],
+  );
+}
+
 /**
  * What the console can actually SEE for each declared env key.
  *
@@ -322,7 +329,8 @@ function serverEnv(server: ServerConfig): Record<string, string> {
  *
  *   1. The declared value with its `${NAME}` refs resolved from the bag. This is
  *      the local/dev shape, and the shape of every non-ref literal.
- *   2. Failing that, the value the DEPLOYMENT baked under the env KEY itself.
+ *   2. Failing that — and only for a key this server declares under
+ *      `consoleEnv:` — the value the DEPLOYMENT baked under the KEY itself.
  *
  * Step 2 exists because a rendered spec does not carry `${NAME}` — it carries the
  * resolved value, filed under the key the container reads. appspec.ts resolves a
@@ -337,9 +345,17 @@ function serverEnv(server: ServerConfig): Record<string, string> {
  * admin credential in production with the value sitting in core's environment
  * under the key one line below.
  *
- * The ref lookup is tried FIRST so the config stays the source of truth: an
- * unrelated variable that happens to share a key name cannot shadow a declared
- * literal.
+ * Step 2 is fenced to `consoleEnv:` because core's environment is ONE namespace
+ * shared by every server: `consoleEnvVars()` merges every enabled supplementary
+ * server's map into it. Falling back for a key declared only under `env:` would
+ * hand this server's view whatever ANOTHER server filed under the same name —
+ * two GCS-backed servers already collide on the bare `GCS_*` names (see
+ * `withNamespacedFallback`), so `/ui/<b>` would browse b's bucket as a's service
+ * account, silently. A key declared only under `env:` is bundle-scoped, and a
+ * hit for it in core's environment is by definition not this server's value.
+ *
+ * The ref lookup is tried FIRST so the config stays the source of truth: a
+ * declared literal always wins over an ambient variable of the same name.
  *
  * A key that resolves neither way is ABSENT from the returned map, which is what
  * lets the callers tell "declared but unreachable from core" (the `env:`-scoped
@@ -347,6 +363,7 @@ function serverEnv(server: ServerConfig): Record<string, string> {
  */
 function resolveEnv(
   env: Record<string, string>,
+  consoleKeys: ReadonlySet<string>,
   secrets: SecretBag,
 ): Record<string, string> {
   const out: Record<string, string> = {};
@@ -356,6 +373,7 @@ function resolveEnv(
       out[key] = viaRef;
       continue;
     }
+    if (!consoleKeys.has(key)) continue;
     const injected = secrets[key];
     if (injected !== undefined) out[key] = injected;
   }

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { unknownConfigKeys } from "../src/config/strict.ts";
+import { consoleScopeProblems } from "../src/deploy/preflight.ts";
 
 /**
  * The loud-failure gate for a config file.
@@ -184,9 +185,10 @@ describe("check-config", () => {
     expect(stderr).toContain("nonexistent");
   });
 
-  it("exits 1 when the config cannot render", async () => {
-    // Two different images in one bundle: valid per-server, unrenderable as a
-    // container topology.
+  it("exits 1 on a cross-field rule: two images in one bundle", async () => {
+    // Each server entry is individually valid; the topology they describe is
+    // not. This is a superRefine rule, so it is caught by the schema check —
+    // named here for what it exercises, not for what it looks like.
     const { code, stderr } = await check(
       `${BASE}  - slug: other
     kind: supplementary-image
@@ -222,6 +224,11 @@ describe("check-config", () => {
 
     expect(await byArgs([])).toBe(2);
     expect(await byArgs(["--config", nowhere])).toBe(2);
+    // A typo'd FLAG, in a tool whose job is catching typos. `parseArgs` throws
+    // on an unknown option, and an unhandled throw would exit 1 — the code that
+    // means "your config is broken" — with a stack trace.
+    expect(await byArgs(["--conifg", "x"])).toBe(2);
+    expect(await byArgs(["strad.config.yaml"])).toBe(2); // stray positional
   });
 
   it("prints referenced secret NAMES and no values", async () => {
@@ -234,12 +241,107 @@ describe("check-config", () => {
     expect(stdout).not.toContain("dummy-value-for-");
   });
 
-  it("catches a consoleEnv: key that fails to reach the core component", async () => {
-    // The check that guards the injection bug itself. It passes today because
-    // appspec.ts does land these on core; it exists so that stopping would fail
-    // the config's own PR rather than one console page in production.
+  it("reports a real config as having no console-scope problem", async () => {
     const { code, stdout } = await check(BASE);
     expect(code).toBe(0);
     expect(stdout).not.toContain("does not land on the core component");
+  });
+});
+
+// =============================================================================
+// Check 4, driven directly — the CLI cannot falsify it
+// =============================================================================
+
+describe("consoleScopeProblems", () => {
+  // Through the CLI this check can only ever pass: the renderer and the check
+  // walk the same servers, so the spec always carries the keys. Drive it with a
+  // spec that has LOST the key, which is what a regression in appspec.ts would
+  // actually look like.
+  const config = parseConfig(BASE);
+
+  const specWith = (coreKeys: string[]) => ({
+    services: [
+      { name: "core", envs: coreKeys.map((key) => ({ key })) },
+      { name: "bundle", envs: [] },
+    ],
+  });
+
+  it("says nothing when every consoleEnv key is on core", () => {
+    expect(
+      consoleScopeProblems(
+        config,
+        specWith([
+          "SECRETS_PROJECT_ID",
+          "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("catches a consoleEnv key the renderer failed to put on core", () => {
+    const problems = consoleScopeProblems(
+      config,
+      specWith(["SECRETS_PROJECT_ID"]), // the admin key never landed
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON");
+    expect(problems[0]).toContain("does not land on the core component");
+  });
+
+  it("catches two servers claiming one key with different values", () => {
+    // core holds ONE flat environment, so the second declaration silently
+    // overwrites the first and one console runs as the wrong identity.
+    const twoServers = parseConfig(`${BASE}  - slug: secrets-two
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:1.0.0
+    bundle: bundle
+    path: /secrets-two
+    entitlements: [admin]
+    consoleEnv:
+      SECRETS_PROJECT_ID: "other-project"
+      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${OTHER_ADMIN_KEY}"
+`);
+    const problems = consoleScopeProblems(
+      twoServers,
+      specWith([
+        "SECRETS_PROJECT_ID",
+        "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+      ]),
+    );
+    expect(problems).toHaveLength(2);
+    for (const p of problems) expect(p).toContain("silently overwrites");
+  });
+
+  it("does not flag two servers declaring one key with the SAME value", () => {
+    // The staging config does exactly this on purpose: several servers repeat a
+    // non-secret literal. Identical values collapse to the same environment.
+    const twins = parseConfig(`${BASE}  - slug: secrets-twin
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:1.0.0
+    bundle: bundle
+    path: /secrets-twin
+    entitlements: [admin]
+    consoleEnv:
+      SECRETS_PROJECT_ID: "demo"
+`);
+    expect(
+      consoleScopeProblems(
+        twins,
+        specWith([
+          "SECRETS_PROJECT_ID",
+          "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores a disabled server, which renders nothing", () => {
+    const disabled = parseConfig(
+      BASE.replace(
+        "  - slug: secrets",
+        "  - slug: secrets\n    enabled: false",
+      ),
+    );
+    expect(consoleScopeProblems(disabled, specWith([]))).toEqual([]);
   });
 });

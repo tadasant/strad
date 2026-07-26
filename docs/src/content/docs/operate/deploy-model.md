@@ -227,16 +227,21 @@ Four checks, in order:
    document is parsed with the real schema, and any key present in the YAML but
    absent from the result was stripped. A copy of the schema would have to be edited
    in lockstep with the real one, and forgetting would mean a check that quietly
-   stopped checking; a diff has nothing to drift from. Keys inside an open map
-   (`env:`, `consoleEnv:`, `roles:`, a builtin's `options:`) are the server's
-   vocabulary, not the schema's, and are never flagged.
+   stopped checking; a diff has nothing to drift from. Keys inside an open map are
+   the declarer's vocabulary, not the schema's, and are never flagged: an `env:` /
+   `consoleEnv:` variable name, a builtin's `options:`, and a **role name** under
+   `roles:` (the role's own fields, like `servers:`, _are_ checked).
 3. **Render.** The full `renderAppSpec`, with a dummy value substituted for every
-   `${NAME}` — so a config that is individually valid but cannot produce a spec
-   fails on the PR rather than mid-deploy.
-4. **Console scope.** Every key a server declares under `consoleEnv:` must actually
-   appear on the rendered `core` component. That is the invariant `/ui` depends on,
-   and asserting it against the real config is what keeps a renderer change from
-   quietly detaching the console from its credential.
+   `${NAME}`. This is a smoke test — the dummy bag covers exactly the names the
+   renderer resolves, so a schema-valid config essentially always renders — and it
+   is what produces the real spec check 4 inspects.
+4. **Console scope.** Two things a rendered spec can prove, and nothing else can:
+   every key a server declares under `consoleEnv:` reaches the `core` component,
+   and no two servers claim one key with different values. The first is the
+   invariant `/ui` depends on. The second matters because `consoleEnvVars()` merges
+   every enabled server's map into one flat environment, so a collision means the
+   last declaration silently wins and the other server's console runs as the wrong
+   identity.
 
 **It is strict where the gateway is lenient, and that asymmetry is deliberate.**
 `parseConfig` at boot keeps ignoring unknown keys, because the config and the image

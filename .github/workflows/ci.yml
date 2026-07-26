@@ -54,10 +54,12 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      # Globbed, not listed: a fourth config added to the repo must not be
+      # silently unchecked. `infra/` holds configs and nothing else.
       - name: Check configs
         run: |
           set -e
-          for cfg in strad.config.yaml strad.config.example.yaml infra/strad.staging.yaml; do
+          for cfg in strad.config*.yaml infra/*.yaml; do
             npm run --silent config:check -- --config "$cfg"
           done
 
