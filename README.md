@@ -149,6 +149,10 @@ npm test            # unit + real-MCP-client end-to-end, in-process
 npm run dev         # local server on :8080
 npm run typecheck
 npm run lint
+
+# validate a config the way a deploy would — no secrets needed. An unknown key
+# (`consoleEnvs:` for `consoleEnv:`) is an error here, not a silent strip.
+npm run config:check -- --config infra/strad.staging.yaml
 ```
 
 Requires Node 22 (uses native TypeScript execution).

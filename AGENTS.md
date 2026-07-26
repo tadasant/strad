@@ -16,6 +16,10 @@ a GHCR image.
 - Use a feature branch off the latest `main`; `main` is protected and lands via PR.
 - `npm test` (Vitest) runs unit tests plus a real-MCP-client, in-process E2E.
 - `npm run typecheck`, `npm run lint`, `npm run format:check` — all three gate CI.
+- `npm run config:check -- --config <path>` validates a config the way a deploy
+  would, with no secrets. An unknown key is a hard error there — the schema is
+  Zod-default, so `consoleEnvs:` for `consoleEnv:` is otherwise stripped in
+  silence. CI runs it over every config in this repo; edit one, run it.
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml`.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
@@ -39,6 +43,7 @@ not a confession.
 | `src/config/schema.ts` — any field, default, or `superRefine` rule         | `servers/interface.md` **and** `strad.config.example.yaml`        |
 | `src/auth/**`                                                              | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                          | `operate/deploy-model.md`                                         |
+| `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate     | `operate/deploy-model.md`, `servers/interface.md`                 |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                      | `operate/telemetry.md`                                            |
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI | `intro/architecture.md`, `operate/telemetry.md`, and every count  |
 | `infra/strad.staging.yaml`                                                 | `operate/operations.md`, `servers/adding.md`                      |
@@ -86,6 +91,9 @@ slop behind when you fix a stale fact.
 - `src/gateway/adapters/` — the one `ServerAdapter` interface (`listTools`,
   `callTool`, `close`) that all three server kinds reduce to.
 - `src/config/schema.ts` — the Zod config schema. It is the product's contract.
+- `src/config/strict.ts` — the deploy-time strict parse. Zod strips unknown keys
+  and boot stays lenient on purpose (a rollback must not become an outage), so
+  "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
 - `servers/bundle/` — one image, 14 mounted MCP servers, one shared Chromium.

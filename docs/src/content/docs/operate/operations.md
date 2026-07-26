@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Eight jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -39,6 +39,12 @@ Runs on PRs and pushes to `main`. Eight jobs, all `runs-on: self-hosted`:
   no token returns `401`**. That last check is _the_ test given strad's
   open-internet posture — an unauthenticated MCP endpoint that ever returned tools
   would be the whole ball game.
+- **`config`** — runs [`check-config`](/operate/deploy-model/#checking-a-config-before-it-deploys)
+  over `strad.config.yaml`, `strad.config.example.yaml` and
+  `infra/strad.staging.yaml`. It needs no secrets, because the check substitutes a
+  dummy value for every `${NAME}`. A key the schema does not define — `consoleEnvs:`
+  for `consoleEnv:` — is stripped silently by Zod and does nothing at runtime, so
+  this is the job that turns that into a failed PR.
 - **`docs_site`** — `npm ci && npm run build` in `docs/`. The documentation site is
   meant to stay true commit-by-commit, so a broken link, bad frontmatter, or a page
   missing from the `sidebar` array fails the PR rather than the deploy.

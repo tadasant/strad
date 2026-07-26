@@ -130,18 +130,26 @@ export function resolveServerView(
   const server = config.servers.find((s) => s.slug === slug);
   if (!server) return { kind: "not_found" };
 
-  const env = withNamespacedFallback(server.slug, serverEnv(server));
+  const declared = withNamespacedFallback(server.slug, serverEnv(server));
+  const value = withNamespacedFallback(
+    server.slug,
+    resolveEnv(serverEnv(server), secrets),
+  );
 
   // Secrets view: the server declares a secrets project. Checked FIRST — a
   // `secrets` server declares no bucket, so the two detectors cannot collide,
   // but the ordering says which concept owns the slug if one ever did.
-  if (env[SECRETS_ENV.projectId]) {
-    return resolveSecretsView(server, env, secrets);
+  if (declared[SECRETS_ENV.projectId]) {
+    return resolveSecretsView(server, declared, value);
   }
 
   // GCS view: the server declares a bucket. That's the whole detector.
-  if (env[GCS_ENV.bucket] || env[GCS_ENV.keyJson] || env[GCS_ENV.clientEmail]) {
-    return resolveGcsView(server, env, secrets);
+  if (
+    declared[GCS_ENV.bucket] ||
+    declared[GCS_ENV.keyJson] ||
+    declared[GCS_ENV.clientEmail]
+  ) {
+    return resolveGcsView(server, declared, value);
   }
 
   return { kind: "no_viewer", server };
@@ -149,21 +157,18 @@ export function resolveServerView(
 
 function resolveSecretsView(
   server: ServerConfig,
-  env: Record<string, string>,
-  secrets: SecretBag,
+  declared: Record<string, string>,
+  value: Record<string, string>,
 ): ServerView {
-  const projectId = tryResolve(env[SECRETS_ENV.projectId] ?? "", secrets) ?? "";
-  const location =
-    tryResolve(env[SECRETS_ENV.location] ?? "", secrets) || undefined;
-  const namespaces = (
-    tryResolve(env[SECRETS_ENV.namespaces] ?? "", secrets) ?? ""
-  )
+  const projectId = value[SECRETS_ENV.projectId] ?? "";
+  const location = value[SECRETS_ENV.location] || undefined;
+  const namespaces = (value[SECRETS_ENV.namespaces] ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const adminRaw = env[SECRETS_ENV.adminKeyJson];
-  const adminJson = adminRaw ? tryResolve(adminRaw, secrets) : undefined;
+  const adminRaw = declared[SECRETS_ENV.adminKeyJson];
+  const adminJson = adminRaw ? value[SECRETS_ENV.adminKeyJson] : undefined;
 
   let account: ServiceAccount | null = null;
   let accountReason: string | undefined;
@@ -189,21 +194,19 @@ function resolveSecretsView(
     namespaces,
     account,
     accountReason,
-    pmApiBase:
-      tryResolve(env[SECRETS_ENV.pmApiBase] ?? "", secrets) || undefined,
-    smApiBase:
-      tryResolve(env[SECRETS_ENV.smApiBase] ?? "", secrets) || undefined,
-    tokenUrl: tryResolve(env[SECRETS_ENV.tokenUrl] ?? "", secrets) || undefined,
+    pmApiBase: value[SECRETS_ENV.pmApiBase] || undefined,
+    smApiBase: value[SECRETS_ENV.smApiBase] || undefined,
+    tokenUrl: value[SECRETS_ENV.tokenUrl] || undefined,
   };
 }
 
 function resolveGcsView(
   server: ServerConfig,
-  env: Record<string, string>,
-  secrets: SecretBag,
+  declared: Record<string, string>,
+  value: Record<string, string>,
 ): ServerView {
-  const bucketRaw = env[GCS_ENV.bucket];
-  const bucket = bucketRaw ? tryResolve(bucketRaw, secrets) : undefined;
+  const bucketRaw = declared[GCS_ENV.bucket];
+  const bucket = bucketRaw ? value[GCS_ENV.bucket] : undefined;
 
   // No bucket resolvable — most likely a `${GCS_BUCKET}` ref not yet injected.
   if (!bucket) {
@@ -219,10 +222,9 @@ function resolveGcsView(
     };
   }
 
-  const prefixRaw = env[GCS_ENV.prefix] ?? "";
-  const prefix = normalisePrefix(tryResolve(prefixRaw, secrets) ?? "");
+  const prefix = normalisePrefix(value[GCS_ENV.prefix] ?? "");
 
-  const { account, reason } = resolveAccount(env, secrets);
+  const { account, reason } = resolveAccount(value);
 
   return {
     kind: "gcs",
@@ -240,12 +242,11 @@ function resolveGcsView(
  *   - remote-filesystem-tmp-public: GCS_CLIENT_EMAIL + GCS_PRIVATE_KEY (two fields only)
  * Support both so the same view scopes to either server.
  */
-function resolveAccount(
-  env: Record<string, string>,
-  secrets: SecretBag,
-): { account: ServiceAccount | null; reason?: string } {
-  const keyJsonRaw = env[GCS_ENV.keyJson];
-  const keyJson = keyJsonRaw ? tryResolve(keyJsonRaw, secrets) : undefined;
+function resolveAccount(value: Record<string, string>): {
+  account: ServiceAccount | null;
+  reason?: string;
+} {
+  const keyJson = value[GCS_ENV.keyJson];
   if (keyJson) {
     try {
       const parsed = JSON.parse(keyJson) as Partial<ServiceAccount>;
@@ -266,14 +267,8 @@ function resolveAccount(
     }
   }
 
-  const clientEmailRaw = env[GCS_ENV.clientEmail];
-  const clientEmail = clientEmailRaw
-    ? tryResolve(clientEmailRaw, secrets)
-    : undefined;
-  const privateKeyRaw = env[GCS_ENV.privateKey];
-  const privateKey = privateKeyRaw
-    ? tryResolve(privateKeyRaw, secrets)
-    : undefined;
+  const clientEmail = value[GCS_ENV.clientEmail];
+  const privateKey = value[GCS_ENV.privateKey];
   if (clientEmail && privateKey) {
     return { account: { client_email: clientEmail, private_key: privateKey } };
   }
@@ -318,6 +313,53 @@ function serverEnv(server: ServerConfig): Record<string, string> {
     return out;
   }
   return {};
+}
+
+/**
+ * What the console can actually SEE for each declared env key.
+ *
+ * Two lookups, and the second one is the whole point of this function.
+ *
+ *   1. The declared value with its `${NAME}` refs resolved from the bag. This is
+ *      the local/dev shape, and the shape of every non-ref literal.
+ *   2. Failing that, the value the DEPLOYMENT baked under the env KEY itself.
+ *
+ * Step 2 exists because a rendered spec does not carry `${NAME}` — it carries the
+ * resolved value, filed under the key the container reads. appspec.ts resolves a
+ * server's `consoleEnv:` at RENDER time and lands
+ * `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON=<the key file>` on core; the ref NAME
+ * (`SECRETS_ADMIN_KEY_JSON`) is deliberately never injected anywhere, because it
+ * names the console's store-ADMIN credential and broadcasting it is exactly what
+ * `consoleEnv:` exists to avoid. Resolving by ref alone therefore asked core's
+ * environment for a name that is guaranteed not to be in it, and every
+ * ref-valued `consoleEnv:` entry read as "declared but not injected" on a
+ * deployment where it was injected perfectly. `/ui/secrets` reported a missing
+ * admin credential in production with the value sitting in core's environment
+ * under the key one line below.
+ *
+ * The ref lookup is tried FIRST so the config stays the source of truth: an
+ * unrelated variable that happens to share a key name cannot shadow a declared
+ * literal.
+ *
+ * A key that resolves neither way is ABSENT from the returned map, which is what
+ * lets the callers tell "declared but unreachable from core" (the `env:`-scoped
+ * case, which wants the "add it under consoleEnv:" nudge) from "not declared".
+ */
+function resolveEnv(
+  env: Record<string, string>,
+  secrets: SecretBag,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, declared] of Object.entries(env)) {
+    const viaRef = tryResolve(declared, secrets);
+    if (viaRef !== undefined) {
+      out[key] = viaRef;
+      continue;
+    }
+    const injected = secrets[key];
+    if (injected !== undefined) out[key] = injected;
+  }
+  return out;
 }
 
 /**
