@@ -1,4 +1,5 @@
 import express, { type Express, type Request, type Response } from "express";
+import type { ConsoleSessions } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
@@ -71,10 +72,19 @@ export interface ConsoleUiOptions {
   parametersStore?: (
     view: Extract<ServerView, { kind: "secrets" }>,
   ) => ParameterStore;
+  /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
+  sessions?: ConsoleSessions | null;
+  /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
+  googleReady?: boolean;
 }
 
 export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
-  const gate = requireConsoleUi({ config: opts.config, env: opts.env });
+  const gate = requireConsoleUi({
+    config: opts.config,
+    env: opts.env,
+    sessions: opts.sessions,
+    googleReady: opts.googleReady,
+  });
   const gcsList = opts.gcsList ?? createGcsLister();
 
   // The parameter forms are urlencoded. Scoped to /ui so it cannot change how

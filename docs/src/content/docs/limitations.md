@@ -78,29 +78,38 @@ difference between calling `good-eggs` directly and calling it through strad.
 `NODE_ENV` or `ALLOW_DEV_AUTH_IN_PRODUCTION`), and it logs loudly.
 
 **It cannot authenticate `/mcp`.** That endpoint takes a static system token and
-nothing else; there is no code path from a console session to it. The Google
-provider, including the `hd` hosted-domain claim check, is fully built and tested —
-it is waiting on credentials.
+nothing else; there is no code path from a console session to it.
 
-**Undo:** provide `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, set
-`auth.google.enabled: true` and `consoleDevBypass.enabled: false`, and delete
-`src/auth/dev.ts` and its call sites. See [Auth](/auth/overview/#console-dev-bypass-temporary).
+Google sign-in is complete in code — the `hd` claim check, the session it
+mints, and the gate that accepts it — and the bypass sits **alongside** it, not
+behind it. What is left is provisioning: an OAuth client for
+`https://strad.tadasant.com/console/oauth/callback` and its two secrets. Staging
+also depends on the bypass, and it is the only way an automated actor reaches the
+console (see #43 in the repo).
 
-### 20. The console "session" is the bootstrap token in a cookie
+**Undo, in this order:** provide `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, set
+`auth.google.enabled: true`, verify a real sign-in in prod, then set
+`consoleDevBypass.enabled: false`, and only then delete `src/auth/dev.ts` and its
+call sites. `src/ui/console-auth.ts` imports from that module; deleting it before
+Google sign-in is verified leaves `/ui` with no fallback authenticator. See
+[Auth](/auth/overview/#console-dev-bypass-temporary).
 
-`/`, `/ui` and `/ui/:server` sit behind the same dev-bypass gate. Because a browser
-navigates between pages, the gate moves the presented `ADMIN_BOOTSTRAP_TOKEN` into
-an HttpOnly, `SameSite=Lax`, Secure-in-prod cookie (`strad_console`) and redirects
-to a clean URL, so the token isn't left in the address bar or in screenshots. That
-cookie is the whole session mechanism. It is scoped to `/` rather than `/ui`, since
-the gate now also covers the landing page; it therefore rides along to `/mcp`,
-where it is inert — that endpoint reads the `Authorization` header via the static
-token store and never looks at cookies.
+### 20. The dev-bypass "session" is still the bootstrap token in a cookie
+
+A Google login mints a real signed, expiring session — see
+[Auth](/auth/overview/#the-console-session). The **bypass** half of the gate is
+what still isn't one: when `ADMIN_BOOTSTRAP_TOKEN` is presented as `?token=`, the
+gate moves it into an HttpOnly, `SameSite=Lax`, Secure-in-prod cookie
+(`strad_console`) and redirects to a clean URL, so the token isn't left in the
+address bar or in screenshots — but the cookie **is** the standing credential,
+re-validated on every request rather than a session in its own right. It is scoped
+to `/` rather than `/ui`, since the gate also covers the landing page; it therefore
+rides along to `/mcp`, where it is inert — that endpoint reads the `Authorization`
+header via the static token store and never looks at cookies.
 
 Same scope as #2: it is console-class only and cannot reach `/mcp`.
 
-**Undo:** it goes away with the dev bypass, replaced by a real signed, expiring
-session once OAuth lands.
+**Undo:** it goes away with the dev bypass itself.
 
 ### 6. Token records live in an env var, not a database
 
@@ -111,15 +120,6 @@ the secret and redeploying.
 **Undo:** implement a DB-backed `TokenStore` — the interface is already the right
 shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. See
 [Auth](/auth/overview/#mcp--static-system-tokens-agents).
-
-### 7. Console OAuth state is in-memory
-
-The OAuth `state → codeVerifier` map is a plain `Map` in `src/http/app.ts`. It does
-not survive a restart and does not span replicas, so a login started on one instance
-cannot complete on another.
-
-**Undo:** back it with Redis or a signed expiring cookie before running a
-multi-instance console.
 
 ## The deployment
 
@@ -314,10 +314,10 @@ The one-time steps that clear most of the list above:
 - The secrets/parameters GCP project plus its three service accounts (viewer,
   admin, resolver) and seeded keys, then the `remote-filesystem-tmp-public` values in
   `/ui/secrets` — clears **#25**.
-- Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) — clears
-  **#2** and **#20**.
+- An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
+  `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Re-point prod at the collapsed bundle, then delete the per-server images and
   workflows — clears **#23**.
 - Mint a dedicated strad GHCR pull token — clears **#5**.
 - Provision Workload Identity Federation, then delete `GCP_SA_KEY` — clears **#8**.
-- Stand up a datastore and a console mint/revoke UI — clears **#6** and **#7**.
+- Stand up a datastore and a console mint/revoke UI — clears **#6**.

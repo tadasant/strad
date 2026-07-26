@@ -77,6 +77,76 @@ The provider is constructed from `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`. Wh
 those are absent it returns `null` and strad falls back to the console dev bypass
 (below).
 
+### The sign-in round trip
+
+```
+GET /ui/secrets            no session      → 302 /console/login?next=%2Fui%2Fsecrets
+GET /console/login         seals the PKCE verifier + state + next into
+                           strad_oauth_tx (HttpOnly, 10 min, Path=/console)
+                                           → 302 accounts.google.com
+GET /console/oauth/callback                → verify hd, mint strad_console_session
+                                           → 302 /ui/secrets
+```
+
+The **authorized redirect URI** to register on the OAuth client is
+`${gateway.publicUrl}/console/oauth/callback` — for prod,
+`https://strad.tadasant.com/console/oauth/callback`.
+
+`next` is sanitised to a same-origin absolute path; a scheme-relative `//host`, a
+full URL, a backslash or a CR/LF all fall back to `/ui`, so the callback cannot be
+turned into an open redirect.
+
+### The console session
+
+A verified identity becomes a **signed, expiring, stateless cookie**
+(`strad_console_session`), and that cookie is what `/`, `/ui` and `/ui/:server`
+accept. It is HttpOnly, `SameSite=Lax`, `Secure` under `NODE_ENV=production`,
+scoped to `/`, and lives **12 hours absolute** — no sliding renewal, so the clock
+starts at sign-in and nothing an attacker holds can extend it. Re-authenticating
+is a redirect, not a password.
+
+Stateless is a deliberate choice over a server-side session table. strad has no
+datastore, and the console component may run more than one replica: a table breaks
+on both — a login begun on replica A cannot be finished on replica B, and a
+redeploy signs everyone out. An HMAC has neither problem. The **same** primitive
+carries the in-flight OAuth transaction, so no login state lives on the server at
+all.
+
+What that costs is per-session revocation: a cookie is valid until it expires.
+Three things bound it.
+
+- The 12-hour absolute lifetime.
+- `hd` is re-checked against the **current** config on every request, and roles are
+  read from the **current** `auth.google.roles` rather than from the cookie. The
+  cookie carries identity (`sub`, `email`, `hd`) and nothing else — tightening
+  `auth.google` takes effect immediately for sessions already issued.
+- Rotating the signing key invalidates every session at once. That is the kill
+  switch, and it is a secret rotation rather than a deploy of new code.
+
+The signing key is `CONSOLE_SESSION_SECRET` when set, and otherwise **derived**
+(HKDF-SHA256) from `GOOGLE_CLIENT_SECRET`, which is necessarily present whenever
+there is a Google login to sign — so sign-in works the moment the OAuth client is
+provisioned, with no second secret to seed and no silent "signed in, but the
+cookie never verifies" state. Set `CONSOLE_SESSION_SECRET` when you want to
+invalidate sessions without touching the OAuth client. The session key and the
+OAuth-transaction key are two separate HKDF derivations, so a value sealed for one
+is unforgeable garbage to the other.
+
+**CSRF on the callback** is the `state` parameter bound to the browser: it is
+sealed into `strad_oauth_tx`, and the callback requires the cookie to verify _and_
+its `state` to constant-time match the one in the URL. The cookie is cleared
+before the code exchange, so a captured callback URL cannot be replayed. A
+callback with no transaction cookie — a stale tab, a forged link — is a `400`, not
+a login.
+
+`auth.google.enabled` alone is **not** enough to make the gate redirect to Google.
+The OAuth client credentials and a session key must both be present; otherwise the
+gate keeps its honest `401` sign-in page and strad warns at boot. The alternative
+is worse than the `401`: a half-configured deployment that redirects to Google and
+dead-ends there is a console reachable by nobody, with nothing to point at.
+
+`GET /console/logout` drops the session.
+
 ### Console dev bypass (temporary)
 
 While Google OAuth credentials are being provisioned, a human can enter `/console`
@@ -84,8 +154,15 @@ with the `ADMIN_BOOTSTRAP_TOKEN`. It is **triple-guarded**: it requires
 `auth.consoleDevBypass.enabled`, `ALLOW_DEV_AUTH=true`, and
 (`NODE_ENV != production` **or** `ALLOW_DEV_AUTH_IN_PRODUCTION`), plus the
 presented bootstrap token — and it logs loudly. **Crucially, it grants only a
-console session and cannot authenticate `/mcp`.** It is slated for deletion once
-OAuth lands — see [Known limitations](/limitations/).
+console session and cannot authenticate `/mcp`.**
+
+It sits **alongside** Google sign-in rather than behind it: the gate resolves a
+Google session first and falls back to the bypass, so a deployment can have both.
+Staging depends on the bypass, and it is the only way an automated actor reaches
+the console at all (see [Known limitations](/limitations/)). Deleting it is a
+separate change, after Google sign-in is verified working in prod — in that order,
+because `src/ui/console-auth.ts` imports from `src/auth/dev.ts` and removing the
+module first leaves `/ui` with no fallback authenticator.
 
 ## Entitlement: the token disposes
 

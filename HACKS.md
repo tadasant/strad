@@ -41,14 +41,23 @@ accepts a static system token — there is no code path from the bypass to it. O
 the open internet, `/mcp` is never left ungated.
 
 **Why.** Google OAuth client credentials (`GOOGLE_CLIENT_ID` /
-`GOOGLE_CLIENT_SECRET`) are being provisioned by the human and were not available
-tonight. The full Google provider is built and tested (`src/auth/google.ts`,
-including the `hd` hosted-domain check); it lights up the moment the creds exist.
+`GOOGLE_CLIENT_SECRET`) are being provisioned by the human. The Google path is
+complete in code — the provider and its `hd` hosted-domain check
+(`src/auth/google.ts`), the signed session the callback mints
+(`src/auth/session.ts`), and the gate that accepts it
+(`src/ui/console-auth.ts`) — and the bypass sits **alongside** it, not behind it.
+A deployment with credentials uses Google; one without still has a door.
 
-**Undo.** Provide `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (as
-`strad-staging-*` secrets), set `auth.google.enabled: true`, and set
-`auth.consoleDevBypass.enabled: false` (or just unset `ALLOW_DEV_AUTH`). Then
-delete `src/auth/dev.ts` and its call sites.
+**Undo, in this order.** Create a Web-application OAuth client whose authorized
+redirect URI is `https://strad.tadasant.com/console/oauth/callback` (there is no
+`gcloud` for this — `gcloud iam oauth-clients` is Workforce Identity Federation, a
+different product; a classic client is Cloud Console only). Provide
+`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as `strad-<env>-*` secrets, set
+`auth.google.enabled: true`, and **verify a real sign-in in prod**. Only then set
+`auth.consoleDevBypass.enabled: false` (or unset `ALLOW_DEV_AUTH`), and only then
+delete `src/auth/dev.ts` and its call sites — `src/ui/console-auth.ts` imports
+from it, so deleting it earlier leaves `/ui` with no fallback authenticator.
+Staging depends on the bypass too. Upstream: tadasant/strad#6.
 
 ---
 
@@ -154,13 +163,12 @@ build a `/console` UI for mint/revoke. Then `STRAD_TOKENS` goes away.
 
 ## 7. Console OAuth state is in-memory
 
-**What.** The OAuth `state → codeVerifier` map in `src/http/app.ts` is a plain
-`Map`. It does not survive a restart and is not shared across replicas.
-
-**Why.** Fine for a single-instance console; not worth a session store tonight.
-
-**Undo.** Back it with Redis or signed, expiring cookies before the console runs
-multi-instance.
+**✅ RESOLVED.** The `state → codeVerifier` map is gone. The PKCE verifier, the
+CSRF `state` and the post-login return path now travel in one signed, HttpOnly,
+10-minute cookie (`strad_oauth_tx`, `src/auth/session.ts`) — the same sealing
+primitive as the console session, under a separately derived key. No login state
+lives on the server, so any replica can finish a login any other replica began,
+and a redeploy mid-login is not a failed login. Upstream: tadasant/strad#11.
 
 ---
 
@@ -460,14 +468,16 @@ push.
 `feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
 it is the standing check for `servers/good-eggs`.
 
-## 20. The human /ui console "session" is the bootstrap token in a cookie
+## 20. The dev-bypass /ui "session" is the bootstrap token in a cookie
 
-**What.** The human resource browser at `/ui` (and `/ui/:server`) is gated by the
-same console SSO as `/console` (see hack #2). Because a browser navigates between
-pages, once `ADMIN_BOOTSTRAP_TOKEN` is presented as `?token=…`, the gate moves it
-into an **HttpOnly, SameSite=Lax, Secure-in-prod cookie** (`strad_console`) and
-redirects to the clean URL, so the token is not left in the address bar, history
-or screenshots. That cookie is the entire "session" for now.
+**What.** A Google login now mints a real signed, expiring session
+(`strad_console_session`, `src/auth/session.ts`), and the gate accepts it as a
+first-class principal. The **bypass** half is what is still not a session: once
+`ADMIN_BOOTSTRAP_TOKEN` is presented as `?token=…`, the gate moves it into an
+**HttpOnly, SameSite=Lax, Secure-in-prod cookie** (`strad_console`) and redirects
+to the clean URL, so the token is not left in the address bar, history or
+screenshots — but that cookie holds the standing credential itself, re-validated
+on every request.
 
 **Crucial scope.** Identical to hack #2: this gate is `/console`-class only. It
 CANNOT authenticate `/mcp` — that endpoint takes a static system token and
@@ -475,16 +485,13 @@ nothing else (`src/auth/index.ts`), and there is no code path from this cookie t
 it. `/ui` is HUMAN-facing HTML; it is not the agent endpoint.
 
 **Why.** Google Workspace OAuth credentials are not provisioned yet (hack #2), so
-the dev bypass is the only working door. Reusing the already-present bootstrap
-token as the cookie value avoids inventing a signing key for a throwaway session
-mechanism tonight. The cookie holds a secret the operator already has, HttpOnly
-so page JS cannot read it.
+the bypass is still the only working door on a deployment without them. Reusing
+the already-present bootstrap token as the cookie value avoids a second signing
+key for a mechanism that is scheduled for deletion. The cookie holds a secret the
+operator already has, HttpOnly so page JS cannot read it.
 
-**Undo.** When `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` land (hack #2 undo),
-`/ui`'s gate redirects to real OAuth and the cookie becomes a proper signed,
-expiring session (Redis or a signed cookie — same upgrade hack #7 wants for the
-OAuth `state` map). Then this token-in-a-cookie stand-in goes away with the rest
-of the dev bypass.
+**Undo.** It goes away with the dev bypass itself (hack #2 undo), once Google
+sign-in is verified working in prod.
 
 ---
 

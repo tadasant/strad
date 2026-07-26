@@ -1,7 +1,26 @@
 import express, { type Express } from "express";
 import { authenticateConsoleBypass, devBypassStatus } from "../auth/dev.ts";
-import { googleProviderFromEnv, AuthError } from "../auth/google.ts";
+import {
+  googleProviderFromEnv,
+  AuthError,
+  type GoogleIdentity,
+  type PendingAuth,
+} from "../auth/google.ts";
+import {
+  clearOauthTxCookie,
+  clearSessionCookie,
+  consoleSessionsFromEnv,
+  issueOauthTxCookie,
+  issueSessionCookie,
+  OAUTH_TX_COOKIE,
+  readCookie,
+  sanitizeNext,
+  stateMatches,
+  type ConsoleSessions,
+  type OauthTxPayload,
+} from "../auth/session.ts";
 import type { TokenStore } from "../auth/tokens.ts";
+import { googlePrincipal } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
@@ -26,6 +45,18 @@ export interface AppOptions {
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
   parametersStore?: ConsoleUiOptions["parametersStore"];
+  /**
+   * Test seam: substitute the Google OAuth provider. A real round-trip needs
+   * accounts.google.com, so the callback→session→gate path is exercised with a
+   * stub that returns an already-verified identity.
+   */
+  googleProvider?: ConsoleOAuthProvider | null;
+}
+
+/** The slice of GoogleOAuthProvider the console actually drives. */
+export interface ConsoleOAuthProvider {
+  beginAuth(): PendingAuth;
+  completeAuth(code: string, codeVerifier: string): Promise<GoogleIdentity>;
 }
 
 export function createApp(opts: AppOptions): Express {
@@ -63,7 +94,11 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.mode === "core") {
-    mountConsole(app, opts, env);
+    // Resolved ONCE and shared: /console begins the login and mints the session,
+    // /ui verifies it. Two independent readings of "is Google usable?" is how
+    // you get a gate that redirects into a flow that cannot complete.
+    const auth = resolveConsoleAuth(opts, env);
+    mountConsole(app, opts, env, auth);
     // The human, SSO-gated surfaces: the landing page at "/" and the resource
     // browser at /ui. Same gate as /console; not /mcp.
     mountConsoleUi(app, {
@@ -72,10 +107,77 @@ export function createApp(opts: AppOptions): Express {
       env,
       gcsList: opts.gcsList,
       parametersStore: opts.parametersStore,
+      sessions: auth.sessions,
+      googleReady: auth.ready,
     });
   }
 
   return app;
+}
+
+export interface ConsoleAuth {
+  google: ConsoleOAuthProvider | null;
+  sessions: ConsoleSessions | null;
+  /** Google sign-in can complete end to end: provider AND session key exist. */
+  ready: boolean;
+  redirectUri: string;
+}
+
+/**
+ * Decide, once, what the human door is.
+ *
+ * `ready` is deliberately narrower than `auth.google.enabled`. If the flag alone
+ * flipped the gate, enabling it without seeding the OAuth client would make the
+ * console STRICTLY less reachable: the honest 401 becomes a redirect into a flow
+ * that cannot complete, and a console reachable by nobody has nothing to point
+ * at. Both halves must be present, and a half-configured deployment says so at
+ * boot rather than at 3am.
+ */
+export function resolveConsoleAuth(
+  opts: AppOptions,
+  env: NodeJS.ProcessEnv,
+  log: (msg: string) => void = console.warn,
+): ConsoleAuth {
+  const cfg = opts.config;
+  const publicUrl = cfg.gateway.publicUrl ?? "";
+  const redirectUri = `${publicUrl.replace(/\/$/, "")}/console/oauth/callback`;
+  const enabled = cfg.auth.google?.enabled === true;
+
+  const google =
+    opts.googleProvider !== undefined
+      ? opts.googleProvider
+      : enabled && cfg.auth.google
+        ? googleProviderFromEnv(cfg.auth.google.hostedDomain, redirectUri, env)
+        : null;
+
+  const sessions = consoleSessionsFromEnv(env);
+  const ready = enabled && google !== null && sessions !== null;
+
+  if (ready) {
+    // The one detail that cannot be verified from inside the process: whether
+    // the OAuth client registered in Google's console names THIS URI. A
+    // mismatch is a redirect_uri_mismatch at sign-in, so print the exact string
+    // to compare against.
+    log(
+      `[strad] Google console sign-in is live. The OAuth client's authorized ` +
+        `redirect URI must be exactly: ${redirectUri}`,
+    );
+  }
+
+  if (enabled && !ready) {
+    // Both env vars are optional in scripts/render-spec.ts, so a typo'd secret
+    // name is otherwise a SILENT no-op: the provider comes back null and the
+    // console quietly has no front door.
+    log(
+      "[strad] auth.google.enabled is true but Google sign-in cannot complete: " +
+        (google === null
+          ? "GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET are not both set"
+          : "no session key (set CONSOLE_SESSION_SECRET or GOOGLE_CLIENT_SECRET)") +
+        ". The console falls back to the dev bypass.",
+    );
+  }
+
+  return { google, sessions, ready, redirectUri };
 }
 
 /**
@@ -85,20 +187,50 @@ export function createApp(opts: AppOptions): Express {
  * Either way it is authenticated — strad is on the open internet and there is
  * no network perimeter behind it, so an unauthenticated console is not an
  * option even in "dev mode".
+ *
+ * Routes:
+ *   GET /console                — status JSON, or the start of a Google login
+ *   GET /console/login          — start a Google login, with `?next=`
+ *   GET /console/oauth/callback — finish it: verify, mint the session, redirect
+ *   GET /console/logout         — drop the session
  */
-function mountConsole(app: Express, opts: AppOptions, env: NodeJS.ProcessEnv) {
+function mountConsole(
+  app: Express,
+  opts: AppOptions,
+  env: NodeJS.ProcessEnv,
+  auth: ConsoleAuth,
+) {
   const cfg = opts.config;
-  const publicUrl = cfg.gateway.publicUrl ?? "";
-  const redirectUri = `${publicUrl.replace(/\/$/, "")}/console/oauth/callback`;
+  const { google, sessions } = auth;
 
-  const google = cfg.auth.google?.enabled
-    ? googleProviderFromEnv(cfg.auth.google.hostedDomain, redirectUri, env)
-    : null;
-
-  // state -> codeVerifier. In-memory, so it does not survive a restart or span
-  // replicas. Fine for a single-instance console; a real session store is the
-  // upgrade (see HACKS.md).
-  const pending = new Map<string, string>();
+  /**
+   * Begin a login.
+   *
+   * The PKCE verifier, the CSRF `state` and the return path all travel in ONE
+   * signed, short-lived, HttpOnly cookie rather than a server-side map. That is
+   * what makes the console horizontally scalable: any replica can finish a login
+   * any other replica began, and a redeploy mid-login is not a failed login.
+   */
+  function beginLogin(res: express.Response, next: string): void {
+    if (!google || !sessions) {
+      res.status(404).json({ error: "google_oauth_not_configured" });
+      return;
+    }
+    const pending = google.beginAuth();
+    issueOauthTxCookie(
+      res,
+      sessions.tx,
+      {
+        // The provider's state, sealed verbatim: it is the value Google echoes
+        // back, so it has to be the value we compare against.
+        state: pending.state,
+        verifier: pending.codeVerifier,
+        next: sanitizeNext(next),
+      },
+      env,
+    );
+    res.redirect(302, pending.url);
+  }
 
   app.get("/console", (req, res) => {
     const bypass = authenticateConsoleBypass(
@@ -124,10 +256,26 @@ function mountConsole(app: Express, opts: AppOptions, env: NodeJS.ProcessEnv) {
       return;
     }
 
-    if (google) {
-      const { state, codeVerifier, url } = google.beginAuth();
-      pending.set(state, codeVerifier);
-      res.redirect(url);
+    // Already signed in with Google: report it rather than looping them back
+    // through consent.
+    const signedIn = googlePrincipal(req.headers.cookie, sessions, cfg);
+    if (signedIn) {
+      res.json({
+        signedInAs: signedIn.label,
+        via: "google",
+        hd: cfg.auth.google?.hostedDomain,
+        roles: signedIn.roles,
+        servers: cfg.servers.map((s) => ({
+          slug: s.slug,
+          kind: s.kind,
+          enabled: s.enabled,
+        })),
+      });
+      return;
+    }
+
+    if (auth.ready) {
+      beginLogin(res, sanitizeNext(req.query.next));
       return;
     }
 
@@ -140,36 +288,57 @@ function mountConsole(app: Express, opts: AppOptions, env: NodeJS.ProcessEnv) {
     });
   });
 
+  // The gate sends people here with the page they were trying to reach. Always
+  // a fresh login, so a stale session cookie cannot wedge someone out.
+  app.get("/console/login", (req, res) => {
+    beginLogin(res, sanitizeNext(req.query.next));
+  });
+
   app.get("/console/oauth/callback", async (req, res) => {
-    if (!google) {
+    if (!google || !sessions) {
       res.status(404).json({ error: "google_oauth_not_configured" });
       return;
     }
 
-    const state = String(req.query.state ?? "");
-    const code = String(req.query.code ?? "");
-    const verifier = pending.get(state);
+    const tx = sessions.tx.unseal<OauthTxPayload>(
+      readCookie(req.headers.cookie, OAUTH_TX_COOKIE),
+    );
+    // One-shot: whatever happens next, this transaction is spent. Clearing it
+    // before the exchange means a replayed callback cannot re-run the exchange.
+    clearOauthTxCookie(res, env);
 
-    // A callback whose state we never issued is either a stale tab or CSRF.
-    // Either way it is not a login.
-    if (!verifier) {
+    // No transaction cookie is a stale tab, a cross-origin forgery, or a login
+    // begun more than ten minutes ago. None of them is a sign-in.
+    if (!tx) {
       res.status(400).json({ error: "unknown_state" });
       return;
     }
-    pending.delete(state);
+    // The state in the URL must be the state we sealed for THIS browser. The
+    // signature proves the cookie is ours; this proves the callback is its
+    // partner, which is the CSRF check.
+    if (!stateMatches(String(req.query.state ?? ""), tx.state)) {
+      res.status(400).json({ error: "state_mismatch" });
+      return;
+    }
 
     try {
-      const identity = await google.completeAuth(code, verifier);
-      res.json({
-        signedInAs: identity.email,
-        via: "google",
-        hd: identity.hd,
-        roles: cfg.auth.google?.roles ?? [],
-      });
+      const identity = await google.completeAuth(
+        String(req.query.code ?? ""),
+        tx.verifier,
+      );
+      issueSessionCookie(res, sessions.session, identity, env);
+      // Back to the page they asked for, as a human expects — not JSON.
+      res.redirect(302, sanitizeNext(tx.next));
     } catch (err) {
       const message = err instanceof AuthError ? err.message : "sign-in failed";
       res.status(403).json({ error: "forbidden", message });
     }
+  });
+
+  app.get("/console/logout", (_req, res) => {
+    clearSessionCookie(res, env);
+    clearOauthTxCookie(res, env);
+    res.redirect(302, "/");
   });
 }
 
