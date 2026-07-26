@@ -53,8 +53,8 @@ class StaleCredentialError extends Error {
  * `endpoint()` is resolved on EVERY operation rather than captured once at
  * construction, because the URL and headers may contain `${SECRET}` references
  * whose values live in a store that a human can change while this process runs.
- * Baking them into the constructor is precisely what used to make a rotated
- * credential require a redeploy.
+ * Baking them into the constructor is what makes a rotated credential require a
+ * redeploy.
  *
  * The cost is a map lookup against a warm cache in the common case (see
  * src/secrets/provider/store.ts), not a network call. When the resolved endpoint
@@ -68,8 +68,21 @@ export class HttpServerAdapter implements ServerAdapter {
 
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
-  /** Digest of the endpoint the cached connection was built with. */
+  /** Digest of the credential currently believed current. */
   private fingerprint: string | null = null;
+  /**
+   * Bumped whenever the credential changes.
+   *
+   * The fingerprint alone cannot serve as the "is this attempt still valid"
+   * check, because `reset()` — which every request-path failure calls — would
+   * have to clear it, and a cleared fingerprint reads as a rotation to any
+   * in-flight connect, making it discard a perfectly good connection. Separating
+   * "what the credential is" from "how many times it has changed" lets a dropped
+   * SOCKET and a rotated CREDENTIAL stop being the same event.
+   */
+  private epoch = 0;
+  /** Set by close(), so a late attempt cannot revive a shut-down adapter. */
+  private closed = false;
 
   constructor(
     private readonly opts: {
@@ -115,20 +128,41 @@ export class HttpServerAdapter implements ServerAdapter {
    * is the whole runtime-rotation mechanism.
    */
   private async connect(attemptsLeft = 3): Promise<Client> {
+    // Snapshot the epoch BEFORE resolving. `endpoint()` can await (a cache miss
+    // reaches the store), so two callers can resolve interleaved and a slow one
+    // can return older values than a fast one that already landed. Comparing
+    // against the epoch as it was when THIS resolution started is what stops a
+    // late straggler from installing a superseded credential over a newer one.
+    const startedAt = this.epoch;
     const endpoint = await this.opts.endpoint();
     const fingerprint = fingerprintOf(endpoint);
 
-    if (this.fingerprint !== null && this.fingerprint !== fingerprint) {
-      // Rotated. Abandon the cached client AND any in-flight connect, both of
-      // which are bound to the superseded credential.
-      this.reset();
+    if (
+      startedAt === this.epoch &&
+      this.fingerprint !== null &&
+      this.fingerprint !== fingerprint
+    ) {
+      // Rotated, and nothing newer has been observed since this resolution
+      // began. Abandon the cached client and any in-flight connect: both are
+      // bound to the superseded credential.
+      this.epoch += 1;
+      this.fingerprint = fingerprint;
+      this.dropClient();
       this.connecting = null;
+    } else if (this.fingerprint === null) {
+      this.fingerprint = fingerprint;
     }
-    this.fingerprint = fingerprint;
 
     if (this.client) return this.client;
-    if (this.connecting) return this.connecting;
 
+    // Join an in-flight attempt — but through the same handler below, not by
+    // returning its promise raw. A raw return skips the retry and the
+    // UpstreamError wrap, so a joiner would receive a StaleCredentialError
+    // verbatim out of listTools()/callTool().
+    const existing = this.connecting;
+    if (existing) return this.settle(existing, attemptsLeft);
+
+    const epoch = this.epoch;
     this.connecting = (async () => {
       const transport = new StreamableHTTPClientTransport(
         new URL(endpoint.url),
@@ -180,13 +214,13 @@ export class HttpServerAdapter implements ServerAdapter {
       await this.hop("connect", () => client.connect(transport));
 
       // Only publish this client if the credential it was built with is still
-      // the current one. Two concurrent calls straddling a rotation would
-      // otherwise race: the OLD one can finish last and clobber `this.client`
-      // with a connection carrying the superseded Authorization header — while
-      // `this.fingerprint` says "new", so nothing ever reconnects and the
-      // rotation is permanently invisible. Losing the race means throwing this
-      // connection away, not installing it.
-      if (this.fingerprint !== fingerprint) {
+      // the current one, and the adapter is still open. Two concurrent calls
+      // straddling a rotation would otherwise race: the OLD one can finish last
+      // and clobber `this.client` with a connection carrying the superseded
+      // Authorization header — while `this.fingerprint` already reads "new", so
+      // nothing ever reconnects and the rotation is permanently invisible.
+      // Losing the race means throwing this connection away, not installing it.
+      if (this.epoch !== epoch || this.closed) {
         void client.close().catch(() => {});
         throw new StaleCredentialError(this.slug);
       }
@@ -195,22 +229,44 @@ export class HttpServerAdapter implements ServerAdapter {
     })();
 
     const attempt = this.connecting;
+    // Clear only OUR attempt. A blanket `this.connecting = null` would also wipe
+    // a newer attempt that a rotation started while this one was in flight,
+    // sending the next caller off to open a third connection.
+    void attempt
+      .catch(() => {})
+      .finally(() => {
+        if (this.connecting === attempt) this.connecting = null;
+      });
+
+    return this.settle(attempt, attemptsLeft);
+  }
+
+  /**
+   * Await one connect attempt, translating its failures.
+   *
+   * Both the caller that STARTED an attempt and any caller that joined one go
+   * through here, so the retry and the error wrapping apply identically. A
+   * `StaleCredentialError` is internal and must never escape: it means the
+   * credential moved mid-handshake, which is a reason to try again, not an error
+   * the client asked about.
+   */
+  private async settle(
+    attempt: Promise<Client>,
+    attemptsLeft: number,
+  ): Promise<Client> {
     try {
       return await attempt;
     } catch (err) {
-      if (err instanceof StaleCredentialError && attemptsLeft > 1) {
-        // The credential moved under us mid-handshake. Retry against whatever is
-        // current now; the caller should never see this. Bounded, so a rotation
-        // arriving faster than a handshake completes fails loudly instead of
-        // spinning.
+      if (
+        err instanceof StaleCredentialError &&
+        attemptsLeft > 1 &&
+        !this.closed
+      ) {
+        // Bounded, so a rotation arriving faster than a handshake completes
+        // fails loudly rather than spinning.
         return this.connect(attemptsLeft - 1);
       }
       throw new UpstreamError(this.slug, err);
-    } finally {
-      // Clear only OUR attempt. A blanket `this.connecting = null` would also
-      // wipe a newer attempt that a rotation started while this one was in
-      // flight, sending the next caller off to open a third connection.
-      if (this.connecting === attempt) this.connecting = null;
     }
   }
 
@@ -359,20 +415,32 @@ export class HttpServerAdapter implements ServerAdapter {
     return prefix ? `${prefix}__${name}` : name;
   }
 
-  private reset(): void {
+  /**
+   * Drop the cached connection after a transport failure.
+   *
+   * Deliberately does NOT touch the fingerprint. A dead socket says nothing
+   * about the credential, and clearing it would manufacture a phantom rotation:
+   * an in-flight connect would see its epoch check fail, close a working
+   * connection, and handshake again for no reason.
+   */
+  private dropClient(): void {
     const client = this.client;
     this.client = null;
-    // Drop the fingerprint with the connection. Leaving it set would make the
-    // NEXT connect believe it is reusing a credential it no longer holds a
-    // connection for — harmless today, but the two are one piece of state.
-    this.fingerprint = null;
     void client?.close().catch(() => {});
   }
 
+  private reset(): void {
+    this.dropClient();
+  }
+
   async close(): Promise<void> {
+    this.closed = true;
     const client = this.client;
     this.client = null;
     this.fingerprint = null;
+    // Abandon any in-flight attempt too. Without this it completes after the
+    // adapter is shut, and would open a fresh connection on a closed adapter.
+    this.connecting = null;
     await client?.close().catch(() => {});
   }
 }

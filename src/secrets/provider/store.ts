@@ -1,4 +1,5 @@
 import type { ParameterResolver } from "../parameters/types.ts";
+import { SnapshotCache } from "./snapshot.ts";
 import type { SecretProvider } from "./types.ts";
 
 /**
@@ -25,10 +26,9 @@ import type { SecretProvider } from "./types.ts";
  * ## Why the cache is a namespace SNAPSHOT and not a per-name entry
  *
  * A parameter store's natural read is a namespace, not a name — `resolve()` is
- * one list plus one render per parameter. A generic per-name cache wrapped
- * around `get()` would turn a page of ten `${REF}`s into ten full listings. So
- * the cache lives here, at the layer that knows the backend's grain, and holds
- * ONE snapshot of the whole namespace.
+ * one list plus one render per parameter. A per-name cache would turn a page of
+ * ten `${REF}`s into ten full listings. So the cache (see snapshot.ts, shared
+ * with the registry's `params:` resolution) holds ONE map of the whole namespace.
  *
  * ## What "immediately" means, precisely
  *
@@ -67,60 +67,50 @@ export interface StoreSecretProviderOptions {
 export const DEFAULT_TTL_MS = 60_000;
 export const DEFAULT_NEGATIVE_TTL_MS = 10_000;
 
-interface Snapshot {
-  values: Record<string, string>;
-  fetchedAt: number;
-}
-
 export class StoreSecretProvider implements SecretProvider {
   readonly name: string;
 
-  private readonly ttlMs: number;
+  private readonly cache: SnapshotCache;
   private readonly negativeTtlMs: number;
   private readonly now: () => number;
-  private readonly warn: (message: string) => void;
-
-  private snapshot: Snapshot | null = null;
-  /** Single-flight: concurrent misses share one backend read. */
-  private inflight: Promise<void> | null = null;
   private lastMissRefreshAt = -Infinity;
-  /**
-   * Bumped by `invalidate()`. A refresh commits its result only if this has not
-   * changed since it started — see the comment there for the race it closes.
-   */
-  private generation = 0;
 
   constructor(
-    private readonly resolver: ParameterResolver,
+    resolver: ParameterResolver,
     /** The namespace this provider reads, e.g. `/strad/prod/gateway/static/`. */
     private readonly namespace: string,
     opts: StoreSecretProviderOptions = {},
   ) {
     this.name = `store:${namespace}`;
-    this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.negativeTtlMs = opts.negativeTtlMs ?? DEFAULT_NEGATIVE_TTL_MS;
     this.now = opts.now ?? Date.now;
-    this.warn =
-      opts.onWarn ??
-      ((message: string) => {
-        console.warn(message);
-      });
+    this.cache = new SnapshotCache((ns) => resolver.resolve(ns), {
+      ttlMs: opts.ttlMs ?? DEFAULT_TTL_MS,
+      now: opts.now,
+      onWarn: opts.onWarn,
+      label: `secret provider "${this.name}"`,
+    });
   }
 
   async get(name: string): Promise<string | null> {
-    await this.ensureFresh();
+    const values = await this.cache.get(this.namespace);
 
-    const hit = this.snapshot?.values[name];
+    const hit = values[name];
     if (hit !== undefined) return hit;
 
     // A MISS. The snapshot may simply predate the secret being added, which is
     // the case this whole class exists to serve. Force one refresh — but no more
     // often than negativeTtlMs, so an unknown ref stays cheap.
+    //
+    // Skip it when the values we just read were fetched moments ago: on a cold
+    // start the `get` above has already done a live read, and refreshing again
+    // would list the namespace twice to learn the same thing.
     const now = this.now();
-    if (now - this.lastMissRefreshAt >= this.negativeTtlMs) {
+    const justFetched = this.cache.age(this.namespace) < this.negativeTtlMs;
+    if (!justFetched && now - this.lastMissRefreshAt >= this.negativeTtlMs) {
       this.lastMissRefreshAt = now;
-      await this.refresh();
-      const retry = this.snapshot?.values[name];
+      await this.cache.refresh(this.namespace);
+      const retry = this.cache.peek(this.namespace)?.[name];
       if (retry !== undefined) return retry;
     }
 
@@ -131,67 +121,7 @@ export class StoreSecretProvider implements SecretProvider {
     // The snapshot is whole-namespace, so a single name cannot be dropped in
     // isolation — and dropping the lot is correct anyway: the caller just wrote
     // to the store, and the write may have touched more than it names.
-    this.snapshot = null;
+    this.cache.invalidate(this.namespace);
     this.lastMissRefreshAt = -Infinity;
-
-    // Bumping the generation is what makes the invalidate STICK. Without it:
-    // a request triggers a refresh, that read captures the pre-write state, the
-    // console then writes and calls invalidate(), and the in-flight read lands
-    // afterwards and installs the values it captured BEFORE the write. The
-    // snapshot would look fresh, be stale, and stay that way for a full TTL —
-    // silently turning "a console write is instant" into "a console write is
-    // ignored". A refresh that started before this point no longer commits.
-    this.generation += 1;
   }
-
-  private async ensureFresh(): Promise<void> {
-    const snap = this.snapshot;
-    if (snap && this.now() - snap.fetchedAt < this.ttlMs) return;
-    await this.refresh();
-  }
-
-  private async refresh(): Promise<void> {
-    // Single-flight. Without this, a burst of concurrent requests on a cold or
-    // just-expired snapshot each opens its own listing of the namespace.
-    if (this.inflight) return this.inflight;
-
-    const startedAt = this.generation;
-
-    this.inflight = (async () => {
-      try {
-        const values = await this.resolver.resolve(this.namespace);
-        // Discard a result that an invalidate() has already superseded. The read
-        // is not wrong, just out of date: it began before a write we were told
-        // about, so installing it would resurrect the pre-write values.
-        if (this.generation !== startedAt) return;
-        this.snapshot = { values, fetchedAt: this.now() };
-      } catch (err) {
-        if (!this.snapshot) throw err;
-        // Serve stale. The message names the provider and the error; it never
-        // names a secret, and it certainly never carries a value.
-        this.warn(
-          `[strad] secret provider "${this.name}" refresh failed; serving the ` +
-            `last known good snapshot: ${errorSummary(err)}`,
-        );
-      } finally {
-        this.inflight = null;
-      }
-    })();
-
-    return this.inflight;
-  }
-}
-
-/**
- * A one-line description of a failure, safe to log.
- *
- * The backend client (parameters/gcp.ts) already builds its errors from a method
- * and a resource path with the query string and any `:verb` stripped, so an
- * error message cannot carry a value. This function exists so that a NON-store
- * error (a TypeError, a network stack trace) is also flattened to one line
- * before it reaches a log.
- */
-function errorSummary(err: unknown): string {
-  if (err instanceof Error) return `${err.name}: ${err.message}`;
-  return "unknown error";
 }

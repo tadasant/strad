@@ -53,11 +53,17 @@ async function main(): Promise<void> {
     );
   }
 
-  // Telemetry starts FIRST — before the registry connects to anything and before
-  // we listen — so that a slow or failing boot is itself observable. A boot that
+  // Telemetry starts before the registry connects to anything and before we
+  // listen, so that a slow or failing boot is itself observable. A boot that
   // dies in Registry.build() because a bundle is unreachable is exactly the kind
   // of thing you want a trace for, and starting telemetry afterwards would mean
   // the only boots we can see are the ones that succeeded.
+  //
+  // Exactly one thing precedes it: hydration, above, which is what SUPPLIES
+  // `OTEL_EXPORTER_OTLP_HEADERS` to a store-backed deployment. The window this
+  // opens is bounded rather than open-ended — every store read carries a
+  // deadline (see parameters/gcp.ts) and hydration swallows its own failures —
+  // so a sick store delays this boot by seconds, it does not hang it forever.
   //
   // With no OTEL_EXPORTER_OTLP_ENDPOINT this starts no SDK, logs one line, and
   // returns a handle whose shutdown() is a no-op. It cannot fail the boot: every

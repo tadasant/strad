@@ -173,9 +173,9 @@ them as App Platform SECRET env vars.
 
 **Note.** This is _not_ really a hack — it is a supported posture, and the one
 that keeps strad deployable with no vendor attached: the container holds no GCP
-credential. Its cost is now named rather than implied — a rotated secret does
-nothing until the deploy runs again — and `gcp-parameter-store` is the answer for
-a deployment that wants runtime rotation (see hack #27 and
+credential. Its cost is explicit — a rotated secret does nothing
+until the deploy runs again — and `gcp-parameter-store` is the answer for a
+deployment that wants runtime rotation (see hack #27 and
 `docs/.../operate/secrets.md`). This entry is listed here only because
 `secrets-sync.yml`/`deploy-staging.yml` authenticate to GCP with **`GCP_SA_KEY`**,
 a long-lived service-account key.

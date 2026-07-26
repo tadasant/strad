@@ -218,7 +218,8 @@ SECRET env vars, exactly like every other secret.
 
 `gateway.secrets.provider: gcp-parameter-store` makes a running gateway resolve
 `${NAME}` from the parameter store with a TTL, so a rotation reaches production
-with no deploy and the app spec carries exactly one secret. It is implemented and
+with no deploy and the gateway's only secret in the spec is the store credential
+itself. It is implemented and
 tested end-to-end against the in-memory fake — a real MCP client, through a real
 gateway, to an upstream that rejects a stale token — and **no deployment runs it
 yet**. Staging and prod both still use `provider: env`, unchanged.

@@ -61,6 +61,25 @@ export const CORE_BOOT_ENV_KEYS = [
 ] as const;
 
 /**
+ * The boot keys a deployment cannot function without.
+ *
+ * Under the `env` provider these are `secret(key, required)` in the renderer, so
+ * a missing one fails the deploy. The store-backed path must hold the same line
+ * or it is a fail-closed regression wearing a preflight: without `STRAD_TOKENS`
+ * the gateway comes up with `/mcp` rejecting every request, and without
+ * `STRAD_INTERNAL_TOKEN` core cannot authenticate to its own bundles. Both are
+ * silent at deploy time and obvious only in production.
+ *
+ * Everything else in `CORE_BOOT_ENV_KEYS` is genuinely optional — a deployment
+ * with no console has no `GOOGLE_CLIENT_SECRET`, and demanding one would fail
+ * deploys that are correct.
+ */
+export const REQUIRED_BOOT_ENV_KEYS = [
+  "STRAD_TOKENS",
+  "STRAD_INTERNAL_TOKEN",
+] as const;
+
+/**
  * The subset a BUNDLE component reads.
  *
  * A bundle answers the core over the private network and serves no console and

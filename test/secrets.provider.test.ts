@@ -153,7 +153,7 @@ describe("StoreSecretProvider", () => {
     // A store outage must not take /mcp down.
     expect(await p.get("TOKEN")).toBe("v1");
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("serving the last known good snapshot");
+    expect(warnings[0]).toContain("serving the last known good values");
   });
 
   it("propagates the error when the FIRST read fails — there is nothing to serve", async () => {
@@ -235,7 +235,10 @@ describe("StoreSecretProvider", () => {
 
     f.failWith(null);
     f.set({ TOKEN: "v2" });
-    c.advance(2_000);
+    // Past the post-failure backoff. Inside it the provider deliberately does
+    // NOT retry — during an outage, one failed call and one log line per request
+    // turns a degraded dependency into a self-inflicted load problem.
+    c.advance(10_000);
     expect(await p.get("TOKEN")).toBe("v2");
   });
 });

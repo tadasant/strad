@@ -186,6 +186,32 @@ const TELEMETRY_ENV_KEYS = new Set([
 ]);
 
 /**
+ * SECRETs that must reach the strad image and STOP there.
+ *
+ * A SECRET-typed entry in `opts.env` is BROADCAST — see the supplementary branch
+ * below, which forwards every one of them to each supplementary component. That
+ * is right for a credential the servers themselves need and wrong for one that
+ * only strad's own process uses.
+ *
+ * The store credential is the sharp case. It can read every value in the gateway
+ * namespace — the token store, the OAuth client secret, every third-party bearer
+ * token — so broadcasting it would put a key to all of them inside `good-eggs`,
+ * `fetchpet` and every other third-party image, none of which have any use for
+ * it. One env-dumping tool or one compromised upstream image would then be worth
+ * the entire deployment. Scoping is what keeps the blast radius of a
+ * supplementary image bounded by what that image was actually handed.
+ *
+ * This is the same reasoning as `consoleEnv:` (see `consoleEnvVars`), one layer
+ * out: that one is core-only, this one is core plus the bundles running the
+ * strad image, because those run `hydrateBootEnv` and may host a `params:`
+ * builtin. `test/appspec.secrets.test.ts` asserts it lands on neither more nor
+ * fewer components than that.
+ */
+const STRAD_IMAGE_ONLY_SECRET_KEYS = new Set([
+  "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON",
+]);
+
+/**
  * The identity vars every component gets, so its telemetry can say which of the
  * 2 deployed processes (core, bundle) it is. `STRAD_COMPONENT` is the one that
  * matters: a
@@ -422,7 +448,9 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
             ),
             ...identityEnvs(name, config.gateway.env, componentImage.tag),
             ...opts.env.filter(
-              (e) => e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key),
+              (e) =>
+                !STRAD_IMAGE_ONLY_SECRET_KEYS.has(e.key) &&
+                (e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key)),
             ),
           ]
         : [

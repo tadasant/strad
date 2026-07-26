@@ -49,7 +49,11 @@ import {
   resolveServerParams,
   RESOLVER_ENV,
 } from "../src/secrets/parameters/index.ts";
-import { bakedSecretNames, preflightSecrets } from "../src/deploy/preflight.ts";
+import {
+  bakedSecretNames,
+  consoleEnvNames,
+  preflightSecrets,
+} from "../src/deploy/preflight.ts";
 
 const { values } = parseArgs({
   options: {
@@ -237,6 +241,14 @@ if (storeBacked && !store) {
 const scopedSecrets: Record<string, string> = {};
 const wanted = bakedSecretNames(config);
 
+// `consoleEnv:` names are read from the ENVIRONMENT ONLY, never from the store.
+// That carries the console's store-ADMIN credential, which can write and reveal.
+// Filing it inside the store would let the weaker resolver credential — the one
+// this script and the gateway container both hold — read the stronger one, and
+// the three-role IAM split would be decorative. Enforcing it here means the
+// invariant is code rather than a sentence in a design doc.
+const consoleOnly = new Set(consoleEnvNames(config));
+
 if (wanted.length > 0) {
   let available: Record<string, string> = {};
   if (storeBacked && store) {
@@ -246,13 +258,15 @@ if (wanted.length > 0) {
   }
 
   for (const name of wanted) {
-    const value = available[name] ?? process.env[name];
+    const value = consoleOnly.has(name)
+      ? process.env[name]
+      : (available[name] ?? process.env[name]);
     if (!value) {
       console.error(
         `::error::${name} is referenced by a supplementary server's env but ` +
-          (storeBacked
+          (storeBacked && !consoleOnly.has(name)
             ? `is not set in ${gatewayNamespace(config.gateway.env)}`
-            : `is not set`),
+            : `is not set in the environment`),
       );
       process.exit(1);
     }

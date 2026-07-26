@@ -101,17 +101,27 @@ describe("preflight", () => {
         return fake.store.reveal(p);
       },
     };
-    await fake.store.create({
-      path: gatewayParameterPath("test", "GRANOLA_TOKEN"),
-      secret: true,
-      value: "gran-secret",
-    });
+    for (const [name, value] of [
+      ["GRANOLA_TOKEN", "gran-secret"],
+      ["STRAD_TOKENS", "[]"],
+      ["STRAD_INTERNAL_TOKEN", "internal"],
+    ]) {
+      await fake.store.create({
+        path: gatewayParameterPath("test", name!),
+        secret: true,
+        value: value!,
+      });
+    }
 
     const config = parseConfig(CONFIG_YAML());
     const result = await preflightSecrets(guarded, config);
 
     expect(result.missing).toEqual([]);
-    expect(result.present).toEqual(["GRANOLA_TOKEN"]);
+    expect(result.present).toEqual([
+      "GRANOLA_TOKEN",
+      "STRAD_INTERNAL_TOKEN",
+      "STRAD_TOKENS",
+    ]);
     expect(result.namespace).toBe(gatewayNamespace("test"));
     expect(revealed).toBe(0);
   });
@@ -120,12 +130,40 @@ describe("preflight", () => {
     const fake = createFakeGcp();
     const config = parseConfig(CONFIG_YAML());
     const result = await preflightSecrets(fake.store, config);
-    expect(result.missing).toEqual(["GRANOLA_TOKEN"]);
+    // The config's own ref AND the two boot keys a deployment cannot work
+    // without: no STRAD_TOKENS means /mcp rejects everything, and no
+    // STRAD_INTERNAL_TOKEN means core cannot reach its own bundles.
+    expect(result.missing).toEqual([
+      "GRANOLA_TOKEN",
+      "STRAD_INTERNAL_TOKEN",
+      "STRAD_TOKENS",
+    ]);
   });
 
   it("does not demand the individually-optional boot keys", async () => {
     // A deployment with no console has no GOOGLE_CLIENT_SECRET, and that is a
     // correct deployment — failing it would be a false alarm on every deploy.
+    const fake = createFakeGcp();
+    for (const name of [
+      "GRANOLA_TOKEN",
+      "STRAD_TOKENS",
+      "STRAD_INTERNAL_TOKEN",
+    ]) {
+      await fake.store.create({
+        path: gatewayParameterPath("test", name),
+        secret: true,
+        value: "x",
+      });
+    }
+    const config = parseConfig(CONFIG_YAML());
+    const { missing } = await preflightSecrets(fake.store, config);
+    expect(missing).toEqual([]);
+  });
+
+  it("DOES demand the two boot keys a deployment cannot work without", async () => {
+    // Under the `env` provider these are `secret(key, required)` and a missing
+    // one fails the deploy. The store path must hold the same line, or this is a
+    // fail-closed regression wearing a preflight.
     const fake = createFakeGcp();
     await fake.store.create({
       path: gatewayParameterPath("test", "GRANOLA_TOKEN"),
@@ -134,7 +172,9 @@ describe("preflight", () => {
     });
     const config = parseConfig(CONFIG_YAML());
     const { missing } = await preflightSecrets(fake.store, config);
-    expect(missing).toEqual([]);
+    expect(missing).toContain("STRAD_TOKENS");
+    expect(missing).toContain("STRAD_INTERNAL_TOKEN");
+    expect(missing).not.toContain("GOOGLE_CLIENT_SECRET");
   });
 });
 
@@ -221,6 +261,11 @@ beforeAll(async () => {
     secret: true,
     value: "[]",
   });
+  await fake.store.create({
+    path: gatewayParameterPath("test", "STRAD_INTERNAL_TOKEN"),
+    secret: true,
+    value: "internal-shared",
+  });
 });
 
 afterAll(async () => {
@@ -261,10 +306,10 @@ async function render(yaml: string): Promise<{
       {
         encoding: "utf8",
         env: {
-          // A DELIBERATELY hostile environment: every secret this config used to
-          // need is present as an env var. A store-backed render must ignore
-          // them all, because baking one would give a rotated secret a stale
-          // twin that wins.
+          // A DELIBERATELY hostile environment: every secret a baking render
+          // would want is present as an env var. A store-backed render must
+          // ignore them all, because baking one would give a rotated secret a
+          // stale twin that wins.
           GRANOLA_TOKEN: "STALE-ENV-VALUE",
           STRAD_TOKENS: "STALE-ENV-VALUE",
           STRAD_INTERNAL_TOKEN: "STALE-ENV-VALUE",

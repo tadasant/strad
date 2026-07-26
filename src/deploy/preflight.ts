@@ -2,7 +2,10 @@ import type { StradConfig } from "../config/schema.ts";
 import { collectSecretRefs } from "./appspec.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
-import { CORE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
+import {
+  CORE_BOOT_ENV_KEYS,
+  REQUIRED_BOOT_ENV_KEYS,
+} from "../secrets/provider/hydrate.ts";
 import type { ParameterAdmin } from "../secrets/parameters/types.ts";
 
 /**
@@ -58,8 +61,8 @@ export function requiredSecretNames(config: StradConfig): string[] {
 }
 
 /**
- * Names a store-backed deploy must still resolve from the deploy environment,
- * because they land as env on a component the gateway process does not own.
+ * Names a store-backed deploy must still resolve at render time, because they
+ * land as env on a component the gateway process does not own.
  */
 export function bakedSecretNames(config: StradConfig): string[] {
   const names = new Set<string>();
@@ -77,12 +80,48 @@ export function bakedSecretNames(config: StradConfig): string[] {
 }
 
 /**
+ * Names referenced by a `consoleEnv:` map.
+ *
+ * These are read from the deploy ENVIRONMENT ONLY, never from the store, and the
+ * renderer enforces that. `consoleEnv:` exists to carry the console's store-ADMIN
+ * credential — the one that can write and reveal — to the core component alone.
+ * Filing it inside the store would let the weaker RESOLVER credential read the
+ * stronger admin one, which would make the three-role split decorative. Keeping
+ * the list here means the rule is enforced by code rather than asserted in prose.
+ */
+export function consoleEnvNames(config: StradConfig): string[] {
+  const names = new Set<string>();
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    for (const raw of Object.values(server.consoleEnv)) {
+      for (const name of refsIn(raw)) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * Boot keys that may legitimately be absent.
+ *
+ * Everything in `CORE_BOOT_ENV_KEYS` except the two the deployment cannot work
+ * without. A `${NAME}` the CONFIG references is never optional — it is only these
+ * platform keys, which are read from the environment rather than named in the
+ * config, that get this treatment.
+ */
+const OPTIONAL_BOOT_ENV_KEYS = CORE_BOOT_ENV_KEYS.filter(
+  (k) => !(REQUIRED_BOOT_ENV_KEYS as readonly string[]).includes(k),
+);
+
+/**
  * Check that every required name exists in the gateway namespace.
  *
- * `optional` names are checked and reported but never counted as missing — the
- * gateway boot keys are individually optional (a deployment with no console has
- * no `GOOGLE_CLIENT_SECRET`), so demanding all of them would fail deploys that
- * are correct.
+ * `optional` names are checked and reported but never counted as missing — a
+ * deployment with no console has no `GOOGLE_CLIENT_SECRET`, and demanding one
+ * would fail deploys that are correct. `STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN`
+ * are deliberately NOT optional: the `env` renderer marks them `required`, and a
+ * store-backed deploy that shipped without them would come up with `/mcp`
+ * rejecting everything, or unable to reach its own bundles.
  */
 export async function preflightSecrets(
   store: Pick<ParameterAdmin, "list">,
@@ -93,7 +132,7 @@ export async function preflightSecrets(
   const metas = await store.list(namespace);
   const held = new Set(metas.filter((m) => m.hasValue).map((m) => m.variable));
 
-  const optional = new Set(opts.optional ?? CORE_BOOT_ENV_KEYS);
+  const optional = new Set(opts.optional ?? OPTIONAL_BOOT_ENV_KEYS);
   const present: string[] = [];
   const missing: string[] = [];
 

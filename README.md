@@ -172,9 +172,12 @@ deploy runs again.
 gateway is **running**. Add or rotate a secret and it reaches production with no
 deploy — a rotation within `ttlSeconds` (default 60s), an addition within
 `negativeTtlSeconds` (default 10s), and instantly for a change written through
-strad's own console. The app spec then carries exactly **one** secret: the key
-the gateway uses to reach the store. A key cannot be kept behind the lock it
-opens; that is the only exception.
+strad's own console. The gateway then needs exactly **one** secret in the app
+spec: the key it uses to reach the store. A key cannot be kept behind the lock it
+opens; that is the only exception. (A `supplementary-image` server's `env:` and a
+server's `consoleEnv:` are still baked — they are another container's environment
+and the console's store-admin credential — but they are read _from the store_, so
+they are still managed in one place.)
 
 Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`
 against the store and fails the deploy on a missing one — reading metadata only,

@@ -97,21 +97,21 @@ workflow runs again.** The value is in the spec, not read at boot.
 
 ```mermaid
 flowchart LR
-    SPEC["App Platform spec<br/>ONE secret: the store credential"] -->|"process.env"| RUN["running container"]
+    SPEC["App Platform spec<br/>one gateway secret:<br/>the store credential"] -->|"process.env"| RUN["running container"]
     RUN -->|"reads at runtime, cached with a TTL"| PS["Parameter Manager + Secret Manager<br/>/strad/&lt;env&gt;/gateway/static/*"]
     PS -.->|"preflight: which names EXIST?<br/>(metadata only, no value read)"| CI["render-spec"]
 ```
 
-The spec carries one credential — the service-account key the gateway uses to
-reach the store — and no other secret at all. Everything else is read while the
-gateway runs, so adding or rotating a secret needs no deploy: a rotation lands
+The gateway needs one credential in the spec — the service-account key it uses to
+reach the store. Everything the gateway resolves is read while it runs, so adding
+or rotating one of those needs no deploy: a rotation lands
 within `ttlSeconds` (default 60s), an addition within `negativeTtlSeconds`
 (default 10s).
 
 `render-spec` still fails loudly on a reference to a secret that does not exist —
 that is the **preflight**, which asks the store which names exist and never asks
-for a value. What it no longer does is bake one, because a baked copy would
-silently outrank a rotated stored one and there would be two ways again.
+for a value. What it does not do is bake one: a baked copy would silently outrank
+a rotated stored one, and there would be two ways again.
 
 ### Deploy-time parameter resolution
 

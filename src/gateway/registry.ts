@@ -6,9 +6,10 @@ import {
   type SecretProvider,
 } from "../secrets/provider/index.ts";
 import {
-  resolveServerParams,
+  staticNamespace,
   type ParameterResolver,
 } from "../secrets/parameters/index.ts";
+import { SnapshotCache } from "../secrets/provider/snapshot.ts";
 import { BuiltinServerAdapter, loadBuiltin } from "./adapters/builtin.ts";
 import { HttpServerAdapter } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
@@ -23,10 +24,10 @@ import type { ServerAdapter } from "./adapters/types.ts";
  *
  * What is NOT built once is the SECRETS. Each adapter is handed a thunk that
  * resolves its `${SECRET}` refs when they are needed, against the runtime
- * provider. Resolving them here, into constructor arguments, is exactly what
- * used to make "rotate a credential" mean "redeploy the gateway" — the values a
- * boot happened to see would live as long as the process. Now the process holds
- * the reference, and the provider holds the value.
+ * provider. Resolving them here, into constructor arguments, is what makes
+ * "rotate a credential" mean "redeploy the gateway": the values a boot happened
+ * to see would live as long as the process. The process holds the reference; the
+ * provider holds the value.
  */
 
 export type Mode = "core" | "bundle";
@@ -95,19 +96,28 @@ export class Registry {
     // not the MCP one; the values are handed to the builtin's process and never
     // returned over /mcp.
     //
+    // `params:` resolution is a NETWORK read — one list plus a render per
+    // parameter — and the thunk below runs on every tool call, so it must not
+    // reach the store every time. This is the same TTL/single-flight/stale-on-
+    // error cache the secret provider uses, keyed by namespace.
+    const resolver = opts.resolver;
+    const paramCache = resolver
+      ? new SnapshotCache((namespace) => resolver.resolve(namespace), {
+          ttlMs: config.gateway.secrets.ttlSeconds * 1000,
+          label: "server parameters",
+        })
+      : null;
+
     // This returns a THUNK, not a value: it is invoked per tool call, so a
     // rotated `${SECRET}` or a re-set parameter is picked up by a running
-    // process. `params:` resolution is the one path here that can be a network
-    // call — the store's own cache is what keeps it off the hot path.
+    // process.
     const optionsFor =
       (server: Extract<StradConfig["servers"][number], { kind: "builtin" }>) =>
       async (): Promise<Record<string, unknown>> => {
         const base = await resolveOptionsAsync(server.options, secrets);
-        if (!server.params || !opts.resolver) return base;
-        const params = await resolveServerParams(
-          opts.resolver,
-          config.gateway.env,
-          server.slug,
+        if (!server.params || !paramCache) return base;
+        const params = await paramCache.get(
+          staticNamespace(config.gateway.env, server.slug),
         );
         return { ...base, ...params };
       };

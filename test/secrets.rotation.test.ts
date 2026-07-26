@@ -34,9 +34,9 @@ import { StoreSecretProvider } from "../src/secrets/provider/index.ts";
  * it is rotated through the store's own `rotate()` — the same call the SSO
  * console makes.
  *
- * The upstream starts out rejecting the credential the gateway holds. If the
- * gateway kept resolving `${UPSTREAM_TOKEN}` once at boot — the behaviour before
- * this change — it would keep failing forever. It does not, and that is the test.
+ * The upstream starts out rejecting the credential the gateway holds. A gateway
+ * that resolved `${UPSTREAM_TOKEN}` once at boot would keep failing forever. This
+ * one does not, and that is the test.
  */
 
 const ENV = "test";
@@ -248,8 +248,8 @@ describe("a secret rotated in the store reaches a running gateway", () => {
   });
 
   it("picks up the ROTATION once the TTL elapses — same process, no restart", async () => {
-    // The upstream now accepts only the new token. A gateway that had baked the
-    // old one at boot is locked out from here on.
+    // The upstream accepts only the new token from here. A gateway that had baked
+    // the old one at boot would be locked out permanently.
     accepted = NEW_TOKEN;
     await expect(call()).rejects.toThrow();
 
@@ -416,13 +416,13 @@ describe("a credential that rotates mid-handshake", () => {
       releaseFirst(); // A's handshake finally lands, carrying the old header —
       await Promise.all([a, b]); // and SUCCEEDS, because the window is still open.
 
-      // The window closes: the old credential is now genuinely dead.
+      // The window closes: the old credential is dead.
       accepts = new Set([NEW]);
 
       // The decisive assertion. If A's connection had been installed, the
       // adapter is holding a session opened with the old header and reuses it
       // (its fingerprint already reads "new", so it never reconnects) — and the
-      // upstream now answers 401.
+      // upstream answers 401.
       const tools = await adapter.listTools();
       expect(tools.map((t) => t.name)).toEqual(["ping"]);
     } finally {

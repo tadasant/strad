@@ -48,10 +48,17 @@ system](/intro/architecture/#the-secrets-and-parameters-system) **while the
 gateway is running**, under `/strad/{env}/gateway/static/`. Add or rotate a
 secret in the store and it reaches production without a deploy.
 
-The app spec carries exactly **one** credential — the service-account key the
-gateway uses to reach the store — as its only `SECRET` env var. Everything else
-is in the store. A key cannot be kept behind the lock it opens; that is the whole
-exception, and it is the only one.
+The gateway itself needs exactly **one** credential in the app spec: the
+service-account key it uses to reach the store. Every secret the gateway resolves
+lives in the store instead. A key cannot be kept behind the lock it opens; that
+is the whole exception, and it is the only one _for the gateway_.
+
+Two other kinds of value are still baked, and neither is a gateway secret: a
+`supplementary-image` server's `env:` (the environment of a container strad does
+not run) and a server's `consoleEnv:` (the console's store-admin credential, which
+must stay out of the store — see below). Both are read _from the store_ at render
+time, so they are still managed in one place. A deployment with no supplementary
+servers and no console really does ship one secret.
 
 #### Which identity, exactly
 
@@ -105,6 +112,12 @@ Two behaviours matter more than the numbers:
   outage must not take `/mcp` down. Only the very first read propagates its
   error, because there is nothing to serve and reporting a config problem for
   what is an outage would be a lie.
+- **Every store read carries a 10s deadline**, and a failed refresh backs off for
+  5s before being retried. Both exist for the same reason: a request that HANGS
+  is worse than one that fails, because a never-settling read pins every
+  concurrent reader behind the single-flight it shares — the availability claim
+  above rests on reads eventually settling. The backoff keeps an outage from
+  costing one failed call and one log line per request.
 
 ## Adding a secret
 
@@ -130,9 +143,9 @@ re-run the deploy.
 
 ## Fail-loud, without reading a value
 
-Baking every `${NAME}` into the spec had one genuinely good property: a reference
-to a secret that did not exist failed the _deploy_. Runtime resolution would
-trade that for a failure at 3am, on one request, to one server.
+Baking every `${NAME}` into the spec has one genuinely good property: a reference
+to a secret that does not exist fails the _deploy_. Runtime resolution would trade
+that for a failure at 3am, on one request, to one server.
 
 So the check is kept and the read is dropped. `render-spec` runs a **preflight**:
 it asks the store which names exist and compares that with what the config
@@ -210,8 +223,8 @@ headers on every operation, fingerprints the result, and rebuilds its MCP
 connection when the fingerprint changes — an established transport still carries
 the old `Authorization` header, so keeping it would make a rotation invisible
 until the next restart. `BuiltinServerAdapter` resolves its options per call.
-Resolving into constructor arguments at boot is exactly what used to make
-"rotate a credential" mean "redeploy the gateway".
+Resolving into constructor arguments at boot is what makes "rotate a
+credential" mean "redeploy the gateway".
 
 ## Never log a value
 
@@ -220,8 +233,9 @@ Resolving into constructor arguments at boot is exactly what used to make
 - `SecretNotFoundError` carries the reference **name** and nothing else.
 - The endpoint fingerprint is a SHA-256 digest, never logged.
 - Boot-time hydration logs the **names** it filled in, never name–value pairs.
-- `render-spec`'s output contains secret values in `env` mode. It is written to a
-  file and never echoed into a build log.
+- `render-spec`'s output contains secret values — every `${NAME}` under the `env`
+  provider, and the baked supplementary/console values under either. It is
+  written to a file and never echoed into a build log.
 - A multi-line secret must have **every line** masked in GitHub Actions —
   `::add-mask::` matches within a single line only. A service-account key has
   leaked into a public Actions log this way before.

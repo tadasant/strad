@@ -196,8 +196,8 @@ compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
   (the default) secrets are injected as App Platform SECRET env vars _at deploy
   time_ and the runtime container holds no cloud credentials. With
   `gcp-parameter-store` they are read _at runtime_ from the parameter store, so a
-  rotation reaches a running gateway without a deploy, and the spec carries
-  exactly one secret: the credential for the store itself. See
+  rotation reaches a running gateway without a deploy, and the gateway's only
+  secret in the spec is the credential for the store itself. See
   [Secrets](/operate/secrets/).
 
 ## The secrets and parameters system
