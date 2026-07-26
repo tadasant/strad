@@ -67,8 +67,15 @@ servers:
     url: https://mcp.granola.ai/mcp
     entitlements: [admin]
     headers:
-      Authorization: "Bearer ${GRANOLA_TOKEN}" # ${...} = a secret, injected at deploy
+      Authorization: "Bearer ${GRANOLA_TOKEN}" # ${...} = a secret reference
 ```
+
+`${NAME}` resolves through the deployment's [secret
+provider](/operate/secrets/) — from the environment by default, or from the
+parameter store at runtime. A `remote-http` server's url and headers are
+re-resolved on every operation, so rotating `GRANOLA_TOKEN` in a store-backed
+deployment takes effect on the running gateway: the adapter notices the endpoint
+changed and rebuilds its upstream connection.
 
 ### 2. `supplementary-image`
 
@@ -169,6 +176,27 @@ read-write variant share it.
 
 Failing loudly at boot is the point: a misconfigured gateway never comes up
 half-wired.
+
+## `gateway.secrets`
+
+Where `${NAME}` resolves from, and when. One block, one provider, per deployment.
+
+```yaml
+gateway:
+  name: strad
+  env: prod
+  secrets:
+    provider: gcp-parameter-store # default: env
+    ttlSeconds: 60 # bounds how long a ROTATION can go unnoticed
+    negativeTtlSeconds: 10 # bounds how long an ADDITION can go unnoticed
+    envFallback: true # keep process.env behind the store, for migration
+```
+
+`provider: env` is the default and involves no vendor. `gcp-parameter-store`
+reads `/strad/{env}/gateway/static/` at runtime, so a secret added or rotated in
+the store reaches a running gateway without a deploy. Setting it to
+`gcp-parameter-store` without a store credential is a hard boot failure, not a
+silent downgrade to env vars. Full model: [Secrets](/operate/secrets/).
 
 ## Where the config comes from
 

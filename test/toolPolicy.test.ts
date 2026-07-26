@@ -19,6 +19,7 @@ import {
   unmatchedAllowEntries,
 } from "../src/gateway/toolPolicy.ts";
 import { createApp } from "../src/http/app.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
  * Capability enforcement, end to end.
@@ -142,7 +143,7 @@ servers:
 
   const registry = await Registry.build({
     config,
-    secrets: {},
+    secrets: new EnvSecretProvider({}),
     mode: "core",
     env,
   });

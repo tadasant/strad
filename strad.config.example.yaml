@@ -19,6 +19,36 @@ gateway:
   env: staging
   publicUrl: https://staging.strad.tadasant.com
 
+  # Where every ${NAME} below resolves from, and WHEN. One provider per
+  # deployment, on purpose: two ways to manage a credential means one of them is
+  # out of date and nobody knows which.
+  secrets:
+    # env (the default) — resolve from the process environment. No vendor, no
+    #   cloud account; `npm run dev` and CI both run on this. Secrets reach the
+    #   container as deploy-time SECRET env vars and the container holds no cloud
+    #   credential. Rotating one does nothing until the deploy runs again.
+    #
+    # gcp-parameter-store — resolve from /strad/{env}/gateway/static/ AT RUNTIME.
+    #   Add or rotate a secret and it reaches production with no deploy. The app
+    #   spec then carries exactly one secret: the key the gateway uses to reach
+    #   the store (STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON). A key cannot
+    #   be kept behind the lock it opens; that is the only exception.
+    provider: env
+
+    # Bounds how long a ROTATION can go unnoticed. The snapshot of the namespace
+    # is refreshed on the first read after it goes stale.
+    ttlSeconds: 60
+
+    # Bounds how long an ADDITION can go unnoticed. A miss forces one
+    # out-of-band refresh, rate limited so an unknown ${REF} on a hot path
+    # cannot list the store once per request.
+    negativeTtlSeconds: 10
+
+    # Keep process.env behind the store, so names can be migrated one at a time
+    # with no window where a name resolves from neither. Set false once the move
+    # is done, to make "the store is the only source" enforceable.
+    envFallback: true
+
 auth:
   # Humans. Verified against the Google Workspace `hd` claim — NOT the email
   # suffix, which a personal account can spell however it likes.

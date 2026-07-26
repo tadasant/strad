@@ -21,7 +21,20 @@ export class BuiltinServerAdapter implements ServerAdapter {
   constructor(
     readonly slug: string,
     private readonly mod: BuiltinModule,
-    private readonly options: Record<string, unknown>,
+    /**
+     * The builtin's options, resolved ON EACH CALL rather than captured once.
+     *
+     * A builtin's `options:` may carry `${SECRET}` refs, and a `params: true`
+     * builtin has its whole managed namespace merged in. Both can change under a
+     * running process, so the adapter asks for them per call instead of holding
+     * the values a boot happened to see. In the common case this is a lookup
+     * against a warm cache, not a network round-trip.
+     *
+     * `listTools` deliberately does not call it: a tool LIST is static metadata
+     * and needs no credential, so listing must not be able to fail on a secret
+     * store outage.
+     */
+    private readonly options: () => Promise<Record<string, unknown>>,
     private readonly component: BuiltinContext["component"],
   ) {}
 
@@ -35,7 +48,7 @@ export class BuiltinServerAdapter implements ServerAdapter {
     ctx?: CallContext,
   ): Promise<CallToolResult> {
     return this.mod.call(name, args, {
-      options: this.options,
+      options: await this.options(),
       component: this.component,
       clientCapabilities: ctx?.clientCapabilities,
     });

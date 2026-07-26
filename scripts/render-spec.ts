@@ -1,11 +1,26 @@
 /**
  * Render a deployable App Platform spec.
  *
- * This is the seam where secrets enter the system. CI has just pulled them from
- * GCP Secret Manager into its own environment; here they become SECRET-typed
- * env vars on the app spec, and DigitalOcean encrypts them at rest. The
- * container that eventually runs holds no GCP credential of any kind — it just
- * reads process.env, like any twelve-factor app.
+ * How secrets enter the system depends on what the config declares in
+ * `gateway.secrets.provider`, and there is exactly ONE path per deployment.
+ *
+ * **`env` (the default).** CI has pulled secrets into its own environment; here
+ * they become SECRET-typed env vars on the app spec, and DigitalOcean encrypts
+ * them at rest. The container holds no cloud credential of any kind — it just
+ * reads process.env, like any twelve-factor app. This is the OSS default and it
+ * requires no vendor.
+ *
+ * **`gcp-parameter-store`.** The app spec carries ONE credential: the one the
+ * gateway uses to reach the store. Every other secret stays in the store and is
+ * read at runtime, so adding or rotating one does not need a deploy at all. What
+ * this script does instead is PREFLIGHT — it asks the store which names exist and
+ * fails the deploy if the config references one that does not. It never reads a
+ * value to do that.
+ *
+ * The one thing still resolved at render time in store mode is a supplementary
+ * image's `env:` and `consoleEnv:`. Those are container env vars on a component
+ * the gateway does not run, so no runtime path can reach them; they are read from
+ * the store here and baked. Changing one of THOSE still needs a redeploy.
  *
  * Usage (from CI):
  *   node --experimental-transform-types scripts/render-spec.ts \
@@ -29,9 +44,12 @@ import {
   type EnvVar,
 } from "../src/deploy/appspec.ts";
 import {
+  gatewayNamespace,
   resolverFromEnv,
   resolveServerParams,
+  RESOLVER_ENV,
 } from "../src/secrets/parameters/index.ts";
+import { bakedSecretNames, preflightSecrets } from "../src/deploy/preflight.ts";
 
 const { values } = parseArgs({
   options: {
@@ -65,6 +83,15 @@ const envs: EnvVar[] = [
   },
 ];
 
+/**
+ * Which of the two secret paths this deployment declared.
+ *
+ * `store` means the gateway reads its secrets at runtime, so this script must
+ * NOT bake them — baking would reinstate the second way to manage a secret, and
+ * a stale baked value silently wins over a rotated stored one.
+ */
+const storeBacked = config.gateway.secrets.provider === "gcp-parameter-store";
+
 /** Present -> SECRET env var. Absent -> omitted, and the app fails closed. */
 function secret(key: string, required = false): void {
   const value = process.env[key];
@@ -79,11 +106,44 @@ function secret(key: string, required = false): void {
   envs.push({ key, value, scope: "RUN_TIME", type: "SECRET" });
 }
 
-secret("STRAD_TOKENS", true); // without this, /mcp rejects everything
-secret("STRAD_INTERNAL_TOKEN", true); // core <-> bundle auth
-secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
-secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
-secret("GOOGLE_CLIENT_SECRET");
+if (storeBacked) {
+  // THE bootstrap credential, and the only secret in a store-backed spec. The
+  // gateway uses it to reach the store; everything else it needs, it asks the
+  // store for. This is the sanctioned exception to "secrets live in the store"
+  // — a key cannot be kept behind the lock it opens.
+  //
+  // WHICH identity this must be is load-bearing; three service accounts touch
+  // this store and handing the container the wrong one breaks the split:
+  //   - NOT the viewer key (the `secrets` MCP server's). It deliberately lacks
+  //     secretmanager.versions.access, so every ${NAME} would resolve to nothing.
+  //   - NOT the admin key (the console's, via consoleEnv:). The gateway never
+  //     writes, and a write-capable credential in the process that answers /mcp
+  //     would make the console's separate identity pointless.
+  //   - NOT CI's GCP_SA_KEY. That drives deploys and is far broader than reading
+  //     one namespace; it must not outlive the job into a long-lived container.
+  // It is the RESOLVER: parametermanager.parameterViewer + secretmanager
+  // .secretAccessor. Read-only by IAM, not merely by intent.
+  secret(RESOLVER_ENV.keyJson, true);
+
+  // The store's ADDRESS is not a credential, so it ships as a visible GENERAL
+  // var where an operator can see which project a deployment is pointed at.
+  for (const key of [
+    RESOLVER_ENV.projectId,
+    RESOLVER_ENV.location,
+    RESOLVER_ENV.pmApiBase,
+    RESOLVER_ENV.smApiBase,
+    RESOLVER_ENV.tokenUrl,
+  ]) {
+    const value = process.env[key];
+    if (value) envs.push({ key, value, scope: "RUN_TIME", type: "GENERAL" });
+  }
+} else {
+  secret("STRAD_TOKENS", true); // without this, /mcp rejects everything
+  secret("STRAD_INTERNAL_TOKEN", true); // core <-> bundle auth
+  secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
+  secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
+  secret("GOOGLE_CLIENT_SECRET");
+}
 
 // --- telemetry (OTLP) -------------------------------------------------------
 //
@@ -100,7 +160,11 @@ secret("GOOGLE_CLIENT_SECRET");
 // SECRET-typed env var that DigitalOcean encrypts at rest. It is never written
 // to a log and never reaches the repo. No workflow change is needed to add it —
 // seeding the secret is the whole job.
-secret("OTEL_EXPORTER_OTLP_HEADERS"); // e.g. "Authorization=Bearer <token>"
+// Store-backed deployments get this from the store at boot, like every other
+// gateway key — see secrets/provider/hydrate.ts.
+if (!storeBacked) {
+  secret("OTEL_EXPORTER_OTLP_HEADERS"); // e.g. "Authorization=Bearer <token>"
+}
 
 // The endpoint and the sampler knobs are NOT secrets — a collector URL is not a
 // credential — so they ship as GENERAL vars, visible in the App Platform console
@@ -120,53 +184,100 @@ for (const key of [
 
 // Secrets referenced by a NON-supplementary server via ${NAME} — a remote-http
 // server's url/headers (e.g. `Authorization: "Bearer ${GRANOLA_TOKEN}"`), a
-// builtin's options. These resolve IN-PROCESS at boot (src/secrets/index.ts
-// resolveRefs) in the core and any strad-image bundle, so they belong as
-// BROADCAST SECRET env vars. An unresolved ref makes the gateway refuse to
-// start, so fail loudly HERE, at render. collectSecretRefs deliberately
-// excludes supplementary-image env (those resolve deploy-time, scoped per
-// bundle — see the good-eggs path below). Backward-compatible: a config with no
-// such refs (the default, and staging) adds nothing.
-const already = new Set(envs.map((e) => e.key));
-for (const name of collectSecretRefs(config)) {
-  if (already.has(name)) continue;
-  secret(name, true); // referenced by the config => required to boot
-  already.add(name);
+// builtin's options.
+//
+// Under the `env` provider these resolve IN-PROCESS from process.env, so they
+// belong in the spec as BROADCAST SECRET env vars, and a referenced-but-unset
+// name is a hard render error — better a failed deploy than a gateway that
+// refuses to start. collectSecretRefs deliberately excludes supplementary-image
+// env (those are scoped per bundle — see below). A config with no such refs adds
+// nothing.
+//
+// Under the store provider these are NOT baked at all. They are read at runtime,
+// which is the entire point; baking a copy would give a rotated secret a stale
+// twin that wins. The fail-loud property is preserved by preflightSecrets()
+// below, which checks the same names exist — by name, without reading a value.
+if (!storeBacked) {
+  const already = new Set(envs.map((e) => e.key));
+  for (const name of collectSecretRefs(config)) {
+    if (already.has(name)) continue;
+    secret(name, true); // referenced by the config => required to boot
+    already.add(name);
+  }
+}
+
+// The store client, when this deployment is store-backed. It is built from the
+// SAME bootstrap credential the container will hold, so a deploy that can
+// preflight is a deploy whose container can resolve.
+const store = resolverFromEnv(process.env);
+if (storeBacked && !store) {
+  console.error(
+    `::error::gateway.secrets.provider is "gcp-parameter-store" but ` +
+      `${RESOLVER_ENV.projectId} / ${RESOLVER_ENV.keyJson} are not set. ` +
+      `The deploy job must supply the bootstrap credential.`,
+  );
+  process.exit(1);
 }
 
 // A supplementary image's `env:` map may reference `${NAME}` secrets. Unlike the
 // SECRETs above (which broadcast to every component), these resolve onto ONLY
-// the bundle that names them — see appspec.ts. Collect every referenced name
-// from the config, pull it from the environment, and hand the bag to the
-// renderer. A referenced-but-unset secret is a hard error: better a failed
-// deploy than a browser bundle that can't log in.
-const SECRET_REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+// the bundle that names them — see appspec.ts.
+//
+// These are baked in BOTH modes, and that is not a gap in the runtime story: a
+// supplementary image is a container the gateway process does not run, so no
+// amount of runtime resolution inside strad can change what is in that
+// container's environment. What changes with the store provider is only WHERE
+// the value is read from — the store, not the deploy job's environment — so a
+// human still manages it in exactly one place. Rotating one of these still needs
+// a redeploy; docs/operate/secrets.md says so plainly.
+//
+// `consoleEnv:` is resolved from the SAME bag, but appspec.ts puts it on the
+// core component only — never on the bundle. That asymmetry is what keeps a
+// value-reading credential out of the container that answers /mcp.
 const scopedSecrets: Record<string, string> = {};
-for (const server of config.servers) {
-  if (server.kind !== "supplementary-image") continue;
-  // appspec.ts skips disabled servers and emits no bundle for them, so don't
-  // demand their secrets here either — that would fail-close in the wrong place.
-  if (!server.enabled) continue;
-  // `consoleEnv:` is resolved from the SAME bag, but appspec.ts puts it on the
-  // core component only — never on the bundle. That asymmetry is what keeps a
-  // value-reading credential out of the container that answers /mcp.
-  for (const raw of [
-    ...Object.values(server.env),
-    ...Object.values(server.consoleEnv),
-  ]) {
-    for (const match of raw.matchAll(SECRET_REF)) {
-      const name = match[1]!;
-      if (name in scopedSecrets) continue;
-      const value = process.env[name];
-      if (!value) {
-        console.error(
-          `::error::${name} is referenced by server "${server.slug}" env but is not set`,
-        );
-        process.exit(1);
-      }
-      scopedSecrets[name] = value;
-    }
+const wanted = bakedSecretNames(config);
+
+if (wanted.length > 0) {
+  let available: Record<string, string> = {};
+  if (storeBacked && store) {
+    // One namespace read. The values go straight into the spec and are never
+    // logged, printed, or written anywhere but /tmp/spec.json.
+    available = await store.resolve(gatewayNamespace(config.gateway.env));
   }
+
+  for (const name of wanted) {
+    const value = available[name] ?? process.env[name];
+    if (!value) {
+      console.error(
+        `::error::${name} is referenced by a supplementary server's env but ` +
+          (storeBacked
+            ? `is not set in ${gatewayNamespace(config.gateway.env)}`
+            : `is not set`),
+      );
+      process.exit(1);
+    }
+    scopedSecrets[name] = value;
+  }
+}
+
+// PREFLIGHT: the fail-loud property that runtime resolution would otherwise cost
+// us. Every `${NAME}` the gateway resolves at runtime is checked for EXISTENCE
+// in the store, by name. `list()` returns metadata — for a secret parameter, an
+// envelope holding a `__REF__` pointer, not the secret — so this needs no
+// value-reading permission and reads no value.
+if (storeBacked && store) {
+  const result = await preflightSecrets(store, config);
+  if (result.missing.length > 0) {
+    console.error(
+      `::error::${result.missing.length} secret(s) referenced by the config are ` +
+        `missing from ${result.namespace}: ${result.missing.join(", ")}`,
+    );
+    process.exit(1);
+  }
+  console.error(
+    `[render-spec] preflight ok: ${result.present.length} referenced secret(s) ` +
+      `present in ${result.namespace}.`,
+  );
 }
 
 // A supplementary server with `params: true` gets its managed parameters —
@@ -179,7 +290,7 @@ for (const server of config.servers) {
 // account exists), this is a no-op and those servers boot without the params —
 // which they already degrade on gracefully — rather than failing the render.
 const resolvedParams: Record<string, Record<string, string>> = {};
-const resolver = resolverFromEnv(process.env);
+const resolver = store;
 for (const server of config.servers) {
   if (server.kind !== "supplementary-image" || !server.enabled) continue;
   if (!server.params) continue;

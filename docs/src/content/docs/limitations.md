@@ -214,6 +214,31 @@ SECRET env vars, exactly like every other secret.
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
 `HACKS.md` #26 for the full checklist.
 
+### 27. Runtime secret resolution is implemented but not enabled anywhere
+
+`gateway.secrets.provider: gcp-parameter-store` makes a running gateway resolve
+`${NAME}` from the parameter store with a TTL, so a rotation reaches production
+with no deploy and the app spec carries exactly one secret. It is implemented and
+tested end-to-end against the in-memory fake — a real MCP client, through a real
+gateway, to an upstream that rejects a stale token — and **no deployment runs it
+yet**. Staging and prod both still use `provider: env`, unchanged.
+
+Turning it on needs the resolver service account (#26), the gateway-namespace
+parameters seeded, and workflow changes in `tadasant-internal`. It ships off by
+default so the capability can land without a flag day.
+
+Three boundaries are by design rather than omission, and
+[Secrets](/operate/secrets/) states each one: a `supplementary-image` server's
+`env:` is another container's environment and still needs a redeploy to change;
+the boot keys are hydrated from the store at startup and so take effect on the
+next restart, not within the TTL; and `consoleEnv:` is never hydrated, because
+filing the store-admin credential inside the store would let the weaker resolver
+credential read the stronger one.
+
+**Undo:** provision the resolver SA, seed `/strad/prod/gateway/static/*`, flip the
+provider in the deployment's config, and drop the per-secret baking from the
+deploy workflow.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session

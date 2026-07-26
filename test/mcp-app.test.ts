@@ -29,6 +29,7 @@ import {
 } from "../src/gateway/clientCapabilities.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 // =============================================================================
 // The capability seam: pure functions
@@ -102,16 +103,11 @@ describe("BuiltinServerAdapter forwards clientCapabilities into the call context
         return { content: [] };
       },
     };
-    const adapter = new BuiltinServerAdapter(
-      "srv",
-      mod,
-      {},
-      {
-        mode: "core",
-        bundle: "core",
-        hostname: "test",
-      },
-    );
+    const adapter = new BuiltinServerAdapter("srv", mod, async () => ({}), {
+      mode: "core",
+      bundle: "core",
+      hostname: "test",
+    });
 
     await adapter.callTool(
       "peek",
@@ -273,7 +269,12 @@ servers:
     const env: NodeJS.ProcessEnv = {
       STRAD_TOKENS: JSON.stringify([token.record]),
     };
-    registry = await Registry.build({ config, secrets: {}, mode: "core", env });
+    registry = await Registry.build({
+      config,
+      secrets: new EnvSecretProvider({}),
+      mode: "core",
+      env,
+    });
     const app = createApp({
       config,
       registry,

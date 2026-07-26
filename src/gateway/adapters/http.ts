@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
@@ -17,6 +18,12 @@ import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
 import { errorKind, instruments, tracer } from "../../telemetry/index.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 
+/** Where this adapter connects, and with what credential. */
+export interface HttpEndpoint {
+  url: string;
+  headers: Record<string, string>;
+}
+
 /**
  * Proxies an MCP server reachable over Streamable HTTP.
  *
@@ -28,6 +35,20 @@ import type { CallToolResult, ServerAdapter } from "./types.ts";
  * The only difference is who resolved the URL. Keeping one implementation means
  * a supplementary image gets the same retry/timeout behaviour as a third-party
  * server, for free.
+ *
+ * ## The endpoint is a thunk, not a value
+ *
+ * `endpoint()` is resolved on EVERY operation rather than captured once at
+ * construction, because the URL and headers may contain `${SECRET}` references
+ * whose values live in a store that a human can change while this process runs.
+ * Baking them into the constructor is precisely what used to make a rotated
+ * credential require a redeploy.
+ *
+ * The cost is a map lookup against a warm cache in the common case (see
+ * src/secrets/provider/store.ts), not a network call. When the resolved endpoint
+ * CHANGES, the cached MCP connection is torn down and rebuilt — an established
+ * transport still carries the old `Authorization` header, so keeping it would
+ * make the rotation invisible until the next restart.
  */
 export class HttpServerAdapter implements ServerAdapter {
   readonly slug: string;
@@ -35,13 +56,15 @@ export class HttpServerAdapter implements ServerAdapter {
 
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  /** Digest of the endpoint the cached connection was built with. */
+  private fingerprint: string | null = null;
 
   constructor(
     private readonly opts: {
       slug: string;
       kind: "remote-http" | "supplementary-image";
-      url: string;
-      headers: Record<string, string>;
+      /** Resolve the current URL + headers. Called on every operation. */
+      endpoint: () => Promise<HttpEndpoint>;
       /**
        * The MCP SDK's default request timeout is 60 SECONDS, and it applies at
        * EVERY hop. Left alone, a long tool call dies at exactly 60s and looks
@@ -72,16 +95,33 @@ export class HttpServerAdapter implements ServerAdapter {
   /**
    * Connect lazily and keep the connection. Reconnecting per request would add
    * a full MCP handshake to every tool call.
+   *
+   * The endpoint is resolved first, and its digest compared with the one the
+   * cached connection was built from. Equal (the overwhelmingly common case) ->
+   * reuse. Different -> a secret was rotated or a URL changed under us, so drop
+   * the connection and handshake again with the new credential. That comparison
+   * is the whole runtime-rotation mechanism.
    */
   private async connect(): Promise<Client> {
+    const endpoint = await this.opts.endpoint();
+    const fingerprint = fingerprintOf(endpoint);
+
+    if (this.fingerprint !== null && this.fingerprint !== fingerprint) {
+      // Rotated. Abandon the cached client AND any in-flight connect, both of
+      // which are bound to the superseded credential.
+      this.reset();
+      this.connecting = null;
+    }
+    this.fingerprint = fingerprint;
+
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
 
     this.connecting = (async () => {
       const transport = new StreamableHTTPClientTransport(
-        new URL(this.opts.url),
+        new URL(endpoint.url),
         {
-          requestInit: { headers: this.opts.headers },
+          requestInit: { headers: endpoint.headers },
           // Inject W3C trace context (`traceparent`) into every upstream request.
           //
           // This is what makes a bundle's spans join the core's trace instead of
@@ -289,14 +329,37 @@ export class HttpServerAdapter implements ServerAdapter {
   private reset(): void {
     const client = this.client;
     this.client = null;
+    // Drop the fingerprint with the connection. Leaving it set would make the
+    // NEXT connect believe it is reusing a credential it no longer holds a
+    // connection for — harmless today, but the two are one piece of state.
+    this.fingerprint = null;
     void client?.close().catch(() => {});
   }
 
   async close(): Promise<void> {
     const client = this.client;
     this.client = null;
+    this.fingerprint = null;
     await client?.close().catch(() => {});
   }
+}
+
+/**
+ * A stable digest of an endpoint, used ONLY to detect that it changed.
+ *
+ * It is a hash, not the values, and it never leaves this process — but it is
+ * derived from a live credential, so it is treated as one: it is never logged,
+ * never a span attribute, and never returned. Header NAMES are sorted so that a
+ * map with the same content in a different insertion order does not read as a
+ * rotation and force a pointless reconnect on every request.
+ */
+function fingerprintOf(endpoint: HttpEndpoint): string {
+  const headers = Object.entries(endpoint.headers).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  return createHash("sha256")
+    .update(JSON.stringify([endpoint.url, headers]))
+    .digest("hex");
 }
 
 /** Seconds elapsed since an `hrtime.bigint()` mark. */

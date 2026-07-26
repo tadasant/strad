@@ -166,14 +166,19 @@ multi-instance.
 
 ## 8. Secret backend: env vars at runtime, GCP at deploy time
 
-**What.** The runtime container reads secrets from `process.env`
-(`EnvSecretSource`). CI (`deploy-staging.yml`) reads `strad-staging-*` from GCP
-Secret Manager and injects them as App Platform SECRET env vars.
+**What.** With `gateway.secrets.provider: env` (the default, and what staging
+runs), the runtime container reads secrets from `process.env`.
+`deploy-staging.yml` reads `strad-staging-*` from GCP Secret Manager and injects
+them as App Platform SECRET env vars.
 
-**Note.** This is _not_ really a hack — it is the intended design: the container
-holds no GCP credential, which sidesteps a bootstrap "one key to rule them all".
-It is listed here only because `secrets-sync.yml`/`deploy-staging.yml`
-authenticate to GCP with **`GCP_SA_KEY`**, a long-lived service-account key.
+**Note.** This is _not_ really a hack — it is a supported posture, and the one
+that keeps strad deployable with no vendor attached: the container holds no GCP
+credential. Its cost is now named rather than implied — a rotated secret does
+nothing until the deploy runs again — and `gcp-parameter-store` is the answer for
+a deployment that wants runtime rotation (see hack #27 and
+`docs/.../operate/secrets.md`). This entry is listed here only because
+`secrets-sync.yml`/`deploy-staging.yml` authenticate to GCP with **`GCP_SA_KEY`**,
+a long-lived service-account key.
 
 **Undo (the actual debt).** Provision **Workload Identity Federation** — a pool +
 provider bound to `tadasant/strad` and `tadasant/tadasant-internal` — so
@@ -683,6 +688,46 @@ cloud credential" still holds — the resolved values reach the bundle as ordina
 SECRET env vars, exactly like every other secret. Until the resolver service
 account exists, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
 boots without its resolved parameters and degrades gracefully.
+
+---
+
+## 27. Runtime secret resolution is implemented but no deployment runs it yet
+
+**What.** `gateway.secrets.provider: gcp-parameter-store` makes a running gateway
+resolve `${NAME}` from `/strad/{env}/gateway/static/` with a TTL, so a secret
+rotated in the store reaches production without a deploy, and the app spec carries
+exactly one secret — the store credential. It is implemented, tested end-to-end
+against the in-memory fake (`test/secrets.rotation.test.ts` drives a real MCP
+client through a real gateway to a real upstream that rejects a stale token), and
+**not yet enabled anywhere**. Staging and prod both still run `provider: env`,
+which is unchanged byte-for-byte.
+
+**Why it is not on.** Enabling it needs the resolver service account (hack #26,
+still unprovisioned), the gateway-namespace parameters seeded, and workflow
+changes in `tadasant-internal` that are outside this repo. It ships off by default
+so the capability can land and be reviewed without a flag day.
+
+**Known boundaries, by design, not by omission.**
+
+- A `supplementary-image` server's `env:` is a container env var on a component
+  the gateway does not run. Under the store provider the values are still read
+  **from the store** at render time, so a human manages them in one place — but
+  changing one needs a redeploy of that component. A supplementary server wanting
+  live rotation must read the store itself, as `servers/secrets` does.
+- The boot keys (`STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`, `ADMIN_BOOTSTRAP_TOKEN`,
+  `GOOGLE_CLIENT_*`, `OTEL_EXPORTER_OTLP_HEADERS`) are hydrated from the store at
+  startup — so they leave the app spec — but take effect on the next restart, not
+  within the TTL. A token store and a shared internal token are boot-scoped by
+  nature; claiming a rotation had landed while half the fleet still trusted the
+  old value would be worse than saying so.
+- `consoleEnv:` is deliberately **never** hydrated and stays deploy-time baked
+  onto core. It carries the store-**admin** credential, and filing that inside the
+  store would let the weaker resolver credential read the stronger one.
+
+**Undo.** Provision the resolver SA (hack #26), seed
+`/strad/prod/gateway/static/*`, then flip `gateway.secrets.provider` in the
+deployment's config and drop the per-secret baking from the deploy workflow. The
+cross-repo half is tracked as issues against `tadasant/tadasant-internal`.
 
 ## What the human still needs to provision
 

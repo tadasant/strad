@@ -98,6 +98,7 @@ export default defineConfig({
           label: "Operating strad",
           items: [
             { label: "Deploy model", slug: "operate/deploy-model" },
+            { label: "Secrets", slug: "operate/secrets" },
             { label: "Operations & CI", slug: "operate/operations" },
             { label: "Telemetry", slug: "operate/telemetry" },
             { label: "DNS & domains", slug: "operate/dns" },

@@ -191,10 +191,14 @@ compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
   your config into an App Platform spec — the server list decides the container
   topology. See [Deploy model](/operate/deploy-model/).
 - **Images:** published to **ghcr** (`ghcr.io/tadasant/strad`).
-- **Secrets:** stored in **GCP Secret Manager** as `strad-<env>-<NAME>`, and
-  injected as App Platform SECRET env vars _at deploy time_. The runtime
-  container holds **no cloud credentials** — it simply reads `process.env`, and
-  the secret source is pluggable behind `loadSecrets()` in `src/secrets/`.
+- **Secrets:** one model per deployment, declared as `gateway.secrets.provider`
+  and pluggable behind `SecretProvider` in `src/secrets/provider/`. With `env`
+  (the default) secrets are injected as App Platform SECRET env vars _at deploy
+  time_ and the runtime container holds no cloud credentials. With
+  `gcp-parameter-store` they are read _at runtime_ from the parameter store, so a
+  rotation reaches a running gateway without a deploy, and the spec carries
+  exactly one secret: the credential for the store itself. See
+  [Secrets](/operate/secrets/).
 
 ## The secrets and parameters system
 
@@ -247,16 +251,22 @@ flowchart LR
 - The **admin** is the SSO-gated console (`/ui/secrets`), on the core component
   only. It reads and writes both kinds. Its credential arrives via `consoleEnv:`,
   which the deploy layer puts on core and nowhere else — the bundle never sees it.
-- The **resolver** injects a server's env at **deploy time** (see [Deploy
-  model](/operate/deploy-model/#deploy-time-parameter-resolution)). It reads both
-  stores' resolved values, hands them to the child process as SECRET env vars, and
-  never returns a value over strad's own MCP channel. The running container still
-  holds no cloud credential.
+- The **resolver** reads both stores' resolved values and hands them to a child
+  process, never returning a value over strad's own MCP channel. It runs in one of
+  two places depending on what it is resolving for: at **deploy time** for a
+  `supplementary-image` (see [Deploy
+  model](/operate/deploy-model/#deploy-time-parameter-resolution)), because that
+  is a container the gateway does not run; and at **runtime, in the container**,
+  for a `bundle: core` builtin and for the gateway's own `${NAME}` references
+  under `/strad/{env}/gateway/static/` when `gateway.secrets.provider` is
+  `gcp-parameter-store`. In that second case the container holds exactly one
+  cloud credential — the resolver key — and no other secret at all. See
+  [Secrets](/operate/secrets/).
 
 A baked server opts into resolution with `params: true`. Everything under
 `/strad/{env}/mcp/{slug}/static/*` is resolved and injected as that server's
-environment — for a `core` builtin in-process at runtime, for a `supplementary-image`
-at deploy time onto its bundle. `remote-filesystem-tmp-public` is the worked example: it
+environment — for a `core` builtin in-process on every call, for a
+`supplementary-image` at deploy time onto its bundle. `remote-filesystem-tmp-public` is the worked example: it
 authenticates to GCS with a non-secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a
 secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`, both set by a human in `/ui/secrets`
 and delivered by the resolver.

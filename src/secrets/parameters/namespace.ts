@@ -22,6 +22,27 @@ export function staticNamespace(env: string, slug: string): string {
   return `/strad/${env}/mcp/${slug}/static/`;
 }
 
+/**
+ * The GATEWAY namespace: `/strad/{env}/gateway/static/`.
+ *
+ * `/mcp/{slug}/` addresses a parameter that belongs to ONE server. This one
+ * addresses the deployment itself — the `${NAME}` references a config makes
+ * outside any single server (a remote-http bearer token, a builtin option), plus
+ * the gateway's own keys (`STRAD_TOKENS`, `GOOGLE_CLIENT_SECRET`, …).
+ *
+ * It sits beside `mcp/` rather than above it so the two never collide: no server
+ * slug can be `gateway`-shaped into this path, because the segment after `{env}`
+ * is a literal, not a slug.
+ */
+export function gatewayNamespace(env: string): string {
+  return `/strad/${env}/gateway/static/`;
+}
+
+/** Build a full parameter path for one gateway-level variable. */
+export function gatewayParameterPath(env: string, variable: string): string {
+  return `${gatewayNamespace(env)}${variable}`;
+}
+
 /** Build a full parameter path for one variable under a server's static kind. */
 export function parameterPath(
   env: string,

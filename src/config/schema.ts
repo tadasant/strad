@@ -303,6 +303,59 @@ const AuthConfig = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Secrets — where `${NAME}` is read from, and when
+// ---------------------------------------------------------------------------
+
+/**
+ * The deployment's secret posture. There is exactly ONE per deployment, on
+ * purpose: two ways to manage secrets is the problem this block exists to end.
+ *
+ * `env` (the default) — `${NAME}` resolves from the process environment. Nothing
+ * cloud-specific is involved, `npm run dev` works, and a deployment that injects
+ * secrets as container env vars at deploy time keeps behaving exactly as it did.
+ * This is the OSS default and it must stay that way: strad bakes in no vendor.
+ *
+ * `gcp-parameter-store` — `${NAME}` resolves AT RUNTIME from the parameter store
+ * (see src/secrets/parameters), under `/strad/{env}/gateway/static/`. Adding or
+ * rotating a secret in the store takes effect on the running gateway inside the
+ * TTLs below, with no redeploy. The deploy renderer then bakes NO per-secret env
+ * vars at all — only the single bootstrap credential the container needs to
+ * reach the store.
+ *
+ * Timings are honest, not aspirational (see src/secrets/provider/store.ts):
+ * a rotation lands within `ttlSeconds`; a newly ADDED name lands within
+ * `negativeTtlSeconds`; a change written through strad's own console is instant
+ * on the process that wrote it.
+ */
+const SecretsConfig = z
+  .object({
+    provider: z.enum(["env", "gcp-parameter-store"]).default("env"),
+    /** Snapshot freshness. Bounds how long a ROTATION can go unnoticed. */
+    ttlSeconds: z.number().int().positive().max(3600).default(60),
+    /**
+     * Minimum interval between refreshes triggered by a MISS. Bounds how long a
+     * newly ADDED secret can go unnoticed, and stops an unknown `${REF}` on a hot
+     * path from listing the store once per request.
+     */
+    negativeTtlSeconds: z.number().int().positive().max(3600).default(10),
+    /**
+     * Keep the process environment as a FALLBACK behind the store.
+     *
+     * True (the default) makes the migration off deploy-time baking reversible
+     * and non-atomic: a name not yet moved into the store still resolves. Set it
+     * false once the move is complete to make "the store is the only source"
+     * enforceable rather than merely intended.
+     */
+    envFallback: z.boolean().default(true),
+  })
+  .default({
+    provider: "env",
+    ttlSeconds: 60,
+    negativeTtlSeconds: 10,
+    envFallback: true,
+  });
+
+// ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
 
@@ -317,8 +370,9 @@ export const StradConfig = z
         publicUrl: z.string().url().optional(),
         /** staging | prod | dev — also the middle segment of static tokens. */
         env: z.string().default("dev"),
+        secrets: SecretsConfig,
       })
-      .default({ name: "strad", env: "dev" }),
+      .default({ name: "strad", env: "dev", secrets: {} }),
 
     auth: AuthConfig,
 
