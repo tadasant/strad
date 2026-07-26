@@ -25,6 +25,18 @@ export interface HttpEndpoint {
 }
 
 /**
+ * Internal: a handshake completed against a credential that has since been
+ * superseded. Never escapes `connect()` — it triggers one retry against the
+ * current credential. It carries the slug and nothing else.
+ */
+class StaleCredentialError extends Error {
+  constructor(slug: string) {
+    super(`upstream "${slug}": credential rotated during connect`);
+    this.name = "StaleCredentialError";
+  }
+}
+
+/**
  * Proxies an MCP server reachable over Streamable HTTP.
  *
  * This backs TWO config kinds, because at runtime they are the same thing:
@@ -102,7 +114,7 @@ export class HttpServerAdapter implements ServerAdapter {
    * the connection and handshake again with the new credential. That comparison
    * is the whole runtime-rotation mechanism.
    */
-  private async connect(): Promise<Client> {
+  private async connect(attemptsLeft = 3): Promise<Client> {
     const endpoint = await this.opts.endpoint();
     const fingerprint = fingerprintOf(endpoint);
 
@@ -166,18 +178,39 @@ export class HttpServerAdapter implements ServerAdapter {
       // `initialize` inside the timeout looks, from the client's side, like a
       // server that does not exist.
       await this.hop("connect", () => client.connect(transport));
+
+      // Only publish this client if the credential it was built with is still
+      // the current one. Two concurrent calls straddling a rotation would
+      // otherwise race: the OLD one can finish last and clobber `this.client`
+      // with a connection carrying the superseded Authorization header — while
+      // `this.fingerprint` says "new", so nothing ever reconnects and the
+      // rotation is permanently invisible. Losing the race means throwing this
+      // connection away, not installing it.
+      if (this.fingerprint !== fingerprint) {
+        void client.close().catch(() => {});
+        throw new StaleCredentialError(this.slug);
+      }
       this.client = client;
       return client;
     })();
 
+    const attempt = this.connecting;
     try {
-      return await this.connecting;
+      return await attempt;
     } catch (err) {
-      // Don't cache a failed connect — the upstream may just be starting up.
-      this.connecting = null;
+      if (err instanceof StaleCredentialError && attemptsLeft > 1) {
+        // The credential moved under us mid-handshake. Retry against whatever is
+        // current now; the caller should never see this. Bounded, so a rotation
+        // arriving faster than a handshake completes fails loudly instead of
+        // spinning.
+        return this.connect(attemptsLeft - 1);
+      }
       throw new UpstreamError(this.slug, err);
     } finally {
-      this.connecting = null;
+      // Clear only OUR attempt. A blanket `this.connecting = null` would also
+      // wipe a newer attempt that a rotation started while this one was in
+      // flight, sending the next caller off to open a third connection.
+      if (this.connecting === attempt) this.connecting = null;
     }
   }
 

@@ -84,6 +84,11 @@ export class StoreSecretProvider implements SecretProvider {
   /** Single-flight: concurrent misses share one backend read. */
   private inflight: Promise<void> | null = null;
   private lastMissRefreshAt = -Infinity;
+  /**
+   * Bumped by `invalidate()`. A refresh commits its result only if this has not
+   * changed since it started — see the comment there for the race it closes.
+   */
+  private generation = 0;
 
   constructor(
     private readonly resolver: ParameterResolver,
@@ -128,6 +133,15 @@ export class StoreSecretProvider implements SecretProvider {
     // to the store, and the write may have touched more than it names.
     this.snapshot = null;
     this.lastMissRefreshAt = -Infinity;
+
+    // Bumping the generation is what makes the invalidate STICK. Without it:
+    // a request triggers a refresh, that read captures the pre-write state, the
+    // console then writes and calls invalidate(), and the in-flight read lands
+    // afterwards and installs the values it captured BEFORE the write. The
+    // snapshot would look fresh, be stale, and stay that way for a full TTL —
+    // silently turning "a console write is instant" into "a console write is
+    // ignored". A refresh that started before this point no longer commits.
+    this.generation += 1;
   }
 
   private async ensureFresh(): Promise<void> {
@@ -141,9 +155,15 @@ export class StoreSecretProvider implements SecretProvider {
     // just-expired snapshot each opens its own listing of the namespace.
     if (this.inflight) return this.inflight;
 
+    const startedAt = this.generation;
+
     this.inflight = (async () => {
       try {
         const values = await this.resolver.resolve(this.namespace);
+        // Discard a result that an invalidate() has already superseded. The read
+        // is not wrong, just out of date: it began before a write we were told
+        // about, so installing it would resurrect the pre-write values.
+        if (this.generation !== startedAt) return;
         this.snapshot = { values, fetchedAt: this.now() };
       } catch (err) {
         if (!this.snapshot) throw err;

@@ -163,6 +163,48 @@ describe("StoreSecretProvider", () => {
     await expect(p.get("TOKEN")).rejects.toThrow("403");
   });
 
+  it("invalidate() is not undone by a refresh that was already in flight", async () => {
+    // The race this closes: a request triggers a refresh whose read captures the
+    // PRE-write state; the console then writes and calls invalidate(); the
+    // in-flight read lands afterwards. Without a generation check it installs
+    // the values it captured before the write, the snapshot looks fresh, and
+    // "a console write is instant" quietly becomes "a console write is ignored"
+    // for a full TTL.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    let values: Record<string, string> = { TOKEN: "v1" };
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        // Snapshot the store's contents NOW, then stall. This is what a real
+        // read does — it observes the backend at the moment it runs, not at the
+        // moment it returns — and it is the whole point of the race: the value
+        // this read is carrying is already out of date when it lands.
+        const captured = { ...values };
+        if (reads === 1) await gate;
+        return captured;
+      },
+    };
+
+    const p = new StoreSecretProvider(resolver, "/ns/");
+
+    const inflight = p.get("TOKEN"); // starts the read, then blocks on the gate
+    await Promise.resolve();
+
+    values = { TOKEN: "v2" }; // the console's write lands
+    p.invalidate(); // ...and tells the provider about it
+
+    release(); // the stale read finally returns "v1"
+    await inflight;
+
+    // It must NOT have been installed. The next read sees the write.
+    expect(await p.get("TOKEN")).toBe("v2");
+  });
+
   it("invalidate() forces the next read to hit the store", async () => {
     const c = clock();
     const f = fakeResolver({ TOKEN: "v1" });
