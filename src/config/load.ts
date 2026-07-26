@@ -46,8 +46,18 @@ export async function loadConfig(
   return parseConfig(raw, path);
 }
 
+/**
+ * The YAML document, before the schema has seen it.
+ *
+ * Exposed for the strict check (src/config/strict.ts), which needs the source
+ * shape to say which keys the schema dropped.
+ */
+export function parseYamlDocument(raw: string): unknown {
+  return parseYaml(raw);
+}
+
 export function parseConfig(raw: string, path = "<inline>"): StradConfig {
-  const doc: unknown = parseYaml(raw);
+  const doc: unknown = parseYamlDocument(raw);
   const result = StradConfig.safeParse(doc);
 
   if (!result.success) {

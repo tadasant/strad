@@ -183,6 +183,73 @@ and no public route.
 
 Prod, in `tadasant-internal`, is a separate config against the same renderer.
 
+## Checking a config before it deploys
+
+`scripts/check-config.ts` validates a config the way a deploy would, without
+deploying and without a single credential. `render-spec` needs the real secrets
+and emits the real spec; this needs neither, which is what makes it runnable on
+every pull request — including from a repo that holds a config but no cloud
+access.
+
+```bash
+node --experimental-transform-types scripts/check-config.ts \
+  --config infra/strad.staging.yaml
+
+# or, from this repo
+npm run config:check -- --config infra/strad.staging.yaml
+```
+
+| Flag              | Meaning                                           |
+| ----------------- | ------------------------------------------------- |
+| `--config <path>` | **required** — the config file to check           |
+| `--image <ref>`   | image ref to render with; only affects the render |
+| `--app <name>`    | app name to render with; only affects the render  |
+
+| Exit | Meaning                                                          |
+| ---- | ---------------------------------------------------------------- |
+| `0`  | the config is valid; the referenced secret **names** are printed |
+| `1`  | at least one problem; every problem is printed and annotated     |
+| `2`  | the script was called wrong (no `--config`, unreadable file)     |
+
+Every problem is emitted as a `::error file=<config>::…` workflow command on
+stderr, so GitHub annotates the run, and repeated as a list on stdout. Output is
+names and structure only — it never prints a value, and the values it renders
+with are dummies anyway.
+
+Four checks, in order:
+
+1. **Schema.** The same `parseConfig` the gateway boots with — types, required
+   fields, and the cross-field rules (an undefined role, two images in one bundle,
+   a `tools:` block with neither `allow` nor `deny`).
+2. **Unknown keys.** The check the others cannot do. Zod strips what it does not
+   recognise, so `consoleEnvs:` for `consoleEnv:` passes every other check here and
+   does nothing at runtime. Detection is a **diff**, not a second strict schema: the
+   document is parsed with the real schema, and any key present in the YAML but
+   absent from the result was stripped. A copy of the schema would have to be edited
+   in lockstep with the real one, and forgetting would mean a check that quietly
+   stopped checking; a diff has nothing to drift from. Keys inside an open map are
+   the declarer's vocabulary, not the schema's, and are never flagged: an `env:` /
+   `consoleEnv:` variable name, a builtin's `options:`, and a **role name** under
+   `roles:` (the role's own fields, like `servers:`, _are_ checked).
+3. **Render.** The full `renderAppSpec`, with a dummy value substituted for every
+   `${NAME}`. This is a smoke test — the dummy bag covers exactly the names the
+   renderer resolves, so a schema-valid config essentially always renders — and it
+   is what produces the real spec check 4 inspects.
+4. **Console scope.** Two things a rendered spec can prove, and nothing else can:
+   every key a server declares under `consoleEnv:` reaches the `core` component,
+   and no two servers claim one key with different values. The first is the
+   invariant `/ui` depends on. The second matters because `consoleEnvVars()` merges
+   every enabled server's map into one flat environment, so a collision means the
+   last declaration silently wins and the other server's console runs as the wrong
+   identity.
+
+**It is strict where the gateway is lenient, and that asymmetry is deliberate.**
+`parseConfig` at boot keeps ignoring unknown keys, because the config and the image
+version independently: an image that refused to boot on a key it had never heard of
+would turn a rollback into an outage — the older image would reject the config the
+newer one wrote. A false failure at boot costs an outage; a false pass at deploy
+costs a silent misconfiguration. So the strictness lives at the gate.
+
 For the workflows that drive all of this, see [Operations &
 CI](/operate/operations/). For the domain wiring, see [DNS &
 domains](/operate/dns/).

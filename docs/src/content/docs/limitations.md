@@ -69,6 +69,30 @@ surface is exposed to every client and rendered only by the ones that asked for 
 This is the intended design given statelessness, not a stopgap — but it is a real
 difference between calling `good-eggs` directly and calling it through strad.
 
+### 28. An unknown config key is ignored at boot, not rejected
+
+The schema is built from Zod objects, and Zod strips what it does not recognise. So
+`consoleEnvs:` where you meant `consoleEnv:` is valid YAML, parses clean, renders
+clean, deploys clean — and does nothing. The gateway never says a word, and the only
+symptom is whatever that key was supposed to configure quietly not being configured.
+
+Boot stays lenient deliberately: the config and the image version independently, and
+an image that refused to start on a key it had never heard of would turn a rollback
+into an outage. A false failure at boot costs an outage; a false pass at deploy costs
+a silent misconfiguration — so the strictness lives at the gate.
+
+[`check-config`](/operate/deploy-model/#checking-a-config-before-it-deploys) is that
+gate: an unknown key is exit 1, annotated, with a "did you mean". It needs no
+credentials, so any repo holding a config can run it on every PR, and `ci.yml`'s
+`config` job runs it over all three configs here.
+
+What it still cannot catch: a typo inside an **open map** — an `env:` /
+`consoleEnv:` variable name, a builtin's `options:`, or a **role name** under
+`roles:`. Those keys are the declarer's vocabulary, not the schema's, and the
+schema keeps every one. A misspelled env var name is still silent. (A role's own
+fields are ordinary schema keys and _are_ checked: `roles.admin.serverz` is
+caught.)
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth

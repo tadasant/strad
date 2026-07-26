@@ -22,6 +22,7 @@
     "test:watch": "vitest",
     "token:mint": "node --experimental-transform-types src/cli.ts token mint",
     "spec:render": "node --experimental-transform-types src/cli.ts spec render",
+    "config:check": "node --experimental-transform-types scripts/check-config.ts",
     "telemetry:sync": "node scripts/sync-telemetry.mjs"
   },
   "dependencies": {

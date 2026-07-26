@@ -102,6 +102,57 @@ export function consoleEnvNames(config: StradConfig): string[] {
 }
 
 /**
+ * Ways a `consoleEnv:` declaration fails to become a value the console can read.
+ *
+ * The console is the half of a supplementary server that runs in CORE, and it
+ * reads its credential from core's environment under the declared KEY. Two things
+ * can quietly break that, and both have a rendered spec to check against:
+ *
+ *   - the key never lands on core, so the page reports a credential missing that
+ *     the config plainly declares;
+ *   - two servers declare the SAME key with different values. `consoleEnvVars()`
+ *     merges every enabled server's map into one flat environment, so the last
+ *     one wins and the other server's console silently runs as the wrong
+ *     identity. Nothing downstream can tell that happened.
+ *
+ * Returns human-readable messages, most specific first, or an empty array.
+ */
+export function consoleScopeProblems(
+  config: StradConfig,
+  spec: { services: { name: string; envs: { key: string }[] }[] },
+): string[] {
+  const problems: string[] = [];
+  const core = spec.services.find((s) => s.name === "core");
+  const onCore = new Set(core?.envs.map((e) => e.key) ?? []);
+
+  /** key -> the first slug/value that declared it, to catch a later conflict. */
+  const claimed = new Map<string, { slug: string; value: string }>();
+
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    for (const [key, value] of Object.entries(server.consoleEnv)) {
+      if (!onCore.has(key)) {
+        problems.push(
+          `server "${server.slug}" declares ${key} under consoleEnv: but it ` +
+            `does not land on the core component — the console cannot read it`,
+        );
+      }
+      const first = claimed.get(key);
+      if (first && first.value !== value) {
+        problems.push(
+          `servers "${first.slug}" and "${server.slug}" both declare ${key} ` +
+            `under consoleEnv: with different values — core holds one flat ` +
+            `environment, so one silently overwrites the other`,
+        );
+      }
+      if (!first) claimed.set(key, { slug: server.slug, value });
+    }
+  }
+  return problems;
+}
+
+/**
  * Boot keys that may legitimately be absent.
  *
  * Everything in `CORE_BOOT_ENV_KEYS` except the two the deployment cannot work

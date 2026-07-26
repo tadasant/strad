@@ -103,6 +103,11 @@ plus two that shape how this server gets its values:
   get a confusing pair of symptoms: the MCP tools work fine while the console reports
   the credentials as unavailable, because the key is on the bundle and the page is
   not. `gcs` in `infra/strad.staging.yaml` is the worked example.
+
+  The deploy layer resolves a `consoleEnv:` `${REF}` at **render** time and lands the
+  resolved value on core under the declared KEY — the ref name itself is never
+  injected anywhere, which is what keeps the admin credential off the bundle. The
+  console therefore reads the key, not the ref.
 - **`params`** (default `false`) — opt into parameter resolution. When `true`,
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
   system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and
@@ -176,6 +181,23 @@ read-write variant share it.
 
 Failing loudly at boot is the point: a misconfigured gateway never comes up
 half-wired.
+
+### What boot does *not* catch: a key that isn't a key
+
+An **unknown** key is not an error at boot. Zod strips what it does not recognise,
+so `consoleEnvs:` where you meant `consoleEnv:` parses clean, renders clean, and
+deploys clean — and does nothing. That is not a hypothetical; it is the shape of a
+misconfiguration that has shipped.
+
+Boot stays lenient on purpose (an image that rejected a key from a newer config
+would turn a rollback into an outage), so the strictness lives one layer up:
+[`check-config`](/operate/deploy-model/#checking-a-config-before-it-deploys) treats
+an unknown key as a hard failure and is meant to run on every PR that touches a
+config. If you edit a config anywhere, run it:
+
+```bash
+npm run config:check -- --config infra/strad.staging.yaml
+```
 
 ## `gateway.secrets`
 

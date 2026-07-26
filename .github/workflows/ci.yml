@@ -40,6 +40,29 @@ jobs:
       - name: Test
         run: npm test
 
+  # Every config this repo ships, through the same gate the internal repo runs
+  # against strad.prod.yaml. It needs no secrets — check-config substitutes a
+  # dummy for every ${NAME} — so it is a plain PR job, and a typo'd key
+  # (`consoleEnvs:` for `consoleEnv:`, which Zod silently strips) fails here
+  # instead of deploying a console with no admin credential.
+  config:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      # Globbed, not listed: a fourth config added to the repo must not be
+      # silently unchecked. `infra/` holds configs and nothing else.
+      - name: Check configs
+        run: |
+          set -e
+          for cfg in strad.config*.yaml infra/*.yaml; do
+            npm run --silent config:check -- --config "$cfg"
+          done
+
   # servers/** is out of the core TS program (see eslint.config.js) and its image
   # is only built on push, so a PR could otherwise break the good-eggs server
   # without CI noticing. Build it (typechecks shared + remote) and run its

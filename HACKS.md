@@ -502,6 +502,16 @@ scoped to `GCS_BUCKET: pulse_public`, with its service-account key seeded into
 GCP Secret Manager for staging and prod. `/ui/gcs` browses a real bucket behind
 the SSO gate (401 unauthenticated on both envs, verified).
 
+**Correction (hack #28's fix).** The seeding was done and the credential really
+did land on core — but the console could not READ it. It resolved
+`consoleEnv:`'s `${GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON}` against core's
+environment, where the RENDERER had filed the value under the KEY
+`GCS_SERVICE_ACCOUNT_KEY_JSON` and never under the ref name. So `/ui/gcs` reported
+"credentials are declared but not resolvable in the console" on a deployment that
+had every credential in place, exactly as `/ui/secrets` did. The claim above was
+true of the provisioning and false of the page until `src/ui/resolve.ts` learned to
+read `consoleEnv:` by key.
+
 **What.** The `gcs` server is registered in `infra/strad.staging.yaml` (its own
 `bundle-gcs` bundle) with `enabled: false` and its bucket/credentials as
 `${GCS_BUCKET}` / `${GCS_SERVICE_ACCOUNT_KEY_JSON}` refs. So `/ui/gcs` on staging
@@ -735,6 +745,40 @@ so the capability can land and be reviewed without a flag day.
 `/strad/prod/gateway/static/*`, then flip `gateway.secrets.provider` in the
 deployment's config and drop the per-secret baking from the deploy workflow. The
 cross-repo half is tracked as issues against `tadasant/tadasant-internal`.
+
+## 28. An unknown config key is silently ignored at boot; only the deploy gate is strict
+
+**What.** The config schema is built from Zod objects, and Zod strips keys it does
+not recognise. So `consoleEnvs:` where you meant `consoleEnv:` is valid YAML, parses
+clean, renders clean, deploys clean — and does nothing at all. The gateway never
+says a word. That is not hypothetical: `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`
+reaching `/ui/secrets` in prod depends on one key being spelled right, and nothing
+in the pipeline checked it.
+
+**Why boot stays lenient.** The config and the image version independently. An image
+that refused to boot on a key it had never heard of would turn a rollback into an
+outage — the older image would reject the config the newer one wrote. A false
+failure at boot costs an outage; a false pass at deploy costs a silent
+misconfiguration. So the strictness lives at the gate, not in the container.
+
+**The gate.** `scripts/check-config.ts` (`npm run config:check -- --config <path>`)
+treats an unknown key as a hard failure, exit 1, with a `::error::` annotation and a
+"did you mean" suggestion. It needs no credentials — every `${NAME}` gets a dummy —
+so any repo holding a config can run it on every PR. `ci.yml`'s `config` job runs it
+over all three configs in this repo; the internal repo runs it over
+`strad.prod.yaml` (tadasant-internal#206).
+
+**The residue.** Detection is a diff of the source document against the parse
+result, so it cannot flag a typo'd key inside an OPEN map — an `env:` /
+`consoleEnv:` variable name, a builtin's `options:`, or a role NAME under `roles:`
+— because the schema keeps every key there by design. A misspelled ENV VAR name is
+still silent. Only a misspelled CONFIG key is caught, and a role's own fields count
+as config keys: `roles.admin.serverz` is reported. The "did you mean" suggestion is likewise best-effort: it can only name keys
+the parse result carries, so an omitted optional key is not suggestable (the
+unknown key is still reported).
+
+**Undo.** Delete `src/config/strict.ts`, `scripts/check-config.ts`, the `config` CI
+job and the `config:check` script. Nothing at runtime depends on any of it.
 
 ## What the human still needs to provision
 
