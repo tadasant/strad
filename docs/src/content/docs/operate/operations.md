@@ -256,9 +256,12 @@ allow-list is a subset of the tier above it.
 - **`/healthz`** is dependency-free and returns `mode`, `bundle`, `env`, and
   `servers` — used by the App Platform health check and the deploy smoke test.
 - **`/mcp`** is handled by `app.all("/mcp", …)` and always requires a token.
-- **`/console`** and `/console/oauth/callback` are mounted only in `core` mode.
-  The OAuth `state → codeVerifier` map is in-memory (see [Known
-  limitations](/limitations/)).
+- **`/console`**, `/console/login`, `/console/oauth/callback` and
+  `/console/logout` are mounted only in `core` mode. Login state — the PKCE
+  verifier, the CSRF `state`, the return path — is a signed 10-minute cookie, not
+  a server-side map, so the console survives a restart and spans replicas. See
+  [Auth](/auth/overview/#the-sign-in-round-trip).
 - **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console,
-  behind the same gate as `/`. The shared "session" is the bootstrap token in a
-  cookie, which is a shim (see [Known limitations](/limitations/)).
+  behind the same gate as `/`. A Google login mints a signed 12-hour session
+  cookie; the dev bypass's cookie is still the bootstrap token itself, which is a
+  shim (see [Known limitations](/limitations/)).

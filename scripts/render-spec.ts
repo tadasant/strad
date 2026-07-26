@@ -147,6 +147,10 @@ if (storeBacked) {
   secret("ADMIN_BOOTSTRAP_TOKEN"); // console dev bypass
   secret("GOOGLE_CLIENT_ID"); // console real auth, when it exists
   secret("GOOGLE_CLIENT_SECRET");
+  // Optional: signs the console session cookie. Absent, the key is derived from
+  // GOOGLE_CLIENT_SECRET. Set it to rotate every console session (the kill
+  // switch) without touching the OAuth client. See src/auth/session.ts.
+  secret("CONSOLE_SESSION_SECRET");
 }
 
 // --- telemetry (OTLP) -------------------------------------------------------

@@ -1,6 +1,14 @@
 import type { NextFunction, Request, Response } from "express";
 import { authenticateConsoleBypass, devBypassStatus } from "../auth/dev.ts";
 import type { Principal } from "../auth/index.ts";
+import {
+  principalFromSession,
+  readCookies,
+  unsealCookie,
+  SESSION_COOKIE,
+  type ConsoleSessionPayload,
+  type ConsoleSessions,
+} from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { renderSignIn } from "./render.ts";
 
@@ -9,31 +17,53 @@ import { renderSignIn } from "./render.ts";
  *
  * It is the SAME gate as /console, and deliberately so: the resource browser is
  * a human surface on the open internet, exactly like /console, and must never be
- * a softer door than it. Today that means the console dev bypass (present
- * ADMIN_BOOTSTRAP_TOKEN); the day Google Workspace OAuth credentials land it
- * becomes real OAuth, with no change to what /ui is allowed to assume — the
- * middleware only ever trusts a resolved Principal.
+ * a softer door than it.
+ *
+ * Two credentials resolve to a Principal here, and the middleware only ever
+ * trusts the Principal, never the credential:
+ *
+ *   1. A Google session — a signed, expiring cookie minted by
+ *      /console/oauth/callback from a verified Workspace identity
+ *      (src/auth/session.ts). This is the real door.
+ *   2. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
+ *      (src/auth/dev.ts). It is what keeps staging and an unprovisioned prod
+ *      enterable, and it goes away once Google sign-in is verified in prod.
  *
  * /mcp is untouched by any of this. That endpoint accepts static system tokens
- * and nothing else (src/auth/index.ts). There is no code path from this bypass
- * to /mcp — same invariant HACKS.md #2 states for /console.
+ * and nothing else (src/auth/index.ts). There is no code path from either
+ * console credential to /mcp — the invariant HACKS.md #2 states for /console.
  *
- * One convenience over /console: a browser is navigating between pages, so once
+ * One convenience for the bypass: a browser is navigating between pages, so once
  * the bootstrap token is presented as `?token=`, it is moved into an HttpOnly
  * cookie and stripped from the URL. Subsequent navigation and its screenshots
- * carry no secret in the address bar. The cookie is the whole "session" for now;
- * a real signed session replaces it with Google OAuth (see HACKS.md).
+ * carry no secret in the address bar.
  */
 
-const COOKIE = "strad_console";
+/** The dev bypass's cookie. Exported so /console/logout can drop it too. */
+export const BYPASS_COOKIE = "strad_console";
 
 export interface ConsoleAuthDeps {
   config: StradConfig;
   env: NodeJS.ProcessEnv;
+  /**
+   * The session sealers, when key material exists. Null means no Google session
+   * can be verified — and, with `googleReady` false, that the gate must not
+   * offer a sign-in it cannot finish.
+   */
+  sessions?: ConsoleSessions | null;
+  /**
+   * True only when Google sign-in can actually complete end to end: the config
+   * enables it, the OAuth client credentials are present, and there is a session
+   * key. Enabling `auth.google` without credentials must NOT turn the honest 401
+   * into a redirect that dead-ends at Google.
+   */
+  googleReady?: boolean;
 }
 
 export function requireConsoleUi(deps: ConsoleAuthDeps) {
   const { config, env } = deps;
+  const sessions = deps.sessions ?? null;
+  const googleReady = deps.googleReady ?? false;
 
   return function gate(req: Request, res: Response, next: NextFunction): void {
     const fromQuery =
@@ -41,13 +71,13 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
         ? req.query.token
         : undefined;
     const fromHeader = bearer(req.headers.authorization);
-    const fromCookie = readCookie(req.headers.cookie, COOKIE);
+    const cookies = req.headers.cookie;
 
-    // The `?token=` drives the sign-in flow: a valid one is upgraded to an
-    // HttpOnly cookie and the URL is cleaned, so the secret does not linger in
-    // history, bookmarks or screenshots. Do this ONLY when it actually
+    // The `?token=` drives the bypass sign-in flow: a valid one is upgraded to
+    // an HttpOnly cookie and the URL is cleaned, so the secret does not linger
+    // in history, bookmarks or screenshots. Do this ONLY when it actually
     // authenticates — a stale/wrong `?token=` in a shared URL must not shadow an
-    // otherwise-valid session cookie and force a spurious sign-in wall.
+    // otherwise-valid session and force a spurious sign-in wall.
     if (fromQuery) {
       const p = authenticateConsoleBypass(fromQuery, config, env);
       if (p) {
@@ -58,12 +88,10 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
       }
     }
 
-    // Established session: a cookie (browser) or a bearer header (curl). Each is
-    // re-validated against ADMIN_BOOTSTRAP_TOKEN on every request.
-    const sessionToken = fromCookie ?? fromHeader;
-    const principal = sessionToken
-      ? authenticateConsoleBypass(sessionToken, config, env)
-      : null;
+    // A Google session, first: it is the real credential.
+    const principal =
+      googlePrincipal(cookies, sessions, config) ??
+      bypassPrincipal(cookies, fromHeader, config, env);
 
     if (principal) {
       res.locals.principal = principal;
@@ -71,10 +99,10 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
       return;
     }
 
-    // Not authenticated. When Google OAuth is configured, that is the front
-    // door — send them to /console to begin it. Until then, explain the bypass.
-    if (config.auth.google?.enabled) {
-      res.redirect(302, "/console");
+    // Not authenticated. When Google sign-in can actually complete, that is the
+    // front door — begin it, and come back to the page they asked for.
+    if (googleReady) {
+      res.redirect(302, `/console/login?next=${encodeURIComponent(here(req))}`);
       return;
     }
 
@@ -88,21 +116,57 @@ export function signedInLabel(res: Response): string | undefined {
   return p?.label;
 }
 
+/** A verified Google session cookie, or null. */
+export function googlePrincipal(
+  cookieHeader: string | undefined,
+  sessions: ConsoleSessions | null,
+  config: StradConfig,
+): Principal | null {
+  if (!sessions) return null;
+  const payload = unsealCookie<ConsoleSessionPayload>(
+    sessions.session,
+    cookieHeader,
+    SESSION_COOKIE,
+  );
+  if (!payload) return null;
+  return principalFromSession(payload, config);
+}
+
+/**
+ * The dev bypass, as an established session: a cookie (browser) or a bearer
+ * header (curl). Each is re-validated against ADMIN_BOOTSTRAP_TOKEN on every
+ * request.
+ */
+function bypassPrincipal(
+  cookieHeader: string | undefined,
+  fromHeader: string | undefined,
+  config: StradConfig,
+  env: NodeJS.ProcessEnv,
+): Principal | null {
+  const candidates = readCookies(cookieHeader, BYPASS_COOKIE);
+  if (fromHeader) candidates.push(fromHeader);
+  for (const token of candidates) {
+    const p = authenticateConsoleBypass(token, config, env);
+    if (p) return p;
+  }
+  return null;
+}
+
 function setSessionCookie(
   res: Response,
   value: string,
   env: NodeJS.ProcessEnv,
 ): void {
-  res.cookie(COOKIE, value, {
+  res.cookie(BYPASS_COOKIE, value, {
     httpOnly: true,
     sameSite: "lax",
     // Staging runs NODE_ENV=production behind TLS; require Secure there.
     secure: env.NODE_ENV === "production",
-    // Scoped to "/" rather than "/ui" because the gate now also covers the
-    // landing page at "/". A cookie scoped to /ui is simply not sent to /, so a
+    // Scoped to "/" rather than "/ui" because the gate also covers the landing
+    // page at "/". A cookie scoped to /ui is simply not sent to /, so a
     // signed-in human would have hit the sign-in wall on the front page.
     //
-    // Widening it does mean the cookie now rides along to /mcp. That is inert:
+    // Widening it does mean the cookie rides along to /mcp. That is inert:
     // /mcp authenticates from the Authorization header via a static token store
     // and never reads cookies — there is no code path from this bypass to /mcp
     // (HACKS.md #2). It stays HttpOnly, SameSite=Lax, and Secure in production.
@@ -119,22 +183,17 @@ function cleanUrl(req: Request): string {
   return `${url.pathname}${qs ? `?${qs}` : ""}`;
 }
 
+/**
+ * Where to return after sign-in. Only GET is worth resuming — a POST cannot be
+ * replayed through a redirect, and /ui's writes are the POSTs, so an expired
+ * session mid-write lands the human back on the index rather than silently
+ * re-submitting anything.
+ */
+function here(req: Request): string {
+  return req.method === "GET" ? cleanUrl(req) : "/ui";
+}
+
 function bearer(header: string | undefined): string | undefined {
   const m = header?.match(/^Bearer\s+(.+)$/i);
   return m?.[1] ? m[1].trim() : undefined;
-}
-
-function readCookie(
-  header: string | undefined,
-  name: string,
-): string | undefined {
-  if (!header) return undefined;
-  for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === name) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
-    }
-  }
-  return undefined;
 }
