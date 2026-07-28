@@ -496,7 +496,12 @@ async function handleSecretAction(
     // Whatever went wrong, the message describes the OPERATION, never the value:
     // ParameterStoreError carries a status and a resource, and this file never
     // interpolates `value` into a string.
-    await fail(describe(err), 502);
+    //
+    // The STATUS has to distinguish "you asked for something wrong" from "the
+    // store failed". A malformed path and an id collision are the caller's, and
+    // answering 502 for them is both a lie and — behind an ingress that treats an
+    // upstream 5xx as its own failure — a response the human never sees.
+    await fail(describe(err), statusFor(err));
   }
 }
 
@@ -706,6 +711,25 @@ function assertWellFormed(path: string): void {
 }
 
 /** An error message that describes the failure and never the payload. */
+/**
+ * 4xx for the caller's mistakes, 502 only for the store's.
+ *
+ * `assertWellFormed` throws a plain Error for a path the caller chose; the store
+ * throws `ParameterStoreError` carrying Google's own status, and a 404 there is
+ * the id-collision guard saying "that is not your parameter". Neither is a bad
+ * gateway.
+ */
+function statusFor(err: unknown): number {
+  if (err instanceof ParameterStoreError) {
+    if (err.status === 404) return 404;
+    if (err.status === 403) return 403;
+    if (err.status === 409) return 409;
+    return 502;
+  }
+  // A plain Error here is validation — assertWellFormed and friends.
+  return 400;
+}
+
 function describe(err: unknown): string {
   if (err instanceof ParameterStoreError) {
     if (err.status === 403) {
