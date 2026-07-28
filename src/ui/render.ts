@@ -540,10 +540,16 @@ function secretsHelp(
   const env = config.gateway.env;
   const consumers = paramsConsumers(config);
   const wired = consumers[0];
-  const unwired = config.servers.find(
+  // Prefer a supplementary image for the counter-example: it is the shape a
+  // human is most likely to be storing a credential for, and its alternative to
+  // `params: true` (a hand-written `env:` entry) is the one worth naming.
+  const unwiredCandidates = config.servers.filter(
     (s) =>
       s.enabled && s.kind !== "remote-http" && !s.params && s.slug !== slug,
   );
+  const unwired =
+    unwiredCandidates.find((s) => s.kind === "supplementary-image") ??
+    unwiredCandidates[0];
 
   const wiredExample = wired
     ? `<li>
@@ -567,8 +573,10 @@ function secretsHelp(
          <code>/strad/${esc(env)}/mcp/${esc(unwired.slug)}/static/EXAMPLE_TOKEN</code>
          <span class="ex-no">stored, delivered nowhere</span>
          <span class="ex-why"><code>${esc(unwired.slug)}</code> does not set <code>params: true</code>;
-           it takes its environment from the <code>env:</code> map in strad's config instead. The
-           value sits here, listed and rotatable, and no process reads it.</span>
+           it takes its configuration from the <code>${
+             unwired.kind === "builtin" ? "options:" : "env:"
+           }</code> map in strad's config instead. The value sits here, listed and rotatable, and no
+           process reads it.</span>
        </li>`
     : "";
 
