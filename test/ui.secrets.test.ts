@@ -56,8 +56,22 @@ servers:
     consoleEnv:
       SECRETS_PROJECT_ID: "demo-project"
       SECRETS_NAMESPACES: "${NS}"
+      SECRETS_REVEAL_ENABLED: "true"
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${ADMIN_KEY}"
 `);
+
+/**
+ * The console's credential, as Google would report it: a full admin. This suite
+ * covers the surface when reveal is BOTH offered and permitted — the staging
+ * posture. test/ui.secrets.reveal.test.ts covers the other three combinations.
+ */
+const ADMIN_CAPABILITIES = {
+  readSecretValues: true,
+  writeParameters: true,
+  writeSecretValues: true,
+  deleteParameters: true,
+  probed: true,
+};
 
 const ADMIN_KEY = JSON.stringify({
   client_email: "strad-secrets-admin@demo.iam.gserviceaccount.com",
@@ -149,6 +163,7 @@ beforeAll(async () => {
     env,
     secrets: SECRETS,
     parametersStore: () => fake.store,
+    capabilities: () => Promise.resolve(ADMIN_CAPABILITIES),
   });
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());

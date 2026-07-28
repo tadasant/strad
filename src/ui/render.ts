@@ -311,7 +311,7 @@ export interface SecretsViewOptions {
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
-  const { view, config, parameters, resolver, reveal } = opts;
+  const { view, config, parameters, resolver, reveal: revealUi } = opts;
   const slug = view.server.slug;
   const action = `/ui/${encodeURIComponent(slug)}`;
   const ns = opts.namespace;
@@ -343,12 +343,12 @@ export function renderSecrets(opts: SecretsViewOptions): string {
         <span class="row-time">${p.updatedAt ? esc(formatTime(p.updatedAt)) : "—"}</span>
         <span class="row-actions">
           ${
-            reveal.allowed
+            revealUi.allowed
               ? `<form method="post" action="${action}/reveal" class="inline">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <button class="btn btn-ghost" ${p.hasValue ? "" : "disabled"}>Reveal</button>
           </form>`
-              : `<button class="btn btn-ghost" disabled title="${esc(reveal.detail)}">${esc(reveal.label)}</button>`
+              : `<button class="btn btn-ghost" disabled title="${esc(revealUi.detail)}">${esc(revealUi.label)}</button>`
           }
           <form method="post" action="${action}/rotate" class="inline rotate-form">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
@@ -413,7 +413,8 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 </section>
 
 ${deliveryBanner(config, resolver)}
-${secretsHelp(config, slug, ns, view.namespaces, resolver)}
+${revealBanner(revealUi)}
+${secretsHelp(config, slug, ns, view.namespaces, resolver, revealUi)}
 
 ${flash}
 ${reveal}
@@ -553,6 +554,21 @@ function deliveryBanner(config: StradConfig, resolver: boolean): string {
 }
 
 /**
+ * The reveal posture, when it is not simply "on and permitted".
+ *
+ * Shown outside the accordions in exactly one case beyond the ordinary: DRIFT,
+ * where the flag and the credential disagree. That is a claim about what this
+ * deployment can do rather than what it offers, and a reader who never opens an
+ * accordion should still not come away with a wrong model of it.
+ */
+function revealBanner(reveal: RevealPosture): string {
+  if (reveal.allowed) return "";
+  return `<p class="posture ${reveal.drift ? "posture-warn" : ""} posture-reveal">
+  <strong>Reveal is not available here.</strong> ${esc(reveal.detail)}
+</p>`;
+}
+
+/**
  * Every explanation on this page, collapsed.
  *
  * Progressive disclosure is the requirement, and it is also the honest shape:
@@ -565,6 +581,7 @@ function secretsHelp(
   namespace: string,
   namespaces: string[],
   resolver: boolean,
+  reveal: RevealPosture,
 ): string {
   const env = config.gateway.env;
   const consumers = paramsConsumers(config);
@@ -703,9 +720,17 @@ function secretsHelp(
         <code>secretmanager.versions.access</code>, so no tool, bug or prompt injection can pull a
         <em>secret</em> value through <code>/mcp</code> — Google refuses the call, rather than this
         code declining it.</p>
-      <p>Adding, rotating, revealing and deleting happen on this page, as a human, behind SSO, with
-        a different admin credential the MCP container never sees. Notes are readable by agents for
+      <p>Adding, rotating and deleting happen on this page, as a human, behind SSO, with a
+        different admin credential the MCP container never sees. Notes are readable by agents for
         both kinds — that is what makes them useful, and why a note should not contain a value.</p>
+      <p><b>Revealing</b> is a separate decision, and it is two of them. A deployment opts in with
+        <code>SECRETS_REVEAL_ENABLED</code>, and the console's service account must hold
+        <code>secretmanager.versions.access</code>. The flag decides what this page offers; IAM
+        decides what is possible; both must agree, and the narrower one wins. ${
+          reveal.allowed
+            ? "On this deployment both say yes, so a secret value can be displayed once, to a human, on an explicit click."
+            : esc(reveal.detail)
+        }</p>
     </div>
   </details>
 
@@ -1067,6 +1092,7 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
   border-radius:.4rem;background:var(--g7);color:var(--g2);font-size:.85rem;line-height:1.5}
 .posture strong{color:var(--white)}
 .posture-warn{border-left-color:#e0a63b;margin-bottom:.7rem}
+.posture-reveal{margin-bottom:.7rem}
 
 /* Namespace picker */
 .nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}

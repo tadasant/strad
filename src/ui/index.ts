@@ -5,18 +5,22 @@ import type { SecretBag } from "../secrets/index.ts";
 import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
 import {
+  cachedProbe,
   createGcpParameterStore,
+  NO_CAPABILITIES,
   normalisePathPrefix,
   ParameterStoreError,
   validatePathPrefix,
   validateVariableName,
   variableOf,
+  type Capabilities,
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
+import { revealPosture } from "./reveal.ts";
 import {
   renderGcsBrowse,
   renderIndex,
@@ -75,6 +79,16 @@ export interface ConsoleUiOptions {
   parametersStore?: (
     view: Extract<ServerView, { kind: "secrets" }>,
   ) => ParameterStore;
+  /**
+   * Override the capability probe. Defaults to asking Google what the console's
+   * service account may do (src/secrets/parameters/capabilities.ts).
+   *
+   * Tests inject this to drive the four flag/credential combinations without a
+   * network, which is the only way to cover the fail-closed paths.
+   */
+  capabilities?: (
+    view: Extract<ServerView, { kind: "secrets" }>,
+  ) => Promise<Capabilities>;
   /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
@@ -398,6 +412,20 @@ async function handleSecretAction(
       }
 
       case "reveal": {
+        // The hidden button is presentation; this is the gate. A form POST is
+        // trivially hand-crafted, so the same posture that decides what to
+        // render has to decide what to honour — and it fails closed.
+        const posture = revealPosture(
+          view.revealEnabled,
+          await capabilitiesFor(view, opts),
+        );
+        if (!posture.allowed) {
+          await fail(
+            `Reveal is not available on this deployment. ${posture.detail}`,
+            403,
+          );
+          return;
+        }
         assertManaged(path, view.namespaces);
         const revealed = await store.reveal(path);
         await renderSecretsPage(res, view, opts, {
@@ -490,6 +518,10 @@ async function renderSecretsPage(
   }
 
   const namespace = selectNamespace(extras.namespace, view.namespaces);
+  const reveal = revealPosture(
+    view.revealEnabled,
+    await capabilitiesFor(view, opts),
+  );
 
   let parameters: ParameterMeta[] = [];
   let flash = extras.flash;
@@ -509,11 +541,44 @@ async function renderSecretsPage(
         parameters,
         namespace,
         resolver: resolverConfigured(opts.env),
+        reveal,
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
       }),
     );
+}
+
+/**
+ * The capability probe, MEMOISED per (server, service account, project).
+ *
+ * Keyed the same way the store is, and for the same reason: the answer is a
+ * property of the CREDENTIAL, so it must be recomputed if the credential is
+ * rotated under us, and must not be recomputed per request. The inner
+ * `cachedProbe` adds the TTL; this map stops a fresh prober being built (and its
+ * cache thrown away) on every page render.
+ */
+const probeCache = new Map<string, () => Promise<Capabilities>>();
+
+async function capabilitiesFor(
+  view: Extract<ServerView, { kind: "secrets" }>,
+  opts: ConsoleUiOptions,
+): Promise<Capabilities> {
+  if (opts.capabilities) return opts.capabilities(view);
+  if (!view.account) return NO_CAPABILITIES;
+
+  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
+  let prober = probeCache.get(key);
+  if (!prober) {
+    prober = cachedProbe({
+      projectId: view.projectId,
+      account: view.account,
+      crmApiBase: view.crmApiBase,
+      tokenUrl: view.tokenUrl,
+    });
+    probeCache.set(key, prober);
+  }
+  return prober();
 }
 
 /**

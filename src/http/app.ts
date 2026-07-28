@@ -46,6 +46,8 @@ export interface AppOptions {
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
   parametersStore?: ConsoleUiOptions["parametersStore"];
+  /** Test seam: override the console's capability probe. See ConsoleUiOptions. */
+  capabilities?: ConsoleUiOptions["capabilities"];
   /**
    * Test seam: substitute the Google OAuth provider. A real round-trip needs
    * accounts.google.com, so the callback→session→gate path is exercised with a
@@ -108,6 +110,7 @@ export function createApp(opts: AppOptions): Express {
       env,
       gcsList: opts.gcsList,
       parametersStore: opts.parametersStore,
+      capabilities: opts.capabilities,
       sessions: auth.sessions,
       googleReady: auth.ready,
     });
