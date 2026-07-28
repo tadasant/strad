@@ -2,6 +2,13 @@ import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
 import type { ServerView } from "./resolve.ts";
 import type { ParameterMeta } from "../secrets/parameters/index.ts";
+import {
+  classifyPath,
+  paramsConsumers,
+  prefixSuggestions,
+  type Routing,
+} from "./param-routing.ts";
+import type { RevealPosture } from "./reveal.ts";
 
 /**
  * Server-rendered HTML for the human resource browser.
@@ -268,7 +275,34 @@ function breadcrumb(
 
 export interface SecretsViewOptions {
   view: Extract<ServerView, { kind: "secrets" }>;
+  /**
+   * The running gateway config. The page reports what will actually READ a
+   * parameter, and that is a property of the config, not of the store — see
+   * param-routing.ts.
+   */
+  config: StradConfig;
   parameters: ParameterMeta[];
+  /** The managed namespace being browsed. One of `view.namespaces`. */
+  namespace: string;
+  /**
+   * Whether this deployment carries the resolver credential.
+   *
+   * `params: true` with no `STRAD_PARAMS_*` behind it delivers nothing, so the
+   * page cannot report delivery from the config alone. See param-routing.ts.
+   */
+  resolver: boolean;
+  /**
+   * Whether this console offers reveal, and if not why. The flag decides what is
+   * offered; the console's service account decides what is possible. See
+   * reveal.ts — both must say yes.
+   */
+  reveal: RevealPosture;
+  /**
+   * The same question asked for a NON-secret parameter, whose value needs no
+   * secret-read permission. Kept separate rather than recomputed per row so the
+   * renderer stays a pure function of what it is handed.
+   */
+  revealNonSecret: RevealPosture;
   signedInAs?: string;
   /** A one-shot banner after an action ("Created FOO"). */
   flash?: { tone: "ok" | "error"; message: string };
@@ -283,21 +317,40 @@ export interface SecretsViewOptions {
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
-  const { view, parameters } = opts;
+  const {
+    view,
+    config,
+    parameters,
+    resolver,
+    reveal: revealUi,
+    revealNonSecret,
+  } = opts;
   const slug = view.server.slug;
   const action = `/ui/${encodeURIComponent(slug)}`;
-  const defaultNs = view.namespaces[0] ?? "";
+  const ns = opts.namespace;
+  /** Every write posts the namespace back, so the page returns where it was. */
+  const nsField = `<input type="hidden" name="ns" value="${esc(ns)}" />`;
 
   const rows = parameters
     .map((p) => {
       const kind = p.secret
         ? `<span class="chip chip-secret">secret</span>`
         : `<span class="chip chip-plain">non-secret</span>`;
+      const routing = classifyPath(config, p.path, resolver);
+      // A non-secret value sits in the envelope this page already read, so
+      // showing it needs no secret-read permission — only the flag. See
+      // revealPosture's `secret` parameter.
+      const rowReveal = p.secret ? revealUi : revealNonSecret;
+      const prefix = p.path.startsWith(ns)
+        ? p.path.slice(ns.length, p.path.length - p.variable.length)
+        : "";
       return `
       <div class="row secret-row">
         <span class="row-icon">${p.secret ? KEY_SVG : TAG_SVG}</span>
-        <span class="row-name" title="${esc(p.path)}">${esc(p.variable)}</span>
-        <span class="row-kind">${kind}</span>
+        <span class="row-name" title="${esc(p.path)}">${
+          prefix ? `<span class="row-pfx">${esc(prefix)}</span>` : ""
+        }<span class="row-var">${esc(p.variable)}</span></span>
+        <span class="row-kind">${kind}${deliveryChip(routing)}</span>
         <span class="row-note">${p.note ? esc(p.note) : `<span class="row-nonote">no note</span>`}</span>
         <span class="row-ver">${
           p.hasValue
@@ -306,23 +359,27 @@ export function renderSecrets(opts: SecretsViewOptions): string {
         }</span>
         <span class="row-time">${p.updatedAt ? esc(formatTime(p.updatedAt)) : "—"}</span>
         <span class="row-actions">
-          <form method="post" action="${action}/reveal" class="inline">
-            <input type="hidden" name="path" value="${esc(p.path)}" />
+          ${
+            rowReveal.allowed
+              ? `<form method="post" action="${action}/reveal" class="inline">
+            <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <button class="btn btn-ghost" ${p.hasValue ? "" : "disabled"}>Reveal</button>
-          </form>
+          </form>`
+              : `<button class="btn btn-ghost" disabled title="${esc(rowReveal.detail)}">${esc(rowReveal.label)}</button>`
+          }
           <form method="post" action="${action}/rotate" class="inline rotate-form">
-            <input type="hidden" name="path" value="${esc(p.path)}" />
+            <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <input class="in in-sm" type="password" name="value" placeholder="new value" autocomplete="off" required />
             <button class="btn btn-ghost">Rotate</button>
           </form>
           <form method="post" action="${action}/note" class="inline">
-            <input type="hidden" name="path" value="${esc(p.path)}" />
+            <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <input class="in in-sm" type="text" name="note" placeholder="note…" value="${esc(p.note ?? "")}" maxlength="512" />
             <button class="btn btn-ghost">Save note</button>
           </form>
           <form method="post" action="${action}/delete" class="inline"
                 onsubmit="return confirm('Delete ${esc(p.variable)} and every version of it? This cannot be undone.')">
-            <input type="hidden" name="path" value="${esc(p.path)}" />
+            <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <button class="btn btn-danger">Delete</button>
           </form>
         </span>
@@ -366,21 +423,15 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 <section class="browse-head">
   <div class="stat"><span class="stat-n">${parameters.length}</span><span class="stat-l">parameters</span></div>
   <div class="stat"><span class="stat-n">${secretCount}</span><span class="stat-l">secret</span></div>
+  ${namespacePicker(action, view.namespaces, ns)}
   <div class="scope">
     <span class="scope-l">project</span><code>${esc(view.projectId)}</code>
-    <span class="scope-l">namespace</span><code>${esc(view.namespaces.join(", "))}</code>
   </div>
 </section>
 
-<p class="posture">
-  <strong>Parameter Manager indexes everything; Secret Manager backs the secret parts.</strong>
-  The <code>${esc(slug)}</code> MCP server runs as a viewer service account: it can list
-  parameters, their notes and versions, and read <em>non-secret</em> values — and it holds no
-  <code>secretmanager.versions.access</code>, so no tool, bug or prompt injection can pull a
-  <em>secret</em> value through <code>/mcp</code>. Adding, rotating, revealing and deleting
-  happen on this page, as a human, behind SSO, with a different admin credential the MCP
-  container never sees.
-</p>
+${deliveryBanner(config, resolver)}
+${revealBanner(revealUi)}
+${secretsHelp(config, slug, ns, view.namespaces, resolver, revealUi)}
 
 ${flash}
 ${reveal}
@@ -389,15 +440,34 @@ ${listing}
 <section class="addbox">
   <h2 class="addbox-title">Add a parameter</h2>
   <form method="post" action="${action}/create" class="addform">
+    ${nsField}
+    <div class="field">
+      <span class="field-l">Namespace</span>
+      <code class="pathpart">${esc(ns)}</code>
+      <span class="field-h">Switch namespaces with the picker above.</span>
+    </div>
+    <label class="field">
+      <span class="field-l">Path prefix <span class="field-opt">optional</span></span>
+      <input class="in" id="pfx" type="text" name="prefix" list="prefix-options" autocapitalize="off" autocomplete="off"
+             placeholder="${esc(examplePrefix(config))}" />
+      <datalist id="prefix-options">${prefixOptions(config)}</datalist>
+      <span class="field-h">The segments between the namespace and the variable name. For a
+        server parameter this is <code>&lt;server-slug&gt;/static/</code> and it is what decides
+        which server the value routes to.</span>
+    </label>
     <label class="field">
       <span class="field-l">Variable name</span>
-      <input class="in" type="text" name="variable" required autocapitalize="off" autocomplete="off"
-             pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL" />
-      <span class="field-h">A valid environment variable name. Stored at <code>${esc(defaultNs)}&lt;VARIABLE&gt;</code>.</span>
+      <input class="in" id="varname" type="text" name="variable" required autocapitalize="off" autocomplete="off"
+             pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="${esc(exampleVariable(config))}" />
+      <span class="field-h">A valid environment variable name.</span>
     </label>
+    <div class="field">
+      <span class="field-l">Full path</span>
+      <code class="pathpart pathpreview" id="pathpreview">${esc(ns)}&lt;VARIABLE&gt;</code>
+    </div>
     <label class="field field-check">
       <input type="checkbox" name="secret" />
-      <span><span class="field-l">Secret</span> <span class="field-h">Tick for a credential (private key, token). The value goes to Secret Manager and can never be read over <code>/mcp</code>. Leave unticked for a non-secret value (e.g. a service-account email), which is stored in Parameter Manager and IS readable by agents.</span></span>
+      <span><span class="field-l">Secret</span> <span class="field-h">Tick for a credential (private key, token) — see “Secret vs non-secret” above.</span></span>
     </label>
     <label class="field">
       <span class="field-l">Note <span class="field-opt">optional</span></span>
@@ -408,11 +478,11 @@ ${listing}
     <label class="field">
       <span class="field-l">Value</span>
       <input class="in" type="password" name="value" required autocomplete="off" />
-      <span class="field-h">A secret value goes straight to Secret Manager. A non-secret value goes to Parameter Manager.</span>
     </label>
     <button class="btn btn-primary">Create parameter</button>
   </form>
-</section>`;
+</section>
+${pathPreviewScript(ns)}`;
 
   return layout({
     title: `${slug} · parameters`,
@@ -420,6 +490,356 @@ ${listing}
     signedInAs: opts.signedInAs,
     body,
   });
+}
+
+/**
+ * The namespace picker.
+ *
+ * `SECRETS_NAMESPACES` has always been a LIST and the store has always been able
+ * to list any of them — it was the console that addressed only the first. This
+ * is a plain GET form so switching is an ordinary navigation the SSO gate already
+ * covers; the `onchange` submit is enhancement, and the button is the fallback.
+ */
+function namespacePicker(
+  action: string,
+  namespaces: string[],
+  selected: string,
+): string {
+  const options = namespaces
+    .map(
+      (n) =>
+        `<option value="${esc(n)}"${n === selected ? " selected" : ""}>${esc(n)}</option>`,
+    )
+    .join("");
+  return `
+  <form class="nsform" method="get" action="${action}">
+    <label class="scope-l" for="ns-select">namespace</label>
+    <select class="in nsselect" id="ns-select" name="ns" onchange="this.form.submit()">${options}</select>
+    <button class="btn nsgo">Switch</button>
+    <span class="nscount">${namespaces.length} managed</span>
+  </form>`;
+}
+
+/** The chip that says whether anything reads a path. */
+function deliveryChip(routing: Routing): string {
+  const cls =
+    routing.state === "delivered"
+      ? "chip-ok"
+      : routing.state === "not-wired"
+        ? "chip-warnish"
+        : "chip-off";
+  return `<span class="chip ${cls} chip-route" title="${esc(routing.detail)}">${esc(routing.label)}</span>`;
+}
+
+/**
+ * The one thing that must be visible WITHOUT opening an accordion.
+ *
+ * Everything else on this page is progressive disclosure. This is not, because
+ * the failure it prevents — storing a credential that reaches nothing and
+ * believing you configured a server — is silent, and a human who never opens the
+ * accordion is exactly the human it happens to.
+ */
+function deliveryBanner(config: StradConfig, resolver: boolean): string {
+  const consumers = paramsConsumers(config);
+  const total = config.servers.filter(
+    (s) => s.enabled && s.kind !== "remote-http",
+  ).length;
+
+  // Two independent conditions, and the banner must not claim delivery on the
+  // strength of one. `params: true` with no resolver credential behind it is a
+  // no-op: render-spec warns and ships the component without those values.
+  const status = !consumers.length
+    ? `<strong>No server on this gateway sets <code>params: true</code></strong>, so
+       nothing stored here is delivered to a running MCP server — this is a registry.
+       Wiring a server up is a config change plus a deploy.`
+    : !resolver
+      ? `${consumers.length} of ${total} servers set <code>params: true</code> (${consumers
+          .map((c) => `<code>${esc(c.slug)}</code>`)
+          .join(
+            ", ",
+          )}), but <strong>this deployment carries no resolver credential</strong>
+         (<code>STRAD_PARAMS_*</code>), so none of it is resolved and nothing stored here reaches
+         a running MCP server — this is a registry.`
+      : `<strong>${consumers.length} of ${total}</strong> servers on this gateway consume managed
+         parameters: ${consumers
+           .map((c) => `<code>${esc(c.slug)}</code>`)
+           .join(", ")}. A path outside those is a registry entry only.`;
+
+  return `<p class="posture posture-warn">
+  Storing a parameter here does not, by itself, send it anywhere. ${status}
+</p>`;
+}
+
+/**
+ * The reveal posture, when it is not simply "on and permitted".
+ *
+ * Shown outside the accordions in exactly one case beyond the ordinary: DRIFT,
+ * where the flag and the credential disagree. That is a claim about what this
+ * deployment can do rather than what it offers, and a reader who never opens an
+ * accordion should still not come away with a wrong model of it.
+ */
+function revealBanner(reveal: RevealPosture): string {
+  if (reveal.allowed) return "";
+  return `<p class="posture ${reveal.drift ? "posture-warn" : ""} posture-reveal">
+  <strong>Reveal is not available here.</strong> ${esc(reveal.detail)}
+</p>`;
+}
+
+/**
+ * Every explanation on this page, collapsed.
+ *
+ * Progressive disclosure is the requirement, and it is also the honest shape:
+ * the routing rules are genuinely intricate, and a human rotating a value they
+ * already understand should not have to scroll past them.
+ */
+function secretsHelp(
+  config: StradConfig,
+  slug: string,
+  namespace: string,
+  namespaces: string[],
+  resolver: boolean,
+  reveal: RevealPosture,
+): string {
+  const env = config.gateway.env;
+  const consumers = paramsConsumers(config);
+  const wired = resolver ? consumers[0] : undefined;
+  // Prefer a supplementary image for the counter-example: it is the shape a
+  // human is most likely to be storing a credential for, and its alternative to
+  // `params: true` (a hand-written `env:` entry) is the one worth naming.
+  const unwiredCandidates = config.servers.filter(
+    (s) =>
+      s.enabled && s.kind !== "remote-http" && !s.params && s.slug !== slug,
+  );
+  const unwired =
+    unwiredCandidates.find((s) => s.kind === "supplementary-image") ??
+    unwiredCandidates[0];
+
+  const wiredExample = wired
+    ? `<li>
+         <code>/strad/${esc(env)}/mcp/${esc(wired.slug)}/static/EXAMPLE_TOKEN</code>
+         <span class="ex-ok">reaches the <code>${esc(wired.slug)}</code> server</span>
+         <span class="ex-why">It sets <code>params: true</code>, so ${
+           wired.when === "deploy"
+             ? "<code>render-spec</code> resolves this path at deploy time and injects it onto that container — a new value lands on the next deploy"
+             : `it is resolved in-process at runtime and refreshed within ${config.gateway.secrets.ttlSeconds}s`
+         }.</span>
+       </li>`
+    : `<li>
+         <code>/strad/${esc(env)}/mcp/${esc(consumers[0]?.slug ?? "&lt;server&gt;")}/static/EXAMPLE_TOKEN</code>
+         <span class="ex-no">reaches nothing on this gateway</span>
+         <span class="ex-why">${
+           consumers.length
+             ? `<code>${esc(consumers[0]!.slug)}</code> sets <code>params: true</code>, but this deployment
+                carries no resolver credential, so the value is never fetched and never injected.`
+             : `No server here sets <code>params: true</code>, so there is no
+                <code>&lt;server&gt;</code> for which this example would be delivered.`
+         }</span>
+       </li>`;
+
+  const unwiredExample = unwired
+    ? `<li>
+         <code>/strad/${esc(env)}/mcp/${esc(unwired.slug)}/static/EXAMPLE_TOKEN</code>
+         <span class="ex-no">stored, delivered nowhere</span>
+         <span class="ex-why"><code>${esc(unwired.slug)}</code> does not set <code>params: true</code>;
+           it takes its configuration from the <code>${
+             unwired.kind === "builtin" ? "options:" : "env:"
+           }</code> map in strad's config instead. The value sits here, listed and rotatable, and no
+           process reads it.</span>
+       </li>`
+    : "";
+
+  const gatewayDelivered =
+    config.gateway.secrets.provider !== "env" && resolver;
+
+  return `
+<div class="helpstack">
+  <details class="acc">
+    <summary>How a parameter here routes into strad</summary>
+    <div class="acc-body">
+      <p>A parameter is addressed by one canonical path, and every segment of it does work:</p>
+      <pre class="acc-code"><span class="seg-ns">/strad/${esc(env)}/mcp/</span><span class="seg-pfx">&lt;server-slug&gt;/static/</span><span class="seg-var">&lt;VARIABLE_NAME&gt;</span></pre>
+      <p class="seglegend"><span class="seg-ns">namespace</span> ·
+        <span class="seg-pfx">path prefix</span> ·
+        <span class="seg-var">variable</span></p>
+      <p>The <b>namespace</b> is the fence this console may write inside. The <b>path prefix</b>
+        is the routing key: <code>&lt;server-slug&gt;/static/</code> names the MCP server that will
+        resolve the value. The <b>variable</b> becomes the environment variable that server's
+        process runs with.</p>
+      <p>Three things must all be true before a value reaches a server:</p>
+      <ol>
+        <li>The path sits under <code>/strad/${esc(env)}/mcp/&lt;server-slug&gt;/static/</code>.
+          Nothing outside that prefix is read. Everything under it is, and resolution keys on the
+          path's <em>last</em> segment — so extra depth still arrives, under that last name, and
+          two such paths ending in the same name collide.</li>
+        <li>That server's entry in strad's config sets <code>params: true</code>. Without it the
+          server never asks the store for anything, and the value is stored and unread.</li>
+        <li>The deployment holds the <em>resolver</em> credential (<code>STRAD_PARAMS_*</code>) —
+          a third identity, distinct from this console's admin key and from the MCP server's
+          viewer key. Without it, <code>params: true</code> resolves to nothing and the deploy
+          says so.</li>
+      </ol>
+      <p><b>When</b> depends on the server kind. A supplementary image's parameters are resolved
+        at <b>deploy</b> time and baked onto its container, so a rotation needs a redeploy of that
+        component. A builtin, which runs a strad image, resolves at <b>runtime</b>, refreshed within
+        <code>gateway.secrets.ttlSeconds</code> (${config.gateway.secrets.ttlSeconds}s).</p>
+      <p>The second namespace shape, <code>/strad/${esc(env)}/gateway/static/&lt;NAME&gt;</code>,
+        is not a server's environment — it backs the <code>\${NAME}</code> references the config
+        makes outside any one server. ${
+          gatewayDelivered
+            ? `This gateway reads it at runtime (<code>gateway.secrets.provider: ${esc(config.gateway.secrets.provider)}</code>) — a name is read only if some config value actually references it.`
+            : `This gateway runs <code>gateway.secrets.provider: env</code>, so it resolves <code>\${NAME}</code> from its process environment; a value here is deploy-time input at most.`
+        }</p>
+      <p class="acc-foot">Every row above carries a chip computed from this gateway's live
+        config — <span class="chip chip-ok chip-route">delivered</span> means a server is wired to
+        read that exact path, <span class="chip chip-warnish chip-route">not wired</span> means it
+        is stored and nothing reads it.</p>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary>Examples, from this gateway's own servers</summary>
+    <div class="acc-body">
+      <ul class="exlist">
+        ${wiredExample}
+        ${unwiredExample}
+        <li>
+          <code>/strad/${esc(env)}/gateway/static/EXAMPLE_TOKEN</code>
+          <span class="${gatewayDelivered ? "ex-ok" : "ex-no"}">${
+            gatewayDelivered
+              ? "resolves <code>${EXAMPLE_TOKEN}</code> in the config at runtime"
+              : "not read at runtime on this gateway"
+          }</span>
+          <span class="ex-why">The gateway namespace backs config-level
+            <code>\${NAME}</code> references — a remote server's bearer token, a builtin's option —
+            rather than one server's environment.</span>
+        </li>
+        <li>
+          <code>${esc(namespace)}EXAMPLE_TOKEN</code>
+          <span class="ex-no">stored, delivered nowhere</span>
+          <span class="ex-why">No path prefix, so it names no server. This is the shape you get
+            by leaving the prefix field empty; it is fine for a credential you only want recorded,
+            and wrong for one you expect a server to pick up.</span>
+        </li>
+      </ul>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary>Secret vs non-secret, and what an agent can see</summary>
+    <div class="acc-body">
+      <p><b>Parameter Manager indexes everything; Secret Manager backs the secret parts.</b>
+        Tick <em>Secret</em> for a credential — a private key, a token. Its value goes to Secret
+        Manager and Parameter Manager holds only a reference to it. Leave it unticked for
+        configuration — a service-account email, a bucket name — which lives in Parameter Manager
+        as a literal.</p>
+      <p>The <code>${esc(slug)}</code> MCP server runs as a <em>viewer</em> service account: it can
+        list parameters, their notes and versions, and read <em>non-secret</em> values. It holds no
+        <code>secretmanager.versions.access</code>, so no tool, bug or prompt injection can pull a
+        <em>secret</em> value through <code>/mcp</code> — Google refuses the call, rather than this
+        code declining it.</p>
+      <p>Adding, rotating and deleting happen on this page, as a human, behind SSO, with a
+        different admin credential the MCP container never sees. Notes are readable by agents for
+        both kinds — that is what makes them useful, and why a note should not contain a value.</p>
+      <p><b>Revealing</b> is a separate decision, and it is two of them. A deployment opts in with
+        <code>SECRETS_REVEAL_ENABLED</code>, and the console's service account must hold
+        <code>secretmanager.versions.access</code>. The flag decides what this page offers; IAM
+        decides what is possible; both must agree, and the narrower one wins. ${
+          reveal.allowed
+            ? "On this deployment both say yes, so a secret value can be displayed once, to a human, on an explicit click."
+            : esc(reveal.detail)
+        }</p>
+    </div>
+  </details>
+
+  <details class="acc">
+    <summary>Namespaces, and where the fence actually is</summary>
+    <div class="acc-body">
+      <p>A namespace is a path prefix this console is allowed to write inside, configured as
+        <code>SECRETS_NAMESPACES</code> (a comma-separated list). This deployment manages:</p>
+      <ul class="nslist">${namespaceList(namespaces, namespace)}</ul>
+      <p>It is a <b>code-level guard, not the IAM boundary</b>. The real boundary is the GCP
+        project: point this at a project that holds only these parameters, so the console's admin
+        credential cannot reach strad's own deployment secrets even in principle.</p>
+    </div>
+  </details>
+</div>`;
+}
+
+/** Every managed namespace, with the one being browsed marked. */
+function namespaceList(namespaces: string[], selected: string): string {
+  return namespaces
+    .map(
+      (n) =>
+        `<li><code>${esc(n)}</code>${
+          n === selected ? ` <span class="ex-ok">currently browsing</span>` : ""
+        }</li>`,
+    )
+    .join("");
+}
+
+/** `<datalist>` entries: every server slug, flagged with whether it is wired. */
+function prefixOptions(config: StradConfig): string {
+  return prefixSuggestions(config)
+    .map(
+      (s) =>
+        `<option value="${esc(s.prefix)}" label="${esc(
+          s.wired ? `${s.slug} — params: true` : `${s.slug} — not wired`,
+        )}"></option>`,
+    )
+    .join("");
+}
+
+/** A prefix worth showing as a placeholder: a wired server if one exists. */
+function examplePrefix(config: StradConfig): string {
+  const consumers = paramsConsumers(config);
+  if (consumers[0]) return consumers[0].prefix;
+  const any = prefixSuggestions(config)[0];
+  return any ? any.prefix : "";
+}
+
+function exampleVariable(config: StradConfig): string {
+  const consumers = paramsConsumers(config);
+  const slug = consumers[0]?.slug;
+  if (!slug) return "EXAMPLE_API_TOKEN";
+  return `${slug.toUpperCase().replace(/-/g, "_")}_API_TOKEN`;
+}
+
+/**
+ * The full-path preview.
+ *
+ * Progressive enhancement: without JS the field still shows the composition with
+ * a `<VARIABLE>` placeholder, and the server composes the same path either way.
+ * With JS it updates as you type, which is the point — "which path am I about to
+ * write" is the question this whole page exists to answer.
+ */
+function pathPreviewScript(namespace: string): string {
+  return `<script>
+(function () {
+  var ns = ${jsonForScript(namespace)};
+  var pfx = document.getElementById("pfx");
+  var name = document.getElementById("varname");
+  var out = document.getElementById("pathpreview");
+  if (!pfx || !name || !out) return;
+  function norm(v) {
+    var t = v.trim().replace(/^\\/+/, "").replace(/\\/+$/, "");
+    return t === "" ? "" : t + "/";
+  }
+  function update() {
+    out.textContent = ns + norm(pfx.value) + (name.value.trim() || "<VARIABLE>");
+  }
+  pfx.addEventListener("input", update);
+  name.addEventListener("input", update);
+  update();
+})();
+</script>`;
+}
+
+/** JSON for an inline `<script>`: `</script>` in a value must not close it. */
+function jsonForScript(value: string): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026");
 }
 
 // ---------------------------------------------------------------------------
@@ -688,8 +1108,58 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .posture{margin:0 0 1.2rem;padding:.75rem 1rem;border:1px solid var(--g5);border-left:3px solid var(--accent);
   border-radius:.4rem;background:var(--g7);color:var(--g2);font-size:.85rem;line-height:1.5}
 .posture strong{color:var(--white)}
+.posture-warn{border-left-color:#e0a63b;margin-bottom:.7rem}
+.posture-reveal{margin-bottom:.7rem}
+
+/* Namespace picker */
+.nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
+.nsselect{width:auto;min-width:13rem;font-size:.8rem;padding:.3rem .45rem}
+.nsgo{font-size:.76rem}
+.nscount{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
+
+/* Progressive disclosure: every explanation on the page lives in one of these. */
+.helpstack{display:flex;flex-direction:column;gap:.4rem;margin-bottom:1.3rem}
+.acc{border:1px solid var(--g5);border-radius:.45rem;background:var(--g7)}
+.acc>summary{cursor:pointer;list-style:none;padding:.55rem .9rem;font-size:.84rem;font-weight:600;
+  color:var(--g1);display:flex;align-items:center;gap:.5rem}
+.acc>summary::-webkit-details-marker{display:none}
+.acc>summary::before{content:"▸";color:var(--text-accent);font-size:.8rem;flex:none}
+.acc[open]>summary::before{content:"▾"}
+.acc>summary:hover{color:var(--white)}
+.acc-body{padding:.2rem 1.1rem 1rem;font-size:.83rem;color:var(--g2);line-height:1.62;
+  border-top:1px solid var(--g6)}
+.acc-body p{margin:.7rem 0}
+.acc-body b{color:var(--white);font-weight:600}
+.acc-body ol,.acc-body ul{margin:.6rem 0;padding-left:1.2rem}
+.acc-body li{margin:.35rem 0}
+.acc-code{margin:.6rem 0;padding:.6rem .8rem;border-radius:.35rem;background:var(--bg-code);
+  color:var(--g1);font-family:var(--font-mono);font-size:.74rem;overflow-x:auto;line-height:1.5}
+.acc-code b{color:var(--text-accent);font-weight:500}
+.seg-ns{color:var(--g3)}
+.seg-pfx{color:var(--text-accent);font-weight:500}
+.seg-var{color:#e0a63b;font-weight:500}
+.seglegend{font-family:var(--font-mono);font-size:.72rem;margin:-.2rem 0 .8rem;color:var(--g4)}
+.acc-foot{color:var(--g3);font-size:.78rem}
+.exlist{list-style:none;padding:0}
+.exlist li{display:flex;flex-direction:column;gap:.2rem;padding:.55rem 0;border-bottom:1px solid var(--g6)}
+.exlist li:last-child{border-bottom:none}
+.exlist code{word-break:break-all}
+.ex-ok{color:var(--text-accent);font-size:.76rem;font-weight:600}
+.ex-no{color:#e0a63b;font-size:.76rem;font-weight:600}
+.ex-why{color:var(--g3);font-size:.78rem}
+.nslist{list-style:none;padding:0}
+.nslist li{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+
+/* The path a value is about to be written to. */
+.pathpart{align-self:flex-start;font-size:.78rem;word-break:break-all;max-width:100%}
+.pathpreview{color:var(--text-accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--g5))}
+.row-pfx{display:block;color:var(--g4);font-size:.72rem;font-weight:400;word-break:break-all}
+.chip-route{text-transform:none;letter-spacing:0}
+.chip-warnish{color:#e0a63b;border-color:color-mix(in srgb,#e0a63b 45%,var(--g5))}
 .secret-row{gap:.6rem;flex-wrap:wrap}
-.secret-row .row-name{flex:0 0 15rem;color:var(--white);font-weight:500}
+.secret-row .row-name{flex:0 0 17rem;color:var(--white);font-weight:500;
+  white-space:normal;overflow:visible;line-height:1.3}
+.row-var{word-break:break-all}
 .row-kind{flex:none}
 .row-note{flex:1;min-width:8rem;color:var(--g2);font-size:.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-nonote{color:var(--g4);font-style:italic}
@@ -698,9 +1168,6 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .chip-ok{color:var(--text-accent);border-color:var(--accent)}
 .chip-secret{color:#e0a63b;border-color:color-mix(in srgb,#e0a63b 45%,var(--g5));text-transform:none;letter-spacing:0}
 .chip-plain{color:var(--g3);border-color:var(--g5);text-transform:none;letter-spacing:0}
-.field-check{flex-direction:row;align-items:flex-start;gap:.55rem}
-.field-check input{margin-top:.2rem;width:1rem;height:1rem;flex:none;accent-color:var(--accent)}
-.field-check .field-l{display:inline}
 form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .btn{font:inherit;font-size:.76rem;padding:.32rem .6rem;border-radius:.35rem;cursor:pointer;
   border:1px solid var(--g5);background:var(--g6);color:var(--g1);white-space:nowrap}
@@ -717,6 +1184,9 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .addbox-title{margin:0 0 .9rem;font-size:1rem;color:var(--white)}
 .addform{display:flex;flex-direction:column;gap:.9rem;max-width:34rem}
 .field{display:flex;flex-direction:column;gap:.3rem}
+.field-check{flex-direction:row;align-items:flex-start;gap:.55rem}
+.field-check input{margin-top:.2rem;width:1rem;height:1rem;flex:none;accent-color:var(--accent)}
+.field-check .field-l{display:inline}
 .field-l{font-size:.78rem;color:var(--g2);font-weight:600}
 .field-opt{color:var(--g4);font-weight:400;text-transform:uppercase;font-size:.66rem;letter-spacing:.05em}
 .field-h{font-size:.72rem;color:var(--g4)}

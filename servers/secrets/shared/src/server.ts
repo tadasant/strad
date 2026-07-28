@@ -5,12 +5,26 @@ import {
 } from "./parameter-manager.js";
 import { loadConfig, type SecretsConfig } from "./config.js";
 import { registerTools } from "./tools.js";
+import {
+  NO_CAPABILITIES,
+  probeCapabilities,
+  type Capabilities,
+} from "./capabilities.js";
+import { createWriteClient, type ParametersWriter } from "./write-client.js";
 
 export interface CreateMCPServerOptions {
   version: string;
   /** Injected in tests; production reads the environment. */
   config?: SecretsConfig;
   readerFactory?: () => ParametersReader;
+  /**
+   * Test seam: override the capability probe. Production asks Google once, at
+   * registerHandlers time, and caches the answer for the process lifetime — an
+   * IAM grant does not change mid-request, and the tool LIST must be stable
+   * within a session or a client's cached listing goes stale in a confusing way.
+   */
+  capabilities?: () => Promise<Capabilities>;
+  writerFactory?: () => ParametersWriter;
 }
 
 /**
@@ -50,7 +64,52 @@ export function createMCPServer(options: CreateMCPServerOptions) {
         });
       });
 
-    registerTools(target, { config, reader: factory });
+    // ONE probe per process. Memoised rather than per-request: the answer is a
+    // property of the credential, and re-asking on every tools/list would add a
+    // round trip to every listing for a value that changes when a human edits
+    // IAM. A revoked permission still fails closed at Google.
+    let probed: Promise<Capabilities> | undefined;
+    const capabilities =
+      options.capabilities ??
+      (() => {
+        probed ??= config.account
+          ? probeCapabilities({
+              projectId: config.projectId,
+              account: config.account,
+              tokenUrl: config.tokenUrl,
+            })
+          : Promise.resolve({
+              ...NO_CAPABILITIES,
+              reason: "no credential is configured for this server",
+            });
+        return probed;
+      });
+
+    // The mutating client is built LAZILY and only ever reached through a
+    // capability check in tools.ts. Constructing it is not the permission; the
+    // probe is.
+    let writer: ParametersWriter | undefined;
+    const writerFactory =
+      options.writerFactory ??
+      ((): ParametersWriter => {
+        if (!config.account) {
+          throw new Error("no credential is configured for this server");
+        }
+        writer ??= createWriteClient({
+          projectId: config.projectId,
+          account: config.account,
+          pmApiBase: config.apiBase,
+          tokenUrl: config.tokenUrl,
+        });
+        return writer;
+      });
+
+    registerTools(target, {
+      config,
+      reader: factory,
+      capabilities,
+      writer: writerFactory,
+    });
   };
 
   return { server, registerHandlers };

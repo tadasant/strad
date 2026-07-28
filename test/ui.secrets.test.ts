@@ -56,8 +56,22 @@ servers:
     consoleEnv:
       SECRETS_PROJECT_ID: "demo-project"
       SECRETS_NAMESPACES: "${NS}"
+      SECRETS_REVEAL_ENABLED: "true"
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${ADMIN_KEY}"
 `);
+
+/**
+ * The console's credential, as Google would report it: a full admin. This suite
+ * covers the surface when reveal is BOTH offered and permitted — the staging
+ * posture. test/ui.secrets.reveal.test.ts covers the other three combinations.
+ */
+const ADMIN_CAPABILITIES = {
+  readSecretValues: true,
+  writeParameters: true,
+  writeSecretValues: true,
+  deleteParameters: true,
+  probed: true,
+};
 
 const ADMIN_KEY = JSON.stringify({
   client_email: "strad-secrets-admin@demo.iam.gserviceaccount.com",
@@ -149,6 +163,7 @@ beforeAll(async () => {
     env,
     secrets: SECRETS,
     parametersStore: () => fake.store,
+    capabilities: () => Promise.resolve(ADMIN_CAPABILITIES),
   });
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
@@ -205,7 +220,9 @@ describe("the parameters console, end to end", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("Created GCS_CLIENT_EMAIL (non-secret).");
+    expect(html).toContain(
+      `Created GCS_CLIENT_EMAIL (non-secret) at ${NS}GCS_CLIENT_EMAIL.`,
+    );
     // Stored in Parameter Manager (its payload holds the literal), not Secret Manager.
     expect(fake.pmPayloads().join("\n")).toContain(
       "svc@demo.iam.gserviceaccount.com",
@@ -226,7 +243,9 @@ describe("the parameters console, end to end", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("Created GCS_PRIVATE_KEY (secret).");
+    expect(html).toContain(
+      `Created GCS_PRIVATE_KEY (secret) at ${NS}GCS_PRIVATE_KEY.`,
+    );
     expect(html).not.toContain(CANARY);
     // The value lives in Secret Manager; the PM payload holds only a __REF__.
     expect([...fake.secrets.values()].flat()).toContain(CANARY);

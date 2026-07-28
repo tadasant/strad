@@ -5,9 +5,15 @@
  *   docker exec <container> node /app/scripts/smoke.mjs
  *
  * It speaks raw streamable-HTTP JSON-RPC (no SDK, no deps) to every mount and
- * reports the tool count each one lists. Credential-free: listing tools never
- * touches an upstream API, so this passes on a container with no secrets — which
- * is exactly what CI has.
+ * reports the tool count each one lists. Credential-free: listing tools touches
+ * no upstream API, so this passes on a container with no secrets — which is
+ * exactly what CI has.
+ *
+ * One mount qualifies that. `secrets` derives its surface from a capability
+ * PROBE (servers/secrets/shared/src/capabilities.ts), so with a credential
+ * present it does make one call, to Cloud Resource Manager, and its count is
+ * credential-dependent. CI has no credential, the probe fails closed, and the
+ * count is the read-only 4 below.
  *
  * What it is really checking is that fifteen servers, seven dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
@@ -29,9 +35,11 @@ const EXPECT = {
   "google-calendar": 7,
   "google-docs": 11,
   onepassword: 9,
-  // Four tools, and not one of them can return a SECRET value. If this number
-  // ever GROWS, someone added a tool to a secrets server, and that is a thing CI
-  // should stop.
+  // Four tools, and not one of them can return a SECRET value. This is the
+  // CREDENTIAL-FREE count: the probe fails closed here, so it is the floor of
+  // the surface rather than the whole of it. A deployment whose credential can
+  // write lists more, by design. If this number grows in CI — where there is no
+  // credential to widen it — someone added a tool to the read-only surface.
   secrets: 4,
   "good-eggs": null, // browser servers vary with their app surface; just list
   fetchpet: null,

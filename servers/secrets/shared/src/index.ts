@@ -24,3 +24,23 @@ export {
 export { registerTools, toolDefinitions } from "./tools.js";
 
 export { createMCPServer, type CreateMCPServerOptions } from "./server.js";
+
+export {
+  probeCapabilities,
+  PROBE_PERMISSIONS,
+  NO_CAPABILITIES,
+  type Capabilities,
+  type ProbeConfig,
+} from "./capabilities.js";
+
+export {
+  createWriteClient,
+  type ParametersWriter,
+  type WriteClientConfig,
+} from "./write-client.js";
+
+export {
+  tokenMinter,
+  GoogleAuthError,
+  SCOPE_CLOUD_PLATFORM,
+} from "./google-auth.js";

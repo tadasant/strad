@@ -69,11 +69,11 @@ this store and handing the container the wrong one silently collapses the
 The gateway gets the **resolver** identity, injected as
 `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`:
 
-| Identity     | Roles                                                               | Where it runs                                                                                                                                                                   |
-| ------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **viewer**   | `parametermanager.parameterViewer`                                  | the `secrets` MCP server, on the bundle. **Cannot** read a secret value — no `secretmanager.versions.access` — so no tool, bug or prompt injection can pull one through `/mcp`. |
-| **admin**    | `parametermanager.admin` + `secretmanager.admin`                    | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                               |
-| **resolver** | `parametermanager.parameterViewer` + `secretmanager.secretAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing.                                                                       |
+| Identity     | Roles                                                               | Where it runs                                                                                                                                                                                                                              |
+| ------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **viewer**   | `parametermanager.parameterViewer`                                  | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — no `secretmanager.versions.access` — so no tool, bug or prompt injection can pull one through `/mcp`. Staging's is deliberately wider; see below. |
+| **admin**    | `parametermanager.admin` + `secretmanager.admin`                    | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                          |
+| **resolver** | `parametermanager.parameterViewer` + `secretmanager.secretAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing.                                                                                                                                  |
 
 Three things follow, and each is deliberate:
 
@@ -200,6 +200,152 @@ A provider that **throws** does not fall through to the environment. An
 unreachable store is not a store that lacks the name, and silently falling back
 to a stale env var during an outage is how a rotated credential comes back from
 the dead.
+
+## The console's parameters page
+
+`/ui/secrets` is the human half of the `secrets` server, and the only place a
+value can be written or a secret value read back. Three things about how it
+addresses the store are worth knowing before you use it.
+
+### It manages every namespace, not the first one
+
+`SECRETS_NAMESPACES` is a comma-separated **list**. The page has a namespace
+picker; the listing, every action and the create form all follow it, and the
+selection rides in `?ns=` so a view is linkable. An `ns` that is not one of the
+configured namespaces is ignored rather than honoured — it is the prefix a new
+parameter's path is built from, so it is an allow-list, not a hint.
+
+The two shapes a namespace usually takes:
+
+| Namespace                      | Holds                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `/strad/{env}/mcp/`            | Per-server parameters, under `{slug}/static/`.                                 |
+| `/strad/{env}/gateway/static/` | The deployment's own `${NAME}` references — the token store, the OAuth secret. |
+
+Staging manages both on the **console** side and only the first on the **MCP**
+side. The console's admin credential can already reach the whole project, so
+listing the gateway namespace widens what a human can address, not what the
+credential may do — while the agent-facing viewer stays scoped to the servers'
+namespace and cannot enumerate the deployment's own keys.
+
+:::caution
+Reveal follows the namespace list. Once the deployment's own `${NAME}` references
+live under `/strad/{env}/gateway/static/` and that namespace is managed by the
+console, a signed-in admin — or a hijacked console session — can reveal
+`GOOGLE_CLIENT_SECRET` and the token store in a browser, not just the servers'
+credentials. That is the same admin credential either way; what changes is the
+reach of one session. Weigh it against
+[shorter console sessions](https://github.com/tadasant/strad/issues/46) and
+[single-use login tokens](https://github.com/tadasant/strad/issues/43) before
+adding the gateway namespace to a production console.
+:::
+
+### A path is namespace + prefix + variable
+
+The create form takes a **path prefix** — the segments between the namespace and
+the variable name — separately from the variable:
+
+```
+/strad/staging/mcp/  remote-filesystem-tmp-public/static/  GCS_PRIVATE_KEY
+└──── namespace ──┘  └──────────── path prefix ─────────┘  └── variable ──┘
+```
+
+The prefix is the routing key. `{slug}/static/` is what makes a parameter belong
+to one MCP server; without it the console could only ever write
+`{namespace}{VARIABLE}`, which is a well-formed path that no resolver reads. The
+field offers this gateway's own server slugs as suggestions and shows the full
+path it is about to write as you type.
+
+### It says whether anything will actually read the path
+
+**Storing a parameter does not deliver it.** A value under
+`/strad/{env}/mcp/{slug}/static/` reaches that server only when the server's
+config entry sets [`params: true`](/servers/interface/) _and_ the deployment holds
+the resolver credential. Those are two independent conditions, and the second is
+invisible in the config — `params: true` with no `STRAD_PARAMS_*` behind it is a
+no-op that `render-spec` warns about and ships anyway. Otherwise the store is a
+registry: the parameter is listed, rotatable and read by nothing.
+
+Because that is silent when it goes wrong, the page computes the answer from the
+running config rather than describing it in prose. Every row carries a chip —
+`delivered · deploy`, `delivered · runtime`, `not wired`, `unrouted` — and a
+banner above the listing counts how many servers on this gateway consume managed
+parameters at all. The explanations themselves live in collapsed accordions, so
+the page stays a working surface rather than a manual.
+
+`src/ui/param-routing.ts` is the single source of that judgement, and
+`test/ui.secrets.routing.test.ts` pins both halves of it against their own
+fixtures: neither a config without a `params: true` server nor a deployment
+without the resolver credential may render a page claiming a value is delivered.
+
+One subtlety the chips encode. Resolution lists everything under
+`{slug}/static/` and keys the result on the path's **last** segment, so a deeper
+path like `{slug}/static/extra/TOKEN` _is_ injected — as `TOKEN` — and collides
+with any sibling ending in the same name. The row says so rather than calling the
+path unrouted, because "nothing reads this" is the more dangerous thing to be
+wrong about.
+
+## Reveal, and why a flag is not a boundary
+
+Displaying a stored secret value is the one console action with no undo, so it is
+gated twice, by two independent things:
+
+| Layer            | Where                                                            | Answers                                 |
+| ---------------- | ---------------------------------------------------------------- | --------------------------------------- |
+| **Feature flag** | `SECRETS_REVEAL_ENABLED` on the server's `consoleEnv:`           | what this deployment's console _offers_ |
+| **IAM grant**    | `secretmanager.versions.access` on the console's service account | what that identity is _permitted_       |
+
+**Both must say yes, and the narrower one wins.** The flag is convenience and
+clarity; the grant is the boundary that cannot be bypassed. Neither substitutes
+for the other — a flag alone is a UI decision wearing a security costume, and a
+grant alone offers a button in an environment that decided not to have one.
+
+Absent means off. A new environment cannot inherit reveal by forgetting to think
+about it.
+
+Staging enables it (nothing in `strad-secrets-staging` is sensitive, and
+round-tripping a value is how the store gets tested). Prod does not.
+
+### When they disagree
+
+Fail closed, and say _which way_, because the two directions need opposite fixes:
+
+- **flag on, credential cannot** — the control is withheld rather than offered and
+  403ed. The fix is an IAM grant.
+- **flag off, credential can** — the control is withheld, and the page reports
+  **drift**: the UI decision is holding and the boundary is not. The fix is to
+  narrow the service account.
+
+A probe that cannot run at all (Cloud Resource Manager not enabled, say) is
+reported as _unverified_ rather than as a denial, because "I could not find out"
+and "you are not allowed" send a reader to different pages.
+
+The hidden button is presentation. `POST /ui/:server/reveal` re-checks the same
+posture and refuses with a 403, so a hand-crafted form post gets nowhere.
+
+## The MCP tool surface is probed, not configured
+
+`servers/secrets` asks Google what its own credential may do
+(`projects:testIamPermissions`) and derives its tool list from the answer.
+
+- **Prod** — a Parameter Manager viewer. Four read-only tools, and `/mcp` cannot
+  read a secret value.
+- **Staging** — read + write on a project holding nothing sensitive. The same
+  image additionally offers `create_parameter`, `set_parameter_value`,
+  `set_parameter_note`, `delete_parameter` and `get_secret_value`.
+
+A flag was the alternative and is worse: one claiming write access on a read-only
+key produces a server that advertises a tool and fails every call to it with an
+opaque 403, and one claiming read-only on a key that can read secret values
+produces a property that exists in prose and not in IAM. The probe cannot drift,
+because what it reports is what Google will enforce.
+
+Every handler re-checks the capability rather than trusting that it was listed — a
+`tools/list` a client cached a minute ago is not an authorization. A probe that
+cannot run yields the read-only surface; nothing is opened by a failure.
+
+The exact grants, per environment, with audit assertions, are in
+[`servers/secrets/README.md`](https://github.com/tadasant/strad/blob/main/servers/secrets/README.md).
 
 ## The seam
 

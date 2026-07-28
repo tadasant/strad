@@ -6,13 +6,29 @@ managed variable, and Secret Manager holds the bytes of the ones that are secret
 The name is deliberately not `gcp-secrets` — the store is an implementation
 detail, and we may add others.
 
-This tree is the **viewer** role: the MCP/agent channel. It lists parameters,
-reads the values of NON-secret ones, and — the part that matters — **cannot read a
-secret value, because the credential it runs as could not fetch one if it tried.**
+This tree is the MCP/agent channel. **Its surface is derived from what its
+credential may actually do**, asked of Google at startup
+(`projects:testIamPermissions` — see `shared/src/capabilities.ts`) rather than
+declared in config. A flag can claim a capability the key does not have; a probe
+cannot.
+
+In **production** the credential is a Parameter Manager *viewer*, so the surface
+is four read-only tools and — the part that matters — it **cannot read a secret
+value, because the credential it runs as could not fetch one if it tried**:
 
 ```
 tools:  list_managed_namespaces   list_parameters   get_parameter   open_secrets_manager
 ```
+
+In **staging** the credential is read+write on a project that holds nothing
+sensitive, so the same image additionally offers `create_parameter`,
+`set_parameter_value`, `set_parameter_note`, `delete_parameter` and
+`get_secret_value`. That is deliberate and scoped to staging: it is what makes the
+store testable end to end over `/mcp` instead of only through the console.
+
+**Fail closed.** A probe that cannot run — no credential, Cloud Resource Manager
+not enabled, a network fault — yields no capabilities, and the surface is the
+read-only four. Nothing is opened by a failure.
 
 Secret values are added, rotated, revealed and deleted by a **human**, in strad's
 SSO-gated console, using a **different service account that never reaches the MCP
@@ -53,45 +69,59 @@ Manager parameter, `format: "JSON"`, labelled `managed-by: strad` and
   __REF__("//secretmanager.googleapis.com/projects/<PROJECT>/secrets/<secretId>/versions/latest")
   ```
 
-  Parameter Manager's `:render` would dereference that ref and return the secret.
-  **This viewer never renders**, and could not: its credential lacks
-  `secretmanager.versions.access`, so the deref is a 403.
+  Parameter Manager's `:render` dereferences that ref and returns the secret. In
+  **prod** this server never renders and could not — the read path is not on its
+  surface and its credential could not back it. In **staging** `:render` is how
+  `get_secret_value` works. Which of the two you get is decided by the probe, not
+  by this paragraph.
 
 The exact `path` is stored *inside* the envelope, so a listing never decodes an id
 back into a path — it reads the envelope and filters on the path it finds there.
 
 ## The posture, stated as a claim you can check
 
-> An agent talking to `/mcp` cannot obtain a **secret** value from this server. Not
-> because we did not write the tool — because the credential in that process lacks
-> `secretmanager.versions.access`, and Google answers 403 to the only call that
-> would return one.
+> An agent talking to **production**'s `/mcp` cannot obtain a **secret** value from
+> this server. Not because we did not write the tool — because the credential in
+> that process lacks `secretmanager.versions.access`, and Google answers 403 to the
+> only call that would return one. The tool is not listed there either, because the
+> probe reports that the credential cannot back it; but the listing is the
+> courtesy and IAM is the reason.
 
 Three locks, in order of how much they are worth:
 
-1. **IAM (the real one).** The MCP component's service account holds Parameter
-   Manager *viewer* access: it can `parameters.list` and `parameterVersions.get`
-   (the envelope), and **nothing** that reads a secret's bytes. A secret's value
-   only comes out of Secret Manager's `versions.access` or Parameter Manager's
-   `:render`, and both check `secretmanager.versions.access` — which this
-   credential does not hold. A bug, a bad merge or a prompt injection that reaches
-   for a secret value gets `403 PERMISSION_DENIED`.
-2. **No code path.** `shared/src/parameter-manager.ts` has one HTTP verb (`get`),
-   no `render`, and no method that dereferences a `__REF__`. There is nothing to
-   call.
+1. **IAM (the real one).** In prod the MCP component's service account holds
+   Parameter Manager *viewer* access: it can `parameters.list` and
+   `parameterVersions.get` (the envelope), and **nothing** that reads a secret's
+   bytes. There are exactly **two** ways a secret value comes out, and prod's
+   credential holds neither: Secret Manager's `versions.access`, and Parameter
+   Manager's `:render`. Those are checked differently and it matters — `:render`
+   needs `parametermanager.parameterVersions.render` on the CALLER *and*
+   `secretAccessor` on the parameter's own principal, so withholding
+   `versions.access` alone is not what shuts it. A bug, a bad merge or a prompt
+   injection that reaches for a secret value gets `403 PERMISSION_DENIED`.
+2. **No code path on the read client.** `shared/src/parameter-manager.ts` has one
+   HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
+   The `:render` call lives in `write-client.ts`, which is constructed only when
+   the probe reports the capability.
 3. **No tool.** `get_parameter` returns NON-secret values only; on a secret
-   parameter it returns an error, not the value. CI pins the tool count at 4
-   (`servers/bundle/scripts/smoke.mjs`), so a fifth tool fails the build.
+   parameter it returns an error, not the value — on every deployment, staging
+   included. The one tool that _can_ return a secret value, `get_secret_value`,
+   is listed only where the probe reports a read capability — and its handler
+   re-checks, because a `tools/list` a client cached a minute ago must not be
+   treated as an authorization. CI's smoke test runs with no credential, so the
+   probe fails closed and the count there is 4
+   (`servers/bundle/scripts/smoke.mjs`).
 
-Lock 1 is the one that holds when 2 and 3 are wrong. That is the whole design —
-and it is now enforced by **both** code (there is no secret-value method) **and**
-IAM (the viewer lacks Secret Manager access entirely).
+Lock 1 is the one that holds when 2 and 3 are wrong. That is the whole design, and
+it is why staging can safely be given a wider credential: nothing about prod's
+posture depends on this code declining, so relaxing the code in an environment
+whose IAM is relaxed changes prod not at all.
 
 ## The three credentials
 
 | Role | Lives in | Can it read a secret value? | Access |
 | --- | --- | --- | --- |
-| **viewer** (this tree) | the bundle image, answers `/mcp` | **no** | Parameter Manager viewer |
+| **viewer** (this tree) | the bundle image, answers `/mcp` | **no in prod**, yes in staging | Parameter Manager viewer (prod); admin on both stores (staging) |
 | **admin** (the console) | `src/**`, behind SSO, core component only | yes (that is "reveal") | Parameter Manager + Secret Manager admin |
 | **resolver** (runtime) | `src/**`, assembles a server's env | yes, at boot | Parameter Manager `:render` |
 
@@ -120,6 +150,14 @@ every non-secret one — and read the value of **no** secret in it, ever.
 `SECRETS_NAMESPACES` is still **required**. An unset one would mean the empty
 prefix — every parameter in the project — so the server refuses to mount rather
 than defaulting to "everything".
+
+It is a **list**, and the two halves of this server need not be given the same
+one. The bundle's `env:` scopes what an AGENT can enumerate; the core's
+`consoleEnv:` scopes what a HUMAN can address on `/ui/secrets`, which offers a
+picker over every entry. Staging gives the console
+`/strad/staging/mcp/,/strad/staging/gateway/static/` and the MCP container only
+the first: a human manages the deployment's own `${NAME}` references there, and
+an agent has no business listing them.
 
 ## Notes
 
@@ -213,24 +251,29 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --role roles/secretmanager.admin
 ```
 
-**Verify the split before trusting it.** Create a secret and a secret parameter
-that references it, then confirm the viewer can read the parameter's envelope but
-is denied the `:render` that would dereference the secret:
+## Per-environment IAM
 
-```bash
-gcloud auth activate-service-account --key-file /tmp/viewer.json
-# parameterVersions.get    -> the envelope, with __REF__ but no bytes            ✅
-# parameterVersions.render -> PERMISSION_DENIED secretmanager.versions.access    ✅ THE PROOF
-```
+**The grants live in one place: [`docs/operate/secrets-iam.md`](../../docs/src/content/docs/operate/secrets-iam.md).**
+That page derives each permission from the actual API calls in
+`src/secrets/parameters/gcp.ts` and this tree's `write-client.ts`, and carries the
+`gcloud` plus an audit assertion for both halves — the prod console's
+write-without-read downgrade, and staging's read+write grant for this server.
 
-The viewer must hold **no other binding** that grants `versions.access`
-(`roles/secretmanager.secretAccessor`, `roles/editor`, `roles/owner` all do). Then
-seed ONLY the two SA keys into the *strad* Secret Manager project (the one the
-deploy reads, where `SLACK_BOT_TOKEN` and friends live — NOT this params project)
-as `strad-<env>-SECRETS_VIEWER_KEY_JSON` and `strad-<env>-SECRETS_ADMIN_KEY_JSON`.
-The project id and namespace are non-secret config LITERALS in
-`infra/strad.<env>.yaml` (like the `gcs` server's `GCS_PROJECT_ID`) — they are not
-seeded anywhere.
+It is deliberately not duplicated here. Two copies of an IAM spec is how one of
+them ends up wrong, and the wrong one gets applied.
+
+One point from it is worth repeating, because it is the part that is easy to get
+backwards: **`roles/parametermanager.admin` is NOT a safe base role for a
+write-without-read console.** It includes `parametermanager.parameterVersions.render`,
+and `:render` dereferences a `__REF__` as the *parameter's own* principal rather
+than as the caller — so a caller holding `render` but not
+`secretmanager.versions.access` still gets a secret value back, as soon as that
+principal is granted `secretAccessor`. Nothing grants it today, which is the only
+reason the path is shut; granting it is exactly what issue #49 proposes. The
+custom role in the spec omits `render` so the boundary survives #49, and
+`capabilities.ts` probes for both permissions so the reported posture stays right
+either way.
+
 
 ## Test
 

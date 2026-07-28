@@ -239,6 +239,12 @@ keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful.
 `google.enabled` is `false` (it flips true when OAuth creds land) and
 `consoleDevBypass.enabled` is `true`.
 
+The `secrets` entry gives its two halves **different** namespace lists on purpose:
+the console (`consoleEnv:`) manages `/strad/staging/mcp/` and
+`/strad/staging/gateway/static/`, the MCP container (`env:`) only the first. A
+human addresses both through the console's namespace picker; an agent cannot
+enumerate the deployment's own `${NAME}` references.
+
 `test/staging-config.test.ts` is the guard on all of this: it asserts the config
 renders to exactly `["core", "bundle"]`, that the bundle is `apps-s-1vcpu-2gb`, that
 no server carries a container-side capability toggle, and that each read-only

@@ -5,15 +5,22 @@ import type { SecretBag } from "../secrets/index.ts";
 import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
 import {
+  cachedProbe,
   createGcpParameterStore,
+  NO_CAPABILITIES,
+  normalisePathPrefix,
   ParameterStoreError,
+  validatePathPrefix,
   validateVariableName,
   variableOf,
+  type Capabilities,
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
+import { resolverConfigured } from "./param-routing.ts";
+import { revealPosture } from "./reveal.ts";
 import {
   renderGcsBrowse,
   renderIndex,
@@ -72,6 +79,16 @@ export interface ConsoleUiOptions {
   parametersStore?: (
     view: Extract<ServerView, { kind: "secrets" }>,
   ) => ParameterStore;
+  /**
+   * Override the capability probe. Defaults to asking Google what the console's
+   * service account may do (src/secrets/parameters/capabilities.ts).
+   *
+   * Tests inject this to drive the four flag/credential combinations without a
+   * network, which is the only way to cover the fail-closed paths.
+   */
+  capabilities?: (
+    view: Extract<ServerView, { kind: "secrets" }>,
+  ) => Promise<Capabilities>;
   /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
@@ -188,7 +205,10 @@ async function handleServerView(
   }
 
   if (view.kind === "secrets") {
-    await renderSecretsPage(res, view, opts, { signedInAs });
+    await renderSecretsPage(res, view, opts, {
+      signedInAs,
+      namespace: selectNamespace(req.query.ns, view.namespaces),
+    });
     return;
   }
 
@@ -282,13 +302,19 @@ async function handleSecretAction(
     return;
   }
 
+  const body = req.body as Record<string, unknown>;
+  // Which namespace the human was looking at. It comes back on every form so an
+  // action does not silently bounce them to the first namespace — and it is
+  // validated against the managed list, never trusted, because it is the thing a
+  // new parameter's path is built from.
+  const namespace = selectNamespace(body.ns, view.namespaces);
+
   const store = storeFor(view, opts);
   if (!store) {
-    await renderSecretsPage(res, view, opts, { signedInAs });
+    await renderSecretsPage(res, view, opts, { signedInAs, namespace });
     return;
   }
 
-  const body = req.body as Record<string, unknown>;
   // A value is read into a local and never leaves this function except toward
   // the parameter store, or into the one-shot reveal panel.
   const value = typeof body.value === "string" ? body.value : "";
@@ -297,11 +323,11 @@ async function handleSecretAction(
   const secret = body.secret === "on" || body.secret === "true";
   // rotate/note/reveal/delete address an existing parameter by its canonical path.
   const path = typeof body.path === "string" ? body.path.trim() : "";
-  const namespace = view.namespaces[0] ?? "";
 
   const fail = (message: string, status = 400) =>
     renderSecretsPage(res, view, opts, {
       signedInAs,
+      namespace,
       flash: { tone: "error", message },
       status,
     });
@@ -311,27 +337,36 @@ async function handleSecretAction(
       case "create": {
         const variable =
           typeof body.variable === "string" ? body.variable.trim() : "";
+        // The prefix is the segments BETWEEN the namespace and the variable —
+        // `{slug}/static/` for a server parameter. It is what routes a value to
+        // one MCP server; without it the path is `{namespace}{VARIABLE}`, which
+        // no resolver reads.
+        const prefixRaw =
+          typeof body.prefix === "string" ? body.prefix.trim() : "";
         const varError = validateVariableName(variable);
+        const prefixError = validatePathPrefix(prefixRaw);
         const noteError = validateNote(note);
-        if (varError ?? noteError) {
-          await fail((varError ?? noteError) as string);
+        if (varError ?? prefixError ?? noteError) {
+          await fail((varError ?? prefixError ?? noteError) as string);
           return;
         }
         if (!value) {
           await fail("A value is required.");
           return;
         }
+        const prefix = normalisePathPrefix(prefixRaw);
         await store.create({
-          path: `${namespace}${variable}`,
+          path: `${namespace}${prefix}${variable}`,
           secret,
           value,
           note: note || undefined,
         });
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
-            message: `Created ${variable} (${secret ? "secret" : "non-secret"}).`,
+            message: `Created ${prefix}${variable} (${secret ? "secret" : "non-secret"}) at ${namespace}${prefix}${variable}.`,
           },
         });
         return;
@@ -346,6 +381,7 @@ async function handleSecretAction(
         await store.rotate(path, value);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
             message: `Rotated ${variableOf(path)}: a new value is now current.`,
@@ -364,6 +400,7 @@ async function handleSecretAction(
         await store.setNote(path, note);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
             message: note
@@ -375,10 +412,36 @@ async function handleSecretAction(
       }
 
       case "reveal": {
+        // The hidden button is presentation; this is the gate. A form POST is
+        // trivially hand-crafted, so the same posture that decides what to
+        // render has to decide what to honour — and it fails closed.
+        //
+        // The kind is read from the store rather than taken from the request:
+        // a POST claiming `secret=false` to dodge the capability check is
+        // exactly the request this gate exists to refuse. A path with no listed
+        // parameter is treated as SECRET, which is the strict answer.
         assertManaged(path, view.namespaces);
+        const listed = await store
+          .list(namespace)
+          .catch((): ParameterMeta[] => []);
+        const isSecret = listed.find((p) => p.path === path)?.secret ?? true;
+
+        const posture = revealPosture(
+          view.revealEnabled,
+          await capabilitiesFor(view, opts),
+          isSecret,
+        );
+        if (!posture.allowed) {
+          await fail(
+            `Reveal is not available on this deployment. ${posture.detail}`,
+            403,
+          );
+          return;
+        }
         const revealed = await store.reveal(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           revealed: { name: variableOf(path), value: revealed },
         });
         return;
@@ -389,6 +452,7 @@ async function handleSecretAction(
         await store.destroy(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
             message: `Deleted ${variableOf(path)} and all of its versions.`,
@@ -407,6 +471,8 @@ async function handleSecretAction(
 
 interface PageExtras {
   signedInAs?: string;
+  /** The managed namespace to list. Defaults to the first when absent. */
+  namespace?: string;
   flash?: { tone: "ok" | "error"; message: string };
   revealed?: { name: string; value: string };
   status?: number;
@@ -420,6 +486,28 @@ async function renderSecretsPage(
 ): Promise<void> {
   const slug = view.server.slug;
   const store = storeFor(view, opts);
+
+  // No namespace is not "the whole project" — it is a misconfiguration. The MCP
+  // half refuses to mount without one (servers/secrets/shared/src/config.ts) on
+  // exactly this reasoning: an empty prefix matches every parameter the
+  // credential can see, and a create would write a namespace-less path.
+  if (view.namespaces.length === 0) {
+    res.type("html").send(
+      renderMessage({
+        title: `${slug} · not configured`,
+        serverSlug: slug,
+        signedInAs: extras.signedInAs,
+        heading: "No managed namespace is configured",
+        sub:
+          `SECRETS_NAMESPACES is empty for this server, and an empty namespace would scope the ` +
+          `console to every parameter in the project. Set it to at least one path prefix — e.g. ` +
+          `"/strad/${opts.config.gateway.env}/mcp/" — under this server's consoleEnv:.`,
+        tone: "warn",
+        breadcrumbToIndex: true,
+      }),
+    );
+    return;
+  }
 
   if (!store) {
     res.type("html").send(
@@ -440,10 +528,15 @@ async function renderSecretsPage(
     return;
   }
 
+  const namespace = selectNamespace(extras.namespace, view.namespaces);
+  const caps = await capabilitiesFor(view, opts);
+  const reveal = revealPosture(view.revealEnabled, caps);
+  const revealNonSecret = revealPosture(view.revealEnabled, caps, false);
+
   let parameters: ParameterMeta[] = [];
   let flash = extras.flash;
   try {
-    parameters = await store.list(view.namespaces[0] ?? "");
+    parameters = await store.list(namespace);
   } catch (err) {
     flash = flash ?? { tone: "error", message: describe(err) };
   }
@@ -454,12 +547,49 @@ async function renderSecretsPage(
     .send(
       renderSecrets({
         view,
+        config: opts.config,
         parameters,
+        namespace,
+        resolver: resolverConfigured(opts.env),
+        reveal,
+        revealNonSecret,
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
       }),
     );
+}
+
+/**
+ * The capability probe, MEMOISED per (server, service account, project).
+ *
+ * Keyed the same way the store is, and for the same reason: the answer is a
+ * property of the CREDENTIAL, so it must be recomputed if the credential is
+ * rotated under us, and must not be recomputed per request. The inner
+ * `cachedProbe` adds the TTL; this map stops a fresh prober being built (and its
+ * cache thrown away) on every page render.
+ */
+const probeCache = new Map<string, () => Promise<Capabilities>>();
+
+async function capabilitiesFor(
+  view: Extract<ServerView, { kind: "secrets" }>,
+  opts: ConsoleUiOptions,
+): Promise<Capabilities> {
+  if (opts.capabilities) return opts.capabilities(view);
+  if (!view.account) return NO_CAPABILITIES;
+
+  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
+  let prober = probeCache.get(key);
+  if (!prober) {
+    prober = cachedProbe({
+      projectId: view.projectId,
+      account: view.account,
+      crmApiBase: view.crmApiBase,
+      tokenUrl: view.tokenUrl,
+    });
+    probeCache.set(key, prober);
+  }
+  return prober();
 }
 
 /**
@@ -542,6 +672,24 @@ function renderUnexpected(res: Response, err: unknown): void {
         breadcrumbToIndex: true,
       }),
     );
+}
+
+/**
+ * Which managed namespace this request is about.
+ *
+ * `SECRETS_NAMESPACES` is a LIST, and the store, the MCP server and
+ * `assertManaged` all handle every entry of it.
+ *
+ * This is an ALLOW-LIST on purpose: the value arrives from a query string or a
+ * form field and becomes the prefix a new parameter's path is built from, so a
+ * value that is not one of the configured namespaces must not be honoured. An
+ * unrecognised one falls back to the first rather than erroring, so a stale
+ * bookmark lands somewhere sensible.
+ */
+export function selectNamespace(raw: unknown, namespaces: string[]): string {
+  const fallback = namespaces[0] ?? "";
+  if (typeof raw !== "string") return fallback;
+  return namespaces.includes(raw) ? raw : fallback;
 }
 
 /**

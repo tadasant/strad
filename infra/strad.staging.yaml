@@ -341,11 +341,44 @@ servers:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
-      # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
+      # STAGING'S MCP CREDENTIAL IS READ+WRITE, and prod's is not. The key name is
+      # unchanged; what changes is the IAM behind it in the staging project only
+      # (servers/secrets/README.md has the grants).
+      #
+      # The server does not take that on faith. At startup it asks Google which
+      # permissions this credential holds (`projects:testIamPermissions`) and
+      # DERIVES its tool surface from the answer — see
+      # servers/secrets/shared/src/capabilities.ts. So prod, whose key is a
+      # viewer, lists four read-only tools exactly as before, and staging lists
+      # the write tools too. There is no flag claiming a capability the credential
+      # might not have, because a flag can be wrong and a probe cannot.
+      #
+      # THE PROD PROPERTY IS UNCHANGED: prod's `/mcp` still cannot read a secret
+      # value, because prod's credential still lacks
+      # secretmanager.versions.access. Staging relaxing this is deliberate and
+      # scoped to a project that holds nothing worth protecting.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
-      SECRETS_NAMESPACES: "/strad/staging/mcp/"
+      # REVEAL, opted in for staging and absent in prod. Two independent layers:
+      # this flag decides what the console OFFERS; whether the console's service
+      # account holds `secretmanager.versions.access` decides what is POSSIBLE.
+      # Both must say yes and the narrower wins (src/ui/reveal.ts). Absent = off,
+      # so a new environment cannot inherit reveal by forgetting to think about it.
+      #
+      # Staging says yes because `strad-secrets-staging` holds nothing sensitive
+      # and round-tripping a value is how the store gets tested. Prod says no,
+      # and its admin SA is being downgraded to write-without-read so that the
+      # "no" is IAM rather than markup — see servers/secrets/README.md.
+      SECRETS_REVEAL_ENABLED: "true"
+      # TWO namespaces on the console side, ONE on the MCP side above, and the
+      # asymmetry is the point. `/strad/staging/gateway/static/` holds the
+      # deployment's own ${NAME} references — the token store, the OAuth client
+      # secret — which a HUMAN manages here and an AGENT has no business
+      # enumerating. The console's admin credential can already reach the whole
+      # project, so listing this namespace widens what is addressable, not what is
+      # permitted; the viewer's list stays scoped to the servers' namespace.
+      SECRETS_NAMESPACES: "/strad/staging/mcp/,/strad/staging/gateway/static/"
       # Parameter Manager admin + Secret Manager admin. Core only. Humans only.
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
 

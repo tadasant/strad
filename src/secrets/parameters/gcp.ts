@@ -298,6 +298,22 @@ export function createGcpParameterStore(
         format: "JSON",
         labels: { "managed-by": "strad", secret: String(input.secret) },
       });
+    } catch (err) {
+      // A 409 here is the ONE failure that must not roll back the parameter: it
+      // means a parameter with this id already exists, and it is not this call's
+      // to delete. `parameterId` collapses a path into a flat id, so two distinct
+      // paths CAN share one — `gcs/static/FOO` and `GCS/Static/FOO` do — and the
+      // rollback would then destroy the parameter that was already there, and
+      // every version of it, in response to a typo.
+      if (!(err instanceof ParameterStoreError && err.status === 409)) {
+        await pm("DELETE", `${pmParent}/parameters/${id}`).catch(() => {});
+      }
+      if (input.secret)
+        await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
+      throw err;
+    }
+
+    try {
       await addVersion(id, {
         path: input.path,
         secret: input.secret,
@@ -305,8 +321,8 @@ export function createGcpParameterStore(
         value: envelopeValue,
       });
     } catch (err) {
-      // Best-effort rollback; each DELETE is 404-tolerant, so it is safe whether
-      // or not that resource was created before the failure.
+      // The parameter above is ours — this call created it — so rolling it back
+      // is right. Each DELETE is 404-tolerant.
       await pm("DELETE", `${pmParent}/parameters/${id}`).catch(() => {});
       if (input.secret)
         await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
