@@ -297,6 +297,12 @@ export interface SecretsViewOptions {
    * reveal.ts — both must say yes.
    */
   reveal: RevealPosture;
+  /**
+   * The same question asked for a NON-secret parameter, whose value needs no
+   * secret-read permission. Kept separate rather than recomputed per row so the
+   * renderer stays a pure function of what it is handed.
+   */
+  revealNonSecret: RevealPosture;
   signedInAs?: string;
   /** A one-shot banner after an action ("Created FOO"). */
   flash?: { tone: "ok" | "error"; message: string };
@@ -311,7 +317,14 @@ export interface SecretsViewOptions {
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
-  const { view, config, parameters, resolver, reveal: revealUi } = opts;
+  const {
+    view,
+    config,
+    parameters,
+    resolver,
+    reveal: revealUi,
+    revealNonSecret,
+  } = opts;
   const slug = view.server.slug;
   const action = `/ui/${encodeURIComponent(slug)}`;
   const ns = opts.namespace;
@@ -324,6 +337,10 @@ export function renderSecrets(opts: SecretsViewOptions): string {
         ? `<span class="chip chip-secret">secret</span>`
         : `<span class="chip chip-plain">non-secret</span>`;
       const routing = classifyPath(config, p.path, resolver);
+      // A non-secret value sits in the envelope this page already read, so
+      // showing it needs no secret-read permission — only the flag. See
+      // revealPosture's `secret` parameter.
+      const rowReveal = p.secret ? revealUi : revealNonSecret;
       const prefix = p.path.startsWith(ns)
         ? p.path.slice(ns.length, p.path.length - p.variable.length)
         : "";
@@ -343,12 +360,12 @@ export function renderSecrets(opts: SecretsViewOptions): string {
         <span class="row-time">${p.updatedAt ? esc(formatTime(p.updatedAt)) : "—"}</span>
         <span class="row-actions">
           ${
-            revealUi.allowed
+            rowReveal.allowed
               ? `<form method="post" action="${action}/reveal" class="inline">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <button class="btn btn-ghost" ${p.hasValue ? "" : "disabled"}>Reveal</button>
           </form>`
-              : `<button class="btn btn-ghost" disabled title="${esc(revealUi.detail)}">${esc(revealUi.label)}</button>`
+              : `<button class="btn btn-ghost" disabled title="${esc(rowReveal.detail)}">${esc(rowReveal.label)}</button>`
           }
           <form method="post" action="${action}/rotate" class="inline rotate-form">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}

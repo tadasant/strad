@@ -56,11 +56,11 @@ export function toolDefinitions(
     {
       name: "list_managed_namespaces",
       description:
-        "List the parameter namespaces this server manages, and state plainly what it can and cannot do. " +
-        "A namespace is a canonical-path prefix like \"/strad/staging/mcp/\". This server is the VIEWER: it " +
-        "holds Parameter Manager viewer access, so it can list parameters and read NON-secret values — but " +
-        "it cannot read a SECRET value, because secret bytes live in Secret Manager and this credential " +
-        "lacks secretmanager.versions.access. Secret values are set by a human in the strad console (see " +
+        "List the parameter namespaces this server manages, and report what THIS deployment's credential " +
+        "may actually do — the capabilities are probed from Google, not declared, so the answer matches " +
+        "what a call would really get. A namespace is a canonical-path prefix like \"/strad/staging/mcp/\". " +
+        "Call this first: whether a secret value can be read, and whether writes are possible, differs by " +
+        "deployment. Where a value cannot be read here, a human can set it in the strad console (see " +
         "open_secrets_manager).",
       inputSchema: {
         type: "object",
@@ -263,19 +263,29 @@ export function registerTools(server: Server, deps: ToolDeps): void {
     const { name, arguments: args } = request.params;
     try {
       switch (name) {
-        case "list_managed_namespaces":
+        case "list_managed_namespaces": {
+          // Reported from the PROBE, never from a constant. A hardcoded "no"
+          // would be a lie on a deployment whose credential can read — told to
+          // an agent, next to a listed get_secret_value tool.
+          const probed = await caps();
           return text({
             projectId: config.projectId,
             managedNamespaces: config.namespaces,
-            canReadSecretValues: false,
-            whyNot:
-              "This server is the VIEWER: its service account holds Parameter Manager viewer access only. " +
-              "It can list parameters and read NON-secret parameter values, but secret values live in " +
-              "Secret Manager and this credential lacks secretmanager.versions.access — so even the " +
-              "Parameter Manager :render deref of a secret reference is denied. A value request for a secret " +
-              "is denied by Google, not merely declined by this code.",
+            canReadSecretValues: probed.readSecretValues,
+            canWrite: probed.writeParameters,
+            canDelete: probed.deleteParameters,
+            capabilitiesProbed: probed.probed,
+            whyNot: probed.readSecretValues
+              ? undefined
+              : probed.probed
+                ? "This deployment's service account holds neither secretmanager.versions.access nor " +
+                  "parametermanager.parameterVersions.render, so a secret value cannot be read here. That " +
+                  "is denied by Google, not merely declined by this code."
+                : `This server's capabilities could not be established (${probed.reason ?? "no reason given"}), ` +
+                  "so it fails closed: the surface is read-only and no secret value can be read.",
             consoleUrl: consoleLink(config),
           });
+        }
 
         case "list_parameters": {
           const namespace = String(

@@ -32,6 +32,15 @@ export const PROBE_PERMISSIONS = {
   createParameter: "parametermanager.parameters.create",
   writeParameter: "parametermanager.parameterVersions.create",
   deleteParameter: "parametermanager.parameters.delete",
+  /**
+   * The SECOND read path. `:render` derefs a `__REF__` as the PARAMETER's own
+   * principal, not the caller's, so `render` without
+   * `secretmanager.versions.access` still returns a secret value once that
+   * principal holds `secretAccessor`. `readValue` in write-client.ts uses
+   * exactly this call, so a credential holding only `render` genuinely can read
+   * one. Kept identical to the src/ copy.
+   */
+  renderParameter: "parametermanager.parameterVersions.render",
 } as const;
 
 export interface Capabilities {
@@ -48,13 +57,13 @@ export interface Capabilities {
   reason?: string;
 }
 
-export const NO_CAPABILITIES: Capabilities = {
+export const NO_CAPABILITIES: Capabilities = Object.freeze({
   readSecretValues: false,
   writeParameters: false,
   writeSecretValues: false,
   deleteParameters: false,
   probed: false,
-};
+});
 
 export interface ProbeConfig {
   projectId: string;
@@ -120,7 +129,9 @@ export async function probeCapabilities(
     const params =
       held.has(P.createParameter) && held.has(P.writeParameter);
     return {
-      readSecretValues: held.has(P.readSecretValue),
+      // EITHER read path counts. See PROBE_PERMISSIONS.renderParameter.
+      readSecretValues:
+        held.has(P.readSecretValue) || held.has(P.renderParameter),
       writeParameters: params,
       writeSecretValues:
         params && held.has(P.createSecret) && held.has(P.writeSecretValue),

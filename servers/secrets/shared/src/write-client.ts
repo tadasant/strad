@@ -110,12 +110,47 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     return `__REF__("//secretmanager.googleapis.com/projects/${cfg.projectId}/secrets/${secretId}/versions/latest")`;
   }
 
+  /**
+   * The greatest `v{n}` among a parameter's ENABLED versions.
+   *
+   * This ranking is a contract, not a detail. Three readers rank versions —
+   * this tree's reader, the console's client (src/secrets/parameters/gcp.ts)
+   * and the runtime resolver — and all three take the greatest NUMERIC suffix.
+   * A writer that disagrees writes versions the others skip, silently: the tool
+   * reports success and the value never takes effect.
+   *
+   * Two ways to get that wrong, both of which this function exists to prevent:
+   * ranking by list order (Parameter Manager lists lexicographically, so `v9`
+   * sorts after `v12`), and minting an id whose suffix is not a number.
+   */
+  async function currentVersionId(id: string): Promise<string | undefined> {
+    const listed = (await pm(
+      "GET",
+      `${pmParent}/parameters/${id}/versions`,
+    )) as {
+      parameterVersions?: { name?: string; disabled?: boolean }[];
+    };
+    let best: { vid: string; n: number } | undefined;
+    for (const v of listed.parameterVersions ?? []) {
+      if (v.disabled || !v.name) continue;
+      const vid = v.name.slice(v.name.lastIndexOf("/") + 1);
+      const n = Number(/(\d+)$/.exec(vid)?.[1] ?? "0");
+      if (!best || n > best.n) best = { vid, n };
+    }
+    return best?.vid;
+  }
+
   async function addVersion(
     id: string,
     envelope: ParameterEnvelope,
   ): Promise<void> {
-    // A version id must be unique per parameter and legal as a resource id.
-    const versionId = `v${Date.now().toString(36)}`;
+    // `v{n+1}`, from the same ranking every reader uses. A timestamp-shaped id
+    // would be unique and legal and still wrong: `Date.now().toString(36)` ends
+    // in a letter most of the time, so its numeric suffix reads as 0 and the
+    // version sorts BELOW `v1`.
+    const current = await currentVersionId(id);
+    const n = current ? Number(/(\d+)$/.exec(current)?.[1] ?? "0") : 0;
+    const versionId = `v${n + 1}`;
     await pm(
       "POST",
       `${pmParent}/parameters/${id}/versions?parameter_version_id=${versionId}`,
@@ -127,22 +162,23 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     );
   }
 
+  /**
+   * The current envelope, VERIFIED to be the one that was asked for.
+   *
+   * `parameterId` is a lossy fold: it collapses every run of non-alphanumerics
+   * to one `-`, so `/strad/staging/mcp/evil/static/X` (inside the namespace) and
+   * `/strad/staging/mcp-evil/static/X` (outside it) land on the same id. The
+   * namespace check upstream passes on the path the caller supplied; without
+   * this comparison the WRITE would land on, and `readValue` would return, a
+   * parameter the namespace does not cover. The read half of this tree already
+   * defends against exactly this (see `getParameter`); so does this half now.
+   */
   async function currentEnvelope(path: string): Promise<ParameterEnvelope> {
     const id = parameterId(path);
-    const listed = (await pm(
-      "GET",
-      `${pmParent}/parameters/${id}/versions`,
-    )) as {
-      parameterVersions?: { name?: string; disabled?: boolean }[];
-    };
-    const versions = (listed.parameterVersions ?? []).filter(
-      (v) => !v.disabled && v.name,
-    );
-    const last = versions[versions.length - 1];
-    if (!last?.name) {
+    const vid = await currentVersionId(id);
+    if (!vid) {
       throw new ParameterManagerError(`"${path}" has no version yet`, 404);
     }
-    const vid = last.name.slice(last.name.lastIndexOf("/") + 1);
     const got = (await pm(
       "GET",
       `${pmParent}/parameters/${id}/versions/${vid}`,
@@ -151,9 +187,21 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     if (!data) {
       throw new ParameterManagerError(`"${path}" version has no payload`, 502);
     }
-    return JSON.parse(
+    const envelope = JSON.parse(
       Buffer.from(data, "base64").toString("utf8"),
     ) as ParameterEnvelope;
+    assertSamePath(envelope, path);
+    return envelope;
+  }
+
+  /** The id collision guard. A mismatch is a 404: this is not that parameter. */
+  function assertSamePath(envelope: ParameterEnvelope, path: string): void {
+    if (envelope.path !== path) {
+      throw new ParameterManagerError(
+        `"${path}" does not exist (the id it folds to belongs to another parameter)`,
+        404,
+      );
+    }
   }
 
   return {
@@ -240,27 +288,27 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
 
     async destroy(path) {
       const id = parameterId(path);
-      const prev = await currentEnvelope(path).catch(() => undefined);
+      // The envelope read is REQUIRED here, not best-effort, and that is the
+      // whole difference between deleting this parameter and deleting whatever
+      // else folded onto the same id. Swallowing the error and deleting anyway
+      // would make an id collision a destructive one.
+      const prev = await currentEnvelope(path);
       await pm("DELETE", `${pmParent}/parameters/${id}`);
-      if (prev?.secret) {
+      if (prev.secret) {
         await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
       }
     },
 
     async readValue(path) {
       const id = parameterId(path);
-      const listed = (await pm(
-        "GET",
-        `${pmParent}/parameters/${id}/versions`,
-      )) as { parameterVersions?: { name?: string; disabled?: boolean }[] };
-      const versions = (listed.parameterVersions ?? []).filter(
-        (v) => !v.disabled && v.name,
-      );
-      const last = versions[versions.length - 1];
-      if (!last?.name) {
+      // Verify the id belongs to THIS path before rendering it. `:render` is the
+      // one call here that returns a secret value, so an id collision must not
+      // be able to hand back a parameter outside the managed namespace.
+      await currentEnvelope(path);
+      const vid = await currentVersionId(id);
+      if (!vid) {
         throw new ParameterManagerError(`"${path}" has no version yet`, 404);
       }
-      const vid = last.name.slice(last.name.lastIndexOf("/") + 1);
       // `:render` dereferences a `__REF__`. This is the ONE call in this tree
       // that can return a secret value, and it is reachable only when the probe
       // reported `readSecretValues` — which is Google's answer, not ours.

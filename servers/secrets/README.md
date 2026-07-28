@@ -69,9 +69,11 @@ Manager parameter, `format: "JSON"`, labelled `managed-by: strad` and
   __REF__("//secretmanager.googleapis.com/projects/<PROJECT>/secrets/<secretId>/versions/latest")
   ```
 
-  Parameter Manager's `:render` would dereference that ref and return the secret.
-  **This viewer never renders**, and could not: its credential lacks
-  `secretmanager.versions.access`, so the deref is a 403.
+  Parameter Manager's `:render` dereferences that ref and returns the secret. In
+  **prod** this server never renders and could not — the read path is not on its
+  surface and its credential could not back it. In **staging** `:render` is how
+  `get_secret_value` works. Which of the two you get is decided by the probe, not
+  by this paragraph.
 
 The exact `path` is stored *inside* the envelope, so a listing never decodes an id
 back into a path — it reads the envelope and filters on the path it finds there.
@@ -87,23 +89,28 @@ back into a path — it reads the envelope and filters on the path it finds ther
 
 Three locks, in order of how much they are worth:
 
-1. **IAM (the real one).** The MCP component's service account holds Parameter
-   Manager *viewer* access: it can `parameters.list` and `parameterVersions.get`
-   (the envelope), and **nothing** that reads a secret's bytes. A secret's value
-   only comes out of Secret Manager's `versions.access` or Parameter Manager's
-   `:render`, and both check `secretmanager.versions.access` — which this
-   credential does not hold. A bug, a bad merge or a prompt injection that reaches
-   for a secret value gets `403 PERMISSION_DENIED`.
-2. **No code path.** `shared/src/parameter-manager.ts` has one HTTP verb (`get`),
-   no `render`, and no method that dereferences a `__REF__`. There is nothing to
-   call.
+1. **IAM (the real one).** In prod the MCP component's service account holds
+   Parameter Manager *viewer* access: it can `parameters.list` and
+   `parameterVersions.get` (the envelope), and **nothing** that reads a secret's
+   bytes. There are exactly **two** ways a secret value comes out, and prod's
+   credential holds neither: Secret Manager's `versions.access`, and Parameter
+   Manager's `:render`. Those are checked differently and it matters — `:render`
+   needs `parametermanager.parameterVersions.render` on the CALLER *and*
+   `secretAccessor` on the parameter's own principal, so withholding
+   `versions.access` alone is not what shuts it. A bug, a bad merge or a prompt
+   injection that reaches for a secret value gets `403 PERMISSION_DENIED`.
+2. **No code path on the read client.** `shared/src/parameter-manager.ts` has one
+   HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
+   The `:render` call lives in `write-client.ts`, which is constructed only when
+   the probe reports the capability.
 3. **No tool.** `get_parameter` returns NON-secret values only; on a secret
-   parameter it returns an error, not the value. The one tool that _can_ return a
-   secret value, `get_secret_value`, is listed only where the probe reports
-   `secretmanager.versions.access` — and its handler re-checks, because a
-   `tools/list` a client cached a minute ago must not be treated as an
-   authorization. CI's smoke test runs with no credential, so the probe fails
-   closed and the count there is 4 (`servers/bundle/scripts/smoke.mjs`).
+   parameter it returns an error, not the value — on every deployment, staging
+   included. The one tool that _can_ return a secret value, `get_secret_value`,
+   is listed only where the probe reports a read capability — and its handler
+   re-checks, because a `tools/list` a client cached a minute ago must not be
+   treated as an authorization. CI's smoke test runs with no credential, so the
+   probe fails closed and the count there is 4
+   (`servers/bundle/scripts/smoke.mjs`).
 
 Lock 1 is the one that holds when 2 and 3 are wrong. That is the whole design, and
 it is why staging can safely be given a wider credential: nothing about prod's
@@ -244,155 +251,29 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --role roles/secretmanager.admin
 ```
 
-## Per-environment IAM: what each identity may do, and how to grant it
+## Per-environment IAM
 
-Two surfaces derive their behaviour from these grants rather than from a config
-flag, so getting them right is what makes the model real:
+**The grants live in one place: [`docs/operate/secrets-iam.md`](../../docs/src/content/docs/operate/secrets-iam.md).**
+That page derives each permission from the actual API calls in
+`src/secrets/parameters/gcp.ts` and this tree's `write-client.ts`, and carries the
+`gcloud` plus an audit assertion for both halves — the prod console's
+write-without-read downgrade, and staging's read+write grant for this server.
 
-- the **console** offers reveal only if `SECRETS_REVEAL_ENABLED` is on **and** its
-  service account holds `secretmanager.versions.access` (`src/ui/reveal.ts`);
-- the **MCP server** derives its tool surface from
-  `projects:testIamPermissions` on its own credential
-  (`servers/secrets/shared/src/capabilities.ts`).
+It is deliberately not duplicated here. Two copies of an IAM spec is how one of
+them ends up wrong, and the wrong one gets applied.
 
-Both fail closed. A permission that is absent produces a narrower surface, never
-an error at call time.
+One point from it is worth repeating, because it is the part that is easy to get
+backwards: **`roles/parametermanager.admin` is NOT a safe base role for a
+write-without-read console.** It includes `parametermanager.parameterVersions.render`,
+and `:render` dereferences a `__REF__` as the *parameter's own* principal rather
+than as the caller — so a caller holding `render` but not
+`secretmanager.versions.access` still gets a secret value back, as soon as that
+principal is granted `secretAccessor`. Nothing grants it today, which is the only
+reason the path is shut; granting it is exactly what issue #49 proposes. The
+custom role in the spec omits `render` so the boundary survives #49, and
+`capabilities.ts` probes for both permissions so the reported posture stays right
+either way.
 
-### The target state
-
-| Identity | Project | Read secret values | Write | Effect |
-| --- | --- | --- | --- | --- |
-| MCP (`strad-secrets-viewer`) | **prod** | ❌ | ❌ | four read-only tools; `/mcp` cannot read a secret value |
-| MCP (`strad-secrets-viewer`) | **staging** | ✅ | ✅ | read + write tools; the store is testable end to end |
-| console (`strad-secrets-admin`) | **prod** | ❌ | ✅ | add and rotate, never display |
-| console (`strad-secrets-admin`) | **staging** | ✅ | ✅ | reveal works |
-
-`cloudresourcemanager.googleapis.com` must be enabled in **both** projects or the
-probe cannot run and every surface degrades to read-only:
-
-```bash
-gcloud services enable cloudresourcemanager.googleapis.com --project "$PROJECT"
-```
-
-### 1. Prod console: write **without** read
-
-The console still has to add and rotate secrets; it must never be able to display
-one. `roles/secretmanager.admin` grants `versions.access`, so it has to go, and
-the pieces have to be added back individually.
-
-`roles/secretmanager.secretVersionAdder` is the right predefined role for the
-write half — it grants `secretmanager.versions.add` and nothing that reads. It
-does **not** grant `secretmanager.secrets.create`, which a first-time create also
-needs, so pair it with `roles/secretmanager.secretCreator`.
-
-`roles/parametermanager.admin` is safe to keep: it grants
-`parametermanager.*` only. It does **not** independently open a read path to
-secret bytes — a `:render` that dereferences a `__REF__` is authorized against
-**Secret Manager**, so a caller without `secretmanager.versions.access` is refused
-by Secret Manager no matter what Parameter Manager allows. That is the same
-mechanism the viewer split has always relied on.
-
-```bash
-PROJECT=strad-secrets-prod
-SA="serviceAccount:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com"
-
-# Remove the role that grants versions.access.
-gcloud projects remove-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/secretmanager.admin
-
-# Add back only the write halves.
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/secretmanager.secretCreator
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/secretmanager.secretVersionAdder
-
-# Parameter Manager admin stays: it is the index, and it reads no secret bytes.
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/parametermanager.admin
-```
-
-**Audit assertion.** Deleting a secret also needs `secretmanager.secrets.delete`,
-which none of the roles above grant — so after this change the console can add and
-rotate but not delete a *secret* parameter's underlying secret. That is the
-intended trade; add `roles/secretmanager.secretVersionManager` only if deleting
-matters more than the smaller blast radius.
-
-```bash
-gcloud projects get-iam-policy "$PROJECT" \
-  --flatten="bindings[].members" \
-  --filter="bindings.members:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com" \
-  --format="value(bindings.role)" | sort
-# EXPECT exactly:
-#   roles/parametermanager.admin
-#   roles/secretmanager.secretCreator
-#   roles/secretmanager.secretVersionAdder
-# and NOT roles/secretmanager.admin, roles/secretmanager.secretAccessor,
-# roles/editor or roles/owner — each of those grants versions.access.
-
-# The proof, run as the admin SA:
-gcloud auth activate-service-account --key-file /tmp/prod-admin.json
-gcloud secrets versions access latest --secret "$SOME_ID" --project "$PROJECT"
-# EXPECT: PERMISSION_DENIED secretmanager.versions.access   ← the boundary
-gcloud secrets versions add "$SOME_ID" --data-file=- --project "$PROJECT" <<< "x"
-# EXPECT: success                                            ← writes still work
-```
-
-The console reports this state on the page: with the flag off and the credential
-still able to read, it says so and calls it drift; once the downgrade lands, it
-says reveal is off **and** impossible. If you see "not yet a boundary" after
-running the above, a broader binding is still in place.
-
-### 2. Staging MCP: read **and** write
-
-`strad-secrets-staging` holds nothing sensitive, and the point is to exercise the
-store through `/mcp` rather than only through the console.
-
-```bash
-PROJECT=strad-secrets-staging
-SA="serviceAccount:strad-secrets-viewer@$PROJECT.iam.gserviceaccount.com"
-
-# Replace the viewer-only binding with admin on both stores.
-gcloud projects remove-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/parametermanager.parameterViewer
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/parametermanager.admin
-gcloud projects add-iam-policy-binding "$PROJECT" \
-  --member "$SA" --role roles/secretmanager.admin
-```
-
-**Audit assertion.** The probe is the assertion — it is what the server will act
-on:
-
-```bash
-gcloud auth activate-service-account --key-file /tmp/staging-viewer.json
-gcloud projects test-iam-permissions "$PROJECT" \
-  --permissions=secretmanager.versions.access,secretmanager.versions.add,secretmanager.secrets.create,parametermanager.parameters.create,parametermanager.parameterVersions.create,parametermanager.parameters.delete
-# EXPECT all six. `/mcp?servers=secrets` then lists the write tools;
-# `list_managed_namespaces` reports what it can do.
-```
-
-**This must not be run against prod.** The prod viewer key staying read-only is
-the property that makes "an agent cannot read a secret value" true, and it is
-enforced by that project's IAM alone.
-
-**Verify the split before trusting it.** Create a secret and a secret parameter
-that references it, then confirm the viewer can read the parameter's envelope but
-is denied the `:render` that would dereference the secret:
-
-```bash
-gcloud auth activate-service-account --key-file /tmp/viewer.json
-# parameterVersions.get    -> the envelope, with __REF__ but no bytes            ✅
-# parameterVersions.render -> PERMISSION_DENIED secretmanager.versions.access    ✅ THE PROOF
-```
-
-The viewer must hold **no other binding** that grants `versions.access`
-(`roles/secretmanager.secretAccessor`, `roles/editor`, `roles/owner` all do). Then
-seed ONLY the two SA keys into the *strad* Secret Manager project (the one the
-deploy reads, where `SLACK_BOT_TOKEN` and friends live — NOT this params project)
-as `strad-<env>-SECRETS_VIEWER_KEY_JSON` and `strad-<env>-SECRETS_ADMIN_KEY_JSON`.
-The project id and namespace are non-secret config LITERALS in
-`infra/strad.<env>.yaml` (like the `gcs` server's `GCS_PROJECT_ID`) — they are not
-seeded anywhere.
 
 ## Test
 

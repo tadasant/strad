@@ -36,7 +36,7 @@ import type { Capabilities } from "../secrets/parameters/index.ts";
  */
 
 export type RevealPosture =
-  | { allowed: true; note?: string }
+  | { allowed: true }
   | {
       allowed: false;
       /** Short label for the disabled control. */
@@ -47,10 +47,31 @@ export type RevealPosture =
       drift: boolean;
     };
 
+/**
+ * @param secret Whether the parameter in question holds its value in Secret
+ *   Manager. Defaults to true — the strict case — because the page-level banner
+ *   asks the question without a parameter in hand, and the safe answer to "can
+ *   reveal happen here" is the one that assumes the value is a credential.
+ *
+ *   It matters because a NON-secret parameter's value lives in the Parameter
+ *   Manager envelope, so revealing it needs no `secretmanager.versions.access`
+ *   at all — and an agent can already read it through `get_parameter`. Gating it
+ *   on the secret-read capability would break a display that discloses nothing,
+ *   and would contradict the permission table in operate/secrets-iam.md. The
+ *   FLAG still governs it: "this console does not show values" is a product
+ *   decision that applies to both kinds.
+ */
 export function revealPosture(
   flagEnabled: boolean,
   caps: Capabilities,
+  secret = true,
 ): RevealPosture {
+  if (flagEnabled && !secret) {
+    // No credential question to ask: the value is in the envelope the console
+    // already read to render the row.
+    return { allowed: true };
+  }
+
   if (!flagEnabled) {
     if (caps.readSecretValues) {
       return {
@@ -77,12 +98,7 @@ export function revealPosture(
   }
 
   // Flag on. The credential decides.
-  if (caps.readSecretValues) {
-    return {
-      allowed: true,
-      note: caps.probed ? undefined : "capability not verified",
-    };
-  }
+  if (caps.readSecretValues) return { allowed: true };
 
   if (!caps.probed) {
     return {

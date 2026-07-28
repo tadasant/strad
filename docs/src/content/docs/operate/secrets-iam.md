@@ -28,19 +28,25 @@ human commands.
 Derived from `src/secrets/parameters/gcp.ts`, not from the role names. This is the
 table the grants below are built from.
 
-| Console operation     | API calls                                                     | Permissions required                                                                                                       |
-| --------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `list(namespace)`     | PM `parameters.list`, `…/versions` list, `…/versions/{v}` GET | `parametermanager.parameters.list`, `parametermanager.parameterVersions.list`, `parametermanager.parameterVersions.access` |
-| `create` — non-secret | PM parameter POST, PM version POST                            | `parametermanager.parameters.create`, `parametermanager.parameterVersions.create`                                          |
-| `create` — secret     | SM `secrets` POST, SM `:addVersion`, then the two PM POSTs    | + `secretmanager.secrets.create`, `secretmanager.versions.add`                                                             |
-| `rotate` — non-secret | PM version GET + POST                                         | as create, non-secret                                                                                                      |
-| `rotate` — secret     | PM version GET, SM `:addVersion`                              | `secretmanager.versions.add`                                                                                               |
-| `setNote`             | PM version GET + POST                                         | as create, non-secret                                                                                                      |
-| **`reveal` — secret** | **SM `versions/latest:access`**                               | **`secretmanager.versions.access`** ← the one prod must not hold                                                           |
-| `reveal` — non-secret | PM version GET only                                           | `parametermanager.parameterVersions.access`                                                                                |
-| `destroy`             | PM parameter GET + DELETE, SM secret DELETE                   | `parametermanager.parameters.delete`, `secretmanager.secrets.delete`                                                       |
+| Console operation     | API calls                                                                    | Permissions required                                                                                                                            |
+| --------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list(namespace)`     | PM `parameters.list`, `…/versions` list, `…/versions/{v}` GET                | `parametermanager.parameters.list`, `parametermanager.parameterVersions.list`, `parametermanager.parameterVersions.access`                      |
+| `create` — non-secret | PM parameter POST, PM version POST                                           | `parametermanager.parameters.create`, `parametermanager.parameterVersions.create`                                                               |
+| `create` — secret     | SM `secrets` POST, SM `:addVersion`, then the two PM POSTs                   | + `secretmanager.secrets.create`, `secretmanager.versions.add`                                                                                  |
+| `rotate` — non-secret | PM version GET + POST                                                        | as create, non-secret                                                                                                                           |
+| `rotate` — secret     | PM versions list + version GET, SM `:addVersion`                             | `parametermanager.parameterVersions.list`, `…access`, `secretmanager.versions.add`                                                              |
+| `setNote`             | PM version GET + POST                                                        | as create, non-secret                                                                                                                           |
+| **`reveal` — secret** | PM version GET, then **SM `versions/latest:access`**                         | **`secretmanager.versions.access`** ← the one prod must not hold, on top of the PM reads                                                        |
+| `reveal` — non-secret | PM version GET only                                                          | `parametermanager.parameterVersions.access`                                                                                                     |
+| `destroy`             | PM parameter GET, versions list + DELETE, parameter DELETE, SM secret DELETE | `parametermanager.parameters.get`, `…parameters.delete`, `…parameterVersions.list`, `…parameterVersions.delete`, `secretmanager.secrets.delete` |
 
 Two things fall out of this table, and both matter:
+
+Every row also needs the `list` row's Parameter Manager reads, which the console
+performs before any mutation; they are not repeated per row. The custom roles
+below grant a few permissions no current code path calls (`secrets.list`,
+`versions.list`, `parameters.update`) — deliberately, so a future version of the
+console does not need an IAM change to enumerate or relabel what it already owns.
 
 **Reveal is the only operation that needs `secretmanager.versions.access`.**
 Everything else the console does — create, rotate, note, delete, list — works
@@ -79,7 +85,7 @@ add, rotate, note and delete secrets, and cannot read one back.
 
 **Bonus, and it is a real one.** This service account's key
 (`SECRETS_ADMIN_KEY_JSON`) is among the credentials exposed in
-[#215](https://github.com/tadasant/strad/issues/215), and rotating it has been
+`tadasant-internal#215`, and rotating it has been
 deliberately deferred. Downgrading the account **shrinks the blast radius of the
 un-rotated key**: an attacker holding it could no longer read prod secret values,
 only write them. That does not make the key safe and it is not a substitute for
@@ -178,7 +184,7 @@ rather than only through the console.
 **This is scoped to staging on purpose.** `strad-secrets-staging` holds nothing
 sensitive. In **prod** the MCP credential stays the Parameter Manager viewer with
 no `secretmanager.versions.access`, so the property from
-[#202](https://github.com/tadasant/strad/issues/202) — the `/mcp` channel cannot
+`tadasant-internal#202` — the `/mcp` channel cannot
 read a secret value — is unchanged there. That property is load-bearing and this
 does not weaken it.
 
@@ -219,7 +225,16 @@ drift from the grant.
 
 It fails closed. If `cloudresourcemanager.googleapis.com` is not enabled, or the
 probe is refused, or it times out, the server reports no capabilities and serves
-the four read-only tools. `list_managed_namespaces` carries the reason, so an
+the four read-only tools.
+
+Two honest limits on "cannot drift". `projects:testIamPermissions` answers at
+**project** level, so a grant bound to an individual secret or parameter reads as
+absent — the surface narrows, which is the safe direction, but the audit assertion
+below would then be proving the wrong thing. And a **conditional** binding can be
+reported as held when its condition would not be met at call time, which widens
+the surface relative to reality; the call still fails at Google, but as a 403
+rather than a missing tool. Grant at project level, unconditionally, and both go
+away. `list_managed_namespaces` carries the reason, so an
 agent can tell a human why an expected tool is missing instead of guessing.
 
 ## Ordering

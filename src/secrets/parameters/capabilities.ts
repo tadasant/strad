@@ -47,6 +47,20 @@ export const PROBE_PERMISSIONS = {
   writeParameter: "parametermanager.parameterVersions.create",
   /** Delete a parameter. */
   deleteParameter: "parametermanager.parameters.delete",
+  /**
+   * The SECOND read path, and the reason `versions.access` alone is not the
+   * whole answer.
+   *
+   * Parameter Manager's `:render` dereferences a `__REF__` into the secret's
+   * value, and it does NOT deref as the caller — it derefs as the PARAMETER's
+   * own principal. So a credential holding `render` but not `versions.access`
+   * can still get a secret value back, once that principal has been granted
+   * `secretAccessor`. strad makes no such grant today, which is the only reason
+   * the path is shut; granting it is exactly what issue #49 proposes. Probing
+   * for both means the answer stays right either way, instead of right by
+   * accident until someone fixes #49.
+   */
+  renderParameter: "parametermanager.parameterVersions.render",
 } as const;
 
 export interface Capabilities {
@@ -68,13 +82,13 @@ export interface Capabilities {
 }
 
 /** Fail closed: no capability is assumed without an answer from Google. */
-export const NO_CAPABILITIES: Capabilities = {
+export const NO_CAPABILITIES: Capabilities = Object.freeze({
   readSecretValues: false,
   writeParameters: false,
   writeSecretValues: false,
   deleteParameters: false,
   probed: false,
-};
+});
 
 export interface ProbeConfig {
   projectId: string;
@@ -145,7 +159,9 @@ export async function probeCapabilities(
     const held = new Set(body.permissions ?? []);
     const P = PROBE_PERMISSIONS;
     return {
-      readSecretValues: held.has(P.readSecretValue),
+      // EITHER read path counts. See PROBE_PERMISSIONS.renderParameter.
+      readSecretValues:
+        held.has(P.readSecretValue) || held.has(P.renderParameter),
       // A non-secret write needs the parameter half only.
       writeParameters:
         held.has(P.createParameter) && held.has(P.writeParameter),
@@ -181,13 +197,21 @@ export function cachedProbe(
   cfg: ProbeConfig,
   ttlMs = 5 * 60_000,
   now: () => number = () => Date.now(),
+  /**
+   * A FAILED probe is cached far more briefly than a successful one. A grant
+   * changes on human timescales, so five minutes is right for an answer; a
+   * network blip is not an answer, and caching it that long would withhold
+   * reveal long after the cause had passed.
+   */
+  failureTtlMs = 15_000,
 ): () => Promise<Capabilities> {
   let at = 0;
   let inFlight: Promise<Capabilities> | undefined;
   let value: Capabilities | undefined;
 
   return () => {
-    if (value && now() - at < ttlMs) return Promise.resolve(value);
+    const ttl = value?.probed === false ? failureTtlMs : ttlMs;
+    if (value && now() - at < ttl) return Promise.resolve(value);
     inFlight ??= probeCapabilities(cfg)
       .then((caps) => {
         value = caps;

@@ -415,9 +415,21 @@ async function handleSecretAction(
         // The hidden button is presentation; this is the gate. A form POST is
         // trivially hand-crafted, so the same posture that decides what to
         // render has to decide what to honour — and it fails closed.
+        //
+        // The kind is read from the store rather than taken from the request:
+        // a POST claiming `secret=false` to dodge the capability check is
+        // exactly the request this gate exists to refuse. A path with no listed
+        // parameter is treated as SECRET, which is the strict answer.
+        assertManaged(path, view.namespaces);
+        const listed = await store
+          .list(namespace)
+          .catch((): ParameterMeta[] => []);
+        const isSecret = listed.find((p) => p.path === path)?.secret ?? true;
+
         const posture = revealPosture(
           view.revealEnabled,
           await capabilitiesFor(view, opts),
+          isSecret,
         );
         if (!posture.allowed) {
           await fail(
@@ -426,7 +438,6 @@ async function handleSecretAction(
           );
           return;
         }
-        assertManaged(path, view.namespaces);
         const revealed = await store.reveal(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
@@ -518,10 +529,9 @@ async function renderSecretsPage(
   }
 
   const namespace = selectNamespace(extras.namespace, view.namespaces);
-  const reveal = revealPosture(
-    view.revealEnabled,
-    await capabilitiesFor(view, opts),
-  );
+  const caps = await capabilitiesFor(view, opts);
+  const reveal = revealPosture(view.revealEnabled, caps);
+  const revealNonSecret = revealPosture(view.revealEnabled, caps, false);
 
   let parameters: ParameterMeta[] = [];
   let flash = extras.flash;
@@ -542,6 +552,7 @@ async function renderSecretsPage(
         namespace,
         resolver: resolverConfigured(opts.env),
         reveal,
+        revealNonSecret,
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,

@@ -47,7 +47,16 @@ const CANARY = "-----BEGIN PRIVATE KEY-----canary-DO-NOT-LEAK-9f3a2b";
 /** A second canary, on a parameter OUTSIDE the namespace. Also never appears. */
 const CANARY_OUTSIDE = "strad-token-DO-NOT-LEAK-tttt";
 
-async function fixture() {
+/**
+ * @param caps Capabilities to report, injected rather than probed.
+ *
+ * HERMETIC ON PURPOSE. Without this the probe runs for real and every
+ * `tools/list` in this file makes a live HTTPS call to
+ * cloudresourcemanager.googleapis.com — which passes only because it fails
+ * closed, and which makes the suite depend on the network. Injecting also lets
+ * the write surface be tested at all: the probe would never report it here.
+ */
+async function fixture(caps) {
   const projectId = "test-project";
   const secretId = "strad-staging-remote-filesystem-tmp-public-gcs-private-key";
 
@@ -95,6 +104,16 @@ async function fixture() {
   const { server, registerHandlers } = createMCPServer({
     version: "0.0.0-test",
     config,
+    capabilities: () =>
+      Promise.resolve(
+        caps ?? {
+          readSecretValues: false,
+          writeParameters: false,
+          writeSecretValues: false,
+          deleteParameters: false,
+          probed: true,
+        },
+      ),
   });
   await registerHandlers(server);
 
