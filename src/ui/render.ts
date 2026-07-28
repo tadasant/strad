@@ -283,6 +283,13 @@ export interface SecretsViewOptions {
   parameters: ParameterMeta[];
   /** The managed namespace being browsed. One of `view.namespaces`. */
   namespace: string;
+  /**
+   * Whether this deployment carries the resolver credential.
+   *
+   * `params: true` with no `STRAD_PARAMS_*` behind it delivers nothing, so the
+   * page cannot report delivery from the config alone. See param-routing.ts.
+   */
+  resolver: boolean;
   signedInAs?: string;
   /** A one-shot banner after an action ("Created FOO"). */
   flash?: { tone: "ok" | "error"; message: string };
@@ -297,11 +304,10 @@ export interface SecretsViewOptions {
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
-  const { view, config, parameters } = opts;
+  const { view, config, parameters, resolver } = opts;
   const slug = view.server.slug;
   const action = `/ui/${encodeURIComponent(slug)}`;
   const ns = opts.namespace;
-  const nsQuery = `?ns=${encodeURIComponent(ns)}`;
   /** Every write posts the namespace back, so the page returns where it was. */
   const nsField = `<input type="hidden" name="ns" value="${esc(ns)}" />`;
 
@@ -310,7 +316,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
       const kind = p.secret
         ? `<span class="chip chip-secret">secret</span>`
         : `<span class="chip chip-plain">non-secret</span>`;
-      const routing = classifyPath(config, p.path);
+      const routing = classifyPath(config, p.path, resolver);
       const prefix = p.path.startsWith(ns)
         ? p.path.slice(ns.length, p.path.length - p.variable.length)
         : "";
@@ -395,8 +401,8 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   </div>
 </section>
 
-${deliveryBanner(config)}
-${secretsHelp(config, slug, ns, view.namespaces)}
+${deliveryBanner(config, resolver)}
+${secretsHelp(config, slug, ns, view.namespaces, resolver)}
 
 ${flash}
 ${reveal}
@@ -454,7 +460,6 @@ ${pathPreviewScript(ns)}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
-    brandHref: `/ui/${encodeURIComponent(slug)}${nsQuery}`,
   });
 }
 
@@ -505,19 +510,31 @@ function deliveryChip(routing: Routing): string {
  * believing you configured a server — is silent, and a human who never opens the
  * accordion is exactly the human it happens to.
  */
-function deliveryBanner(config: StradConfig): string {
+function deliveryBanner(config: StradConfig, resolver: boolean): string {
   const consumers = paramsConsumers(config);
   const total = config.servers.filter(
     (s) => s.enabled && s.kind !== "remote-http",
   ).length;
 
-  const status = consumers.length
-    ? `<strong>${consumers.length} of ${total}</strong> servers on this gateway consume managed parameters: ${consumers
-        .map((c) => `<code>${esc(c.slug)}</code>`)
-        .join(", ")}. Everything else stored here is a registry entry only.`
-    : `<strong>No server on this gateway sets <code>params: true</code></strong> today, so
-       nothing stored here is delivered to a running MCP server yet — this is a registry.
-       Wiring a server up is a config change plus a deploy.`;
+  // Two independent conditions, and the banner must not claim delivery on the
+  // strength of one. `params: true` with no resolver credential behind it is a
+  // no-op: render-spec warns and ships the component without those values.
+  const status = !consumers.length
+    ? `<strong>No server on this gateway sets <code>params: true</code></strong>, so
+       nothing stored here is delivered to a running MCP server — this is a registry.
+       Wiring a server up is a config change plus a deploy.`
+    : !resolver
+      ? `${consumers.length} of ${total} servers set <code>params: true</code> (${consumers
+          .map((c) => `<code>${esc(c.slug)}</code>`)
+          .join(
+            ", ",
+          )}), but <strong>this deployment carries no resolver credential</strong>
+         (<code>STRAD_PARAMS_*</code>), so none of it is resolved and nothing stored here reaches
+         a running MCP server — this is a registry.`
+      : `<strong>${consumers.length} of ${total}</strong> servers on this gateway consume managed
+         parameters: ${consumers
+           .map((c) => `<code>${esc(c.slug)}</code>`)
+           .join(", ")}. A path outside those is a registry entry only.`;
 
   return `<p class="posture posture-warn">
   Storing a parameter here does not, by itself, send it anywhere. ${status}
@@ -536,10 +553,11 @@ function secretsHelp(
   slug: string,
   namespace: string,
   namespaces: string[],
+  resolver: boolean,
 ): string {
   const env = config.gateway.env;
   const consumers = paramsConsumers(config);
-  const wired = consumers[0];
+  const wired = resolver ? consumers[0] : undefined;
   // Prefer a supplementary image for the counter-example: it is the shape a
   // human is most likely to be storing a credential for, and its alternative to
   // `params: true` (a hand-written `env:` entry) is the one worth naming.
@@ -562,10 +580,15 @@ function secretsHelp(
          }.</span>
        </li>`
     : `<li>
-         <code>/strad/${esc(env)}/mcp/&lt;server&gt;/static/EXAMPLE_TOKEN</code>
+         <code>/strad/${esc(env)}/mcp/${esc(consumers[0]?.slug ?? "&lt;server&gt;")}/static/EXAMPLE_TOKEN</code>
          <span class="ex-no">reaches nothing on this gateway</span>
-         <span class="ex-why">No server here sets <code>params: true</code>. Until one does,
-           there is no <code>&lt;server&gt;</code> for which this example would be delivered.</span>
+         <span class="ex-why">${
+           consumers.length
+             ? `<code>${esc(consumers[0]!.slug)}</code> sets <code>params: true</code>, but this deployment
+                carries no resolver credential, so the value is never fetched and never injected.`
+             : `No server here sets <code>params: true</code>, so there is no
+                <code>&lt;server&gt;</code> for which this example would be delivered.`
+         }</span>
        </li>`;
 
   const unwiredExample = unwired
@@ -580,7 +603,8 @@ function secretsHelp(
        </li>`
     : "";
 
-  const gatewayDelivered = config.gateway.secrets.provider !== "env";
+  const gatewayDelivered =
+    config.gateway.secrets.provider !== "env" && resolver;
 
   return `
 <div class="helpstack">
@@ -598,8 +622,10 @@ function secretsHelp(
         process runs with.</p>
       <p>Three things must all be true before a value reaches a server:</p>
       <ol>
-        <li>The path is exactly <code>&lt;server-slug&gt;/static/&lt;VARIABLE&gt;</code> under the
-          <code>/strad/${esc(env)}/mcp/</code> namespace. Nothing resolves any other shape.</li>
+        <li>The path sits under <code>/strad/${esc(env)}/mcp/&lt;server-slug&gt;/static/</code>.
+          Nothing outside that prefix is read. Everything under it is, and resolution keys on the
+          path's <em>last</em> segment — so extra depth still arrives, under that last name, and
+          two such paths ending in the same name collide.</li>
         <li>That server's entry in strad's config sets <code>params: true</code>. Without it the
           server never asks the store for anything, and the value is stored and unread.</li>
         <li>The deployment holds the <em>resolver</em> credential (<code>STRAD_PARAMS_*</code>) —
@@ -609,13 +635,13 @@ function secretsHelp(
       </ol>
       <p><b>When</b> depends on the server kind. A supplementary image's parameters are resolved
         at <b>deploy</b> time and baked onto its container, so a rotation needs a redeploy of that
-        component. A builtin running inside the gateway resolves at <b>runtime</b>, refreshed within
+        component. A builtin, which runs a strad image, resolves at <b>runtime</b>, refreshed within
         <code>gateway.secrets.ttlSeconds</code> (${config.gateway.secrets.ttlSeconds}s).</p>
       <p>The second namespace shape, <code>/strad/${esc(env)}/gateway/static/&lt;NAME&gt;</code>,
         is not a server's environment — it backs the <code>\${NAME}</code> references the config
         makes outside any one server. ${
           gatewayDelivered
-            ? `This gateway reads it at runtime (<code>gateway.secrets.provider: ${esc(config.gateway.secrets.provider)}</code>).`
+            ? `This gateway reads it at runtime (<code>gateway.secrets.provider: ${esc(config.gateway.secrets.provider)}</code>) — a name is read only if some config value actually references it.`
             : `This gateway runs <code>gateway.secrets.provider: env</code>, so it resolves <code>\${NAME}</code> from its process environment; a value here is deploy-time input at most.`
         }</p>
       <p class="acc-foot">Every row above carries a chip computed from this gateway's live

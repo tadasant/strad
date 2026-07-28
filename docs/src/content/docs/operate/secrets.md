@@ -228,6 +228,18 @@ listing the gateway namespace widens what a human can address, not what the
 credential may do — while the agent-facing viewer stays scoped to the servers'
 namespace and cannot enumerate the deployment's own keys.
 
+:::caution
+Reveal follows the namespace list. Once the deployment's own `${NAME}` references
+live under `/strad/{env}/gateway/static/` and that namespace is managed by the
+console, a signed-in admin — or a hijacked console session — can reveal
+`GOOGLE_CLIENT_SECRET` and the token store in a browser, not just the servers'
+credentials. That is the same admin credential either way; what changes is the
+reach of one session. Weigh it against
+[shorter console sessions](https://github.com/tadasant/strad/issues/46) and
+[single-use login tokens](https://github.com/tadasant/strad/issues/43) before
+adding the gateway namespace to a production console.
+:::
+
 ### A path is namespace + prefix + variable
 
 The create form takes a **path prefix** — the segments between the namespace and
@@ -249,8 +261,10 @@ path it is about to write as you type.
 **Storing a parameter does not deliver it.** A value under
 `/strad/{env}/mcp/{slug}/static/` reaches that server only when the server's
 config entry sets [`params: true`](/servers/interface/) _and_ the deployment holds
-the resolver credential. Otherwise the store is a registry: the parameter is
-listed, rotatable and read by nothing.
+the resolver credential. Those are two independent conditions, and the second is
+invisible in the config — `params: true` with no `STRAD_PARAMS_*` behind it is a
+no-op that `render-spec` warns about and ships anyway. Otherwise the store is a
+registry: the parameter is listed, rotatable and read by nothing.
 
 Because that is silent when it goes wrong, the page computes the answer from the
 running config rather than describing it in prose. Every row carries a chip —
@@ -260,8 +274,16 @@ parameters at all. The explanations themselves live in collapsed accordions, so
 the page stays a working surface rather than a manual.
 
 `src/ui/param-routing.ts` is the single source of that judgement, and
-`test/ui.secrets.routing.test.ts` pins it: a config with no `params: true` server
-must never render a page claiming a value is delivered.
+`test/ui.secrets.routing.test.ts` pins both halves of it against their own
+fixtures: neither a config without a `params: true` server nor a deployment
+without the resolver credential may render a page claiming a value is delivered.
+
+One subtlety the chips encode. Resolution lists everything under
+`{slug}/static/` and keys the result on the path's **last** segment, so a deeper
+path like `{slug}/static/extra/TOKEN` _is_ injected — as `TOKEN` — and collides
+with any sibling ending in the same name. The row says so rather than calling the
+path unrouted, because "nothing reads this" is the more dangerous thing to be
+wrong about.
 
 ## The seam
 

@@ -154,7 +154,14 @@ export function normalisePathPrefix(prefix: string): string {
  * Prefix segments become part of a GCP resource id (see `parameterId`) and part
  * of a path the resolver matches on, so they are bounded to the same alphabet a
  * slug and a `kind` use. `.` and `..` are excluded by the leading-character rule:
- * a segment must start with a letter or digit.
+ * a segment must start with a lowercase letter or a digit.
+ *
+ * LOWERCASE IS LOAD-BEARING, not tidiness. A resolver builds the path it reads
+ * from the server's slug, which the schema constrains to lowercase, so `GCS/`
+ * could never match one. `parameterId` meanwhile lowercases before it hashes, so
+ * `GCS/Static/FOO` and `gcs/static/FOO` collapse onto ONE resource id: the
+ * uppercase spelling is a path no server reads that collides with the path a
+ * server does. Rejecting it is cheaper than explaining it.
  */
 export function validatePathPrefix(prefix: string): string | null {
   const trimmed = prefix.trim();
@@ -164,10 +171,11 @@ export function validatePathPrefix(prefix: string): string | null {
   }
   const normalised = normalisePathPrefix(trimmed);
   for (const segment of normalised.slice(0, -1).split("/")) {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment)) {
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(segment)) {
       return (
-        "A path prefix is slash-separated segments of letters, digits, dots, " +
-        'dashes and underscores — e.g. "gcs/static/".'
+        "A path prefix is slash-separated segments of LOWERCASE letters, digits, dots, " +
+        'dashes and underscores — e.g. "gcs/static/". A server slug is lowercase, and an ' +
+        "uppercase prefix names a path no server resolves."
       );
     }
   }

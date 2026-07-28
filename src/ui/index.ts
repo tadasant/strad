@@ -16,6 +16,7 @@ import {
 } from "../secrets/parameters/index.ts";
 import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
+import { resolverConfigured } from "./param-routing.ts";
 import {
   renderGcsBrowse,
   renderIndex,
@@ -324,8 +325,8 @@ async function handleSecretAction(
           typeof body.variable === "string" ? body.variable.trim() : "";
         // The prefix is the segments BETWEEN the namespace and the variable —
         // `{slug}/static/` for a server parameter. It is what routes a value to
-        // one MCP server, and before this field existed the console could only
-        // write `{namespace}{VARIABLE}`, which routes to nothing.
+        // one MCP server; without it the path is `{namespace}{VARIABLE}`, which
+        // no resolver reads.
         const prefixRaw =
           typeof body.prefix === "string" ? body.prefix.trim() : "";
         const varError = validateVariableName(variable);
@@ -447,6 +448,28 @@ async function renderSecretsPage(
   const slug = view.server.slug;
   const store = storeFor(view, opts);
 
+  // No namespace is not "the whole project" — it is a misconfiguration. The MCP
+  // half refuses to mount without one (servers/secrets/shared/src/config.ts) on
+  // exactly this reasoning: an empty prefix matches every parameter the
+  // credential can see, and a create would write a namespace-less path.
+  if (view.namespaces.length === 0) {
+    res.type("html").send(
+      renderMessage({
+        title: `${slug} · not configured`,
+        serverSlug: slug,
+        signedInAs: extras.signedInAs,
+        heading: "No managed namespace is configured",
+        sub:
+          `SECRETS_NAMESPACES is empty for this server, and an empty namespace would scope the ` +
+          `console to every parameter in the project. Set it to at least one path prefix — e.g. ` +
+          `"/strad/${opts.config.gateway.env}/mcp/" — under this server's consoleEnv:.`,
+        tone: "warn",
+        breadcrumbToIndex: true,
+      }),
+    );
+    return;
+  }
+
   if (!store) {
     res.type("html").send(
       renderMessage({
@@ -485,6 +508,7 @@ async function renderSecretsPage(
         config: opts.config,
         parameters,
         namespace,
+        resolver: resolverConfigured(opts.env),
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
@@ -577,11 +601,11 @@ function renderUnexpected(res: Response, err: unknown): void {
 /**
  * Which managed namespace this request is about.
  *
- * `SECRETS_NAMESPACES` has always been a LIST, and the store, the MCP server and
- * `assertManaged` have always handled every entry of it — the console was the one
- * place that addressed `namespaces[0]` and nothing else. This is the whole of the
- * fix, and it is an ALLOW-LIST on purpose: the value arrives from a query string
- * or a form field and is the prefix a new parameter's path is built from, so a
+ * `SECRETS_NAMESPACES` is a LIST, and the store, the MCP server and
+ * `assertManaged` all handle every entry of it.
+ *
+ * This is an ALLOW-LIST on purpose: the value arrives from a query string or a
+ * form field and becomes the prefix a new parameter's path is built from, so a
  * value that is not one of the configured namespaces must not be honoured. An
  * unrecognised one falls back to the first rather than erroring, so a stale
  * bookmark lands somewhere sensible.

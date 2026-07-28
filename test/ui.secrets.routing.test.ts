@@ -11,28 +11,31 @@ import {
 } from "../src/secrets/parameters/index.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import { selectNamespace } from "../src/ui/index.ts";
-import { classifyPath, paramsConsumers } from "../src/ui/param-routing.ts";
+import {
+  classifyPath,
+  paramsConsumers,
+  resolverConfigured,
+} from "../src/ui/param-routing.ts";
 
 /**
  * The console's parameters page as an ADDRESSING surface, and as a page that
  * tells the truth about where a value goes.
  *
- * Three things are proven here that the older ui.secrets suite does not touch:
+ * Three properties, none of which the older ui.secrets suite touches:
  *
- *   1. MULTI-NAMESPACE. `SECRETS_NAMESPACES` is a list; the store and the MCP
- *      server always handled every entry. The console addressed `[0]` only. The
- *      picker, the listing and every write now follow `?ns=` / the `ns` form
- *      field — and an `ns` that is not a managed namespace is ignored, because it
- *      is the prefix a new parameter's PATH is built from.
- *   2. PATH PREFIX. A create now composes `{namespace}{prefix}{VARIABLE}`, so the
+ *   1. MULTI-NAMESPACE. `SECRETS_NAMESPACES` is a list, and the picker, the
+ *      listing and every write follow `?ns=` / the `ns` form field. An `ns` that
+ *      is not a managed namespace is ignored, because it is the prefix a new
+ *      parameter's PATH is built from.
+ *   2. PATH PREFIX. A create composes `{namespace}{prefix}{VARIABLE}`, so the
  *      console can write the canonical `{slug}/static/{VAR}` that parameter
- *      resolution actually reads. Without the prefix it could only ever write
- *      `{namespace}{VAR}`, which routes to nothing.
+ *      resolution reads. `{namespace}{VAR}` alone routes to nothing.
  *   3. THE ROUTING CLAIM. The page states whether anything will read a path, and
- *      that statement is COMPUTED from the running config rather than asserted in
- *      prose. This suite is the thing that keeps it honest: a config with no
- *      `params: true` server must never render a page that says a value is
- *      delivered.
+ *      that statement is COMPUTED from the running config AND the environment
+ *      rather than asserted in prose. This suite is what keeps it honest:
+ *      neither a config without a `params: true` server NOR a deployment without
+ *      the resolver credential may render a page that says a value is delivered.
+ *      Those are two independent conditions and each has its own config below.
  */
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
@@ -113,6 +116,9 @@ describe("path prefixes", () => {
     expect(validatePathPrefix("../escape/")).not.toBeNull();
     expect(validatePathPrefix("has space/static/")).not.toBeNull();
     expect(validatePathPrefix(`${"a".repeat(201)}/`)).not.toBeNull();
+    // Uppercase collapses onto the SAME parameterId as the lowercase spelling
+    // while naming a path no resolver matches. Refuse it rather than explain it.
+    expect(validatePathPrefix("GCS/Static/")).not.toBeNull();
   });
 });
 
@@ -134,33 +140,33 @@ describe("namespace selection is an allow-list", () => {
 
 describe("routing is computed from the config, not asserted", () => {
   it("a params: true server's canonical path is delivered, at deploy time", () => {
-    const r = classifyPath(CONFIG, `${MCP_NS}wired/static/TOKEN`);
+    const r = classifyPath(CONFIG, `${MCP_NS}wired/static/TOKEN`, true);
     expect(r.state).toBe("delivered");
     expect(r.when).toBe("deploy");
     expect(r.slug).toBe("wired");
   });
 
   it("a server WITHOUT params: true is stored and delivered nowhere", () => {
-    const r = classifyPath(CONFIG, `${MCP_NS}unwired/static/TOKEN`);
+    const r = classifyPath(CONFIG, `${MCP_NS}unwired/static/TOKEN`, true);
     expect(r.state).toBe("not-wired");
     expect(r.detail).toContain("params: true");
   });
 
   it("a path with no {slug}/static/ prefix routes to nothing", () => {
-    expect(classifyPath(CONFIG, `${MCP_NS}TOKEN`).state).toBe("unrouted");
-    expect(classifyPath(CONFIG, `${MCP_NS}wired/oauth/TOKEN`).state).toBe(
+    expect(classifyPath(CONFIG, `${MCP_NS}TOKEN`, true).state).toBe("unrouted");
+    expect(classifyPath(CONFIG, `${MCP_NS}wired/oauth/TOKEN`, true).state).toBe(
       "unrouted",
     );
   });
 
   it("names a slug that is not configured", () => {
-    const r = classifyPath(CONFIG, `${MCP_NS}nosuch/static/TOKEN`);
+    const r = classifyPath(CONFIG, `${MCP_NS}nosuch/static/TOKEN`, true);
     expect(r.state).toBe("unrouted");
     expect(r.detail).toContain("nosuch");
   });
 
   it("the gateway namespace is not runtime-read under provider: env", () => {
-    const r = classifyPath(CONFIG, `${GATEWAY_NS}TOKEN`);
+    const r = classifyPath(CONFIG, `${GATEWAY_NS}TOKEN`, true);
     expect(r.state).toBe("not-wired");
     expect(r.detail).toContain("env");
   });
@@ -168,13 +174,124 @@ describe("routing is computed from the config, not asserted", () => {
   it("paramsConsumers lists exactly the opted-in servers", () => {
     expect(paramsConsumers(CONFIG).map((c) => c.slug)).toEqual(["wired"]);
   });
+
+  it("`params: true` with NO resolver credential is not delivery", () => {
+    // The second half of the condition, and the one a config-only check misses:
+    // render-spec warns and ships the component without these values, so the
+    // page must not claim otherwise.
+    const r = classifyPath(CONFIG, `${MCP_NS}wired/static/TOKEN`, false);
+    expect(r.state).toBe("not-wired");
+    expect(r.label).toBe("no resolver");
+    expect(r.detail).toContain("STRAD_PARAMS");
+  });
+
+  it("reads the resolver credential out of the environment", () => {
+    expect(resolverConfigured({})).toBe(false);
+    expect(resolverConfigured({ STRAD_PARAMS_PROJECT_ID: "p" })).toBe(false);
+    expect(
+      resolverConfigured({
+        STRAD_PARAMS_PROJECT_ID: "p",
+        STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: "{}",
+      }),
+    ).toBe(true);
+  });
+
+  it("a path DEEPER than {slug}/static/{VAR} is still delivered, by its last segment", async () => {
+    // resolve() lists everything under `{slug}/static/` and keys on the last
+    // segment, so this path IS injected — as TOKEN. Calling it "unrouted" would
+    // tell a human a live credential is inert, which is the worse error.
+    const r = classifyPath(CONFIG, `${MCP_NS}wired/static/extra/TOKEN`, true);
+    expect(r.state).toBe("delivered");
+    expect(r.detail).toContain("TOKEN");
+    expect(r.detail).toContain("collides");
+
+    // And prove the claim against the store rather than asserting it.
+    const probe = createFakeGcp();
+    await probe.store.create({
+      path: `${MCP_NS}wired/static/extra/TOKEN`,
+      secret: false,
+      value: "v",
+    });
+    expect(await probe.store.resolve(`${MCP_NS}wired/static/`)).toEqual({
+      TOKEN: "v",
+    });
+  });
+
+  it("a remote-http slug can never be wired, and says so", () => {
+    const r = classifyPath(
+      REMOTE_CONFIG,
+      "/strad/test/mcp/remote/static/T",
+      true,
+    );
+    expect(r.state).toBe("unrouted");
+    expect(r.detail).toContain("remote-http");
+  });
 });
+
+/** A gateway with NO parameter consumer at all — prod's shape today. */
+const NO_CONSUMER_CONFIG = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /secrets
+    entitlements: [admin]
+    env:
+      SECRETS_PROJECT_ID: "demo-project"
+      SECRETS_NAMESPACES: "${MCP_NS}"
+    consoleEnv:
+      SECRETS_PROJECT_ID: "demo-project"
+      SECRETS_NAMESPACES: "${MCP_NS}"
+      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${ADMIN_KEY}"
+  - slug: unwired
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /unwired
+    entitlements: [admin]
+`);
+
+const REMOTE_CONFIG = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+bundles: []
+servers:
+  - slug: remote
+    kind: remote-http
+    url: https://example.com/mcp
+`);
 
 // --- through the real Express app -------------------------------------------
 
 let fake: FakeGcp;
 let server: Server;
 let baseUrl: string;
+
+/**
+ * Two more apps, because the page's verdict depends on two things the DEFAULT
+ * app deliberately lacks.
+ *
+ *   resolverApp — same config, but STRAD_PARAMS_* present. The only fixture in
+ *                 which "delivered" may legitimately appear.
+ *   bareApp     — a config with no `params: true` server at all. Prod's shape.
+ */
+let resolverFake: FakeGcp;
+let resolverServer: Server;
+let resolverUrl: string;
+let bareServer: Server;
+let bareUrl: string;
 
 const env: NodeJS.ProcessEnv = {
   ALLOW_DEV_AUTH: "true",
@@ -225,10 +342,63 @@ beforeAll(async () => {
   const addr = server.address();
   if (typeof addr === "string" || !addr) throw new Error("no port");
   baseUrl = `http://127.0.0.1:${addr.port}`;
+
+  resolverFake = createFakeGcp();
+  const resolverEnv: NodeJS.ProcessEnv = {
+    ...env,
+    STRAD_PARAMS_PROJECT_ID: "demo-project",
+    STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: ADMIN_KEY,
+  };
+  const resolverApp = createApp({
+    config: CONFIG,
+    registry: await Registry.build({
+      config: CONFIG,
+      secrets: new EnvSecretProvider(SECRETS),
+      mode: "core",
+      env: resolverEnv,
+    }),
+    tokenStore: tokenStoreFromConfig(CONFIG, resolverEnv),
+    mode: "core",
+    env: resolverEnv,
+    secrets: SECRETS,
+    parametersStore: () => resolverFake.store,
+  });
+  await new Promise<void>((resolve) => {
+    resolverServer = resolverApp.listen(0, () => resolve());
+  });
+  resolverUrl = addressOf(resolverServer);
+
+  const bareFake = createFakeGcp();
+  const bareApp = createApp({
+    config: NO_CONSUMER_CONFIG,
+    registry: await Registry.build({
+      config: NO_CONSUMER_CONFIG,
+      secrets: new EnvSecretProvider(SECRETS),
+      mode: "core",
+      env,
+    }),
+    tokenStore: tokenStoreFromConfig(NO_CONSUMER_CONFIG, env),
+    mode: "core",
+    env,
+    secrets: SECRETS,
+    parametersStore: () => bareFake.store,
+  });
+  await new Promise<void>((resolve) => {
+    bareServer = bareApp.listen(0, () => resolve());
+  });
+  bareUrl = addressOf(bareServer);
 });
+
+function addressOf(s: Server): string {
+  const addr = s.address();
+  if (typeof addr === "string" || !addr) throw new Error("no port");
+  return `http://127.0.0.1:${addr.port}`;
+}
 
 afterAll(() => {
   server?.close();
+  resolverServer?.close();
+  bareServer?.close();
 });
 
 describe("the console addresses every managed namespace", () => {
@@ -372,29 +542,57 @@ describe("a create composes namespace + prefix + variable", () => {
 });
 
 describe("the page says where a value actually goes", () => {
-  it("flags each row from the live config", async () => {
-    fake.parameters.clear();
-    fake.secrets.clear();
-    await fake.store.create({
+  it("flags each row from the live config, when a resolver exists", async () => {
+    resolverFake.parameters.clear();
+    resolverFake.secrets.clear();
+    await resolverFake.store.create({
       path: `${MCP_NS}wired/static/DELIVERED`,
       secret: false,
       value: "a",
     });
-    await fake.store.create({
+    await resolverFake.store.create({
       path: `${MCP_NS}unwired/static/STRANDED`,
       secret: false,
       value: "b",
     });
 
-    const html = await get("/ui/secrets");
+    const res = await fetch(`${resolverUrl}/ui/secrets`, { headers: auth });
+    const html = await res.text();
     expect(html).toContain("delivered · deploy");
     expect(html).toContain("not wired");
+    expect(html).toContain("<strong>1 of 3</strong>");
   });
 
-  it("counts the wired servers in the always-visible banner", async () => {
+  it("a gateway with no params: true server is described as a registry", async () => {
+    const res = await fetch(`${bareUrl}/ui/secrets`, { headers: auth });
+    const html = await res.text();
+    expect(html).toContain(
+      "No server on this gateway sets <code>params: true</code>",
+    );
+    expect(html).toContain("this is a registry");
+    // The word "delivered" appears in negations ("stored, delivered nowhere").
+    // What must never appear is a POSITIVE claim, which is only ever a chip.
+    expect(html).not.toContain("delivered · deploy");
+    expect(html).not.toContain("delivered · runtime");
+    expect(html).not.toContain("reaches the");
+  });
+
+  it("does NOT claim delivery when the deployment has no resolver", async () => {
+    // The app under test runs without STRAD_PARAMS_*, which is the shape of
+    // staging and prod today. `wired` sets `params: true` and still must not
+    // render as delivered.
+    fake.parameters.clear();
+    fake.secrets.clear();
+    await fake.store.create({
+      path: `${MCP_NS}wired/static/TOKEN`,
+      secret: false,
+      value: "a",
+    });
+
     const html = await get("/ui/secrets");
-    // 1 of 3 enabled, container-backed servers: secrets, wired, unwired.
-    expect(html).toContain("<strong>1 of 3</strong>");
+    expect(html).toContain("no resolver");
+    expect(html).toContain("carries no resolver credential");
+    expect(html).not.toContain("delivered · deploy");
   });
 
   it("every explanation is behind an accordion, none of it expanded", async () => {
