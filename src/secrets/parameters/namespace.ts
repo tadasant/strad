@@ -134,6 +134,47 @@ export function decodeEnvelope(payload: string): ParameterEnvelope {
 }
 
 /**
+ * Normalise the PATH PREFIX — the segments between a namespace and the variable
+ * name. `""` stays `""`; `"/gcs/static"` becomes `"gcs/static/"`.
+ *
+ * A namespace is where a parameter is allowed to live; the prefix is where
+ * inside it the parameter actually sits, and for a server parameter that prefix
+ * (`{slug}/static/`) is what decides which server resolves it. Composing the two
+ * separately is what lets the console write a full canonical path without the
+ * human typing the namespace again.
+ */
+export function normalisePathPrefix(prefix: string): string {
+  const trimmed = prefix.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  return trimmed === "" ? "" : `${trimmed}/`;
+}
+
+/**
+ * Validate a path prefix, or return null.
+ *
+ * Prefix segments become part of a GCP resource id (see `parameterId`) and part
+ * of a path the resolver matches on, so they are bounded to the same alphabet a
+ * slug and a `kind` use. `.` and `..` are excluded by the leading-character rule:
+ * a segment must start with a letter or digit.
+ */
+export function validatePathPrefix(prefix: string): string | null {
+  const trimmed = prefix.trim();
+  if (trimmed === "") return null;
+  if (trimmed.length > 200) {
+    return "A path prefix may be at most 200 characters.";
+  }
+  const normalised = normalisePathPrefix(trimmed);
+  for (const segment of normalised.slice(0, -1).split("/")) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment)) {
+      return (
+        "A path prefix is slash-separated segments of letters, digits, dots, " +
+        'dashes and underscores — e.g. "gcs/static/".'
+      );
+    }
+  }
+  return null;
+}
+
+/**
  * Validate a variable name for a new parameter.
  *
  * A parameter's variable is injected as an ENVIRONMENT VARIABLE into a server's

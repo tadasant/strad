@@ -37,6 +37,8 @@ export {
   parameterId,
   variableOf,
   validateVariableName,
+  validatePathPrefix,
+  normalisePathPrefix,
   type ParameterEnvelope,
 } from "./namespace.ts";
 

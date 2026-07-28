@@ -201,6 +201,68 @@ unreachable store is not a store that lacks the name, and silently falling back
 to a stale env var during an outage is how a rotated credential comes back from
 the dead.
 
+## The console's parameters page
+
+`/ui/secrets` is the human half of the `secrets` server, and the only place a
+value can be written or a secret value read back. Three things about how it
+addresses the store are worth knowing before you use it.
+
+### It manages every namespace, not the first one
+
+`SECRETS_NAMESPACES` is a comma-separated **list**. The page has a namespace
+picker; the listing, every action and the create form all follow it, and the
+selection rides in `?ns=` so a view is linkable. An `ns` that is not one of the
+configured namespaces is ignored rather than honoured — it is the prefix a new
+parameter's path is built from, so it is an allow-list, not a hint.
+
+The two shapes a namespace usually takes:
+
+| Namespace                        | Holds                                                                        |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| `/strad/{env}/mcp/`              | Per-server parameters, under `{slug}/static/`.                               |
+| `/strad/{env}/gateway/static/`   | The deployment's own `${NAME}` references — the token store, the OAuth secret. |
+
+Staging manages both on the **console** side and only the first on the **MCP**
+side. The console's admin credential can already reach the whole project, so
+listing the gateway namespace widens what a human can address, not what the
+credential may do — while the agent-facing viewer stays scoped to the servers'
+namespace and cannot enumerate the deployment's own keys.
+
+### A path is namespace + prefix + variable
+
+The create form takes a **path prefix** — the segments between the namespace and
+the variable name — separately from the variable:
+
+```
+/strad/staging/mcp/  remote-filesystem-tmp-public/static/  GCS_PRIVATE_KEY
+└──── namespace ──┘  └──────────── path prefix ─────────┘  └── variable ──┘
+```
+
+The prefix is the routing key. `{slug}/static/` is what makes a parameter belong
+to one MCP server; without it the console could only ever write
+`{namespace}{VARIABLE}`, which is a well-formed path that no resolver reads. The
+field offers this gateway's own server slugs as suggestions and shows the full
+path it is about to write as you type.
+
+### It says whether anything will actually read the path
+
+**Storing a parameter does not deliver it.** A value under
+`/strad/{env}/mcp/{slug}/static/` reaches that server only when the server's
+config entry sets [`params: true`](/servers/interface/) _and_ the deployment holds
+the resolver credential. Otherwise the store is a registry: the parameter is
+listed, rotatable and read by nothing.
+
+Because that is silent when it goes wrong, the page computes the answer from the
+running config rather than describing it in prose. Every row carries a chip —
+`delivered · deploy`, `delivered · runtime`, `not wired`, `unrouted` — and a
+banner above the listing counts how many servers on this gateway consume managed
+parameters at all. The explanations themselves live in collapsed accordions, so
+the page stays a working surface rather than a manual.
+
+`src/ui/param-routing.ts` is the single source of that judgement, and
+`test/ui.secrets.routing.test.ts` pins it: a config with no `params: true` server
+must never render a page claiming a value is delivered.
+
 ## The seam
 
 ```

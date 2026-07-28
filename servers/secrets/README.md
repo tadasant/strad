@@ -121,6 +121,14 @@ every non-secret one — and read the value of **no** secret in it, ever.
 prefix — every parameter in the project — so the server refuses to mount rather
 than defaulting to "everything".
 
+It is a **list**, and the two halves of this server need not be given the same
+one. The bundle's `env:` scopes what an AGENT can enumerate; the core's
+`consoleEnv:` scopes what a HUMAN can address on `/ui/secrets`, which offers a
+picker over every entry. Staging gives the console
+`/strad/staging/mcp/,/strad/staging/gateway/static/` and the MCP container only
+the first: a human manages the deployment's own `${NAME}` references there, and
+an agent has no business listing them.
+
 ## Notes
 
 Every parameter carries an optional free-form `note` in its envelope — "which key

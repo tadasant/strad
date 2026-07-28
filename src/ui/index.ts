@@ -6,7 +6,9 @@ import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
 import {
   createGcpParameterStore,
+  normalisePathPrefix,
   ParameterStoreError,
+  validatePathPrefix,
   validateVariableName,
   variableOf,
   type ParameterMeta,
@@ -188,7 +190,10 @@ async function handleServerView(
   }
 
   if (view.kind === "secrets") {
-    await renderSecretsPage(res, view, opts, { signedInAs });
+    await renderSecretsPage(res, view, opts, {
+      signedInAs,
+      namespace: selectNamespace(req.query.ns, view.namespaces),
+    });
     return;
   }
 
@@ -282,13 +287,19 @@ async function handleSecretAction(
     return;
   }
 
+  const body = req.body as Record<string, unknown>;
+  // Which namespace the human was looking at. It comes back on every form so an
+  // action does not silently bounce them to the first namespace — and it is
+  // validated against the managed list, never trusted, because it is the thing a
+  // new parameter's path is built from.
+  const namespace = selectNamespace(body.ns, view.namespaces);
+
   const store = storeFor(view, opts);
   if (!store) {
-    await renderSecretsPage(res, view, opts, { signedInAs });
+    await renderSecretsPage(res, view, opts, { signedInAs, namespace });
     return;
   }
 
-  const body = req.body as Record<string, unknown>;
   // A value is read into a local and never leaves this function except toward
   // the parameter store, or into the one-shot reveal panel.
   const value = typeof body.value === "string" ? body.value : "";
@@ -297,11 +308,11 @@ async function handleSecretAction(
   const secret = body.secret === "on" || body.secret === "true";
   // rotate/note/reveal/delete address an existing parameter by its canonical path.
   const path = typeof body.path === "string" ? body.path.trim() : "";
-  const namespace = view.namespaces[0] ?? "";
 
   const fail = (message: string, status = 400) =>
     renderSecretsPage(res, view, opts, {
       signedInAs,
+      namespace,
       flash: { tone: "error", message },
       status,
     });
@@ -311,27 +322,36 @@ async function handleSecretAction(
       case "create": {
         const variable =
           typeof body.variable === "string" ? body.variable.trim() : "";
+        // The prefix is the segments BETWEEN the namespace and the variable —
+        // `{slug}/static/` for a server parameter. It is what routes a value to
+        // one MCP server, and before this field existed the console could only
+        // write `{namespace}{VARIABLE}`, which routes to nothing.
+        const prefixRaw =
+          typeof body.prefix === "string" ? body.prefix.trim() : "";
         const varError = validateVariableName(variable);
+        const prefixError = validatePathPrefix(prefixRaw);
         const noteError = validateNote(note);
-        if (varError ?? noteError) {
-          await fail((varError ?? noteError) as string);
+        if (varError ?? prefixError ?? noteError) {
+          await fail((varError ?? prefixError ?? noteError) as string);
           return;
         }
         if (!value) {
           await fail("A value is required.");
           return;
         }
+        const prefix = normalisePathPrefix(prefixRaw);
         await store.create({
-          path: `${namespace}${variable}`,
+          path: `${namespace}${prefix}${variable}`,
           secret,
           value,
           note: note || undefined,
         });
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
-            message: `Created ${variable} (${secret ? "secret" : "non-secret"}).`,
+            message: `Created ${prefix}${variable} (${secret ? "secret" : "non-secret"}) at ${namespace}${prefix}${variable}.`,
           },
         });
         return;
@@ -346,6 +366,7 @@ async function handleSecretAction(
         await store.rotate(path, value);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
             message: `Rotated ${variableOf(path)}: a new value is now current.`,
@@ -364,6 +385,7 @@ async function handleSecretAction(
         await store.setNote(path, note);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
             message: note
@@ -379,6 +401,7 @@ async function handleSecretAction(
         const revealed = await store.reveal(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           revealed: { name: variableOf(path), value: revealed },
         });
         return;
@@ -389,6 +412,7 @@ async function handleSecretAction(
         await store.destroy(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
+          namespace,
           flash: {
             tone: "ok",
             message: `Deleted ${variableOf(path)} and all of its versions.`,
@@ -407,6 +431,8 @@ async function handleSecretAction(
 
 interface PageExtras {
   signedInAs?: string;
+  /** The managed namespace to list. Defaults to the first when absent. */
+  namespace?: string;
   flash?: { tone: "ok" | "error"; message: string };
   revealed?: { name: string; value: string };
   status?: number;
@@ -440,10 +466,12 @@ async function renderSecretsPage(
     return;
   }
 
+  const namespace = selectNamespace(extras.namespace, view.namespaces);
+
   let parameters: ParameterMeta[] = [];
   let flash = extras.flash;
   try {
-    parameters = await store.list(view.namespaces[0] ?? "");
+    parameters = await store.list(namespace);
   } catch (err) {
     flash = flash ?? { tone: "error", message: describe(err) };
   }
@@ -454,7 +482,9 @@ async function renderSecretsPage(
     .send(
       renderSecrets({
         view,
+        config: opts.config,
         parameters,
+        namespace,
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
@@ -542,6 +572,24 @@ function renderUnexpected(res: Response, err: unknown): void {
         breadcrumbToIndex: true,
       }),
     );
+}
+
+/**
+ * Which managed namespace this request is about.
+ *
+ * `SECRETS_NAMESPACES` has always been a LIST, and the store, the MCP server and
+ * `assertManaged` have always handled every entry of it — the console was the one
+ * place that addressed `namespaces[0]` and nothing else. This is the whole of the
+ * fix, and it is an ALLOW-LIST on purpose: the value arrives from a query string
+ * or a form field and is the prefix a new parameter's path is built from, so a
+ * value that is not one of the configured namespaces must not be honoured. An
+ * unrecognised one falls back to the first rather than erroring, so a stale
+ * bookmark lands somewhere sensible.
+ */
+export function selectNamespace(raw: unknown, namespaces: string[]): string {
+  const fallback = namespaces[0] ?? "";
+  if (typeof raw !== "string") return fallback;
+  return namespaces.includes(raw) ? raw : fallback;
 }
 
 /**

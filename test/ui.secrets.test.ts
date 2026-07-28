@@ -205,7 +205,9 @@ describe("the parameters console, end to end", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("Created GCS_CLIENT_EMAIL (non-secret).");
+    expect(html).toContain(
+      `Created GCS_CLIENT_EMAIL (non-secret) at ${NS}GCS_CLIENT_EMAIL.`,
+    );
     // Stored in Parameter Manager (its payload holds the literal), not Secret Manager.
     expect(fake.pmPayloads().join("\n")).toContain(
       "svc@demo.iam.gserviceaccount.com",
@@ -226,7 +228,9 @@ describe("the parameters console, end to end", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("Created GCS_PRIVATE_KEY (secret).");
+    expect(html).toContain(
+      `Created GCS_PRIVATE_KEY (secret) at ${NS}GCS_PRIVATE_KEY.`,
+    );
     expect(html).not.toContain(CANARY);
     // The value lives in Secret Manager; the PM payload holds only a __REF__.
     expect([...fake.secrets.values()].flat()).toContain(CANARY);
