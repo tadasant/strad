@@ -42,7 +42,8 @@ const KEY = JSON.stringify({
 const SECRETS = { ADMIN_KEY: KEY };
 
 function configWithReveal(flag: boolean | undefined) {
-  const line = flag === undefined ? "" : `\n      SECRETS_REVEAL_ENABLED: "${flag}"`;
+  const line =
+    flag === undefined ? "" : `\n      SECRETS_REVEAL_ENABLED: "${flag}"`;
   return parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
@@ -150,7 +151,7 @@ describe("the capability probe", () => {
       Promise.resolve(handler(String(url), init))) as typeof fetch;
   }
 
-  const tokenOk = (url: string) =>
+  const tokenOk = (_url: string) =>
     new Response(JSON.stringify({ access_token: "at", expires_in: 3600 }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -293,7 +294,9 @@ async function revealPost(baseUrl: string): Promise<Response> {
 describe("reveal, end to end", () => {
   it("staging shape (flag on, credential permits): the value is shown once", async () => {
     const url = await appWith(true, CAN_READ);
-    const page = await (await fetch(`${url}/ui/secrets`, { headers: auth })).text();
+    const page = await (
+      await fetch(`${url}/ui/secrets`, { headers: auth })
+    ).text();
     expect(page).toContain(">Reveal<");
     expect(page).not.toContain(CANARY);
 
@@ -304,7 +307,9 @@ describe("reveal, end to end", () => {
 
   it("prod shape (flag absent, credential cannot): no control, POST refused", async () => {
     const url = await appWith(undefined, WRITE_ONLY);
-    const page = await (await fetch(`${url}/ui/secrets`, { headers: auth })).text();
+    const page = await (
+      await fetch(`${url}/ui/secrets`, { headers: auth })
+    ).text();
     // The control is gone, replaced by an inert explanation.
     expect(page).not.toContain(">Reveal<");
     expect(page).toContain("reveal off");
@@ -320,7 +325,9 @@ describe("reveal, end to end", () => {
 
   it("flag off but credential CAN read: refused, and reported as drift", async () => {
     const url = await appWith(false, CAN_READ);
-    const page = await (await fetch(`${url}/ui/secrets`, { headers: auth })).text();
+    const page = await (
+      await fetch(`${url}/ui/secrets`, { headers: auth })
+    ).text();
     expect(page).not.toContain(">Reveal<");
     expect(page).toContain("not yet a boundary");
 
@@ -331,7 +338,9 @@ describe("reveal, end to end", () => {
 
   it("flag on but credential CANNOT: withheld rather than offered and 403ed", async () => {
     const url = await appWith(true, WRITE_ONLY);
-    const page = await (await fetch(`${url}/ui/secrets`, { headers: auth })).text();
+    const page = await (
+      await fetch(`${url}/ui/secrets`, { headers: auth })
+    ).text();
     expect(page).not.toContain(">Reveal<");
     expect(page).toContain("not permitted");
 
@@ -342,7 +351,9 @@ describe("reveal, end to end", () => {
 
   it("an unrunnable probe withholds reveal even with the flag on", async () => {
     const url = await appWith(true, UNPROBED);
-    const page = await (await fetch(`${url}/ui/secrets`, { headers: auth })).text();
+    const page = await (
+      await fetch(`${url}/ui/secrets`, { headers: auth })
+    ).text();
     expect(page).not.toContain(">Reveal<");
     expect(page).toContain("unverified");
 

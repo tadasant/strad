@@ -6,6 +6,8 @@ import {
 import type { SecretsConfig } from "./config.js";
 import { inManagedNamespace } from "./config.js";
 import type { ParametersReader } from "./parameter-manager.js";
+import { NO_CAPABILITIES, type Capabilities } from "./capabilities.js";
+import type { ParametersWriter } from "./write-client.js";
 
 /**
  * The four tools.
@@ -32,6 +34,14 @@ import type { ParametersReader } from "./parameter-manager.js";
 interface ToolDeps {
   config: SecretsConfig;
   reader: () => ParametersReader;
+  /**
+   * What this server's credential may actually do, as reported by Google. The
+   * tool surface is DERIVED from it — see capabilities.ts for why a probe rather
+   * than a flag. Absent means fail closed: the read-only surface.
+   */
+  capabilities?: () => Promise<Capabilities>;
+  /** The mutating client. Built only when the probe says writes are permitted. */
+  writer?: () => ParametersWriter;
 }
 
 const ANNOTATIONS = { readOnlyHint: true, openWorldHint: false } as const;
