@@ -10,6 +10,8 @@ import {
   NO_CAPABILITIES,
   normalisePathPrefix,
   ParameterStoreError,
+  normaliseNamespace,
+  validateNamespace,
   validatePathPrefix,
   validateVariableName,
   variableOf,
@@ -308,6 +310,11 @@ async function handleSecretAction(
   // validated against the managed list, never trusted, because it is the thing a
   // new parameter's path is built from.
   const namespace = selectNamespace(body.ns, view.namespaces);
+  // A TYPED namespace that is malformed must not silently write somewhere else.
+  // selectNamespace falls back for a stale link; a submitted form is an
+  // intention, and the difference deserves an error rather than a surprise.
+  const typedNs = typeof body.ns === "string" ? body.ns.trim() : "";
+  const nsError = typedNs === "" ? null : validateNamespace(typedNs);
 
   const store = storeFor(view, opts);
   if (!store) {
@@ -346,8 +353,10 @@ async function handleSecretAction(
         const varError = validateVariableName(variable);
         const prefixError = validatePathPrefix(prefixRaw);
         const noteError = validateNote(note);
-        if (varError ?? prefixError ?? noteError) {
-          await fail((varError ?? prefixError ?? noteError) as string);
+        if (nsError ?? varError ?? prefixError ?? noteError) {
+          await fail(
+            (nsError ?? varError ?? prefixError ?? noteError) as string,
+          );
           return;
         }
         if (!value) {
@@ -377,7 +386,7 @@ async function handleSecretAction(
           await fail("A new value is required to rotate.");
           return;
         }
-        assertManaged(path, view.namespaces);
+        assertWellFormed(path);
         await store.rotate(path, value);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
@@ -396,7 +405,7 @@ async function handleSecretAction(
           await fail(noteError);
           return;
         }
-        assertManaged(path, view.namespaces);
+        assertWellFormed(path);
         await store.setNote(path, note);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
@@ -420,7 +429,7 @@ async function handleSecretAction(
         // a POST claiming `secret=false` to dodge the capability check is
         // exactly the request this gate exists to refuse. A path with no listed
         // parameter is treated as SECRET, which is the strict answer.
-        assertManaged(path, view.namespaces);
+        assertWellFormed(path);
         const listed = await store
           .list(namespace)
           .catch((): ParameterMeta[] => []);
@@ -448,7 +457,7 @@ async function handleSecretAction(
       }
 
       case "delete": {
-        assertManaged(path, view.namespaces);
+        assertWellFormed(path);
         await store.destroy(path);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
@@ -632,12 +641,13 @@ function storeFor(
  * sentence a human can act on, and it keeps a hand-crafted form POST from naming
  * a path outside the namespace and getting an opaque backend error back.
  */
-function assertManaged(path: string, namespaces: string[]): void {
+function assertWellFormed(path: string): void {
   if (!path) throw new Error("A parameter path is required.");
-  if (!namespaces.some((ns) => path.startsWith(ns))) {
-    throw new Error(
-      `"${path}" is outside this server's managed namespace (${namespaces.join(", ")}).`,
-    );
+  if (!path.startsWith("/")) {
+    throw new Error(`"${path}" is not an absolute parameter path.`);
+  }
+  if (path.includes("//") || path.split("/").includes("..")) {
+    throw new Error(`"${path}" is not a well-formed parameter path.`);
   }
   if (validateVariableName(variableOf(path))) {
     throw new Error(`"${path}" does not end in a valid variable name.`);
@@ -675,21 +685,25 @@ function renderUnexpected(res: Response, err: unknown): void {
 }
 
 /**
- * Which managed namespace this request is about.
+ * Which namespace this request is about.
  *
- * `SECRETS_NAMESPACES` is a LIST, and the store, the MCP server and
- * `assertManaged` all handle every entry of it.
+ * `SECRETS_NAMESPACES` seeds the picker's suggestions; it does not bound what a
+ * human may address. The fence is the GCP PROJECT — see servers/secrets/README.md
+ * — and a list checked in code over the same credential would add no security,
+ * only a redeploy between a human and a namespace they can already reach.
  *
- * This is an ALLOW-LIST on purpose: the value arrives from a query string or a
- * form field and becomes the prefix a new parameter's path is built from, so a
- * value that is not one of the configured namespaces must not be honoured. An
- * unrecognised one falls back to the first rather than erroring, so a stale
- * bookmark lands somewhere sensible.
+ * What IS checked is shape: the value arrives from a query string or a form
+ * field and becomes the prefix of a written path, so it must be a well-formed
+ * absolute path prefix with no traversal.
  */
 export function selectNamespace(raw: unknown, namespaces: string[]): string {
   const fallback = namespaces[0] ?? "";
-  if (typeof raw !== "string") return fallback;
-  return namespaces.includes(raw) ? raw : fallback;
+  if (typeof raw !== "string" || raw.trim() === "") return fallback;
+  // Shape, not membership. The configured list is a convenience; the GCP project
+  // is the boundary. A malformed value falls back rather than erroring, so a
+  // stale bookmark lands somewhere sensible — a value that is merely UNLISTED is
+  // honoured, which is the point.
+  return validateNamespace(raw) === null ? normaliseNamespace(raw) : fallback;
 }
 
 /**

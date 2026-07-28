@@ -134,6 +134,53 @@ export function decodeEnvelope(payload: string): ParameterEnvelope {
 }
 
 /**
+ * Normalise a NAMESPACE — an absolute canonical-path prefix like
+ * `/strad/prod/mcp/`. Always starts and ends with exactly one `/`.
+ */
+export function normaliseNamespace(namespace: string): string {
+  const trimmed = namespace.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  return trimmed === "" ? "/" : `/${trimmed}/`;
+}
+
+/**
+ * Validate a namespace, or return null.
+ *
+ * The configured `SECRETS_NAMESPACES` list is a CONVENIENCE, not the fence. A
+ * human running the console may address any namespace in the project, because
+ * the project IS the boundary — an IAM binding the console cannot talk its way
+ * past — and a hardcoded list would only ever be a code-level guard over the
+ * same credential. Adding a namespace should not require a redeploy.
+ *
+ * So this checks SHAPE, not membership. What it refuses is a value that would
+ * make a malformed or ambiguous path: traversal, empty segments, whitespace,
+ * uppercase (a slug is lowercase, and `parameterId` folds case, so an uppercase
+ * spelling names a path no resolver matches while colliding with one that does).
+ */
+export function validateNamespace(namespace: string): string | null {
+  const trimmed = namespace.trim();
+  if (trimmed === "") return "A namespace is required.";
+  if (!trimmed.startsWith("/")) {
+    return 'A namespace is an absolute path prefix — it must start with "/", e.g. "/strad/prod/mcp/".';
+  }
+  if (trimmed.length > 200) {
+    return "A namespace may be at most 200 characters.";
+  }
+  const normalised = normaliseNamespace(trimmed);
+  if (normalised === "/") {
+    return 'A namespace of "/" would cover every parameter in the project. Name one, e.g. "/strad/prod/mcp/".';
+  }
+  for (const segment of normalised.slice(1, -1).split("/")) {
+    if (!/^[a-z0-9][a-z0-9._-]*$/.test(segment)) {
+      return (
+        "A namespace is slash-separated segments of LOWERCASE letters, digits, dots, " +
+        'dashes and underscores — e.g. "/strad/prod/mcp/".'
+      );
+    }
+  }
+  return null;
+}
+
+/**
  * Normalise the PATH PREFIX — the segments between a namespace and the variable
  * name. `""` stays `""`; `"/gcs/static"` becomes `"gcs/static/"`.
  *

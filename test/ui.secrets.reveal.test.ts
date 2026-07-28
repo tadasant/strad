@@ -297,7 +297,7 @@ describe("reveal, end to end", () => {
     const page = await (
       await fetch(`${url}/ui/secrets`, { headers: auth })
     ).text();
-    expect(page).toContain(">Reveal<");
+    expect(page).toContain('action="/ui/secrets/reveal"');
     expect(page).not.toContain(CANARY);
 
     const res = await revealPost(url);
@@ -311,9 +311,10 @@ describe("reveal, end to end", () => {
       await fetch(`${url}/ui/secrets`, { headers: auth })
     ).text();
     // The control is gone, replaced by an inert explanation.
-    expect(page).not.toContain(">Reveal<");
+    expect(page).not.toContain('action="/ui/secrets/reveal"');
     expect(page).toContain("reveal off");
-    expect(page).toContain("Reveal is not available here");
+    expect(page).toContain("This deployment, right now");
+    expect(page).toContain("off by configuration");
     expect(page).toContain("write-only");
 
     // And the endpoint refuses a hand-crafted POST — the gate, not the button.
@@ -328,7 +329,7 @@ describe("reveal, end to end", () => {
     const page = await (
       await fetch(`${url}/ui/secrets`, { headers: auth })
     ).text();
-    expect(page).not.toContain(">Reveal<");
+    expect(page).not.toContain('action="/ui/secrets/reveal"');
     expect(page).toContain("not yet a boundary");
 
     const res = await revealPost(url);
@@ -341,7 +342,7 @@ describe("reveal, end to end", () => {
     const page = await (
       await fetch(`${url}/ui/secrets`, { headers: auth })
     ).text();
-    expect(page).not.toContain(">Reveal<");
+    expect(page).not.toContain('action="/ui/secrets/reveal"');
     expect(page).toContain("not permitted");
 
     const res = await revealPost(url);
@@ -354,7 +355,7 @@ describe("reveal, end to end", () => {
     const page = await (
       await fetch(`${url}/ui/secrets`, { headers: auth })
     ).text();
-    expect(page).not.toContain(">Reveal<");
+    expect(page).not.toContain('action="/ui/secrets/reveal"');
     expect(page).toContain("unverified");
 
     expect((await revealPost(url)).status).toBe(403);

@@ -304,12 +304,19 @@ describe("the parameters console, end to end", () => {
     expect(await fake.store.list(NS)).toHaveLength(2); // nothing moved
   });
 
-  it("refuses to act outside the managed namespace", async () => {
+  it("refuses a path that is not well formed", async () => {
+    // The configured namespace list is a convenience, not the fence — the GCP
+    // PROJECT is (servers/secrets/README.md). So what is refused here is a
+    // malformed path, not merely an unlisted one.
     await resetStore();
-    const res = await post("/ui/secrets/delete", {
-      path: "/strad/test/mcp/OTHER/static/X",
-    });
-    expect(await res.text()).toContain("outside this server");
+    for (const path of [
+      "strad/test/mcp/NOT_ABSOLUTE",
+      "/strad/test/mcp//DOUBLE",
+      "/strad/test/../escape/X",
+    ]) {
+      const res = await post("/ui/secrets/delete", { path });
+      expect(await res.text()).toMatch(/not (an absolute|a well-formed)/);
+    }
     expect(await fake.store.list(NS)).toHaveLength(2);
   });
 

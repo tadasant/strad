@@ -39,6 +39,12 @@ export interface LayoutOptions {
    * would be a lie on the public landing page — hence the parameter.
    */
   footNote?: string;
+  /**
+   * A guide, rendered into a `<dialog>` and opened by a Help control in the top
+   * right. The working surface stays a working surface; the explanation is one
+   * click away rather than scrolled past on every visit.
+   */
+  help?: string;
 }
 
 export function layout(opts: LayoutOptions): string {
@@ -73,12 +79,14 @@ export function layout(opts: LayoutOptions): string {
           ? `<span class="whoami" title="signed in via console SSO">${esc(opts.signedInAs)}</span>`
           : ""
       }
+      ${opts.help ? helpButton() : ""}
     </div>
   </div>
 </header>
 <main class="page">
 ${opts.body}
 </main>
+${opts.help ? helpDialog(opts.help) : ""}
 <footer class="foot">
   <span>strad · human console</span>
   <span class="foot-sep">·</span>
@@ -86,6 +94,44 @@ ${opts.body}
 </footer>
 </body>
 </html>`;
+}
+
+/**
+ * The Help control, and the guide behind it.
+ *
+ * A `<dialog>` rather than a route, so the guide is one click away and one
+ * `Escape` back — no navigation, no losing the namespace you were on, and no
+ * second page to keep in step with the first. `showModal()` gives the focus trap
+ * and backdrop for free.
+ *
+ * Progressive enhancement, as everywhere else here: with no JS the dialog is
+ * inert, so the button carries `formmethod`-free plain semantics and the guide's
+ * content is still in the document for anything that reads it.
+ */
+function helpButton(): string {
+  return `<button class="helpbtn" type="button" data-help-open aria-label="Open the guide" title="Guide">${QUESTION_SVG}<span>Help</span></button>`;
+}
+
+function helpDialog(inner: string): string {
+  return `<dialog class="helpdlg" id="help-dialog" aria-label="Secrets console guide">
+  <div class="helpdlg-head">
+    <h2>Secrets console guide</h2>
+    <button class="btn" type="button" data-help-close aria-label="Close">Close</button>
+  </div>
+  <div class="helpdlg-body">${inner}</div>
+</dialog>
+<script>
+(function () {
+  var dlg = document.getElementById("help-dialog");
+  if (!dlg || typeof dlg.showModal !== "function") return;
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("[data-help-open]")) { dlg.showModal(); return; }
+    if (e.target.closest("[data-help-close]")) { dlg.close(); return; }
+    // A click on the backdrop — outside the dialog's own box — closes it.
+    if (e.target === dlg) dlg.close();
+  });
+})();
+</script>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,9 +476,6 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 </section>
 
 ${deliveryBanner(config, resolver)}
-${revealBanner(revealUi)}
-${secretsHelp(config, slug, ns, view.namespaces, resolver, revealUi)}
-
 ${flash}
 ${reveal}
 ${listing}
@@ -444,7 +487,7 @@ ${listing}
     <div class="field">
       <span class="field-l">Namespace</span>
       <code class="pathpart">${esc(ns)}</code>
-      <span class="field-h">Switch namespaces with the picker above.</span>
+      <span class="field-h">Type or pick one above; the suggestions are a convenience, not a limit.</span>
     </div>
     <label class="field">
       <span class="field-l">Path prefix <span class="field-opt">optional</span></span>
@@ -467,7 +510,7 @@ ${listing}
     </div>
     <label class="field field-check">
       <input type="checkbox" name="secret" />
-      <span><span class="field-l">Secret</span> <span class="field-h">Tick for a credential (private key, token) — see “Secret vs non-secret” above.</span></span>
+      <span><span class="field-l">Secret</span> <span class="field-h">Tick for a credential (private key, token). See the guide under Help.</span></span>
     </label>
     <label class="field">
       <span class="field-l">Note <span class="field-opt">optional</span></span>
@@ -489,6 +532,15 @@ ${pathPreviewScript(ns)}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
+    help: secretsGuide(
+      config,
+      slug,
+      ns,
+      view.namespaces,
+      resolver,
+      revealUi,
+      view.projectId,
+    ),
   });
 }
 
@@ -506,17 +558,16 @@ function namespacePicker(
   selected: string,
 ): string {
   const options = namespaces
-    .map(
-      (n) =>
-        `<option value="${esc(n)}"${n === selected ? " selected" : ""}>${esc(n)}</option>`,
-    )
+    .map((n) => `<option value="${esc(n)}"></option>`)
     .join("");
   return `
   <form class="nsform" method="get" action="${action}">
-    <label class="scope-l" for="ns-select">namespace</label>
-    <select class="in nsselect" id="ns-select" name="ns" onchange="this.form.submit()">${options}</select>
-    <button class="btn nsgo">Switch</button>
-    <span class="nscount">${namespaces.length} managed</span>
+    <label class="scope-l" for="ns-input">namespace</label>
+    <input class="in nsinput" id="ns-input" name="ns" list="ns-options" value="${esc(selected)}"
+           autocapitalize="off" autocomplete="off" spellcheck="false"
+           placeholder="/strad/prod/mcp/" />
+    <datalist id="ns-options">${options}</datalist>
+    <button class="btn nsgo">Go</button>
   </form>`;
 }
 
@@ -578,11 +629,11 @@ function deliveryBanner(config: StradConfig, resolver: boolean): string {
  * deployment can do rather than what it offers, and a reader who never opens an
  * accordion should still not come away with a wrong model of it.
  */
-function revealBanner(reveal: RevealPosture): string {
-  if (reveal.allowed) return "";
-  return `<p class="posture ${reveal.drift ? "posture-warn" : ""} posture-reveal">
-  <strong>Reveal is not available here.</strong> ${esc(reveal.detail)}
-</p>`;
+function revealStatus(reveal: RevealPosture): string {
+  return reveal.allowed
+    ? `<li><b>Reveal</b> <span class="ex-ok">available</span> — the flag is on and this
+         console's service account may read a secret value.</li>`
+    : `<li><b>Reveal</b> <span class="ex-no">${esc(reveal.label)}</span> — ${esc(reveal.detail)}</li>`;
 }
 
 /**
@@ -592,13 +643,14 @@ function revealBanner(reveal: RevealPosture): string {
  * the routing rules are genuinely intricate, and a human rotating a value they
  * already understand should not have to scroll past them.
  */
-function secretsHelp(
+function secretsGuide(
   config: StradConfig,
   slug: string,
   namespace: string,
   namespaces: string[],
   resolver: boolean,
   reveal: RevealPosture,
+  projectId: string,
 ): string {
   const env = config.gateway.env;
   const consumers = paramsConsumers(config);
@@ -653,7 +705,36 @@ function secretsHelp(
 
   return `
 <div class="helpstack">
-  <details class="acc">
+  <details class="acc" open>
+    <summary>This deployment, right now</summary>
+    <div class="acc-body">
+      <p>Everything below is read from the running config and from what Google says this
+        console's credential may do — not from documentation that could have gone stale.</p>
+      <ul class="nslist">
+        <li><b>Project</b> <code>${esc(projectId)}</code> — the real fence. A namespace is a
+          path prefix inside it, and the project's IAM bindings are the blast radius.</li>
+        <li><b>Browsing</b> <code>${esc(namespace)}</code></li>
+        <li><b>Suggested namespaces</b> ${
+          namespaces.length
+            ? namespaces.map((n) => `<code>${esc(n)}</code>`).join(" ")
+            : '<span class="ex-no">none configured</span>'
+        } — a convenience only; you may type any namespace in this project.</li>
+        <li><b>Parameter delivery</b> ${
+          !consumers.length
+            ? `<span class="ex-no">nothing is delivered</span> — no server here sets <code>params: true</code>.`
+            : !resolver
+              ? `<span class="ex-no">nothing is delivered</span> — ${consumers.length} server(s) set
+                 <code>params: true</code>, but this deployment carries no resolver credential
+                 (<code>STRAD_PARAMS_*</code>).`
+              : `<span class="ex-ok">${consumers.length} server(s)</span> consume managed parameters:
+                 ${consumers.map((c) => `<code>${esc(c.slug)}</code>`).join(", ")}.`
+        }</li>
+        ${revealStatus(reveal)}
+      </ul>
+    </div>
+  </details>
+
+  <details class="acc" open>
     <summary>How a parameter here routes into strad</summary>
     <div class="acc-body">
       <p>A parameter is addressed by one canonical path, and every segment of it does work:</p>
@@ -689,14 +770,14 @@ function secretsHelp(
             ? `This gateway reads it at runtime (<code>gateway.secrets.provider: ${esc(config.gateway.secrets.provider)}</code>) — a name is read only if some config value actually references it.`
             : `This gateway runs <code>gateway.secrets.provider: env</code>, so it resolves <code>\${NAME}</code> from its process environment; a value here is deploy-time input at most.`
         }</p>
-      <p class="acc-foot">Every row above carries a chip computed from this gateway's live
+      <p class="acc-foot">Every row on the page carries a chip computed from this gateway's live
         config — <span class="chip chip-ok chip-route">delivered</span> means a server is wired to
         read that exact path, <span class="chip chip-warnish chip-route">not wired</span> means it
         is stored and nothing reads it.</p>
     </div>
   </details>
 
-  <details class="acc">
+  <details class="acc" open>
     <summary>Examples, from this gateway's own servers</summary>
     <div class="acc-body">
       <ul class="exlist">
@@ -985,6 +1066,8 @@ const KEY_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" ari
 
 const TAG_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12.5V5.5A1.5 1.5 0 0 1 5.5 4h7l7.5 7.5a1.5 1.5 0 0 1 0 2.1l-6.4 6.4a1.5 1.5 0 0 1-2.1 0L4 12.5Z" stroke="currentColor" stroke-width="1.5"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor"/></svg>`;
 
+const QUESTION_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M9.6 9.3a2.4 2.4 0 1 1 3.2 2.26c-.5.19-.8.67-.8 1.2v.54" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12 16.7h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>`;
+
 const INFO_SVG = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v5M12 8h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 
 // ---------------------------------------------------------------------------
@@ -1113,11 +1196,26 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 
 /* Namespace picker */
 .nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
-.nsselect{width:auto;min-width:13rem;font-size:.8rem;padding:.3rem .45rem}
+.nsinput{width:auto;min-width:17rem;font-size:.8rem;padding:.3rem .45rem}
 .nsgo{font-size:.76rem}
 .nscount{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
 
-/* Progressive disclosure: every explanation on the page lives in one of these. */
+/* Help: a control in the top bar, and the guide it opens. */
+.helpbtn{display:inline-flex;align-items:center;gap:.35rem;font:inherit;font-size:.8rem;
+  cursor:pointer;background:transparent;color:var(--g2);border:1px solid var(--g5);
+  border-radius:999px;padding:.2rem .6rem}
+.helpbtn:hover{border-color:var(--accent);color:var(--text-accent)}
+.helpdlg{border:1px solid var(--g5);border-radius:.7rem;background:var(--g7);color:var(--g1);
+  max-width:52rem;width:calc(100vw - 3rem);max-height:82vh;padding:0;overflow:hidden}
+.helpdlg::backdrop{background:rgba(0,0,0,.6);backdrop-filter:blur(2px)}
+.helpdlg-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  padding:.9rem 1.2rem;border-bottom:1px solid var(--g5);background:var(--g6);
+  position:sticky;top:0}
+.helpdlg-head h2{margin:0;font-size:1rem;color:var(--white)}
+.helpdlg-body{padding:1rem 1.2rem 1.4rem;overflow-y:auto;max-height:calc(82vh - 3.6rem)}
+.helpdlg-body .helpstack{margin-bottom:0}
+
+/* Progressive disclosure: every explanation in the guide lives in one of these. */
 .helpstack{display:flex;flex-direction:column;gap:.4rem;margin-bottom:1.3rem}
 .acc{border:1px solid var(--g5);border-radius:.45rem;background:var(--g7)}
 .acc>summary{cursor:pointer;list-style:none;padding:.55rem .9rem;font-size:.84rem;font-weight:600;

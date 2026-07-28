@@ -7,6 +7,7 @@ import { createApp } from "../src/http/app.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   normalisePathPrefix,
+  validateNamespace,
   validatePathPrefix,
 } from "../src/secrets/parameters/index.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
@@ -122,19 +123,42 @@ describe("path prefixes", () => {
   });
 });
 
-describe("namespace selection is an allow-list", () => {
+describe("namespace selection checks SHAPE, not membership", () => {
   const managed = [MCP_NS, GATEWAY_NS];
 
-  it("honours a managed namespace", () => {
+  it("honours a configured namespace", () => {
     expect(selectNamespace(GATEWAY_NS, managed)).toBe(GATEWAY_NS);
   });
 
-  it("falls back to the first for anything unmanaged", () => {
-    // The value becomes the PREFIX of a written path. An attacker-supplied one
-    // must not be honoured, and a stale bookmark should still land somewhere.
-    expect(selectNamespace("/strad/prod/mcp/", managed)).toBe(MCP_NS);
+  it("honours a well-formed namespace that is NOT in the list", () => {
+    // The configured list is a convenience. The fence is the GCP project, so a
+    // human may address any namespace inside it without a redeploy.
+    expect(selectNamespace("/strad/test/other/", managed)).toBe(
+      "/strad/test/other/",
+    );
+    expect(selectNamespace("/anything/at/all/", managed)).toBe(
+      "/anything/at/all/",
+    );
+  });
+
+  it("normalises slashes", () => {
+    expect(selectNamespace("strad/test/mcp", managed)).toBe(MCP_NS);
+    expect(selectNamespace("//strad/test/mcp//", managed)).toBe(MCP_NS);
+  });
+
+  it("falls back for anything MALFORMED, so a stale link still lands", () => {
+    expect(selectNamespace("/has space/", managed)).toBe(MCP_NS);
+    expect(selectNamespace("/../escape/", managed)).toBe(MCP_NS);
+    expect(selectNamespace("/UPPER/", managed)).toBe(MCP_NS);
+    expect(selectNamespace("/", managed)).toBe(MCP_NS);
     expect(selectNamespace(undefined, managed)).toBe(MCP_NS);
     expect(selectNamespace(["/strad/test/mcp/"], managed)).toBe(MCP_NS);
+  });
+
+  it("refuses a namespace that would cover the whole project", () => {
+    expect(validateNamespace("/")).not.toBeNull();
+    expect(validateNamespace("")).not.toBeNull();
+    expect(validateNamespace("/strad/test/mcp/")).toBeNull();
   });
 });
 
@@ -404,10 +428,10 @@ afterAll(() => {
 describe("the console addresses every managed namespace", () => {
   it("offers each one in the picker", async () => {
     const html = await get("/ui/secrets");
-    expect(html).toContain('name="ns"');
-    expect(html).toContain(`<option value="${MCP_NS}" selected>`);
-    expect(html).toContain(`<option value="${GATEWAY_NS}"`);
-    expect(html).toContain("2 managed");
+    expect(html).toContain('id="ns-input"');
+    expect(html).toContain(`value="${MCP_NS}"`);
+    // The configured list is offered as suggestions, not as the only options.
+    expect(html).toContain(`<option value="${GATEWAY_NS}"></option>`);
   });
 
   it("lists the SECOND namespace when ?ns= selects it", async () => {
@@ -433,13 +457,18 @@ describe("the console addresses every managed namespace", () => {
     );
     expect(second).toContain("IN_GATEWAY_NS");
     expect(second).not.toContain("IN_MCP_NS");
-    expect(second).toContain(`<option value="${GATEWAY_NS}" selected>`);
+    expect(second).toContain(`value="${GATEWAY_NS}"`);
   });
 
-  it("an unmanaged ?ns= falls back rather than listing it", async () => {
-    const html = await get("/ui/secrets?ns=%2Fstrad%2Fprod%2Fmcp%2F");
-    expect(html).toContain(`<option value="${MCP_NS}" selected>`);
-    expect(html).not.toContain("/strad/prod/mcp/");
+  it("a well-formed ?ns= outside the configured list IS honoured", async () => {
+    const html = await get("/ui/secrets?ns=%2Fstrad%2Ftest%2Fadhoc%2F");
+    expect(html).toContain('value="/strad/test/adhoc/"');
+  });
+
+  it("a MALFORMED ?ns= falls back rather than being honoured", async () => {
+    const html = await get("/ui/secrets?ns=%2F..%2Fescape%2F");
+    expect(html).toContain(`value="${MCP_NS}"`);
+    expect(html).not.toContain("escape");
   });
 
   it("a write lands in the SELECTED namespace and stays there", async () => {
@@ -457,26 +486,41 @@ describe("the console addresses every managed namespace", () => {
     expect(res.status).toBe(200);
     expect(html).toContain(`${GATEWAY_NS}GATEWAY_LEVEL_TOKEN`);
     // Still on the namespace the human was looking at, not bounced to the first.
-    expect(html).toContain(`<option value="${GATEWAY_NS}" selected>`);
+    expect(html).toContain(`value="${GATEWAY_NS}"`);
     expect(await fake.store.list(GATEWAY_NS)).toHaveLength(1);
     expect(await fake.store.list(MCP_NS)).toHaveLength(0);
   });
 
-  it("an unmanaged ns on a POST cannot steer the written path", async () => {
+  it("a MALFORMED ns on a POST is an error, not a silent write elsewhere", async () => {
     fake.parameters.clear();
     fake.secrets.clear();
 
-    await post("/ui/secrets/create", {
-      ns: "/strad/prod/mcp/",
+    const res = await post("/ui/secrets/create", {
+      ns: "/../escape/",
       prefix: "wired/static/",
       variable: "SNEAKY",
       value: "v",
     });
 
-    const written = await fake.store.list("/strad/");
-    expect(written.map((p) => p.path)).toEqual([
-      `${MCP_NS}wired/static/SNEAKY`,
-    ]);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("namespace");
+    expect(await fake.store.list("/")).toHaveLength(0);
+  });
+
+  it("a well-formed ns outside the list writes there, as typed", async () => {
+    fake.parameters.clear();
+    fake.secrets.clear();
+
+    await post("/ui/secrets/create", {
+      ns: "/strad/test/adhoc/",
+      prefix: "wired/static/",
+      variable: "ADHOC",
+      value: "v",
+    });
+
+    expect(
+      (await fake.store.list("/strad/test/adhoc/")).map((p) => p.path),
+    ).toEqual(["/strad/test/adhoc/wired/static/ADHOC"]);
   });
 });
 
@@ -595,18 +639,26 @@ describe("the page says where a value actually goes", () => {
     expect(html).not.toContain("delivered · deploy");
   });
 
-  it("every explanation is behind an accordion, none of it expanded", async () => {
+  it("every explanation lives in the Help dialog, not the page body", async () => {
     const html = await get("/ui/secrets");
-    const opened = html.match(/<details class="acc" open/g) ?? [];
-    expect(opened).toHaveLength(0);
+
+    // The guide exists, behind a control, in a dialog.
+    expect(html).toContain("data-help-open");
+    expect(html).toContain('<dialog class="helpdlg"');
+    expect(html).toContain("This deployment, right now");
     expect(html).toContain("How a parameter here routes into strad");
     expect(html).toContain("Examples, from this gateway's own servers");
     expect(html).toContain("Secret vs non-secret, and what an agent can see");
     expect(html).toContain("Namespaces, and where the fence actually is");
-    // The old always-on posture paragraph is gone from the page body.
-    expect(html).not.toContain(
-      "Parameter Manager indexes everything; Secret Manager backs the secret parts.</strong>",
+
+    // …and every one of those sits INSIDE the dialog, so the working surface
+    // above it stays a working surface.
+    const body = html.slice(0, html.indexOf('<dialog class="helpdlg"'));
+    expect(body).not.toContain("How a parameter here routes into strad");
+    expect(body).not.toContain(
+      "Secret vs non-secret, and what an agent can see",
     );
+    expect(body).not.toContain('details class="acc"');
   });
 
   it("grounds its examples in this gateway's own servers", async () => {
