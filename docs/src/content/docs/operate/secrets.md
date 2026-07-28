@@ -207,7 +207,7 @@ the dead.
 value can be written or a secret value read back. Three things about how it
 addresses the store are worth knowing before you use it.
 
-### It manages every namespace, not the first one
+### The namespace field is free text
 
 `SECRETS_NAMESPACES` is a comma-separated **list**, and it seeds the picker's
 suggestions — it does not bound what a human may address. The namespace field is
@@ -237,20 +237,31 @@ The two shapes a namespace usually takes:
 
 Staging manages both on the **console** side and only the first on the **MCP**
 side. The console's admin credential can already reach the whole project, so
-listing the gateway namespace widens what a human can address, not what the
-credential may do — while the agent-facing viewer stays scoped to the servers'
+listing the gateway namespace widens what is SUGGESTED, not what the credential
+may do — and, unless `SECRETS_NAMESPACES_STRICT` is set, not what a session can
+address either — while the agent-facing viewer stays scoped to the servers'
 namespace and cannot enumerate the deployment's own keys.
 
-:::caution
-Reveal follows the namespace list. Once the deployment's own `${NAME}` references
-live under `/strad/{env}/gateway/static/` and that namespace is managed by the
-console, a signed-in admin — or a hijacked console session — can reveal
-`GOOGLE_CLIENT_SECRET` and the token store in a browser, not just the servers'
-credentials. That is the same admin credential either way; what changes is the
-reach of one session. Weigh it against
-[shorter console sessions](https://github.com/tadasant/strad/issues/46) and
-[single-use login tokens](https://github.com/tadasant/strad/issues/43) before
-adding the gateway namespace to a production console.
+:::caution[Reveal reaches any namespace this console can address]
+Once the deployment's own `${NAME}` references live under
+`/strad/{env}/gateway/static/`, a signed-in admin — **or a hijacked console
+session** — can reveal `GOOGLE_CLIENT_SECRET` and the token store in a browser,
+not just the servers' credentials. It is the same admin credential either way;
+what changes is the reach of one session.
+
+The namespace field is free text, so **not listing a namespace no longer keeps a
+session away from it.** Two things do:
+
+1. **`SECRETS_REVEAL_ENABLED`** — absent means off, which is prod's default. A
+   session cannot reveal what the deployment does not offer, and after the
+   [§1 downgrade](/operate/secrets-iam/) it cannot reveal at all.
+2. **`SECRETS_NAMESPACES_STRICT=true`** on the server's `consoleEnv:` — restores
+   `SECRETS_NAMESPACES` as a hard limit on the console rather than a set of
+   suggestions. Set it where you want the deploy-time fence back.
+
+Weigh both against [shorter console
+sessions](https://github.com/tadasant/strad/issues/46) and [single-use login
+tokens](https://github.com/tadasant/strad/issues/43).
 :::
 
 ### A path is namespace + prefix + variable
@@ -299,8 +310,8 @@ Because that is silent when it goes wrong, the page computes the answer from the
 running config rather than describing it in prose. Every row carries a chip —
 `delivered · deploy`, `delivered · runtime`, `not wired`, `unrouted` — and a
 banner above the listing counts how many servers on this gateway consume managed
-parameters at all. The explanations themselves live in collapsed accordions, so
-the page stays a working surface rather than a manual.
+parameters at all. The explanations live in the Help guide, so the page stays a working surface
+rather than a manual.
 
 `src/ui/param-routing.ts` is the single source of that judgement, and
 `test/ui.secrets.routing.test.ts` pins both halves of it against their own

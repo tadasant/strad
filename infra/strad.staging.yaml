@@ -314,8 +314,9 @@ servers:
   # env. It writes nothing and never reaches a running container.
   #
   # NAMESPACE, AND WHERE THE FENCE ACTUALLY IS. The path prefix
-  # `/strad/staging/mcp/` is a code-level guard: the server refuses to list an
-  # unmanaged namespace and the console refuses to write outside one. It is NOT
+  # `/strad/staging/mcp/` is a code-level guard on the MCP half: that server
+  # refuses to list an unmanaged namespace. On the console half the same list is
+  # only a set of suggestions (SECRETS_NAMESPACES_STRICT would make it a limit). It is NOT
   # the IAM boundary — put these parameters in a project that holds ONLY them, not
   # the project holding strad's own strad-staging-* secrets. Then the viewer can
   # describe everything in that project and read no secret value; the admin can do

@@ -158,8 +158,8 @@ keeps the hard scope, because an agent is not an operator.
 
 It is a **list**, and the two halves of this server need not be given the same
 one. The bundle's `env:` scopes what an AGENT can enumerate; the core's
-`consoleEnv:` scopes what a HUMAN can address on `/ui/secrets`, which offers a
-picker over every entry. Staging gives the console
+`consoleEnv:` seeds the SUGGESTIONS on `/ui/secrets`, whose namespace field is
+free text (set `SECRETS_NAMESPACES_STRICT=true` to make the list a limit again). Staging gives the console
 `/strad/staging/mcp/,/strad/staging/gateway/static/` and the MCP container only
 the first: a human manages the deployment's own `${NAME}` references there, and
 an agent has no business listing them.
@@ -211,7 +211,9 @@ image**, mounted like every other server there.
 | Var | Where | Required | Notes |
 | --- | --- | --- | --- |
 | `SECRETS_PROJECT_ID` | bundle + core | yes | The GCP project holding the parameters (and their secrets). |
-| `SECRETS_NAMESPACES` | bundle + core | yes | CSV of managed path prefixes, e.g. `/strad/staging/mcp/`. Unset = refuse to mount. |
+| `SECRETS_NAMESPACES` | **bundle** | yes | CSV of managed path prefixes, e.g. `/strad/staging/mcp/`. A HARD scope here. Unset = refuse to mount. |
+| `SECRETS_NAMESPACES` | **core** | yes | The console's namespace SUGGESTIONS. Free text unless `SECRETS_NAMESPACES_STRICT`. Unset = the console reports a misconfiguration. |
+| `SECRETS_NAMESPACES_STRICT` | core | no | `true` restores the list as a hard limit on the console. Default off. |
 | `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. |
 | `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. |
 | `SECRETS_PM_API_BASE` / `SECRETS_TOKEN_URL` | either | no | **Test seams.** Point at a stub Parameter Manager. Not a production knob. |

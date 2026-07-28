@@ -155,6 +155,17 @@ describe("namespace selection checks SHAPE, not membership", () => {
     expect(selectNamespace(["/strad/test/mcp/"], managed)).toBe(MCP_NS);
   });
 
+  it("strict mode restores the list as a LIMIT, and is off by default", () => {
+    // Off (the default): an unlisted-but-well-formed namespace is honoured.
+    expect(selectNamespace("/strad/test/adhoc/", managed)).toBe(
+      "/strad/test/adhoc/",
+    );
+    // On: the same value falls back, because the list bounds the console again.
+    expect(selectNamespace("/strad/test/adhoc/", managed, true)).toBe(MCP_NS);
+    // A LISTED namespace still works in strict mode.
+    expect(selectNamespace(GATEWAY_NS, managed, true)).toBe(GATEWAY_NS);
+  });
+
   it("refuses a namespace that would cover the whole project", () => {
     expect(validateNamespace("/")).not.toBeNull();
     expect(validateNamespace("")).not.toBeNull();
@@ -521,6 +532,37 @@ describe("the console addresses every managed namespace", () => {
     expect(
       (await fake.store.list("/strad/test/adhoc/")).map((p) => p.path),
     ).toEqual(["/strad/test/adhoc/wired/static/ADHOC"]);
+  });
+});
+
+describe("a malformed ns cannot steer a non-create action", () => {
+  it("rotate/note/delete address `path` only, so `ns` cannot redirect them", async () => {
+    fake.parameters.clear();
+    fake.secrets.clear();
+    await fake.store.create({
+      path: `${MCP_NS}wired/static/PINNED`,
+      secret: false,
+      value: "before",
+    });
+
+    // A junk `ns` on each: the action still targets the path it was given, and
+    // nothing is written anywhere else.
+    await post("/ui/secrets/rotate", {
+      ns: "/../junk/",
+      path: `${MCP_NS}wired/static/PINNED`,
+      value: "after",
+    });
+    await post("/ui/secrets/note", {
+      ns: "/../junk/",
+      path: `${MCP_NS}wired/static/PINNED`,
+      note: "n",
+    });
+
+    const all = await fake.store.list("/");
+    expect(all.map((p) => p.path)).toEqual([`${MCP_NS}wired/static/PINNED`]);
+    expect(await fake.store.reveal(`${MCP_NS}wired/static/PINNED`)).toBe(
+      "after",
+    );
   });
 });
 

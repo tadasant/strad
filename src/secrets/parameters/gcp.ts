@@ -187,6 +187,24 @@ export function createGcpParameterStore(
     return vid;
   }
 
+  /**
+   * The id-collision guard, matching the one the MCP write client applies.
+   *
+   * `parameterId` is a lossy fold, so two distinct paths can name one resource.
+   * The envelope carries the EXACT path it was written with, so comparing them
+   * turns "this id resolves" into "this is the parameter you asked for". Without
+   * it a rotate or a delete under a differently-spelled path acts on someone
+   * else's parameter, and a reveal returns its value.
+   */
+  function assertSamePath(envelope: ParameterEnvelope, path: string): void {
+    if (envelope.path !== path) {
+      throw new ParameterStoreError(
+        `"${path}" does not exist (the id it folds to belongs to another parameter)`,
+        404,
+      );
+    }
+  }
+
   /** The current envelope (raw — a secret one still holds a `__REF__`, not a value). */
   async function currentEnvelope(id: string): Promise<{
     envelope: ParameterEnvelope;
@@ -343,6 +361,7 @@ export function createGcpParameterStore(
     const id = parameterId(path);
     const cur = await currentEnvelope(id);
     if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
+    assertSamePath(cur.envelope, path);
 
     if (cur.envelope.secret) {
       // The Secret Manager version is the value; the Parameter Manager `__REF__`
@@ -359,6 +378,7 @@ export function createGcpParameterStore(
     const id = parameterId(path);
     const cur = await currentEnvelope(id);
     if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
+    assertSamePath(cur.envelope, path);
     // The note lives in the envelope, so a note change is a new version that
     // carries the SAME value pointer (or literal). A secret's value is untouched.
     await addVersion(id, { ...cur.envelope, note: note || undefined });
@@ -368,6 +388,7 @@ export function createGcpParameterStore(
     const id = parameterId(path);
     const cur = await currentEnvelope(id);
     if (!cur) throw new ParameterStoreError(`no such parameter: ${path}`, 404);
+    assertSamePath(cur.envelope, path);
     if (!cur.envelope.secret) return cur.envelope.value;
     // Secret: read the value from Secret Manager directly (the admin credential
     // can). This is the only place a secret value is read for DISPLAY, and it is
@@ -388,6 +409,15 @@ export function createGcpParameterStore(
 
   async function destroy(path: string): Promise<void> {
     const id = parameterId(path);
+    // Verify the id names THIS path before deleting anything. A delete is the
+    // one action with no undo, so the collision guard has to run first — and it
+    // is required, not best-effort: swallowing the read and deleting anyway is
+    // what turns a spelling collision into data loss.
+    const existing = await currentEnvelope(id);
+    if (!existing)
+      throw new ParameterStoreError(`no such parameter: ${path}`, 404);
+    assertSamePath(existing.envelope, path);
+
     // Whether this is a secret parameter is read from the PARAMETER'S label, not
     // its version envelope: the label survives even if the latest version is
     // unreadable, so a transient read glitch cannot make us skip the Secret

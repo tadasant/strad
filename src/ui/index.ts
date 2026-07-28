@@ -209,7 +209,11 @@ async function handleServerView(
   if (view.kind === "secrets") {
     await renderSecretsPage(res, view, opts, {
       signedInAs,
-      namespace: selectNamespace(req.query.ns, view.namespaces),
+      namespace: selectNamespace(
+        req.query.ns,
+        view.namespaces,
+        view.namespacesStrict,
+      ),
     });
     return;
   }
@@ -306,15 +310,31 @@ async function handleSecretAction(
 
   const body = req.body as Record<string, unknown>;
   // Which namespace the human was looking at. It comes back on every form so an
-  // action does not silently bounce them to the first namespace — and it is
-  // validated against the managed list, never trusted, because it is the thing a
-  // new parameter's path is built from.
-  const namespace = selectNamespace(body.ns, view.namespaces);
+  // action does not silently bounce them to the first namespace. Its SHAPE is
+  // checked, not its membership — see selectNamespace.
+  const namespace = selectNamespace(
+    body.ns,
+    view.namespaces,
+    view.namespacesStrict,
+  );
   // A TYPED namespace that is malformed must not silently write somewhere else.
   // selectNamespace falls back for a stale link; a submitted form is an
   // intention, and the difference deserves an error rather than a surprise.
-  const typedNs = typeof body.ns === "string" ? body.ns.trim() : "";
-  const nsError = typedNs === "" ? null : validateNamespace(typedNs);
+  const rawNs = body.ns;
+  const typedNs = typeof rawNs === "string" ? rawNs.trim() : "";
+  const nsError =
+    rawNs !== undefined && typeof rawNs !== "string"
+      ? // A repeated `ns=` makes Express hand us an array. Falling back silently
+        // would write to a namespace the form did not name.
+        "A single namespace is required."
+      : typedNs === ""
+        ? null
+        : (validateNamespace(typedNs) ??
+          (view.namespacesStrict &&
+          !view.namespaces.includes(normaliseNamespace(typedNs))
+            ? `"${normaliseNamespace(typedNs)}" is not one of this console's configured namespaces ` +
+              `(${view.namespaces.join(", ")}), and SECRETS_NAMESPACES_STRICT is on.`
+            : null));
 
   const store = storeFor(view, opts);
   if (!store) {
@@ -364,8 +384,10 @@ async function handleSecretAction(
           return;
         }
         const prefix = normalisePathPrefix(prefixRaw);
+        const fullPath = `${namespace}${prefix}${variable}`;
+        assertWellFormed(fullPath);
         await store.create({
-          path: `${namespace}${prefix}${variable}`,
+          path: fullPath,
           secret,
           value,
           note: note || undefined,
@@ -537,7 +559,11 @@ async function renderSecretsPage(
     return;
   }
 
-  const namespace = selectNamespace(extras.namespace, view.namespaces);
+  const namespace = selectNamespace(
+    extras.namespace,
+    view.namespaces,
+    view.namespacesStrict,
+  );
   const caps = await capabilitiesFor(view, opts);
   const reveal = revealPosture(view.revealEnabled, caps);
   const revealNonSecret = revealPosture(view.revealEnabled, caps, false);
@@ -635,22 +661,47 @@ function storeFor(
 }
 
 /**
- * The console may only act on a WELL-FORMED canonical path inside a managed
- * namespace. The service account's project scope already bounds what it can
- * touch, so this is the second lock — but it turns "GCP says 403/404" into a
- * sentence a human can act on, and it keeps a hand-crafted form POST from naming
- * a path outside the namespace and getting an opaque backend error back.
+ * The console may only act on a WELL-FORMED path. The GCP project bounds what
+ * the credential can touch; this bounds the SPELLING, and that is a separate and
+ * necessary job.
+ *
+ * The reason is `parameterId`: it folds a path to a flat id by lowercasing and
+ * collapsing every non-alphanumeric run to `-`. So `/strad/prod/mcp/gcs/static/T`,
+ * `/STRAD/prod/mcp/gcs/static/T`, `/strad/prod/./mcp/gcs/static/T` and
+ * `/strad-prod/mcp/gcs/static/T` are FOUR spellings of ONE resource. A rotate or
+ * a delete naming any of them would hit the parameter written under the first —
+ * and `path` arrives from a hidden form field, so it is chosen by the caller.
+ *
+ * Applying the same alphabet the create path applies (`validatePathPrefix`) kills
+ * `//`, `.`, `..`, uppercase and whitespace in one rule, and makes the mutating
+ * actions symmetric with create rather than laxer than it.
+ *
+ * The store checks the envelope's own path as well (see gcp.ts) — this is the
+ * cheap lock, that is the one that holds.
  */
 function assertWellFormed(path: string): void {
   if (!path) throw new Error("A parameter path is required.");
+  if (path.length > 512) {
+    throw new Error("A parameter path may be at most 512 characters.");
+  }
   if (!path.startsWith("/")) {
     throw new Error(`"${path}" is not an absolute parameter path.`);
   }
+  // Checked on the RAW path, before any normalisation: an empty segment folds to
+  // the same id as none, so `…/mcp//VAR` and `…/mcp/VAR` are one resource.
   if (path.includes("//") || path.split("/").includes("..")) {
     throw new Error(`"${path}" is not a well-formed parameter path.`);
   }
-  if (validateVariableName(variableOf(path))) {
+  const variable = variableOf(path);
+  if (validateVariableName(variable)) {
     throw new Error(`"${path}" does not end in a valid variable name.`);
+  }
+  // Everything between the leading slash and the variable is namespace+prefix,
+  // and both use one alphabet. `validatePathPrefix` returns null for "", so a
+  // bare `/VARIABLE` still passes.
+  const lead = path.slice(1, path.length - variable.length - 1);
+  if (validatePathPrefix(lead)) {
+    throw new Error(`"${path}" is not a well-formed parameter path.`);
   }
 }
 
@@ -696,14 +747,21 @@ function renderUnexpected(res: Response, err: unknown): void {
  * field and becomes the prefix of a written path, so it must be a well-formed
  * absolute path prefix with no traversal.
  */
-export function selectNamespace(raw: unknown, namespaces: string[]): string {
+export function selectNamespace(
+  raw: unknown,
+  namespaces: string[],
+  strict = false,
+): string {
   const fallback = namespaces[0] ?? "";
   if (typeof raw !== "string" || raw.trim() === "") return fallback;
-  // Shape, not membership. The configured list is a convenience; the GCP project
-  // is the boundary. A malformed value falls back rather than erroring, so a
-  // stale bookmark lands somewhere sensible — a value that is merely UNLISTED is
-  // honoured, which is the point.
-  return validateNamespace(raw) === null ? normaliseNamespace(raw) : fallback;
+  if (validateNamespace(raw) !== null) return fallback;
+  const normalised = normaliseNamespace(raw);
+  // `strict` restores the configured list as a LIMIT rather than a set of
+  // suggestions. Off by default: free text is right for an operator, whose
+  // credential already reaches the whole project. On, it is defence in depth
+  // against a hijacked session — see SECRETS_NAMESPACES_STRICT in resolve.ts.
+  if (strict && !namespaces.includes(normalised)) return fallback;
+  return normalised;
 }
 
 /**

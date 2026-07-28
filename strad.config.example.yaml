@@ -291,7 +291,8 @@ servers:
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       # A LIST, and the console's may be wider than the container's above. The
-      # console offers a picker over every entry; the gateway namespace holds the
+      # console offers these as SUGGESTIONS on a free-text field (set
+      # SECRETS_NAMESPACES_STRICT: "true" to make them a limit); the gateway namespace holds the
       # deployment's own ${NAME} references, which a human manages and an agent
       # has no business enumerating.
       SECRETS_NAMESPACES: "/strad/staging/mcp/,/strad/staging/gateway/static/"

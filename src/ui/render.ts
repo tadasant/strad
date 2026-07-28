@@ -43,6 +43,8 @@ export interface LayoutOptions {
    * A guide, rendered into a `<dialog>` and opened by a Help control in the top
    * right. The working surface stays a working surface; the explanation is one
    * click away rather than scrolled past on every visit.
+   *
+   * PRE-ESCAPED HTML, built by this module. Never pass caller-supplied text.
    */
   help?: string;
 }
@@ -104,12 +106,14 @@ ${opts.help ? helpDialog(opts.help) : ""}
  * second page to keep in step with the first. `showModal()` gives the focus trap
  * and backdrop for free.
  *
- * Progressive enhancement, as everywhere else here: with no JS the dialog is
- * inert, so the button carries `formmethod`-free plain semantics and the guide's
- * content is still in the document for anything that reads it.
+ * WITH NO JS a `<dialog>` is `display:none` and the button is a dead control, so
+ * "the content is still in the document" would be true only for a scraper. The
+ * `<noscript>` block below inverts it: the button disappears and the guide
+ * renders inline, which is where it lived before this control existed. A missing
+ * `showModal` falls back to the `open` attribute for the same reason.
  */
 function helpButton(): string {
-  return `<button class="helpbtn" type="button" data-help-open aria-label="Open the guide" title="Guide">${QUESTION_SVG}<span>Help</span></button>`;
+  return `<button class="helpbtn" type="button" data-help-open aria-haspopup="dialog" title="Open the guide">${QUESTION_SVG}<span>Help</span></button>`;
 }
 
 function helpDialog(inner: string): string {
@@ -120,15 +124,29 @@ function helpDialog(inner: string): string {
   </div>
   <div class="helpdlg-body">${inner}</div>
 </dialog>
+<noscript><style>
+  .helpbtn{display:none}
+  .helpdlg{display:block;position:static;max-width:none;width:auto;margin:1.4rem 0;max-height:none}
+  .helpdlg-head button{display:none}
+  .helpdlg-body{max-height:none;overflow:visible}
+</style></noscript>
 <script>
 (function () {
   var dlg = document.getElementById("help-dialog");
-  if (!dlg || typeof dlg.showModal !== "function") return;
+  if (!dlg) return;
+  var modal = typeof dlg.showModal === "function";
   document.addEventListener("click", function (e) {
-    if (e.target.closest("[data-help-open]")) { dlg.showModal(); return; }
-    if (e.target.closest("[data-help-close]")) { dlg.close(); return; }
+    if (!(e.target instanceof Element)) return;
+    if (e.target.closest("[data-help-open]")) {
+      if (modal) dlg.showModal(); else dlg.setAttribute("open", "");
+      return;
+    }
+    if (e.target.closest("[data-help-close]")) {
+      if (modal) dlg.close(); else dlg.removeAttribute("open");
+      return;
+    }
     // A click on the backdrop — outside the dialog's own box — closes it.
-    if (e.target === dlg) dlg.close();
+    if (modal && e.target === dlg) dlg.close();
   });
 })();
 </script>`;
@@ -328,7 +346,7 @@ export interface SecretsViewOptions {
    */
   config: StradConfig;
   parameters: ParameterMeta[];
-  /** The managed namespace being browsed. One of `view.namespaces`. */
+  /** The namespace being browsed. May be one the config never listed. */
   namespace: string;
   /**
    * Whether this deployment carries the resolver credential.
@@ -476,6 +494,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 </section>
 
 ${deliveryBanner(config, resolver)}
+${driftBanner(revealUi)}
 ${flash}
 ${reveal}
 ${listing}
@@ -545,12 +564,13 @@ ${pathPreviewScript(ns)}`;
 }
 
 /**
- * The namespace picker.
+ * The namespace field: free text, with `SECRETS_NAMESPACES` offered as
+ * suggestions.
  *
- * `SECRETS_NAMESPACES` has always been a LIST and the store has always been able
- * to list any of them — it was the console that addressed only the first. This
- * is a plain GET form so switching is an ordinary navigation the SSO gate already
- * covers; the `onchange` submit is enhancement, and the button is the fallback.
+ * A plain GET form, so switching is an ordinary navigation the SSO gate already
+ * covers and the result is linkable. The `<datalist>` is a convenience; what
+ * bounds the value is its SHAPE (see validateNamespace) and, underneath that,
+ * the project the credential is scoped to.
  */
 function namespacePicker(
   action: string,
@@ -629,6 +649,23 @@ function deliveryBanner(config: StradConfig, resolver: boolean): string {
  * deployment can do rather than what it offers, and a reader who never opens an
  * accordion should still not come away with a wrong model of it.
  */
+/**
+ * The ONE reveal case that stays on the page: DRIFT.
+ *
+ * The ordinary "not offered" states are a product decision and belong in the
+ * guide with everything else. Drift is different — it is a claim about what this
+ * deployment CAN do rather than what it offers, and a reader who never opens the
+ * guide should still not come away with a wrong model of their own blast radius.
+ * That is the same test `deliveryBanner` passes, and the reason both survive on a
+ * page that is otherwise chrome-free: each appears only when something is wrong.
+ */
+function driftBanner(reveal: RevealPosture): string {
+  if (reveal.allowed || !reveal.drift) return "";
+  return `<p class="posture posture-warn posture-reveal">
+  <strong>Reveal is hidden, not impossible.</strong> ${esc(reveal.detail)}
+</p>`;
+}
+
 function revealStatus(reveal: RevealPosture): string {
   return reveal.allowed
     ? `<li><b>Reveal</b> <span class="ex-ok">available</span> — the flag is on and this
@@ -742,7 +779,7 @@ function secretsGuide(
       <p class="seglegend"><span class="seg-ns">namespace</span> ·
         <span class="seg-pfx">path prefix</span> ·
         <span class="seg-var">variable</span></p>
-      <p>The <b>namespace</b> is the fence this console may write inside. The <b>path prefix</b>
+      <p>The <b>namespace</b> is where a parameter lives inside the project. The <b>path prefix</b>
         is the routing key: <code>&lt;server-slug&gt;/static/</code> names the MCP server that will
         resolve the value. The <b>variable</b> becomes the environment variable that server's
         process runs with.</p>
@@ -835,18 +872,22 @@ function secretsGuide(
   <details class="acc">
     <summary>Namespaces, and where the fence actually is</summary>
     <div class="acc-body">
-      <p>A namespace is a path prefix this console is allowed to write inside, configured as
-        <code>SECRETS_NAMESPACES</code> (a comma-separated list). This deployment manages:</p>
+      <p>A namespace is a path prefix inside the project. <code>SECRETS_NAMESPACES</code> seeds
+        the suggestions this console offers — it does not bound what you may address, because a
+        list checked in code sits over the same credential the console already holds. You may
+        type any namespace in this project. Suggested here:</p>
       <ul class="nslist">${namespaceList(namespaces, namespace)}</ul>
-      <p>It is a <b>code-level guard, not the IAM boundary</b>. The real boundary is the GCP
-        project: point this at a project that holds only these parameters, so the console's admin
-        credential cannot reach strad's own deployment secrets even in principle.</p>
+      <p><b>The project is the boundary</b>, and it is the only one: point this console at a
+        project that holds only these parameters, so its admin credential cannot reach strad's own
+        deployment secrets even in principle. The <em>MCP</em> half is scoped differently and
+        harder — <code>SECRETS_NAMESPACES</code> there is a hard fence, because an agent is not an
+        operator.</p>
     </div>
   </details>
 </div>`;
 }
 
-/** Every managed namespace, with the one being browsed marked. */
+/** The suggested namespaces. The one being browsed is marked when it is among them. */
 function namespaceList(namespaces: string[], selected: string): string {
   return namespaces
     .map(
