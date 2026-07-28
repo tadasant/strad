@@ -217,10 +217,10 @@ parameter's path is built from, so it is an allow-list, not a hint.
 
 The two shapes a namespace usually takes:
 
-| Namespace                        | Holds                                                                        |
-| -------------------------------- | ---------------------------------------------------------------------------- |
-| `/strad/{env}/mcp/`              | Per-server parameters, under `{slug}/static/`.                               |
-| `/strad/{env}/gateway/static/`   | The deployment's own `${NAME}` references — the token store, the OAuth secret. |
+| Namespace                      | Holds                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `/strad/{env}/mcp/`            | Per-server parameters, under `{slug}/static/`.                                 |
+| `/strad/{env}/gateway/static/` | The deployment's own `${NAME}` references — the token store, the OAuth secret. |
 
 Staging manages both on the **console** side and only the first on the **MCP**
 side. The console's admin credential can already reach the whole project, so
