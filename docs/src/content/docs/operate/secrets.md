@@ -209,11 +209,24 @@ addresses the store are worth knowing before you use it.
 
 ### It manages every namespace, not the first one
 
-`SECRETS_NAMESPACES` is a comma-separated **list**. The page has a namespace
-picker; the listing, every action and the create form all follow it, and the
-selection rides in `?ns=` so a view is linkable. An `ns` that is not one of the
-configured namespaces is ignored rather than honoured — it is the prefix a new
-parameter's path is built from, so it is an allow-list, not a hint.
+`SECRETS_NAMESPACES` is a comma-separated **list**, and it seeds the picker's
+suggestions — it does not bound what a human may address. The namespace field is
+free text with the configured list offered as `<datalist>` suggestions; the
+listing, every action and the create form follow it, and the selection rides in
+`?ns=` so a view is linkable.
+
+**The fence is the GCP project, not the list.** A list checked in code sits over
+the same credential the console already holds, so it would add no security —
+only a redeploy between an operator and a namespace they can already reach.
+What _is_ checked is shape: a namespace must be an absolute, lowercase,
+slash-separated path prefix with no traversal, and never a bare `/` (which would
+cover every parameter in the project).
+
+The two directions of a bad value are handled differently on purpose. A **GET**
+with a malformed `?ns=` falls back to the first configured namespace, so a stale
+link still lands somewhere. A **POST** with one is an **error**, because a
+submitted form is an intention and silently writing to a different namespace
+would be the worst of both.
 
 The two shapes a namespace usually takes:
 
@@ -255,6 +268,22 @@ to one MCP server; without it the console could only ever write
 `{namespace}{VARIABLE}`, which is a well-formed path that no resolver reads. The
 field offers this gateway's own server slugs as suggestions and shows the full
 path it is about to write as you type.
+
+### The guide lives behind a Help control
+
+The working surface stays a working surface. Everything explanatory — the routing
+rules, worked examples, the secret/non-secret split, what a namespace is worth —
+is in a `<dialog>` opened by **Help** in the top bar and closed by `Escape`, the
+backdrop, or the button. No navigation, so the namespace you were browsing
+survives.
+
+The guide opens with **"This deployment, right now"**: the project, the namespace
+being browsed, the suggested namespaces, whether anything is actually being
+delivered, and the reveal posture — every line read from the running config and
+the capability probe rather than from prose that could have gone stale.
+
+The page itself keeps one line, and only when something is wrong: that storing a
+parameter does not by itself send it anywhere.
 
 ### It says whether anything will actually read the path
 

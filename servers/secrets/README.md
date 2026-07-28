@@ -147,9 +147,14 @@ reference) in a **project of their own**, separate from the one holding strad's 
 without a caveat: the viewer SA can list every parameter in that project and read
 every non-secret one — and read the value of **no** secret in it, ever.
 
-`SECRETS_NAMESPACES` is still **required**. An unset one would mean the empty
-prefix — every parameter in the project — so the server refuses to mount rather
-than defaulting to "everything".
+`SECRETS_NAMESPACES` is still **required** for THIS server. An unset one would
+mean the empty prefix — every parameter in the project — so it refuses to mount
+rather than defaulting to "everything".
+
+On the CONSOLE side the same variable is a list of **suggestions**: an operator
+may type any namespace in the project, because the project is the fence and a
+code-level list over the same credential would only add a redeploy. The MCP half
+keeps the hard scope, because an agent is not an operator.
 
 It is a **list**, and the two halves of this server need not be given the same
 one. The bundle's `env:` scopes what an AGENT can enumerate; the core's
