@@ -166,9 +166,15 @@ environment:
 The two credentials this server needs — a non-secret
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a secret
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` — are **not** in the config. A human sets
-them once in `/ui/secrets`, and the resolver injects them: for a supplementary image
-at deploy time (`render-spec`, with the `STRAD_PARAMS_*` resolver credential),
-scoped onto that bundle. The container holds no cloud credential, exactly as with a
+them once in `/ui/secrets` — namespace `/strad/{env}/mcp/`, path prefix
+`remote-filesystem-tmp-public/static/` — and the resolver injects them: for a
+supplementary image at deploy time (`render-spec`, with the `STRAD_PARAMS_*` resolver
+credential), scoped onto that bundle.
+
+The path prefix is the part that does the routing, and the console will tell you
+whether it landed: a parameter written under a slug that does not set
+`params: true` is flagged `not wired` rather than silently going nowhere. See
+[the console's parameters page](/operate/secrets/#the-consoles-parameters-page). The container holds no cloud credential, exactly as with a
 `${REF}` secret. When no resolver credential is configured, a `params: true` server
 simply boots without those values and degrades gracefully — see [Known
 limitations](/limitations/).
