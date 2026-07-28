@@ -6,13 +6,29 @@ managed variable, and Secret Manager holds the bytes of the ones that are secret
 The name is deliberately not `gcp-secrets` — the store is an implementation
 detail, and we may add others.
 
-This tree is the **viewer** role: the MCP/agent channel. It lists parameters,
-reads the values of NON-secret ones, and — the part that matters — **cannot read a
-secret value, because the credential it runs as could not fetch one if it tried.**
+This tree is the MCP/agent channel. **Its surface is derived from what its
+credential may actually do**, asked of Google at startup
+(`projects:testIamPermissions` — see `shared/src/capabilities.ts`) rather than
+declared in config. A flag can claim a capability the key does not have; a probe
+cannot.
+
+In **production** the credential is a Parameter Manager *viewer*, so the surface
+is four read-only tools and — the part that matters — it **cannot read a secret
+value, because the credential it runs as could not fetch one if it tried**:
 
 ```
 tools:  list_managed_namespaces   list_parameters   get_parameter   open_secrets_manager
 ```
+
+In **staging** the credential is read+write on a project that holds nothing
+sensitive, so the same image additionally offers `create_parameter`,
+`set_parameter_value`, `set_parameter_note`, `delete_parameter` and
+`get_secret_value`. That is deliberate and scoped to staging: it is what makes the
+store testable end to end over `/mcp` instead of only through the console.
+
+**Fail closed.** A probe that cannot run — no credential, Cloud Resource Manager
+not enabled, a network fault — yields no capabilities, and the surface is the
+read-only four. Nothing is opened by a failure.
 
 Secret values are added, rotated, revealed and deleted by a **human**, in strad's
 SSO-gated console, using a **different service account that never reaches the MCP
@@ -62,10 +78,12 @@ back into a path — it reads the envelope and filters on the path it finds ther
 
 ## The posture, stated as a claim you can check
 
-> An agent talking to `/mcp` cannot obtain a **secret** value from this server. Not
-> because we did not write the tool — because the credential in that process lacks
-> `secretmanager.versions.access`, and Google answers 403 to the only call that
-> would return one.
+> An agent talking to **production**'s `/mcp` cannot obtain a **secret** value from
+> this server. Not because we did not write the tool — because the credential in
+> that process lacks `secretmanager.versions.access`, and Google answers 403 to the
+> only call that would return one. The tool is not listed there either, because the
+> probe reports that the credential cannot back it; but the listing is the
+> courtesy and IAM is the reason.
 
 Three locks, in order of how much they are worth:
 
@@ -80,18 +98,23 @@ Three locks, in order of how much they are worth:
    no `render`, and no method that dereferences a `__REF__`. There is nothing to
    call.
 3. **No tool.** `get_parameter` returns NON-secret values only; on a secret
-   parameter it returns an error, not the value. CI pins the tool count at 4
-   (`servers/bundle/scripts/smoke.mjs`), so a fifth tool fails the build.
+   parameter it returns an error, not the value. The one tool that _can_ return a
+   secret value, `get_secret_value`, is listed only where the probe reports
+   `secretmanager.versions.access` — and its handler re-checks, because a
+   `tools/list` a client cached a minute ago must not be treated as an
+   authorization. CI's smoke test runs with no credential, so the probe fails
+   closed and the count there is 4 (`servers/bundle/scripts/smoke.mjs`).
 
-Lock 1 is the one that holds when 2 and 3 are wrong. That is the whole design —
-and it is now enforced by **both** code (there is no secret-value method) **and**
-IAM (the viewer lacks Secret Manager access entirely).
+Lock 1 is the one that holds when 2 and 3 are wrong. That is the whole design, and
+it is why staging can safely be given a wider credential: nothing about prod's
+posture depends on this code declining, so relaxing the code in an environment
+whose IAM is relaxed changes prod not at all.
 
 ## The three credentials
 
 | Role | Lives in | Can it read a secret value? | Access |
 | --- | --- | --- | --- |
-| **viewer** (this tree) | the bundle image, answers `/mcp` | **no** | Parameter Manager viewer |
+| **viewer** (this tree) | the bundle image, answers `/mcp` | **no in prod**, yes in staging | Parameter Manager viewer (prod); admin on both stores (staging) |
 | **admin** (the console) | `src/**`, behind SSO, core component only | yes (that is "reveal") | Parameter Manager + Secret Manager admin |
 | **resolver** (runtime) | `src/**`, assembles a server's env | yes, at boot | Parameter Manager `:render` |
 
@@ -220,6 +243,137 @@ gcloud projects add-iam-policy-binding "$PROJECT" \
   --member "serviceAccount:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com" \
   --role roles/secretmanager.admin
 ```
+
+## Per-environment IAM: what each identity may do, and how to grant it
+
+Two surfaces derive their behaviour from these grants rather than from a config
+flag, so getting them right is what makes the model real:
+
+- the **console** offers reveal only if `SECRETS_REVEAL_ENABLED` is on **and** its
+  service account holds `secretmanager.versions.access` (`src/ui/reveal.ts`);
+- the **MCP server** derives its tool surface from
+  `projects:testIamPermissions` on its own credential
+  (`servers/secrets/shared/src/capabilities.ts`).
+
+Both fail closed. A permission that is absent produces a narrower surface, never
+an error at call time.
+
+### The target state
+
+| Identity | Project | Read secret values | Write | Effect |
+| --- | --- | --- | --- | --- |
+| MCP (`strad-secrets-viewer`) | **prod** | ❌ | ❌ | four read-only tools; `/mcp` cannot read a secret value |
+| MCP (`strad-secrets-viewer`) | **staging** | ✅ | ✅ | read + write tools; the store is testable end to end |
+| console (`strad-secrets-admin`) | **prod** | ❌ | ✅ | add and rotate, never display |
+| console (`strad-secrets-admin`) | **staging** | ✅ | ✅ | reveal works |
+
+`cloudresourcemanager.googleapis.com` must be enabled in **both** projects or the
+probe cannot run and every surface degrades to read-only:
+
+```bash
+gcloud services enable cloudresourcemanager.googleapis.com --project "$PROJECT"
+```
+
+### 1. Prod console: write **without** read
+
+The console still has to add and rotate secrets; it must never be able to display
+one. `roles/secretmanager.admin` grants `versions.access`, so it has to go, and
+the pieces have to be added back individually.
+
+`roles/secretmanager.secretVersionAdder` is the right predefined role for the
+write half — it grants `secretmanager.versions.add` and nothing that reads. It
+does **not** grant `secretmanager.secrets.create`, which a first-time create also
+needs, so pair it with `roles/secretmanager.secretCreator`.
+
+`roles/parametermanager.admin` is safe to keep: it grants
+`parametermanager.*` only. It does **not** independently open a read path to
+secret bytes — a `:render` that dereferences a `__REF__` is authorized against
+**Secret Manager**, so a caller without `secretmanager.versions.access` is refused
+by Secret Manager no matter what Parameter Manager allows. That is the same
+mechanism the viewer split has always relied on.
+
+```bash
+PROJECT=strad-secrets-prod
+SA="serviceAccount:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com"
+
+# Remove the role that grants versions.access.
+gcloud projects remove-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/secretmanager.admin
+
+# Add back only the write halves.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/secretmanager.secretCreator
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/secretmanager.secretVersionAdder
+
+# Parameter Manager admin stays: it is the index, and it reads no secret bytes.
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/parametermanager.admin
+```
+
+**Audit assertion.** Deleting a secret also needs `secretmanager.secrets.delete`,
+which none of the roles above grant — so after this change the console can add and
+rotate but not delete a *secret* parameter's underlying secret. That is the
+intended trade; add `roles/secretmanager.secretVersionManager` only if deleting
+matters more than the smaller blast radius.
+
+```bash
+gcloud projects get-iam-policy "$PROJECT" \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:strad-secrets-admin@$PROJECT.iam.gserviceaccount.com" \
+  --format="value(bindings.role)" | sort
+# EXPECT exactly:
+#   roles/parametermanager.admin
+#   roles/secretmanager.secretCreator
+#   roles/secretmanager.secretVersionAdder
+# and NOT roles/secretmanager.admin, roles/secretmanager.secretAccessor,
+# roles/editor or roles/owner — each of those grants versions.access.
+
+# The proof, run as the admin SA:
+gcloud auth activate-service-account --key-file /tmp/prod-admin.json
+gcloud secrets versions access latest --secret "$SOME_ID" --project "$PROJECT"
+# EXPECT: PERMISSION_DENIED secretmanager.versions.access   ← the boundary
+gcloud secrets versions add "$SOME_ID" --data-file=- --project "$PROJECT" <<< "x"
+# EXPECT: success                                            ← writes still work
+```
+
+The console reports this state on the page: with the flag off and the credential
+still able to read, it says so and calls it drift; once the downgrade lands, it
+says reveal is off **and** impossible. If you see "not yet a boundary" after
+running the above, a broader binding is still in place.
+
+### 2. Staging MCP: read **and** write
+
+`strad-secrets-staging` holds nothing sensitive, and the point is to exercise the
+store through `/mcp` rather than only through the console.
+
+```bash
+PROJECT=strad-secrets-staging
+SA="serviceAccount:strad-secrets-viewer@$PROJECT.iam.gserviceaccount.com"
+
+# Replace the viewer-only binding with admin on both stores.
+gcloud projects remove-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/parametermanager.parameterViewer
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/parametermanager.admin
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member "$SA" --role roles/secretmanager.admin
+```
+
+**Audit assertion.** The probe is the assertion — it is what the server will act
+on:
+
+```bash
+gcloud auth activate-service-account --key-file /tmp/staging-viewer.json
+gcloud projects test-iam-permissions "$PROJECT" \
+  --permissions=secretmanager.versions.access,secretmanager.versions.add,secretmanager.secrets.create,parametermanager.parameters.create,parametermanager.parameterVersions.create,parametermanager.parameters.delete
+# EXPECT all six. `/mcp?servers=secrets` then lists the write tools;
+# `list_managed_namespaces` reports what it can do.
+```
+
+**This must not be run against prod.** The prod viewer key staying read-only is
+the property that makes "an agent cannot read a secret value" true, and it is
+enforced by that project's IAM alone.
 
 **Verify the split before trusting it.** Create a secret and a secret parameter
 that references it, then confirm the viewer can read the parameter's envelope but

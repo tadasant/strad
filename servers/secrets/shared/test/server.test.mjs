@@ -108,6 +108,128 @@ async function fixture() {
   return { fake, config, client, close: () => fake.close() };
 }
 
+/**
+ * THE TOOL SURFACE IS DERIVED FROM THE CREDENTIAL, not from a config flag.
+ *
+ * `toolDefinitions` is the single place that decision is made, so it is asserted
+ * directly: four permission shapes in, four surfaces out. The point of a probe
+ * over a flag is that these cannot disagree with what Google will enforce, and
+ * the fail-closed default is what protects a deployment whose probe cannot run.
+ */
+const CAPS = {
+  none: {
+    readSecretValues: false,
+    writeParameters: false,
+    writeSecretValues: false,
+    deleteParameters: false,
+    probed: true,
+  },
+  readWrite: {
+    readSecretValues: true,
+    writeParameters: true,
+    writeSecretValues: true,
+    deleteParameters: true,
+    probed: true,
+  },
+  writeNonSecretOnly: {
+    readSecretValues: false,
+    writeParameters: true,
+    writeSecretValues: false,
+    deleteParameters: false,
+    probed: true,
+  },
+  unprobed: {
+    readSecretValues: false,
+    writeParameters: false,
+    writeSecretValues: false,
+    deleteParameters: false,
+    probed: false,
+    reason: "cloudresourcemanager.googleapis.com is not enabled",
+  },
+};
+
+test("the tool surface is derived from the credential's permissions", async () => {
+  const { config, close } = await fixture();
+
+  // Prod's viewer: the four read-only tools and nothing else.
+  const readOnly = toolDefinitions(config, CAPS.none).map((t) => t.name);
+  assert.deepEqual(readOnly.sort(), [
+    "get_parameter",
+    "list_managed_namespaces",
+    "list_parameters",
+    "open_secrets_manager",
+  ]);
+
+  // Staging's read-write credential: writes AND the value read appear.
+  const full = toolDefinitions(config, CAPS.readWrite).map((t) => t.name);
+  for (const name of [
+    "create_parameter",
+    "set_parameter_value",
+    "set_parameter_note",
+    "delete_parameter",
+    "get_secret_value",
+  ]) {
+    assert.ok(full.includes(name), `expected ${name} with a read-write credential`);
+  }
+
+  // A credential that can write configuration but not secrets: writes are
+  // offered, the value read is NOT, and delete is NOT.
+  const partial = toolDefinitions(config, CAPS.writeNonSecretOnly).map((t) => t.name);
+  assert.ok(partial.includes("create_parameter"));
+  assert.ok(!partial.includes("get_secret_value"));
+  assert.ok(!partial.includes("delete_parameter"));
+  // …and the description says so, rather than letting the call fail at Google.
+  const create = toolDefinitions(config, CAPS.writeNonSecretOnly).find(
+    (t) => t.name === "create_parameter",
+  );
+  assert.match(create.description, /CANNOT be written by this credential/);
+
+  // FAIL CLOSED: an unrunnable probe yields the read-only surface, never more.
+  assert.deepEqual(
+    toolDefinitions(config, CAPS.unprobed).map((t) => t.name).sort(),
+    readOnly.sort(),
+  );
+
+  // And with no capabilities argument at all — the default — same thing.
+  assert.deepEqual(
+    toolDefinitions(config).map((t) => t.name).sort(),
+    readOnly.sort(),
+  );
+
+  await close();
+});
+
+test("a write tool refuses when the probe says the credential cannot", async () => {
+  // The listing is advisory; the handler is the gate. A client with a cached
+  // tools/list from a moment ago must still be refused.
+  const { fake, config } = await (async () => {
+    const f = await fixture();
+    return f;
+  })();
+
+  const { createMCPServer: make } = await import("../build/index.js");
+  const { server, registerHandlers } = make({
+    version: "test",
+    config,
+    capabilities: () => Promise.resolve(CAPS.none),
+    writerFactory: () => {
+      throw new Error("the writer must never be constructed when denied");
+    },
+  });
+  const client = new Client({ name: "t", version: "0" }, { capabilities: {} });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await registerHandlers(server);
+  await Promise.all([server.connect(st), client.connect(ct)]);
+
+  const res = await client.callTool({
+    name: "create_parameter",
+    arguments: { name: `${NS}wired/static/NOPE`, value: "v" },
+  });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /cannot write parameters/);
+  await fake.close();
+});
+
 test("tools/list exposes exactly four read-only tools, none of which returns a secret value", async () => {
   const { client, close } = await fixture();
   const { tools } = await client.listTools();

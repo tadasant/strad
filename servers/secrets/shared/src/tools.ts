@@ -5,6 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { SecretsConfig } from "./config.js";
 import { inManagedNamespace } from "./config.js";
+import { variableOf } from "./parameter-manager.js";
 import type { ParametersReader } from "./parameter-manager.js";
 import { NO_CAPABILITIES, type Capabilities } from "./capabilities.js";
 import type { ParametersWriter } from "./write-client.js";
@@ -46,9 +47,12 @@ interface ToolDeps {
 
 const ANNOTATIONS = { readOnlyHint: true, openWorldHint: false } as const;
 
-export function toolDefinitions(config: SecretsConfig) {
+export function toolDefinitions(
+  config: SecretsConfig,
+  caps: Capabilities = NO_CAPABILITIES,
+) {
   const nsList = config.namespaces.map((n) => `"${n}"`).join(", ");
-  return [
+  const readOnly = [
     {
       name: "list_managed_namespaces",
       description:
@@ -126,13 +130,133 @@ export function toolDefinitions(config: SecretsConfig) {
       annotations: ANNOTATIONS,
     },
   ];
+
+  // Everything below is listed only when Google says this credential can perform
+  // it. A surface that advertises what the boundary forbids is a bug that
+  // presents as an opaque 403 to whoever calls it.
+  const gated = [];
+
+  if (caps.readSecretValues) {
+    gated.push({
+      name: "get_secret_value",
+      description:
+        "Read the RESOLVED value of a parameter, dereferencing a secret reference. This tool is " +
+        "listed only on a deployment whose credential holds secretmanager.versions.access — on " +
+        "one that does not (production), it does not exist and Google would refuse the call " +
+        "underneath it. Use it for end-to-end verification, not to move credentials around.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: `The canonical path. Must be inside a managed namespace (${nsList}).`,
+          },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    });
+  }
+
+  if (caps.writeParameters) {
+    gated.push({
+      name: "create_parameter",
+      description:
+        `Create a parameter inside a managed namespace (${nsList}). A NON-SECRET value is stored ` +
+        "in Parameter Manager and is readable; a SECRET value goes to Secret Manager and " +
+        (caps.writeSecretValues
+          ? "is referenced from Parameter Manager."
+          : "CANNOT be written by this credential — pass secret: false, or use the console."),
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description:
+              "The canonical path, e.g. \"/strad/staging/mcp/<slug>/static/<VAR>\". The " +
+              "<slug>/static/ segment is what routes the value to one MCP server.",
+          },
+          value: { type: "string", description: "The value to store." },
+          secret: {
+            type: "boolean",
+            description:
+              "True for a credential (goes to Secret Manager). False for configuration.",
+          },
+          note: {
+            type: "string",
+            description: "Optional free-form note. Readable by agents; never put a value in it.",
+          },
+        },
+        required: ["name", "value"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    });
+
+    gated.push({
+      name: "set_parameter_value",
+      description:
+        "Rotate an existing parameter: store a new value as a new version. The previous version " +
+        "is retained by the store. The parameter must already exist and be inside a managed namespace.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The canonical path." },
+          value: { type: "string", description: "The new value." },
+        },
+        required: ["name", "value"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    });
+
+    gated.push({
+      name: "set_parameter_note",
+      description:
+        "Set or clear a parameter's free-form note. Agents can read notes, so a note documents " +
+        "what a credential is for — it must never contain the credential.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The canonical path." },
+          note: { type: "string", description: "The note. Empty clears it." },
+        },
+        required: ["name", "note"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    });
+  }
+
+  if (caps.deleteParameters) {
+    gated.push({
+      name: "delete_parameter",
+      description:
+        "Delete a parameter and every version of it, plus its Secret Manager secret if it had " +
+        "one. This cannot be undone.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "The canonical path." },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    });
+  }
+
+  return [...readOnly, ...gated];
 }
 
 export function registerTools(server: Server, deps: ToolDeps): void {
   const { config } = deps;
 
+  const caps = deps.capabilities ?? (() => Promise.resolve(NO_CAPABILITIES));
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDefinitions(config),
+    tools: toolDefinitions(config, await caps()),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -227,6 +351,117 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           });
         }
 
+        case "get_secret_value": {
+          const path = String((args as { name?: unknown } | undefined)?.name ?? "");
+          const c = await caps();
+          if (!c.readSecretValues) {
+            return error(
+              "This deployment's credential cannot read secret values " +
+                `(${c.probed ? "no secretmanager.versions.access" : (c.reason ?? "capability unverified")}). ` +
+                "Use open_secrets_manager to have a human view it in the console.",
+            );
+          }
+          if (!inManagedNamespace(path, config.namespaces)) {
+            return error(
+              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
+            );
+          }
+          const writer = deps.writer?.();
+          if (!writer) return error("no client is configured for value reads");
+          return text({ name: path, value: await writer.readValue(path) });
+        }
+
+        case "create_parameter": {
+          const a = (args ?? {}) as {
+            name?: unknown;
+            value?: unknown;
+            secret?: unknown;
+            note?: unknown;
+          };
+          const path = String(a.name ?? "");
+          const secret = a.secret === true;
+          const c = await caps();
+          const denied = writeDenial(c, secret);
+          if (denied) return error(denied);
+          if (!inManagedNamespace(path, config.namespaces)) {
+            return error(
+              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
+            );
+          }
+          if (typeof a.value !== "string" || a.value === "") {
+            return error("a non-empty `value` is required");
+          }
+          const writer = deps.writer?.();
+          if (!writer) return error("no client is configured for writes");
+          await writer.create({
+            path,
+            secret,
+            value: a.value,
+            note: typeof a.note === "string" && a.note ? a.note : undefined,
+          });
+          return text({
+            created: path,
+            variable: variableOf(path),
+            secret,
+            note: "Stored. Whether a running server RESOLVES this path depends on that server's `params: true` and the deployment's resolver credential — see the console.",
+          });
+        }
+
+        case "set_parameter_value": {
+          const a = (args ?? {}) as { name?: unknown; value?: unknown };
+          const path = String(a.name ?? "");
+          const c = await caps();
+          if (!c.writeParameters) return error(writeDenial(c, false) ?? "denied");
+          if (!inManagedNamespace(path, config.namespaces)) {
+            return error(
+              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
+            );
+          }
+          if (typeof a.value !== "string" || a.value === "") {
+            return error("a non-empty `value` is required");
+          }
+          const writer = deps.writer?.();
+          if (!writer) return error("no client is configured for writes");
+          await writer.rotate(path, a.value);
+          return text({ rotated: path, variable: variableOf(path) });
+        }
+
+        case "set_parameter_note": {
+          const a = (args ?? {}) as { name?: unknown; note?: unknown };
+          const path = String(a.name ?? "");
+          const c = await caps();
+          if (!c.writeParameters) return error(writeDenial(c, false) ?? "denied");
+          if (!inManagedNamespace(path, config.namespaces)) {
+            return error(
+              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
+            );
+          }
+          const writer = deps.writer?.();
+          if (!writer) return error("no client is configured for writes");
+          await writer.setNote(path, String(a.note ?? ""));
+          return text({ noted: path, variable: variableOf(path) });
+        }
+
+        case "delete_parameter": {
+          const path = String((args as { name?: unknown } | undefined)?.name ?? "");
+          const c = await caps();
+          if (!c.deleteParameters) {
+            return error(
+              "This deployment's credential cannot delete parameters " +
+                `(${c.probed ? "no parametermanager.parameters.delete" : (c.reason ?? "capability unverified")}).`,
+            );
+          }
+          if (!inManagedNamespace(path, config.namespaces)) {
+            return error(
+              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
+            );
+          }
+          const writer = deps.writer?.();
+          if (!writer) return error("no client is configured for writes");
+          await writer.destroy(path);
+          return text({ deleted: path, variable: variableOf(path) });
+        }
+
         default:
           return error(`unknown tool: ${name}`);
       }
@@ -237,6 +472,36 @@ export function registerTools(server: Server, deps: ToolDeps): void {
       return error(err instanceof Error ? err.message : String(err));
     }
   });
+}
+
+/**
+ * Why a write is refused, or null when it is permitted.
+ *
+ * Split by kind because the two failures have different fixes: a non-secret write
+ * needs Parameter Manager only, a secret write needs Secret Manager too, and
+ * telling someone "you cannot write" when they can in fact write configuration is
+ * the kind of message that sends them to the wrong IAM page.
+ */
+function writeDenial(caps: Capabilities, secret: boolean): string | null {
+  if (!caps.probed) {
+    return (
+      "This deployment's write capability could not be established " +
+      `(${caps.reason ?? "no reason given"}), so writes are refused rather than attempted.`
+    );
+  }
+  if (!caps.writeParameters) {
+    return (
+      "This deployment's credential cannot write parameters (no " +
+      "parametermanager.parameters.create / parameterVersions.create). Use the console."
+    );
+  }
+  if (secret && !caps.writeSecretValues) {
+    return (
+      "This deployment's credential can write configuration but not SECRET values (no " +
+      "secretmanager.secrets.create / versions.add). Pass secret: false, or set it in the console."
+    );
+  }
+  return null;
 }
 
 /** `https://strad/ui/secrets?param=/strad/staging/mcp/.../VAR` */
