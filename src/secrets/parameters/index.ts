@@ -43,3 +43,12 @@ export {
 } from "./namespace.ts";
 
 export { parseServiceAccount, type ServiceAccount } from "./service-account.ts";
+
+export {
+  probeCapabilities,
+  cachedProbe,
+  PROBE_PERMISSIONS,
+  NO_CAPABILITIES,
+  type Capabilities,
+  type ProbeConfig,
+} from "./capabilities.ts";

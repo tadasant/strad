@@ -57,9 +57,15 @@ export type ServerView =
        */
       account: ServiceAccount | null;
       accountReason?: string;
+      /**
+       * Whether this deployment OFFERS reveal. Independent of whether the
+       * credential could perform it — see capabilities.ts for that half.
+       */
+      revealEnabled: boolean;
       /** Test seams, when the deployment points at stub Parameter/Secret Managers. */
       pmApiBase?: string;
       smApiBase?: string;
+      crmApiBase?: string;
       tokenUrl?: string;
     };
 
@@ -93,8 +99,26 @@ const SECRETS_ENV = {
   location: "SECRETS_LOCATION",
   namespaces: "SECRETS_NAMESPACES",
   adminKeyJson: "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+  /**
+   * The reveal FEATURE FLAG. Absent means OFF.
+   *
+   * Displaying a stored secret value is the one console action with no undo and
+   * no audit trail a human would notice, and it is not something every
+   * deployment should offer. Staging wants it (nothing there is sensitive, and
+   * round-tripping a value is how the store gets tested); prod does not.
+   *
+   * Default-off is the whole point of spelling it as an opt-in: a deployment
+   * that forgets to think about this gets the safe answer, and a new environment
+   * cannot inherit reveal by accident.
+   *
+   * It is NOT the boundary. The boundary is whether the console's service
+   * account holds `secretmanager.versions.access` — see capabilities.ts. This
+   * flag decides what the UI OFFERS; IAM decides what is POSSIBLE.
+   */
+  revealEnabled: "SECRETS_REVEAL_ENABLED",
   pmApiBase: "SECRETS_PM_API_BASE",
   smApiBase: "SECRETS_SM_API_BASE",
+  crmApiBase: "SECRETS_CRM_API_BASE",
   tokenUrl: "SECRETS_TOKEN_URL",
 } as const;
 
@@ -194,8 +218,10 @@ function resolveSecretsView(
     namespaces,
     account,
     accountReason,
+    revealEnabled: isTrue(value[SECRETS_ENV.revealEnabled]),
     pmApiBase: value[SECRETS_ENV.pmApiBase] || undefined,
     smApiBase: value[SECRETS_ENV.smApiBase] || undefined,
+    crmApiBase: value[SECRETS_ENV.crmApiBase] || undefined,
     tokenUrl: value[SECRETS_ENV.tokenUrl] || undefined,
   };
 }
@@ -397,6 +423,15 @@ function tryResolve(value: string, secrets: SecretBag): string | undefined {
     return found;
   });
   return missing ? undefined : out;
+}
+
+/**
+ * A flag is ON only for an explicit truthy spelling. Anything else — absent,
+ * empty, "false", a typo — is OFF, because this gates displaying a credential
+ * and "I could not parse your intent" must not resolve to yes.
+ */
+function isTrue(raw: string | undefined): boolean {
+  return raw === "true" || raw === "1" || raw === "yes";
 }
 
 /** "" stays "". "screenshots" -> "screenshots/". Trailing/leading slashes tidy. */

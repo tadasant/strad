@@ -8,6 +8,7 @@ import {
   prefixSuggestions,
   type Routing,
 } from "./param-routing.ts";
+import type { RevealPosture } from "./reveal.ts";
 
 /**
  * Server-rendered HTML for the human resource browser.
@@ -290,6 +291,12 @@ export interface SecretsViewOptions {
    * page cannot report delivery from the config alone. See param-routing.ts.
    */
   resolver: boolean;
+  /**
+   * Whether this console offers reveal, and if not why. The flag decides what is
+   * offered; the console's service account decides what is possible. See
+   * reveal.ts — both must say yes.
+   */
+  reveal: RevealPosture;
   signedInAs?: string;
   /** A one-shot banner after an action ("Created FOO"). */
   flash?: { tone: "ok" | "error"; message: string };
@@ -304,7 +311,7 @@ export interface SecretsViewOptions {
 }
 
 export function renderSecrets(opts: SecretsViewOptions): string {
-  const { view, config, parameters, resolver } = opts;
+  const { view, config, parameters, resolver, reveal } = opts;
   const slug = view.server.slug;
   const action = `/ui/${encodeURIComponent(slug)}`;
   const ns = opts.namespace;
@@ -335,10 +342,14 @@ export function renderSecrets(opts: SecretsViewOptions): string {
         }</span>
         <span class="row-time">${p.updatedAt ? esc(formatTime(p.updatedAt)) : "—"}</span>
         <span class="row-actions">
-          <form method="post" action="${action}/reveal" class="inline">
+          ${
+            reveal.allowed
+              ? `<form method="post" action="${action}/reveal" class="inline">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <button class="btn btn-ghost" ${p.hasValue ? "" : "disabled"}>Reveal</button>
-          </form>
+          </form>`
+              : `<button class="btn btn-ghost" disabled title="${esc(reveal.detail)}">${esc(reveal.label)}</button>`
+          }
           <form method="post" action="${action}/rotate" class="inline rotate-form">
             <input type="hidden" name="path" value="${esc(p.path)}" />${nsField}
             <input class="in in-sm" type="password" name="value" placeholder="new value" autocomplete="off" required />
