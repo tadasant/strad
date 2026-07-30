@@ -368,10 +368,13 @@ describe("a parameterViewer credential cannot reach a secret VALUE", () => {
     // ...and read a NON-secret value, whose envelope holds the value itself.
     expect(await viewer.reveal(emailPath)).toBe(EMAIL_VALUE);
 
-    // But BOTH read paths to a secret value are refused, which is the property:
-    // the direct one (Secret Manager `:access`) and the indirect one
-    // (`:render`, which is the one this change opened on the parameter side).
+    // The DIRECT read path to the secret's value — Secret Manager `:access` —
+    // is refused, named on the secret parameter specifically.
     await expect(viewer.reveal(keyPath)).rejects.toThrow(/403/);
+    // And a namespace resolve cannot complete. Note this 403 lands on whichever
+    // parameter sorts first, so it proves the resolve is blocked, NOT that the
+    // secret's own `:render` is; the next test isolates the secret and proves
+    // that. Asserting more here would be asserting less than it appears.
     await expect(resolveServerParams(viewer, ENV, SLUG)).rejects.toThrow(/403/);
 
     // And nothing leaked through the path it CAN reach: the raw envelope the
@@ -420,6 +423,8 @@ describe("a parameterViewer credential cannot reach a secret VALUE", () => {
       "parametermanager.parameters.list",
       "parametermanager.parameterVersions.get",
       "parametermanager.parameterVersions.list",
+      "resourcemanager.projects.get",
+      "resourcemanager.projects.list",
     ]);
   });
 });

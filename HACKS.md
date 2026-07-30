@@ -921,7 +921,12 @@ A consolidated checklist, cross-referenced above:
       billing linked (`gcloud billing projects link`) and `--organization`, plus
       `parametermanager` / `secretmanager` / `iam` enabled, before the SAs can be
       created. Exact predefined roles, verified live: the VIEWER SA gets
-      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`)
+      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`,
+      and — load-bearing since secret parameters grant their own principal —
+      NEVER `roles/parametermanager.parameterAccessor`, which carries
+      `parameterVersions.render` and is the one remaining thing between `/mcp`
+      and a prod secret value; staging's is deliberately wider, see
+      `docs/operate/secrets-iam.md` §2)
       → seed key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; the ADMIN SA gets
       `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
       plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the

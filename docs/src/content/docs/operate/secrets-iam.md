@@ -89,9 +89,33 @@ so assume the next person will too.
 If the `secrets` server ever appears unable to read something in prod, that is the
 design working. The fix is never to widen this credential.
 
-`test/parameters.store.test.ts` asserts the property directly — a viewer-scoped
-client is refused both read paths even with the parameter's own grant in place —
-so eroding it fails CI rather than shipping.
+**Be precise about what is and is not enforced.**
+`test/parameters.store.test.ts` asserts the MODEL: a viewer-scoped client is
+refused both read paths even with the parameter's own grant in place. It pins
+strad's understanding of the boundary, so a code change that stops honouring it
+fails CI.
+
+It does **not** pin the deployment. CI has no visibility into the prod viewer
+service account's IAM policy, and nothing in this repo does. A human running
+`add-iam-policy-binding --role=roles/parametermanager.parameterAccessor` against
+that account is exactly what this section forbids and exactly what no test can
+see. That is why the audit below exists: it is the only thing that can catch it.
+
+**Audit assertion — the prod `secrets` MCP credential.** Run as that service
+account. It MUST print `{}`: neither read path, by either route.
+
+```bash
+PROJECT=strad-secrets-prod
+gcloud auth activate-service-account --key-file=/path/to/prod-viewer-key.json
+curl -sS -X POST \
+  "https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["secretmanager.versions.access","parametermanager.parameterVersions.render"]}'
+```
+
+A non-empty answer here means `/mcp` can read production secret values. There is
+no second line of defence behind it.
 :::
 
 :::caution[The second read path is OPEN — `versions.access` alone is not the boundary]
@@ -414,10 +438,19 @@ rather than only through the console.
 
 **This is scoped to staging on purpose.** `strad-secrets-staging` holds nothing
 sensitive. In **prod** the MCP credential stays the Parameter Manager viewer with
-no `secretmanager.versions.access`, so the property from
+neither `secretmanager.versions.access` **nor
+`parametermanager.parameterVersions.render`**, so the property from
 `tadasant-internal#202` — the `/mcp` channel cannot
 read a secret value — is unchanged there. That property is load-bearing and this
 does not weaken it.
+
+:::caution[Do not copy these commands to a prod service account]
+The grant below is `roles/parametermanager.admin` + `roles/secretmanager.admin`,
+and `parametermanager.admin` **includes `parameterVersions.render`**. That is
+deliberate for staging and would be a prod secret-value leak: `render` is the half
+that is load-bearing now, not `versions.access`. See
+[Never grant the `secrets` MCP credential `parameterAccessor`](#never-grant-the-secrets-mcp-credential-parameteraccessor).
+:::
 
 ```bash
 PROJECT=strad-secrets-staging

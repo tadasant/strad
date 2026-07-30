@@ -87,7 +87,9 @@ back into a path — it reads the envelope and filters on the path it finds ther
 > probe reports that the credential cannot back it; but the listing is the
 > courtesy and IAM is the reason.
 
-Three locks, in order of how much they are worth:
+Three locks, in order of how much they are worth. Lock 1 is the only independent
+one: locks 2 and 3 are both derived from the capability probe, so a credential
+granted `parameterAccessor` opens all three at once, with no code change.
 
 1. **IAM (the real one).** In prod the MCP component's service account holds
    Parameter Manager *viewer* access: it can `parameters.list` and
@@ -107,8 +109,11 @@ Three locks, in order of how much they are worth:
    for reading parameters — `parameterViewer` is that role; `parameterAccessor`
    is the deref. If this server ever seems unable to read something in prod, that
    is the design working, and widening the credential is never the fix.
-   `test/parameters.store.test.ts` in the core tree asserts this property, so
-   eroding it fails CI.
+   `test/parameters.store.test.ts` in the core tree pins strad's MODEL of this,
+   so a code change that stops honouring it fails CI — but no test can see the
+   prod service account's actual IAM policy. The audit assertion in
+   `docs/operate/secrets-iam.md` is the only thing that catches a human granting
+   it, and it must print `{}`.
 2. **No code path on the read client.** `shared/src/parameter-manager.ts` has one
    HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
    The `:render` call lives in `write-client.ts`, which is constructed only when

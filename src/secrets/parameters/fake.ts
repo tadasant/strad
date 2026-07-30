@@ -99,16 +99,35 @@ const RENDER_PERMISSION = "parametermanager.parameterVersions.render";
 const ACCESS_PERMISSION = "secretmanager.versions.access";
 
 /**
+ * Refuse a call the CALLER is not permitted to make.
+ *
+ * `caller === null` is the admin/resolver case and permits everything. Every
+ * Parameter Manager verb goes through this, not just the two that return secret
+ * bytes — otherwise the permission list would be a two-string deny-list wearing
+ * an allow-list's clothes, and a test asserting "the viewer can still enumerate
+ * the namespace" would pass for a credential holding nothing at all.
+ */
+function must(caller: Set<string> | null, permission: string): void {
+  if (caller && !caller.has(permission)) throw new HttpError(403);
+}
+
+/**
  * `roles/parametermanager.parameterViewer`, spelled out.
  *
  * Exported so a test can build a genuinely viewer-scoped client rather than
- * approximating one. Note what is absent: `parameterVersions.render`.
+ * approximating one. Note what is absent: `parameterVersions.render`. That
+ * permission is the whole of `roles/parametermanager.parameterAccessor` (plus the
+ * same two `resourcemanager.projects.*`), which is why the two roles are not
+ * interchangeable and why only one of them may reach prod's MCP credential.
  */
 export const PARAMETER_VIEWER_PERMISSIONS: readonly string[] = Object.freeze([
   "parametermanager.parameters.get",
   "parametermanager.parameters.list",
   "parametermanager.parameterVersions.get",
   "parametermanager.parameterVersions.list",
+  // Carried for fidelity to the real role. Nothing in the fake consults them.
+  "resourcemanager.projects.get",
+  "resourcemanager.projects.list",
 ]);
 
 /**
@@ -218,6 +237,7 @@ export function createFakeGcp(): FakeGcp {
 
     // list parameters
     if (pathOnly === paramParent && method === "GET") {
+      must(caller, "parametermanager.parameters.list");
       return json(200, {
         parameters: [...parameters.entries()].map(([id, p]) => ({
           name: `projects/${PROJECT}/locations/${LOCATION}/parameters/${id}`,
@@ -227,6 +247,7 @@ export function createFakeGcp(): FakeGcp {
     }
     // create parameter
     if (pathOnly === paramParent && method === "POST") {
+      must(caller, "parametermanager.parameters.create");
       const id = q.get("parameter_id")!;
       if (parameters.has(id)) throw new HttpError(409);
       parameters.set(id, {
@@ -246,6 +267,7 @@ export function createFakeGcp(): FakeGcp {
 
     // DELETE parameter
     if (tail.length === 0 && method === "DELETE") {
+      must(caller, "parametermanager.parameters.delete");
       if (!param) throw new HttpError(404);
       parameters.delete(id);
       return json(200, {});
@@ -254,6 +276,7 @@ export function createFakeGcp(): FakeGcp {
 
     // GET parameter — labels, and the principal `:render` derefs as.
     if (tail.length === 0 && method === "GET") {
+      must(caller, "parametermanager.parameters.get");
       return json(200, {
         name: `${paramParent}/${id}`,
         labels: param.labels,
@@ -265,6 +288,7 @@ export function createFakeGcp(): FakeGcp {
     if (tail[0] === "versions") {
       // list versions
       if (tail.length === 1 && method === "GET") {
+        must(caller, "parametermanager.parameterVersions.list");
         return json(200, {
           parameterVersions: param.versions.map((v) => ({
             name: `${paramParent}/${id}/versions/${v.id}`,
@@ -275,6 +299,7 @@ export function createFakeGcp(): FakeGcp {
       }
       // create version
       if (tail.length === 1 && method === "POST") {
+        must(caller, "parametermanager.parameterVersions.create");
         const vid = q.get("parameter_version_id")!;
         param.versions.push({
           id: vid,
@@ -288,6 +313,7 @@ export function createFakeGcp(): FakeGcp {
       const version = param.versions.find((v) => v.id === vid);
       if (!version) throw new HttpError(404);
       if (method === "DELETE") {
+        must(caller, "parametermanager.parameterVersions.delete");
         param.versions = param.versions.filter((v) => v.id !== vid);
         return json(200, {});
       }
@@ -297,7 +323,7 @@ export function createFakeGcp(): FakeGcp {
         // here — before the parameter's own grant is ever consulted. This is the
         // single remaining thing that keeps the `secrets` MCP surface in prod
         // from reading a secret value, so the fake enforces it.
-        if (caller && !caller.has(RENDER_PERMISSION)) throw new HttpError(403);
+        must(caller, RENDER_PERMISSION);
         const decoded = Buffer.from(version.data, "base64").toString("utf8");
         const rendered = renderRefs(decoded, id);
         return json(200, {
@@ -305,6 +331,7 @@ export function createFakeGcp(): FakeGcp {
         });
       }
       if (method === "GET") {
+        must(caller, "parametermanager.parameterVersions.get");
         return json(200, {
           name: `${paramParent}/${id}/versions/${vid}`,
           payload: { data: version.data },
@@ -443,7 +470,7 @@ export function createFakeGcp(): FakeGcp {
       // `:render` above is the indirect one. A credential must be denied BOTH
       // to be unable to reach a secret value, which is exactly the property
       // prod's `secrets` MCP identity is supposed to have.
-      if (caller && !caller.has(ACCESS_PERMISSION)) throw new HttpError(403);
+      must(caller, ACCESS_PERMISSION);
       const versions = secrets.get(id);
       if (!versions || versions.length === 0) throw new HttpError(404);
       return json(200, {
@@ -507,6 +534,9 @@ const STATUS_TEXT: Record<number, string> = {
   // `SECRET_REFERENCE_ERROR`. It is a 400, not a 403: the CALLER was permitted,
   // the parameter was not.
   400: "Bad Request",
+  // What a caller lacking the permission gets — the newest failure mode here,
+  // so it needs a reason phrase like the rest.
+  403: "Forbidden",
   404: "Not Found",
   409: "Conflict",
 };
