@@ -40,6 +40,7 @@ table the grants below are built from.
 | **`reveal` — secret** | PM version GET, then **SM `versions/latest:access`**                                                                            | **`secretmanager.versions.access`** ← the one prod must not hold, on top of the PM reads                                                                                      |
 | `reveal` — non-secret | PM version GET only                                                                                                             | `parametermanager.parameterVersions.get`                                                                                                                                      |
 | `destroy`             | PM parameter GET, versions list + DELETE, parameter DELETE, SM secret DELETE                                                    | `parametermanager.parameters.get`, `…parameters.delete`, `…parameterVersions.list`, `…parameterVersions.delete`, `secretmanager.secrets.delete`                               |
+| **`resolve`**         | the `list` row, then **PM `…/versions/{v}:render`** per parameter                                                               | **`parametermanager.parameterVersions.render`** ← the resolver's whole reason to exist, on top of the PM reads                                                                |
 
 Two things fall out of this table, and both matter:
 
@@ -429,6 +430,23 @@ curl -sS -X POST \
   -H "Content-Type: application/json" \
   -d '{"permissions":["parametermanager.parameterVersions.list","parametermanager.parameterVersions.render"]}'
 ```
+
+**Holding `render` is not the same as rendering.** The permission is the caller's
+half; the parameter's own principal must additionally reach the referenced secret
+(the section above), and that is a property of the parameter rather than of this
+credential — so no probe of this service account can tell you whether it is in
+place. Prove the round trip rather than the binding, with the credential the
+container will hold:
+
+```bash
+npm run store:check -- --config infra/strad.staging.yaml --resolve
+```
+
+It reports, by name and never by value, which of the namespace's names the
+resolver can actually turn into a value — and reports a credential that cannot
+render at all as a render failure rather than as a namespace full of missing
+names, because the two have unrelated fixes. See
+[Secrets](/operate/secrets/#is-the-namespace-complete-store-check).
 
 ## 2. Staging MCP server: read and write
 

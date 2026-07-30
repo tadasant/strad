@@ -185,7 +185,11 @@ they are still managed in one place.)
 
 Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`
 against the store and fails the deploy on a missing one — reading metadata only,
-never a value.
+never a value. That is a deploy gate, and it forgives the boot keys a correct
+deployment may legitimately lack, so `npm run store:check -- --config <path>` is
+the wider check to run before switching a live deployment onto the store: it
+counts every name the deployment reads, names what is absent, and has a
+`--mode report` for a migration in progress.
 
 The seam is `src/secrets/provider/` (`SecretProvider`: `get`, `invalidate`), over
 the store-agnostic `ParameterResolver` in `src/secrets/parameters/`. No secret

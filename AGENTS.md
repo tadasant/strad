@@ -44,6 +44,8 @@ not a confession.
 | `src/auth/**`                                                              | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                          | `operate/deploy-model.md`                                         |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate     | `operate/deploy-model.md`, `servers/interface.md`                 |
+| `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate  | `operate/deploy-model.md`, `operate/secrets.md`                   |
+| `src/deploy/preflight.ts` — what a deploy demands of the store             | `operate/secrets.md`, `limitations.md`                            |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                      | `operate/telemetry.md`                                            |
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI | `intro/architecture.md`, `operate/telemetry.md`, and every count  |
 | `infra/strad.staging.yaml`                                                 | `operate/operations.md`, `servers/adding.md`                      |

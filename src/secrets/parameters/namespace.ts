@@ -95,6 +95,20 @@ export function secretRef(projectId: string, secretId: string): string {
 }
 
 /**
+ * Is this value still a POINTER rather than a value?
+ *
+ * A resolved parameter should never carry one: `:render` is what turns the
+ * pointer into the secret. Getting one back means the dereference did not
+ * happen — the caller rendered, and the parameter's own principal could not
+ * reach the secret behind the ref. A caller that cannot tell the difference
+ * reports an un-dereferenced pointer as a value, which is worse than an error,
+ * because the pointer is a perfectly good non-empty string.
+ */
+export function isSecretRef(value: string): boolean {
+  return /^__REF__\("\/\/secretmanager\.googleapis\.com\/[^"]+"\)$/.test(value);
+}
+
+/**
  * The JSON envelope stored as a parameter version's payload.
  *
  * A non-secret parameter carries its literal value here. A secret parameter

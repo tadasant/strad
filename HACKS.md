@@ -744,6 +744,21 @@ so the capability can land and be reviewed without a flag day.
   onto core. It carries the store-**admin** credential, and filing that inside the
   store would let the weaker resolver credential read the stronger one.
 
+**The deploy preflight does not make the flip safe, and it is not trying to.**
+`preflightSecrets()` checks `requiredSecretNames()` — the config's `${NAME}` refs
+plus `CORE_BOOT_ENV_KEYS` — and of the boot keys counts as missing only the two a
+deployment cannot work without. So a namespace can be missing most of what a real
+config needs and still deploy green: the optional boot keys are reported and never
+counted (`GOOGLE_CLIENT_ID` among them, which with `auth.google.enabled: true` is
+a front-door outage on `/ui`, not a dormant one), and a `supplementary-image`
+server's `env:` names are outside the check entirely. `scripts/check-store.ts`
+(`npm run store:check -- --config <path>`) is the pre-flip counterpart: it counts
+every name the deployment reads from the store, names the ones that are absent,
+and has a `--mode report` that reports "these N of M are in" without failing, for
+a migration that moves one server per day. `--resolve` additionally proves the
+resolver can render what it found — the only way to catch a grant that is bound
+but cannot `:render`. It reads metadata by default and prints no value in any mode.
+
 **Undo.** Provision the resolver SA (hack #26), seed
 `/strad/prod/gateway/static/*`, then flip `gateway.secrets.provider` in the
 deployment's config and drop the per-secret baking from the deploy workflow. The

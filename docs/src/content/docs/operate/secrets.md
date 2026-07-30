@@ -179,6 +179,92 @@ pointer at Secret Manager, not the secret. Nothing in the preflight path calls
 `:render` or `reveal`. A credential with no `secretmanager.versions.access`
 passes it happily, which is the proof.
 
+## Is the namespace complete? (store-check)
+
+The preflight above is a **deploy gate**, and it is scoped like one. It checks the
+names the gateway resolves at runtime — the config's `${NAME}` refs plus the core
+boot keys. Every `${NAME}` the config references is always counted missing; of the
+**boot keys**, only `STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` are. Both halves are
+correct for a deploy and insufficient for the one moment that matters most:
+switching a live deployment from `env` to `gcp-parameter-store`.
+
+Two names make the difference concrete. `GOOGLE_CLIENT_ID` is **optional at
+boot**, so a namespace without it preflights clean — and with
+`auth.google.enabled: true` that is a front door that does not open. A
+`supplementary-image` server's `env:` names are outside the preflight entirely
+(they are baked at render time, and `render-spec` fails on a missing one) — but
+under this provider they are read _from the store_, so they have to be seeded
+before the flip, and the deploy is the first thing that looks.
+
+`scripts/check-store.ts` counts **everything the deployment reads from the
+store**:
+
+| Counted                                                       | Why                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------- |
+| every `${NAME}` in a remote-http url/header or builtin option | resolved on the request path                             |
+| **every** core boot key, optional-at-boot included            | hydrated at startup; optional there is not optional here |
+| every `supplementary-image` `env:` name                       | read from the store at render time                       |
+| _not_ a `consoleEnv:` name                                    | deploy-environment only — see below                      |
+
+```bash
+# The gate. Run it immediately before the flip; a missing name is exit 1.
+npm run store:check -- --config infra/strad.staging.yaml
+
+# The daily driver. Same enumeration, same names, exit 0 — a partially seeded
+# namespace mid-migration is the expected state, not an error.
+npm run store:check -- --config infra/strad.staging.yaml --mode report
+
+# Presence is not resolvability. Also render what it found, and report by NAME
+# which names came back with a value.
+npm run store:check -- --config infra/strad.staging.yaml --resolve
+```
+
+| Flag                 | Meaning                                                                                                                    |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `--config <path>`    | **required** — the config whose names are counted                                                                          |
+| `--mode require`     | the default: a finding is exit 1, annotated `::error`                                                                      |
+| `--mode report`      | the same report, exit 0, annotated `::notice`                                                                              |
+| `--namespace <path>` | override the namespace `gateway.env` implies. It cannot be empty — an empty prefix matches every parameter in the project. |
+| `--resolve`          | also render what was found, and report by name what came back                                                              |
+
+`--mode require` is the default deliberately: a checker that never fails unless
+asked repeats the mistake it exists to fix. The mode changes the verdict and never
+the facts, so a day's report and the final gate cannot disagree about what is
+seeded.
+
+**It never prints a value**, in any mode. The default check is `list()` —
+metadata, and for a secret parameter a `__REF__` pointer rather than a secret.
+`--resolve` does render values in order to prove the resolver can, and reports
+names alone.
+
+**A `consoleEnv:` name found in the store fails the gate.** It is the opposite of
+a missing name and it is still a finding: nothing reads the copy there —
+`render-spec` takes that value from the deploy environment — and the resolver
+credential, the one the flip hands to the gateway process, can. That is the one
+thing the [three-credential
+split](/auth/overview/#the-secrets-console-three-credentials) exists to prevent,
+so the fix named is "delete it from the store", not "seed it".
+
+A name declared under **both** `env:` and `consoleEnv:` is not excluded. Some
+component genuinely reads it from the store for the `env:` declaration, so it is
+counted like any other expected name.
+
+**It runs standalone from a checkout.** No image, no pin bump, no deploy: Node 22,
+this repo, and the resolver's `STRAD_PARAMS_*` environment. That is the same
+credential the container will hold, so a namespace this passes against is one that
+credential can read.
+
+**`--resolve` is how you find out the grant is wrong.** A resolver holding
+`parametermanager.parameterViewer` and nothing else lists the namespace perfectly
+and renders none of it; `:render` needs
+`roles/parametermanager.parameterAccessor`. The check reports that as a render
+failure rather than a missing name, because the two have unrelated fixes — and it
+catches the other half too, the parameter's own principal lacking access to its
+secret, which no probe of the resolver's service account can see. See [the
+resolver's roles](/operate/secrets-iam/#the-resolvers-roles-parameterviewer-is-not-enough)
+and [why a parameter must be granted access to its own
+secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-secret).
+
 ## What still needs a redeploy
 
 Two categories, both honestly bounded:
