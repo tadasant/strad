@@ -296,7 +296,7 @@ servers:
   #   STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON       -> DEPLOY only (resolver)
   #
   # `env:` lands on the container that answers /mcp. It gets the VIEWER service
-  # account: Parameter Manager list/get and parameterVersions.access (so it can
+  # account: Parameter Manager list/get and parameterVersions.get (so it can
   # read the index and NON-SECRET values) and NOT secretmanager.versions.access.
   # A secret parameter's value lives in Secret Manager, which this credential
   # cannot reach, so the MCP path can see that a parameter exists, its kind and
@@ -325,11 +325,12 @@ servers:
   #
   # The project id and namespace are NON-SECRET config, so they are LITERALS here
   # (like `gcs`'s GCS_PROJECT_ID above) — not `${refs}`. Only the two service-
-  # account KEYS are secret. SEEDING (not yet done — see the PR): seed just the
-  # keys in Secret Manager as strad-staging-SECRETS_VIEWER_KEY_JSON and
-  # strad-staging-SECRETS_ADMIN_KEY_JSON before this deploys. If you named the
-  # secrets project something other than `strad-secrets-staging`, edit the two
-  # SECRETS_PROJECT_ID literals below.
+  # account KEYS are secret: they are seeded in Secret Manager as
+  # strad-staging-SECRETS_VIEWER_KEY_JSON and strad-staging-SECRETS_ADMIN_KEY_JSON,
+  # and render-spec fails the deploy if either is missing. If you name the secrets
+  # project something other than `strad-secrets-staging`, there are THREE sites:
+  # the two SECRETS_PROJECT_ID literals below, and the --project flag on the
+  # capability-report step in .github/workflows/deploy-staging.yml.
   - slug: secrets
     kind: supplementary-image
     title: Secrets & parameters
