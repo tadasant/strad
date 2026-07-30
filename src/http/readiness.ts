@@ -1,7 +1,12 @@
 import type { Request, RequestHandler, Response } from "express";
-import { authenticateMcp, Unauthenticated } from "../auth/index.ts";
+import {
+  authenticateMcp,
+  Unauthenticated,
+  type Principal,
+} from "../auth/index.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { entitledServers } from "../gateway/entitlements.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { SecretProvider } from "../secrets/provider/index.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
@@ -31,12 +36,15 @@ import {
  *
  * ## The three shape decisions, and why each one
  *
- * **1. A static bearer token, never OAuth.** The consumer is a machine holding a
- * single long-lived credential (`STRAD_API_KEY`). The Google-SSO path exists to
- * put a human identity in front of the console, and a machine has none — so this
- * authenticates exactly the way `/mcp` does, through `authenticateMcp`, against
- * the same `STRAD_TOKENS` roster and the same environment check. No new
- * credential, no new trust boundary, nothing to rotate separately.
+ * **1. A static bearer token, never OAuth — and entitlement to match the scope.**
+ * The consumer is a machine holding a single long-lived credential
+ * (`STRAD_API_KEY`). The Google-SSO path exists to put a human identity in front
+ * of the console, and a machine has none — so this authenticates exactly the way
+ * `/mcp` does, through `authenticateMcp`, against the same `STRAD_TOKENS` roster
+ * and the same environment check. No new credential, no new trust boundary,
+ * nothing to rotate separately. Authorization is then narrower than /mcp's rather
+ * than absent: the report is deployment-wide, so it takes a token entitled to
+ * every enabled server, and answers 403 to anything less.
  *
  * **2. Always 200, with the verdict in the body.** The tempting alternative is
  * 503-when-not-ready. It is wrong here for two reasons: an App Platform ingress
@@ -286,8 +294,9 @@ export function createReadinessHandler(
   // until its own timeout, which for a machine consumer is the worst answer of
   // the three (worse than a 500, which at least tells it something).
   return async (req: Request, res: Response) => {
+    let principal: Principal;
     try {
-      await authenticateMcp(
+      principal = await authenticateMcp(
         req.headers.authorization,
         opts.tokenStore,
         opts.config.gateway.env,
@@ -302,6 +311,33 @@ export function createReadinessHandler(
         return;
       }
       res.status(500).json({ error: "readiness_failed" });
+      return;
+    }
+
+    // AUTHENTICATED IS NOT ENTITLED, and this report is deployment-wide.
+    //
+    // `/mcp` narrows the identical credential through entitledServers() — the
+    // query string proposes, the token disposes — so a surface that authenticated
+    // like /mcp and then answered for EVERY server would be a strict widening on
+    // the same token: a narrow role would learn every slug, every referenced
+    // secret NAME, the canonical paths, the project id, and the presence state of
+    // strad's own boot keys.
+    //
+    // The report cannot be meaningfully narrowed instead, because `ready` is a
+    // claim about the GATEWAY. A per-token subset would make the same field mean
+    // different things to different callers, which for a machine consumer is
+    // worse than a refusal. So the credential has to match the scope: entitled to
+    // every enabled server, or nothing. Zimmer's `admin` token (`servers: ["*"]`)
+    // passes; a per-server token does not.
+    const entitled = entitledServers(principal, opts.config);
+    const enabled = opts.config.servers.filter((s) => s.enabled);
+    if (enabled.some((s) => !entitled.has(s.slug))) {
+      res.status(403).json({
+        error: "forbidden",
+        message:
+          "This report covers every server on the gateway, so it requires a token " +
+          "entitled to every server on the gateway.",
+      });
       return;
     }
 

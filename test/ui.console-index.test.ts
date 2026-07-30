@@ -271,6 +271,81 @@ describe("GET /ui — badges", () => {
   });
 });
 
+describe("GET /ui with nothing enabled", () => {
+  const boot = async (yaml: string) => {
+    const config = parseConfig(yaml);
+    const provider = new EnvSecretProvider(BAG);
+    const registry = await Registry.build({
+      config,
+      secrets: provider,
+      mode: "core",
+      env: ENV,
+    });
+    const app = createApp({
+      config,
+      registry,
+      tokenStore: tokenStoreFromConfig(config, ENV),
+      mode: "core",
+      env: ENV,
+      secrets: BAG,
+      secretProvider: provider,
+    });
+    const s = app.listen(0);
+    await new Promise<void>((r) => s.on("listening", () => r()));
+    const addr = s.address();
+    if (typeof addr === "string" || !addr) throw new Error("no port");
+    const body = await (
+      await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
+    ).text();
+    s.close();
+    return body;
+  };
+
+  const EMPTY = `
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles: { admin: { servers: ["*"] } }
+servers: []
+`;
+
+  it("does NOT claim every server is READY over an empty grid", async () => {
+    // The core ships with ZERO servers (src/config/schema.ts), so this is the
+    // very first screen of a fresh install. "Every server is READY" above "No
+    // servers are configured on this gateway" is an unearned green of exactly
+    // the kind this module refuses everywhere else: nothing was checked because
+    // there was nothing to check.
+    const body = await boot(EMPTY);
+    expect(body).not.toContain("Every server is READY");
+    expect(body).toContain("No servers are enabled on this gateway");
+    expect(body).toContain(
+      `<p class="empty">No servers are configured on this gateway.</p>`,
+    );
+  });
+
+  it("says the same when every server is DISABLED, not just when there are none", async () => {
+    // `sorted.length` is non-zero here and `statuses.length` is not — the grid
+    // renders a card and the roster is still empty.
+    const body = await boot(
+      EMPTY.replace(
+        "servers: []",
+        `servers:
+  - slug: off-server
+    kind: remote-http
+    url: https://x.example.com/mcp
+    enabled: false
+    headers: { Authorization: "Bearer \${OFF_TOKEN}" }
+    entitlements: [admin]`,
+      ),
+    );
+    expect(body).not.toContain("Every server is READY");
+    expect(body).toContain("No servers are enabled on this gateway");
+    expect(body).toContain('<span class="chip chip-off">disabled</span>');
+  });
+});
+
 describe("GET /ui — the ISSUE popout", () => {
   const popout = () => {
     const at = html.indexOf('<dialog class="fixdlg" id="fix-beta"');

@@ -310,9 +310,9 @@ is silently wrong. `test/ui.secret-status.test.ts` pins both spellings and their
 tooltips so the coupling shows up in a diff; nothing can make it automatic from
 inside this repo.
 
-**Undo:** delete `src/ui/secret-status.ts` and `src/http/readiness.ts`, and revert
-`src/ui/index-page.ts` to the plain server grid it renders around. Nothing else
-reads any of it.
+**Undo:** delete `src/ui/secret-status.ts` and `src/http/readiness.ts`, drop the
+`/secrets` redirect in `src/ui/index.ts`, and revert `src/ui/index-page.ts` to the
+plain server grid it renders around. Nothing else reads any of it.
 
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 

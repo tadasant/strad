@@ -2,6 +2,7 @@ import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { esc, layout, serverLooksGcs, serverLooksSecrets } from "./render.ts";
 import {
   fixTargets,
+  isActionable,
   SOURCE_TOOLTIP,
   STATE_RANK,
   storeProject,
@@ -145,7 +146,7 @@ export function renderIndex(opts: ConsoleIndexOptions): string {
 
 ${summaryBar(readyCount, issues.length, statuses.length)}
 
-${banner(issues)}
+${banner(issues, statuses.length)}
 
 <div class="card-grid">
 ${
@@ -189,6 +190,7 @@ ${INDEX_CSS}`;
     brandHref: "/",
     brandSub: "console",
     footNote: "status and guidance · never values",
+    helpTitle: "Console guide",
     help: GUIDE,
   });
 }
@@ -199,9 +201,9 @@ ${INDEX_CSS}`;
 
 function summaryBar(ready: number, issues: number, total: number): string {
   return `<div class="browse-head">
-  <div class="stat"><span class="stat-n">${total}</span><span class="stat-l">enabled servers</span></div>
+  <div class="stat"><span class="stat-n">${total}</span><span class="stat-l">enabled server${total === 1 ? "" : "s"}</span></div>
   <div class="stat"><span class="stat-n stat-ready">${ready}</span><span class="stat-l">ready</span></div>
-  <div class="stat"><span class="stat-n stat-missing">${issues}</span><span class="stat-l">issue</span></div>
+  <div class="stat"><span class="stat-n stat-missing">${issues}</span><span class="stat-l">issue${issues === 1 ? "" : "s"}</span></div>
 </div>`;
 }
 
@@ -214,8 +216,20 @@ function summaryBar(ready: number, issues: number, total: number): string {
  * value EXISTS for each ${NAME}" across the top. The entries were honest and the
  * banner above them was not, which is worse than either alone: the banner is the
  * part someone reads.
+ *
+ * FOUR-way, in fact, because of the empty roster. The core ships with zero
+ * servers (src/config/schema.ts), so a fresh install's very first screen is this
+ * one — and "Every server is READY" over an empty grid is an unearned green of
+ * exactly the kind this module refuses everywhere else. Nothing was checked
+ * because there was nothing to check, and that is what it says.
  */
-function banner(issues: Entry[]): string {
+function banner(issues: Entry[], enabled: number): string {
+  if (enabled === 0) {
+    return `<p class="posture">No servers are enabled on this gateway, so there is nothing
+      to seed and nothing to report. Add one to <code>servers:</code> in the config, and its
+      secrets appear here.</p>`;
+  }
+
   if (issues.length === 0) {
     return `<p class="posture"><strong>Every server is READY.</strong> That means a value
       EXISTS for each <code>\${NAME}</code> the config references — strad does not call any
@@ -223,8 +237,11 @@ function banner(issues: Entry[]): string {
       lists tools and 401s on every call is the shape to suspect next.</p>`;
   }
 
+  // `isActionable` rather than an inlined `missing || placeholder`: there is one
+  // definition of "a human has to do something about this", and the banner and
+  // the popout headline must not be able to disagree about it.
   const actionable = issues.filter(
-    (e) => e.status?.state === "missing" || e.status?.state === "placeholder",
+    (e) => e.status !== undefined && isActionable(e.status.state),
   ).length;
   const unchecked = issues.length - actionable;
 

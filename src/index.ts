@@ -111,9 +111,10 @@ async function main(): Promise<void> {
     );
   }
 
-  // `secretProvider` is handed to the app for the Secrets Console: it is the only
-  // seam that can answer "does this ${NAME} resolve?" for a store-backed
-  // deployment, where the answer is in the parameter store and in no bag.
+  // `secretProvider` is handed to the app for the console's secret roster and the
+  // readiness endpoint that mirrors it: it is the only seam that can answer "does
+  // this ${NAME} resolve?" for a store-backed deployment, where the answer is in
+  // the parameter store and in no bag.
   const app = createApp({
     config,
     registry,

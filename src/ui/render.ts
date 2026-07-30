@@ -11,7 +11,7 @@ import {
 import type { RevealPosture } from "./reveal.ts";
 
 /**
- * Server-rendered HTML for the human resource browser.
+ * Server-rendered HTML for the human console.
  *
  * Every page is a full document with the theme inlined — no build step, no
  * client framework, no bundle. Navigation is plain `<a href>` with a `?prefix=`
@@ -30,15 +30,20 @@ export interface LayoutOptions {
   serverSlug?: string;
   signedInAs?: string;
   body: string;
-  /** Where the brand mark links. Defaults to the resource browser. */
+  /** Where the brand mark links. Defaults to the console index. */
   brandHref?: string;
-  /** The word beside the brand mark. Defaults to "resource browser". */
+  /** The word beside the brand mark. Defaults to "console". */
   brandSub?: string;
   /**
    * Right-hand footer text. Defaults to the gated browser's own claim, which
    * would be a lie on the public landing page — hence the parameter.
    */
   footNote?: string;
+  /**
+   * Heading and accessible name for the Help dialog. Defaults to the console
+   * guide; a page whose guide is about something narrower says so.
+   */
+  helpTitle?: string;
   /**
    * A guide, rendered into a `<dialog>` and opened by a Help control in the top
    * right. The working surface stays a working surface; the explanation is one
@@ -68,7 +73,7 @@ export function layout(opts: LayoutOptions): string {
     <a class="brand" href="${esc(opts.brandHref ?? "/ui")}">
       ${LOGO_SVG}
       <span class="brand-name">strad</span>
-      <span class="brand-sub">${esc(opts.brandSub ?? "resource browser")}</span>
+      <span class="brand-sub">${esc(opts.brandSub ?? "console")}</span>
     </a>
     <div class="topbar-right">
       ${
@@ -88,7 +93,7 @@ export function layout(opts: LayoutOptions): string {
 <main class="page">
 ${opts.body}
 </main>
-${opts.help ? helpDialog(opts.help) : ""}
+${opts.help ? helpDialog(opts.help, opts.helpTitle ?? "Console guide") : ""}
 <footer class="foot">
   <span>strad · human console</span>
   <span class="foot-sep">·</span>
@@ -116,10 +121,10 @@ function helpButton(): string {
   return `<button class="helpbtn" type="button" data-help-open aria-haspopup="dialog" title="Open the guide">${QUESTION_SVG}<span>Help</span></button>`;
 }
 
-function helpDialog(inner: string): string {
-  return `<dialog class="helpdlg" id="help-dialog" aria-label="Secrets console guide">
+function helpDialog(inner: string, title: string): string {
+  return `<dialog class="helpdlg" id="help-dialog" aria-label="${esc(title)}">
   <div class="helpdlg-head">
-    <h2>Secrets console guide</h2>
+    <h2>${esc(title)}</h2>
     <button class="btn" type="button" data-help-close aria-label="Close">Close</button>
   </div>
   <div class="helpdlg-body">${inner}</div>
@@ -426,7 +431,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   const secretCount = parameters.filter((p) => p.secret).length;
 
   const body = `
-<nav class="breadcrumb"><a href="/ui" class="crumb">resource browser</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
 
 <section class="browse-head">
   <div class="stat"><span class="stat-n">${parameters.length}</span><span class="stat-l">parameters</span></div>
@@ -495,6 +500,7 @@ ${pathPreviewScript(ns)}`;
     serverSlug: slug,
     signedInAs: opts.signedInAs,
     body,
+    helpTitle: "Parameters guide",
     help: secretsGuide(
       config,
       slug,
@@ -924,7 +930,7 @@ export function renderMessage(opts: {
 }): string {
   const tone = opts.tone ?? "info";
   const body = `
-${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">resource browser</a></nav>` : ""}
+${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a></nav>` : ""}
 <div class="state state-${tone}">
   <div class="state-icon">${opts.icon ?? INFO_SVG}</div>
   <p class="state-title">${esc(opts.heading)}</p>

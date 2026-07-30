@@ -481,7 +481,10 @@ long-lived credential, and the Google-SSO path exists to put a human identity in
 front of the console. So this authenticates exactly the way `/mcp` does — through
 `authenticateMcp`, against the same `STRAD_TOKENS` roster, with the same
 environment check, so a token minted for `prod` cannot read `staging`'s roster.
-No new credential and nothing to rotate separately.
+No new credential and nothing to rotate separately. Authorization is narrower than
+`/mcp`'s rather than absent: the report is deployment-wide, so it takes a token
+entitled to every enabled server and answers `403` to anything less. See
+[Auth](/auth/overview/#apisecretsreadiness-is-not-a-console-surface).
 
 **Always `200`, with the verdict in the body.** The tempting alternative is
 503-when-not-ready. An App Platform ingress treats an upstream 5xx as its own

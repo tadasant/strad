@@ -852,8 +852,9 @@ anything else to its class name. `test/ui.secret-status.test.ts` builds the real
 **Undo.** Delete `src/ui/secret-status.ts`, `src/http/readiness.ts`,
 `test/ui.secret-status.test.ts`, `test/ui.console-index.test.ts`,
 `test/readiness.test.ts`, the badge/popout half of `src/ui/index-page.ts`, the
-`/api/secrets/readiness` route in `src/http/app.ts`, and the `secretProvider` option
-threaded through `src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
+`/api/secrets/readiness` route in `src/http/app.ts`, the `/secrets` redirect in
+`src/ui/index.ts`, and the `secretProvider` option threaded through
+`src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
 
 ## What the human still needs to provision
 

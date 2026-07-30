@@ -191,7 +191,19 @@ machine has no Google identity to put in front of a redirect — so it
 authenticates through `authenticateMcp` against `STRAD_TOKENS`, exactly as `/mcp`
 does, including the environment check that stops a `prod` token reading
 `staging`'s roster. It answers a `401` to a console session cookie and to the dev
-bypass alike. See [Secrets](/operate/secrets/#get-apisecretsreadiness--the-same-answer-for-a-machine).
+bypass alike.
+
+Authorization there is **narrower** than `/mcp`'s, not absent. `/mcp` narrows the
+same credential through `entitledServers()` and hands back whatever subset the
+token holds; a readiness report that authenticated the same way and then answered
+for _every_ server would be a strict widening on the identical token — a
+per-server role would learn every slug, every referenced secret name, the
+canonical paths and the project id. The report cannot be meaningfully narrowed
+instead, because `ready` is a claim about the whole gateway and a per-token subset
+would make the same field mean different things to different callers. So the
+credential has to match the scope: a token entitled to every enabled server, or a
+`403`. Zimmer's `admin` token (`servers: ["*"]`) clears it; a per-server token
+does not. See [Secrets](/operate/secrets/#get-apisecretsreadiness--the-same-answer-for-a-machine).
 
 ### Console dev bypass (temporary)
 

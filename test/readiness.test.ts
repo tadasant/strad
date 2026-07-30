@@ -31,19 +31,24 @@ import type { ReadinessReport } from "../src/http/readiness.ts";
 const ENV_NAME = "test";
 
 /** A real token record, so the endpoint is exercised through actual auth. */
-function mintFor(env: string): { plaintext: string; recordJson: string } {
+function mint(
+  env: string,
+  roles: string[] = ["admin"],
+): { pubid: string; plaintext: string; record: unknown } {
   const pubid = randomBytes(4).toString("hex");
   const secret = randomBytes(32).toString("base64url");
   const hash = createHash("sha256").update(secret, "utf8").digest("hex");
   return {
+    pubid,
     plaintext: `strad_${env}_${pubid}_${secret}`,
-    recordJson: JSON.stringify([
-      { pubid, label: "zimmer", hash, roles: ["admin"] },
-    ]),
+    record: { pubid, label: `token-${roles.join("-")}`, hash, roles },
   };
 }
 
-const TOKEN = mintFor(ENV_NAME);
+const TOKEN = mint(ENV_NAME);
+/** Entitled to `alpha` and nothing else — the 403 case. */
+const NARROW = mint(ENV_NAME, ["alpha-only"]);
+const TOKENS_JSON = JSON.stringify([TOKEN.record, NARROW.record]);
 
 const YAML = `
 version: 1
@@ -56,6 +61,9 @@ auth:
   consoleDevBypass: { enabled: true, roles: [admin] }
 roles:
   admin: { servers: ["*"] }
+  # A deliberately narrow role. The entitlement gate is only meaningful if some
+  # token is genuinely entitled to less than the whole gateway.
+  alpha-only: { servers: [alpha] }
 bundles:
   - name: bundle
 servers:
@@ -63,7 +71,7 @@ servers:
     kind: remote-http
     url: https://alpha.example.com/mcp
     headers: { Authorization: "Bearer \${ALPHA_TOKEN}" }
-    entitlements: [admin]
+    entitlements: [admin, alpha-only]
   - slug: beta
     kind: remote-http
     url: https://beta.example.com/mcp
@@ -94,12 +102,12 @@ const STORE_CONFIG = parseConfig(
 const BAG: Record<string, string> = {
   ALPHA_TOKEN: "alpha-real-credential-value-abcdef",
   GAMMA_TOKEN: "change-me",
-  STRAD_TOKENS: TOKEN.recordJson,
+  STRAD_TOKENS: TOKENS_JSON,
   STRAD_INTERNAL_TOKEN: "internal-token-value-abcdef",
 };
 
 const ENV: NodeJS.ProcessEnv = {
-  STRAD_TOKENS: TOKEN.recordJson,
+  STRAD_TOKENS: TOKENS_JSON,
   STRAD_BUNDLE_URL_BUNDLE: "http://127.0.0.1:1",
 };
 
@@ -171,7 +179,7 @@ describe("GET /api/secrets/readiness auth", () => {
   it("401s a token minted for a DIFFERENT environment", async () => {
     // The same env check /mcp applies. A prod token must not read staging's
     // secret roster because someone pasted the wrong URL into a config.
-    const other = mintFor("prod");
+    const other = mint("prod");
     const res = await fetch(`${baseUrl}/api/secrets/readiness`, {
       headers: { authorization: `Bearer ${other.plaintext}` },
     });
@@ -185,6 +193,25 @@ describe("GET /api/secrets/readiness auth", () => {
       headers: { authorization: "Bearer bootstrap-secret-xyz" },
     });
     expect(res.status).toBe(401);
+  });
+
+  it("403s a VALID token entitled to less than the whole gateway", async () => {
+    // Authenticated is not entitled. /mcp narrows the identical credential
+    // through entitledServers(), so a surface that authenticated the same way and
+    // then answered for EVERY server would be a strict widening on the same
+    // token: `alpha-only` would learn beta's and gamma's slugs, their secret
+    // NAMES and the canonical paths. The report is deployment-wide, so the
+    // credential has to be too.
+    const res = await fetch(`${baseUrl}/api/secrets/readiness`, {
+      headers: { authorization: `Bearer ${NARROW.plaintext}` },
+    });
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).toContain("forbidden");
+    // And the refusal itself leaks nothing about what it withheld.
+    for (const name of ["BETA_TOKEN", "GAMMA_TOKEN", "beta", "gamma"]) {
+      expect(body).not.toContain(name);
+    }
   });
 
   it("accepts the static bearer token and answers JSON", async () => {
@@ -347,7 +374,7 @@ describe("readiness when everything resolves", () => {
       ALPHA_TOKEN: "alpha-real-credential-value-abcdef",
       BETA_TOKEN: "beta-real-credential-value-abcdef",
       GAMMA_TOKEN: "gamma-real-credential-value-abcdef",
-      STRAD_TOKENS: TOKEN.recordJson,
+      STRAD_TOKENS: TOKENS_JSON,
     };
     const { url, close: shut } = await boot(
       CONFIG,
