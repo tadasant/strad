@@ -296,7 +296,7 @@ servers:
   #   STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON       -> DEPLOY only (resolver)
   #
   # `env:` lands on the container that answers /mcp. It gets the VIEWER service
-  # account: Parameter Manager list/get and parameterVersions.access (so it can
+  # account: Parameter Manager list/get and parameterVersions.get (so it can
   # read the index and NON-SECRET values) and NOT secretmanager.versions.access.
   # A secret parameter's value lives in Secret Manager, which this credential
   # cannot reach, so the MCP path can see that a parameter exists, its kind and

@@ -23,6 +23,9 @@ Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted`:
   tests _are_ the security review: they drive the server through a real MCP client
   against a fake Parameter Manager that models the two-store split, and assert that
   no tool can return a secret value and that the viewer credential cannot reach one.
+  They also pin the capability probe's permission strings, because the whole tool
+  surface is derived from them and a name Google does not recognise reads as "not
+  granted" rather than as an error — see [Secrets IAM](/operate/secrets-iam/).
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 9, tailscale 15, monarch-money 23,
