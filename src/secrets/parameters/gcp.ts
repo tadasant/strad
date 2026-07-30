@@ -76,6 +76,19 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  */
 const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
 
+/**
+ * One binding in a Secret Manager IAM policy.
+ *
+ * `condition` is carried opaquely and never interpreted — it exists here so a
+ * read-modify-write preserves a conditional binding it does not understand
+ * rather than dropping it on the way back.
+ */
+interface IamBinding {
+  role: string;
+  members?: string[];
+  condition?: unknown;
+}
+
 export function createGcpParameterStore(
   cfg: GcpParameterStoreConfig,
 ): ParameterStore {
@@ -247,8 +260,9 @@ export function createGcpParameterStore(
    *
    * Two reads plus a write, rather than a blind overwrite: the policy is
    * read-modify-written so an etag guards a concurrent change, and a policy that
-   * already carries this member is left alone. A fresh secret's policy is empty,
-   * but `create()` is not the only thing that can have touched it.
+   * already carries this member is left alone. A fresh secret's policy is empty
+   * — `create()` makes the secret itself, so the idempotent branch is
+   * defence-in-depth here and the live path for a re-run over an existing secret.
    */
   async function grantRenderAccess(id: string): Promise<void> {
     const param = (await pm("GET", `${pmParent}/parameters/${id}`)) as {
@@ -265,16 +279,30 @@ export function createGcpParameterStore(
       );
     }
 
+    // `requestedPolicyVersion=3` is REQUIRED, not a refinement. Without it IAM
+    // answers with a version-1 VIEW of the policy that omits every CONDITIONAL
+    // binding — and writing that view back deletes them. A read-modify-write that
+    // cannot see part of what it is rewriting is a destructive one.
     const policy = (await sm(
       "GET",
-      `${smParent}/secrets/${id}:getIamPolicy`,
-    )) as { bindings?: { role: string; members?: string[] }[]; etag?: string };
+      `${smParent}/secrets/${id}:getIamPolicy?options.requestedPolicyVersion=3`,
+    )) as {
+      bindings?: IamBinding[];
+      etag?: string;
+      version?: number;
+    };
 
     const bindings = (policy.bindings ?? []).map((b) => ({
       ...b,
       members: [...(b.members ?? [])],
     }));
-    const binding = bindings.find((b) => b.role === SECRET_ACCESSOR_ROLE);
+    // An UNCONDITIONAL binding, specifically. One role may appear in several
+    // bindings distinguished by `condition`, and appending the principal to a
+    // conditional one grants access only while that condition holds — which
+    // fails exactly like no grant at all, from a policy that reads as correct.
+    const binding = bindings.find(
+      (b) => b.role === SECRET_ACCESSOR_ROLE && b.condition === undefined,
+    );
     if (binding?.members.includes(principal)) return;
     if (binding) binding.members.push(principal);
     else bindings.push({ role: SECRET_ACCESSOR_ROLE, members: [principal] });

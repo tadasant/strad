@@ -686,12 +686,15 @@ today; an `oauth` kind is issue #32). Three roles touch it, and they are three
 DIFFERENT credentials on purpose:
 
 - the MCP **viewer** (`secrets` server, on the bundle) — lists parameters, reads
-  notes and NON-secret values, and cannot read a secret value (no
-  `secretmanager.versions.access`);
+  notes and NON-secret values, and in PROD cannot read a secret value: it holds
+  neither `secretmanager.versions.access` nor `parameterVersions.render`, which
+  are the two calls that return one (staging's is deliberately wider);
 - the console **admin** (core only, from `consoleEnv:`, behind SSO) — reads and
   writes both kinds;
-- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads both stores'
-  values to inject a `params: true` server's env, never over MCP.
+- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads values to
+  inject a `params: true` server's env, never over MCP. It calls Parameter
+  Manager ONLY: `:render` dereferences the secret under the parameter's own
+  principal, so the resolver never touches Secret Manager itself.
 
 What is NOT done, and needs a human with GCP access (see the checklist below and
 `docs/.../limitations.md`): the resolver service account and its key, and the
@@ -878,6 +881,34 @@ clean. The render assertion at the end of that runbook section is the check.
 
 **Undo.** Nothing to undo; this is a migration gap, not a mechanism. It closes when
 every pre-existing secret parameter has been bound once.
+
+## 31. The prod console's write-without-read role can escalate itself to read
+
+**What.** A secret create must grant the parameter's own principal
+`secretAccessor` on its secret, so the console's credential needs
+`secretmanager.secrets.setIamPolicy`, bound at project level. That permission can
+write any binding onto any secret in the project — including granting the console's
+own service account `roles/secretmanager.secretAccessor`. The role withholds
+`versions.access` and `parameterVersions.render`, and can grant itself the first
+back in two API calls.
+
+**Why it ships anyway.** It is inherent to a console that can create secret
+parameters at all; removing `setIamPolicy` removes the create. What is fixable is
+the CLAIM, so the docs now say plainly that write-without-read here is a speed bump
+and an audit signal, not a wall: no bug, bad merge or prompt injection reads a
+secret by accident, and anyone who does must first take a conspicuous, logged
+policy-write. It is not a wall against a determined holder of the key — which
+matters, because that key's rotation is deliberately deferred (`#215`).
+
+**The real fix, not yet applied.** An IAM deny policy on
+`secretmanager.googleapis.com/versions.access` and
+`parametermanager.googleapis.com/parameterVersions.render` for that principal. Deny
+is evaluated before allow and cannot be self-granted around. The command is in
+`docs/operate/secrets-iam.md` under "Prod console: write, but never read"; it needs
+project IAM admin, which no strad process holds.
+
+**Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
+either way — this is an IAM-shaped limitation, not a mechanism in strad.
 
 ## What the human still needs to provision
 

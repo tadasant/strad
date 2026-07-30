@@ -60,6 +60,8 @@ export interface FakeGcp {
 export interface FakeBinding {
   role: string;
   members: string[];
+  /** Present only for a CONDITIONAL binding. Never interpreted, only preserved. */
+  condition?: unknown;
 }
 
 interface FakeParameter {
@@ -111,6 +113,9 @@ export function createFakeGcp(): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
   const secretPolicies = new Map<string, FakeBinding[]>();
+  /** Policy writes per secret — the etag is derived from this, so it moves. */
+  const policyWrites = new Map<string, number>();
+  const etagOf = (id: string) => `etag-${policyWrites.get(id) ?? 0}`;
 
   const json = (status: number, body: unknown): Response =>
     ({
@@ -270,8 +275,15 @@ export function createFakeGcp(): FakeGcp {
       const secretId = m[2]!;
       const versions = secrets.get(secretId);
       if (!versions || versions.length === 0) throw new HttpError(404);
+      // An UNCONDITIONAL binding only. A conditional one is modelled as
+      // not-currently-satisfied, which is the pessimistic reading and the one
+      // that catches a client that appended the principal to a conditional
+      // binding instead of making its own.
       const granted = (secretPolicies.get(secretId) ?? []).some(
-        (b) => b.role === SECRET_ACCESSOR_ROLE && b.members.includes(principal),
+        (b) =>
+          b.role === SECRET_ACCESSOR_ROLE &&
+          b.condition === undefined &&
+          b.members.includes(principal),
       );
       if (!granted) throw new HttpError(400);
       env[k] = versions[versions.length - 1]!;
@@ -301,24 +313,38 @@ export function createFakeGcp(): FakeGcp {
     if (rest.endsWith(":getIamPolicy") && method === "GET") {
       const id = rest.slice(0, -":getIamPolicy".length);
       if (!secrets.has(id)) throw new HttpError(404);
+      // A caller that does not ask for version 3 gets the version-1 VIEW, with
+      // every conditional binding omitted — exactly what IAM does, and the
+      // reason a read-modify-write without it silently deletes them.
+      const wantsV3 = q.get("options.requestedPolicyVersion") === "3";
+      const all = secretPolicies.get(id) ?? [];
       return json(200, {
-        bindings: secretPolicies.get(id) ?? [],
-        etag: "BwXhAAAA",
-        version: 1,
+        bindings: wantsV3 ? all : all.filter((b) => b.condition === undefined),
+        etag: etagOf(id),
+        version: wantsV3 ? 3 : 1,
       });
     }
     if (rest.endsWith(":setIamPolicy") && method === "POST") {
       const id = rest.slice(0, -":setIamPolicy".length);
       if (!secrets.has(id)) throw new HttpError(404);
-      const policy = (body as { policy?: { bindings?: FakeBinding[] } }).policy;
+      const policy = (
+        body as { policy?: { bindings?: FakeBinding[] } & { etag?: string } }
+      ).policy;
+      // The etag is the concurrency guard, so the fake ENFORCES it. Dropping the
+      // read's etag from the write-back would otherwise break no test.
+      if (policy?.etag !== etagOf(id)) throw new HttpError(409);
       secretPolicies.set(
         id,
         (policy?.bindings ?? []).map((b) => ({
           role: b.role,
           members: [...(b.members ?? [])],
+          // Carried through: a client that drops it silently un-scopes a
+          // conditional binding into a permanent one.
+          ...(b.condition === undefined ? {} : { condition: b.condition }),
         })),
       );
-      return json(200, { bindings: secretPolicies.get(id), etag: "BwXhAAAB" });
+      policyWrites.set(id, (policyWrites.get(id) ?? 0) + 1);
+      return json(200, { bindings: secretPolicies.get(id), etag: etagOf(id) });
     }
 
     // {id}:addVersion

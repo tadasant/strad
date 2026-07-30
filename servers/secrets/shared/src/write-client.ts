@@ -53,6 +53,13 @@ const LOCATION = "global";
 /** See `grantRenderAccess` — the grant is on the PARAMETER, not on any caller. */
 const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
 
+/** One Secret Manager IAM binding. `condition` is carried, never interpreted. */
+interface IamBinding {
+  role: string;
+  members?: string[];
+  condition?: unknown;
+}
+
 export interface ParametersWriter {
   create(input: {
     path: string;
@@ -218,16 +225,23 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       );
     }
 
+    // `requestedPolicyVersion=3` is REQUIRED: without it IAM returns a version-1
+    // VIEW that omits conditional bindings, and writing that view back deletes
+    // them. Same reasoning, same call, as the src/ copy.
     const policy = (await sm(
       "GET",
-      `${smParent}/secrets/${id}:getIamPolicy`,
-    )) as { bindings?: { role: string; members?: string[] }[]; etag?: string };
+      `${smParent}/secrets/${id}:getIamPolicy?options.requestedPolicyVersion=3`,
+    )) as { bindings?: IamBinding[]; etag?: string; version?: number };
 
     const bindings = (policy.bindings ?? []).map((b) => ({
       ...b,
       members: [...(b.members ?? [])],
     }));
-    const binding = bindings.find((b) => b.role === SECRET_ACCESSOR_ROLE);
+    // UNCONDITIONAL only — a conditional `secretAccessor` binding would grant
+    // access just while its condition holds, failing like no grant at all.
+    const binding = bindings.find(
+      (b) => b.role === SECRET_ACCESSOR_ROLE && b.condition === undefined,
+    );
     if (binding?.members.includes(principal)) return;
     if (binding) binding.members.push(principal);
     else bindings.push({ role: SECRET_ACCESSOR_ROLE, members: [principal] });

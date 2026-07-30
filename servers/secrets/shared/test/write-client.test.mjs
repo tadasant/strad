@@ -19,13 +19,6 @@ import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
 const PROJECT = "test-project";
 const ACCOUNT = VIEWER_ACCOUNT;
 
-/**
- * A Parameter Manager + Secret Manager stub that records what it is told.
- *
- * Version listing deliberately returns LEXICOGRAPHIC order, the way Parameter
- * Manager does, so `v9` comes after `v12`. A client that treats the last element
- * as current fails here, which is the point.
- */
 /** The principal `:render` derefs as — the PARAMETER's, not the caller's. */
 function principalFor(id) {
   return `principal://parametermanager.googleapis.com/projects/100000000001/uid/locations/global/parameters/${id}`;
@@ -33,10 +26,24 @@ function principalFor(id) {
 
 const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
 
+/**
+ * A Parameter Manager + Secret Manager stub that records what it is told.
+ *
+ * Version listing deliberately returns LEXICOGRAPHIC order, the way Parameter
+ * Manager does, so `v9` comes after `v12`. A client that treats the last element
+ * as current fails here, which is the point.
+ */
 function stubStore() {
   const params = new Map(); // id -> { labels, versions: Map<vid, envelopeJson> }
   const secrets = new Map(); // id -> [values]
-  const secretPolicies = new Map(); // id -> [{ role, members }]
+  const secretPolicies = new Map(); // id -> [{ role, members, condition? }]
+  const policyWrites = new Map(); // id -> count; the etag is derived from it
+  const etagOf = (id) => `etag-${policyWrites.get(id) ?? 0}`;
+  let setIamPolicyFails = false;
+  // Seeds survive the secret-create that would otherwise reset the policy, so a
+  // test can construct "this secret already had a policy" — which create() alone
+  // cannot produce, since it makes the secret itself.
+  const seeded = new Map();
 
   const json = (body, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -59,19 +66,32 @@ function stubStore() {
       const id = u.searchParams.get("secretId");
       if (secrets.has(id)) return json({ error: "exists" }, 409);
       secrets.set(id, []);
-      secretPolicies.set(id, []);
+      secretPolicies.set(id, seeded.get(id) ?? []);
       return json({});
     }
     // The IAM policy on a secret — what makes a `__REF__` resolvable at all.
+    // Modelled the way IAM behaves, not the way it is convenient: a read that
+    // does not ask for version 3 gets a VIEW with conditional bindings omitted,
+    // and the etag is enforced on write.
     let m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):getIamPolicy$/.exec(path);
     if (m && method === "GET") {
       if (!secrets.has(m[1])) return json({ error: "no" }, 404);
-      return json({ bindings: secretPolicies.get(m[1]) ?? [], etag: "BwAAAA" });
+      const wantsV3 = u.searchParams.get("options.requestedPolicyVersion") === "3";
+      const all = secretPolicies.get(m[1]) ?? [];
+      return json({
+        bindings: wantsV3 ? all : all.filter((b) => !b.condition),
+        etag: etagOf(m[1]),
+        version: wantsV3 ? 3 : 1,
+      });
     }
     m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):setIamPolicy$/.exec(path);
     if (m && method === "POST") {
       if (!secrets.has(m[1])) return json({ error: "no" }, 404);
-      secretPolicies.set(m[1], JSON.parse(init.body).policy.bindings ?? []);
+      if (setIamPolicyFails) return json({ error: { code: 503 } }, 503);
+      const policy = JSON.parse(init.body).policy;
+      if (policy.etag !== etagOf(m[1])) return json({ error: "etag" }, 409);
+      secretPolicies.set(m[1], policy.bindings ?? []);
+      policyWrites.set(m[1], (policyWrites.get(m[1]) ?? 0) + 1);
       return json({});
     }
     m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):addVersion$/.exec(path);
@@ -119,6 +139,7 @@ function stubStore() {
         const granted = (secretPolicies.get(m[1]) ?? []).some(
           (b) =>
             b.role === SECRET_ACCESSOR_ROLE &&
+            !b.condition &&
             b.members.includes(principalFor(m[1])),
         );
         if (!granted) return json({ error: "SECRET_REFERENCE_ERROR" }, 400);
@@ -154,7 +175,16 @@ function stubStore() {
     tokenUrl: "https://oauth2.test/token",
     fetchImpl,
   });
-  return { client, params, secrets, secretPolicies };
+  return {
+    client,
+    params,
+    secrets,
+    secretPolicies,
+    failSetIamPolicy: () => {
+      setIamPolicyFails = true;
+    },
+    seedPolicy: (id, bindings) => seeded.set(id, bindings),
+  };
 }
 
 const NS = "/strad/test/mcp/";
@@ -238,6 +268,47 @@ test("a non-secret create touches no IAM policy", async () => {
   const { client, secretPolicies } = stubStore();
   await client.create({ path: `${NS}demo/static/PLAIN`, secret: false, value: "v" });
   assert.equal(secretPolicies.size, 0);
+});
+
+test("a failed IAM grant rolls back both stores and writes no version", async () => {
+  // Mirrors the src/ rollback test. A grant that does not land leaves a
+  // parameter whose `__REF__` can never render, so it must roll back rather than
+  // report success for a secret nothing can read.
+  const { client, params, secrets, failSetIamPolicy } = stubStore();
+  failSetIamPolicy();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+
+  await assert.rejects(
+    () => client.create({ path, secret: true, value: "s3cr3t" }),
+    /503/,
+  );
+
+  const id = parameterId(path);
+  assert.equal(params.has(id), false, "the parameter was rolled back");
+  assert.equal(secrets.has(id), false, "the secret was rolled back");
+});
+
+test("a conditional binding is preserved, not joined and not dropped", async () => {
+  // Reading without options.requestedPolicyVersion=3 hides conditional bindings
+  // and writing that view back DELETES them; matching the role without checking
+  // `condition` appends the principal to a binding that only applies while the
+  // condition holds. Both are silent, and both break rendering.
+  const { client, secretPolicies, seedPolicy } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  const conditional = {
+    role: SECRET_ACCESSOR_ROLE,
+    members: ["user:a@b.c"],
+    condition: { title: "expires", expression: "request.time < timestamp(0)" },
+  };
+  seedPolicy(parameterId(path), [conditional]);
+
+  await client.create({ path, secret: true, value: "s3cr3t" });
+
+  assert.deepEqual(secretPolicies.get(parameterId(path)), [
+    conditional,
+    { role: SECRET_ACCESSOR_ROLE, members: [principalFor(parameterId(path))] },
+  ]);
+  assert.equal(await client.readValue(path), "s3cr3t");
 });
 
 test("a 409 on the parameter create does not delete the parameter that already exists", async () => {

@@ -337,6 +337,30 @@ permission the message implicates, and a `testIamPermissions` probe of that
 credential comes back completely clean. Anything built on such a probe reports
 healthy while nothing resolves.
 
+### 31. The console's "write, never read" role can escalate itself to read
+
+Creating a secret parameter requires granting the parameter's own principal
+`secretAccessor` on its secret, so the console's credential holds
+`secretmanager.secrets.setIamPolicy` at project level. That permission can write
+any binding onto any secret in the project — including granting the console's own
+service account `roles/secretmanager.secretAccessor`.
+
+So the write-without-read posture is honest about the permissions the role holds
+and **is not a boundary**: it is a speed bump and an audit signal. It means no bug,
+bad merge or prompt injection reads a secret by accident, and that anyone who does
+read one must first take a conspicuous, logged policy-write. It does not mean a
+determined holder of that key cannot read production secrets. That matters here
+because the key in question is among the credentials whose rotation has been
+deliberately deferred.
+
+The fix is an IAM **deny** policy on `versions.access` and `parameterVersions.render`
+for that principal — deny is evaluated before allow and cannot be self-granted
+around. The command is in
+[Secrets IAM](/operate/secrets-iam/#1-prod-console-write-but-never-read); it needs
+project IAM admin, which no strad process holds, so it is a human step and is not
+applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
+console's ability to create a secret parameter at all.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session

@@ -114,11 +114,12 @@ have parameters that predate this, run the one-time backfill in
 
 Not instant. The numbers, and where they come from:
 
-| Change                                       | Visible within                     | Why                                                                                                                             |
-| -------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **Rotating** an existing secret              | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale.                                                      |
-| **Adding** a name that was absent            | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request. |
-| A change written through strad's own console | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                         |
+| Change                                       | Visible within                     | Why                                                                                                                                                                                                         |
+| -------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rotating** an existing secret              | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale.                                                                                                                                  |
+| **Adding** a name that was absent            | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                             |
+| A change written through strad's own console | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                     |
+| A brand-new **secret** parameter             | up to ~2 minutes                   | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug. |
 
 Two behaviours matter more than the numbers:
 
@@ -146,11 +147,15 @@ With `provider: gcp-parameter-store`:
 2. Reference it in the config as `${NAME}`.
 3. That's it. No deploy.
 
-An agent using the `secrets` server can add and rotate values but **cannot read a
-secret value back** — its credential lacks `secretmanager.versions.access`, so
-Google refuses the only call that would return one. The gateway resolving that
-same secret at runtime uses a different, value-reading credential. Two identities,
-one store; see [which identity, exactly](#which-identity-exactly) above.
+An agent using the `secrets` server **in prod** can add and rotate values but
+**cannot read a secret value back** — its credential holds neither of the two
+calls that return one: `secretmanager.versions.access` and Parameter Manager's
+`:render`. Both matter, because `:render` dereferences under the parameter's own
+principal rather than the caller's, so withholding `versions.access` alone would
+not shut it. **Staging's credential is deliberately wider** and can read values;
+see [Secrets IAM](/operate/secrets-iam/). The gateway resolving that same secret at
+runtime uses a different credential again. Two identities, one store; see
+[which identity, exactly](#which-identity-exactly) above.
 
 If the name is **new to the config**, the next deploy's preflight will check it
 exists — see below. If you only changed a value, nothing else is needed.

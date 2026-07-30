@@ -211,6 +211,74 @@ describe("secret parameters grant their own principal secretAccessor", () => {
     });
   });
 
+  /**
+   * Seed a pre-existing policy on the secret the moment it is created, then run
+   * the real client's `create()` over it. The interceptor is the only way to
+   * construct "the secret already had a policy", because `create()` makes the
+   * secret itself.
+   */
+  const createOverExistingPolicy = async (
+    gcp: ReturnType<typeof createFakeGcp>,
+    seed: Parameters<typeof gcp.secretPolicies.set>[1],
+  ) => {
+    const id = parameterId(keyPath);
+    const realFetch = gcp.fetchImpl;
+    const store = createGcpParameterStore({
+      projectId: gcp.endpoints.projectId,
+      location: gcp.endpoints.location,
+      account: JSON.parse(gcp.endpoints.keyJson) as {
+        client_email: string;
+        private_key: string;
+      },
+      pmApiBase: gcp.endpoints.pmApiBase,
+      smApiBase: gcp.endpoints.smApiBase,
+      tokenUrl: gcp.endpoints.tokenUrl,
+      fetchImpl: async (input, init) => {
+        const res = await realFetch(input, init);
+        if (String(input).includes("/secrets?secretId=")) {
+          gcp.secretPolicies.set(id, seed);
+        }
+        return res;
+      },
+    });
+    await store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+  };
+
+  it("preserves a CONDITIONAL binding instead of joining or dropping it", async () => {
+    // Two ways to get this wrong, both silent. Reading the policy without
+    // `options.requestedPolicyVersion=3` returns a view with conditional
+    // bindings OMITTED, and writing that view back DELETES them. Matching the
+    // role without checking `condition` appends the parameter's principal to the
+    // conditional binding, so the grant only applies while the condition holds —
+    // which fails exactly like no grant at all.
+    const gcp = createFakeGcp();
+    const id = parameterId(keyPath);
+    const conditional = {
+      role: "roles/secretmanager.secretAccessor",
+      members: ["user:a@b.c"],
+      condition: {
+        title: "expires",
+        expression: "request.time < timestamp(0)",
+      },
+    };
+
+    await createOverExistingPolicy(gcp, [conditional]);
+
+    // The conditional binding survives, untouched — the principal was NOT added
+    // to it — and the parameter got its own unconditional one.
+    expect(gcp.secretPolicies.get(id)).toEqual([
+      conditional,
+      {
+        role: "roles/secretmanager.secretAccessor",
+        members: [gcp.principalOf(id)],
+      },
+    ]);
+    // And it actually resolves, which the conditional binding alone would not do.
+    expect(await resolveServerParams(gcp.store, ENV, SLUG)).toEqual({
+      [KEY_VAR]: KEY_VALUE,
+    });
+  });
+
   it("survives a policy that already carries other bindings", async () => {
     const gcp = createFakeGcp();
     const id = parameterId(keyPath);

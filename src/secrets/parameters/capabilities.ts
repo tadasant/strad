@@ -57,6 +57,13 @@ export const PROBE_PERMISSIONS = {
   bindSecret: "secretmanager.secrets.setIamPolicy",
   /** Create a parameter — the index entry every parameter needs. */
   createParameter: "parametermanager.parameters.create",
+  /**
+   * Read a parameter resource. A secret create needs it: the grant below reads
+   * `policyMember.iamPolicyUidPrincipal` off the parameter, and that read is the
+   * FIRST call of the grant — so without this a create dies after both stores
+   * have been written and rolls back.
+   */
+  readParameter: "parametermanager.parameters.get",
   /** Add a parameter version — every write goes through one. */
   writeParameter: "parametermanager.parameterVersions.create",
   /** Delete a parameter. */
@@ -191,6 +198,7 @@ export async function probeCapabilities(
         held.has(P.writeParameter) &&
         held.has(P.createSecret) &&
         held.has(P.writeSecretValue) &&
+        held.has(P.readParameter) &&
         held.has(P.readSecretIamPolicy) &&
         held.has(P.bindSecret),
       deleteParameters: held.has(P.deleteParameter),

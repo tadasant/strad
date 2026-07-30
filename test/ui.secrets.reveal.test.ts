@@ -176,6 +176,7 @@ describe("the capability probe", () => {
               // parameter's own principal secretAccessor on its secret. It is a
               // WRITE that moves no value, which is why prod's write-without-read
               // role includes it and still reads nothing.
+              PROBE_PERMISSIONS.readParameter,
               PROBE_PERMISSIONS.readSecretIamPolicy,
               PROBE_PERMISSIONS.bindSecret,
               PROBE_PERMISSIONS.deleteParameter,

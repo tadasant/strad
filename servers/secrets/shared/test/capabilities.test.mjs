@@ -32,6 +32,7 @@ const EXPECTED = {
   readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
   bindSecret: "secretmanager.secrets.setIamPolicy",
   createParameter: "parametermanager.parameters.create",
+  readParameter: "parametermanager.parameters.get",
   writeParameter: "parametermanager.parameterVersions.create",
   deleteParameter: "parametermanager.parameters.delete",
   renderParameter: "parametermanager.parameterVersions.render",

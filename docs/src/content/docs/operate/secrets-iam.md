@@ -50,8 +50,11 @@ console does not need an IAM change to enumerate or relabel what it already owns
 
 **Reveal is the only operation that needs `secretmanager.versions.access`.**
 Everything else the console does — create, rotate, note, delete, list — works
-without it. So write-without-read is achievable: the console keeps managing
-secrets and loses the ability to display one.
+without it. So write-without-read is achievable _as a permission set_: the console
+keeps managing secrets and loses the ability to display one. It is **not** a
+boundary on its own, because a secret create also needs
+`secretmanager.secrets.setIamPolicy`, and that permission can grant read back to
+its holder — see [the danger note below](#1-prod-console-write-but-never-read).
 
 **`parameterVersions.get` is safe to keep.** It reads the parameter's raw
 envelope, and for a secret parameter that envelope holds a `__REF__` pointer, not
@@ -97,12 +100,59 @@ add, rotate, note and delete secrets, and cannot read one back.
 (`SECRETS_ADMIN_KEY_JSON`) is among the credentials exposed in
 `tadasant-internal#215`, and rotating it has been
 deliberately deferred. Downgrading the account **shrinks the blast radius of the
-un-rotated key**: an attacker holding it could no longer read prod secret values,
-only write them. That does not make the key safe and it is not a substitute for
-rotation — a write-capable credential is still a serious one — but it converts
-"can exfiltrate every production secret" into "can corrupt them", which is both
-less bad and far more visible. Treat this change as a partial mitigation of an
-accepted risk, not only as a feature.
+un-rotated key**: an attacker holding it could no longer read prod secret values
+_by simply asking for them_, only write them. That does not make the key safe and
+it is not a substitute for rotation — a write-capable credential is still a
+serious one — but it raises the cost of exfiltration and makes it visible. Treat
+this change as a partial mitigation of an accepted risk, not only as a feature.
+
+:::danger[This role can escalate to read. Say it out loud.]
+A secret create has to grant the parameter's own principal `secretAccessor`, so
+the console's role includes **`secretmanager.secrets.setIamPolicy`**, bound at
+**project** level. That permission lets its holder write any binding onto any
+secret in the project — **including granting itself
+`roles/secretmanager.secretAccessor`**. So "cannot read a secret value" is true of
+the permissions it holds and **false as a security boundary**: it is two API calls
+away from full read.
+
+This is not a flaw in the role list; it is inherent to a console that can create
+secret parameters at all. What is a flaw is claiming otherwise, so:
+**write-without-read here is a speed bump and an audit signal, not a wall.** It
+means a bug, a bad merge or a prompt injection does not read a secret by accident,
+and that an attacker who does read one must first take a conspicuous, logged
+policy-write action. It does not mean a determined holder of this key cannot read
+production secrets.
+
+**Close it properly with an IAM deny policy**, which is evaluated before any allow
+and cannot be self-granted around:
+
+```bash
+PROJECT_ID=strad-secrets-prod
+SA=strad-secrets-admin@${PROJECT_ID}.iam.gserviceaccount.com
+cat > /tmp/strad-console-deny.json <<JSON
+{
+  "displayName": "strad console: never read a secret value",
+  "rules": [{
+    "denyRule": {
+      "deniedPrincipals": ["principalSet://goog/subject/${SA}"],
+      "deniedPermissions": [
+        "secretmanager.googleapis.com/versions.access",
+        "parametermanager.googleapis.com/parameterVersions.render"
+      ]
+    }
+  }]
+}
+JSON
+gcloud iam policies create strad-console-no-read \
+  --attachment-point="cloudresourcemanager.googleapis.com/projects/${PROJECT_ID}" \
+  --kind=denypolicies --policy-file=/tmp/strad-console-deny.json
+```
+
+Note the deny policy names permissions in their **fully-qualified** `service/verb`
+form, which is a different spelling from the allow-side names used everywhere else
+on this page. Until this is applied, the un-rotated key from `#215` should be
+treated as read-capable. Tracked as [Known limitations](/limitations/) #31.
+:::
 
 No predefined role gives Secret Manager create + delete + add-version _without_
 `versions.access`, so this needs two custom roles.
@@ -124,7 +174,9 @@ includedPermissions:
   # The IAM half of a secret create. `create()` grants the PARAMETER's own
   # principal secretAccessor on the secret it points at; without these two the
   # create fails partway and rolls back, and the console cannot write a secret
-  # at all. Neither reads a value — this stays a write-without-read role.
+  # at all. Neither READS a value — but setIamPolicy can GRANT the ability to,
+  # to this same principal. See the danger note above; the deny policy is what
+  # actually closes that, not this role's contents.
   - secretmanager.secrets.getIamPolicy
   - secretmanager.secrets.setIamPolicy
   - secretmanager.versions.add
@@ -257,18 +309,31 @@ for ID in $(gcloud parametermanager parameters list \
   PRINCIPAL=$(gcloud parametermanager parameters describe "$ID" \
     --project "$PROJECT" --location "$LOCATION" \
     --format='value(policyMember.iamPolicyUidPrincipal)')
+  # An empty principal means the describe failed; binding "" is an error, not a
+  # no-op, and it would abort the loop partway through.
+  [ -n "$PRINCIPAL" ] || { echo "no principal for $ID, skipping" >&2; continue; }
   gcloud secrets add-iam-policy-binding "$ID" --project "$PROJECT" \
     --member="$PRINCIPAL" --role=roles/secretmanager.secretAccessor
 done
 ```
 
-**Assert it worked** — this renders a parameter and must print its real value, not
-a `__REF__` and not an error:
+**Assert it worked.** Pick one secret parameter and render it: this must print its
+real value, not a `__REF__` and not an error. Set `ID` explicitly — do not rely on
+whatever the loop above left behind:
 
 ```bash
+ID=<one secret parameter id from the loop above>
+VERSION=$(gcloud parametermanager parameters versions list "$ID" \
+  --project "$PROJECT" --location "$LOCATION" \
+  --format='value(name.basename())' --limit 1)
+
 gcloud parametermanager parameters versions render "$VERSION" \
   --parameter "$ID" --project "$PROJECT" --location "$LOCATION"
 ```
+
+A `400 SECRET_REFERENCE_ERROR` here means the binding did not land. **Give it a
+minute first** — an IAM change takes up to ~2 minutes to propagate (occasionally
+longer), and during that window the failure is indistinguishable from the bug.
 
 ## The resolver's roles: `parameterViewer` is not enough
 
@@ -337,8 +402,10 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
 gcloud services enable cloudresourcemanager.googleapis.com --project="${PROJECT}"
 ```
 
-**Audit assertion.** All six must be listed; the MCP server's tool surface is
-derived from exactly this answer.
+**Audit assertion.** All nine must be listed; the MCP server's tool surface is
+derived from exactly this answer. The last three are the IAM half of a secret
+create — `roles/secretmanager.admin` and `roles/parametermanager.admin` above
+already carry them, so this asserts the grant rather than adding to it.
 
 ```bash
 gcloud auth activate-service-account --key-file=/path/to/staging-viewer-key.json
@@ -346,7 +413,7 @@ curl -sS -X POST \
   "https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions" \
   -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   -H "Content-Type: application/json" \
-  -d '{"permissions":["secretmanager.versions.access","secretmanager.versions.add","secretmanager.secrets.create","secretmanager.secrets.delete","parametermanager.parameters.create","parametermanager.parameterVersions.create"]}'
+  -d '{"permissions":["secretmanager.versions.access","secretmanager.versions.add","secretmanager.secrets.create","secretmanager.secrets.delete","parametermanager.parameters.create","parametermanager.parameterVersions.create","parametermanager.parameters.get","secretmanager.secrets.getIamPolicy","secretmanager.secrets.setIamPolicy"]}'
 ```
 
 There is no flag to set for this. The server probes at startup and lists the tools

@@ -40,6 +40,12 @@ export const PROBE_PERMISSIONS = {
   readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
   bindSecret: "secretmanager.secrets.setIamPolicy",
   createParameter: "parametermanager.parameters.create",
+  /**
+   * A secret create reads `policyMember.iamPolicyUidPrincipal` off the parameter
+   * as the first call of the grant, so this is part of a secret write too.
+   * Kept identical to the src/ copy.
+   */
+  readParameter: "parametermanager.parameters.get",
   writeParameter: "parametermanager.parameterVersions.create",
   deleteParameter: "parametermanager.parameters.delete",
   /**
@@ -149,6 +155,7 @@ export async function probeCapabilities(
         params &&
         held.has(P.createSecret) &&
         held.has(P.writeSecretValue) &&
+        held.has(P.readParameter) &&
         held.has(P.readSecretIamPolicy) &&
         held.has(P.bindSecret),
       deleteParameters: held.has(P.deleteParameter),
