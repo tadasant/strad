@@ -15,10 +15,12 @@ import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
  * them. Nothing in the type system knows these are Google's identifiers, so this
  * is the only place that can catch a plausible-looking typo.
  *
- * `docs/operate/secrets-iam.md` shipped exactly that mistake in a custom role —
- * `parametermanager.parameterVersions.access`, borrowing Secret Manager's verb
- * for a permission Parameter Manager does not define (it reads a version's
- * payload with `parameterVersions.get`). The strings below are verified against
+ * That exact typo shipped in PROSE — `docs/operate/secrets-iam.md` documented a
+ * custom role containing `parametermanager.parameterVersions.access`, borrowing
+ * Secret Manager's verb for a permission Parameter Manager does not define (it
+ * reads a version's payload with `parameterVersions.get`). This file's copy of
+ * the strings was correct, and this is what keeps it that way. The names are
+ * verified against
  * https://cloud.google.com/iam/docs/roles-permissions/parametermanager and the
  * secretmanager page next to it.
  */

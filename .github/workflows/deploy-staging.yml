@@ -372,24 +372,33 @@ jobs:
         # like a deliberate narrowing. Nothing errors; the surface is just
         # smaller. So the deploy asks, and prints the answer.
         #
-        # NON-FATAL by design. A narrow credential is a legitimate posture (it is
-        # prod's), so this reports and never gates. It runs the same probe the
-        # containers run, against the same keys, and prints booleans only — the
-        # keys are read from the env and never echoed, and testIamPermissions
-        # returns no secret material.
+        # NON-FATAL by design — `continue-on-error`, not a swallowed exit code. A
+        # narrow credential is a legitimate posture (it is prod's), so this
+        # reports and never gates. But it still EXITS non-zero when a probe does
+        # not complete, so the step goes yellow and says which key: swallowing
+        # the status would also hide a genuinely broken script, and it would let
+        # the second probe's success mask the first probe's failure.
+        #
+        # It runs the same probe the containers run, against the same keys, and
+        # prints booleans only — the keys are read from the env and never echoed,
+        # and testIamPermissions returns no secret material.
         if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
+          rc=0
           probe() {
             node --experimental-transform-types scripts/probe-capabilities.ts \
-              --project strad-secrets-staging --key-env "$1" --label "$2" \
-              || echo "::warning::capability probe for $2 did not complete (see above)"
+              --project strad-secrets-staging --key-env "$1" --label "$2" || {
+              echo "::warning::capability probe for $2 did not complete (see above)"
+              rc=1
+            }
           }
           # The viewer key is the /mcp tool surface; the admin key is the
           # console's reveal. Both, because they answer different questions.
           probe SECRETS_VIEWER_KEY_JSON "staging MCP server (viewer key)"
           probe SECRETS_ADMIN_KEY_JSON  "staging console (admin key)"
+          exit "$rc"
 
       - name: Dump the failing container's logs
         # A failed deploy reports a `godo` progress struct and the sentence

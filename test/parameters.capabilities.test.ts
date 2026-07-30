@@ -6,6 +6,7 @@ import {
   PROBE_PERMISSIONS,
   probeCapabilities,
 } from "../src/secrets/parameters/capabilities.ts";
+import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
 
 /**
  * The probe's PERMISSION STRINGS, pinned literally.
@@ -15,8 +16,12 @@ import {
  * borrowing Secret Manager's verb, say — compiles, lints, and produces a probe
  * that is wrong in the silent direction: a permission Google does not recognise is
  * never in the held set, so the capability reads false and the surface withholds a
- * tool the credential can in fact use. `docs/operate/secrets-iam.md` shipped exactly
- * that mistake in a custom role, which is what these assertions exist to catch.
+ * tool the credential can in fact use.
+ *
+ * That exact typo shipped — in PROSE, in `docs/operate/secrets-iam.md`'s custom
+ * role, where `docs.iam-identifiers.test.ts` now guards it. The probe was right.
+ * This suite is what keeps it right, since the same mistake in this file would
+ * cost capability rather than a Google error.
  *
  * So the test spells each one out. Changing a value here should require having
  * looked it up at
@@ -175,6 +180,40 @@ describe("capability probe — how it reads the answer", () => {
     expect(caps).toMatchObject({ ...NO_CAPABILITIES, probed: false });
     expect(caps.reason).toContain("403");
     expect(caps.reason).toContain("Cloud Resource Manager");
+  });
+});
+
+describe("parsing the key the probe runs as", () => {
+  /**
+   * `null`, `"str"` and `123` are all VALID JSON. They clear `JSON.parse` and
+   * then throw on property access, so a malformed key surfaced as a TypeError
+   * out of `src/ui/resolve.ts` — the console's credential diagnostics, whose
+   * entire job is to explain a bad key in words.
+   */
+  it("reports a JSON non-object by shape instead of throwing", () => {
+    for (const raw of ["null", '"a string"', "123", "[]"]) {
+      const { account, reason } = parseServiceAccount(raw);
+      expect(account).toBeNull();
+      expect(reason).toBeTruthy();
+    }
+  });
+
+  it("still reports the ordinary malformed cases, and never echoes the key", () => {
+    expect(parseServiceAccount(undefined).reason).toBe("no key JSON provided");
+    expect(parseServiceAccount("{oops").reason).toBe("is not valid JSON");
+
+    const secret = "-----BEGIN PRIVATE KEY-----CANARY-----END-----";
+    const { account, reason } = parseServiceAccount(
+      JSON.stringify({ private_key: secret }),
+    );
+    expect(account).toBeNull();
+    expect(reason).toBe("is missing client_email / private_key");
+    expect(reason).not.toContain("CANARY");
+  });
+
+  it("accepts a well-formed key", () => {
+    const { account } = parseServiceAccount(JSON.stringify(ACCOUNT));
+    expect(account).toStrictEqual(ACCOUNT);
   });
 });
 

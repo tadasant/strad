@@ -15,7 +15,7 @@
  * only way to tell "prod, correctly locked down" from "staging, grant missed" is
  * to ask.
  *
- * So the staging deploy asks, and prints six booleans. That is the whole feature.
+ * So the staging deploy asks, and prints five booleans. That is the whole feature.
  *
  * ## It cannot leak
  *
@@ -37,7 +37,7 @@
  */
 import { parseArgs } from "node:util";
 import { probeCapabilities } from "../src/secrets/parameters/capabilities.ts";
-import type { ServiceAccount } from "../src/secrets/parameters/service-account.ts";
+import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
 
 /**
  * Plain stderr, no `::error::`. A narrowed or unverifiable credential is a fact
@@ -49,13 +49,20 @@ function fail(message: string, code: 1 | 2): never {
   process.exit(code);
 }
 
-const { values } = parseArgs({
-  options: {
-    project: { type: "string" },
-    "key-env": { type: "string" },
-    label: { type: "string" },
-  },
-});
+// parseArgs throws on an unknown flag, and an uncaught throw exits 1 — the code
+// that means "the probe did not complete". A mistyped flag is a calling error.
+let values: { project?: string; "key-env"?: string; label?: string };
+try {
+  ({ values } = parseArgs({
+    options: {
+      project: { type: "string" },
+      "key-env": { type: "string" },
+      label: { type: "string" },
+    },
+  }));
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err), 2);
+}
 
 const projectId = values.project;
 const keyEnv = values["key-env"];
@@ -65,23 +72,10 @@ if (!projectId || !keyEnv) {
   fail("usage: probe-capabilities.ts --project <id> --key-env <ENV_VAR>", 2);
 }
 
-const raw = process.env[keyEnv];
-if (!raw) fail(`${keyEnv} is not set`, 2);
-
-let account: ServiceAccount;
-try {
-  const parsed = JSON.parse(raw) as Partial<ServiceAccount>;
-  if (!parsed.client_email || !parsed.private_key) {
-    // Name the SHAPE, never the content: this variable IS the credential.
-    fail(`${keyEnv} is JSON but not a service-account key`, 2);
-  }
-  account = {
-    client_email: parsed.client_email,
-    private_key: parsed.private_key,
-  };
-} catch {
-  fail(`${keyEnv} is not parseable JSON`, 2);
-}
+// The same parse the gateway uses, which reports by SHAPE and never by content:
+// this variable IS the credential.
+const { account, reason } = parseServiceAccount(process.env[keyEnv]);
+if (!account) fail(`${keyEnv} ${reason}`, 2);
 
 const caps = await probeCapabilities({ projectId, account });
 

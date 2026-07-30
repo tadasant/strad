@@ -166,7 +166,7 @@ gcloud projects remove-iam-policy-binding "${PROJECT}" \
 gcloud services enable cloudresourcemanager.googleapis.com --project="${PROJECT}"
 ```
 
-**Audit assertion.** Run as the service account itself; the second block is the
+**Audit assertion.** Run as the service account itself; the first command is the
 one that matters.
 
 There is no `gcloud` subcommand for this. `testIamPermissions` is a method on the
@@ -196,10 +196,10 @@ as an empty body — `{}`, not a list of `false`. The first command printing `{}
 the whole point of this section. strad's own console reports the same fact on the
 page, from the same call.
 
-If either command returns `403`, that is the Cloud Resource Manager API not being
-enabled on the project — the `gcloud services enable` line above — and not an
-answer about the grant. It is the same 403 the runtime probe reports as "capability
-unverified".
+A `403` from either command is not an answer about the grant. It means the Cloud
+Resource Manager API is not enabled on the project — the `gcloud services enable`
+line above — or that this credential has no access to the project at all. It is the
+same 403 the runtime probe reports as "capability unverified".
 
 ## 2. Staging MCP server: read and write
 
@@ -246,7 +246,7 @@ above _is_ the configuration. Revoke it and the tools disappear on the next boot
 
 **The staging deploy runs this audit for you.** `deploy-staging.yml` ends by
 running `scripts/probe-capabilities.ts` — the same probe, against the same two
-keys — and printing six booleans for each. It is non-fatal and prints no secret
+keys — and printing five booleans for each. It is non-fatal and prints no secret
 material. That exists because a grant that did not land is indistinguishable from
 a deliberate narrowing from the outside: both are just a smaller tool surface. See
 [Operations](/operate/operations/#deploy-stagingyml--put-it-on-app-platform).

@@ -103,7 +103,7 @@ if its credential holds the permissions, and the console offers reveal on the sa
 basis — so a grant that did not land looks exactly like a deliberate narrowing:
 nothing errors, the surface is just smaller. The step runs
 `scripts/probe-capabilities.ts` (the same probe the containers run, see
-[Secrets IAM](/operate/secrets-iam/)) against both staging keys and prints six
+[Secrets IAM](/operate/secrets-iam/)) against both staging keys and prints five
 booleans each. It is **non-fatal**: a narrow credential is a legitimate posture —
 it is prod's — so this reports and never gates. It prints booleans only; the keys
 are read from the environment and never echoed, and `testIamPermissions` returns

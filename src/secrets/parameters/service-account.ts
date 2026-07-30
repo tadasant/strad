@@ -135,19 +135,26 @@ export function parseServiceAccount(raw: string | undefined): {
   reason?: string;
 } {
   if (!raw) return { account: null, reason: "no key JSON provided" };
-  let parsed: Partial<ServiceAccount>;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as Partial<ServiceAccount>;
+    parsed = JSON.parse(raw);
   } catch {
     return { account: null, reason: "is not valid JSON" };
   }
-  if (!parsed.client_email || !parsed.private_key) {
+  // `null`, `"str"` and `123` are all VALID JSON, so they clear the parse and
+  // then throw on property access — a TypeError from the console's credential
+  // diagnostics, which is the one place that exists to explain a bad key.
+  if (typeof parsed !== "object" || parsed === null) {
+    return { account: null, reason: "is not a JSON object" };
+  }
+  const key = parsed as Partial<ServiceAccount>;
+  if (!key.client_email || !key.private_key) {
     return { account: null, reason: "is missing client_email / private_key" };
   }
   return {
     account: {
-      client_email: parsed.client_email,
-      private_key: parsed.private_key,
+      client_email: key.client_email,
+      private_key: key.private_key,
     },
   };
 }
