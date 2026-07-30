@@ -940,14 +940,44 @@ describe("GET /secrets", () => {
   });
 
   it("says a bundle-scoped secret is not visible here, rather than missing", () => {
-    expect(html).toContain("not visible here");
-    expect(html).toContain("never broadcast to core");
+    // Asserted on the CHIP, not on the words. The Help guide explains every state
+    // in prose and is rendered on every request, so a bare
+    // toContain("not visible here") passes with zero rows in that state — it was
+    // written that way first, and caught in self-review.
+    expect(html).toContain(
+      '<span class="chip chip-plain chip-route">not visible here</span>',
+    );
+    // And the row it belongs to is a bundle-scoped secret, not something else.
+    // PARAMS_TOKEN is declared only under a supplementary server's env: and is
+    // absent from the bag, which is exactly the unobservable case.
+    const at = html.indexOf("${PARAMS_TOKEN}");
+    expect(at).toBeGreaterThan(-1);
+    expect(html.slice(at, at + 600)).toContain("not visible here");
   });
 
   it("lists the gateway's own boot keys, and marks the optional ones optional", () => {
-    expect(html).toContain("STRAD_TOKENS");
-    expect(html).toContain("STRAD_INTERNAL_TOKEN");
-    expect(html).toContain("not set · optional");
+    // Every boot key is on the page, in a row of its own.
+    for (const key of [
+      "STRAD_TOKENS",
+      "STRAD_INTERNAL_TOKEN",
+      "ADMIN_BOOTSTRAP_TOKEN",
+      "GOOGLE_CLIENT_ID",
+      "CONSOLE_SESSION_SECRET",
+    ]) {
+      expect(html).toContain(`<span class="row-name">${key}</span>`);
+    }
+    // The two the deployment cannot work without carry `required`; the rest read
+    // as optional rather than as a fault, since a deployment with no console
+    // genuinely has no GOOGLE_CLIENT_SECRET.
+    const required =
+      html.split('<span class="chip chip-warnish">required</span>').length - 1;
+    expect(required).toBe(2);
+    expect(html).toContain(
+      '<span class="chip chip-plain chip-route">not set · optional</span>',
+    );
+    // An absent OPTIONAL key must NOT be dressed as a problem.
+    const at = html.indexOf('<span class="row-name">GOOGLE_CLIENT_ID</span>');
+    expect(html.slice(at, at + 400)).not.toContain("not seeded");
   });
 
   it("leaks NO secret value", () => {
