@@ -686,12 +686,15 @@ today; an `oauth` kind is issue #32). Three roles touch it, and they are three
 DIFFERENT credentials on purpose:
 
 - the MCP **viewer** (`secrets` server, on the bundle) — lists parameters, reads
-  notes and NON-secret values, and cannot read a secret value (no
-  `secretmanager.versions.access`);
+  notes and NON-secret values, and in PROD cannot read a secret value: it holds
+  neither `secretmanager.versions.access` nor `parameterVersions.render`, which
+  are the two calls that return one (staging's is deliberately wider);
 - the console **admin** (core only, from `consoleEnv:`, behind SSO) — reads and
   writes both kinds;
-- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads both stores'
-  values to inject a `params: true` server's env, never over MCP.
+- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads values to
+  inject a `params: true` server's env, never over MCP. It calls Parameter
+  Manager ONLY: `:render` dereferences the secret under the parameter's own
+  principal, so the resolver never touches Secret Manager itself.
 
 What is NOT done, and needs a human with GCP access (see the checklist below and
 `docs/.../limitations.md`): the resolver service account and its key, and the
@@ -856,6 +859,66 @@ anything else to its class name. `test/ui.secret-status.test.ts` builds the real
 `src/ui/index.ts`, and the `secretProvider` option threaded through
 `src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
 
+## 30. Secret parameters written before strad granted them access are not repaired
+
+**What.** `create()` now grants each secret parameter's own principal
+`roles/secretmanager.secretAccessor` on the secret it points at, which is what makes
+`:render` able to dereference the `__REF__`. Parameters written by an EARLIER strad
+carry no such binding, and nothing in the code repairs them: `rotate()` adds a
+Secret Manager version and never touches IAM, and there is no reconcile pass. They
+keep failing every resolution with `400 SECRET_REFERENCE_ERROR` until a human runs
+the backfill.
+
+**Why not self-heal.** A resolver that repaired IAM would need
+`secretmanager.secrets.setIamPolicy` in the gateway container — turning the one
+deliberately read-only credential in the system into one that can rewrite the access
+policy of every secret it reads. That trade is far worse than a one-time human loop.
+Doing it in `rotate()` instead would put the same permission on the console's write
+path for a case that only exists once, and would still miss every parameter nobody
+rotates.
+
+**Blast radius, today.** Small and knowable: prod runs `provider: env` and has no
+live parameters, and staging has one `params: true` server. The backfill loop is in
+`docs/operate/secrets-iam.md` ("Backfilling parameters created before strad made
+this grant"); it is idempotent, so running it over a store that is already correct
+is a no-op.
+
+**How you find out you needed it.** The failure names neither the parameter nor the
+missing binding — the resolver reports a 400 while holding every permission the
+error implicates, and a `testIamPermissions` probe of that credential comes back
+clean. The render assertion at the end of that runbook section is the check.
+
+**Undo.** Nothing to undo; this is a migration gap, not a mechanism. It closes when
+every pre-existing secret parameter has been bound once.
+
+## 31. The prod console's write-without-read role can escalate itself to read
+
+**What.** A secret create must grant the parameter's own principal
+`secretAccessor` on its secret, so the console's credential needs
+`secretmanager.secrets.setIamPolicy`, bound at project level. That permission can
+write any binding onto any secret in the project — including granting the console's
+own service account `roles/secretmanager.secretAccessor`. The role withholds
+`versions.access` and `parameterVersions.render`, and can grant itself the first
+back in two API calls.
+
+**Why it ships anyway.** It is inherent to a console that can create secret
+parameters at all; removing `setIamPolicy` removes the create. What is fixable is
+the CLAIM, so the docs now say plainly that write-without-read here is a speed bump
+and an audit signal, not a wall: no bug, bad merge or prompt injection reads a
+secret by accident, and anyone who does must first take a conspicuous, logged
+policy-write. It is not a wall against a determined holder of the key — which
+matters, because that key's rotation is deliberately deferred (`#215`).
+
+**The real fix, not yet applied.** An IAM deny policy on
+`secretmanager.googleapis.com/versions.access` and
+`parametermanager.googleapis.com/parameterVersions.render` for that principal. Deny
+is evaluated before allow and cannot be self-granted around. The command is in
+`docs/operate/secrets-iam.md` under "Prod console: write, but never read"; it needs
+project IAM admin, which no strad process holds.
+
+**Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
+either way — this is an IAM-shaped limitation, not a mechanism in strad.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
@@ -867,12 +930,21 @@ A consolidated checklist, cross-referenced above:
       billing linked (`gcloud billing projects link`) and `--organization`, plus
       `parametermanager` / `secretmanager` / `iam` enabled, before the SAs can be
       created. Exact predefined roles, verified live: the VIEWER SA gets
-      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`)
+      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`,
+      and — load-bearing since secret parameters grant their own principal —
+      NEVER `roles/parametermanager.parameterAccessor`, which carries
+      `parameterVersions.render` and is the one remaining thing between `/mcp`
+      and a prod secret value; staging's is deliberately wider, see
+      `docs/operate/secrets-iam.md` §2)
       → seed key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; the ADMIN SA gets
       `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
       plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the
       RESOLVER SA gets `roles/parametermanager.parameterViewer` plus
-      `roles/secretmanager.secretAccessor` →
+      `roles/parametermanager.parameterAccessor` (the accessor role is what carries
+      `parameterVersions.render`; the viewer role does NOT, and a resolver holding
+      only it lists every parameter and 403s on every value — it does not need
+      `roles/secretmanager.secretAccessor`, because the deref runs as the
+      parameter's own principal) →
       `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed for
       the deploy-time param injection of `remote-filesystem-tmp-public`). Only the SA
       KEYS are secret; seed them into strad's existing `strad-staging-*` Secret

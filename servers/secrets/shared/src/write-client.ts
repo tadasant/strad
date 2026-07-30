@@ -50,6 +50,16 @@ const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
 const DEFAULT_SM_BASE = "https://secretmanager.googleapis.com";
 const LOCATION = "global";
 
+/** See `grantRenderAccess` — the grant is on the PARAMETER, not on any caller. */
+const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
+/** One Secret Manager IAM binding. `condition` is carried, never interpreted. */
+interface IamBinding {
+  role: string;
+  members?: string[];
+  condition?: unknown;
+}
+
 export interface ParametersWriter {
   create(input: {
     path: string;
@@ -194,6 +204,53 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     return envelope;
   }
 
+  /**
+   * Make a secret parameter's `__REF__` resolvable — the same grant, and the same
+   * reasoning, as `grantRenderAccess` in `src/secrets/parameters/gcp.ts`.
+   *
+   * Parameter Manager derefs a reference as the PARAMETER's own principal, so a
+   * secret written here without this binding renders `400 SECRET_REFERENCE_ERROR`
+   * for every reader forever. This tree writes to the same store the gateway's
+   * resolver reads, so omitting it here would leave exactly half the defect fixed.
+   */
+  async function grantRenderAccess(id: string): Promise<void> {
+    const param = (await pm("GET", `${pmParent}/parameters/${id}`)) as {
+      policyMember?: { iamPolicyUidPrincipal?: string };
+    };
+    const principal = param.policyMember?.iamPolicyUidPrincipal;
+    if (!principal) {
+      throw new ParameterManagerError(
+        `parameter "${id}" reported no policyMember.iamPolicyUidPrincipal, so its secret reference could not be made resolvable`,
+        502,
+      );
+    }
+
+    // `requestedPolicyVersion=3` is REQUIRED: without it IAM returns a version-1
+    // VIEW that omits conditional bindings, and writing that view back deletes
+    // them. Same reasoning, same call, as the src/ copy.
+    const policy = (await sm(
+      "GET",
+      `${smParent}/secrets/${id}:getIamPolicy?options.requestedPolicyVersion=3`,
+    )) as { bindings?: IamBinding[]; etag?: string; version?: number };
+
+    const bindings = (policy.bindings ?? []).map((b) => ({
+      ...b,
+      members: [...(b.members ?? [])],
+    }));
+    // UNCONDITIONAL only — a conditional `secretAccessor` binding would grant
+    // access just while its condition holds, failing like no grant at all.
+    const binding = bindings.find(
+      (b) => b.role === SECRET_ACCESSOR_ROLE && b.condition === undefined,
+    );
+    if (binding?.members.includes(principal)) return;
+    if (binding) binding.members.push(principal);
+    else bindings.push({ role: SECRET_ACCESSOR_ROLE, members: [principal] });
+
+    await sm("POST", `${smParent}/secrets/${id}:setIamPolicy`, {
+      policy: { ...policy, bindings },
+    });
+  }
+
   /** The id collision guard. A mismatch is a 404: this is not that parameter. */
   function assertSamePath(envelope: ParameterEnvelope, path: string): void {
     if (envelope.path !== path) {
@@ -251,6 +308,10 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       }
 
       try {
+        // BEFORE the version: a complete-looking secret parameter must never
+        // exist with an unresolvable reference. Inside the existing rollback, so
+        // a grant that fails leaves nothing behind.
+        if (input.secret) await grantRenderAccess(id);
         await addVersion(id, {
           path: input.path,
           secret: input.secret,

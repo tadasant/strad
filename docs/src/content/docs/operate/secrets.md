@@ -69,16 +69,19 @@ this store and handing the container the wrong one silently collapses the
 The gateway gets the **resolver** identity, injected as
 `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`:
 
-| Identity     | Roles                                                               | Where it runs                                                                                                                                                                                                                              |
-| ------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **viewer**   | `parametermanager.parameterViewer`                                  | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — no `secretmanager.versions.access` — so no tool, bug or prompt injection can pull one through `/mcp`. Staging's is deliberately wider; see below. |
-| **admin**    | `parametermanager.admin` + `secretmanager.admin`                    | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                          |
-| **resolver** | `parametermanager.parameterViewer` + `secretmanager.secretAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing.                                                                                                                                  |
+| Identity     | Roles                                                                     | Where it runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **viewer**   | `parametermanager.parameterViewer`, and **never** `parameterAccessor`     | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — it holds neither of the two read paths: no `secretmanager.versions.access`, and no `parameterVersions.render` (that lives in `parameterAccessor`). Withholding `parameterAccessor` is now the ONLY thing closing the render path, so granting it — however reasonable it looks — opens `/mcp` to prod secret values. See [Secrets IAM](/operate/secrets-iam/#never-grant-the-secrets-mcp-credential-parameteraccessor). Staging's is deliberately wider; see below. |
+| **admin**    | `parametermanager.admin` + `secretmanager.admin`                          | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **resolver** | `parametermanager.parameterViewer` + `parametermanager.parameterAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing. Both roles are required — `parameterViewer` does **not** include `parameterVersions.render`, so a resolver holding it alone lists every parameter and 403s on every value. See [Secrets IAM](/operate/secrets-iam/#the-resolvers-roles-parameterviewer-is-not-enough).                                                                                                                                                                             |
 
 Three things follow, and each is deliberate:
 
 - It is **not** the viewer key. The viewer cannot read a secret value by
   construction, so a gateway holding it would resolve every `${NAME}` to nothing.
+  A resolver key that is missing `parameterAccessor` fails the same way for a
+  different reason, and the two are easy to confuse: the viewer is denied the
+  _value_, the under-granted resolver is denied the _deref_.
 - It is **not** the admin key. The gateway never needs to write, and a
   write-capable credential in the process that answers `/mcp` would make the
   console's separate identity pointless.
@@ -93,15 +96,30 @@ Read-only is real here, not just intended: the resolver has no write role, so a
 compromised gateway cannot alter a secret, only read the ones its namespace
 holds.
 
+:::caution[A secret parameter must be granted access to its own secret]
+`:render` dereferences a `__REF__` as **the parameter's own principal**, not as the
+resolver. That principal needs `roles/secretmanager.secretAccessor` on the secret,
+and `create()` grants it — but nothing repairs parameters written by an earlier
+strad, which fail every resolution with `400 SECRET_REFERENCE_ERROR`.
+
+The failure does not point at the cause: the resolver holds every permission the
+error implicates, and a `testIamPermissions` probe of it comes back clean, so any
+health indicator built on that probe stays green while nothing resolves. If you
+have parameters that predate this, run the one-time backfill in
+[Secrets IAM](/operate/secrets-iam/#backfilling-parameters-created-before-strad-made-this-grant)
+— it is idempotent. See [Known limitations](/limitations/) #30.
+:::
+
 ## What "immediately" means
 
 Not instant. The numbers, and where they come from:
 
-| Change                                       | Visible within                     | Why                                                                                                                             |
-| -------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **Rotating** an existing secret              | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale.                                                      |
-| **Adding** a name that was absent            | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request. |
-| A change written through strad's own console | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                         |
+| Change                                       | Visible within                     | Why                                                                                                                                                                                                         |
+| -------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rotating** an existing secret              | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale.                                                                                                                                  |
+| **Adding** a name that was absent            | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                             |
+| A change written through strad's own console | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                     |
+| A brand-new **secret** parameter             | up to ~2 minutes                   | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug. |
 
 Two behaviours matter more than the numbers:
 
@@ -129,11 +147,15 @@ With `provider: gcp-parameter-store`:
 2. Reference it in the config as `${NAME}`.
 3. That's it. No deploy.
 
-An agent using the `secrets` server can add and rotate values but **cannot read a
-secret value back** — its credential lacks `secretmanager.versions.access`, so
-Google refuses the only call that would return one. The gateway resolving that
-same secret at runtime uses a different, value-reading credential. Two identities,
-one store; see [which identity, exactly](#which-identity-exactly) above.
+An agent using the `secrets` server **in prod** can add and rotate values but
+**cannot read a secret value back** — its credential holds neither of the two
+calls that return one: `secretmanager.versions.access` and Parameter Manager's
+`:render`. Both matter, because `:render` dereferences under the parameter's own
+principal rather than the caller's, so withholding `versions.access` alone would
+not shut it. **Staging's credential is deliberately wider** and can read values;
+see [Secrets IAM](/operate/secrets-iam/). The gateway resolving that same secret at
+runtime uses a different credential again. Two identities, one store; see
+[which identity, exactly](#which-identity-exactly) above.
 
 If the name is **new to the config**, the next deploy's preflight will check it
 exists — see below. If you only changed a value, nothing else is needed.

@@ -125,8 +125,17 @@ opening any PR.
   - `gcp-parameter-store` — the container holds exactly ONE credential, the
     resolver key that reaches the store, and reads everything else at runtime.
     The resolver identity is `parametermanager.parameterViewer` +
-    `secretmanager.secretAccessor` — never the `secrets` server's viewer key,
-    never the console's admin key, never CI's `GCP_SA_KEY`.
+    `parametermanager.parameterAccessor` (the second is what `:render` needs;
+    `parameterViewer` alone lists everything and 403s on every value) — never the
+    `secrets` server's viewer key, never the console's admin key, never CI's
+    `GCP_SA_KEY`. A secret parameter also grants its OWN principal
+    `secretmanager.secretAccessor` on its secret; `create()` does that, and
+    without it every `:render` is a `400 SECRET_REFERENCE_ERROR`.
+    Because that grant exists, `:render` is a live read path for secret values,
+    and **the `secrets` MCP credential must NEVER hold
+    `roles/parametermanager.parameterAccessor`** — withholding it is the only
+    thing keeping `/mcp` away from a prod secret value. `parameterViewer` is the
+    read role; `parameterAccessor` is the deref, despite the names.
     A credential that only strad's own process needs must be scoped to the strad
     image (`STRAD_IMAGE_ONLY_SECRET_KEYS` in `src/deploy/appspec.ts`): a plain
     SECRET in the app spec is BROADCAST to every supplementary container.

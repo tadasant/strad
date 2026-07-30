@@ -314,6 +314,55 @@ inside this repo.
 `/secrets` redirect in `src/ui/index.ts`, and revert `src/ui/index-page.ts` to the
 plain server grid it renders around. Nothing else reads any of it.
 
+### 30. Secret parameters written before strad granted them access need a manual backfill
+
+A secret parameter's value is reached through `:render`, which dereferences the
+`__REF__` **as the parameter's own principal** rather than as the caller. That
+principal has to hold `roles/secretmanager.secretAccessor` on the secret, and
+`create()` now grants it. Parameters written by an earlier strad have no such
+binding, and nothing repairs them: `rotate()` writes a Secret Manager version and
+never touches IAM, and there is no reconcile pass. They fail every resolution with
+`400 SECRET_REFERENCE_ERROR` until a human runs the backfill loop in
+[Secrets IAM](/operate/secrets-iam/#backfilling-parameters-created-before-strad-made-this-grant).
+It is idempotent, so running it over a correct store does nothing.
+
+Self-healing was rejected rather than deferred. Repairing from the resolver would
+put `secretmanager.secrets.setIamPolicy` in the gateway container — making the one
+deliberately read-only credential in the system able to rewrite the access policy of
+every secret it reads — and repairing from `rotate()` would add the same permission
+to the console's write path for a case that occurs once, while still missing every
+parameter nobody rotates.
+
+The sharp part is the diagnosis, not the fix. The failure names neither the
+parameter nor the missing binding: the resolver gets a 400 while holding every
+permission the message implicates, and a `testIamPermissions` probe of that
+credential comes back completely clean. Anything built on such a probe reports
+healthy while nothing resolves.
+
+### 31. The console's "write, never read" role can escalate itself to read
+
+Creating a secret parameter requires granting the parameter's own principal
+`secretAccessor` on its secret, so the console's credential holds
+`secretmanager.secrets.setIamPolicy` at project level. That permission can write
+any binding onto any secret in the project — including granting the console's own
+service account `roles/secretmanager.secretAccessor`.
+
+So the write-without-read posture is honest about the permissions the role holds
+and **is not a boundary**: it is a speed bump and an audit signal. It means no bug,
+bad merge or prompt injection reads a secret by accident, and that anyone who does
+read one must first take a conspicuous, logged policy-write. It does not mean a
+determined holder of that key cannot read production secrets. That matters here
+because the key in question is among the credentials whose rotation has been
+deliberately deferred.
+
+The fix is an IAM **deny** policy on `versions.access` and `parameterVersions.render`
+for that principal — deny is evaluated before allow and cannot be self-granted
+around. The command is in
+[Secrets IAM](/operate/secrets-iam/#1-prod-console-write-but-never-read); it needs
+project IAM admin, which no strad process holds, so it is a human step and is not
+applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
+console's ability to create a secret parameter at all.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session
