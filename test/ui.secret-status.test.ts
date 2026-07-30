@@ -21,11 +21,11 @@ import {
 } from "../src/ui/secret-status.ts";
 
 /**
- * The Secrets Console.
+ * The secret roster, and the console index it lives on.
  *
  * The derivation is where the value is, so most of this file is about it rather
- * than about markup. Three properties carry the page, and each of them is a way
- * the obvious implementation would have been wrong:
+ * than about markup. Three properties carry it, and each of them is a way the
+ * obvious implementation would have been wrong:
  *
  *   1. NOT VISIBLE HERE IS NOT MISSING. A supplementary image's `env:` is baked
  *      onto its own component; core cannot see it. A presence check that answered
@@ -828,7 +828,7 @@ servers: []
 });
 
 // ---------------------------------------------------------------------------
-// GET /secrets
+// GET /ui — the console index
 // ---------------------------------------------------------------------------
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
@@ -889,14 +889,14 @@ beforeAll(async () => {
   const booted = await boot(CONFIG, new EnvSecretProvider(SECRETS), SECRETS);
   baseUrl = booted.url;
   server = { close: booted.close } as unknown as Server;
-  html = await (await fetch(`${baseUrl}/secrets`, { headers: AUTH })).text();
+  html = await (await fetch(`${baseUrl}/ui`, { headers: AUTH })).text();
 });
 
 afterAll(() => server?.close());
 
-describe("GET /secrets gate", () => {
+describe("GET /ui gate", () => {
   it("401s an anonymous request and leaks no secret NAME", async () => {
-    const res = await fetch(`${baseUrl}/secrets`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/ui`, { redirect: "manual" });
     expect(res.status).toBe(401);
     const body = await res.text();
     expect(body).toContain("Sign in required");
@@ -905,30 +905,46 @@ describe("GET /secrets gate", () => {
     }
   });
 
-  it("is the SAME gate as /ui — not a softer door", async () => {
-    const [mine, ui] = await Promise.all([
-      fetch(`${baseUrl}/secrets`, { redirect: "manual" }),
-      fetch(`${baseUrl}/ui`, { redirect: "manual" }),
-    ]);
-    expect(mine.status).toBe(ui.status);
+  it("gates the retired /secrets URL too, rather than redirecting anonymously", async () => {
+    // The redirect sits BEHIND the gate. An open redirect to a gated page is not
+    // a leak, but a door that answers differently to an anonymous caller is one
+    // fewer thing to have to reason about.
+    const res = await fetch(`${baseUrl}/secrets`, { redirect: "manual" });
+    expect(res.status).toBe(401);
   });
 });
 
 describe("GET /secrets", () => {
+  it("redirects to the index that absorbed it", async () => {
+    // The roster was a destination of its own and is not one any more. The URL
+    // was published — bookmarks, the AIR catalog, the docs — so it redirects
+    // rather than 404s: a page whose content simply moved teaches nobody
+    // anything by disappearing.
+    const res = await fetch(`${baseUrl}/secrets`, {
+      headers: AUTH,
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/ui");
+  });
+});
+
+describe("GET /ui", () => {
   it("serves HTML to a signed-in human", async () => {
-    const res = await fetch(`${baseUrl}/secrets`, { headers: AUTH });
+    const res = await fetch(`${baseUrl}/ui`, { headers: AUTH });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(html).toContain("<title>Secrets Console · strad</title>");
+    expect(html).toContain("<title>Servers · strad</title>");
   });
 
-  it("lists EVERY enabled server, healthy ones included", () => {
+  it("lists EVERY server, healthy ones included", () => {
     // The roster is the feature: "slack is fine, granola is not" is the answer,
     // and a page listing only failures cannot give it.
-    // Asserted on each server's own rendered slug/name element. A bare
-    // toContain("secrets") passes on page chrome alone — "Secrets Console",
-    // "no secrets", href="/ui/secrets" — with the server absent. Caught by the
-    // fresh-eyes review.
+    //
+    // Asserted on each entry's own rendered title element. A bare
+    // toContain("secrets") passes on page chrome alone — "no secrets",
+    // href="/ui/secrets" — with the server absent. Caught by an earlier
+    // fresh-eyes review, and the reason these are element assertions.
     for (const slug of [
       "slack",
       "slack-readonly",
@@ -936,21 +952,27 @@ describe("GET /secrets", () => {
       "google-flights",
       "params-server",
     ]) {
-      expect(html).toContain(`<span class="sec-name">${slug}</span>`);
+      expect(html).toContain(`<span class="card-title">${slug}</span>`);
     }
-    // `gcs` is the one entry with a `title:`, so its slug renders in the
-    // sec-slug code tag beside the title rather than as the heading.
-    expect(html).toContain('<span class="sec-name">Object store</span>');
-    expect(html).toContain('<code class="sec-slug">gcs</code>');
-    expect(html).toContain('<span class="sec-name">secrets</span>');
-    expect(html).toContain('<span class="panel-note">7 enabled</span>');
-    expect(html).not.toContain("retired");
+    // `gcs` and `secrets` have console views, so their titles are links.
+    expect(html).toContain(">Object store</a>");
+    expect(html).toContain('<code class="card-slug">gcs</code>');
+    expect(html).toContain(">secrets</a>");
+    expect(html).toContain('<span class="stat-l">enabled servers</span>');
+    // A disabled server is still on the INDEX — /ui always listed every
+    // configured server — but it carries no badge. It is the secret ROSTER that
+    // omits it, because strad does not mount it.
+    expect(html).toContain('<span class="chip chip-off">disabled</span>');
   });
 
-  it("shows the placeholder server as needing attention, not as ready", () => {
+  it("shows the placeholder server as ISSUE, not as READY", () => {
     // GRANOLA_TOKEN resolves to "change-me": seeded, and evidently not working.
-    expect(html).toContain("check value");
+    const at = html.indexOf(`data-fix-open="fix-granola"`);
+    expect(at).toBeGreaterThan(-1);
     expect(html).toContain("${GRANOLA_TOKEN}");
+    expect(html).toContain(
+      '<span class="chip chip-warnish chip-route">placeholder</span>',
+    );
   });
 
   it("names the exact GCP paths to fix it", () => {
@@ -1065,7 +1087,7 @@ describe("GET /secrets", () => {
       invalidate: () => {},
     };
     const { url, close } = await boot(STORE_CONFIG, angry, {});
-    const res = await fetch(`${url}/secrets`, { headers: AUTH });
+    const res = await fetch(`${url}/ui`, { headers: AUTH });
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("granola");
@@ -1113,9 +1135,7 @@ servers:
       invalidate: () => {},
     };
     const { url, close } = await boot(gatewayOnly, angry, {});
-    const body = await (
-      await fetch(`${url}/secrets`, { headers: AUTH })
-    ).text();
+    const body = await (await fetch(`${url}/ui`, { headers: AUTH })).text();
     expect(body).toContain("could not be checked");
     expect(body).toContain("That is not the same as healthy");
     expect(body).not.toContain("Every server&#39;s secrets resolve");
@@ -1148,9 +1168,7 @@ servers:
       RFS_GCS_BUCKET: "a-literal-bucket"
 `);
     const { url, close } = await boot(managed, new EnvSecretProvider({}), {});
-    const body = await (
-      await fetch(`${url}/secrets`, { headers: AUTH })
-    ).text();
+    const body = await (await fetch(`${url}/ui`, { headers: AUTH })).text();
     expect(body).not.toContain(
       '<span class="chip chip-plain chip-route">no secrets</span>',
     );
@@ -1176,9 +1194,7 @@ servers:
     entitlements: [admin]
 `);
     const { url, close } = await boot(hostile, new EnvSecretProvider({}), {});
-    const body = await (
-      await fetch(`${url}/secrets`, { headers: AUTH })
-    ).text();
+    const body = await (await fetch(`${url}/ui`, { headers: AUTH })).text();
     expect(body).not.toContain("<script>alert");
     expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     close();
@@ -1219,13 +1235,16 @@ describe("GET /secrets in bundle mode", () => {
   });
 });
 
-describe("the fourth console card on /", () => {
-  it("links the Secrets Console from the landing page", async () => {
+describe("the console cards on /", () => {
+  it("offers ONE console card, not a second one for the secrets", async () => {
     const body = await (await fetch(`${baseUrl}/`, { headers: AUTH })).text();
-    expect(body).toContain('href="/secrets"');
-    expect(body).toContain("Secrets Console");
-    // Still four, not three: the existing three must not have been displaced.
-    for (const href of ['href="/ui"', 'href="/console"', 'href="/healthz"']) {
+    // The roster is on /ui now, so a second card pointing at /secrets would be
+    // a second door onto the same page.
+    expect(body).not.toContain('href="/secrets"');
+    expect(body).toContain('href="/ui"');
+    expect(body).toContain("whether the secrets it needs are seeded");
+    // The other two must not have been displaced.
+    for (const href of ['href="/console"', 'href="/healthz"']) {
       expect(body).toContain(href);
     }
   });

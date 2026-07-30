@@ -153,62 +153,6 @@ function helpDialog(inner: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// The index: every configured server, with a link to its view.
-// ---------------------------------------------------------------------------
-
-export function renderIndex(
-  config: StradConfig,
-  signedInAs: string | undefined,
-): string {
-  const cards = config.servers.map((s) => serverCard(s)).join("\n");
-
-  const body = `
-<section class="intro">
-  <h1>Resource browser</h1>
-  <p class="lede">A human-facing, SSO-gated view of the resources scoped to each
-    MCP server on this strad gateway. Pick a server to browse what it can see.</p>
-</section>
-<div class="card-grid">
-${cards || `<p class="empty">No servers are configured on this gateway.</p>`}
-</div>`;
-
-  return layout({ title: "Resource browser", signedInAs, body });
-}
-
-function serverCard(server: ServerConfig): string {
-  const hasGcs = serverLooksGcs(server);
-  const hasSecrets = serverLooksSecrets(server);
-  const hasView = hasGcs || hasSecrets;
-  const kindLabel = server.kind;
-  const title = server.title ?? server.slug;
-  const desc =
-    server.description ??
-    (hasSecrets
-      ? "Add, rotate, reveal and delete the non-secret and secret parameters this server manages."
-      : hasGcs
-        ? "Browse the object store this server is scoped to."
-        : "No browser view for this server kind yet.");
-
-  const cta = hasSecrets ? "Manage →" : "Browse →";
-
-  const inner = `
-    <div class="card-head">
-      <span class="card-title">${esc(title)}</span>
-      <span class="chip chip-${esc(kindLabel)}">${esc(kindLabel)}</span>
-      ${server.enabled ? "" : `<span class="chip chip-off">disabled</span>`}
-    </div>
-    <p class="card-desc">${esc(desc)}</p>
-    <div class="card-foot">
-      <code>${esc(server.slug)}</code>
-      ${hasView ? `<span class="card-cta">${cta}</span>` : `<span class="card-muted">No view</span>`}
-    </div>`;
-
-  return hasView
-    ? `<a class="card card-link" href="/ui/${encodeURIComponent(server.slug)}">${inner}</a>`
-    : `<div class="card">${inner}</div>`;
-}
-
-// ---------------------------------------------------------------------------
 // The GCS browse view.
 // ---------------------------------------------------------------------------
 
