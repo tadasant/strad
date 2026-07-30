@@ -44,6 +44,8 @@ not a confession.
 | `src/auth/**`                                                              | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                          | `operate/deploy-model.md`                                         |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate     | `operate/deploy-model.md`, `servers/interface.md`                 |
+| `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate  | `operate/deploy-model.md`, `operate/secrets.md`                   |
+| `src/deploy/preflight.ts` — what a deploy demands of the store             | `operate/secrets.md`, `limitations.md`                            |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                      | `operate/telemetry.md`                                            |
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI | `intro/architecture.md`, `operate/telemetry.md`, and every count  |
 | `infra/strad.staging.yaml`                                                 | `operate/operations.md`, `servers/adding.md`                      |
@@ -125,8 +127,10 @@ opening any PR.
   - `gcp-parameter-store` — the container holds exactly ONE credential, the
     resolver key that reaches the store, and reads everything else at runtime.
     The resolver identity is `parametermanager.parameterViewer` +
-    `secretmanager.secretAccessor` — never the `secrets` server's viewer key,
-    never the console's admin key, never CI's `GCP_SA_KEY`.
+    `parametermanager.parameterAccessor` (`:render` lives in the ACCESSOR role;
+    `parameterViewer` is get/list, so the viewer half alone renders nothing) —
+    never the `secrets` server's viewer key, never the console's admin key, never
+    CI's `GCP_SA_KEY`.
     A credential that only strad's own process needs must be scoped to the strad
     image (`STRAD_IMAGE_ONLY_SECRET_KEYS` in `src/deploy/appspec.ts`): a plain
     SECRET in the app spec is BROADCAST to every supplementary container.

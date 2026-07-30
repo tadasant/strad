@@ -39,6 +39,7 @@ table the grants below are built from.
 | **`reveal` — secret** | PM version GET, then **SM `versions/latest:access`**                         | **`secretmanager.versions.access`** ← the one prod must not hold, on top of the PM reads                                                        |
 | `reveal` — non-secret | PM version GET only                                                          | `parametermanager.parameterVersions.get`                                                                                                        |
 | `destroy`             | PM parameter GET, versions list + DELETE, parameter DELETE, SM secret DELETE | `parametermanager.parameters.get`, `…parameters.delete`, `…parameterVersions.list`, `…parameterVersions.delete`, `secretmanager.secrets.delete` |
+| **`resolve`**         | the `list` row, then **PM `…/versions/{v}:render`** per parameter            | **`parametermanager.parameterVersions.render`** ← the resolver's whole reason to exist, on top of the PM reads                                  |
 
 Two things fall out of this table, and both matter:
 
@@ -250,6 +251,87 @@ keys — and printing five booleans for each. It is non-fatal and prints no secr
 material. That exists because a grant that did not land is indistinguishable from
 a deliberate narrowing from the outside: both are just a smaller tool surface. See
 [Operations](/operate/operations/#deploy-stagingyml--put-it-on-app-platform).
+
+## 3. The runtime resolver: render, and nothing else
+
+**Goal.** `strad-secrets-resolver@strad-secrets-prod.iam.gserviceaccount.com` —
+the credential the gateway container holds, and the one `render-spec` uses at
+deploy time — can resolve `/strad/{env}/gateway/static/` into `VARIABLE -> value`,
+and can do nothing else. It writes nothing, in either store.
+
+:::caution[`parameterViewer` + `secretmanager.secretAccessor` cannot render]
+Both are real roles, both apply cleanly, and a resolver holding them enumerates
+the namespace correctly and returns an empty value for every name. `resolve()` is
+`list` plus one `:render` per parameter, and
+`parametermanager.parameterVersions.render` is in
+`roles/parametermanager.parameterAccessor` only — `parameterViewer` is get/list.
+
+A service account already bound that way needs the accessor binding added.
+Nothing has to be removed for it to start resolving.
+:::
+
+Both Parameter Manager roles are needed, and neither is redundant:
+
+| Role                                       | What it contributes                                                                                                  |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `roles/parametermanager.parameterViewer`   | `parameters.list`, `parameterVersions.list`, `parameterVersions.get` — the `list` that finds what to resolve.        |
+| `roles/parametermanager.parameterAccessor` | `parameterVersions.render` (plus `locations.*`) and nothing else. It cannot list, so it is not a resolver by itself. |
+
+**Secret Manager: no grant at all.** `:render` does not dereference as the
+caller — it dereferences as the _parameter's own_ principal (the caution above) —
+so `roles/secretmanager.secretAccessor` on this service account is not what opens
+the secret half. The two calls the resolver makes are Parameter Manager only:
+`list()` (parameters page, versions page, version GET) and `resolve()` (the same,
+plus `:render` per parameter). Granting Secret Manager to the resolver neither
+helps nor gets used; leave it off, and if it is already bound, removing it changes
+no resolver behaviour.
+
+```bash
+PROJECT=strad-secrets-prod
+SA=strad-secrets-resolver@${PROJECT}.iam.gserviceaccount.com
+
+# Enumerate the namespace…
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA}" \
+  --role="roles/parametermanager.parameterViewer"
+
+# …and render each version. This is the binding the old spec omitted.
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA}" \
+  --role="roles/parametermanager.parameterAccessor"
+```
+
+**Audit assertion.** Run as the resolver itself.
+
+```bash
+gcloud auth activate-service-account --key-file=/path/to/prod-resolver-key.json
+CRM="https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions"
+
+# MUST list all four. `render` missing is the exact failure this section exists for.
+curl -sS -X POST "${CRM}" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["parametermanager.parameters.list","parametermanager.parameterVersions.list","parametermanager.parameterVersions.get","parametermanager.parameterVersions.render"]}'
+
+# MUST print {} — the resolver writes nothing and reads no Secret Manager version.
+curl -sS -X POST "${CRM}" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["parametermanager.parameterVersions.create","parametermanager.parameters.delete","secretmanager.versions.add","secretmanager.versions.access"]}'
+```
+
+**Holding `render` is not the same as rendering.** The permission is the caller's
+half; the parameter's own principal still has to be able to reach the referenced
+secret, which is issue #49 and is not granted today. So prove the round trip
+rather than the binding, with the credential the container will hold:
+
+```bash
+npm run store:check -- --config infra/strad.staging.yaml --resolve
+```
+
+It reports, by name and never by value, which of the namespace's names the
+resolver can actually turn into a value. See
+[Secrets](/operate/secrets/#is-the-namespace-complete-store-check).
 
 ## Why a probe and not a flag, for the MCP surface
 

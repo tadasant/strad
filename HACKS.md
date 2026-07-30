@@ -741,6 +741,21 @@ so the capability can land and be reviewed without a flag day.
   onto core. It carries the store-**admin** credential, and filing that inside the
   store would let the weaker resolver credential read the stronger one.
 
+**The deploy preflight does not make the flip safe, and it is not trying to.**
+`preflightSecrets()` checks `requiredSecretNames()` — the config's `${NAME}` refs
+plus `CORE_BOOT_ENV_KEYS` — and counts as missing only the two boot keys a
+deployment cannot work without. So a namespace can be missing most of what a real
+config needs and still deploy green: the optional boot keys are reported and never
+counted (`GOOGLE_CLIENT_ID` among them, which with `auth.google.enabled: true` is
+a front-door outage on `/ui`, not a dormant one), and a `supplementary-image`
+server's `env:` names are outside the check entirely. `scripts/check-store.ts`
+(`npm run store:check -- --config <path>`) is the pre-flip counterpart: it counts
+every name the deployment reads from the store, names the ones that are absent,
+and has a `--mode report` that reports "these N of M are in" without failing, for
+a migration that moves one server per day. `--resolve` additionally proves the
+resolver can render what it found — the only way to catch a grant that is bound
+but cannot `:render`. It reads metadata by default and prints no value in any mode.
+
 **Undo.** Provision the resolver SA (hack #26), seed
 `/strad/prod/gateway/static/*`, then flip `gateway.secrets.provider` in the
 deployment's config and drop the per-secret baking from the deploy workflow. The
@@ -863,7 +878,10 @@ A consolidated checklist, cross-referenced above:
       `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
       plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the
       RESOLVER SA gets `roles/parametermanager.parameterViewer` plus
-      `roles/secretmanager.secretAccessor` →
+      `roles/parametermanager.parameterAccessor` (the accessor role is where
+      `parameterVersions.render` lives — the viewer role lists and renders
+      nothing, and `roles/secretmanager.secretAccessor` is not a substitute
+      because `:render` derefs as the parameter's principal, not the caller) →
       `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed for
       the deploy-time param injection of `remote-filesystem-tmp-public`). Only the SA
       KEYS are secret; seed them into strad's existing `strad-staging-*` Secret

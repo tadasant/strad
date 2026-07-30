@@ -260,6 +260,15 @@ next restart, not within the TTL; and `consoleEnv:` is never hydrated, because
 filing the store-admin credential inside the store would let the weaker resolver
 credential read the stronger one.
 
+The deploy preflight is a deploy gate and does not make the flip safe: it counts
+only the two boot keys a deployment cannot work without, so a namespace missing
+the optional ones — `GOOGLE_CLIENT_ID` among them, which with
+`auth.google.enabled: true` is a front-door outage on `/ui` — deploys green.
+[`store:check`](/operate/secrets/#is-the-namespace-complete-store-check) is the
+pre-flip counterpart: it counts every name the deployment reads from the store,
+names what is absent, and has a report mode for a migration that moves one server
+per day.
+
 **Undo:** provision the resolver SA, seed `/strad/prod/gateway/static/*`, flip the
 provider in the deployment's config, and drop the per-secret baking from the
 deploy workflow.

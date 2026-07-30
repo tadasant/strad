@@ -69,16 +69,32 @@ this store and handing the container the wrong one silently collapses the
 The gateway gets the **resolver** identity, injected as
 `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`:
 
-| Identity     | Roles                                                               | Where it runs                                                                                                                                                                                                                              |
-| ------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **viewer**   | `parametermanager.parameterViewer`                                  | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — no `secretmanager.versions.access` — so no tool, bug or prompt injection can pull one through `/mcp`. Staging's is deliberately wider; see below. |
-| **admin**    | `parametermanager.admin` + `secretmanager.admin`                    | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                          |
-| **resolver** | `parametermanager.parameterViewer` + `secretmanager.secretAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing.                                                                                                                                  |
+| Identity     | Roles                                                                     | Where it runs                                                                                                                                                                                                                              |
+| ------------ | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **viewer**   | `parametermanager.parameterViewer`                                        | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — no `secretmanager.versions.access` — so no tool, bug or prompt injection can pull one through `/mcp`. Staging's is deliberately wider; see below. |
+| **admin**    | `parametermanager.admin` + `secretmanager.admin`                          | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                          |
+| **resolver** | `parametermanager.parameterViewer` + `parametermanager.parameterAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing.                                                                                                                                  |
+
+**The resolver's second role is `parameterAccessor`, not `secretAccessor`, and
+the difference is the whole grant.** Resolution is `list` + `:render` per
+parameter, and `parametermanager.parameterVersions.render` lives in
+`roles/parametermanager.parameterAccessor` alone. `parameterViewer` is get/list
+only, so the two together are the minimum: the viewer half enumerates the
+namespace, the accessor half renders it. A resolver granted `parameterViewer` +
+`secretmanager.secretAccessor` — two real roles that apply cleanly — lists the
+namespace fine and cannot render a single value.
+
+That is not a naming quibble. `:render` does **not** dereference as the caller;
+it dereferences as the _parameter's own_ principal, so a Secret Manager grant on
+the resolver's service account is not what opens the secret half, and no resolver
+code path calls Secret Manager directly. [Secrets IAM](/operate/secrets-iam/#3-the-runtime-resolver-render-and-nothing-else)
+carries the exact `gcloud` and an audit assertion.
 
 Three things follow, and each is deliberate:
 
-- It is **not** the viewer key. The viewer cannot read a secret value by
-  construction, so a gateway holding it would resolve every `${NAME}` to nothing.
+- It is **not** the viewer key. The viewer's grant stops at `parameterViewer`, so
+  a gateway holding it would enumerate the namespace and render none of it —
+  every `${NAME}` would resolve to nothing.
 - It is **not** the admin key. The gateway never needs to write, and a
   write-capable credential in the process that answers `/mcp` would make the
   console's separate identity pointless.
@@ -156,6 +172,74 @@ secret parameter the underlying Parameter Manager payload holds a `__REF__`
 pointer at Secret Manager, not the secret. Nothing in the preflight path calls
 `:render` or `reveal`. A credential with no `secretmanager.versions.access`
 passes it happily, which is the proof.
+
+## Is the namespace complete? (store-check)
+
+The preflight above is a **deploy gate**, and it is scoped like one. It checks the
+names the gateway resolves at runtime — the config's `${NAME}` refs plus the core
+boot keys — and of those it counts only the ones a deployment cannot work without
+as missing. Both halves are correct for a deploy and insufficient for the one
+moment that matters most: switching a live deployment from `env` to
+`gcp-parameter-store`.
+
+Two names make the difference concrete. `GOOGLE_CLIENT_ID` is **optional at
+boot**, so a namespace without it preflights clean — and with
+`auth.google.enabled: true` that is a front door that does not open. A
+`supplementary-image` server's `env:` names are outside the preflight entirely
+(they are baked at render time, and `render-spec` fails on a missing one) — but
+under this provider they are read _from the store_, so they have to be seeded
+before the flip and nothing checked that until the deploy was already running.
+
+`scripts/check-store.ts` counts **everything the deployment reads from the
+store**:
+
+| Counted                                                       | Why                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------- |
+| every `${NAME}` in a remote-http url/header or builtin option | resolved on the request path                             |
+| **every** core boot key, optional-at-boot included            | hydrated at startup; optional there is not optional here |
+| every `supplementary-image` `env:` name                       | read from the store at render time                       |
+| _not_ a `consoleEnv:` name                                    | deploy-environment only — see below                      |
+
+```bash
+# The gate. Run it immediately before the flip; a missing name is exit 1.
+npm run store:check -- --config infra/strad.staging.yaml
+
+# The daily driver. Same enumeration, same names, exit 0 — a partially seeded
+# namespace mid-migration is the expected state, not an error.
+npm run store:check -- --config infra/strad.staging.yaml --mode report
+
+# Presence is not resolvability. Also render what it found, and report by NAME
+# which names came back with a value.
+npm run store:check -- --config infra/strad.staging.yaml --resolve
+```
+
+`--mode require` is the default deliberately: a checker that never fails unless
+asked repeats the mistake it exists to fix. The mode changes the verdict and never
+the facts, so a day's report and the final gate cannot disagree about what is
+seeded.
+
+**It never prints a value**, in any mode. The default check is `list()` —
+metadata, and for a secret parameter a `__REF__` pointer rather than a secret.
+`--resolve` does render values in order to prove the resolver can, and reports
+names alone.
+
+**A `consoleEnv:` name found in the store is reported, not counted.** It is not
+missing — `render-spec` reads it from the deploy environment by design — but a
+copy sitting in the gateway namespace is readable by the weaker resolver
+credential, which is the one thing the [three-credential
+split](/auth/overview/#the-secrets-console-three-credentials) exists to prevent.
+
+**It runs standalone from a checkout.** No image, no pin bump, no deploy: Node 22,
+this repo, and the resolver's `STRAD_PARAMS_*` environment. That is the same
+credential the container will hold, so a namespace this passes against is one that
+credential can read.
+
+**`--resolve` is how you find out the grant is wrong.** A resolver holding
+`parametermanager.parameterViewer` and nothing else lists the namespace perfectly
+and renders none of it; `:render` needs
+`roles/parametermanager.parameterAccessor`. The check reports that as a render
+failure rather than a missing name, because the two have unrelated fixes. See
+[Secrets IAM](/operate/secrets-iam/#3-the-runtime-resolver-render-and-nothing-else).
 
 ## What still needs a redeploy
 
