@@ -48,7 +48,14 @@ import { PROBE_PERMISSIONS } from "../src/secrets/parameters/capabilities.ts";
 
 const REPO = new URL("..", import.meta.url).pathname;
 
-/** Parameter Manager, in full. Note `parameterVersions.get` — there is no `.access`. */
+/**
+ * Parameter Manager. Note `parameterVersions.get` — there is no `.access`.
+ *
+ * A transcription of Google's page, so it ages: a permission added upstream is
+ * absent here, and the first doc that legitimately names one fails the "never
+ * names a permission Google does not define" test. That failure means "add it to
+ * this list", not "the doc is wrong" — check the page before assuming otherwise.
+ */
 const PARAMETER_MANAGER = new Set([
   "parametermanager.locations.get",
   "parametermanager.locations.list",
@@ -378,10 +385,20 @@ function customRolePermissions(): string[] {
 const PERMISSION =
   /\b(?:parametermanager|secretmanager)\.[A-Za-z]+\.[A-Za-z]+\b/g;
 
-/** Every place this repo writes prose a human copies commands out of. */
+/**
+ * Every place this repo names an identifier a human reads and acts on.
+ *
+ * `scripts/` and `src/` are in scope, and not as an afterthought: `check-store`
+ * prints `roles/parametermanager.parameterAccessor` straight at an operator's
+ * terminal when a render fails, and the header comments in `store.ts` and
+ * `render-spec.ts` are where the next reader learns which identity the gateway
+ * holds. A wrong role name is exactly as costly there as on a docs page.
+ */
 const ROOTS = [
   "docs/src/content/docs",
   "infra",
+  "scripts",
+  "src",
   "servers/secrets/README.md",
   "servers/bundle/README.md",
   "strad.config.example.yaml",
@@ -390,7 +407,7 @@ const ROOTS = [
   "AGENTS.md",
 ];
 
-const EXTENSIONS = [".md", ".mdx", ".yaml", ".yml"];
+const EXTENSIONS = [".md", ".mdx", ".yaml", ".yml", ".ts"];
 
 function walk(path: string, out: string[] = []): string[] {
   const stat = statSync(path, { throwIfNoEntry: false });

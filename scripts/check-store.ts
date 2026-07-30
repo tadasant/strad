@@ -11,9 +11,14 @@
  *
  * Usage:
  *   node --experimental-transform-types scripts/check-store.ts \
- *     --config infra/strad.staging.yaml [--mode report] [--resolve]
+ *     --config <path> [--mode require|report] [--namespace <path>] [--resolve]
  *
  *   npm run store:check -- --config infra/strad.staging.yaml
+ *
+ * `--namespace` overrides the namespace `gateway.env` implies, for checking one
+ * environment's namespace with another's config in hand. It cannot be empty: an
+ * empty prefix matches every parameter in the project, and the check would pass
+ * on another environment's names.
  *
  * ## The two modes, and which is which
  *
@@ -45,7 +50,8 @@
  * ## Exit codes
  *
  *   0  complete (require), or the report was produced (report)
- *   1  names are missing, or --resolve could not render them  [require only]
+ *   1  a finding: a name is missing, --resolve could not render one, or the
+ *      namespace holds a `consoleEnv:` name  [require only]
  *   2  called wrong: no --config, unreadable file, config does not parse
  *   3  the store could not be consulted at all — no resolver credential in the
  *      environment, or `list()` failed. Distinct from 1 on purpose: "the
@@ -59,6 +65,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { checkStore } from "../src/deploy/store-check.ts";
 import { resolverFromEnv } from "../src/secrets/parameters/index.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
+import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
 import { errorSummary } from "../src/secrets/provider/snapshot.ts";
 
 function usage(message: string): never {
@@ -94,6 +101,12 @@ const mode = values.mode ?? "require";
 if (mode !== "require" && mode !== "report") {
   usage(`--mode must be "require" or "report", not "${mode}"`);
 }
+// An empty override is not "use the default" — it is a prefix that matches EVERY
+// parameter in the project, so a name from another environment would satisfy the
+// check and the script would report `complete` for the wrong reason.
+if (values.namespace !== undefined && !values.namespace.trim()) {
+  usage("--namespace cannot be empty");
+}
 
 let raw: string;
 try {
@@ -115,11 +128,23 @@ const config = (() => {
 // running as the console admin would answer a question nobody asked.
 const store = resolverFromEnv(process.env);
 if (!store) {
-  console.error(
-    `::error::no store credential in the environment: set ` +
-      `${RESOLVER_ENV.projectId} and ${RESOLVER_ENV.keyJson} to the RESOLVER ` +
-      `service account's key (never the console admin's).`,
-  );
+  // Two different failures, and telling someone to set a variable they have
+  // already set is how a corrupt key gets diagnosed as a missing one.
+  const keyJson = process.env[RESOLVER_ENV.keyJson];
+  if (!process.env[RESOLVER_ENV.projectId] || !keyJson) {
+    console.error(
+      `::error::no store credential in the environment: set ` +
+        `${RESOLVER_ENV.projectId} and ${RESOLVER_ENV.keyJson} to the RESOLVER ` +
+        `service account's key (never the console admin's).`,
+    );
+  } else {
+    // `reason` reports by SHAPE — "is not valid JSON", "is missing
+    // client_email / private_key" — never by content.
+    const { reason } = parseServiceAccount(keyJson);
+    console.error(
+      `::error::${RESOLVER_ENV.keyJson} is set but unusable: it ${reason}.`,
+    );
+  }
   process.exit(3);
 }
 
@@ -151,19 +176,14 @@ if (missing.length > 0)
   console.log(`  missing:\n    ${missing.join("\n    ")}`);
 
 if (result.environmentOnly.length > 0) {
-  // Not counted either way. A consoleEnv: name is read from the deploy
-  // environment by design — but if one is IN the namespace, the resolver
-  // credential can read the console's admin credential, and the three-role split
-  // stops being a boundary.
   console.log(
     `  environment-only (consoleEnv:, never expected here):\n    ` +
       result.environmentOnly.join("\n    "),
   );
-  for (const name of result.adminCredentialsInStore) {
-    console.error(
-      `::warning file=${values.config}::${name} is a consoleEnv: name and it is ` +
-        `in ${namespace}. render-spec reads it from the deploy environment, so ` +
-        `the copy here is unused — and readable by the weaker resolver credential.`,
+  if (result.adminCredentialsInStore.length > 0) {
+    console.log(
+      `  IN THE STORE AND SHOULD NOT BE:\n    ` +
+        result.adminCredentialsInStore.join("\n    "),
     );
   }
 }
@@ -190,6 +210,19 @@ for (const name of missing) {
     `::${annotate} file=${values.config}::${name} is not in ${namespace}`,
   );
 }
+// A finding, not a warning, and it fails the gate. A `consoleEnv:` name carries
+// the console's store-ADMIN credential; a copy in this namespace is unused by
+// anything (render-spec reads it from the deploy environment) and readable by the
+// weaker resolver credential — so the flip would hand the gateway process the one
+// credential the three-role split exists to keep away from it.
+for (const name of result.adminCredentialsInStore) {
+  console.error(
+    `::${annotate} file=${values.config}::${name} is a consoleEnv: name and it ` +
+      `is in ${namespace}. Nothing reads the copy there, and the resolver ` +
+      `credential can. Delete it from the store; render-spec takes it from the ` +
+      `deploy environment.`,
+  );
+}
 if (render?.error) {
   console.error(
     `::${annotate} file=${values.config}::the resolver credential could not ` +
@@ -213,7 +246,8 @@ const renderFindings = render
     ? 1
     : render.unrendered.length
   : 0;
-const findings = missing.length + renderFindings;
+const findings =
+  missing.length + renderFindings + result.adminCredentialsInStore.length;
 
 if (mode === "report") {
   console.log(

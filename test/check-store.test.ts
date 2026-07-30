@@ -11,6 +11,7 @@ import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   gatewayNamespace,
   gatewayParameterPath,
+  secretRef,
 } from "../src/secrets/parameters/namespace.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { ParameterStoreError } from "../src/secrets/parameters/types.ts";
@@ -70,16 +71,24 @@ servers:
 
 const config = parseConfig(CONFIG_YAML);
 
-/** Everything except the one name under test. */
+/**
+ * Everything except the one name under test.
+ *
+ * The values are distinctive sentinels rather than realistic-looking ones, and
+ * that is load-bearing: the leak assertion is `not.toContain(value)` over the
+ * whole output, so a short generic value like `[]` or `session` would fail the
+ * moment ordinary output happened to contain it — a false alarm on the one test
+ * nobody should learn to ignore.
+ */
 const SEEDED = [
-  ["GRANOLA_TOKEN", "gran-secret-value"],
-  ["STRAD_TOKENS", "[]"],
-  ["STRAD_INTERNAL_TOKEN", "internal-shared"],
-  ["ADMIN_BOOTSTRAP_TOKEN", "boot"],
-  ["GOOGLE_CLIENT_SECRET", "google-secret-value"],
-  ["CONSOLE_SESSION_SECRET", "session"],
-  ["OTEL_EXPORTER_OTLP_HEADERS", "authorization=x"],
-  ["SHOP_PASSWORD", "shop-secret-value"],
+  ["GRANOLA_TOKEN", "leak-canary-granola-9f2a"],
+  ["STRAD_TOKENS", "leak-canary-tokens-9f2a"],
+  ["STRAD_INTERNAL_TOKEN", "leak-canary-internal-9f2a"],
+  ["ADMIN_BOOTSTRAP_TOKEN", "leak-canary-bootstrap-9f2a"],
+  ["GOOGLE_CLIENT_SECRET", "leak-canary-google-9f2a"],
+  ["CONSOLE_SESSION_SECRET", "leak-canary-session-9f2a"],
+  ["OTEL_EXPORTER_OTLP_HEADERS", "leak-canary-otel-9f2a"],
+  ["SHOP_PASSWORD", "leak-canary-shop-9f2a"],
 ] as const;
 
 async function seededFake(): Promise<ReturnType<typeof createFakeGcp>> {
@@ -147,20 +156,42 @@ describe("expectedStoreNames", () => {
     expect(expectedStoreNames(config)).not.toContain("SECRETS_ADMIN_KEY_JSON");
   });
 
-  it("reports a consoleEnv: name that IS in the store, without counting it", async () => {
+  it("reports a consoleEnv: name that IS in the store, as its own finding", async () => {
     const fake = await seededFake();
     await fake.store.create({
       path: gatewayParameterPath("test", "SECRETS_ADMIN_KEY_JSON"),
       secret: true,
-      value: "admin-key-value",
+      value: "leak-canary-adminkey-9f2a",
     });
     const check = await checkStore(fake.store, config);
     expect(check.environmentOnly).toStrictEqual(["SECRETS_ADMIN_KEY_JSON"]);
     expect(check.adminCredentialsInStore).toStrictEqual([
       "SECRETS_ADMIN_KEY_JSON",
     ]);
+    // Not present (nothing reads it there) and not missing (it should not be
+    // there at all). Counting it as either would name the wrong fix.
     expect(check.present).not.toContain("SECRETS_ADMIN_KEY_JSON");
     expect(check.missing).not.toContain("SECRETS_ADMIN_KEY_JSON");
+  });
+
+  it("still expects a name declared under BOTH env: and consoleEnv:", async () => {
+    // The exclusion is per-NAME, not per-map: one server can read `${SHARED}`
+    // from the store via env: while another declares it under consoleEnv:.
+    // Subtracting the console set wholesale would drop it from the count, and a
+    // missing name would go unreported by the one function whose job is to count
+    // everything.
+    const shared = parseConfig(
+      CONFIG_YAML.replace(
+        `      ADMIN_KEY: "\${SECRETS_ADMIN_KEY_JSON}"`,
+        `      ADMIN_KEY: "\${SECRETS_ADMIN_KEY_JSON}"\n      SHARED_KEY: "\${SHOP_PASSWORD}"`,
+      ),
+    );
+    expect(expectedStoreNames(shared)).toContain("SHOP_PASSWORD");
+
+    const fake = createFakeGcp();
+    const check = await checkStore(fake.store, shared);
+    expect(check.missing).toContain("SHOP_PASSWORD");
+    expect(check.environmentOnly).toStrictEqual(["SECRETS_ADMIN_KEY_JSON"]);
   });
 });
 
@@ -195,6 +226,25 @@ describe("--resolve: presence is not resolvability", () => {
     expect(check.render?.unrendered).toStrictEqual([]);
   });
 
+  it("counts a value that is still a __REF__ pointer as UNRENDERED", async () => {
+    // The issue-#49 state: the caller holds `render`, the call succeeds, and the
+    // parameter's own principal cannot reach the secret — so what comes back is
+    // the pointer. A pointer is a perfectly good non-empty string, so a check
+    // that only asks "did I get something" reports the failure it exists to find
+    // as a pass.
+    const fake = await seededFake();
+    const undereferenced = {
+      list: fake.store.list.bind(fake.store),
+      resolve: async () => ({
+        GRANOLA_TOKEN: secretRef("strad-secrets-test", "granola"),
+        STRAD_TOKENS: "[]",
+      }),
+    };
+    const check = await checkStore(undereferenced, config, { resolve: true });
+    expect(check.render?.rendered).toStrictEqual(["STRAD_TOKENS"]);
+    expect(check.render?.unrendered).toContain("GRANOLA_TOKEN");
+  });
+
   it("does not re-report a MISSING name as one that failed to render", async () => {
     // A half-seeded namespace mid-migration must not look twice as broken as it
     // is: a name is counted once, in the category that has a fix.
@@ -225,10 +275,11 @@ const run = promisify(execFile);
 async function check(
   args: string[],
   env: Record<string, string> = {},
+  configBody = CONFIG_YAML,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const dir = mkdtempSync(join(tmpdir(), "strad-store-check-"));
   const cfg = join(dir, "cfg.yaml");
-  writeFileSync(cfg, CONFIG_YAML);
+  writeFileSync(cfg, configBody);
   const argv = ["--experimental-transform-types", "scripts/check-store.ts"];
   // `--config <the temp file>` unless the caller is testing the flag handling.
   if (!args.includes("--no-config")) argv.push("--config", cfg);
@@ -308,6 +359,38 @@ describe("scripts/check-store.ts", () => {
     expect(result.stderr).toContain(RESOLVER_ENV.keyJson);
   });
 
+  it("says a key is UNUSABLE rather than unset, when it is set and broken", async () => {
+    // Telling someone to set a variable they have already set is how a corrupt
+    // key gets diagnosed as a missing one. The reason is by shape, never content.
+    const result = await check([], {
+      [RESOLVER_ENV.keyJson]: '{"client_email": "truncated"',
+    });
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("is set but unusable");
+    expect(result.stderr).toContain("is not valid JSON");
+  });
+
+  it("exits 3 when the store cannot be reached at all", async () => {
+    // list() throwing is not a verdict about what is seeded. Port 1 refuses.
+    const result = await check([], {
+      [RESOLVER_ENV.tokenUrl]: "http://127.0.0.1:1/token",
+      [RESOLVER_ENV.pmApiBase]: "http://127.0.0.1:1/pm",
+    });
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("could not list the store");
+    expect(result.stderr).toContain("not a report about what is seeded");
+  });
+
+  it("exits 2 on a config that does not parse", async () => {
+    const result = await check(
+      [],
+      {},
+      "version: 1\ngateway: [not, an, object]\n",
+    );
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("does not parse");
+  });
+
   it("exits 2 on a typo'd flag, not 1", async () => {
     // A tool whose job is catching mistakes must not answer `--mode reprot` with
     // the exit code that means "your namespace is broken".
@@ -328,5 +411,42 @@ describe("scripts/check-store.ts", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("0 of 9 expected name(s) present");
     expect(result.stdout).toContain("/strad/nowhere/");
+  });
+
+  it("refuses an empty --namespace instead of matching the whole project", async () => {
+    // An empty prefix matches every parameter in the project, so staging's
+    // STRAD_TOKENS would satisfy a prod check and the script would print
+    // `complete` for the wrong reason.
+    expect((await check(["--namespace="])).code).toBe(2);
+    expect((await check(["--namespace=  "])).code).toBe(2);
+  });
+
+  it("fails the gate on a consoleEnv: name found in the namespace", async () => {
+    // The opposite of a missing name, and still a finding: nothing reads the copy
+    // there, and the resolver credential — the one the flip hands to the gateway
+    // process — can.
+    const inverted = await seededFake();
+    await inverted.store.create({
+      path: gatewayParameterPath("test", "SECRETS_ADMIN_KEY_JSON"),
+      secret: true,
+      value: "leak-canary-adminkey-9f2a",
+    });
+    const invertedServed = await serveFake(inverted);
+    try {
+      const result = await check([], {
+        [RESOLVER_ENV.pmApiBase]: `${invertedServed.base}/pm`,
+        [RESOLVER_ENV.smApiBase]: `${invertedServed.base}/sm`,
+        [RESOLVER_ENV.tokenUrl]: `${invertedServed.base}/token`,
+      });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toContain("IN THE STORE AND SHOULD NOT BE");
+      expect(result.stderr).toContain(
+        "SECRETS_ADMIN_KEY_JSON is a consoleEnv: name",
+      );
+      expect(result.stdout).not.toContain("leak-canary-adminkey-9f2a");
+      expect(result.stderr).not.toContain("leak-canary-adminkey-9f2a");
+    } finally {
+      await invertedServed.close();
+    }
   });
 });

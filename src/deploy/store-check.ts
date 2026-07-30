@@ -1,10 +1,13 @@
 import type { StradConfig } from "../config/schema.ts";
 import {
-  bakedSecretNames,
   consoleEnvNames,
   requiredSecretNames,
+  supplementaryEnvNames,
 } from "./preflight.ts";
-import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
+import {
+  gatewayNamespace,
+  isSecretRef,
+} from "../secrets/parameters/namespace.ts";
 import { errorSummary } from "../secrets/provider/snapshot.ts";
 import type {
   ParameterAdmin,
@@ -36,8 +39,10 @@ import type {
  *     and `auth.google.enabled: true` that is missing it has a front door that
  *     does not open, and the preflight reports that namespace as fine.
  *
- * Put together on a real config: a namespace holding 3 of 31 names deploys green.
- * This module counts all 31.
+ * Put together: a namespace holding only the three names the preflight insists on
+ * — `STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN` and whatever `${NAME}` refs the config
+ * makes — deploys green, however many the deployment actually reads. This module
+ * counts all of them.
  *
  * ## What "expected" means here
  *
@@ -50,11 +55,14 @@ import type {
  *   - a `supplementary-image` server's `env:` — read from the store at RENDER
  *     time and baked onto that component.
  *
- * A `consoleEnv:` name is the one exclusion, and it is not an oversight: it
+ * A `consoleEnv:`-only name is the one exclusion, and it is not an oversight: it
  * carries the console's store-ADMIN credential, `render-spec` reads it from the
  * deploy environment ONLY, and filing it inside the store would let the weaker
  * resolver credential read the stronger admin one. Finding one IN the store is
- * therefore a finding of its own, reported rather than counted as present.
+ * therefore its own kind of finding — the opposite of a missing name, and still
+ * something a pre-flip gate should refuse. A name declared under both `env:` and
+ * `consoleEnv:` is NOT excluded: the `env:` declaration means some component
+ * genuinely reads it from the store.
  *
  * ## It reads metadata, not values
  *
@@ -77,9 +85,10 @@ export interface StoreCheckResult {
   /** `consoleEnv:` names — deploy-environment only, never expected here. */
   environmentOnly: string[];
   /**
-   * `consoleEnv:` names found IN the namespace anyway. Not a missing-name
-   * failure; a privilege inversion worth a human's attention, because the
-   * resolver credential can read whatever is filed here.
+   * `consoleEnv:` names found IN the namespace anyway. Not a missing name — the
+   * opposite — but a finding all the same, and one the pre-flip gate fails on:
+   * the resolver credential can read whatever is filed here, and what is filed
+   * here is the console's store-ADMIN credential.
    */
   adminCredentialsInStore: string[];
   /** Present only when `resolve` was requested. */
@@ -107,12 +116,24 @@ export interface RenderCheck {
  * a caller can see what M is built from.
  */
 export function expectedStoreNames(config: StradConfig): string[] {
-  const consoleOnly = new Set(consoleEnvNames(config));
   const names = new Set<string>(requiredSecretNames(config));
-  for (const name of bakedSecretNames(config)) {
-    if (!consoleOnly.has(name)) names.add(name);
-  }
+  // `env:` only — never `consoleEnv:`. And `env:` WINS: one name can be declared
+  // under both maps (by one server or by two), and it is still read from the
+  // store for the `env:` declaration, so subtracting the console set wholesale
+  // would drop a genuinely required name from the count.
+  for (const name of supplementaryEnvNames(config)) names.add(name);
   return [...names].sort();
+}
+
+/**
+ * `consoleEnv:` names that are ONLY that — read from the deploy environment and
+ * never from the store. A name also declared under some server's `env:` is not
+ * here: it belongs in `expected`, and reporting it as environment-only would tell
+ * an operator to remove the very thing the check demands.
+ */
+function environmentOnlyNames(config: StradConfig): string[] {
+  const fromEnv = new Set(supplementaryEnvNames(config));
+  return consoleEnvNames(config).filter((name) => !fromEnv.has(name));
 }
 
 export interface StoreCheckOptions {
@@ -126,7 +147,7 @@ export interface StoreCheckOptions {
   resolve?: boolean;
 }
 
-type Store = Pick<ParameterAdmin, "list"> & Partial<ParameterResolver>;
+type Store = Pick<ParameterAdmin, "list"> & Pick<ParameterResolver, "resolve">;
 
 /** Enumerate, compare, report. Reads no value unless `resolve` is set. */
 export async function checkStore(
@@ -142,7 +163,7 @@ export async function checkStore(
   const present = expected.filter((name) => held.has(name));
   const missing = expected.filter((name) => !held.has(name));
 
-  const environmentOnly = consoleEnvNames(config);
+  const environmentOnly = environmentOnlyNames(config);
   const adminCredentialsInStore = environmentOnly.filter((name) =>
     held.has(name),
   );
@@ -175,18 +196,23 @@ async function renderCheck(
   namespace: string,
   present: string[],
 ): Promise<RenderCheck> {
-  if (!store.resolve) {
-    return {
-      rendered: [],
-      unrendered: [...present],
-      error: "this store client cannot resolve",
-    };
-  }
   try {
     const values = await store.resolve(namespace);
-    const rendered = present.filter((name) => values[name] !== undefined);
-    const unrendered = present.filter((name) => values[name] === undefined);
-    return { rendered, unrendered };
+    // A value that is still a `__REF__` pointer did NOT render. The dereference
+    // runs as the parameter's own principal, so a caller with `render` can be
+    // handed the pointer back when that principal cannot reach the secret — and
+    // a pointer is a perfectly good non-empty string, so "did I get something"
+    // is the wrong question. This is the exact state issue #49 describes, and
+    // reporting it as a value would make this check green on the failure it
+    // exists to find.
+    const resolved = (name: string): boolean => {
+      const value = values[name];
+      return value !== undefined && !isSecretRef(value);
+    };
+    return {
+      rendered: present.filter(resolved),
+      unrendered: present.filter((name) => !resolved(name)),
+    };
   } catch (err) {
     // A 403 here is the missing accessor role, and it is the failure this whole
     // change exists to make visible. Everything else — an outage, a deadline —

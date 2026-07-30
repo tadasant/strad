@@ -80,6 +80,28 @@ export function bakedSecretNames(config: StradConfig): string[] {
 }
 
 /**
+ * Names referenced by a supplementary image's own `env:` map, and nothing else.
+ *
+ * `bakedSecretNames()` is `env:` plus `consoleEnv:`, because both are resolved at
+ * render time. They are not interchangeable: an `env:` name is read FROM THE
+ * STORE under the store provider, a `consoleEnv:` name never is. Anything asking
+ * "what must the store hold" needs the two apart, and needs this one to win when
+ * a name appears in both — `render-spec` still has to find it in the store for
+ * the server that declared it under `env:`.
+ */
+export function supplementaryEnvNames(config: StradConfig): string[] {
+  const names = new Set<string>();
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    for (const raw of Object.values(server.env)) {
+      for (const name of refsIn(raw)) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
  * Names referenced by a `consoleEnv:` map.
  *
  * These are read from the deploy ENVIRONMENT ONLY, never from the store, and the

@@ -8,8 +8,8 @@ import type { createFakeGcp } from "../../src/secrets/parameters/fake.ts";
  * The fake is a `fetch` stub keyed on its own base URLs; this rewrites an
  * incoming request back onto those bases and hands it to the stub. That keeps one
  * implementation of the store's behaviour instead of two that drift — which
- * matters because two scripts now talk to a store (`render-spec` and
- * `check-store`), and both are exercised as real subprocesses.
+ * matters because two scripts talk to a store (`render-spec` and `check-store`),
+ * and both are exercised as real subprocesses.
  */
 export interface ServedFake {
   base: string;

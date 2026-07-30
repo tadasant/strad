@@ -177,10 +177,10 @@ passes it happily, which is the proof.
 
 The preflight above is a **deploy gate**, and it is scoped like one. It checks the
 names the gateway resolves at runtime — the config's `${NAME}` refs plus the core
-boot keys — and of those it counts only the ones a deployment cannot work without
-as missing. Both halves are correct for a deploy and insufficient for the one
-moment that matters most: switching a live deployment from `env` to
-`gcp-parameter-store`.
+boot keys. Every `${NAME}` the config references is always counted missing; of the
+**boot keys**, only `STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` are. Both halves are
+correct for a deploy and insufficient for the one moment that matters most:
+switching a live deployment from `env` to `gcp-parameter-store`.
 
 Two names make the difference concrete. `GOOGLE_CLIENT_ID` is **optional at
 boot**, so a namespace without it preflights clean — and with
@@ -188,7 +188,7 @@ boot**, so a namespace without it preflights clean — and with
 `supplementary-image` server's `env:` names are outside the preflight entirely
 (they are baked at render time, and `render-spec` fails on a missing one) — but
 under this provider they are read _from the store_, so they have to be seeded
-before the flip and nothing checked that until the deploy was already running.
+before the flip, and the deploy is the first thing that looks.
 
 `scripts/check-store.ts` counts **everything the deployment reads from the
 store**:
@@ -213,6 +213,14 @@ npm run store:check -- --config infra/strad.staging.yaml --mode report
 npm run store:check -- --config infra/strad.staging.yaml --resolve
 ```
 
+| Flag                 | Meaning                                                                                                                    |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `--config <path>`    | **required** — the config whose names are counted                                                                          |
+| `--mode require`     | the default: a finding is exit 1, annotated `::error`                                                                      |
+| `--mode report`      | the same report, exit 0, annotated `::notice`                                                                              |
+| `--namespace <path>` | override the namespace `gateway.env` implies. It cannot be empty — an empty prefix matches every parameter in the project. |
+| `--resolve`          | also render what was found, and report by name what came back                                                              |
+
 `--mode require` is the default deliberately: a checker that never fails unless
 asked repeats the mistake it exists to fix. The mode changes the verdict and never
 the facts, so a day's report and the final gate cannot disagree about what is
@@ -223,11 +231,17 @@ metadata, and for a secret parameter a `__REF__` pointer rather than a secret.
 `--resolve` does render values in order to prove the resolver can, and reports
 names alone.
 
-**A `consoleEnv:` name found in the store is reported, not counted.** It is not
-missing — `render-spec` reads it from the deploy environment by design — but a
-copy sitting in the gateway namespace is readable by the weaker resolver
-credential, which is the one thing the [three-credential
-split](/auth/overview/#the-secrets-console-three-credentials) exists to prevent.
+**A `consoleEnv:` name found in the store fails the gate.** It is the opposite of
+a missing name and it is still a finding: nothing reads the copy there —
+`render-spec` takes that value from the deploy environment — and the resolver
+credential, the one the flip hands to the gateway process, can. That is the one
+thing the [three-credential
+split](/auth/overview/#the-secrets-console-three-credentials) exists to prevent,
+so the fix named is "delete it from the store", not "seed it".
+
+A name declared under **both** `env:` and `consoleEnv:` is not excluded. Some
+component genuinely reads it from the store for the `env:` declaration, so it is
+counted like any other expected name.
 
 **It runs standalone from a checkout.** No image, no pin bump, no deploy: Node 22,
 this repo, and the resolver's `STRAD_PARAMS_*` environment. That is the same

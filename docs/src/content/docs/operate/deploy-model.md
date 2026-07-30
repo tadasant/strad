@@ -264,12 +264,19 @@ npm run store:check -- --config infra/strad.staging.yaml            # the gate
 npm run store:check -- --config infra/strad.staging.yaml --mode report  # daily
 ```
 
-| Exit | Meaning                                                                       |
-| ---- | ----------------------------------------------------------------------------- |
-| `0`  | every expected name is present — or `--mode report` produced its report       |
-| `1`  | names are missing (or `--resolve` could not render them); `require` mode only |
-| `2`  | called wrong: no `--config`, unreadable file, config does not parse           |
-| `3`  | the store could not be consulted at all — not a verdict about what is seeded  |
+| Flag                 | Meaning                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| `--config <path>`    | **required** — the config whose names are counted              |
+| `--mode <m>`         | `require` (default, a finding is exit 1) or `report` (exit 0)  |
+| `--namespace <path>` | override the namespace `gateway.env` implies; may not be empty |
+| `--resolve`          | also render what was found; report by name what came back      |
+
+| Exit | Meaning                                                                                       |
+| ---- | --------------------------------------------------------------------------------------------- |
+| `0`  | every expected name is present — or `--mode report` produced its report                       |
+| `1`  | a finding: a missing name, a name that would not render, or a `consoleEnv:` name in the store |
+| `2`  | called wrong: no `--config`, unreadable file, config does not parse                           |
+| `3`  | the store could not be consulted at all — not a verdict about what is seeded                  |
 
 It runs standalone from a checkout with the resolver key in the environment: no
 image, no pin bump, no deploy. [Secrets](/operate/secrets/#is-the-namespace-complete-store-check)

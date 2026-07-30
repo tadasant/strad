@@ -743,7 +743,7 @@ so the capability can land and be reviewed without a flag day.
 
 **The deploy preflight does not make the flip safe, and it is not trying to.**
 `preflightSecrets()` checks `requiredSecretNames()` — the config's `${NAME}` refs
-plus `CORE_BOOT_ENV_KEYS` — and counts as missing only the two boot keys a
+plus `CORE_BOOT_ENV_KEYS` — and of the boot keys counts as missing only the two a
 deployment cannot work without. So a namespace can be missing most of what a real
 config needs and still deploy green: the optional boot keys are reported and never
 counted (`GOOGLE_CLIENT_ID` among them, which with `auth.google.enabled: true` is
