@@ -114,14 +114,30 @@ describe("Sealer", () => {
   });
 
   it("rejects a tampered payload", () => {
-    const token = s.seal({ v: 1, role: "viewer", exp: Date.now() + 1000 });
+    // A fixed expiry, so the sealed body — and with it the MAC — is identical on
+    // every run, and no assertion below can pass because the payload expired
+    // rather than because the MAC failed.
+    const exp = 4_102_444_800_000; // 2100-01-01
+    const token = s.seal({ v: 1, role: "viewer", exp });
     const [body, mac] = token.split(".") as [string, string];
+    // The control: every token below differs from this valid one by exactly the
+    // tamper, so a null can only be the tamper.
+    expect(s.unseal(token)).not.toBeNull();
     const forged = Buffer.from(
-      JSON.stringify({ v: 1, role: "admin", exp: Date.now() + 1000 }),
+      JSON.stringify({ v: 1, role: "admin", exp }),
       "utf8",
     ).toString("base64url");
+    // Tamper at the BYTE level. The MAC is a 32-byte digest in 43 base64url
+    // characters, so the last character carries only 4 significant bits: it is
+    // one of 16 values, and its two low bits are dropped on decode. Rewriting
+    // only that character to a constant is a no-op one run in sixteen — whenever
+    // the genuine MAC already ends in that character, it rebuilds the valid
+    // token. Flipping every byte is unconditional.
+    const tampered = Buffer.from(
+      Buffer.from(mac, "base64url").map((b) => b ^ 0xff),
+    ).toString("base64url");
     expect(s.unseal(`${forged}.${mac}`)).toBeNull();
-    expect(s.unseal(`${body}.${mac.slice(0, -1)}A`)).toBeNull();
+    expect(s.unseal(`${body}.${tampered}`)).toBeNull();
     expect(s.unseal("garbage")).toBeNull();
     expect(s.unseal(undefined)).toBeNull();
   });
