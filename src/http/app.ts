@@ -42,6 +42,15 @@ export interface AppOptions {
    * Optional so existing test call sites need not supply it.
    */
   secrets?: SecretBag;
+  /**
+   * The runtime secret provider, for the Secrets Console at `/secrets`.
+   *
+   * Optional, and the fallback is not a degradation under the default `env`
+   * provider — the bag IS process.env there. It matters for a store-backed
+   * deployment, where a referenced name lives in the parameter store and appears
+   * in no bag, so presence can only be established by asking the provider.
+   */
+  secretProvider?: ConsoleUiOptions["secretProvider"];
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
@@ -107,6 +116,7 @@ export function createApp(opts: AppOptions): Express {
     mountConsoleUi(app, {
       config: opts.config,
       secrets: opts.secrets ?? {},
+      secretProvider: opts.secretProvider,
       env,
       gcsList: opts.gcsList,
       parametersStore: opts.parametersStore,

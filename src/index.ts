@@ -111,7 +111,18 @@ async function main(): Promise<void> {
     );
   }
 
-  const app = createApp({ config, registry, tokenStore, mode, env, secrets });
+  // `secretProvider` is handed to the app for the Secrets Console: it is the only
+  // seam that can answer "does this ${NAME} resolve?" for a store-backed
+  // deployment, where the answer is in the parameter store and in no bag.
+  const app = createApp({
+    config,
+    registry,
+    tokenStore,
+    mode,
+    env,
+    secrets,
+    secretProvider,
+  });
 
   // App Platform: a PUBLIC component sets http_port. An INTERNAL component sets
   // internal_ports and must NOT set http_port (http_port is what mints the

@@ -201,6 +201,151 @@ unreachable store is not a store that lacks the name, and silently falling back
 to a stale env var during an outage is how a rotated credential comes back from
 the dead.
 
+## The Secrets Console: every server, and whether its secrets are there
+
+`/secrets` is the fourth console entry on the landing page, and it answers one
+question: **is the strad side of this connector broken?**
+
+The preflight above is honest but late. A `${NAME}` that is not seeded is
+discoverable at exactly one moment — the deploy, when `render-spec` refuses to
+render — and that is no help at all to someone standing in front of a connector
+returning 401 and wondering whose fault it is. This page derives the same answer
+from the running config, before and independently of any deploy.
+
+It is a **roster**, not an error log. Every enabled server is on it, healthy ones
+included, because "slack is fine, gmail is not" is the answer and a page listing
+only failures cannot give it. Servers needing attention are expanded by default;
+the rest are collapsed.
+
+It is behind `requireConsoleUi`, the same gate as `/ui` and `/console`.
+
+### The six states, and what each one claims
+
+| State         | What it means                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ready`       | Every `${NAME}` this server references resolves to a value. **Not** a claim the credential works — see below.      |
+| `no secrets`  | The server declares no references at all. Nothing to seed.                                                         |
+| `not seeded`  | The backend answered, and there is no such secret. The one unambiguous state, and the one the fix guidance is for. |
+| `check value` | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string. |
+| `unverified`  | The value is scoped to a component this process is not, so the console cannot confirm it either way.               |
+| `unknown`     | The secret backend could not be consulted. Not absent.                                                             |
+
+**Seeded is not working, and the page does not pretend otherwise.** strad never
+calls an upstream to prove a credential is accepted, so the good state is `ready`
+— "everything it needs is present" — and never "healthy". This is not a
+hypothetical distinction: a `remote-http` server carrying a placeholder bearer
+token boots fine, lists every other server fine, and 401s in isolation. A page
+that reported presence alone would call that healthy. The `check value` state
+exists for exactly that shape.
+
+**Not visible here is not missing.** The console renders in `core`. A
+supplementary image's `env:` is resolved at render time and injected onto its own
+_bundle_ — `appspec.ts` never broadcasts it — so core cannot see it, and a
+presence check that answered "not seeded" would paint a healthy fleet entirely
+red. That case is `unverified`, and the row says which process would have to be
+asked. Under `gcp-parameter-store` the picture is better rather than worse: the
+store holds the deploy-time source of truth for a bundle-scoped ref too, so those
+deployments get a real answer for every name — the same answer `render-spec`
+would compute, one deploy earlier.
+
+**A `consoleEnv:` value is found under its KEY, not its ref name.** A rendered
+spec carries the resolved value filed under the key the container reads; the ref
+NAME is deliberately never injected anywhere. Asking the provider for the ref name
+and believing the `null` is the bug that once had `/ui/secrets` reporting a
+missing admin credential in production with the value sitting in core's
+environment one line below.
+
+### The GSM / ENV source badge
+
+Each secret carries a second badge naming **which store holds it** — provenance,
+not status, which is the chip beside it.
+
+| Badge | Meaning                                                                                                                                                                                                                                                                                                 |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GSM` | Google Secret Manager holds the bytes. Either read at runtime through the parameter store (whose secret parameters are `__REF__` pointers into Secret Manager), or seeded as `strad-<env>-<NAME>` and baked into the app spec at deploy time. On a `not seeded` row it names where the value has to go. |
+| `ENV` | strad reads it straight out of its own process environment.                                                                                                                                                                                                                                             |
+
+Every `consoleEnv:` name is `ENV` by design, on both providers: it is read from the
+deploy environment only and never from the store, because it carries the console's
+store-admin credential.
+
+An `unknown` row carries no badge — a backend that could not be consulted cannot be
+named as the source either.
+
+**The labels are not strad's own invention, and that is the point.** Zimmer's
+Connectors page uses the same two, so the two screens can be read side by side and
+compared, which is the whole loop this page exists to serve. Zimmer additionally
+shows `Rails Credentials`; strad has no equivalent and never renders it. If
+Zimmer's labels change, these change with them —
+`test/ui.secret-status.test.ts` pins both spellings and their tooltips so a
+divergence fails CI rather than quietly defeating the feature.
+
+### One shared secret is one problem
+
+Every capability variant of a server family declares its credentials identically,
+on purpose: a component's environment is the union of its servers' `env:` maps, so
+with the secret on only one variant, setting `enabled: false` on _that_ variant
+would silently strip it from its siblings. So one `${NAME}` legitimately appears
+on several entries, and the page deduplicates by name. One unseeded secret shared
+by four variants is one problem, and listing it four times would bury the other
+three.
+
+Disabled servers contribute nothing — the gateway does not mount them and
+`render-spec` skips them, so their secrets are required by nothing.
+
+### The fix guidance is the point
+
+A `not seeded` or `check value` row names, per route: the store, the GCP project,
+the exact resource name or canonical path, and a paste-ready `gcloud` command. The
+route offered **first** is decided by what the deployment declares, because the two
+are not interchangeable:
+
+- `provider: env` → GCP Secret Manager, `strad-<env>-<NAME>`, then redeploy.
+- `provider: gcp-parameter-store` → `/strad/<env>/gateway/static/<NAME>`, read at
+  runtime, with a link straight to the parameters console that can write it.
+
+A server with `params: true` also gets its own namespace offered —
+`/strad/<env>/mcp/<slug>/static/<NAME>` — as the narrowest home for a credential
+only it needs.
+
+The project is read from the deployment rather than assumed: the resolver's own
+`STRAD_PARAMS_PROJECT_ID` if this process holds one, else the `secrets` server's
+declared `SECRETS_PROJECT_ID`, else the `strad-secrets-<env>` convention. The
+convention is last because a deployment that named its project something else
+would otherwise be handed a command that fails; when it _is_ a guess, the page
+says so.
+
+A `consoleEnv:`-only name gets one route and it is not the store — that value is
+read from the deploy environment only, because it carries the console's
+store-admin credential and filing it inside the store would let the weaker
+resolver credential read the stronger one.
+
+### It prints names and paths, never values
+
+`/` is deliberately narrow — no `env:` keys, no urls, no headers. This page's
+entire job is to name the missing thing and where it goes, so it prints NAMES and
+PATHS. The line it holds instead is the one that matters: **no secret value is
+ever rendered.** Not revealed, not excerpted, not length-hinted, not in a title
+attribute. The placeholder check reads a value and returns a sentence about the
+_shape_ it matched; nothing on the page is ever handed bytes.
+
+### It degrades rather than hanging
+
+Every name is read concurrently under its own deadline. A store that hangs costs
+the page one timeout, not one per secret; a store that throws costs it one
+`unknown` row. One server whose status cannot be determined does not break the
+page or delay the others.
+
+### The gateway's own boot keys
+
+A second panel lists `STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN` and the console OAuth
+client. They belong here because the loop this page serves starts with "point a
+client at a strad URL with the shared API token": without `STRAD_TOKENS` every
+`/mcp` request is rejected and no amount of per-server green means anything. Only
+those first two are required; the rest render as `not set · optional`, because a
+deployment with no console genuinely has no `GOOGLE_CLIENT_SECRET` and flagging
+that red would train people to ignore the panel.
+
 ## The console's parameters page
 
 `/ui/secrets` is the human half of the `secrets` server, and the only place a

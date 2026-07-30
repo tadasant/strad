@@ -780,6 +780,61 @@ unknown key is still reported).
 **Undo.** Delete `src/config/strict.ts`, `scripts/check-config.ts`, the `config` CI
 job and the `config:check` script. Nothing at runtime depends on any of it.
 
+## 29. The Secrets Console proves presence, not that a credential works
+
+**What.** `/secrets` lists every configured MCP server and whether the secrets it
+requires resolve. It does NOT establish that a credential is still accepted — strad
+makes no upstream call to check. So the good state is `ready` ("everything it needs
+is present"), never "healthy", and a server whose token was revoked yesterday reads
+`ready` here while 401ing on every call.
+
+**Why the state names are the mitigation.** The page's whole value is being trusted
+at a glance, so the honesty has to be in the label rather than in a footnote.
+`ready`, `check value`, `not seeded`, `unverified`, `unknown` and `no secrets` each
+claim exactly one thing, and `src/ui/secret-status.ts` derives them from the running
+config rather than asserting them.
+
+**The placeholder heuristic, and why it is narrow.** A value that is evidently
+filler gets its own `check value` state: an unexpanded `${...}`, an empty string, or
+an exact (case-folded, trimmed) match against a short list of well-known filler
+strings, plus a few unmistakable substrings. Deliberately NOT entropy scoring: a
+false "this looks fake" sends someone to rotate a working secret, and they cannot
+verify without revealing it. Both directions of wrong are costly, so the rule only
+fires on shapes no credential issuer emits. It catches the concrete case it was
+written for — a `remote-http` bearer token seeded with a placeholder, which boots
+fine, lists fine and 401s in isolation — and it will miss a plausible-looking dud.
+
+**The scope gap.** Under `provider: env` a `supplementary-image` server's `env:` is
+resolved at render time and baked onto its own bundle; `appspec.ts` never broadcasts
+it, and the console renders in `core`. So core cannot see those values, and the page
+reports `unverified` — "not visible here" — rather than `missing`. Reporting
+`missing` would paint a healthy 26-server fleet entirely red, which is the failure
+mode that would make the page worse than nothing. `provider: gcp-parameter-store`
+closes the gap (the store holds the deploy-time source of truth for those refs too,
+so every name gets a real answer, one deploy before `render-spec` would compute the
+same thing). Under `env` it cannot be closed from inside the container: the value
+lives in CI's environment, which core has no path to.
+
+**What it does NOT do, on purpose.** No secret VALUE is rendered — not revealed,
+excerpted, length-hinted, or put in a title attribute. The placeholder check reads a
+value and returns a sentence about the SHAPE it matched; nothing in the renderer is
+ever handed bytes. `test/ui.secret-status.test.ts` asserts that over a table of
+values, and asserts the rendered page contains none of them.
+
+**The GSM / ENV badge is coupled to another product's UI, deliberately.** Those two
+labels are Zimmer's Connectors page's labels, not strad's. The workflow is to read
+that screen and this one and compare, so a divergent spelling defeats the badge —
+which makes this a cross-repo coupling with no compile-time link. If Zimmer renames
+a label, strad's is silently wrong. `test/ui.secret-status.test.ts` pins both
+spellings and their tooltip expansions so the coupling is at least visible in a
+diff; nothing can make it automatic from inside this repo. Zimmer's third label
+(`Rails Credentials`) has no strad equivalent and is never rendered here.
+
+**Undo.** Delete `src/ui/secret-status.ts`, `src/ui/secret-status-page.ts`,
+`test/ui.secret-status.test.ts`, the `/secrets` route in `src/ui/index.ts`, the
+fourth card in `src/ui/landing.ts`, and the `secretProvider` option threaded through
+`src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
