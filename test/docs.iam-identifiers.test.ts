@@ -263,6 +263,10 @@ const IDENTITIES: Record<
   { does: readonly Operation[]; mustNotHold: readonly string[] }
 > = {
   // servers/secrets, on the bundle: list and read NON-secret values.
+  //
+  // `mustNotHold` here is not defence in depth. `render` is a live read path —
+  // the parameter's own principal must hold `secretAccessor` for resolution to
+  // work at all — so this role split is the whole fence. See the dedicated test.
   viewer: {
     does: ["list"],
     mustNotHold: [
@@ -343,6 +347,16 @@ const SECRETS_IAM_MD = join(
  * assertion below pins the identity set, so deleting or renaming a row fails
  * here rather than quietly checking nothing.
  */
+function grantedRolesIn(cell: string): string[] {
+  // A cell may name a role in order to FORBID it — the viewer row's
+  // "`parameterViewer`, and **never** `parameterAccessor`" is the load-bearing
+  // example, and reading that as a grant would invert the security property this
+  // file exists to protect. Everything from the first "never" on is a
+  // prohibition, not a grant.
+  const granted = cell.split(/\bnever\b/i)[0]!;
+  return [...(granted.match(ROLE) ?? [])].map(normalizeRole);
+}
+
 function documentedGrants(): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const line of readFileSync(SECRETS_MD, "utf8").split("\n")) {
@@ -350,7 +364,7 @@ function documentedGrants(): Record<string, string[]> {
       line,
     );
     if (!row) continue;
-    out[row[1]!] = [...(row[2]!.match(ROLE) ?? [])].map(normalizeRole);
+    out[row[1]!] = grantedRolesIn(row[2]!);
   }
   return out;
 }
@@ -524,6 +538,60 @@ describe("documented grants vs. what the code calls", () => {
       }
     }
     expect(excess).toStrictEqual([]);
+  });
+
+  it("never lets prod's MCP credential hold a role that carries `render`", () => {
+    // THE security invariant on this page, and the one with the least margin.
+    //
+    // `:render` returns a secret VALUE, and it dereferences as the parameter's
+    // OWN principal rather than the caller's. That principal must hold
+    // `secretmanager.secretAccessor` on the secret or nothing resolves at all
+    // (issue #49), so `render` is a live read path and withholding
+    // `secretmanager.versions.access` from the `secrets` MCP server does not
+    // close it. What keeps the `/mcp` channel away from a production secret
+    // value is one thing only: prod's viewer credential holds `parameterViewer`
+    // (get/list) and NOT `parameterAccessor` (which carries `render`).
+    //
+    // And the trap is that widening it looks reasonable: the credential exists
+    // to READ PARAMETERS, and `parameterAccessor` is named as though it is the
+    // role for that. It is not. This repo has now misstated exactly that
+    // distinction in four separate documents, so assume the next reader will too.
+    const why =
+      "The `secrets` MCP credential must never be documented as holding a role " +
+      "that carries parametermanager.parameterVersions.render. `:render` " +
+      "returns a secret VALUE and derefs as the parameter's own principal, " +
+      "which strad grants secretAccessor — so withholding " +
+      "secretmanager.versions.access is NOT sufficient. This role split is the " +
+      "single remaining barrier between /mcp and production secret values " +
+      "(tadasant-internal#202), not a stylistic preference. `parameterViewer` " +
+      "is the read role; `parameterAccessor` is the deref, despite the names.";
+
+    const viewer = documentedGrants().viewer ?? [];
+    const carriesRender = viewer.filter((role) =>
+      (PREDEFINED_ROLES[role] ?? []).includes(
+        PROBE_PERMISSIONS.renderParameter,
+      ),
+    );
+    expect(carriesRender, why).toStrictEqual([]);
+
+    // Belt and braces: the same claim by PERMISSION, so a future role that
+    // happens to include `render` is caught even if nobody adds it to the list
+    // above by name.
+    const granted = grantedBy(viewer);
+    expect(granted.has(PROBE_PERMISSIONS.renderParameter), why).toBe(false);
+    expect(granted.has(PROBE_PERMISSIONS.readSecretValue), why).toBe(false);
+  });
+
+  it("reads a role named to FORBID it as forbidden, not as granted", () => {
+    // The viewer row says "`parameterViewer`, and never `parameterAccessor`".
+    // A parser that took every role token in the cell would read the prohibition
+    // as a grant and fail the invariant above — turning the doc's clearest
+    // statement of the boundary into a CI failure.
+    expect(
+      grantedRolesIn(
+        "`parametermanager.parameterViewer`, and **never** `parameterAccessor`",
+      ),
+    ).toStrictEqual(["roles/parametermanager.parameterViewer"]);
   });
 
   it("keeps the resolver's two Parameter Manager roles BOTH load-bearing", () => {

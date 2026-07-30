@@ -313,17 +313,34 @@ curl -sS -X POST "${CRM}" \
   -H "Content-Type: application/json" \
   -d '{"permissions":["parametermanager.parameters.list","parametermanager.parameterVersions.list","parametermanager.parameterVersions.get","parametermanager.parameterVersions.render"]}'
 
-# MUST print {} — the resolver writes nothing and reads no Secret Manager version.
+# MUST print {} — the resolver writes nothing, in either store.
 curl -sS -X POST "${CRM}" \
   -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   -H "Content-Type: application/json" \
-  -d '{"permissions":["parametermanager.parameterVersions.create","parametermanager.parameters.delete","secretmanager.versions.add","secretmanager.versions.access"]}'
+  -d '{"permissions":["parametermanager.parameterVersions.create","parametermanager.parameters.delete","secretmanager.versions.add","secretmanager.secrets.create"]}'
 ```
 
+`secretmanager.versions.access` is deliberately absent from both assertions. A
+resolver that also holds `roles/secretmanager.secretAccessor` is not broken — no
+resolver path calls Secret Manager, so the grant is unused either way — but it is
+not the thing that makes `:render` work, and least privilege says drop it.
+
+**The same accessor role is the one grant the `secrets` MCP credential must never
+have.** `:render` returns a secret value, so `roles/parametermanager.parameterAccessor`
+on the server that answers `/mcp` is a read path to production secrets — and
+withholding `secretmanager.versions.access` does not close it, because the deref
+runs as the parameter's principal rather than the caller. The resolver gets the
+accessor role because injecting values into a child process is its job; the
+viewer must not, because returning them over the agent channel is precisely what
+it exists not to do. `test/docs.iam-identifiers.test.ts` fails the build if this
+page or [Secrets](/operate/secrets/#which-identity-exactly) ever documents the
+viewer as holding it.
+
 **Holding `render` is not the same as rendering.** The permission is the caller's
-half; the parameter's own principal still has to be able to reach the referenced
-secret, which is issue #49 and is not granted today. So prove the round trip
-rather than the binding, with the credential the container will hold:
+half; the parameter's own principal must additionally hold
+`roles/secretmanager.secretAccessor` on the referenced secret — a property of the
+parameter, not of this credential, and the subject of issue #49. So prove the
+round trip rather than the binding, with the credential the container will hold:
 
 ```bash
 npm run store:check -- --config infra/strad.staging.yaml --resolve
