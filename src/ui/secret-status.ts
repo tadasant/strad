@@ -38,7 +38,7 @@ import { errorSummary } from "../secrets/provider/snapshot.ts";
  * presence check that answered "missing" would report the entire fleet broken on
  * a perfectly healthy deployment. That case is `unobservable`, and it says which
  * process would have to be asked. (`src/ui/resolve.ts` carries the scar from the
- * near-miss version of this mistake: `/ui/secrets` reported a missing admin
+ * near-miss version of this mistake: the console reported a missing admin
  * credential in prod with the value sitting in core's environment under the key
  * one line below.)
  *
@@ -194,9 +194,9 @@ export function collectRequirements(config: StradConfig): SecretRequirement[] {
  * The gateway's OWN boot keys — the token store, the internal token, the console
  * OAuth client. Not any server's, which is why they are a separate roster.
  *
- * They belong on this page because the loop it serves starts with "point Zimmer
+ * They belong on the console because the loop it serves starts with "point Zimmer
  * at a strad URL with the shared API token": without `STRAD_TOKENS` every /mcp
- * request is rejected and no amount of per-server green means anything.
+ * request is rejected and no amount of per-server READY means anything.
  */
 export function bootRequirements(): {
   name: string;
@@ -676,6 +676,87 @@ function finish(
 }
 
 // ---------------------------------------------------------------------------
+// The whole reading, in one call
+// ---------------------------------------------------------------------------
+
+/**
+ * The lookup `observe()` wants, built from what the deployment has.
+ *
+ * The RUNTIME provider when one was supplied, and the boot bag otherwise. Both
+ * honour the contract `observe()` depends on: `null` means the backend answered
+ * and the name is absent, and a throw means it could not be consulted.
+ * Collapsing those would turn a store outage into a wall of red "not seeded",
+ * which is the one failure mode that would make the console worse than nothing.
+ *
+ * The provider is the right seam rather than the bag alone because it is the
+ * only one that can answer for a store-backed deployment, where a name lives in
+ * the parameter store and never in `process.env`. Absent, the bag is exactly
+ * correct — under the `env` provider the bag IS the environment.
+ */
+export function secretLookup(
+  bag: SecretBag,
+  provider?: { get(name: string): Promise<string | null> },
+): (name: string) => Promise<string | null> {
+  if (provider) return (name: string) => provider.get(name);
+  return async (name: string) => bag[name] ?? null;
+}
+
+export interface SecretReading {
+  /** One entry per ENABLED server, in config order. */
+  statuses: ServerSecretStatus[];
+  /** The gateway's own boot keys, and whether each is required. */
+  boot: { observation: SecretObservation; required: boolean }[];
+}
+
+/**
+ * Read every referenced `${NAME}` once and derive both rosters.
+ *
+ * Shared by the human console (`/ui`) and the machine readiness endpoint
+ * (`/api/secrets/readiness`) so the two can never disagree: a badge and a JSON
+ * field that were derived separately would eventually drift, and the entire
+ * point of the endpoint is that a platform app can trust it says what the page
+ * says.
+ */
+export async function readSecretStatus(opts: {
+  config: StradConfig;
+  bag: SecretBag;
+  lookup: (name: string) => Promise<string | null>;
+  timeoutMs?: number;
+}): Promise<SecretReading> {
+  const { config, bag, lookup, timeoutMs } = opts;
+
+  const observations = await observe(collectRequirements(config), {
+    config,
+    lookup,
+    bag,
+    timeoutMs,
+  });
+
+  // The gateway's own boot keys travel the same path, so they are observed the
+  // same way. They carry no `consoleEnv:` key and no bundle scope, so they are
+  // plain `gateway`-delivery requirements.
+  const bootKeys = bootRequirements();
+  const bootObservations = await observe(
+    bootKeys.map(({ name }) => ({
+      name,
+      deliveries: ["gateway" as const],
+      slugs: [],
+      consoleKeys: [],
+      paramsSlugs: [],
+    })),
+    { config, lookup, bag, timeoutMs },
+  );
+
+  return {
+    statuses: deriveServerStatuses(config, observations),
+    boot: bootObservations.map((observation, i) => ({
+      observation,
+      required: bootKeys[i]?.required ?? false,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Per-server status
 // ---------------------------------------------------------------------------
 
@@ -711,7 +792,7 @@ export interface ServerSecretStatus {
  * each step down is a weaker claim, and a row must be labelled by the strongest
  * bad news it carries or the label is a lie of omission.
  */
-const STATE_RANK: Record<SecretState, number> = {
+export const STATE_RANK: Record<SecretState, number> = {
   missing: 4,
   placeholder: 3,
   error: 2,

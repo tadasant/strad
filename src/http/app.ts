@@ -29,6 +29,7 @@ import type { SecretBag } from "../secrets/index.ts";
 import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
+import { createReadinessHandler } from "./readiness.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -43,7 +44,8 @@ export interface AppOptions {
    */
   secrets?: SecretBag;
   /**
-   * The runtime secret provider, for the Secrets Console at `/secrets`.
+   * The runtime secret provider, for the secret roster on `/ui` and the
+   * machine-readable one at `/api/secrets/readiness`.
    *
    * Optional, and the fallback is not a degradation under the default `env`
    * provider — the bag IS process.env there. It matters for a store-backed
@@ -106,6 +108,27 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.mode === "core") {
+    // The machine's read of the human console's secret roster.
+    //
+    // CORE ONLY, alongside the console it mirrors: the derivation reads core's
+    // own environment (a `consoleEnv:` value lands under its declared key on
+    // core and nowhere else), so a bundle would answer the same question with
+    // strictly less information and get it wrong.
+    //
+    // It is a STATIC-BEARER surface, not a session one: the consumer is a
+    // platform app holding one long-lived token, and it authenticates through
+    // the same authenticateMcp/STRAD_TOKENS path /mcp does. See readiness.ts.
+    app.get(
+      "/api/secrets/readiness",
+      createReadinessHandler({
+        config: opts.config,
+        tokenStore: opts.tokenStore,
+        env,
+        secrets: opts.secrets ?? {},
+        secretProvider: opts.secretProvider,
+      }),
+    );
+
     // Resolved ONCE and shared: /console begins the login and mints the session,
     // /ui verifies it. Two independent readings of "is Google usable?" is how
     // you get a gate that redirects into a flow that cannot complete.

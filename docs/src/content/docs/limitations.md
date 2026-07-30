@@ -264,17 +264,18 @@ credential read the stronger one.
 provider in the deployment's config, and drop the per-secret baking from the
 deploy workflow.
 
-### 29. The Secrets Console proves presence, not that a credential works
+### 29. The console's secret badges prove presence, not that a credential works
 
-`/secrets` lists every configured MCP server and whether the secrets it requires
+`/ui` lists every configured MCP server and whether the secrets it requires
 resolve. What it cannot do is tell you a credential is still _accepted_: strad
-never calls an upstream to check, so the good state is named `ready` ("everything
+never calls an upstream to check, so the good badge is named `READY` ("everything
 it needs is present") and never "healthy". A server whose token was revoked
-yesterday reads `ready` here and 401s on every call.
+yesterday reads `READY` here and 401s on every call. `GET /api/secrets/readiness`
+carries the same limitation into JSON: `ready: true` is a presence claim.
 
 Two mitigations are real but partial. A value that is _evidently_ filler — an
 unexpanded `${...}`, a well-known "change-me" string, an empty string — gets its
-own `check value` state, which catches the specific shape a
+own `check value` state behind the `ISSUE` badge, which catches the specific shape a
 placeholder-bearer-token server has (boots fine, lists fine, 401s in isolation).
 And the placeholder list is deliberately narrow, exact-match plus a few
 unmistakable substrings: entropy scoring would send someone to rotate a working
@@ -283,8 +284,8 @@ are costly.
 
 The second gap is scope. Under `provider: env` a `supplementary-image` server's
 `env:` is baked onto its own bundle and never broadcast to core, where the console
-renders — so core cannot see it and the page says `unverified` rather than
-guessing. That is honest but it is not an answer, and on an `env`-provider
+renders — so core cannot see it and the popout says `unverified` rather than
+guessing. That badges the entry `ISSUE`, because `READY` has to mean observed. That is honest but it is not an answer, and on an `env`-provider
 deployment it is the state most servers land in. `provider: gcp-parameter-store`
 closes it: the store holds the deploy-time source of truth for those refs too, so
 every name gets a real answer. Closing it under `env` would mean the console
@@ -302,15 +303,16 @@ namespace it did not check. That is honest but it is not an answer, and
 namespace through the resolver would close it; `preflightSecrets` already shows
 the listing is metadata-only, so nothing about it needs a value-reading credential.
 
-A fourth, smaller edge: the page's `GSM` / `ENV` source badge uses Zimmer's
+A fourth, smaller edge: the popout's `GSM` / `ENV` source badge uses Zimmer's
 Connectors-page labels on purpose, so the two screens can be compared — a
 cross-repo coupling with no compile-time link. If Zimmer renames a label, strad's
 is silently wrong. `test/ui.secret-status.test.ts` pins both spellings and their
 tooltips so the coupling shows up in a diff; nothing can make it automatic from
 inside this repo.
 
-**Undo:** delete `src/ui/secret-status.ts`, `src/ui/secret-status-page.ts`, the
-`/secrets` route and the fourth console card. Nothing else reads any of it.
+**Undo:** delete `src/ui/secret-status.ts` and `src/http/readiness.ts`, drop the
+`/secrets` redirect in `src/ui/index.ts`, and revert `src/ui/index-page.ts` to the
+plain server grid it renders around. Nothing else reads any of it.
 
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 

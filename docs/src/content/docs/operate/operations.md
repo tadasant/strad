@@ -292,6 +292,12 @@ allow-list is a subset of the tier above it.
   a server-side map, so the console survives a restart and spans replicas. See
   [Auth](/auth/overview/#the-sign-in-round-trip).
 - **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console,
-  behind the same gate as `/`. A Google login mints a signed 12-hour session
-  cookie; the dev bypass's cookie is still the bootstrap token itself, which is a
-  shim (see [Known limitations](/limitations/)).
+  behind the same gate as `/`. `/ui` carries the secret roster — a `READY` or
+  `ISSUE` badge per entry — and `/secrets` 302s to it. A Google login mints a
+  signed 12-hour session cookie; the dev bypass's cookie is still the bootstrap
+  token itself, which is a shim (see [Known limitations](/limitations/)).
+- **`/api/secrets/readiness`** is core-only and is the one authenticated surface
+  there that the console gate does **not** guard: its consumer is a machine, so it
+  takes a static bearer token through the same path `/mcp` does. It returns the
+  console's derivation as JSON — names, paths and states, never a value. See
+  [Secrets](/operate/secrets/#get-apisecretsreadiness--the-same-answer-for-a-machine).

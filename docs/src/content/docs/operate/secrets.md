@@ -201,34 +201,71 @@ unreachable store is not a store that lacks the name, and silently falling back
 to a stale env var during an outage is how a rotated credential comes back from
 the dead.
 
-## The Secrets Console: every server, and whether its secrets are there
+## The console index: every server, and whether its secrets are there
 
-`/secrets` is the fourth console entry on the landing page, and it answers one
-question: **is the strad side of this connector broken?**
+`/ui` is the console, and it answers two questions about the same list: what is
+each server scoped to, and **is the strad side of this connector broken?**
+
+The two live on one page because nobody wants the second question in isolation: it
+is asked _about_ a server, standing in front of the list of servers, so the answer
+belongs on the entry rather than one navigation away. `/secrets` is a 302 to
+`/ui` — the URL was published, and a page whose content moved teaches nobody
+anything by 404ing.
 
 The preflight above is honest but late. A `${NAME}` that is not seeded is
 discoverable at exactly one moment — the deploy, when `render-spec` refuses to
 render — and that is no help at all to someone standing in front of a connector
-returning 401 and wondering whose fault it is. This page derives the same answer
+returning 401 and wondering whose fault it is. The index derives the same answer
 from the running config, before and independently of any deploy.
 
-It is a **roster**, not an error log. Every enabled server is on it, healthy ones
+It is a **roster**, not an error log. Every server is on it, healthy ones
 included, because "slack is fine, gmail is not" is the answer and a page listing
-only failures cannot give it. Servers needing attention are expanded by default;
-the rest are collapsed.
+only failures cannot give it.
 
-It is behind `requireConsoleUi`, the same gate as `/ui` and `/console`.
+It is behind `requireConsoleUi`, the same gate as `/console`.
 
-### The six states, and what each one claims
+### Two badges, and where they sit
 
-| State         | What it means                                                                                                      |
-| ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `ready`       | Every `${NAME}` this server references resolves to a value. **Not** a claim the credential works — see below.      |
-| `no secrets`  | The server declares no references at all. Nothing to seed.                                                         |
-| `not seeded`  | The backend answered, and there is no such secret. The one unambiguous state, and the one the fix guidance is for. |
-| `check value` | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string. |
-| `unverified`  | The value is scoped to a component this process is not, so the console cannot confirm it either way.               |
-| `unknown`     | The secret backend could not be consulted. Not absent.                                                             |
+Every enabled entry carries exactly one of two badges, in the slot the duplicated
+slug used to occupy. Most servers declare no `title:`, so the heading _is_ the
+slug and printing it again underneath was pure duplication; where a `title:` does
+differ, the slug still renders beside the badge, because there it is information
+rather than an echo.
+
+| Badge   | What it claims                                                                                                                                   |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `READY` | Every `${NAME}` this server references was **observed** to resolve, or it references none at all. **Not** a claim the credential works.          |
+| `ISSUE` | Anything else — including "could not be checked from here". Click it: it opens a popout naming the secret, the state, and the exact path to fix. |
+
+`ISSUE` is a real `<button>` bound to a per-entry `<dialog>`, so it is
+keyboard-reachable and announced as a control. Without JavaScript the buttons hide
+and every panel renders inline at the foot of the page.
+
+**"Could not be checked" is an `ISSUE`, deliberately.** A bundle-scoped value is
+genuinely invisible to core and may well be fine — but `READY` has to mean
+observed, or a total store outage renders a fleet of reassuring badges over an
+unusable gateway. The popout carries the distinction; the badge does not pretend.
+
+### Ordering
+
+`READY` first, then `ISSUE`. Within each group, servers with a console view come
+before servers without one, and config order breaks the remaining ties. Disabled
+servers sort last and carry no badge at all — strad does not mount them, so they
+need no secrets, and a green would be a claim about a server that answers nothing.
+
+### The six states behind the badges
+
+The popout names which of these it is, because "not seeded" and "could not be
+checked" want opposite responses.
+
+| State         | Badge   | What it means                                                                                                      |
+| ------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ready`       | `READY` | Every `${NAME}` this server references resolves to a value. **Not** a claim the credential works — see below.      |
+| `no secrets`  | `READY` | The server declares no references at all. Nothing to seed.                                                         |
+| `not seeded`  | `ISSUE` | The backend answered, and there is no such secret. The one unambiguous state, and the one the fix guidance is for. |
+| `check value` | `ISSUE` | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string. |
+| `unverified`  | `ISSUE` | The value is scoped to a component this process is not, so the console cannot confirm it either way.               |
+| `unknown`     | `ISSUE` | The secret backend could not be consulted. Not absent.                                                             |
 
 **Seeded is not working, and the page does not pretend otherwise.** strad never
 calls an upstream to prove a credential is accepted, so the good state is `ready`
@@ -242,7 +279,7 @@ exists for exactly that shape.
 supplementary image's `env:` is resolved at render time and injected onto its own
 _bundle_ — `appspec.ts` never broadcasts it — so core cannot see it, and a
 presence check that answered "not seeded" would paint a healthy fleet entirely
-red. That case is `unverified`, and the row says which process would have to be
+red. That case is `unverified`, and the popout says which process would have to be
 asked. Under `gcp-parameter-store` the picture is better rather than worse: the
 store holds the deploy-time source of truth for a bundle-scoped ref too, so those
 deployments get a real answer for every name — the same answer `render-spec`
@@ -251,14 +288,14 @@ would compute, one deploy earlier.
 **A `consoleEnv:` value is found under its KEY, not its ref name.** A rendered
 spec carries the resolved value filed under the key the container reads; the ref
 NAME is deliberately never injected anywhere. Asking the provider for the ref name
-and believing the `null` is the bug that once had `/ui/secrets` reporting a
+and believing the `null` is the bug that once had the console reporting a
 missing admin credential in production with the value sitting in core's
 environment one line below.
 
 ### The GSM / ENV source badge
 
-Each secret carries a second badge naming **which store holds it** — provenance,
-not status, which is the chip beside it.
+Inside a popout, each secret carries a second badge naming **which store holds
+it** — provenance, not status, which is the chip beside it.
 
 | Badge | Meaning                                                                                                                                                                                                                                                                                                 |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -303,9 +340,9 @@ divergence fails CI rather than quietly defeating the feature.
 Every capability variant of a server family declares its credentials identically,
 on purpose: a component's environment is the union of its servers' `env:` maps, so
 with the secret on only one variant, setting `enabled: false` on _that_ variant
-would silently strip it from its siblings. So one `${NAME}` legitimately appears
-on several entries, and the page deduplicates by name. One unseeded secret shared
-by four variants is one problem, and listing it four times would bury the other
+would silently strip it from its siblings. So one `${NAME}` legitimately makes several entries
+`ISSUE` at once, and each popout says which others share it. One unseeded secret
+behind four badges is one problem, and listing it four times would bury the other
 three.
 
 Disabled servers contribute nothing — the gateway does not mount them and
@@ -313,7 +350,7 @@ Disabled servers contribute nothing — the gateway does not mount them and
 
 ### The fix guidance is the point
 
-A `not seeded` or `check value` row names, per route: the store, the GCP project,
+A `not seeded` or `check value` popout names, per route: the store, the GCP project,
 the exact resource name or canonical path, and a paste-ready `gcloud` command. The
 route offered **first** is decided by what the deployment declares, because the two
 are not interchangeable:
@@ -344,8 +381,8 @@ resolver credential read the stronger one.
 
 ### It prints names and paths, never values
 
-`/` is deliberately narrow — no `env:` keys, no urls, no headers. This page's
-entire job is to name the missing thing and where it goes, so it prints NAMES and
+`/` is deliberately narrow — no `env:` keys, no urls, no headers. Naming the
+missing thing and where it goes is this page's entire job, so it prints NAMES and
 PATHS. The line it holds instead is the one that matters: **no secret value is
 ever rendered.** Not revealed, not excerpted, not length-hinted, not in a title
 attribute. The placeholder check reads a value and returns a sentence about the
@@ -360,13 +397,124 @@ page or delay the others.
 
 ### The gateway's own boot keys
 
-A second panel lists `STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN` and the console OAuth
-client. They belong here because the loop this page serves starts with "point a
-client at a strad URL with the shared API token": without `STRAD_TOKENS` every
-`/mcp` request is rejected and no amount of per-server green means anything. Only
+A panel below the grid lists `STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN` and the
+console OAuth client. They belong here because the loop this page serves starts
+with "point a client at a strad URL with the shared API token": without
+`STRAD_TOKENS` every `/mcp` request is rejected and no amount of per-server
+`READY` means anything. Only
 those first two are required; the rest render as `not set · optional`, because a
 deployment with no console genuinely has no `GOOGLE_CLIENT_SECRET` and flagging
 that red would train people to ignore the panel.
+
+## `GET /api/secrets/readiness` — the same answer, for a machine
+
+A platform app that points agents at strad needs to know whether Google Secret
+Manager and Parameter Manager are wired up before it tells a human that a
+connector is usable. The console answers that, and a console is not an answer a
+program can hold: it would have to be scraped, and a scraper breaks the first time
+the copy changes.
+
+```bash
+curl -H "Authorization: Bearer $STRAD_API_KEY" \
+  https://staging.strad.tadasant.com/api/secrets/readiness
+```
+
+```json
+{
+  "ready": false,
+  "env": "staging",
+  "store": {
+    "provider": "env",
+    "wired": true,
+    "project": "strad-secrets-staging",
+    "projectGuessed": false,
+    "gatewayNamespace": "/strad/staging/gateway/static/",
+    "resolverCredential": false,
+    "detail": "gateway.secrets.provider is \"env\": …"
+  },
+  "servers": {
+    "total": 12,
+    "ready": 8,
+    "issues": 4,
+    "states": {
+      "ready": 5,
+      "no-secrets": 3,
+      "missing": 1,
+      "placeholder": 1,
+      "unverified": 2,
+      "unknown": 0
+    }
+  },
+  "issues": [
+    {
+      "slug": "granola",
+      "state": "missing",
+      "summary": "1 of 1 required secret not seeded: GRANOLA_TOKEN.",
+      "secrets": [
+        {
+          "name": "GRANOLA_TOKEN",
+          "state": "missing",
+          "source": "GSM",
+          "deliveries": ["gateway"],
+          "path": "/strad/staging/gateway/static/GRANOLA_TOKEN",
+          "secretManagerName": "strad-staging-GRANOLA_TOKEN",
+          "detail": "Not seeded: ${GRANOLA_TOKEN} does not resolve …"
+        }
+      ]
+    }
+  ],
+  "boot": [
+    {
+      "name": "STRAD_TOKENS",
+      "state": "present",
+      "required": true,
+      "detail": "…"
+    }
+  ]
+}
+```
+
+Four shape decisions, each of which could have gone the other way:
+
+**A static bearer token, never OAuth.** The consumer is a machine holding one
+long-lived credential, and the Google-SSO path exists to put a human identity in
+front of the console. So this authenticates exactly the way `/mcp` does — through
+`authenticateMcp`, against the same `STRAD_TOKENS` roster, with the same
+environment check, so a token minted for `prod` cannot read `staging`'s roster.
+No new credential and nothing to rotate separately. Authorization is narrower than
+`/mcp`'s rather than absent: the report is deployment-wide, so it takes a token
+entitled to every enabled server and answers `403` to anything less. See
+[Auth](/auth/overview/#apisecretsreadiness-is-not-a-console-surface).
+
+**Always `200`, with the verdict in the body.** The tempting alternative is
+503-when-not-ready. An App Platform ingress treats an upstream 5xx as its own
+failure and can rewrite it, so the body a caller sees would be the ingress's — and
+"not ready" is a correct, complete, successfully computed answer. Only auth
+failures (`401`) and an unhandled crash (`500`) are non-200. `cache-control:
+no-store`, because the answer changes the moment someone seeds a value.
+
+**`ready` means observed.** It is `true` only when the store is wired, every
+enabled server's secrets resolved, _and_ every required boot key is present. A
+server that could not be checked makes it `false`, exactly as it makes the console
+badge `ISSUE`. `servers.states` carries the full breakdown for a caller that wants
+to treat `unverified` differently from `missing`.
+
+**`store` is separate from `servers`.** "Can this gateway reach the store at all"
+and "is every credential seeded" are different failures with different fixes — a
+missing parameter is a value to create, a missing resolver credential is a deploy.
+Under `provider: env`, `store.wired` is `true` by definition: there is no store to
+wire, the deploy bakes values in, and reporting `false` would make every `env`
+deployment permanently un-ready for something that is not a fault.
+
+It is mounted on **core only**, alongside the console it mirrors: a `consoleEnv:`
+value lands on core under its declared key and nowhere else, so a bundle asked the
+same question would answer with strictly less information. And it is derived by
+the same `readSecretStatus` call the console uses — a JSON field and a badge
+computed by two paths would drift, and the endpoint's whole value is that it says
+what the page says.
+
+It prints names, paths and states. **It never prints a value**, for the same
+reason the console does not; `test/readiness.test.ts` is the canary.
 
 ## The console's parameters page
 

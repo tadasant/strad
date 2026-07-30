@@ -780,19 +780,23 @@ unknown key is still reported).
 **Undo.** Delete `src/config/strict.ts`, `scripts/check-config.ts`, the `config` CI
 job and the `config:check` script. Nothing at runtime depends on any of it.
 
-## 29. The Secrets Console proves presence, not that a credential works
+## 29. The console's secret badges prove presence, not that a credential works
 
-**What.** `/secrets` lists every configured MCP server and whether the secrets it
-requires resolve. It does NOT establish that a credential is still accepted — strad
-makes no upstream call to check. So the good state is `ready` ("everything it needs
-is present"), never "healthy", and a server whose token was revoked yesterday reads
-`ready` here while 401ing on every call.
+**What.** `/ui` lists every configured MCP server and whether the secrets it
+requires resolve, and `GET /api/secrets/readiness` returns the same derivation as
+JSON. Neither establishes that a credential is still accepted — strad makes no
+upstream call to check. So the good badge is `READY` ("everything it needs is
+present"), never "healthy", and a server whose token was revoked yesterday reads
+`READY` here while 401ing on every call.
 
-**Why the state names are the mitigation.** The page's whole value is being trusted
-at a glance, so the honesty has to be in the label rather than in a footnote.
-`ready`, `check value`, `not seeded`, `unverified`, `unknown` and `no secrets` each
-claim exactly one thing, and `src/ui/secret-status.ts` derives them from the running
-config rather than asserting them.
+**Why the state names are the mitigation.** The badge is trusted at a glance, so the
+honesty has to be in the label and in the popout behind it rather than in a
+footnote. `ready`, `check value`, `not seeded`, `unverified`, `unknown` and
+`no secrets` each claim exactly one thing, and `src/ui/secret-status.ts` derives
+them from the running config rather than asserting them. The two-badge collapse
+keeps its own line: `READY` is only ever `ready` or `no secrets` — the states the
+console ESTABLISHED — and `unverified`/`unknown` badge `ISSUE`, because a green on
+"I could not check" is the one lie this surface cannot afford.
 
 **The placeholder heuristic, and why it is narrow.** A value that is evidently
 filler gets its own `check value` state: an unexpanded `${...}`, an empty string, or
@@ -806,20 +810,23 @@ fine, lists fine and 401s in isolation — and it will miss a plausible-looking 
 
 **The scope gap.** Under `provider: env` a `supplementary-image` server's `env:` is
 resolved at render time and baked onto its own bundle; `appspec.ts` never broadcasts
-it, and the console renders in `core`. So core cannot see those values, and the page
+it, and the console renders in `core`. So core cannot see those values, and the popout
 reports `unverified` — "not visible here" — rather than `missing`. Reporting
 `missing` would paint a healthy 26-server fleet entirely red, which is the failure
-mode that would make the page worse than nothing. `provider: gcp-parameter-store`
+mode that would make the surface worse than nothing. It still badges `ISSUE`, which
+is the conservative direction and is stated as "could not be checked" rather than
+as a fault. `provider: gcp-parameter-store`
 closes the gap (the store holds the deploy-time source of truth for those refs too,
 so every name gets a real answer, one deploy before `render-spec` would compute the
 same thing). Under `env` it cannot be closed from inside the container: the value
 lives in CI's environment, which core has no path to.
 
-**What it does NOT do, on purpose.** No secret VALUE is rendered — not revealed,
-excerpted, length-hinted, or put in a title attribute. The placeholder check reads a
+**What it does NOT do, on purpose.** No secret VALUE is rendered or serialised — not
+revealed, excerpted, length-hinted, or put in a title attribute or a JSON field. The placeholder check reads a
 value and returns a sentence about the SHAPE it matched; nothing in the renderer is
 ever handed bytes. `test/ui.secret-status.test.ts` asserts that over a table of
-values, and asserts the rendered page contains none of them.
+values and asserts the rendered page contains none of them; `test/readiness.test.ts`
+holds the same line for the JSON.
 
 **The GSM / ENV badge is coupled to another product's UI, deliberately.** Those two
 labels are Zimmer's Connectors page's labels, not strad's. The workflow is to read
@@ -842,9 +849,11 @@ message through (method + resource, query and `:verb` stripped) and reduces
 anything else to its class name. `test/ui.secret-status.test.ts` builds the real
 `SyntaxError` and asserts the value is absent from the rendered detail.
 
-**Undo.** Delete `src/ui/secret-status.ts`, `src/ui/secret-status-page.ts`,
-`test/ui.secret-status.test.ts`, the `/secrets` route in `src/ui/index.ts`, the
-fourth card in `src/ui/landing.ts`, and the `secretProvider` option threaded through
+**Undo.** Delete `src/ui/secret-status.ts`, `src/http/readiness.ts`,
+`test/ui.secret-status.test.ts`, `test/ui.console-index.test.ts`,
+`test/readiness.test.ts`, the badge/popout half of `src/ui/index-page.ts`, the
+`/api/secrets/readiness` route in `src/http/app.ts`, the `/secrets` redirect in
+`src/ui/index.ts`, and the `secretProvider` option threaded through
 `src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
 
 ## What the human still needs to provision

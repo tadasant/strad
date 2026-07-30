@@ -23,28 +23,19 @@ import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
-import { renderSecretStatus } from "./secret-status-page.ts";
-import {
-  bootRequirements,
-  collectRequirements,
-  deriveServerStatuses,
-  observe,
-} from "./secret-status.ts";
+import { renderIndex } from "./index-page.ts";
+import { readSecretStatus, secretLookup } from "./secret-status.ts";
 import type { SecretProvider } from "../secrets/provider/index.ts";
-import {
-  renderGcsBrowse,
-  renderIndex,
-  renderMessage,
-  renderSecrets,
-} from "./render.ts";
+import { renderGcsBrowse, renderMessage, renderSecrets } from "./render.ts";
 
 /**
- * Mount the human, SSO-gated resource browser.
+ * Mount the human, SSO-gated console.
  *
  * Routes:
- *   GET  /ui                    — index of every configured server
- *   GET  /secrets               — the Secrets Console: every server, and whether
- *                                 the secrets it requires are seeded
+ *   GET  /ui                    — the index: every configured server, what it is
+ *                                 scoped to, and whether its secrets are seeded
+ *   GET  /secrets               — 302 to /ui. The secret roster was a page of its
+ *                                 own; it is now part of the index it describes.
  *   GET  /ui/:server            — the per-server view (GCS browser, parameters
  *                                 manager, or a "no view yet" notice)
  *   POST /ui/:server/create     — ┐
@@ -104,10 +95,10 @@ export interface ConsoleUiOptions {
   /**
    * The RUNTIME secret provider — the same one the router resolves `${NAME}` with.
    *
-   * The Secrets Console asks it whether each referenced name resolves. It is the
+   * The index asks it whether each referenced name resolves. It is the
    * right seam rather than the boot bag alone because it is the only one that can
    * answer for a store-backed deployment, where a name lives in the parameter
-   * store and never in `process.env`. Absent, the page falls back to the bag,
+   * store and never in `process.env`. Absent, the index falls back to the bag,
    * which is exactly correct under the `env` provider.
    */
   secretProvider?: SecretProvider;
@@ -149,20 +140,27 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     );
   });
 
-  app.get("/ui", gate, (_req, res) => {
-    res.type("html").send(renderIndex(opts.config, signedInLabel(res)));
-  });
-
-  // The Secrets Console. A TOP-LEVEL route on purpose: `/ui/:server` is a
-  // wildcard over config-supplied slugs, so mounting this under it would let a
-  // server named `secret-status` shadow the page (or the page shadow the server).
-  // `/secrets` cannot collide with anything the config declares.
-  app.get("/secrets", gate, async (_req, res) => {
+  app.get("/ui", gate, async (_req, res) => {
+    // Express 4 does not catch a rejected async handler, so guard it here: any
+    // unexpected error becomes a 500 page rather than a hung request.
     try {
-      await handleSecretStatus(res, opts);
+      await handleIndex(res, opts);
     } catch (err) {
       renderUnexpected(res, err);
     }
+  });
+
+  // The secret roster used to live here, as its own destination. It does not any
+  // more — it is on `/ui`, on the entry it describes. The redirect stays because
+  // the URL was published (bookmarks, the AIR catalog, docs), and a 404 for a
+  // page whose content simply moved teaches nobody anything.
+  //
+  // It is behind the gate rather than in front of it so an anonymous request to
+  // `/secrets` still 401s: an open redirect to a gated page is not a leak, but a
+  // door that answers differently to an anonymous caller is one fewer thing to
+  // reason about.
+  app.get("/secrets", gate, (_req, res) => {
+    res.redirect(302, "/ui");
   });
 
   app.get("/ui/:server", gate, async (req, res) => {
@@ -193,58 +191,32 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
 }
 
 // ---------------------------------------------------------------------------
-// GET /secrets — the Secrets Console
+// GET /ui — the console index
 // ---------------------------------------------------------------------------
 
 /**
- * Read every referenced `${NAME}` once, derive a status per server, render.
+ * Read every referenced `${NAME}` once, derive a status per server, render the
+ * roster.
  *
- * The lookup is the RUNTIME provider when one was supplied, and the boot bag
- * otherwise. Both honour the contract `observe()` depends on: `null` means the
- * backend answered and the name is absent, and a throw means it could not be
- * consulted. Collapsing those would turn a store outage into a wall of red "not
- * seeded", which is the one failure mode that would make this page worse than
- * nothing.
+ * The reading is `readSecretStatus`, the same call `/api/secrets/readiness`
+ * makes. A badge here and a JSON field there derived by two different code paths
+ * would eventually disagree, and the endpoint's whole value is that a platform
+ * app can trust it says what this page says.
  */
-async function handleSecretStatus(
+async function handleIndex(
   res: Response,
   opts: ConsoleUiOptions,
 ): Promise<void> {
-  const bag = opts.secrets;
-  const lookup = opts.secretProvider
-    ? (name: string) => opts.secretProvider!.get(name)
-    : async (name: string) => bag[name] ?? null;
-
-  const requirements = collectRequirements(opts.config);
-  const observations = await observe(requirements, {
+  const { statuses, boot } = await readSecretStatus({
     config: opts.config,
-    lookup,
-    bag,
+    bag: opts.secrets,
+    lookup: secretLookup(opts.secrets, opts.secretProvider),
   });
 
-  // The gateway's own boot keys travel the same path, so they are observed the
-  // same way. They carry no `consoleEnv:` key and no bundle scope, so they are
-  // plain `gateway`-delivery requirements.
-  const bootKeys = bootRequirements();
-  const bootObservations = await observe(
-    bootKeys.map(({ name }) => ({
-      name,
-      deliveries: ["gateway" as const],
-      slugs: [],
-      consoleKeys: [],
-      paramsSlugs: [],
-    })),
-    { config: opts.config, lookup, bag },
-  );
-  const boot = bootObservations.map((observation, i) => ({
-    observation,
-    required: bootKeys[i]?.required ?? false,
-  }));
-
   res.type("html").send(
-    renderSecretStatus({
+    renderIndex({
       config: opts.config,
-      statuses: deriveServerStatuses(opts.config, observations),
+      statuses,
       boot,
       env: opts.env,
       signedInAs: signedInLabel(res),
