@@ -94,6 +94,20 @@ credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` 
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
 `401`).
 
+**Then it reports what the secrets credentials can do.** The secrets surfaces are
+probe-derived — the MCP server lists `get_secret_value` and the write tools only
+if its credential holds the permissions, and the console offers reveal on the same
+basis — so a grant that did not land looks exactly like a deliberate narrowing:
+nothing errors, the surface is just smaller. The step runs
+`scripts/probe-capabilities.ts` (the same probe the containers run, see
+[Secrets IAM](/operate/secrets-iam/)) against both staging keys and prints six
+booleans each. It is **non-fatal**: a narrow credential is a legitimate posture —
+it is prod's — so this reports and never gates. It prints booleans only; the keys
+are read from the environment and never echoed, and `testIamPermissions` returns
+no secret material. A probe that cannot complete emits a `::warning::`, which is
+almost always `cloudresourcemanager.googleapis.com` not being enabled on the
+project rather than anything about the grant.
+
 If any of that fails, a last step dumps the `core` and `bundle` containers' own
 logs for the newest deployment. App Platform reports only which component exited
 non-zero, never why; the why is in the container's log. The step never fails the

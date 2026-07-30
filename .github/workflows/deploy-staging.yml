@@ -364,6 +364,33 @@ jobs:
           [ "$code" = "401" ] || { echo "::error::/mcp not gated (got $code)"; exit 1; }
           echo "OK: staging healthy and /mcp gated."
 
+      - name: Report what the secrets credentials can do
+        # The secrets surfaces are PROBE-DERIVED: the MCP server lists
+        # get_secret_value and the write tools only if its credential holds the
+        # permissions, and the console offers reveal on the same basis. Good
+        # property, one bad consequence — a grant that did not land looks exactly
+        # like a deliberate narrowing. Nothing errors; the surface is just
+        # smaller. So the deploy asks, and prints the answer.
+        #
+        # NON-FATAL by design. A narrow credential is a legitimate posture (it is
+        # prod's), so this reports and never gates. It runs the same probe the
+        # containers run, against the same keys, and prints booleans only — the
+        # keys are read from the env and never echoed, and testIamPermissions
+        # returns no secret material.
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          probe() {
+            node --experimental-transform-types scripts/probe-capabilities.ts \
+              --project strad-secrets-staging --key-env "$1" --label "$2" \
+              || echo "::warning::capability probe for $2 did not complete (see above)"
+          }
+          # The viewer key is the /mcp tool surface; the admin key is the
+          # console's reveal. Both, because they answer different questions.
+          probe SECRETS_VIEWER_KEY_JSON "staging MCP server (viewer key)"
+          probe SECRETS_ADMIN_KEY_JSON  "staging console (admin key)"
+
       - name: Dump the failing container's logs
         # A failed deploy reports a `godo` progress struct and the sentence
         # "container exited with a non-zero exit code" — which component died,

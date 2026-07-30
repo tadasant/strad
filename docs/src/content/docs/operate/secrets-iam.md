@@ -30,14 +30,14 @@ table the grants below are built from.
 
 | Console operation     | API calls                                                                    | Permissions required                                                                                                                            |
 | --------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list(namespace)`     | PM `parameters.list`, `…/versions` list, `…/versions/{v}` GET                | `parametermanager.parameters.list`, `parametermanager.parameterVersions.list`, `parametermanager.parameterVersions.access`                      |
+| `list(namespace)`     | PM `parameters.list`, `…/versions` list, `…/versions/{v}` GET                | `parametermanager.parameters.list`, `parametermanager.parameterVersions.list`, `parametermanager.parameterVersions.get`                         |
 | `create` — non-secret | PM parameter POST, PM version POST                                           | `parametermanager.parameters.create`, `parametermanager.parameterVersions.create`                                                               |
 | `create` — secret     | SM `secrets` POST, SM `:addVersion`, then the two PM POSTs                   | + `secretmanager.secrets.create`, `secretmanager.versions.add`                                                                                  |
 | `rotate` — non-secret | PM version GET + POST                                                        | as create, non-secret                                                                                                                           |
-| `rotate` — secret     | PM versions list + version GET, SM `:addVersion`                             | `parametermanager.parameterVersions.list`, `…access`, `secretmanager.versions.add`                                                              |
+| `rotate` — secret     | PM versions list + version GET, SM `:addVersion`                             | `parametermanager.parameterVersions.list`, `…get`, `secretmanager.versions.add`                                                                 |
 | `setNote`             | PM version GET + POST                                                        | as create, non-secret                                                                                                                           |
 | **`reveal` — secret** | PM version GET, then **SM `versions/latest:access`**                         | **`secretmanager.versions.access`** ← the one prod must not hold, on top of the PM reads                                                        |
-| `reveal` — non-secret | PM version GET only                                                          | `parametermanager.parameterVersions.access`                                                                                                     |
+| `reveal` — non-secret | PM version GET only                                                          | `parametermanager.parameterVersions.get`                                                                                                        |
 | `destroy`             | PM parameter GET, versions list + DELETE, parameter DELETE, SM secret DELETE | `parametermanager.parameters.get`, `…parameters.delete`, `…parameterVersions.list`, `…parameterVersions.delete`, `secretmanager.secrets.delete` |
 
 Two things fall out of this table, and both matter:
@@ -53,9 +53,18 @@ Everything else the console does — create, rotate, note, delete, list — work
 without it. So write-without-read is achievable: the console keeps managing
 secrets and loses the ability to display one.
 
-**`parameterVersions.access` is safe to keep.** It reads the parameter's raw
+**`parameterVersions.get` is safe to keep.** It reads the parameter's raw
 envelope, and for a secret parameter that envelope holds a `__REF__` pointer, not
 a value. Listing keeps working; nothing in it dereferences.
+
+:::note[Permission names are Google's, not ours]
+Parameter Manager reads a version's payload with **`parameterVersions.get`**.
+There is no `parametermanager.parameterVersions.access` — that spelling borrows
+Secret Manager's verb (`secretmanager.versions.access`) and Parameter Manager does
+not use it. `gcloud iam roles create` rejects a permission name it does not know,
+so a custom role containing it fails to create at all rather than creating a role
+that grants nothing.
+:::
 
 :::caution[The second read path, and why it is not open today]
 Parameter Manager's `:render` verb dereferences a `__REF__` into the secret's
@@ -128,9 +137,9 @@ includedPermissions:
   - parametermanager.parameters.get
   - parametermanager.parameters.list
   - parametermanager.parameters.update
-  - parametermanager.parameterVersions.access
   - parametermanager.parameterVersions.create
   - parametermanager.parameterVersions.delete
+  - parametermanager.parameterVersions.get
   - parametermanager.parameterVersions.list
   - parametermanager.parameterVersions.update
 YAML
@@ -150,30 +159,47 @@ gcloud projects remove-iam-policy-binding "${PROJECT}" \
 gcloud projects remove-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${SA}" --role="roles/parametermanager.admin"
 
-# The probe needs this API enabled, in both projects. Without it the console
-# reports "capability unverified" and withholds reveal, which is safe but opaque.
+# Enable this API in both projects. It backs BOTH the runtime probe AND the audit
+# commands below — they are the same call. Without it, the console reports
+# "capability unverified" and withholds reveal (safe but opaque), and the audit
+# itself answers 403 instead of answering the question.
 gcloud services enable cloudresourcemanager.googleapis.com --project="${PROJECT}"
 ```
 
 **Audit assertion.** Run as the service account itself; the second block is the
 one that matters.
 
+There is no `gcloud` subcommand for this. `testIamPermissions` is a method on the
+resource, not a CLI verb, so the audit is a REST call to Cloud Resource Manager —
+the same endpoint `capabilities.ts` uses at runtime, which is what makes the
+assertion and the console's own report the same fact.
+
 ```bash
 gcloud auth activate-service-account --key-file=/path/to/prod-console-key.json
+CRM="https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions"
 
-# MUST be empty — no read path, by either route.
-gcloud projects test-iam-permissions "${PROJECT}" \
-  --permissions=secretmanager.versions.access,parametermanager.parameterVersions.render \
-  --format='value(permissions)'
+# MUST print {} — no read path, by either route.
+curl -sS -X POST "${CRM}" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["secretmanager.versions.access","parametermanager.parameterVersions.render"]}'
 
 # MUST list all four — the console still manages secrets.
-gcloud projects test-iam-permissions "${PROJECT}" \
-  --permissions=secretmanager.secrets.create,secretmanager.versions.add,parametermanager.parameters.create,parametermanager.parameters.delete \
-  --format='value(permissions)'
+curl -sS -X POST "${CRM}" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["secretmanager.secrets.create","secretmanager.versions.add","parametermanager.parameters.create","parametermanager.parameters.delete"]}'
 ```
 
-The first command printing nothing is the whole point of this section. strad's own
-console reports the same fact on the page, from the same probe.
+The response carries only the subset the caller holds, so "none of them" comes back
+as an empty body — `{}`, not a list of `false`. The first command printing `{}` is
+the whole point of this section. strad's own console reports the same fact on the
+page, from the same call.
+
+If either command returns `403`, that is the Cloud Resource Manager API not being
+enabled on the project — the `gcloud services enable` line above — and not an
+answer about the grant. It is the same 403 the runtime probe reports as "capability
+unverified".
 
 ## 2. Staging MCP server: read and write
 
@@ -197,6 +223,7 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
 gcloud projects add-iam-policy-binding "${PROJECT}" \
   --member="serviceAccount:${SA}" --role="roles/parametermanager.admin"
 
+# Gates the server's startup probe AND the audit below — both are the same call.
 gcloud services enable cloudresourcemanager.googleapis.com --project="${PROJECT}"
 ```
 
@@ -205,15 +232,24 @@ derived from exactly this answer.
 
 ```bash
 gcloud auth activate-service-account --key-file=/path/to/staging-viewer-key.json
-gcloud projects test-iam-permissions "${PROJECT}" \
-  --permissions=secretmanager.versions.access,secretmanager.versions.add,secretmanager.secrets.create,secretmanager.secrets.delete,parametermanager.parameters.create,parametermanager.parameterVersions.create \
-  --format='value(permissions)'
+curl -sS -X POST \
+  "https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["secretmanager.versions.access","secretmanager.versions.add","secretmanager.secrets.create","secretmanager.secrets.delete","parametermanager.parameters.create","parametermanager.parameterVersions.create"]}'
 ```
 
 There is no flag to set for this. The server probes at startup and lists the tools
 the credential supports — `get_secret_value`, `create_parameter`,
 `set_parameter_value`, `set_parameter_note`, `delete_parameter` — so the grant
 above _is_ the configuration. Revoke it and the tools disappear on the next boot.
+
+**The staging deploy runs this audit for you.** `deploy-staging.yml` ends by
+running `scripts/probe-capabilities.ts` — the same probe, against the same two
+keys — and printing six booleans for each. It is non-fatal and prints no secret
+material. That exists because a grant that did not land is indistinguishable from
+a deliberate narrowing from the outside: both are just a smaller tool surface. See
+[Operations](/operate/operations/#deploy-stagingyml--put-it-on-app-platform).
 
 ## Why a probe and not a flag, for the MCP surface
 
@@ -229,8 +265,8 @@ the four read-only tools.
 
 Two honest limits on "cannot drift". `projects:testIamPermissions` answers at
 **project** level, so a grant bound to an individual secret or parameter reads as
-absent — the surface narrows, which is the safe direction, but the audit assertion
-below would then be proving the wrong thing. And a **conditional** binding can be
+absent — the surface narrows, which is the safe direction, but the audit assertions
+above would then be proving the wrong thing. And a **conditional** binding can be
 reported as held when its condition would not be met at call time, which widens
 the surface relative to reality; the call still fails at Google, but as a 403
 rather than a missing tool. Grant at project level, unconditionally, and both go
