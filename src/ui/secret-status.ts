@@ -10,6 +10,7 @@ import {
   staticNamespace,
 } from "../secrets/parameters/namespace.ts";
 import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
+import { errorSummary } from "../secrets/provider/snapshot.ts";
 
 /**
  * "Is the strad side of this connector broken?" — derived, not asserted.
@@ -430,17 +431,28 @@ async function withDeadline(
     ]);
     return { ok: value };
   } catch (err) {
-    // The message describes the BACKEND's failure, and this is the one piece of
-    // free-form text on the page that comes from outside it. strad's own providers
-    // are safe by construction — `ParameterStoreError` carries method, resource
-    // path and HTTP status, and gcp.ts strips the query and `:verb` precisely
-    // because "values travel in the body, which is not echoed here" — so a value
-    // cannot arrive this way today. The cap is for the provider nobody has written
-    // yet: bounded text cannot become a payload dump on a page whose entire claim
-    // is that it never prints bytes.
-    const raw = err instanceof Error ? err.message : String(err);
+    // THIS IS THE ONE PIECE OF FREE-FORM TEXT ON THE PAGE THAT COMES FROM OUTSIDE
+    // IT, AND A RAW `err.message` HERE LEAKS A SECRET.
+    //
+    // Not hypothetically. A store read ends in `decodeEnvelope` -> `JSON.parse`
+    // over a `:render`ed payload — which is the dereferenced secret, in plaintext.
+    // A truncated or corrupted envelope throws a `SyntaxError` whose message
+    // embeds a window of the body it choked on, and on a COLD cache
+    // `snapshot.ts` re-throws it raw rather than serving stale values. That
+    // message would land in `detail` and render, as visible text, on a page whose
+    // entire claim is that it never prints bytes. Truncating to 200 characters
+    // does not help: the window is ~30 characters and sits well inside the cap.
+    //
+    // `errorSummary` is the defence snapshot.ts already wrote for exactly this,
+    // and reusing it is the point — a `ParameterStoreError` message is known safe
+    // (method + resource, query and `:verb` stripped) and passes through; anything
+    // else is reduced to its class name. The cap stays as a second belt.
+    const summary = errorSummary(err);
     return {
-      error: raw.length > 200 ? `${raw.slice(0, 200)}… (truncated)` : raw,
+      error:
+        summary.length > 200
+          ? `${summary.slice(0, 200)}… (truncated)`
+          : summary,
     };
   } finally {
     if (timer) clearTimeout(timer);
@@ -487,18 +499,47 @@ function classify(
   // (the `npm run dev` shape, and the order resolve.ts itself uses), and nothing
   // else.
   if (requirement.deliveries.includes("console")) {
+    // A name can be BOTH a consoleEnv: key and a gateway-resolved ref, because
+    // requirements are merged by NAME across servers: one server's consoleEnv:
+    // and another's headers:/url:/options: collapse into one row. The console
+    // rule below is authority for the console half ONLY — answering the whole row
+    // from it would report `ready` while /mcp throws SecretNotFoundError on every
+    // call to the other server (a false green), or `missing` for a gateway that
+    // works fine (a false red). So when a gateway half exists, it is checked too
+    // and the WORSE of the two wins, with the detail naming which half is which.
+    const alsoGateway = requirement.deliveries.includes("gateway");
+    const gatewayBad =
+      alsoGateway && !("ok" in attempt && attempt.ok !== null)
+        ? "error" in attempt
+          ? `The gateway half could not be checked (${attempt.error}).`
+          : `The GATEWAY half is NOT seeded: \${${requirement.name}} does not resolve for ` +
+            `the process that answers /mcp, so every call to the server referencing it fails.`
+        : "";
+
     const key = requirement.consoleKeys.find((k) => nonEmpty(bag[k]));
-    if (key) {
-      return finish(requirement, bag[key] as string, {
-        where: `core's environment, under ${key} (declared by consoleEnv:)`,
+    const consoleValue = key
+      ? (bag[key] as string)
+      : nonEmpty(bag[requirement.name])
+        ? (bag[requirement.name] as string)
+        : undefined;
+
+    if (consoleValue !== undefined && !gatewayBad) {
+      return finish(requirement, consoleValue, {
+        where: key
+          ? `core's environment, under ${key} (declared by consoleEnv:)`
+          : `core's environment, under \${${requirement.name}} itself`,
         source: "ENV",
       });
     }
-    if (nonEmpty(bag[requirement.name])) {
-      return finish(requirement, bag[requirement.name] as string, {
-        where: `core's environment, under \${${requirement.name}} itself`,
-        source: "ENV",
-      });
+    if (consoleValue !== undefined && gatewayBad) {
+      return {
+        requirement,
+        state: "error" in attempt ? "error" : "missing",
+        source: "error" in attempt ? null : "GSM",
+        detail:
+          `The console half resolves from core's environment, but this name is ALSO a ` +
+          `gateway reference and that half does not. ${gatewayBad}`,
+      };
     }
     return {
       requirement,
@@ -519,11 +560,26 @@ function classify(
   }
 
   if ("ok" in attempt && attempt.ok !== null) {
+    // A bundle-scoped ref on a store-backed deployment is DEPLOY-TIME INPUT, not
+    // a runtime read: render-spec reads the gateway namespace at render time and
+    // bakes the value onto the component, and the running container never touches
+    // the store. So "present" here is true and "the server has it" is not — a
+    // value added after the last deploy makes this row green while the container
+    // still holds nothing. Say which it is rather than letting the reader assume.
+    const bundleOnly =
+      storeBacked &&
+      requirement.deliveries.includes("bundle") &&
+      !requirement.deliveries.includes("gateway");
     return finish(requirement, attempt.ok, {
       where: storeBacked
         ? `the parameter store, under ${gatewayNamespace(config.gateway.env)}`
         : "this process's environment",
       source: storeBacked ? "GSM" : "ENV",
+      lands: bundleOnly
+        ? " It reaches this server's container at the NEXT DEPLOY, not now: a " +
+          "supplementary image's env: is baked at render time and the container never " +
+          "reads the store."
+        : "",
     });
   }
 
@@ -577,16 +633,23 @@ function classify(
     detail: storeBacked
       ? `Not seeded: ${gatewayNamespace(config.gateway.env)}${requirement.name} does not ` +
         `exist in the parameter store, so every value that references it resolves to ` +
-        `nothing and the next deploy's preflight will fail.`
+        `nothing. ` +
+        (requirement.deliveries.includes("bundle")
+          ? `The next deploy fails in render-spec's baked-secret pass — preflight ` +
+            `deliberately excludes a supplementary server's env:.`
+          : `The next deploy's preflight will fail, by name.`)
       : `Not seeded: \${${requirement.name}} does not resolve from this process's ` +
-        `environment, so the gateway cannot build the value that references it.`,
+        `environment. ` +
+        (requirement.slugs.length
+          ? `The gateway cannot build the value that references it.`
+          : `The gateway reads this key directly at boot.`),
   };
 }
 
 function finish(
   requirement: SecretRequirement,
   value: string,
-  ctx: { where: string; source: SecretSource },
+  ctx: { where: string; source: SecretSource; lands?: string },
 ): SecretObservation {
   const reason = placeholderReason(value);
   if (reason) {
@@ -607,7 +670,8 @@ function finish(
     source: ctx.source,
     detail:
       `Resolves from ${ctx.where}. That proves a value EXISTS — strad does not call ` +
-      `the upstream, so it is not a claim that the credential is accepted.`,
+      `the upstream, so it is not a claim that the credential is accepted.` +
+      (ctx.lands ?? ""),
   };
 }
 
@@ -696,6 +760,30 @@ export function deriveServerStatuses(
       }
 
       if (requirements.length === 0) {
+        // `params: true` means this server's credentials are MANAGED PARAMETERS,
+        // resolved out of /strad/{env}/mcp/{slug}/static/* and injected directly —
+        // they are not `${NAME}` refs, so they produce no requirements here.
+        //
+        // Calling that "no secrets" is a false green, and a live one:
+        // `remote-filesystem-tmp-public` in infra/strad.staging.yaml carries its
+        // GCS client email and private key exactly this way, and an unseeded one
+        // breaks the server while this page reports it has nothing to seed. This
+        // page does not read that namespace, so the honest answer is that it did
+        // not check — not that there was nothing to check.
+        const managed = server.kind !== "remote-http" && server.params;
+        if (managed) {
+          return {
+            server,
+            state: "unverified" as ServerState,
+            label: STATE_LABEL.unverified,
+            summary:
+              `This server sets \`params: true\`, so its credentials are managed parameters ` +
+              `under ${staticNamespace(config.gateway.env, server.slug)} rather than ` +
+              `\${NAME} references — and this page does not read that namespace. Nothing ` +
+              `here says they are seeded.`,
+            requirements,
+          };
+        }
         return {
           server,
           state: "no-secrets" as ServerState,
@@ -804,6 +892,9 @@ export function storeProject(
   if (fromResolver) return { project: fromResolver, guessed: false };
 
   for (const server of config.servers) {
+    // A DISABLED server is not this deployment's source of truth for anything;
+    // letting its project id win would bake a wrong --project into every command.
+    if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
     const declared =
       server.consoleEnv.SECRETS_PROJECT_ID ?? server.env.SECRETS_PROJECT_ID;
@@ -898,34 +989,71 @@ export function fixTargets(
     commands: secretManagerCommands(smName, project),
   };
 
-  // For a `params: true` server the per-server namespace is the more specific
-  // (and usually the intended) home: it lands on exactly that component.
+  targets.push(
+    ...(storeBacked ? [storeTarget, bakedTarget] : [bakedTarget, storeTarget]),
+  );
+
+  // A `params: true` server's own namespace, LAST and explicitly labelled as not
+  // a fix for this row.
+  //
+  // It was offered first, under a heading that reads "most likely route first",
+  // and that was wrong: the requirement here is a `${NAME}` REFERENCE in `env:`
+  // or `headers:`, and putting the name under `/strad/{env}/mcp/{slug}/static/`
+  // does not resolve a reference. render-spec looks a referenced name up in the
+  // GATEWAY namespace and then the environment, and exits 1 if neither has it —
+  // before `resolveServerParams` runs at all. So the first thing a reader was
+  // told to do left the deploy failing with the identical error.
   for (const slug of requirement.paramsSlugs) {
-    const serverPath = `${staticNamespace(gatewayEnv, slug)}${requirement.name}`;
     targets.push({
-      store: "GCP Parameter Manager + Secret Manager",
-      resource: serverPath,
+      store: "GCP Parameter Manager + Secret Manager (a different mechanism)",
+      resource: `${staticNamespace(gatewayEnv, slug)}${requirement.name}`,
       project,
       detail:
+        `NOT a fix for this row — noted because it is the adjacent thing to reach for. ` +
         `"${slug}" sets \`params: true\`, so everything under its static namespace is ` +
-        `resolved into that server's environment and this is the narrowest place to put a ` +
-        `credential only it needs.${projectNote}`,
+        `injected into that server's environment. But this row is a \${${requirement.name}} ` +
+        `REFERENCE, and render-spec resolves a reference from the gateway namespace or the ` +
+        `deploy environment — never from a server's own namespace — so a value here leaves ` +
+        `the deploy failing exactly as it does now. Use it to replace the \`${requirement.name}\` ` +
+        `entry in that server's env: with a managed parameter, which is a config change.` +
+        projectNote,
       commands: [
-        `# In the console: prefix "${slug}/static/", variable ${requirement.name}.`,
+        `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
+        `# ...then DELETE the \${${requirement.name}} entry from ${slug}'s env: in the config.`,
       ],
       href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
     });
   }
 
-  targets.push(
-    ...(storeBacked ? [storeTarget, bakedTarget] : [bakedTarget, storeTarget]),
-  );
   return targets;
 }
 
+/**
+ * A GCP project id, or a refusal.
+ *
+ * `project` reaches a command a human is invited to paste into a shell. It comes
+ * from `STRAD_PARAMS_PROJECT_ID` or a free-form YAML `SECRETS_PROJECT_ID`, so it
+ * is the same trust boundary as the config itself — but "someone who can edit the
+ * config can already run code" is an argument for not caring, and this page's
+ * whole job is to be pasted from. A value carrying `;` or a backtick would yield
+ * a command that runs something else. GCP project ids are 6–30 characters of
+ * lowercase letters, digits and hyphens, so anything else is not a project id and
+ * is not worth quoting into a command.
+ */
+function safeProject(project: string): string | null {
+  return /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) ? project : null;
+}
+
 function secretManagerCommands(name: string, project: string): string[] {
+  const safe = safeProject(project);
+  if (!safe) {
+    return [
+      `# No paste-ready command: "${project}" is not a well-formed GCP project id,`,
+      `# so it is not quoted into a shell command here. Fix the project id first.`,
+    ];
+  }
   return [
-    `gcloud secrets create ${name} --project ${project} --replication-policy automatic`,
-    `printf %s "$VALUE" | gcloud secrets versions add ${name} --project ${project} --data-file=-`,
+    `gcloud secrets create ${name} --project ${safe} --replication-policy automatic`,
+    `printf %s "$VALUE" | gcloud secrets versions add ${name} --project ${safe} --data-file=-`,
   ];
 }

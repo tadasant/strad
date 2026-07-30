@@ -294,7 +294,15 @@ An upstream `initialize` probe per server would close the first gap, at the cost
 a page that makes N authenticated calls to third parties on every load. That is
 the trade not yet made.
 
-A third, smaller edge: the page's `GSM` / `ENV` source badge uses Zimmer's
+A third gap is `params: true`. Such a server takes its credentials from
+`/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references, and the
+page does not read that namespace — so it reports `unverified` and names the
+namespace it did not check. That is honest but it is not an answer, and
+`remote-filesystem-tmp-public` on staging is exactly that shape. Listing the
+namespace through the resolver would close it; `preflightSecrets` already shows
+the listing is metadata-only, so nothing about it needs a value-reading credential.
+
+A fourth, smaller edge: the page's `GSM` / `ENV` source badge uses Zimmer's
 Connectors-page labels on purpose, so the two screens can be compared — a
 cross-repo coupling with no compile-time link. If Zimmer renames a label, strad's
 is silently wrong. `test/ui.secret-status.test.ts` pins both spellings and their

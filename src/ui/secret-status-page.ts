@@ -21,7 +21,7 @@ import {
  * ## What this page is for
  *
  * It is step 2 of a loop that starts somewhere else. Someone looks at a list of
- * connectors, sees one that is broken, and needs to know whether STRAD is the
+ * connectors, sees one that is broken, and needs to know whether strad is the
  * reason before they go looking anywhere else. So the page is a roster, not an
  * error log: every enabled server is on it, healthy ones included, because
  * "slack is fine, gmail is not" is the answer and a page listing only failures
@@ -85,6 +85,11 @@ export function renderSecretStatus(opts: SecretStatusPageOptions): string {
   const { config, statuses } = opts;
   const counts = tally(statuses);
   const problems = statuses.filter((s) => isActionable(s.state));
+  // Rows whose status could not be ESTABLISHED, as distinct from rows that are
+  // fine. The banner must not treat these as a clean bill of health — see banner().
+  const unchecked = statuses.filter(
+    (s) => s.state === "unknown" || s.state === "unverified",
+  );
   const { project, guessed } = storeProject(config, opts.env);
 
   const body = `
@@ -98,18 +103,7 @@ export function renderSecretStatus(opts: SecretStatusPageOptions): string {
 
 ${summaryBar(counts, statuses.length)}
 
-${
-  problems.length
-    ? `<p class="posture posture-warn"><strong>${problems.length} server${
-        problems.length === 1 ? "" : "s"
-      } need attention.</strong> Each one below is expanded, with the store, the project
-      and the resource name to create. Nothing here can be fixed by redeploying alone
-      unless the value exists first.</p>`
-    : `<p class="posture"><strong>Every server's secrets resolve.</strong> That means a value
-      EXISTS for each <code>\${NAME}</code> the config references — strad does not call any
-      upstream, so it is not a claim that a credential is still accepted. A server that
-      lists tools and 401s on every call is the shape to suspect next.</p>`
-}
+${banner(problems.length, unchecked)}
 
 <section class="panel">
   <div class="panel-head">
@@ -156,6 +150,41 @@ ${STATUS_CSS}`;
   });
 }
 
+/**
+ * The headline claim, and it has to be THREE-way rather than two.
+ *
+ * The two-way version said "Every server's secrets resolve" whenever nothing was
+ * actionable — and `unknown` and `unverified` are not actionable. So a TOTAL
+ * STORE OUTAGE, with every row correctly reading `unknown`, printed a green "a
+ * value EXISTS for each ${NAME}" across the top. The rows were honest and the
+ * banner above them was not, which is worse than either alone: the banner is the
+ * part someone reads.
+ *
+ * "Could not be checked" is therefore its own posture. It is not reassurance and
+ * it is not an alarm, because neither would be true.
+ */
+function banner(problems: number, unchecked: ServerSecretStatus[]): string {
+  if (problems > 0) {
+    return `<p class="posture posture-warn"><strong>${problems} server${
+      problems === 1 ? "" : "s"
+    } need attention.</strong> Each one below is expanded, with the store, the project
+      and the resource name to create. Nothing here can be fixed by redeploying alone
+      unless the value exists first.</p>`;
+  }
+  if (unchecked.length > 0) {
+    return `<p class="posture posture-warn"><strong>Nothing is known to be broken, but ${
+      unchecked.length
+    } server${unchecked.length === 1 ? "" : "s"} could not be checked.</strong>
+      That is not the same as healthy. A row reading <code>unknown</code> means the secret
+      backend could not be consulted; <code>unverified</code> means the value is scoped to a
+      component this process is not. Neither is evidence that anything resolves.</p>`;
+  }
+  return `<p class="posture"><strong>Every server's secrets resolve.</strong> That means a value
+      EXISTS for each <code>\${NAME}</code> the config references — strad does not call any
+      upstream, so it is not a claim that a credential is still accepted. A server that
+      lists tools and 401s on every call is the shape to suspect next.</p>`;
+}
+
 function summaryBar(
   counts: Record<ServerState, number>,
   total: number,
@@ -164,7 +193,7 @@ function summaryBar(
     ["ready", "ready"],
     ["no-secrets", "no secrets"],
     ["missing", "not seeded"],
-    ["placeholder", "placeholder"],
+    ["placeholder", "check value"],
     ["unverified", "unverified"],
     ["unknown", "unknown"],
   ];
@@ -196,7 +225,7 @@ function serverBlock(
   const title = server.title ?? server.slug;
   const open = isActionable(status.state) || status.state === "unknown";
 
-  return `  <details class="acc sec-acc" ${open ? "open" : ""}>
+  return `  <details class="acc sec-acc"${open ? " open" : ""}>
     <summary>
       <span class="sec-name">${esc(title)}</span>
       ${
@@ -212,7 +241,7 @@ function serverBlock(
 ${
   status.requirements.length
     ? status.requirements
-        .map((o) => requirementBlock(o, config, env))
+        .map((o) => requirementBlock(o, config, env, server.slug))
         .join("\n")
     : `      <p>${esc(status.summary)}</p>`
 }
@@ -250,17 +279,20 @@ function requirementBlock(
   observation: SecretObservation,
   config: StradConfig,
   env: NodeJS.ProcessEnv,
+  /** The server whose row this is, so "also required by" can exclude it. */
+  slug: string,
 ): string {
   const { requirement, state, detail } = observation;
-  const shared =
-    requirement.slugs.length > 1
-      ? `<p class="sec-shared">Shared with ${requirement.slugs
-          .filter((s) => s !== undefined)
-          .map((s) => `<code>${esc(s)}</code>`)
-          .join(
-            " ",
-          )} — one secret, one problem, however many rows reference it.</p>`
-      : "";
+  // The OTHER servers that declare this same name — not this one, which the
+  // reader is already looking at.
+  const others = requirement.slugs.filter((s) => s !== slug);
+  const shared = others.length
+    ? `<p class="sec-shared">Also required by ${others
+        .map((s) => `<code>${esc(s)}</code>`)
+        .join(
+          " ",
+        )} — one secret, one problem, however many rows reference it.</p>`
+    : "";
 
   const guidance =
     state === "missing" || state === "placeholder"

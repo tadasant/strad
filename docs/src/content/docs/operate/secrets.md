@@ -272,6 +272,24 @@ store-admin credential.
 An `unknown` row carries no badge — a backend that could not be consulted cannot be
 named as the source either.
 
+### The headline is three-way, not two
+
+The banner above the roster reads "N servers need attention" when something is
+actionable, and "every server's secrets resolve" when nothing is. Neither is true
+during an outage, so there is a third: **"nothing is known to be broken, but N
+servers could not be checked."** `unknown` and `unverified` are not problems and
+they are not health, and a green headline over a page of `unknown` rows would be
+the page lying in the one place everybody reads.
+
+### A `params: true` server reads `unverified`, not `no secrets`
+
+A server that opts into parameter resolution takes its credentials from
+`/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references, and this
+page does not read that namespace. Reporting `no secrets` would be a false green
+on a server whose credentials are simply managed elsewhere — `remote-filesystem-tmp-public`
+in `infra/strad.staging.yaml` is exactly that shape. It reads `unverified`, and the
+row says which namespace was not checked.
+
 **The labels are not strad's own invention, and that is the point.** Zimmer's
 Connectors page uses the same two, so the two screens can be read side by side and
 compared, which is the whole loop this page exists to serve. Zimmer additionally
@@ -304,9 +322,13 @@ are not interchangeable:
 - `provider: gcp-parameter-store` → `/strad/<env>/gateway/static/<NAME>`, read at
   runtime, with a link straight to the parameters console that can write it.
 
-A server with `params: true` also gets its own namespace offered —
-`/strad/<env>/mcp/<slug>/static/<NAME>` — as the narrowest home for a credential
-only it needs.
+A server with `params: true` also gets its own namespace listed —
+`/strad/<env>/mcp/<slug>/static/<NAME>` — but **last, and labelled as not a fix for
+that row**. A managed parameter does not resolve a `${NAME}` reference: the
+renderer looks a referenced name up in the gateway namespace and then the deploy
+environment, and fails before server-parameter resolution runs at all. Moving a
+credential there is a config change (drop the `${NAME}` entry from that server's
+`env:`), not a value you can add to unblock the current deploy.
 
 The project is read from the deployment rather than assumed: the resolver's own
 `STRAD_PARAMS_PROJECT_ID` if this process holds one, else the `secrets` server's

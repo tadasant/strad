@@ -430,17 +430,58 @@ describe("observe", () => {
     expect(o!.detail).toContain("This row is about the console half");
   });
 
-  it("truncates a very long backend error rather than rendering it whole", async () => {
+  it("NEVER renders a backend error body — a SyntaxError window is a secret leak", async () => {
+    // THE leak the fresh-eyes review caught. A store read ends in JSON.parse over
+    // a `:render`ed payload, which is the dereferenced secret in plaintext. A
+    // corrupted envelope throws a SyntaxError whose message embeds a ~30-char
+    // window of that body, and on a cold cache snapshot.ts re-throws it raw. A
+    // 200-char cap does not help — the window sits well inside it. Only reducing
+    // a non-ParameterStoreError to its CLASS NAME does.
+    const secret = "SUPERSECRETTOKENVALUE1234567890";
+    let thrown: unknown;
+    try {
+      // The shape gcp.ts -> decodeEnvelope -> JSON.parse actually hits on a
+      // corrupted `:render` payload, whose `value` is the dereferenced secret.
+      JSON.parse(`{"path":"/p","secret":true,"value":@"${secret}"}`);
+    } catch (err) {
+      thrown = err;
+    }
+    // Node's "Unexpected token" form embeds a window of the body it choked on.
+    // It is a PARTIAL leak — a prefix of the value — which is still a leak, and
+    // it sits well inside any 200-char cap.
+    expect(String((thrown as Error).message)).toContain("SUPERSEC");
     const [o] = await observe([requirement("X_TOKEN")], {
       config: STORE_CONFIG,
       lookup: async () => {
-        throw new Error("z".repeat(5000));
+        throw thrown;
       },
       bag: EMPTY_BAG,
     });
     expect(o!.state).toBe("error");
-    expect(o!.detail).toContain("(truncated)");
-    expect(o!.detail.length).toBeLessThan(500);
+    expect(o!.detail).not.toContain(secret);
+    expect(o!.detail).not.toContain("SUPERSEC");
+    expect(o!.detail).toContain("SyntaxError");
+  });
+
+  it("passes a ParameterStoreError message through, since it is known value-free", async () => {
+    // gcp.ts builds it from method + resource with the query and `:verb`
+    // stripped, so it is the one backend message worth showing an operator.
+    class ParameterStoreError extends Error {
+      constructor(msg: string) {
+        super(msg);
+        this.name = "ParameterStoreError";
+      }
+    }
+    const [o] = await observe([requirement("X_TOKEN")], {
+      config: STORE_CONFIG,
+      lookup: async () => {
+        throw new ParameterStoreError(
+          "GET /v1/projects/p/parameters failed: 503",
+        );
+      },
+      bag: EMPTY_BAG,
+    });
+    expect(o!.detail).toContain("503");
   });
 
   it("reports a consoleEnv: ref absent under BOTH spellings as missing", async () => {
@@ -725,15 +766,24 @@ describe("fixTargets", () => {
     );
   });
 
-  it("offers a params: true server's own namespace as the narrowest home", () => {
+  it("offers a params: true namespace LAST, labelled as not a fix for this row", () => {
+    // It used to be offered FIRST, under a heading reading "most likely route
+    // first" — and it does not resolve a ${NAME} REFERENCE at all: render-spec
+    // looks a referenced name up in the gateway namespace then the environment
+    // and exits 1 if neither has it, before resolveServerParams runs. So the
+    // first thing a reader was told to do left the deploy failing identically.
     const req = requirement("PARAMS_TOKEN", {
       deliveries: ["bundle"],
       paramsSlugs: ["params-server"],
     });
-    const [first] = fixTargets(CONFIG, req, {});
-    expect(first!.resource).toBe(
+    const targets = fixTargets(CONFIG, req, {});
+    const last = targets[targets.length - 1]!;
+    expect(last.resource).toBe(
       "/strad/test/mcp/params-server/static/PARAMS_TOKEN",
     );
+    expect(last.detail).toContain("NOT a fix for this row");
+    // ...and an actual fix is offered ahead of it.
+    expect(targets[0]!.resource).toBe("strad-test-PARAMS_TOKEN");
   });
 
   it("routes a consoleEnv-only name to the deploy environment, never the store", () => {
@@ -875,17 +925,24 @@ describe("GET /secrets", () => {
   it("lists EVERY enabled server, healthy ones included", () => {
     // The roster is the feature: "slack is fine, granola is not" is the answer,
     // and a page listing only failures cannot give it.
+    // Asserted on each server's own rendered slug/name element. A bare
+    // toContain("secrets") passes on page chrome alone — "Secrets Console",
+    // "no secrets", href="/ui/secrets" — with the server absent. Caught by the
+    // fresh-eyes review.
     for (const slug of [
       "slack",
       "slack-readonly",
-      "gcs",
-      "secrets",
       "granola",
       "google-flights",
       "params-server",
     ]) {
-      expect(html).toContain(slug);
+      expect(html).toContain(`<span class="sec-name">${slug}</span>`);
     }
+    // `gcs` is the one entry with a `title:`, so its slug renders in the
+    // sec-slug code tag beside the title rather than as the heading.
+    expect(html).toContain('<span class="sec-name">Object store</span>');
+    expect(html).toContain('<code class="sec-slug">gcs</code>');
+    expect(html).toContain('<span class="sec-name">secrets</span>');
     expect(html).toContain('<span class="panel-note">7 enabled</span>');
     expect(html).not.toContain("retired");
   });
@@ -1012,8 +1069,93 @@ describe("GET /secrets", () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("granola");
-    expect(body).toContain("unknown");
+    // Assert the CHIP, not the word: GUIDE renders "<b>unknown</b> — the secret
+    // backend could not be consulted" on every request, so toContain("unknown")
+    // cannot fail. Caught by the fresh-eyes review.
+    expect(body).toContain(
+      '<span class="chip chip-warnish chip-route">unknown</span>',
+    );
     expect(body).toContain("Status unknown, not absent");
+    // ...and the banner must never read as a clean bill of health.
+    expect(body).not.toContain("Every server&#39;s secrets resolve");
+    close();
+  });
+
+  it("NEVER prints a clean bill of health when rows could not be checked", async () => {
+    // The second blocker the fresh-eyes review caught. The banner was two-way and
+    // keyed on `isActionable`, which is missing||placeholder — so `unknown` and
+    // `unverified` counted as zero problems and a TOTAL STORE OUTAGE printed
+    // "Every server's secrets resolve" across the top while every row below
+    // correctly read `unknown`. The rows were honest; the headline was not, and
+    // the headline is the part someone reads.
+    const gatewayOnly = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: test
+  secrets: { provider: gcp-parameter-store }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles: { admin: { servers: ["*"] } }
+servers:
+  - slug: granola
+    kind: remote-http
+    url: https://x.example.com/mcp
+    headers: { Authorization: "Bearer \${GRANOLA_TOKEN}" }
+    entitlements: [admin]
+`);
+    const angry: SecretProvider = {
+      name: "angry",
+      get: async () => {
+        throw new Error("store unreachable");
+      },
+      invalidate: () => {},
+    };
+    const { url, close } = await boot(gatewayOnly, angry, {});
+    const body = await (
+      await fetch(`${url}/secrets`, { headers: AUTH })
+    ).text();
+    expect(body).toContain("could not be checked");
+    expect(body).toContain("That is not the same as healthy");
+    expect(body).not.toContain("Every server&#39;s secrets resolve");
+    close();
+  });
+
+  it("does not call a params: true server 'no secrets' when its credentials are managed", async () => {
+    // Live on the real staging config: remote-filesystem-tmp-public sets
+    // params: true and carries its GCS client email and private key as MANAGED
+    // PARAMETERS, not ${NAME} refs — so it produced zero requirements and the
+    // page reported it had nothing to seed. This page does not read that
+    // namespace, so the honest answer is "not checked", not "nothing to check".
+    const managed = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles: { admin: { servers: ["*"] } }
+bundles: [{ name: bundle }]
+servers:
+  - slug: rfs
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /rfs
+    entitlements: [admin]
+    params: true
+    env:
+      RFS_GCS_BUCKET: "a-literal-bucket"
+`);
+    const { url, close } = await boot(managed, new EnvSecretProvider({}), {});
+    const body = await (
+      await fetch(`${url}/secrets`, { headers: AUTH })
+    ).text();
+    expect(body).not.toContain(
+      '<span class="chip chip-plain chip-route">no secrets</span>',
+    );
+    expect(body).toContain("managed parameters");
+    expect(body).toContain("/strad/test/mcp/rfs/static/");
     close();
   });
 

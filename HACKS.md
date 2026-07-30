@@ -830,6 +830,18 @@ spellings and their tooltip expansions so the coupling is at least visible in a
 diff; nothing can make it automatic from inside this repo. Zimmer's third label
 (`Rails Credentials`) has no strad equivalent and is never rendered here.
 
+**The one place outside text can reach the page.** A backend error message is the
+only free-form string on the page that strad does not author, and rendering
+`err.message` raw LEAKS A SECRET: a store read ends in `JSON.parse` over a
+`:render`ed payload — the dereferenced secret in plaintext — and a corrupted
+envelope throws a `SyntaxError` whose message embeds a window of that body. On a
+cold cache `snapshot.ts` re-throws it raw rather than serving stale values.
+Truncating does not help; the window is ~30 characters. `withDeadline` therefore
+reuses `errorSummary()` from `snapshot.ts`, which passes a `ParameterStoreError`
+message through (method + resource, query and `:verb` stripped) and reduces
+anything else to its class name. `test/ui.secret-status.test.ts` builds the real
+`SyntaxError` and asserts the value is absent from the rendered detail.
+
 **Undo.** Delete `src/ui/secret-status.ts`, `src/ui/secret-status-page.ts`,
 `test/ui.secret-status.test.ts`, the `/secrets` route in `src/ui/index.ts`, the
 fourth card in `src/ui/landing.ts`, and the `secretProvider` option threaded through
