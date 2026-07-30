@@ -87,7 +87,9 @@ back into a path — it reads the envelope and filters on the path it finds ther
 > probe reports that the credential cannot back it; but the listing is the
 > courtesy and IAM is the reason.
 
-Three locks, in order of how much they are worth:
+Three locks, in order of how much they are worth. Lock 1 is the only independent
+one: locks 2 and 3 are both derived from the capability probe, so a credential
+granted `parameterAccessor` opens all three at once, with no code change.
 
 1. **IAM (the real one).** In prod the MCP component's service account holds
    Parameter Manager *viewer* access: it can `parameters.list` and
@@ -96,9 +98,22 @@ Three locks, in order of how much they are worth:
    credential holds neither: Secret Manager's `versions.access`, and Parameter
    Manager's `:render`. Those are checked differently and it matters — `:render`
    needs `parametermanager.parameterVersions.render` on the CALLER *and*
-   `secretAccessor` on the parameter's own principal, so withholding
-   `versions.access` alone is not what shuts it. A bug, a bad merge or a prompt
+   `secretAccessor` on the parameter's own principal. `create()` always grants the
+   second, so withholding `versions.access` alone is NOT what shuts the path;
+   withholding `render` from the caller is. A bug, a bad merge or a prompt
    injection that reaches for a secret value gets `403 PERMISSION_DENIED`.
+
+   **So: never grant this server's credential `roles/parametermanager.parameterAccessor`.**
+   It is the role that carries `render`, and it is now the ONLY thing standing
+   between `/mcp` and a prod secret value. Its name makes it look like the role
+   for reading parameters — `parameterViewer` is that role; `parameterAccessor`
+   is the deref. If this server ever seems unable to read something in prod, that
+   is the design working, and widening the credential is never the fix.
+   `test/parameters.store.test.ts` in the core tree pins strad's MODEL of this,
+   so a code change that stops honouring it fails CI — but no test can see the
+   prod service account's actual IAM policy. The audit assertion in
+   `docs/operate/secrets-iam.md` is the only thing that catches a human granting
+   it, and it must print `{}`.
 2. **No code path on the read client.** `shared/src/parameter-manager.ts` has one
    HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
    The `:render` call lives in `write-client.ts`, which is constructed only when
@@ -274,12 +289,11 @@ backwards: **`roles/parametermanager.admin` is NOT a safe base role for a
 write-without-read console.** It includes `parametermanager.parameterVersions.render`,
 and `:render` dereferences a `__REF__` as the *parameter's own* principal rather
 than as the caller — so a caller holding `render` but not
-`secretmanager.versions.access` still gets a secret value back, as soon as that
-principal is granted `secretAccessor`. Nothing grants it today, which is the only
-reason the path is shut; granting it is exactly what issue #49 proposes. The
-custom role in the spec omits `render` so the boundary survives #49, and
-`capabilities.ts` probes for both permissions so the reported posture stays right
-either way.
+`secretmanager.versions.access` still gets a secret value back. `create()` grants
+that principal `secretAccessor` on every secret it writes (without it nothing
+resolves at all), so this path is OPEN, not theoretical. The custom role in the
+spec omits `render` for exactly that reason, and `capabilities.ts` probes for both
+permissions so the reported posture stays right either way.
 
 
 ## Test

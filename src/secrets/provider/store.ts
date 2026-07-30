@@ -17,12 +17,13 @@ import type { SecretProvider } from "./types.ts";
  * here is WHEN the read happens and how long its result is trusted.
  *
  * The credential is the RESOLVER identity — `parametermanager.parameterViewer`
- * plus `parametermanager.parameterAccessor`, the role that carries `:render`.
- * Read-only by IAM. It is deliberately neither the `secrets` MCP server's viewer
- * key (which lists but renders nothing, so every `${NAME}` would resolve to
- * nothing) nor the console's admin key (which can write); see ../parameters/types.ts
- * for why those three are separate, and scripts/render-spec.ts for where the
- * distinction is enforced.
+ * plus `parametermanager.parameterAccessor`, which is the role that carries
+ * `parameterVersions.render`; the viewer role does not, and a resolver holding
+ * only it lists every parameter and 403s on every value. Read-only by IAM. It is
+ * deliberately neither the `secrets` MCP server's viewer key (which cannot read a
+ * value at all) nor the console's admin key (which can write); see
+ * ../parameters/types.ts for why those three are separate, and
+ * scripts/render-spec.ts for where the distinction is enforced.
  *
  * ## Why the cache is a namespace SNAPSHOT and not a per-name entry
  *

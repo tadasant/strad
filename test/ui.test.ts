@@ -245,13 +245,15 @@ describe("/ui/:server GCS browse", () => {
     expect(html).toContain(`href="/ui/gcs"`);
   });
 
-  it("renders an index of every server", async () => {
+  it("renders an index of every server, each carrying a secret badge", async () => {
     const res = await fetch(`${baseUrl}/ui`, { headers: auth });
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Resource browser");
+    expect(html).toContain("<title>Servers · strad</title>");
     expect(html).toContain("gcs");
     expect(html).toContain("echo");
+    // The badge is the point of the index now: every enabled entry carries one.
+    expect(html).toMatch(/>READY</);
   });
 
   it("404s an unknown server", async () => {

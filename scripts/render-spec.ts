@@ -126,8 +126,10 @@ if (storeBacked) {
   //   - NOT CI's GCP_SA_KEY. That drives deploys and is far broader than reading
   //     one namespace; it must not outlive the job into a long-lived container.
   // It is the RESOLVER: parametermanager.parameterViewer +
-  // parametermanager.parameterAccessor (the role `:render` lives in — the viewer
-  // half only lists). Read-only by IAM, not merely by intent.
+  // parametermanager.parameterAccessor. Both — parameterViewer does NOT carry
+  // parameterVersions.render, so a resolver without the accessor role lists
+  // every parameter and 403s on every value. Read-only by IAM, not merely by
+  // intent.
   secret(RESOLVER_ENV.keyJson, true);
 
   // The store's ADDRESS is not a credential, so it ships as a visible GENERAL

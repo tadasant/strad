@@ -42,8 +42,35 @@ export interface FakeGcp {
   parameters: Map<string, FakeParameter>;
   /** The Secret Manager map: secretId -> string[] (versions, newest last). */
   secrets: Map<string, string[]>;
+  /**
+   * The Secret Manager IAM map: secretId -> bindings.
+   *
+   * `:render` is GATED on this (see `renderRefs`), which is the whole reason it
+   * is modelled. A secret parameter whose principal was never granted
+   * `secretAccessor` renders 400 here exactly as it does at Google, so a
+   * regression that drops the grant fails a test instead of failing a deploy.
+   */
+  secretPolicies: Map<string, FakeBinding[]>;
+  /** The principal Parameter Manager derefs a `__REF__` as, for a given parameter. */
+  principalOf(parameterId: string): string;
+  /**
+   * A second client over the SAME store state, with a NARROWER credential.
+   *
+   * The point is to be able to ask "what can this identity actually reach",
+   * rather than "what does this identity's config claim". `store` above holds
+   * every permission; `storeAs(PARAMETER_VIEWER_PERMISSIONS)` is the prod
+   * `secrets` MCP credential, and must not be able to read a secret value.
+   */
+  storeAs(callerPermissions: readonly string[]): ParameterStore;
   /** Every payload string ever written to Parameter Manager (for canary checks). */
   pmPayloads(): string[];
+}
+
+export interface FakeBinding {
+  role: string;
+  members: string[];
+  /** Present only for a CONDITIONAL binding. Never interpreted, only preserved. */
+  condition?: unknown;
 }
 
 interface FakeParameter {
@@ -52,10 +79,71 @@ interface FakeParameter {
 }
 
 const PROJECT = "strad-secrets-test";
+const PROJECT_NUMBER = "100000000001";
 const PM_BASE = "https://pm.test";
 const SM_BASE = "https://sm.test";
 const TOKEN_URL = "https://token.test/token";
 const LOCATION = "global";
+const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
+/**
+ * The permission `:render` needs ON THE CALLER, as opposed to on the parameter.
+ *
+ * It lives in `roles/parametermanager.parameterAccessor`. It is NOT in
+ * `roles/parametermanager.parameterViewer`, which is get/list only — and that
+ * distinction is the whole prod boundary. See `storeAs`.
+ */
+const RENDER_PERMISSION = "parametermanager.parameterVersions.render";
+
+/** The DIRECT read path's caller permission — Secret Manager's own verb. */
+const ACCESS_PERMISSION = "secretmanager.versions.access";
+
+/**
+ * Refuse a call the CALLER is not permitted to make.
+ *
+ * `caller === null` is the admin/resolver case and permits everything. Every
+ * Parameter Manager verb goes through this, not just the two that return secret
+ * bytes — otherwise the permission list would be a two-string deny-list wearing
+ * an allow-list's clothes, and a test asserting "the viewer can still enumerate
+ * the namespace" would pass for a credential holding nothing at all.
+ */
+function must(caller: Set<string> | null, permission: string): void {
+  if (caller && !caller.has(permission)) throw new HttpError(403);
+}
+
+/**
+ * `roles/parametermanager.parameterViewer`, spelled out.
+ *
+ * Exported so a test can build a genuinely viewer-scoped client rather than
+ * approximating one. Note what is absent: `parameterVersions.render`. That
+ * permission is the whole of `roles/parametermanager.parameterAccessor` (plus the
+ * same two `resourcemanager.projects.*`), which is why the two roles are not
+ * interchangeable and why only one of them may reach prod's MCP credential.
+ */
+export const PARAMETER_VIEWER_PERMISSIONS: readonly string[] = Object.freeze([
+  "parametermanager.parameters.get",
+  "parametermanager.parameters.list",
+  "parametermanager.parameterVersions.get",
+  "parametermanager.parameterVersions.list",
+  // Carried for fidelity to the real role. Nothing in the fake consults them.
+  "resourcemanager.projects.get",
+  "resourcemanager.projects.list",
+]);
+
+/**
+ * The principal a `:render` runs as — the PARAMETER, not the caller.
+ *
+ * Google's shape, and the shape matters: the real one is minted per parameter and
+ * exposed as `policyMember.iamPolicyUidPrincipal`, so a client that grants
+ * `secretAccessor` to its own service account instead builds a member string that
+ * never matches this and gets a 400 it cannot explain.
+ */
+function principalFor(parameterId: string): string {
+  return (
+    `principal://parametermanager.googleapis.com/projects/${PROJECT_NUMBER}` +
+    `/uid/locations/${LOCATION}/parameters/${parameterId}`
+  );
+}
 
 // mintAccessToken RSA-signs the JWT before POSTing to the (stubbed) token
 // endpoint, so it needs a real key. Generated once per process; a credential to
@@ -77,6 +165,10 @@ const REF_RE =
 export function createFakeGcp(): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
+  const secretPolicies = new Map<string, FakeBinding[]>();
+  /** Policy writes per secret — the etag is derived from this, so it moves. */
+  const policyWrites = new Map<string, number>();
+  const etagOf = (id: string) => `etag-${policyWrites.get(id) ?? 0}`;
 
   const json = (status: number, body: unknown): Response =>
     ({
@@ -87,44 +179,65 @@ export function createFakeGcp(): FakeGcp {
       json: async () => body,
     }) as Response;
 
-  const fetchImpl: FetchLike = async (input, init) => {
-    const url = typeof input === "string" ? input : (input as URL).toString();
-    const method = (init?.method ?? "GET").toUpperCase();
+  /**
+   * A transport for ONE calling credential.
+   *
+   * `caller === null` means "holds everything" — the admin/resolver case every
+   * existing test uses. A Set models a NARROWER credential, which is what makes
+   * the two-layer authorization real: reaching a secret value through `:render`
+   * needs the CALLER to be allowed to make the call *and* the PARAMETER's own
+   * principal to be allowed to read the secret. Both are checked here, because
+   * both are checked at Google, and the prod security model rests on the first
+   * one being withheld from the `secrets` MCP credential.
+   */
+  const fetchImplFor =
+    (caller: Set<string> | null): FetchLike =>
+    async (input, init) => {
+      const url = typeof input === "string" ? input : (input as URL).toString();
+      const method = (init?.method ?? "GET").toUpperCase();
 
-    // The token endpoint takes a form-encoded body, not JSON — handle it before
-    // any JSON parse.
-    if (url === TOKEN_URL) {
-      return json(200, { access_token: "fake-token", expires_in: 3600 });
-    }
+      // The token endpoint takes a form-encoded body, not JSON — handle it
+      // before any JSON parse.
+      if (url === TOKEN_URL) {
+        return json(200, { access_token: "fake-token", expires_in: 3600 });
+      }
 
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
-    const pm = url.startsWith(`${PM_BASE}/v1/`)
-      ? url.slice(`${PM_BASE}/v1/`.length)
-      : null;
-    const sm = url.startsWith(`${SM_BASE}/v1/`)
-      ? url.slice(`${SM_BASE}/v1/`.length)
-      : null;
+      const pm = url.startsWith(`${PM_BASE}/v1/`)
+        ? url.slice(`${PM_BASE}/v1/`.length)
+        : null;
+      const sm = url.startsWith(`${SM_BASE}/v1/`)
+        ? url.slice(`${SM_BASE}/v1/`.length)
+        : null;
 
-    try {
-      if (pm !== null) return handlePm(pm, method, body);
-      if (sm !== null) return handleSm(sm, method, body);
-    } catch (e) {
-      if (e instanceof HttpError)
-        return json(e.status, { error: { code: e.status } });
-      throw e;
-    }
-    return json(404, { error: { code: 404 } });
-  };
+      try {
+        if (pm !== null) return handlePm(pm, method, body, caller);
+        if (sm !== null) return handleSm(sm, method, body, caller);
+      } catch (e) {
+        if (e instanceof HttpError)
+          return json(e.status, { error: { code: e.status } });
+        throw e;
+      }
+      return json(404, { error: { code: 404 } });
+    };
+
+  const fetchImpl = fetchImplFor(null);
 
   const paramParent = `projects/${PROJECT}/locations/${LOCATION}/parameters`;
 
-  function handlePm(path: string, method: string, body: unknown): Response {
+  function handlePm(
+    path: string,
+    method: string,
+    body: unknown,
+    caller: Set<string> | null,
+  ): Response {
     const [pathOnly, query] = splitQuery(path);
     const q = new URLSearchParams(query);
 
     // list parameters
     if (pathOnly === paramParent && method === "GET") {
+      must(caller, "parametermanager.parameters.list");
       return json(200, {
         parameters: [...parameters.entries()].map(([id, p]) => ({
           name: `projects/${PROJECT}/locations/${LOCATION}/parameters/${id}`,
@@ -134,6 +247,7 @@ export function createFakeGcp(): FakeGcp {
     }
     // create parameter
     if (pathOnly === paramParent && method === "POST") {
+      must(caller, "parametermanager.parameters.create");
       const id = q.get("parameter_id")!;
       if (parameters.has(id)) throw new HttpError(409);
       parameters.set(id, {
@@ -153,16 +267,28 @@ export function createFakeGcp(): FakeGcp {
 
     // DELETE parameter
     if (tail.length === 0 && method === "DELETE") {
+      must(caller, "parametermanager.parameters.delete");
       if (!param) throw new HttpError(404);
       parameters.delete(id);
       return json(200, {});
     }
     if (!param) throw new HttpError(404);
 
+    // GET parameter — labels, and the principal `:render` derefs as.
+    if (tail.length === 0 && method === "GET") {
+      must(caller, "parametermanager.parameters.get");
+      return json(200, {
+        name: `${paramParent}/${id}`,
+        labels: param.labels,
+        policyMember: { iamPolicyUidPrincipal: principalFor(id) },
+      });
+    }
+
     // versions
     if (tail[0] === "versions") {
       // list versions
       if (tail.length === 1 && method === "GET") {
+        must(caller, "parametermanager.parameterVersions.list");
         return json(200, {
           parameterVersions: param.versions.map((v) => ({
             name: `${paramParent}/${id}/versions/${v.id}`,
@@ -173,6 +299,7 @@ export function createFakeGcp(): FakeGcp {
       }
       // create version
       if (tail.length === 1 && method === "POST") {
+        must(caller, "parametermanager.parameterVersions.create");
         const vid = q.get("parameter_version_id")!;
         param.versions.push({
           id: vid,
@@ -186,17 +313,25 @@ export function createFakeGcp(): FakeGcp {
       const version = param.versions.find((v) => v.id === vid);
       if (!version) throw new HttpError(404);
       if (method === "DELETE") {
+        must(caller, "parametermanager.parameterVersions.delete");
         param.versions = param.versions.filter((v) => v.id !== vid);
         return json(200, {});
       }
       if (render && method === "GET") {
+        // LAYER ONE: may this CALLER make the call at all? `parameterViewer`
+        // carries get/list and NOT render, so a viewer-scoped credential stops
+        // here — before the parameter's own grant is ever consulted. This is the
+        // single remaining thing that keeps the `secrets` MCP surface in prod
+        // from reading a secret value, so the fake enforces it.
+        must(caller, RENDER_PERMISSION);
         const decoded = Buffer.from(version.data, "base64").toString("utf8");
-        const rendered = renderRefs(decoded);
+        const rendered = renderRefs(decoded, id);
         return json(200, {
           renderedPayload: Buffer.from(rendered, "utf8").toString("base64"),
         });
       }
       if (method === "GET") {
+        must(caller, "parametermanager.parameterVersions.get");
         return json(200, {
           name: `${paramParent}/${id}/versions/${vid}`,
           payload: { data: version.data },
@@ -206,20 +341,49 @@ export function createFakeGcp(): FakeGcp {
     return json(404, { error: { code: 404 } });
   }
 
-  function renderRefs(payload: string): string {
+  /**
+   * Dereference every `__REF__`, AS THE PARAMETER.
+   *
+   * The IAM check is the point of this function, not decoration. Parameter
+   * Manager resolves a reference under the parameter's own principal, so a
+   * reference whose target has not granted that principal `secretAccessor`
+   * fails — `400 SECRET_REFERENCE_ERROR` — no matter what the caller holds.
+   * Modelling that is what lets a test prove `create()` makes the grant: delete
+   * the binding and `resolve()` stops working, which is precisely the production
+   * failure.
+   */
+  function renderRefs(payload: string, parameterId: string): string {
+    const principal = principalFor(parameterId);
     const env = JSON.parse(payload) as Record<string, unknown>;
     for (const [k, v] of Object.entries(env)) {
       if (typeof v !== "string") continue;
       const m = REF_RE.exec(v);
       if (!m) continue;
-      const versions = secrets.get(m[2]!);
+      const secretId = m[2]!;
+      const versions = secrets.get(secretId);
       if (!versions || versions.length === 0) throw new HttpError(404);
+      // An UNCONDITIONAL binding only. A conditional one is modelled as
+      // not-currently-satisfied, which is the pessimistic reading and the one
+      // that catches a client that appended the principal to a conditional
+      // binding instead of making its own.
+      const granted = (secretPolicies.get(secretId) ?? []).some(
+        (b) =>
+          b.role === SECRET_ACCESSOR_ROLE &&
+          b.condition === undefined &&
+          b.members.includes(principal),
+      );
+      if (!granted) throw new HttpError(400);
       env[k] = versions[versions.length - 1]!;
     }
     return JSON.stringify(env);
   }
 
-  function handleSm(path: string, method: string, body: unknown): Response {
+  function handleSm(
+    path: string,
+    method: string,
+    body: unknown,
+    caller: Set<string> | null,
+  ): Response {
     const secretsParent = `projects/${PROJECT}/secrets`;
     const [pathOnly, query] = splitQuery(path);
     const q = new URLSearchParams(query);
@@ -228,12 +392,52 @@ export function createFakeGcp(): FakeGcp {
       const id = q.get("secretId")!;
       if (secrets.has(id)) throw new HttpError(409);
       secrets.set(id, []);
+      secretPolicies.set(id, []);
       return json(200, { name: `${secretsParent}/${id}` });
     }
     const rest = pathOnly.startsWith(`${secretsParent}/`)
       ? pathOnly.slice(`${secretsParent}/`.length)
       : null;
     if (rest === null) return json(404, { error: { code: 404 } });
+
+    // {id}:getIamPolicy / {id}:setIamPolicy — the binding that makes a `__REF__`
+    // resolvable. Read-modify-write, so the etag is echoed back.
+    if (rest.endsWith(":getIamPolicy") && method === "GET") {
+      const id = rest.slice(0, -":getIamPolicy".length);
+      if (!secrets.has(id)) throw new HttpError(404);
+      // A caller that does not ask for version 3 gets the version-1 VIEW, with
+      // every conditional binding omitted — exactly what IAM does, and the
+      // reason a read-modify-write without it silently deletes them.
+      const wantsV3 = q.get("options.requestedPolicyVersion") === "3";
+      const all = secretPolicies.get(id) ?? [];
+      return json(200, {
+        bindings: wantsV3 ? all : all.filter((b) => b.condition === undefined),
+        etag: etagOf(id),
+        version: wantsV3 ? 3 : 1,
+      });
+    }
+    if (rest.endsWith(":setIamPolicy") && method === "POST") {
+      const id = rest.slice(0, -":setIamPolicy".length);
+      if (!secrets.has(id)) throw new HttpError(404);
+      const policy = (
+        body as { policy?: { bindings?: FakeBinding[] } & { etag?: string } }
+      ).policy;
+      // The etag is the concurrency guard, so the fake ENFORCES it. Dropping the
+      // read's etag from the write-back would otherwise break no test.
+      if (policy?.etag !== etagOf(id)) throw new HttpError(409);
+      secretPolicies.set(
+        id,
+        (policy?.bindings ?? []).map((b) => ({
+          role: b.role,
+          members: [...(b.members ?? [])],
+          // Carried through: a client that drops it silently un-scopes a
+          // conditional binding into a permanent one.
+          ...(b.condition === undefined ? {} : { condition: b.condition }),
+        })),
+      );
+      policyWrites.set(id, (policyWrites.get(id) ?? 0) + 1);
+      return json(200, { bindings: secretPolicies.get(id), etag: etagOf(id) });
+    }
 
     // {id}:addVersion
     if (rest.endsWith(":addVersion") && method === "POST") {
@@ -252,6 +456,8 @@ export function createFakeGcp(): FakeGcp {
     if (tail.length === 0 && method === "DELETE") {
       if (!secrets.has(id)) throw new HttpError(404);
       secrets.delete(id);
+      // An IAM policy does not outlive its resource.
+      secretPolicies.delete(id);
       return json(200, {});
     }
     // versions/latest:access
@@ -260,6 +466,11 @@ export function createFakeGcp(): FakeGcp {
       (tail[1] ?? "").endsWith(":access") &&
       method === "GET"
     ) {
+      // The OTHER caller-side read check. `:access` is the direct read path;
+      // `:render` above is the indirect one. A credential must be denied BOTH
+      // to be unable to reach a secret value, which is exactly the property
+      // prod's `secrets` MCP identity is supposed to have.
+      must(caller, ACCESS_PERMISSION);
       const versions = secrets.get(id);
       if (!versions || versions.length === 0) throw new HttpError(404);
       return json(200, {
@@ -273,18 +484,23 @@ export function createFakeGcp(): FakeGcp {
     return json(404, { error: { code: 404 } });
   }
 
-  const store = createGcpParameterStore({
-    projectId: PROJECT,
-    location: LOCATION,
-    account: ACCOUNT,
-    pmApiBase: PM_BASE,
-    smApiBase: SM_BASE,
-    tokenUrl: TOKEN_URL,
-    fetchImpl,
-  });
+  const storeWith = (impl: FetchLike): ParameterStore =>
+    createGcpParameterStore({
+      projectId: PROJECT,
+      location: LOCATION,
+      account: ACCOUNT,
+      pmApiBase: PM_BASE,
+      smApiBase: SM_BASE,
+      tokenUrl: TOKEN_URL,
+      fetchImpl: impl,
+    });
+
+  const store = storeWith(fetchImpl);
 
   return {
     store,
+    storeAs: (callerPermissions) =>
+      storeWith(fetchImplFor(new Set(callerPermissions))),
     fetchImpl,
     endpoints: {
       projectId: PROJECT,
@@ -296,6 +512,8 @@ export function createFakeGcp(): FakeGcp {
     },
     parameters,
     secrets,
+    secretPolicies,
+    principalOf: principalFor,
     pmPayloads: () =>
       [...parameters.values()].flatMap((p) =>
         p.versions.map((v) => Buffer.from(v.data, "base64").toString("utf8")),
@@ -312,6 +530,13 @@ class HttpError extends Error {
 const STATUS_TEXT: Record<number, string> = {
   200: "OK",
   204: "No Content",
+  // What `:render` answers when a reference cannot be dereferenced — Google's
+  // `SECRET_REFERENCE_ERROR`. It is a 400, not a 403: the CALLER was permitted,
+  // the parameter was not.
+  400: "Bad Request",
+  // What a caller lacking the permission gets — the newest failure mode here,
+  // so it needs a reason phrase like the rest.
+  403: "Forbidden",
   404: "Not Found",
   409: "Conflict",
 };

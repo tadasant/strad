@@ -686,12 +686,15 @@ today; an `oauth` kind is issue #32). Three roles touch it, and they are three
 DIFFERENT credentials on purpose:
 
 - the MCP **viewer** (`secrets` server, on the bundle) — lists parameters, reads
-  notes and NON-secret values, and cannot read a secret value (no
-  `secretmanager.versions.access`);
+  notes and NON-secret values, and in PROD cannot read a secret value: it holds
+  neither `secretmanager.versions.access` nor `parameterVersions.render`, which
+  are the two calls that return one (staging's is deliberately wider);
 - the console **admin** (core only, from `consoleEnv:`, behind SSO) — reads and
   writes both kinds;
-- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads both stores'
-  values to inject a `params: true` server's env, never over MCP.
+- the runtime **resolver** (deploy-time, `STRAD_PARAMS_*`) — reads values to
+  inject a `params: true` server's env, never over MCP. It calls Parameter
+  Manager ONLY: `:render` dereferences the secret under the parameter's own
+  principal, so the resolver never touches Secret Manager itself.
 
 What is NOT done, and needs a human with GCP access (see the checklist below and
 `docs/.../limitations.md`): the resolver service account and its key, and the
@@ -795,19 +798,23 @@ unknown key is still reported).
 **Undo.** Delete `src/config/strict.ts`, `scripts/check-config.ts`, the `config` CI
 job and the `config:check` script. Nothing at runtime depends on any of it.
 
-## 29. The Secrets Console proves presence, not that a credential works
+## 29. The console's secret badges prove presence, not that a credential works
 
-**What.** `/secrets` lists every configured MCP server and whether the secrets it
-requires resolve. It does NOT establish that a credential is still accepted — strad
-makes no upstream call to check. So the good state is `ready` ("everything it needs
-is present"), never "healthy", and a server whose token was revoked yesterday reads
-`ready` here while 401ing on every call.
+**What.** `/ui` lists every configured MCP server and whether the secrets it
+requires resolve, and `GET /api/secrets/readiness` returns the same derivation as
+JSON. Neither establishes that a credential is still accepted — strad makes no
+upstream call to check. So the good badge is `READY` ("everything it needs is
+present"), never "healthy", and a server whose token was revoked yesterday reads
+`READY` here while 401ing on every call.
 
-**Why the state names are the mitigation.** The page's whole value is being trusted
-at a glance, so the honesty has to be in the label rather than in a footnote.
-`ready`, `check value`, `not seeded`, `unverified`, `unknown` and `no secrets` each
-claim exactly one thing, and `src/ui/secret-status.ts` derives them from the running
-config rather than asserting them.
+**Why the state names are the mitigation.** The badge is trusted at a glance, so the
+honesty has to be in the label and in the popout behind it rather than in a
+footnote. `ready`, `check value`, `not seeded`, `unverified`, `unknown` and
+`no secrets` each claim exactly one thing, and `src/ui/secret-status.ts` derives
+them from the running config rather than asserting them. The two-badge collapse
+keeps its own line: `READY` is only ever `ready` or `no secrets` — the states the
+console ESTABLISHED — and `unverified`/`unknown` badge `ISSUE`, because a green on
+"I could not check" is the one lie this surface cannot afford.
 
 **The placeholder heuristic, and why it is narrow.** A value that is evidently
 filler gets its own `check value` state: an unexpanded `${...}`, an empty string, or
@@ -821,20 +828,23 @@ fine, lists fine and 401s in isolation — and it will miss a plausible-looking 
 
 **The scope gap.** Under `provider: env` a `supplementary-image` server's `env:` is
 resolved at render time and baked onto its own bundle; `appspec.ts` never broadcasts
-it, and the console renders in `core`. So core cannot see those values, and the page
+it, and the console renders in `core`. So core cannot see those values, and the popout
 reports `unverified` — "not visible here" — rather than `missing`. Reporting
 `missing` would paint a healthy 26-server fleet entirely red, which is the failure
-mode that would make the page worse than nothing. `provider: gcp-parameter-store`
+mode that would make the surface worse than nothing. It still badges `ISSUE`, which
+is the conservative direction and is stated as "could not be checked" rather than
+as a fault. `provider: gcp-parameter-store`
 closes the gap (the store holds the deploy-time source of truth for those refs too,
 so every name gets a real answer, one deploy before `render-spec` would compute the
 same thing). Under `env` it cannot be closed from inside the container: the value
 lives in CI's environment, which core has no path to.
 
-**What it does NOT do, on purpose.** No secret VALUE is rendered — not revealed,
-excerpted, length-hinted, or put in a title attribute. The placeholder check reads a
+**What it does NOT do, on purpose.** No secret VALUE is rendered or serialised — not
+revealed, excerpted, length-hinted, or put in a title attribute or a JSON field. The placeholder check reads a
 value and returns a sentence about the SHAPE it matched; nothing in the renderer is
 ever handed bytes. `test/ui.secret-status.test.ts` asserts that over a table of
-values, and asserts the rendered page contains none of them.
+values and asserts the rendered page contains none of them; `test/readiness.test.ts`
+holds the same line for the JSON.
 
 **The GSM / ENV badge is coupled to another product's UI, deliberately.** Those two
 labels are Zimmer's Connectors page's labels, not strad's. The workflow is to read
@@ -857,10 +867,72 @@ message through (method + resource, query and `:verb` stripped) and reduces
 anything else to its class name. `test/ui.secret-status.test.ts` builds the real
 `SyntaxError` and asserts the value is absent from the rendered detail.
 
-**Undo.** Delete `src/ui/secret-status.ts`, `src/ui/secret-status-page.ts`,
-`test/ui.secret-status.test.ts`, the `/secrets` route in `src/ui/index.ts`, the
-fourth card in `src/ui/landing.ts`, and the `secretProvider` option threaded through
+**Undo.** Delete `src/ui/secret-status.ts`, `src/http/readiness.ts`,
+`test/ui.secret-status.test.ts`, `test/ui.console-index.test.ts`,
+`test/readiness.test.ts`, the badge/popout half of `src/ui/index-page.ts`, the
+`/api/secrets/readiness` route in `src/http/app.ts`, the `/secrets` redirect in
+`src/ui/index.ts`, and the `secretProvider` option threaded through
 `src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
+
+## 30. Secret parameters written before strad granted them access are not repaired
+
+**What.** `create()` now grants each secret parameter's own principal
+`roles/secretmanager.secretAccessor` on the secret it points at, which is what makes
+`:render` able to dereference the `__REF__`. Parameters written by an EARLIER strad
+carry no such binding, and nothing in the code repairs them: `rotate()` adds a
+Secret Manager version and never touches IAM, and there is no reconcile pass. They
+keep failing every resolution with `400 SECRET_REFERENCE_ERROR` until a human runs
+the backfill.
+
+**Why not self-heal.** A resolver that repaired IAM would need
+`secretmanager.secrets.setIamPolicy` in the gateway container — turning the one
+deliberately read-only credential in the system into one that can rewrite the access
+policy of every secret it reads. That trade is far worse than a one-time human loop.
+Doing it in `rotate()` instead would put the same permission on the console's write
+path for a case that only exists once, and would still miss every parameter nobody
+rotates.
+
+**Blast radius, today.** Small and knowable: prod runs `provider: env` and has no
+live parameters, and staging has one `params: true` server. The backfill loop is in
+`docs/operate/secrets-iam.md` ("Backfilling parameters created before strad made
+this grant"); it is idempotent, so running it over a store that is already correct
+is a no-op.
+
+**How you find out you needed it.** The failure names neither the parameter nor the
+missing binding — the resolver reports a 400 while holding every permission the
+error implicates, and a `testIamPermissions` probe of that credential comes back
+clean. The render assertion at the end of that runbook section is the check.
+
+**Undo.** Nothing to undo; this is a migration gap, not a mechanism. It closes when
+every pre-existing secret parameter has been bound once.
+
+## 31. The prod console's write-without-read role can escalate itself to read
+
+**What.** A secret create must grant the parameter's own principal
+`secretAccessor` on its secret, so the console's credential needs
+`secretmanager.secrets.setIamPolicy`, bound at project level. That permission can
+write any binding onto any secret in the project — including granting the console's
+own service account `roles/secretmanager.secretAccessor`. The role withholds
+`versions.access` and `parameterVersions.render`, and can grant itself the first
+back in two API calls.
+
+**Why it ships anyway.** It is inherent to a console that can create secret
+parameters at all; removing `setIamPolicy` removes the create. What is fixable is
+the CLAIM, so the docs now say plainly that write-without-read here is a speed bump
+and an audit signal, not a wall: no bug, bad merge or prompt injection reads a
+secret by accident, and anyone who does must first take a conspicuous, logged
+policy-write. It is not a wall against a determined holder of the key — which
+matters, because that key's rotation is deliberately deferred (`#215`).
+
+**The real fix, not yet applied.** An IAM deny policy on
+`secretmanager.googleapis.com/versions.access` and
+`parametermanager.googleapis.com/parameterVersions.render` for that principal. Deny
+is evaluated before allow and cannot be self-granted around. The command is in
+`docs/operate/secrets-iam.md` under "Prod console: write, but never read"; it needs
+project IAM admin, which no strad process holds.
+
+**Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
+either way — this is an IAM-shaped limitation, not a mechanism in strad.
 
 ## What the human still needs to provision
 
@@ -873,15 +945,21 @@ A consolidated checklist, cross-referenced above:
       billing linked (`gcloud billing projects link`) and `--organization`, plus
       `parametermanager` / `secretmanager` / `iam` enabled, before the SAs can be
       created. Exact predefined roles, verified live: the VIEWER SA gets
-      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`)
+      `roles/parametermanager.parameterViewer` ONLY (no `secretmanager.versions.access`,
+      and — load-bearing since secret parameters grant their own principal —
+      NEVER `roles/parametermanager.parameterAccessor`, which carries
+      `parameterVersions.render` and is the one remaining thing between `/mcp`
+      and a prod secret value; staging's is deliberately wider, see
+      `docs/operate/secrets-iam.md` §2)
       → seed key as `strad-staging-SECRETS_VIEWER_KEY_JSON`; the ADMIN SA gets
       `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
       plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the
       RESOLVER SA gets `roles/parametermanager.parameterViewer` plus
-      `roles/parametermanager.parameterAccessor` (the accessor role is where
-      `parameterVersions.render` lives — the viewer role lists and renders
-      nothing, and `roles/secretmanager.secretAccessor` is not a substitute
-      because `:render` derefs as the parameter's principal, not the caller) →
+      `roles/parametermanager.parameterAccessor` (the accessor role is what carries
+      `parameterVersions.render`; the viewer role does NOT, and a resolver holding
+      only it lists every parameter and 403s on every value — it does not need
+      `roles/secretmanager.secretAccessor`, because the deref runs as the
+      parameter's own principal) →
       `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed for
       the deploy-time param injection of `remote-filesystem-tmp-public`). Only the SA
       KEYS are secret; seed them into strad's existing `strad-staging-*` Secret

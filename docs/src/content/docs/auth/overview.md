@@ -174,14 +174,36 @@ bypass's — so "sign out" means signed out however the human got in.
 
 The console gate asks whether a request resolves to a **Principal**, not what that
 principal may do. Any verified member of `hostedDomain` therefore reaches every
-console surface — `/ui/secrets` and the [Secrets Console](/operate/secrets/) at
-`/secrets` included — whatever `auth.google.roles` says: a
+console surface — `/ui/secrets` and the [secret roster](/operate/secrets/) on
+`/ui` included — whatever `auth.google.roles` says: a
 `roles: []` that reads like "signed in, no permissions" grants the same console as
 `roles: [admin]`. Roles are carried on the Principal and consumed by
 `entitledServers()` for the `/mcp` selection; they are not a console ACL, and the
 dev bypass's `consoleDevBypass.roles` has always worked the same way. Treat
 `hostedDomain` as the console's authorization boundary, and keep the Workspace
 membership that clears it tight.
+
+### `/api/secrets/readiness` is not a console surface
+
+The one authenticated surface on core that the Google gate does **not** guard.
+Its consumer is a platform app holding one long-lived `STRAD_API_KEY`, and a
+machine has no Google identity to put in front of a redirect — so it
+authenticates through `authenticateMcp` against `STRAD_TOKENS`, exactly as `/mcp`
+does, including the environment check that stops a `prod` token reading
+`staging`'s roster. It answers a `401` to a console session cookie and to the dev
+bypass alike.
+
+Authorization there is **narrower** than `/mcp`'s, not absent. `/mcp` narrows the
+same credential through `entitledServers()` and hands back whatever subset the
+token holds; a readiness report that authenticated the same way and then answered
+for _every_ server would be a strict widening on the identical token — a
+per-server role would learn every slug, every referenced secret name, the
+canonical paths and the project id. The report cannot be meaningfully narrowed
+instead, because `ready` is a claim about the whole gateway and a per-token subset
+would make the same field mean different things to different callers. So the
+credential has to match the scope: a token entitled to every enabled server, or a
+`403`. Zimmer's `admin` token (`servers: ["*"]`) clears it; a per-server token
+does not. See [Secrets](/operate/secrets/#get-apisecretsreadiness--the-same-answer-for-a-machine).
 
 ### Console dev bypass (temporary)
 

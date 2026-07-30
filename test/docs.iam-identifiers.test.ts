@@ -460,6 +460,11 @@ function documentedGrants(): Record<string, string[]> {
  * The `includedPermissions:` of every custom role `operate/secrets-iam.md`
  * tells a human to create, unioned. They are inside heredocs in a bash block,
  * so this reads the lines rather than parsing YAML.
+ *
+ * A `#` comment between two items does NOT end the list — the roles here are
+ * commented inline to explain why each permission is present, and a collector
+ * that stopped at the first comment would silently check only the permissions
+ * above it and report the rest as missing from a role that grants them.
  */
 function customRolePermissions(): string[] {
   const out = new Set<string>();
@@ -472,7 +477,7 @@ function customRolePermissions(): string[] {
     if (!collecting) continue;
     const item = /^\s+-\s+(\S+)\s*$/.exec(line);
     if (item) out.add(item[1]!);
-    else collecting = false;
+    else if (!/^\s*(#.*)?$/.test(line)) collecting = false;
   }
   return [...out].sort();
 }

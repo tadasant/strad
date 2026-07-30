@@ -130,9 +130,12 @@ function copyRow(url: string, note: string): string {
 function consoleCards(consoleMounted: boolean): string[] {
   const cards = [
     {
+      // One console entry, not two. The secret roster used to be a second card
+      // pointing at /secrets, and it was the same list of servers answering a
+      // second question about them — so it is on the entries now.
       href: "/ui",
-      title: "Resource browser",
-      desc: "Browse what each server is scoped to — buckets, objects, parameters. SSO-gated.",
+      title: "Console",
+      desc: "Every server: what it is scoped to, and whether the secrets it needs are seeded — with the exact GCP path to fix what is not. Names and status only, never values.",
       cta: "Open →",
       show: consoleMounted,
     },
@@ -141,13 +144,6 @@ function consoleCards(consoleMounted: boolean): string[] {
       title: "Sign in",
       desc: "The console session endpoint. Google SSO when configured, bootstrap token otherwise.",
       cta: "Sign in →",
-      show: consoleMounted,
-    },
-    {
-      href: "/secrets",
-      title: "Secrets Console",
-      desc: "Every server and whether the secrets it needs are seeded — with the exact GCP path to fix what is not. Names and status only, never values.",
-      cta: "Check →",
       show: consoleMounted,
     },
     {
