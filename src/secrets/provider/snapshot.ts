@@ -208,7 +208,7 @@ export class SnapshotCache {
  * to its class name: a `SyntaxError` from a malformed response body embeds a
  * window of that body, and on this path the body can be a rendered secret.
  */
-function errorSummary(err: unknown): string {
+export function errorSummary(err: unknown): string {
   if (err instanceof Error) {
     return err.name === "ParameterStoreError"
       ? `${err.name}: ${err.message}`

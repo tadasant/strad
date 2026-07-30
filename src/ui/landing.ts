@@ -144,6 +144,13 @@ function consoleCards(consoleMounted: boolean): string[] {
       show: consoleMounted,
     },
     {
+      href: "/secrets",
+      title: "Secrets Console",
+      desc: "Every server and whether the secrets it needs are seeded — with the exact GCP path to fix what is not. Names and status only, never values.",
+      cta: "Check →",
+      show: consoleMounted,
+    },
+    {
       href: "/healthz",
       title: "Health",
       desc: "Liveness, mode, environment, and the list of servers this process actually mounted.",

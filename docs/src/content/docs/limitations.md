@@ -264,6 +264,54 @@ credential read the stronger one.
 provider in the deployment's config, and drop the per-secret baking from the
 deploy workflow.
 
+### 29. The Secrets Console proves presence, not that a credential works
+
+`/secrets` lists every configured MCP server and whether the secrets it requires
+resolve. What it cannot do is tell you a credential is still _accepted_: strad
+never calls an upstream to check, so the good state is named `ready` ("everything
+it needs is present") and never "healthy". A server whose token was revoked
+yesterday reads `ready` here and 401s on every call.
+
+Two mitigations are real but partial. A value that is _evidently_ filler — an
+unexpanded `${...}`, a well-known "change-me" string, an empty string — gets its
+own `check value` state, which catches the specific shape a
+placeholder-bearer-token server has (boots fine, lists fine, 401s in isolation).
+And the placeholder list is deliberately narrow, exact-match plus a few
+unmistakable substrings: entropy scoring would send someone to rotate a working
+secret, and they cannot check without revealing it, so both directions of wrong
+are costly.
+
+The second gap is scope. Under `provider: env` a `supplementary-image` server's
+`env:` is baked onto its own bundle and never broadcast to core, where the console
+renders — so core cannot see it and the page says `unverified` rather than
+guessing. That is honest but it is not an answer, and on an `env`-provider
+deployment it is the state most servers land in. `provider: gcp-parameter-store`
+closes it: the store holds the deploy-time source of truth for those refs too, so
+every name gets a real answer. Closing it under `env` would mean the console
+reading CI's environment, which it has no path to.
+
+An upstream `initialize` probe per server would close the first gap, at the cost of
+a page that makes N authenticated calls to third parties on every load. That is
+the trade not yet made.
+
+A third gap is `params: true`. Such a server takes its credentials from
+`/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references, and the
+page does not read that namespace — so it reports `unverified` and names the
+namespace it did not check. That is honest but it is not an answer, and
+`remote-filesystem-tmp-public` on staging is exactly that shape. Listing the
+namespace through the resolver would close it; `preflightSecrets` already shows
+the listing is metadata-only, so nothing about it needs a value-reading credential.
+
+A fourth, smaller edge: the page's `GSM` / `ENV` source badge uses Zimmer's
+Connectors-page labels on purpose, so the two screens can be compared — a
+cross-repo coupling with no compile-time link. If Zimmer renames a label, strad's
+is silently wrong. `test/ui.secret-status.test.ts` pins both spellings and their
+tooltips so the coupling shows up in a diff; nothing can make it automatic from
+inside this repo.
+
+**Undo:** delete `src/ui/secret-status.ts`, `src/ui/secret-status-page.ts`, the
+`/secrets` route and the fourth console card. Nothing else reads any of it.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session

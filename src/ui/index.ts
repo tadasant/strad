@@ -23,6 +23,14 @@ import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
+import { renderSecretStatus } from "./secret-status-page.ts";
+import {
+  bootRequirements,
+  collectRequirements,
+  deriveServerStatuses,
+  observe,
+} from "./secret-status.ts";
+import type { SecretProvider } from "../secrets/provider/index.ts";
 import {
   renderGcsBrowse,
   renderIndex,
@@ -35,6 +43,8 @@ import {
  *
  * Routes:
  *   GET  /ui                    — index of every configured server
+ *   GET  /secrets               — the Secrets Console: every server, and whether
+ *                                 the secrets it requires are seeded
  *   GET  /ui/:server            — the per-server view (GCS browser, parameters
  *                                 manager, or a "no view yet" notice)
  *   POST /ui/:server/create     — ┐
@@ -91,6 +101,16 @@ export interface ConsoleUiOptions {
   capabilities?: (
     view: Extract<ServerView, { kind: "secrets" }>,
   ) => Promise<Capabilities>;
+  /**
+   * The RUNTIME secret provider — the same one the router resolves `${NAME}` with.
+   *
+   * The Secrets Console asks it whether each referenced name resolves. It is the
+   * right seam rather than the boot bag alone because it is the only one that can
+   * answer for a store-backed deployment, where a name lives in the parameter
+   * store and never in `process.env`. Absent, the page falls back to the bag,
+   * which is exactly correct under the `env` provider.
+   */
+  secretProvider?: SecretProvider;
   /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
@@ -133,6 +153,18 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     res.type("html").send(renderIndex(opts.config, signedInLabel(res)));
   });
 
+  // The Secrets Console. A TOP-LEVEL route on purpose: `/ui/:server` is a
+  // wildcard over config-supplied slugs, so mounting this under it would let a
+  // server named `secret-status` shadow the page (or the page shadow the server).
+  // `/secrets` cannot collide with anything the config declares.
+  app.get("/secrets", gate, async (_req, res) => {
+    try {
+      await handleSecretStatus(res, opts);
+    } catch (err) {
+      renderUnexpected(res, err);
+    }
+  });
+
   app.get("/ui/:server", gate, async (req, res) => {
     // Express 4 does not catch a rejected async handler, so guard it here: any
     // unexpected error becomes a 500 page rather than a hung request.
@@ -158,6 +190,66 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
       }
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// GET /secrets — the Secrets Console
+// ---------------------------------------------------------------------------
+
+/**
+ * Read every referenced `${NAME}` once, derive a status per server, render.
+ *
+ * The lookup is the RUNTIME provider when one was supplied, and the boot bag
+ * otherwise. Both honour the contract `observe()` depends on: `null` means the
+ * backend answered and the name is absent, and a throw means it could not be
+ * consulted. Collapsing those would turn a store outage into a wall of red "not
+ * seeded", which is the one failure mode that would make this page worse than
+ * nothing.
+ */
+async function handleSecretStatus(
+  res: Response,
+  opts: ConsoleUiOptions,
+): Promise<void> {
+  const bag = opts.secrets;
+  const lookup = opts.secretProvider
+    ? (name: string) => opts.secretProvider!.get(name)
+    : async (name: string) => bag[name] ?? null;
+
+  const requirements = collectRequirements(opts.config);
+  const observations = await observe(requirements, {
+    config: opts.config,
+    lookup,
+    bag,
+  });
+
+  // The gateway's own boot keys travel the same path, so they are observed the
+  // same way. They carry no `consoleEnv:` key and no bundle scope, so they are
+  // plain `gateway`-delivery requirements.
+  const bootKeys = bootRequirements();
+  const bootObservations = await observe(
+    bootKeys.map(({ name }) => ({
+      name,
+      deliveries: ["gateway" as const],
+      slugs: [],
+      consoleKeys: [],
+      paramsSlugs: [],
+    })),
+    { config: opts.config, lookup, bag },
+  );
+  const boot = bootObservations.map((observation, i) => ({
+    observation,
+    required: bootKeys[i]?.required ?? false,
+  }));
+
+  res.type("html").send(
+    renderSecretStatus({
+      config: opts.config,
+      statuses: deriveServerStatuses(opts.config, observations),
+      boot,
+      env: opts.env,
+      signedInAs: signedInLabel(res),
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------
