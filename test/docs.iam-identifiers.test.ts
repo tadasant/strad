@@ -328,9 +328,57 @@ function grantedBy(roles: readonly string[]): Set<string> {
 const ROLE =
   /\b(?:roles\/)?(?:parametermanager|secretmanager)\.[a-zA-Z]+(?![.\w])/g;
 
+/**
+ * The SHORT name of every role whose short name is unambiguous, mapped to the
+ * full one — `parameterAccessor` -> `roles/parametermanager.parameterAccessor`.
+ *
+ * Prose writes both forms, often in one sentence ("`parameterViewer` is the read
+ * role; `parameterAccessor` is the deref"), and a parser that saw only the
+ * qualified form would read a cell granting bare `parameterAccessor` as granting
+ * nothing — silently, on the one row where that is a production read path.
+ *
+ * `admin`, `editor` and `viewer` are deliberately absent: both services define
+ * them, so a bare one names no particular role.
+ */
+const SHORT_ROLE_NAMES = (() => {
+  const seen = new Map<string, string[]>();
+  for (const full of Object.keys(PREDEFINED_ROLES)) {
+    const short = full.slice(full.lastIndexOf(".") + 1);
+    seen.set(short, [...(seen.get(short) ?? []), full]);
+  }
+  const unique = new Map<string, string>();
+  for (const [short, fulls] of seen) {
+    if (fulls.length === 1) unique.set(short, fulls[0]!);
+  }
+  return unique;
+})();
+
+const SHORT_ROLE = new RegExp(
+  `\\b(?:${[...SHORT_ROLE_NAMES.keys()].join("|")})\\b`,
+  "g",
+);
+
 /** `parametermanager.admin` and `roles/parametermanager.admin` are one role. */
 function normalizeRole(token: string): string {
+  if (SHORT_ROLE_NAMES.has(token)) return SHORT_ROLE_NAMES.get(token)!;
   return token.startsWith("roles/") ? token : `roles/${token}`;
+}
+
+/** Every role a fragment names, qualified or bare, with where it was named. */
+function roleTokensIn(text: string): { role: string; at: number }[] {
+  const out: { role: string; at: number }[] = [];
+  for (const pattern of [ROLE, SHORT_ROLE]) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      // A short name inside a qualified one is the same mention twice.
+      if (pattern === SHORT_ROLE && /[./]$/.test(text.slice(0, match.index))) {
+        continue;
+      }
+      out.push({ role: normalizeRole(match[0]), at: match.index });
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
 }
 
 const SECRETS_MD = join(REPO, "docs/src/content/docs/operate/secrets.md");
@@ -347,14 +395,53 @@ const SECRETS_IAM_MD = join(
  * assertion below pins the identity set, so deleting or renaming a row fails
  * here rather than quietly checking nothing.
  */
+/**
+ * Split a cell into the roles it GRANTS and the roles it FORBIDS.
+ *
+ * A cell may name a role in order to forbid it — the viewer row's
+ * "`parameterViewer`, and **never** `parameterAccessor`" is the load-bearing
+ * example, and reading that as a grant would invert the security property this
+ * file exists to protect.
+ *
+ * The scope of a "never" is the role it introduces, within its own clause. Two
+ * cheaper rules were tried and both are wrong in a way an editor cannot see:
+ *
+ *   - "everything after the first never is forbidden" reads
+ *     "never `parameterAccessor`, only `parameterViewer`" as granting nothing,
+ *     failing on a correct doc, and word order silently becomes load-bearing;
+ *   - "the first role after a never is forbidden" reads
+ *     "`parameterViewer` — never a write role; staging adds `parameterAccessor`"
+ *     as forbidding the accessor it in fact grants.
+ *
+ * Clause boundaries cap the negation, and inside a clause it reaches the next
+ * role and stops. Both of the above then come out right.
+ */
+function classifyRoles(cell: string): {
+  granted: string[];
+  forbidden: string[];
+} {
+  const granted: string[] = [];
+  const forbidden: string[] = [];
+  // `;`, `|`, and a period that ENDS A SENTENCE. Not every period: a role name
+  // is full of them, and splitting on those would cut `parametermanager.admin`
+  // into two fragments that name nothing.
+  for (const clause of cell.split(/[;|]|\.(?=\s|$)/)) {
+    const marker = /\b(?:never|not)\b/i.exec(clause);
+    let negated = marker !== null;
+    for (const { role, at } of roleTokensIn(clause)) {
+      if (negated && marker && at > marker.index) {
+        forbidden.push(role);
+        negated = false; // the negation covers one role, then it is spent
+      } else {
+        granted.push(role);
+      }
+    }
+  }
+  return { granted, forbidden };
+}
+
 function grantedRolesIn(cell: string): string[] {
-  // A cell may name a role in order to FORBID it — the viewer row's
-  // "`parameterViewer`, and **never** `parameterAccessor`" is the load-bearing
-  // example, and reading that as a grant would invert the security property this
-  // file exists to protect. Everything from the first "never" on is a
-  // prohibition, not a grant.
-  const granted = cell.split(/\bnever\b/i)[0]!;
-  return [...(granted.match(ROLE) ?? [])].map(normalizeRole);
+  return classifyRoles(cell).granted;
 }
 
 function documentedGrants(): Record<string, string[]> {
@@ -554,8 +641,8 @@ describe("documented grants vs. what the code calls", () => {
     //
     // And the trap is that widening it looks reasonable: the credential exists
     // to READ PARAMETERS, and `parameterAccessor` is named as though it is the
-    // role for that. It is not. This repo has now misstated exactly that
-    // distinction in four separate documents, so assume the next reader will too.
+    // role for that. It is not. Several of this repo's own documents have
+    // misstated exactly that distinction, so assume the next reader will too.
     const why =
       "The `secrets` MCP credential must never be documented as holding a role " +
       "that carries parametermanager.parameterVersions.render. `:render` " +
@@ -582,14 +669,71 @@ describe("documented grants vs. what the code calls", () => {
     expect(granted.has(PROBE_PERMISSIONS.readSecretValue), why).toBe(false);
   });
 
+  it("requires the viewer row to FORBID the accessor role, not merely omit it", () => {
+    // Omission is indistinguishable from an oversight, and it survives the one
+    // edit most likely to erode this: a merge resolution that takes the older
+    // side of the identity table. A row that has to SAY "never" cannot be
+    // reverted to a row that does not without failing here.
+    const row = readFileSync(SECRETS_MD, "utf8")
+      .split("\n")
+      .find((line) => /^\|\s*\*\*viewer\*\*/.test(line));
+    expect(row, "the identity table has no viewer row").toBeDefined();
+    expect(
+      row,
+      "the viewer row must say explicitly that this credential never holds " +
+        "parameterAccessor. Omitting the role reads as an oversight; saying " +
+        "'never' is what stops the next reader from 'fixing' the viewer by " +
+        "granting it the role that renders.",
+    ).toMatch(/never[^|]*parameterAccessor/i);
+  });
+
   it("reads a role named to FORBID it as forbidden, not as granted", () => {
-    // The viewer row says "`parameterViewer`, and never `parameterAccessor`".
-    // A parser that took every role token in the cell would read the prohibition
-    // as a grant and fail the invariant above — turning the doc's clearest
+    // A parser that took every role token in a cell would read the prohibition
+    // above as a grant and fail the invariant — turning the doc's clearest
     // statement of the boundary into a CI failure.
+    const cell =
+      "`parametermanager.parameterViewer`, and **never** `parametermanager.parameterAccessor`";
+    expect(classifyRoles(cell)).toStrictEqual({
+      granted: ["roles/parametermanager.parameterViewer"],
+      forbidden: ["roles/parametermanager.parameterAccessor"],
+    });
+    // Negative control: the naive parse this replaced DID see two grants, so
+    // this test fails if the negation handling is ever dropped.
+    expect([...(cell.match(ROLE) ?? [])].map(normalizeRole)).toContain(
+      "roles/parametermanager.parameterAccessor",
+    );
+  });
+
+  it("reads the SHORT form of a role name too", () => {
+    // Prose writes `parameterAccessor` as often as the qualified name, and a
+    // parser blind to the short form would read a cell granting it as granting
+    // nothing at all — on the one row where that is a production read path.
+    expect(grantedRolesIn("`parameterViewer` + `parameterAccessor`")).toContain(
+      "roles/parametermanager.parameterAccessor",
+    );
+    expect(
+      classifyRoles("`parameterViewer`, never `parameterAccessor`"),
+    ).toStrictEqual({
+      granted: ["roles/parametermanager.parameterViewer"],
+      forbidden: ["roles/parametermanager.parameterAccessor"],
+    });
+    // A bare `admin` names no role: both services define one.
+    expect(grantedRolesIn("the `admin` identity")).toStrictEqual([]);
+  });
+
+  it("does not let a grant hide behind an unrelated `never`", () => {
+    // "…never a write role; staging adds `parameterAccessor`" grants the
+    // accessor, and a negation that swallowed the rest of the cell would report
+    // it as forbidden — a false pass on exactly the edit that matters.
     expect(
       grantedRolesIn(
-        "`parametermanager.parameterViewer`, and **never** `parameterAccessor`",
+        "`parametermanager.parameterViewer` — never a write role; staging adds `parametermanager.parameterAccessor`",
+      ),
+    ).toContain("roles/parametermanager.parameterAccessor");
+    // …and the reverse order still reads correctly.
+    expect(
+      grantedRolesIn(
+        "never `parametermanager.parameterAccessor`, only `parametermanager.parameterViewer`",
       ),
     ).toStrictEqual(["roles/parametermanager.parameterViewer"]);
   });

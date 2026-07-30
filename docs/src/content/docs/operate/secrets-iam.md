@@ -332,15 +332,18 @@ withholding `secretmanager.versions.access` does not close it, because the deref
 runs as the parameter's principal rather than the caller. The resolver gets the
 accessor role because injecting values into a child process is its job; the
 viewer must not, because returning them over the agent channel is precisely what
-it exists not to do. `test/docs.iam-identifiers.test.ts` fails the build if this
-page or [Secrets](/operate/secrets/#which-identity-exactly) ever documents the
-viewer as holding it.
+it exists not to do. `test/docs.iam-identifiers.test.ts` fails the build if the
+identity table in [Secrets](/operate/secrets/#which-identity-exactly) stops
+saying so — it reads that table and nothing else, so it cannot police an IAM
+policy, this page's `gcloud`, or a grant a human makes by hand. The audit
+assertions are what catch those.
 
 **Holding `render` is not the same as rendering.** The permission is the caller's
 half; the parameter's own principal must additionally hold
 `roles/secretmanager.secretAccessor` on the referenced secret — a property of the
-parameter, not of this credential, and the subject of issue #49. So prove the
-round trip rather than the binding, with the credential the container will hold:
+parameter rather than of this credential, so no probe of this service account can
+tell you whether it is in place. Prove the round trip rather than the binding,
+with the credential the container will hold:
 
 ```bash
 npm run store:check -- --config infra/strad.staging.yaml --resolve
