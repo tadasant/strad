@@ -100,6 +100,15 @@ Three locks, in order of how much they are worth:
    second, so withholding `versions.access` alone is NOT what shuts the path;
    withholding `render` from the caller is. A bug, a bad merge or a prompt
    injection that reaches for a secret value gets `403 PERMISSION_DENIED`.
+
+   **So: never grant this server's credential `roles/parametermanager.parameterAccessor`.**
+   It is the role that carries `render`, and it is now the ONLY thing standing
+   between `/mcp` and a prod secret value. Its name makes it look like the role
+   for reading parameters — `parameterViewer` is that role; `parameterAccessor`
+   is the deref. If this server ever seems unable to read something in prod, that
+   is the design working, and widening the credential is never the fix.
+   `test/parameters.store.test.ts` in the core tree asserts this property, so
+   eroding it fails CI.
 2. **No code path on the read client.** `shared/src/parameter-manager.ts` has one
    HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
    The `:render` call lives in `write-client.ts`, which is constructed only when

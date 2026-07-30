@@ -1,6 +1,9 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
+import {
+  createFakeGcp,
+  PARAMETER_VIEWER_PERMISSIONS,
+} from "../src/secrets/parameters/fake.ts";
 import {
   createGcpParameterStore,
   parameterId,
@@ -317,6 +320,106 @@ describe("secret parameters grant their own principal secretAccessor", () => {
         role: "roles/secretmanager.secretAccessor",
         members: [gcp.principalOf(id)],
       },
+    ]);
+  });
+});
+
+/**
+ * THE INVARIANT THIS CHANGE PUTS WEIGHT ON.
+ *
+ * Granting the parameter's principal `secretAccessor` is what makes `:render`
+ * able to return a secret value at all — and `:render` is a SECOND read path,
+ * independent of `secretmanager.versions.access`. Before that grant existed, two
+ * separate things kept the `/mcp` channel away from prod secret values. Now one
+ * does: prod's `secrets` MCP credential holds `roles/parametermanager.parameterViewer`
+ * (get/list) and NOT `roles/parametermanager.parameterAccessor` (which carries
+ * `parameterVersions.render`).
+ *
+ * That single distinction is now load-bearing, and this repo has misstated the
+ * viewer/accessor split in four separate documents. Someone "fixing" the viewer
+ * by granting it `parameterAccessor` — entirely plausible reasoning, it does need
+ * to read parameters — would silently open the path. These tests are what turns
+ * that into a CI failure instead of a quiet capability.
+ */
+describe("a parameterViewer credential cannot reach a secret VALUE", () => {
+  it("lists and reads envelopes, and is refused the render", async () => {
+    const gcp = createFakeGcp();
+    await gcp.store.create({
+      path: emailPath,
+      secret: false,
+      value: EMAIL_VALUE,
+    });
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+
+    // The grant landed: an accessor-holding caller resolves the secret. So what
+    // follows is not "nothing works" — it is the caller layer doing the work.
+    expect(await resolveServerParams(gcp.store, ENV, SLUG)).toEqual({
+      [EMAIL_VAR]: EMAIL_VALUE,
+      [KEY_VAR]: KEY_VALUE,
+    });
+
+    const viewer = gcp.storeAs(PARAMETER_VIEWER_PERMISSIONS);
+
+    // The viewer can still do its job: enumerate the namespace...
+    const listed = await viewer.list(staticNamespace(ENV, SLUG));
+    expect(listed.map((m) => m.path).sort()).toEqual(
+      [emailPath, keyPath].sort(),
+    );
+    // ...and read a NON-secret value, whose envelope holds the value itself.
+    expect(await viewer.reveal(emailPath)).toBe(EMAIL_VALUE);
+
+    // But BOTH read paths to a secret value are refused, which is the property:
+    // the direct one (Secret Manager `:access`) and the indirect one
+    // (`:render`, which is the one this change opened on the parameter side).
+    await expect(viewer.reveal(keyPath)).rejects.toThrow(/403/);
+    await expect(resolveServerParams(viewer, ENV, SLUG)).rejects.toThrow(/403/);
+
+    // And nothing leaked through the path it CAN reach: the raw envelope the
+    // viewer is allowed to read carries a pointer, never the value.
+    expect(gcp.pmPayloads().join("\n")).not.toContain("SUPER-SECRET-CANARY");
+    expect(gcp.pmPayloads().join("\n")).toContain("__REF__(");
+  });
+
+  it("is refused even though the parameter's own grant is present", async () => {
+    // The distinction that matters: the 403 is about the CALLER, not about the
+    // binding. The binding is present and correct — an accessor-holding caller
+    // reads the value through it in the test above. Withholding `render` is what
+    // closes the path, and it is the only thing closing it.
+    const gcp = createFakeGcp();
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+
+    const id = parameterId(keyPath);
+    expect(gcp.secretPolicies.get(id)).toEqual([
+      {
+        role: "roles/secretmanager.secretAccessor",
+        members: [gcp.principalOf(id)],
+      },
+    ]);
+
+    await expect(
+      resolveServerParams(gcp.storeAs(PARAMETER_VIEWER_PERMISSIONS), ENV, SLUG),
+    ).rejects.toThrow(/403/);
+
+    // And the moment `render` is added — i.e. someone grants parameterAccessor —
+    // the value comes straight out. This asserts the mechanism rather than
+    // trusting the sentence above it.
+    const withRender = gcp.storeAs([
+      ...PARAMETER_VIEWER_PERMISSIONS,
+      "parametermanager.parameterVersions.render",
+    ]);
+    expect(await resolveServerParams(withRender, ENV, SLUG)).toEqual({
+      [KEY_VAR]: KEY_VALUE,
+    });
+  });
+
+  it("pins the viewer role's contents, so `render` cannot drift into it", () => {
+    // If a future edit adds `parameterVersions.render` here, the two tests above
+    // would still pass while asserting nothing. This is the guard on the guard.
+    expect([...PARAMETER_VIEWER_PERMISSIONS]).toEqual([
+      "parametermanager.parameters.get",
+      "parametermanager.parameters.list",
+      "parametermanager.parameterVersions.get",
+      "parametermanager.parameterVersions.list",
     ]);
   });
 });

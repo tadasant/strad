@@ -131,6 +131,11 @@ opening any PR.
     `GCP_SA_KEY`. A secret parameter also grants its OWN principal
     `secretmanager.secretAccessor` on its secret; `create()` does that, and
     without it every `:render` is a `400 SECRET_REFERENCE_ERROR`.
+    Because that grant exists, `:render` is a live read path for secret values,
+    and **the `secrets` MCP credential must NEVER hold
+    `roles/parametermanager.parameterAccessor`** — withholding it is the only
+    thing keeping `/mcp` away from a prod secret value. `parameterViewer` is the
+    read role; `parameterAccessor` is the deref, despite the names.
     A credential that only strad's own process needs must be scoped to the strad
     image (`STRAD_IMAGE_ONLY_SECRET_KEYS` in `src/deploy/appspec.ts`): a plain
     SECRET in the app spec is BROADCAST to every supplementary container.

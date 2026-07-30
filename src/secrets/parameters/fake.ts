@@ -53,6 +53,15 @@ export interface FakeGcp {
   secretPolicies: Map<string, FakeBinding[]>;
   /** The principal Parameter Manager derefs a `__REF__` as, for a given parameter. */
   principalOf(parameterId: string): string;
+  /**
+   * A second client over the SAME store state, with a NARROWER credential.
+   *
+   * The point is to be able to ask "what can this identity actually reach",
+   * rather than "what does this identity's config claim". `store` above holds
+   * every permission; `storeAs(PARAMETER_VIEWER_PERMISSIONS)` is the prod
+   * `secrets` MCP credential, and must not be able to read a secret value.
+   */
+  storeAs(callerPermissions: readonly string[]): ParameterStore;
   /** Every payload string ever written to Parameter Manager (for canary checks). */
   pmPayloads(): string[];
 }
@@ -76,6 +85,31 @@ const SM_BASE = "https://sm.test";
 const TOKEN_URL = "https://token.test/token";
 const LOCATION = "global";
 const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
+/**
+ * The permission `:render` needs ON THE CALLER, as opposed to on the parameter.
+ *
+ * It lives in `roles/parametermanager.parameterAccessor`. It is NOT in
+ * `roles/parametermanager.parameterViewer`, which is get/list only — and that
+ * distinction is the whole prod boundary. See `storeAs`.
+ */
+const RENDER_PERMISSION = "parametermanager.parameterVersions.render";
+
+/** The DIRECT read path's caller permission — Secret Manager's own verb. */
+const ACCESS_PERMISSION = "secretmanager.versions.access";
+
+/**
+ * `roles/parametermanager.parameterViewer`, spelled out.
+ *
+ * Exported so a test can build a genuinely viewer-scoped client rather than
+ * approximating one. Note what is absent: `parameterVersions.render`.
+ */
+export const PARAMETER_VIEWER_PERMISSIONS: readonly string[] = Object.freeze([
+  "parametermanager.parameters.get",
+  "parametermanager.parameters.list",
+  "parametermanager.parameterVersions.get",
+  "parametermanager.parameterVersions.list",
+]);
 
 /**
  * The principal a `:render` runs as — the PARAMETER, not the caller.
@@ -126,39 +160,59 @@ export function createFakeGcp(): FakeGcp {
       json: async () => body,
     }) as Response;
 
-  const fetchImpl: FetchLike = async (input, init) => {
-    const url = typeof input === "string" ? input : (input as URL).toString();
-    const method = (init?.method ?? "GET").toUpperCase();
+  /**
+   * A transport for ONE calling credential.
+   *
+   * `caller === null` means "holds everything" — the admin/resolver case every
+   * existing test uses. A Set models a NARROWER credential, which is what makes
+   * the two-layer authorization real: reaching a secret value through `:render`
+   * needs the CALLER to be allowed to make the call *and* the PARAMETER's own
+   * principal to be allowed to read the secret. Both are checked here, because
+   * both are checked at Google, and the prod security model rests on the first
+   * one being withheld from the `secrets` MCP credential.
+   */
+  const fetchImplFor =
+    (caller: Set<string> | null): FetchLike =>
+    async (input, init) => {
+      const url = typeof input === "string" ? input : (input as URL).toString();
+      const method = (init?.method ?? "GET").toUpperCase();
 
-    // The token endpoint takes a form-encoded body, not JSON — handle it before
-    // any JSON parse.
-    if (url === TOKEN_URL) {
-      return json(200, { access_token: "fake-token", expires_in: 3600 });
-    }
+      // The token endpoint takes a form-encoded body, not JSON — handle it
+      // before any JSON parse.
+      if (url === TOKEN_URL) {
+        return json(200, { access_token: "fake-token", expires_in: 3600 });
+      }
 
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined;
 
-    const pm = url.startsWith(`${PM_BASE}/v1/`)
-      ? url.slice(`${PM_BASE}/v1/`.length)
-      : null;
-    const sm = url.startsWith(`${SM_BASE}/v1/`)
-      ? url.slice(`${SM_BASE}/v1/`.length)
-      : null;
+      const pm = url.startsWith(`${PM_BASE}/v1/`)
+        ? url.slice(`${PM_BASE}/v1/`.length)
+        : null;
+      const sm = url.startsWith(`${SM_BASE}/v1/`)
+        ? url.slice(`${SM_BASE}/v1/`.length)
+        : null;
 
-    try {
-      if (pm !== null) return handlePm(pm, method, body);
-      if (sm !== null) return handleSm(sm, method, body);
-    } catch (e) {
-      if (e instanceof HttpError)
-        return json(e.status, { error: { code: e.status } });
-      throw e;
-    }
-    return json(404, { error: { code: 404 } });
-  };
+      try {
+        if (pm !== null) return handlePm(pm, method, body, caller);
+        if (sm !== null) return handleSm(sm, method, body, caller);
+      } catch (e) {
+        if (e instanceof HttpError)
+          return json(e.status, { error: { code: e.status } });
+        throw e;
+      }
+      return json(404, { error: { code: 404 } });
+    };
+
+  const fetchImpl = fetchImplFor(null);
 
   const paramParent = `projects/${PROJECT}/locations/${LOCATION}/parameters`;
 
-  function handlePm(path: string, method: string, body: unknown): Response {
+  function handlePm(
+    path: string,
+    method: string,
+    body: unknown,
+    caller: Set<string> | null,
+  ): Response {
     const [pathOnly, query] = splitQuery(path);
     const q = new URLSearchParams(query);
 
@@ -238,6 +292,12 @@ export function createFakeGcp(): FakeGcp {
         return json(200, {});
       }
       if (render && method === "GET") {
+        // LAYER ONE: may this CALLER make the call at all? `parameterViewer`
+        // carries get/list and NOT render, so a viewer-scoped credential stops
+        // here — before the parameter's own grant is ever consulted. This is the
+        // single remaining thing that keeps the `secrets` MCP surface in prod
+        // from reading a secret value, so the fake enforces it.
+        if (caller && !caller.has(RENDER_PERMISSION)) throw new HttpError(403);
         const decoded = Buffer.from(version.data, "base64").toString("utf8");
         const rendered = renderRefs(decoded, id);
         return json(200, {
@@ -291,7 +351,12 @@ export function createFakeGcp(): FakeGcp {
     return JSON.stringify(env);
   }
 
-  function handleSm(path: string, method: string, body: unknown): Response {
+  function handleSm(
+    path: string,
+    method: string,
+    body: unknown,
+    caller: Set<string> | null,
+  ): Response {
     const secretsParent = `projects/${PROJECT}/secrets`;
     const [pathOnly, query] = splitQuery(path);
     const q = new URLSearchParams(query);
@@ -374,6 +439,11 @@ export function createFakeGcp(): FakeGcp {
       (tail[1] ?? "").endsWith(":access") &&
       method === "GET"
     ) {
+      // The OTHER caller-side read check. `:access` is the direct read path;
+      // `:render` above is the indirect one. A credential must be denied BOTH
+      // to be unable to reach a secret value, which is exactly the property
+      // prod's `secrets` MCP identity is supposed to have.
+      if (caller && !caller.has(ACCESS_PERMISSION)) throw new HttpError(403);
       const versions = secrets.get(id);
       if (!versions || versions.length === 0) throw new HttpError(404);
       return json(200, {
@@ -387,18 +457,23 @@ export function createFakeGcp(): FakeGcp {
     return json(404, { error: { code: 404 } });
   }
 
-  const store = createGcpParameterStore({
-    projectId: PROJECT,
-    location: LOCATION,
-    account: ACCOUNT,
-    pmApiBase: PM_BASE,
-    smApiBase: SM_BASE,
-    tokenUrl: TOKEN_URL,
-    fetchImpl,
-  });
+  const storeWith = (impl: FetchLike): ParameterStore =>
+    createGcpParameterStore({
+      projectId: PROJECT,
+      location: LOCATION,
+      account: ACCOUNT,
+      pmApiBase: PM_BASE,
+      smApiBase: SM_BASE,
+      tokenUrl: TOKEN_URL,
+      fetchImpl: impl,
+    });
+
+  const store = storeWith(fetchImpl);
 
   return {
     store,
+    storeAs: (callerPermissions) =>
+      storeWith(fetchImplFor(new Set(callerPermissions))),
     fetchImpl,
     endpoints: {
       projectId: PROJECT,

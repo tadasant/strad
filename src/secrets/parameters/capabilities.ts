@@ -80,9 +80,17 @@ export const PROBE_PERMISSIONS = {
    * at all.
    *
    * This path is therefore OPEN, and `render` is a read permission in full. A
-   * console that must not read secret values has to be denied `render` as well
-   * as `versions.access`; withholding only the latter is not sufficient, and
-   * `roles/parametermanager.admin` includes `render`.
+   * credential that must not read secret values has to be denied `render` as
+   * well as `versions.access`; withholding only the latter is not sufficient,
+   * and `roles/parametermanager.admin` includes `render`.
+   *
+   * OPERATIONAL INVARIANT, and it is load-bearing rather than defence-in-depth:
+   * prod's `secrets` MCP credential must never hold
+   * `roles/parametermanager.parameterAccessor`. That role carries `render`, and
+   * withholding it is now the ONLY thing keeping `/mcp` away from a prod secret
+   * value. `parameterViewer` is the read role; `parameterAccessor` is the deref,
+   * which their names do not suggest. `test/parameters.store.test.ts` asserts
+   * the property so it fails CI rather than opening quietly.
    */
   renderParameter: "parametermanager.parameterVersions.render",
 } as const;

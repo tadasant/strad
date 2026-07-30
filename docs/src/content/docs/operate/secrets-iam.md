@@ -16,7 +16,8 @@ substitutes for the other:
 
 Where the two disagree, strad fails closed and says which way they disagree,
 because the two directions call for opposite fixes. See
-[the console's reveal posture](/operate/secrets/#reveal) for what the page shows.
+[the console's reveal posture](/operate/secrets/#reveal-and-why-a-flag-is-not-a-boundary)
+for what the page shows.
 
 This page is the second layer: the exact permission each operation needs, the
 `gcloud` to apply it, and an assertion to prove it landed. It requires project
@@ -67,6 +68,30 @@ Secret Manager's verb (`secretmanager.versions.access`) and Parameter Manager do
 not use it. `gcloud iam roles create` rejects a permission name it does not know,
 so a custom role containing it fails to create at all rather than creating a role
 that grants nothing.
+:::
+
+## Never grant the `secrets` MCP credential `parameterAccessor`
+
+:::danger[This is the one grant that would open `/mcp` to prod secret values]
+`:render` returns a secret value, and `create()` now makes the grant that lets it
+(see [below](#why-a-parameter-must-be-granted-access-to-its-own-secret)). That was
+necessary — nothing resolves without it — but it means **the only thing keeping the
+`/mcp` channel away from a prod secret value is that prod's MCP credential holds
+`parameterViewer` (get/list) and not `parameterAccessor` (which carries `render`)**.
+Before that grant existed, two independent things blocked that path. Now one does.
+
+The trap is that granting it looks reasonable. The credential is _for reading
+parameters_, and `parameterAccessor` is named as though it is the role for that. It
+is not: `parameterViewer` is the read role, and `parameterAccessor` is specifically
+the deref. This repo has now misstated that distinction in four separate documents,
+so assume the next person will too.
+
+If the `secrets` server ever appears unable to read something in prod, that is the
+design working. The fix is never to widen this credential.
+
+`test/parameters.store.test.ts` asserts the property directly — a viewer-scoped
+client is refused both read paths even with the parameter's own grant in place —
+so eroding it fails CI rather than shipping.
 :::
 
 :::caution[The second read path is OPEN — `versions.access` alone is not the boundary]
@@ -361,9 +386,14 @@ gcloud projects add-iam-policy-binding "${PROJECT}" \
 
 **The resolver does not need `roles/secretmanager.secretAccessor`.** It never calls
 Secret Manager: the deref happens under the parameter's own principal, which is what
-the grant in the previous section is for. Granting it to the resolver as well is
-harmless but misleading — it looks like the thing that makes rendering work, and it
-is not, so a debugger who sees it present concludes the IAM is fine.
+the grant in the previous section is for.
+
+Prod's resolver **does** currently hold it, alongside the two Parameter Manager
+roles, and that is fine — it grants nothing the resolver uses. Say so out loud
+because its presence is actively misleading during debugging: it looks like the
+thing that makes rendering work, so someone checking IAM sees it, concludes the
+grants are correct, and stops one step short of the parameter-side binding that is
+actually missing.
 
 **Audit assertion.** Run as the resolver; both must be listed.
 
