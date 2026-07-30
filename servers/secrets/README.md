@@ -96,8 +96,9 @@ Three locks, in order of how much they are worth:
    credential holds neither: Secret Manager's `versions.access`, and Parameter
    Manager's `:render`. Those are checked differently and it matters — `:render`
    needs `parametermanager.parameterVersions.render` on the CALLER *and*
-   `secretAccessor` on the parameter's own principal, so withholding
-   `versions.access` alone is not what shuts it. A bug, a bad merge or a prompt
+   `secretAccessor` on the parameter's own principal. `create()` always grants the
+   second, so withholding `versions.access` alone is NOT what shuts the path;
+   withholding `render` from the caller is. A bug, a bad merge or a prompt
    injection that reaches for a secret value gets `403 PERMISSION_DENIED`.
 2. **No code path on the read client.** `shared/src/parameter-manager.ts` has one
    HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
@@ -274,12 +275,11 @@ backwards: **`roles/parametermanager.admin` is NOT a safe base role for a
 write-without-read console.** It includes `parametermanager.parameterVersions.render`,
 and `:render` dereferences a `__REF__` as the *parameter's own* principal rather
 than as the caller — so a caller holding `render` but not
-`secretmanager.versions.access` still gets a secret value back, as soon as that
-principal is granted `secretAccessor`. Nothing grants it today, which is the only
-reason the path is shut; granting it is exactly what issue #49 proposes. The
-custom role in the spec omits `render` so the boundary survives #49, and
-`capabilities.ts` probes for both permissions so the reported posture stays right
-either way.
+`secretmanager.versions.access` still gets a secret value back. `create()` grants
+that principal `secretAccessor` on every secret it writes (without it nothing
+resolves at all), so this path is OPEN, not theoretical. The custom role in the
+spec omits `render` for exactly that reason, and `capabilities.ts` probes for both
+permissions so the reported posture stays right either way.
 
 
 ## Test

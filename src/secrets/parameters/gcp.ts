@@ -67,6 +67,15 @@ const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
 const DEFAULT_SM_BASE = "https://secretmanager.googleapis.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+/**
+ * The role a parameter's own principal needs on every secret it references.
+ *
+ * `:render` does NOT dereference a `__REF__` as the caller — it derefs as the
+ * PARAMETER, so the caller's `secretAccessor` is the wrong grant to reason about
+ * and granting it to the resolver does not make a single reference resolve.
+ */
+const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
 export function createGcpParameterStore(
   cfg: GcpParameterStoreConfig,
 ): ParameterStore {
@@ -226,6 +235,55 @@ export function createGcpParameterStore(
     };
   }
 
+  /**
+   * Make a secret parameter's `__REF__` actually resolvable.
+   *
+   * Parameter Manager dereferences a reference as the PARAMETER's own principal,
+   * not as whoever called `:render`. So a secret parameter is born unresolvable:
+   * the secret exists, the pointer at it exists, and every `:render` fails with
+   * `400 SECRET_REFERENCE_ERROR` until this binding is added. No amount of grant
+   * on the RESOLVER fixes it, which is what makes the failure so confusing — the
+   * credential that gets the 400 holds every permission the error implicates.
+   *
+   * Two reads plus a write, rather than a blind overwrite: the policy is
+   * read-modify-written so an etag guards a concurrent change, and a policy that
+   * already carries this member is left alone. A fresh secret's policy is empty,
+   * but `create()` is not the only thing that can have touched it.
+   */
+  async function grantRenderAccess(id: string): Promise<void> {
+    const param = (await pm("GET", `${pmParent}/parameters/${id}`)) as {
+      policyMember?: { iamPolicyUidPrincipal?: string };
+    };
+    const principal = param.policyMember?.iamPolicyUidPrincipal;
+    if (!principal) {
+      // Fail rather than proceed. A parameter whose principal we cannot name is
+      // one whose reference we cannot make resolvable, and finishing `create()`
+      // would report success for a secret that can never be read back.
+      throw new ParameterStoreError(
+        `parameter "${id}" reported no policyMember.iamPolicyUidPrincipal, so its secret reference could not be made resolvable`,
+        502,
+      );
+    }
+
+    const policy = (await sm(
+      "GET",
+      `${smParent}/secrets/${id}:getIamPolicy`,
+    )) as { bindings?: { role: string; members?: string[] }[]; etag?: string };
+
+    const bindings = (policy.bindings ?? []).map((b) => ({
+      ...b,
+      members: [...(b.members ?? [])],
+    }));
+    const binding = bindings.find((b) => b.role === SECRET_ACCESSOR_ROLE);
+    if (binding?.members.includes(principal)) return;
+    if (binding) binding.members.push(principal);
+    else bindings.push({ role: SECRET_ACCESSOR_ROLE, members: [principal] });
+
+    await sm("POST", `${smParent}/secrets/${id}:setIamPolicy`, {
+      policy: { ...policy, bindings },
+    });
+  }
+
   // --- ParameterStore surface ---------------------------------------------
 
   async function list(namespace: string): Promise<ParameterMeta[]> {
@@ -332,6 +390,11 @@ export function createGcpParameterStore(
     }
 
     try {
+      // BEFORE the version, so there is never a moment where a complete-looking
+      // secret parameter exists whose reference cannot render. The grant needs
+      // the parameter to exist (its principal is minted with it) and does not
+      // need the version, so this is the earliest point it can be made.
+      if (input.secret) await grantRenderAccess(id);
       await addVersion(id, {
         path: input.path,
         secret: input.secret,
@@ -340,7 +403,8 @@ export function createGcpParameterStore(
       });
     } catch (err) {
       // The parameter above is ours — this call created it — so rolling it back
-      // is right. Each DELETE is 404-tolerant.
+      // is right. Each DELETE is 404-tolerant. Deleting the secret drops the
+      // binding with it; an IAM policy does not outlive its resource.
       await pm("DELETE", `${pmParent}/parameters/${id}`).catch(() => {});
       if (input.secret)
         await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});

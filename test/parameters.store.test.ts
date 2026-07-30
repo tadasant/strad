@@ -146,13 +146,120 @@ describe("gcp parameter store — two-store model", () => {
   });
 });
 
+/**
+ * The grant that makes a `__REF__` resolvable at all.
+ *
+ * `:render` derefs a reference as the PARAMETER's own principal, not as the
+ * caller, so a secret parameter is born unresolvable: every resource exists and
+ * every render fails until the parameter's principal holds `secretAccessor` on
+ * the secret. The fake enforces this the way Google does, which is what makes
+ * these assertions about behaviour rather than about call shape — the first test
+ * below removes the binding and watches `resolve()` break.
+ */
+describe("secret parameters grant their own principal secretAccessor", () => {
+  it("makes the binding during create, and :render depends on it", async () => {
+    const gcp = createFakeGcp();
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+
+    const id = parameterId(keyPath);
+    expect(gcp.secretPolicies.get(id)).toEqual([
+      {
+        role: "roles/secretmanager.secretAccessor",
+        members: [gcp.principalOf(id)],
+      },
+    ]);
+
+    // With the binding, the value resolves.
+    expect(await resolveServerParams(gcp.store, ENV, SLUG)).toEqual({
+      [KEY_VAR]: KEY_VALUE,
+    });
+
+    // Take ONLY the binding away — every other resource is untouched — and the
+    // resolve that just worked stops working. This is the production failure
+    // this whole change exists to prevent, and it is what a regression that
+    // dropped the grant from create() would produce.
+    gcp.secretPolicies.set(id, []);
+    await expect(resolveServerParams(gcp.store, ENV, SLUG)).rejects.toThrow(
+      /400/,
+    );
+  });
+
+  it("grants the PARAMETER's principal, not the caller's service account", async () => {
+    const gcp = createFakeGcp();
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+
+    const members = gcp.secretPolicies.get(parameterId(keyPath))![0]!.members;
+    // The distinction the defect turned on: granting the resolver/admin identity
+    // instead looks equally plausible and resolves nothing.
+    expect(members[0]).toMatch(
+      /^principal:\/\/parametermanager\.googleapis\.com\/projects\/\d+\/uid\/locations\/global\/parameters\//,
+    );
+    expect(members.join()).not.toContain("gserviceaccount.com");
+  });
+
+  it("makes no binding for a NON-secret parameter", async () => {
+    const gcp = createFakeGcp();
+    await gcp.store.create({
+      path: emailPath,
+      secret: false,
+      value: EMAIL_VALUE,
+    });
+    // Nothing in Secret Manager to bind, and nothing bound.
+    expect(gcp.secretPolicies.size).toBe(0);
+    expect(await resolveServerParams(gcp.store, ENV, SLUG)).toEqual({
+      [EMAIL_VAR]: EMAIL_VALUE,
+    });
+  });
+
+  it("survives a policy that already carries other bindings", async () => {
+    const gcp = createFakeGcp();
+    const id = parameterId(keyPath);
+    // A read-modify-write, not an overwrite: an unrelated binding must survive,
+    // or create() silently revokes whatever else was on the secret.
+    const other = {
+      role: "roles/secretmanager.viewer",
+      members: ["user:a@b.c"],
+    };
+    const realFetch = gcp.fetchImpl;
+    const store = createGcpParameterStore({
+      projectId: gcp.endpoints.projectId,
+      location: gcp.endpoints.location,
+      account: JSON.parse(gcp.endpoints.keyJson) as {
+        client_email: string;
+        private_key: string;
+      },
+      pmApiBase: gcp.endpoints.pmApiBase,
+      smApiBase: gcp.endpoints.smApiBase,
+      tokenUrl: gcp.endpoints.tokenUrl,
+      fetchImpl: async (input, init) => {
+        // Seed the pre-existing binding the moment the secret exists.
+        const res = await realFetch(input, init);
+        if (String(input).includes("/secrets?secretId=")) {
+          gcp.secretPolicies.set(id, [other]);
+        }
+        return res;
+      },
+    });
+
+    await store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+
+    expect(gcp.secretPolicies.get(id)).toEqual([
+      other,
+      {
+        role: "roles/secretmanager.secretAccessor",
+        members: [gcp.principalOf(id)],
+      },
+    ]);
+  });
+});
+
 describe("two-store create rollback", () => {
   it("rolls back the Secret Manager secret when the parameter version fails", async () => {
     // Drive the REAL client over a stub fetch, so the rollback is asserted on the
     // code that ships. A secret create is: SM create secret, SM addVersion, PM
-    // create parameter, PM addVersion. If the LAST call fails, both the empty
-    // parameter and the Secret Manager secret must be rolled back, or a retry hits
-    // "already exists".
+    // create parameter, the IAM grant that makes the `__REF__` resolvable, PM
+    // addVersion. If the LAST call fails, both the empty parameter and the Secret
+    // Manager secret must be rolled back, or a retry hits "already exists".
     const calls: string[] = [];
     const stub = (async (input: string | URL, init?: RequestInit) => {
       const url = String(input);
@@ -162,9 +269,17 @@ describe("two-store create rollback", () => {
       }
       const path = url.split("/v1/")[1] ?? "";
       calls.push(`${method} ${path.split("?")[0]}`);
-      // Fail the PM version create (the last of the four writes).
+      // Fail the PM version create (the LAST of the writes).
       if (method === "POST" && /parameters\/[^/]+\/versions/.test(path)) {
         return jsonRes({ error: { code: 503 } }, 503);
+      }
+      // The parameter GET the IAM grant reads its principal from. Without a
+      // principal the grant fails first and this test would assert on the wrong
+      // failure.
+      if (method === "GET" && /parameters\/[^/]+$/.test(path)) {
+        return jsonRes({
+          policyMember: { iamPolicyUidPrincipal: "principal://pm/uid/p" },
+        });
       }
       // Any versions LIST (to compute the next id) returns empty.
       if (method === "GET" && /parameters\/[^/]+\/versions$/.test(path)) {
@@ -197,6 +312,61 @@ describe("two-store create rollback", () => {
       `DELETE projects/p/locations/global/parameters/${id}`,
     );
     expect(calls).toContain(`DELETE projects/p/secrets/${id}`);
+  });
+
+  it("rolls back both stores when the IAM GRANT fails", async () => {
+    // The failure mode this change introduces. A grant that does not land leaves
+    // a parameter whose `__REF__` can never render, so it must roll back exactly
+    // like the version-create failure above rather than reporting success for a
+    // secret nothing can read.
+    const calls: string[] = [];
+    const stub = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/token")) {
+        return jsonRes({ access_token: "t", expires_in: 3600 });
+      }
+      const path = url.split("/v1/")[1] ?? "";
+      calls.push(`${method} ${path.split("?")[0]}`);
+      if (method === "POST" && /:setIamPolicy$/.test(path)) {
+        return jsonRes({ error: { code: 503 } }, 503);
+      }
+      if (method === "GET" && /parameters\/[^/]+$/.test(path)) {
+        return jsonRes({
+          policyMember: { iamPolicyUidPrincipal: "principal://pm/uid/p" },
+        });
+      }
+      return jsonRes({ name: path });
+    }) as typeof fetch;
+
+    const store = createGcpParameterStore({
+      projectId: "p",
+      account: {
+        client_email: "admin@demo.iam.gserviceaccount.com",
+        private_key: generateKeyPairSync("rsa", { modulusLength: 2048 })
+          .privateKey.export({ type: "pkcs8", format: "pem" })
+          .toString(),
+      },
+      pmApiBase: "http://pm",
+      smApiBase: "http://sm",
+      tokenUrl: "http://token/token",
+      fetchImpl: stub,
+    });
+
+    await expect(
+      store.create({ path: keyPath, secret: true, value: "v" }),
+    ).rejects.toThrow(/503/);
+
+    const id = parameterId(keyPath);
+    expect(calls).toContain(
+      `DELETE projects/p/locations/global/parameters/${id}`,
+    );
+    expect(calls).toContain(`DELETE projects/p/secrets/${id}`);
+    // And it failed BEFORE writing a version, so no half-built parameter ever
+    // became visible to a reader.
+    expect(
+      calls.filter((c) => /^POST .*parameters\/[^/]+\/versions$/.test(c)),
+    ).toEqual([]);
   });
 
   it("rolls back the Secret Manager secret when the PARAMETER create fails", async () => {

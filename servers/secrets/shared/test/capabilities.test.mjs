@@ -29,6 +29,8 @@ const EXPECTED = {
   readSecretValue: "secretmanager.versions.access",
   writeSecretValue: "secretmanager.versions.add",
   createSecret: "secretmanager.secrets.create",
+  readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
+  bindSecret: "secretmanager.secrets.setIamPolicy",
   createParameter: "parametermanager.parameters.create",
   writeParameter: "parametermanager.parameterVersions.create",
   deleteParameter: "parametermanager.parameters.delete",
@@ -118,6 +120,20 @@ test("a staging-shaped grant lights up the write tools", async () => {
     deleteParameters: true,
     probed: true,
   });
+});
+
+test("without the IAM-policy grant, a secret write is not claimed", async () => {
+  // `create()` grants the PARAMETER's own principal secretAccessor on its
+  // secret; `:render` derefs as that principal, so a create without the binding
+  // produces a parameter nothing can read. A credential that can write the
+  // values but not set the policy fails the create and rolls it back.
+  for (const missing of [EXPECTED.bindSecret, EXPECTED.readSecretIamPolicy]) {
+    const caps = await probe(
+      stubCrm(Object.values(EXPECTED).filter((p) => p !== missing)),
+    );
+    assert.equal(caps.writeParameters, true);
+    assert.equal(caps.writeSecretValues, false);
+  }
 });
 
 test("a prod-shaped viewer grant lights up nothing, and still counts as probed", async () => {

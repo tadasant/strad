@@ -42,8 +42,24 @@ export interface FakeGcp {
   parameters: Map<string, FakeParameter>;
   /** The Secret Manager map: secretId -> string[] (versions, newest last). */
   secrets: Map<string, string[]>;
+  /**
+   * The Secret Manager IAM map: secretId -> bindings.
+   *
+   * `:render` is GATED on this (see `renderRefs`), which is the whole reason it
+   * is modelled. A secret parameter whose principal was never granted
+   * `secretAccessor` renders 400 here exactly as it does at Google, so a
+   * regression that drops the grant fails a test instead of failing a deploy.
+   */
+  secretPolicies: Map<string, FakeBinding[]>;
+  /** The principal Parameter Manager derefs a `__REF__` as, for a given parameter. */
+  principalOf(parameterId: string): string;
   /** Every payload string ever written to Parameter Manager (for canary checks). */
   pmPayloads(): string[];
+}
+
+export interface FakeBinding {
+  role: string;
+  members: string[];
 }
 
 interface FakeParameter {
@@ -52,10 +68,27 @@ interface FakeParameter {
 }
 
 const PROJECT = "strad-secrets-test";
+const PROJECT_NUMBER = "100000000001";
 const PM_BASE = "https://pm.test";
 const SM_BASE = "https://sm.test";
 const TOKEN_URL = "https://token.test/token";
 const LOCATION = "global";
+const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
+/**
+ * The principal a `:render` runs as — the PARAMETER, not the caller.
+ *
+ * Google's shape, and the shape matters: the real one is minted per parameter and
+ * exposed as `policyMember.iamPolicyUidPrincipal`, so a client that grants
+ * `secretAccessor` to its own service account instead builds a member string that
+ * never matches this and gets a 400 it cannot explain.
+ */
+function principalFor(parameterId: string): string {
+  return (
+    `principal://parametermanager.googleapis.com/projects/${PROJECT_NUMBER}` +
+    `/uid/locations/${LOCATION}/parameters/${parameterId}`
+  );
+}
 
 // mintAccessToken RSA-signs the JWT before POSTing to the (stubbed) token
 // endpoint, so it needs a real key. Generated once per process; a credential to
@@ -77,6 +110,7 @@ const REF_RE =
 export function createFakeGcp(): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
+  const secretPolicies = new Map<string, FakeBinding[]>();
 
   const json = (status: number, body: unknown): Response =>
     ({
@@ -159,6 +193,15 @@ export function createFakeGcp(): FakeGcp {
     }
     if (!param) throw new HttpError(404);
 
+    // GET parameter — labels, and the principal `:render` derefs as.
+    if (tail.length === 0 && method === "GET") {
+      return json(200, {
+        name: `${paramParent}/${id}`,
+        labels: param.labels,
+        policyMember: { iamPolicyUidPrincipal: principalFor(id) },
+      });
+    }
+
     // versions
     if (tail[0] === "versions") {
       // list versions
@@ -191,7 +234,7 @@ export function createFakeGcp(): FakeGcp {
       }
       if (render && method === "GET") {
         const decoded = Buffer.from(version.data, "base64").toString("utf8");
-        const rendered = renderRefs(decoded);
+        const rendered = renderRefs(decoded, id);
         return json(200, {
           renderedPayload: Buffer.from(rendered, "utf8").toString("base64"),
         });
@@ -206,14 +249,31 @@ export function createFakeGcp(): FakeGcp {
     return json(404, { error: { code: 404 } });
   }
 
-  function renderRefs(payload: string): string {
+  /**
+   * Dereference every `__REF__`, AS THE PARAMETER.
+   *
+   * The IAM check is the point of this function, not decoration. Parameter
+   * Manager resolves a reference under the parameter's own principal, so a
+   * reference whose target has not granted that principal `secretAccessor`
+   * fails — `400 SECRET_REFERENCE_ERROR` — no matter what the caller holds.
+   * Modelling that is what lets a test prove `create()` makes the grant: delete
+   * the binding and `resolve()` stops working, which is precisely the production
+   * failure.
+   */
+  function renderRefs(payload: string, parameterId: string): string {
+    const principal = principalFor(parameterId);
     const env = JSON.parse(payload) as Record<string, unknown>;
     for (const [k, v] of Object.entries(env)) {
       if (typeof v !== "string") continue;
       const m = REF_RE.exec(v);
       if (!m) continue;
-      const versions = secrets.get(m[2]!);
+      const secretId = m[2]!;
+      const versions = secrets.get(secretId);
       if (!versions || versions.length === 0) throw new HttpError(404);
+      const granted = (secretPolicies.get(secretId) ?? []).some(
+        (b) => b.role === SECRET_ACCESSOR_ROLE && b.members.includes(principal),
+      );
+      if (!granted) throw new HttpError(400);
       env[k] = versions[versions.length - 1]!;
     }
     return JSON.stringify(env);
@@ -228,12 +288,38 @@ export function createFakeGcp(): FakeGcp {
       const id = q.get("secretId")!;
       if (secrets.has(id)) throw new HttpError(409);
       secrets.set(id, []);
+      secretPolicies.set(id, []);
       return json(200, { name: `${secretsParent}/${id}` });
     }
     const rest = pathOnly.startsWith(`${secretsParent}/`)
       ? pathOnly.slice(`${secretsParent}/`.length)
       : null;
     if (rest === null) return json(404, { error: { code: 404 } });
+
+    // {id}:getIamPolicy / {id}:setIamPolicy — the binding that makes a `__REF__`
+    // resolvable. Read-modify-write, so the etag is echoed back.
+    if (rest.endsWith(":getIamPolicy") && method === "GET") {
+      const id = rest.slice(0, -":getIamPolicy".length);
+      if (!secrets.has(id)) throw new HttpError(404);
+      return json(200, {
+        bindings: secretPolicies.get(id) ?? [],
+        etag: "BwXhAAAA",
+        version: 1,
+      });
+    }
+    if (rest.endsWith(":setIamPolicy") && method === "POST") {
+      const id = rest.slice(0, -":setIamPolicy".length);
+      if (!secrets.has(id)) throw new HttpError(404);
+      const policy = (body as { policy?: { bindings?: FakeBinding[] } }).policy;
+      secretPolicies.set(
+        id,
+        (policy?.bindings ?? []).map((b) => ({
+          role: b.role,
+          members: [...(b.members ?? [])],
+        })),
+      );
+      return json(200, { bindings: secretPolicies.get(id), etag: "BwXhAAAB" });
+    }
 
     // {id}:addVersion
     if (rest.endsWith(":addVersion") && method === "POST") {
@@ -252,6 +338,8 @@ export function createFakeGcp(): FakeGcp {
     if (tail.length === 0 && method === "DELETE") {
       if (!secrets.has(id)) throw new HttpError(404);
       secrets.delete(id);
+      // An IAM policy does not outlive its resource.
+      secretPolicies.delete(id);
       return json(200, {});
     }
     // versions/latest:access
@@ -296,6 +384,8 @@ export function createFakeGcp(): FakeGcp {
     },
     parameters,
     secrets,
+    secretPolicies,
+    principalOf: principalFor,
     pmPayloads: () =>
       [...parameters.values()].flatMap((p) =>
         p.versions.map((v) => Buffer.from(v.data, "base64").toString("utf8")),
@@ -312,6 +402,10 @@ class HttpError extends Error {
 const STATUS_TEXT: Record<number, string> = {
   200: "OK",
   204: "No Content",
+  // What `:render` answers when a reference cannot be dereferenced — Google's
+  // `SECRET_REFERENCE_ERROR`. It is a 400, not a 403: the CALLER was permitted,
+  // the parameter was not.
+  400: "Bad Request",
   404: "Not Found",
   409: "Conflict",
 };

@@ -847,6 +847,38 @@ anything else to its class name. `test/ui.secret-status.test.ts` builds the real
 fourth card in `src/ui/landing.ts`, and the `secretProvider` option threaded through
 `src/http/app.ts` and `src/index.ts`. Nothing else reads any of it.
 
+## 30. Secret parameters written before strad granted them access are not repaired
+
+**What.** `create()` now grants each secret parameter's own principal
+`roles/secretmanager.secretAccessor` on the secret it points at, which is what makes
+`:render` able to dereference the `__REF__`. Parameters written by an EARLIER strad
+carry no such binding, and nothing in the code repairs them: `rotate()` adds a
+Secret Manager version and never touches IAM, and there is no reconcile pass. They
+keep failing every resolution with `400 SECRET_REFERENCE_ERROR` until a human runs
+the backfill.
+
+**Why not self-heal.** A resolver that repaired IAM would need
+`secretmanager.secrets.setIamPolicy` in the gateway container — turning the one
+deliberately read-only credential in the system into one that can rewrite the access
+policy of every secret it reads. That trade is far worse than a one-time human loop.
+Doing it in `rotate()` instead would put the same permission on the console's write
+path for a case that only exists once, and would still miss every parameter nobody
+rotates.
+
+**Blast radius, today.** Small and knowable: prod runs `provider: env` and has no
+live parameters, and staging has one `params: true` server. The backfill loop is in
+`docs/operate/secrets-iam.md` ("Backfilling parameters created before strad made
+this grant"); it is idempotent, so running it over a store that is already correct
+is a no-op.
+
+**How you find out you needed it.** The failure names neither the parameter nor the
+missing binding — the resolver reports a 400 while holding every permission the
+error implicates, and a `testIamPermissions` probe of that credential comes back
+clean. The render assertion at the end of that runbook section is the check.
+
+**Undo.** Nothing to undo; this is a migration gap, not a mechanism. It closes when
+every pre-existing secret parameter has been bound once.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
@@ -863,7 +895,11 @@ A consolidated checklist, cross-referenced above:
       `roles/parametermanager.admin` (note: `admin`, there is no `parameterAdmin`)
       plus `roles/secretmanager.admin` → `strad-staging-SECRETS_ADMIN_KEY_JSON`; the
       RESOLVER SA gets `roles/parametermanager.parameterViewer` plus
-      `roles/secretmanager.secretAccessor` →
+      `roles/parametermanager.parameterAccessor` (the accessor role is what carries
+      `parameterVersions.render`; the viewer role does NOT, and a resolver holding
+      only it lists every parameter and 403s on every value — it does not need
+      `roles/secretmanager.secretAccessor`, because the deref runs as the
+      parameter's own principal) →
       `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` (only needed for
       the deploy-time param injection of `remote-filesystem-tmp-public`). Only the SA
       KEYS are secret; seed them into strad's existing `strad-staging-*` Secret

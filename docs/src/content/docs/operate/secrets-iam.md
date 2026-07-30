@@ -28,17 +28,17 @@ human commands.
 Derived from `src/secrets/parameters/gcp.ts`, not from the role names. This is the
 table the grants below are built from.
 
-| Console operation     | API calls                                                                    | Permissions required                                                                                                                            |
-| --------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list(namespace)`     | PM `parameters.list`, `…/versions` list, `…/versions/{v}` GET                | `parametermanager.parameters.list`, `parametermanager.parameterVersions.list`, `parametermanager.parameterVersions.get`                         |
-| `create` — non-secret | PM parameter POST, PM version POST                                           | `parametermanager.parameters.create`, `parametermanager.parameterVersions.create`                                                               |
-| `create` — secret     | SM `secrets` POST, SM `:addVersion`, then the two PM POSTs                   | + `secretmanager.secrets.create`, `secretmanager.versions.add`                                                                                  |
-| `rotate` — non-secret | PM version GET + POST                                                        | as create, non-secret                                                                                                                           |
-| `rotate` — secret     | PM versions list + version GET, SM `:addVersion`                             | `parametermanager.parameterVersions.list`, `…get`, `secretmanager.versions.add`                                                                 |
-| `setNote`             | PM version GET + POST                                                        | as create, non-secret                                                                                                                           |
-| **`reveal` — secret** | PM version GET, then **SM `versions/latest:access`**                         | **`secretmanager.versions.access`** ← the one prod must not hold, on top of the PM reads                                                        |
-| `reveal` — non-secret | PM version GET only                                                          | `parametermanager.parameterVersions.get`                                                                                                        |
-| `destroy`             | PM parameter GET, versions list + DELETE, parameter DELETE, SM secret DELETE | `parametermanager.parameters.get`, `…parameters.delete`, `…parameterVersions.list`, `…parameterVersions.delete`, `secretmanager.secrets.delete` |
+| Console operation     | API calls                                                                                                                       | Permissions required                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list(namespace)`     | PM `parameters.list`, `…/versions` list, `…/versions/{v}` GET                                                                   | `parametermanager.parameters.list`, `parametermanager.parameterVersions.list`, `parametermanager.parameterVersions.get`                                                       |
+| `create` — non-secret | PM parameter POST, PM version POST                                                                                              | `parametermanager.parameters.create`, `parametermanager.parameterVersions.create`                                                                                             |
+| `create` — secret     | SM `secrets` POST, SM `:addVersion`, PM parameter POST, PM parameter GET, SM `:getIamPolicy` + `:setIamPolicy`, PM version POST | + `secretmanager.secrets.create`, `secretmanager.versions.add`, `parametermanager.parameters.get`, `secretmanager.secrets.getIamPolicy`, `secretmanager.secrets.setIamPolicy` |
+| `rotate` — non-secret | PM version GET + POST                                                                                                           | as create, non-secret                                                                                                                                                         |
+| `rotate` — secret     | PM versions list + version GET, SM `:addVersion`                                                                                | `parametermanager.parameterVersions.list`, `…get`, `secretmanager.versions.add`                                                                                               |
+| `setNote`             | PM version GET + POST                                                                                                           | as create, non-secret                                                                                                                                                         |
+| **`reveal` — secret** | PM version GET, then **SM `versions/latest:access`**                                                                            | **`secretmanager.versions.access`** ← the one prod must not hold, on top of the PM reads                                                                                      |
+| `reveal` — non-secret | PM version GET only                                                                                                             | `parametermanager.parameterVersions.get`                                                                                                                                      |
+| `destroy`             | PM parameter GET, versions list + DELETE, parameter DELETE, SM secret DELETE                                                    | `parametermanager.parameters.get`, `…parameters.delete`, `…parameterVersions.list`, `…parameterVersions.delete`, `secretmanager.secrets.delete`                               |
 
 Two things fall out of this table, and both matter:
 
@@ -66,25 +66,26 @@ so a custom role containing it fails to create at all rather than creating a rol
 that grants nothing.
 :::
 
-:::caution[The second read path, and why it is not open today]
+:::caution[The second read path is OPEN — `versions.access` alone is not the boundary]
 Parameter Manager's `:render` verb dereferences a `__REF__` into the secret's
 value. It does **not** run as the caller — it derefs as the _parameter's own_
-principal — so a caller without `secretmanager.versions.access` could still get a
-secret value back from `:render` **if that principal had been granted
-`secretAccessor`**.
+principal. So a caller holding `render` and **not** `secretmanager.versions.access`
+still gets a secret value back.
 
-strad never makes that grant, which is why no such path exists right now — and it
-is also exactly what [issue #49](https://github.com/tadasant/strad/issues/49)
-proposes to fix. **The day #49 lands, withholding `versions.access` alone stops
-being sufficient**, and the console SA must additionally be denied
-`parametermanager.parameterVersions.render`. The custom role below already omits
-`render` for this reason, so applying it now is future-proof; `roles/parametermanager.admin`
-includes `render` and is therefore not a safe base role for a write-without-read
-console.
+`create()` grants each parameter's principal `secretAccessor` on the secret it
+points at, so this is the normal state of every secret strad writes, not a
+hypothetical. It has to be: without that grant nothing resolves at all — see
+[Why a parameter must be granted access to its own secret](#why-a-parameter-must-be-granted-access-to-its-own-secret).
+
+**Withholding `versions.access` is therefore not sufficient** to build a console
+that cannot read secret values. It must also be denied
+`parametermanager.parameterVersions.render`. The custom role below omits `render`
+for exactly this reason, and `roles/parametermanager.admin` **includes** `render`
+and is not a safe base role for a write-without-read console.
 
 `src/secrets/parameters/capabilities.ts` probes for `render` as well as
 `versions.access` and treats either as "can read a secret value", so the console's
-own reporting stays honest whichever path is open.
+own reporting stays honest about which path is open.
 :::
 
 ## 1. Prod console: write, but never read
@@ -113,13 +114,19 @@ SA=strad-secrets-admin@${PROJECT}.iam.gserviceaccount.com
 # --- Secret Manager: create, delete, add versions. NOT versions.access. -------
 cat > /tmp/strad-console-sm.yaml <<'YAML'
 title: strad secrets console (Secret Manager, write-only)
-description: Create/delete secrets and add versions. Deliberately excludes secretmanager.versions.access.
+description: Create/delete secrets, add versions, and grant a parameter access to its own secret. Deliberately excludes secretmanager.versions.access.
 stage: GA
 includedPermissions:
   - secretmanager.secrets.create
   - secretmanager.secrets.delete
   - secretmanager.secrets.get
   - secretmanager.secrets.list
+  # The IAM half of a secret create. `create()` grants the PARAMETER's own
+  # principal secretAccessor on the secret it points at; without these two the
+  # create fails partway and rolls back, and the console cannot write a secret
+  # at all. Neither reads a value — this stays a write-without-read role.
+  - secretmanager.secrets.getIamPolicy
+  - secretmanager.secrets.setIamPolicy
   - secretmanager.versions.add
   - secretmanager.versions.list
 YAML
@@ -184,11 +191,13 @@ curl -sS -X POST "${CRM}" \
   -H "Content-Type: application/json" \
   -d '{"permissions":["secretmanager.versions.access","parametermanager.parameterVersions.render"]}'
 
-# MUST list all four — the console still manages secrets.
+# MUST list all six — the console still manages secrets. The two IAM-policy
+# permissions are part of a secret CREATE (see the section below); a role missing
+# them reports writeSecretValues=false and the console withholds the create.
 curl -sS -X POST "${CRM}" \
   -H "Authorization: Bearer $(gcloud auth print-access-token)" \
   -H "Content-Type: application/json" \
-  -d '{"permissions":["secretmanager.secrets.create","secretmanager.versions.add","parametermanager.parameters.create","parametermanager.parameters.delete"]}'
+  -d '{"permissions":["secretmanager.secrets.create","secretmanager.versions.add","secretmanager.secrets.getIamPolicy","secretmanager.secrets.setIamPolicy","parametermanager.parameters.create","parametermanager.parameters.delete"]}'
 ```
 
 The response carries only the subset the caller holds, so "none of them" comes back
@@ -200,6 +209,107 @@ A `403` from either command is not an answer about the grant. It means the Cloud
 Resource Manager API is not enabled on the project — the `gcloud services enable`
 line above — or that this credential has no access to the project at all. It is the
 same 403 the runtime probe reports as "capability unverified".
+
+## Why a parameter must be granted access to its own secret
+
+This is the least guessable thing on this page, and getting it wrong produces an
+error that points at the wrong credential.
+
+A secret parameter's Parameter Manager payload holds a `__REF__` pointer, and
+`:render` dereferences it **as the parameter**, using a principal minted with the
+parameter itself. The caller's permissions authorise the `:render` _call_; they
+have nothing to do with reaching the secret. So a secret must grant
+`roles/secretmanager.secretAccessor` to:
+
+```
+principal://parametermanager.googleapis.com/projects/PROJECT_NUMBER/uid/locations/global/parameters/PARAMETER_UID
+```
+
+Without it, every resolution of that parameter fails with
+**`400 SECRET_REFERENCE_ERROR`** — while the resolver holds every permission the
+message seems to implicate, and a `testIamPermissions` probe of the resolver comes
+back completely clean. Nothing about the failure points at the parameter.
+
+**strad makes this grant itself.** `create()` in `src/secrets/parameters/gcp.ts`
+(and the matching path in the `secrets` MCP server's `write-client.ts`) reads
+`policyMember.iamPolicyUidPrincipal` from the parameter and sets the binding on the
+secret, after the parameter exists and before the first version — so a
+complete-looking parameter with an unresolvable reference never exists. A grant
+that fails rolls the whole create back. The only IAM work a human does is making
+sure the writing credential holds `secretmanager.secrets.getIamPolicy` and
+`secretmanager.secrets.setIamPolicy`, which the roles on this page include.
+
+### Backfilling parameters created before strad made this grant
+
+Parameters written by an earlier strad have no binding, and nothing repairs them
+automatically — `rotate` adds a secret version and does not touch IAM. Repair is
+per-parameter and idempotent:
+
+```bash
+PROJECT=strad-secrets-staging   # or strad-secrets-prod
+LOCATION=global
+
+for ID in $(gcloud parametermanager parameters list \
+      --project "$PROJECT" --location "$LOCATION" \
+      --format='value(name.basename())'); do
+  # Only secret parameters have a secret to bind.
+  gcloud secrets describe "$ID" --project "$PROJECT" >/dev/null 2>&1 || continue
+  PRINCIPAL=$(gcloud parametermanager parameters describe "$ID" \
+    --project "$PROJECT" --location "$LOCATION" \
+    --format='value(policyMember.iamPolicyUidPrincipal)')
+  gcloud secrets add-iam-policy-binding "$ID" --project "$PROJECT" \
+    --member="$PRINCIPAL" --role=roles/secretmanager.secretAccessor
+done
+```
+
+**Assert it worked** — this renders a parameter and must print its real value, not
+a `__REF__` and not an error:
+
+```bash
+gcloud parametermanager parameters versions render "$VERSION" \
+  --parameter "$ID" --project "$PROJECT" --location "$LOCATION"
+```
+
+## The resolver's roles: `parameterViewer` is not enough
+
+`roles/parametermanager.parameterViewer` does **not** include
+`parametermanager.parameterVersions.render`. That permission is in
+`roles/parametermanager.parameterAccessor`, and rendering is exactly what the
+resolver does — `resolve()` is one `list` plus one `:render` per parameter.
+
+A resolver provisioned with `parameterViewer` alone therefore **lists fine and
+403s on every render**, which reads like an intermittent or partial outage rather
+than a missing role. It needs both:
+
+```bash
+PROJECT=strad-secrets-staging   # or strad-secrets-prod
+SA=strad-secrets-resolver@${PROJECT}.iam.gserviceaccount.com
+
+# The parameters and their envelopes (list + get).
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA}" --role="roles/parametermanager.parameterViewer"
+
+# The deref itself. WITHOUT THIS, every :render is a 403.
+gcloud projects add-iam-policy-binding "${PROJECT}" \
+  --member="serviceAccount:${SA}" --role="roles/parametermanager.parameterAccessor"
+```
+
+**The resolver does not need `roles/secretmanager.secretAccessor`.** It never calls
+Secret Manager: the deref happens under the parameter's own principal, which is what
+the grant in the previous section is for. Granting it to the resolver as well is
+harmless but misleading — it looks like the thing that makes rendering work, and it
+is not, so a debugger who sees it present concludes the IAM is fine.
+
+**Audit assertion.** Run as the resolver; both must be listed.
+
+```bash
+gcloud auth activate-service-account --key-file=/path/to/resolver-key.json
+curl -sS -X POST \
+  "https://cloudresourcemanager.googleapis.com/v1/projects/${PROJECT}:testIamPermissions" \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"permissions":["parametermanager.parameterVersions.list","parametermanager.parameterVersions.render"]}'
+```
 
 ## 2. Staging MCP server: read and write
 

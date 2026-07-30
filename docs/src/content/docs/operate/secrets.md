@@ -69,16 +69,19 @@ this store and handing the container the wrong one silently collapses the
 The gateway gets the **resolver** identity, injected as
 `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`:
 
-| Identity     | Roles                                                               | Where it runs                                                                                                                                                                                                                              |
-| ------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **viewer**   | `parametermanager.parameterViewer`                                  | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — no `secretmanager.versions.access` — so no tool, bug or prompt injection can pull one through `/mcp`. Staging's is deliberately wider; see below. |
-| **admin**    | `parametermanager.admin` + `secretmanager.admin`                    | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                          |
-| **resolver** | `parametermanager.parameterViewer` + `secretmanager.secretAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing.                                                                                                                                  |
+| Identity     | Roles                                                                     | Where it runs                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **viewer**   | `parametermanager.parameterViewer`                                        | the `secrets` MCP server, on the bundle. In **prod** it **cannot** read a secret value — it holds neither of the two read paths: no `secretmanager.versions.access`, and no `parameterVersions.render` (that lives in `parameterAccessor`, which it is not granted) — so no tool, bug or prompt injection can pull one through `/mcp`. Staging's is deliberately wider; see below. |
+| **admin**    | `parametermanager.admin` + `secretmanager.admin`                          | the SSO-gated console, core only, via `consoleEnv:`. Reads and writes both kinds.                                                                                                                                                                                                                                                                                                  |
+| **resolver** | `parametermanager.parameterViewer` + `parametermanager.parameterAccessor` | **the gateway container**, and `render-spec` at deploy time. Reads values to inject them; writes nothing. Both roles are required — `parameterViewer` does **not** include `parameterVersions.render`, so a resolver holding it alone lists every parameter and 403s on every value. See [Secrets IAM](/operate/secrets-iam/#the-resolvers-roles-parameterviewer-is-not-enough).   |
 
 Three things follow, and each is deliberate:
 
 - It is **not** the viewer key. The viewer cannot read a secret value by
   construction, so a gateway holding it would resolve every `${NAME}` to nothing.
+  A resolver key that is missing `parameterAccessor` fails the same way for a
+  different reason, and the two are easy to confuse: the viewer is denied the
+  _value_, the under-granted resolver is denied the _deref_.
 - It is **not** the admin key. The gateway never needs to write, and a
   write-capable credential in the process that answers `/mcp` would make the
   console's separate identity pointless.
@@ -92,6 +95,20 @@ Three things follow, and each is deliberate:
 Read-only is real here, not just intended: the resolver has no write role, so a
 compromised gateway cannot alter a secret, only read the ones its namespace
 holds.
+
+:::caution[A secret parameter must be granted access to its own secret]
+`:render` dereferences a `__REF__` as **the parameter's own principal**, not as the
+resolver. That principal needs `roles/secretmanager.secretAccessor` on the secret,
+and `create()` grants it — but nothing repairs parameters written by an earlier
+strad, which fail every resolution with `400 SECRET_REFERENCE_ERROR`.
+
+The failure does not point at the cause: the resolver holds every permission the
+error implicates, and a `testIamPermissions` probe of it comes back clean, so any
+health indicator built on that probe stays green while nothing resolves. If you
+have parameters that predate this, run the one-time backfill in
+[Secrets IAM](/operate/secrets-iam/#backfilling-parameters-created-before-strad-made-this-grant)
+— it is idempotent. See [Known limitations](/limitations/) #30.
+:::
 
 ## What "immediately" means
 

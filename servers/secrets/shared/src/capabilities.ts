@@ -29,16 +29,26 @@ export const PROBE_PERMISSIONS = {
   readSecretValue: "secretmanager.versions.access",
   writeSecretValue: "secretmanager.versions.add",
   createSecret: "secretmanager.secrets.create",
+  /**
+   * The IAM half of a secret create. `create()` in write-client.ts grants the
+   * PARAMETER's own principal `secretAccessor` on the secret it points at —
+   * without it every `:render` of that parameter answers
+   * `400 SECRET_REFERENCE_ERROR`. A credential that can write the values but not
+   * the binding fails the create and rolls it back, so both belong in the
+   * `writeSecretValues` answer. Kept identical to the src/ copy.
+   */
+  readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
+  bindSecret: "secretmanager.secrets.setIamPolicy",
   createParameter: "parametermanager.parameters.create",
   writeParameter: "parametermanager.parameterVersions.create",
   deleteParameter: "parametermanager.parameters.delete",
   /**
    * The SECOND read path. `:render` derefs a `__REF__` as the PARAMETER's own
    * principal, not the caller's, so `render` without
-   * `secretmanager.versions.access` still returns a secret value once that
-   * principal holds `secretAccessor`. `readValue` in write-client.ts uses
-   * exactly this call, so a credential holding only `render` genuinely can read
-   * one. Kept identical to the src/ copy.
+   * `secretmanager.versions.access` returns a secret value — `create()` grants
+   * that principal `secretAccessor`, so the path is open rather than theoretical.
+   * `readValue` in write-client.ts uses exactly this call, so a credential
+   * holding only `render` genuinely can read one. Kept identical to the src/ copy.
    */
   renderParameter: "parametermanager.parameterVersions.render",
 } as const;
@@ -133,8 +143,14 @@ export async function probeCapabilities(
       readSecretValues:
         held.has(P.readSecretValue) || held.has(P.renderParameter),
       writeParameters: params,
+      // Both stores AND the binding: see PROBE_PERMISSIONS.bindSecret. A create
+      // that cannot grant the parameter its own access rolls back.
       writeSecretValues:
-        params && held.has(P.createSecret) && held.has(P.writeSecretValue),
+        params &&
+        held.has(P.createSecret) &&
+        held.has(P.writeSecretValue) &&
+        held.has(P.readSecretIamPolicy) &&
+        held.has(P.bindSecret),
       deleteParameters: held.has(P.deleteParameter),
       probed: true,
     };

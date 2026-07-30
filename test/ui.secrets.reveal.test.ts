@@ -172,6 +172,12 @@ describe("the capability probe", () => {
               PROBE_PERMISSIONS.writeParameter,
               PROBE_PERMISSIONS.createSecret,
               PROBE_PERMISSIONS.writeSecretValue,
+              // The IAM half of a secret create: `create()` grants the
+              // parameter's own principal secretAccessor on its secret. It is a
+              // WRITE that moves no value, which is why prod's write-without-read
+              // role includes it and still reads nothing.
+              PROBE_PERMISSIONS.readSecretIamPolicy,
+              PROBE_PERMISSIONS.bindSecret,
               PROBE_PERMISSIONS.deleteParameter,
             ],
           }),

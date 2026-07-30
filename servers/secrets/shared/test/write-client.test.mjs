@@ -26,9 +26,17 @@ const ACCOUNT = VIEWER_ACCOUNT;
  * Manager does, so `v9` comes after `v12`. A client that treats the last element
  * as current fails here, which is the point.
  */
+/** The principal `:render` derefs as — the PARAMETER's, not the caller's. */
+function principalFor(id) {
+  return `principal://parametermanager.googleapis.com/projects/100000000001/uid/locations/global/parameters/${id}`;
+}
+
+const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
 function stubStore() {
   const params = new Map(); // id -> { labels, versions: Map<vid, envelopeJson> }
   const secrets = new Map(); // id -> [values]
+  const secretPolicies = new Map(); // id -> [{ role, members }]
 
   const json = (body, status = 200) =>
     new Response(JSON.stringify(body), {
@@ -51,9 +59,22 @@ function stubStore() {
       const id = u.searchParams.get("secretId");
       if (secrets.has(id)) return json({ error: "exists" }, 409);
       secrets.set(id, []);
+      secretPolicies.set(id, []);
       return json({});
     }
-    let m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):addVersion$/.exec(path);
+    // The IAM policy on a secret — what makes a `__REF__` resolvable at all.
+    let m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):getIamPolicy$/.exec(path);
+    if (m && method === "GET") {
+      if (!secrets.has(m[1])) return json({ error: "no" }, 404);
+      return json({ bindings: secretPolicies.get(m[1]) ?? [], etag: "BwAAAA" });
+    }
+    m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):setIamPolicy$/.exec(path);
+    if (m && method === "POST") {
+      if (!secrets.has(m[1])) return json({ error: "no" }, 404);
+      secretPolicies.set(m[1], JSON.parse(init.body).policy.bindings ?? []);
+      return json({});
+    }
+    m = /^\/v1\/projects\/[^/]+\/secrets\/([^/:]+):addVersion$/.exec(path);
     if (m && method === "POST") {
       const body = JSON.parse(init.body);
       secrets.get(m[1]).push(Buffer.from(body.payload.data, "base64").toString("utf8"));
@@ -92,6 +113,15 @@ function stubStore() {
       if (payload == null) return json({ error: "no" }, 404);
       const envelope = JSON.parse(payload);
       if (envelope.secret) {
+        // The deref runs as the PARAMETER. Without its binding on the secret,
+        // Google answers 400 SECRET_REFERENCE_ERROR — so the stub does too, and
+        // a client that skips the grant fails here instead of silently passing.
+        const granted = (secretPolicies.get(m[1]) ?? []).some(
+          (b) =>
+            b.role === SECRET_ACCESSOR_ROLE &&
+            b.members.includes(principalFor(m[1])),
+        );
+        if (!granted) return json({ error: "SECRET_REFERENCE_ERROR" }, 400);
         const versions = secrets.get(m[1]) ?? [];
         envelope.value = versions[versions.length - 1] ?? "";
       }
@@ -108,7 +138,9 @@ function stubStore() {
     m = new RegExp(`^${pmRoot}/([^/]+)$`).exec(path);
     if (m && method === "DELETE") { params.delete(m[1]); return json({}); }
     if (m && method === "GET") {
-      return params.has(m[1]) ? json({}) : json({ error: "no" }, 404);
+      return params.has(m[1])
+        ? json({ policyMember: { iamPolicyUidPrincipal: principalFor(m[1]) } })
+        : json({ error: "no" }, 404);
     }
 
     return json({ error: `unhandled ${method} ${path}` }, 500);
@@ -122,7 +154,7 @@ function stubStore() {
     tokenUrl: "https://oauth2.test/token",
     fetchImpl,
   });
-  return { client, params, secrets };
+  return { client, params, secrets, secretPolicies };
 }
 
 const NS = "/strad/test/mcp/";
@@ -180,6 +212,32 @@ test("a secret create writes the value to Secret Manager and a ref to the envelo
   assert.equal(envelope.secret, true);
   assert.match(envelope.value, /^__REF__\("\/\/secretmanager\.googleapis\.com\//);
   assert.ok(!JSON.stringify(envelope).includes("s3cr3t"));
+});
+
+test("a secret create grants the parameter's own principal secretAccessor", async () => {
+  // Without this the ref is written, the secret exists, and every read of it
+  // fails with 400 SECRET_REFERENCE_ERROR — for the console, the resolver and
+  // this server alike. The grant is on the PARAMETER, never on a caller.
+  const { client, secretPolicies } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "s3cr3t" });
+
+  const id = parameterId(path);
+  assert.deepEqual(secretPolicies.get(id), [
+    { role: SECRET_ACCESSOR_ROLE, members: [principalFor(id)] },
+  ]);
+  // And it is the grant, not the create, that the read depends on: this is the
+  // same client reading back through `:render`.
+  assert.equal(await client.readValue(path), "s3cr3t");
+
+  secretPolicies.set(id, []);
+  await assert.rejects(() => client.readValue(path), /400/);
+});
+
+test("a non-secret create touches no IAM policy", async () => {
+  const { client, secretPolicies } = stubStore();
+  await client.create({ path: `${NS}demo/static/PLAIN`, secret: false, value: "v" });
+  assert.equal(secretPolicies.size, 0);
 });
 
 test("a 409 on the parameter create does not delete the parameter that already exists", async () => {

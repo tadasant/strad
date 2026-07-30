@@ -41,6 +41,8 @@ const EXPECTED = {
   readSecretValue: "secretmanager.versions.access",
   writeSecretValue: "secretmanager.versions.add",
   createSecret: "secretmanager.secrets.create",
+  readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
+  bindSecret: "secretmanager.secrets.setIamPolicy",
   createParameter: "parametermanager.parameters.create",
   writeParameter: "parametermanager.parameterVersions.create",
   deleteParameter: "parametermanager.parameters.delete",
@@ -150,6 +152,23 @@ describe("capability probe — how it reads the answer", () => {
       deleteParameters: true,
       probed: true,
     });
+  });
+
+  it("does not claim a secret write without the IAM-policy permissions", async () => {
+    // `create()` grants the parameter's own principal `secretAccessor` on the
+    // secret, because `:render` derefs as the parameter and not as the caller.
+    // A credential that can write every VALUE but cannot set that binding fails
+    // the create and rolls it back, so reporting `writeSecretValues` would offer
+    // a button that always errors.
+    for (const missing of [EXPECTED.bindSecret, EXPECTED.readSecretIamPolicy]) {
+      const caps = await probe(
+        stubCrm(Object.values(EXPECTED).filter((p) => p !== missing)),
+      );
+      expect(caps).toMatchObject({
+        writeParameters: true,
+        writeSecretValues: false,
+      });
+    }
   });
 
   it("treats an empty body as 'holds none of them', not as an error", async () => {

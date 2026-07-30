@@ -41,6 +41,20 @@ export const PROBE_PERMISSIONS = {
   writeSecretValue: "secretmanager.versions.add",
   /** Create a Secret Manager secret — the other write half of create. */
   createSecret: "secretmanager.secrets.create",
+  /**
+   * Read and set a secret's IAM policy — the THIRD write half of a secret
+   * create, and the one that is easy to forget because no value passes through
+   * it.
+   *
+   * `create()` grants the parameter's own principal `secretAccessor` on the
+   * secret it points at, because `:render` derefs as the parameter rather than
+   * as the caller. Without these two permissions the create fails partway and
+   * rolls back — so a credential that holds every value-writing permission and
+   * not these cannot write a secret parameter at all. Probing for them is what
+   * keeps the console from advertising a create it will not complete.
+   */
+  readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
+  bindSecret: "secretmanager.secrets.setIamPolicy",
   /** Create a parameter — the index entry every parameter needs. */
   createParameter: "parametermanager.parameters.create",
   /** Add a parameter version — every write goes through one. */
@@ -54,11 +68,14 @@ export const PROBE_PERMISSIONS = {
    * Parameter Manager's `:render` dereferences a `__REF__` into the secret's
    * value, and it does NOT deref as the caller — it derefs as the PARAMETER's
    * own principal. So a credential holding `render` but not `versions.access`
-   * can still get a secret value back, once that principal has been granted
-   * `secretAccessor`. strad makes no such grant today, which is the only reason
-   * the path is shut; granting it is exactly what issue #49 proposes. Probing
-   * for both means the answer stays right either way, instead of right by
-   * accident until someone fixes #49.
+   * still gets a secret value back, because `create()` grants that principal
+   * `secretAccessor` on every secret it writes — without which nothing resolves
+   * at all.
+   *
+   * This path is therefore OPEN, and `render` is a read permission in full. A
+   * console that must not read secret values has to be denied `render` as well
+   * as `versions.access`; withholding only the latter is not sufficient, and
+   * `roles/parametermanager.admin` includes `render`.
    */
   renderParameter: "parametermanager.parameterVersions.render",
 } as const;
@@ -165,12 +182,17 @@ export async function probeCapabilities(
       // A non-secret write needs the parameter half only.
       writeParameters:
         held.has(P.createParameter) && held.has(P.writeParameter),
-      // A secret write needs BOTH stores: the secret and its first version.
+      // A secret write needs BOTH stores — the secret and its first version —
+      // AND the binding that makes the resulting `__REF__` resolvable. All three
+      // are part of one `create()`, and a credential missing the last one fails
+      // it and rolls back, so claiming otherwise offers a create that cannot land.
       writeSecretValues:
         held.has(P.createParameter) &&
         held.has(P.writeParameter) &&
         held.has(P.createSecret) &&
-        held.has(P.writeSecretValue),
+        held.has(P.writeSecretValue) &&
+        held.has(P.readSecretIamPolicy) &&
+        held.has(P.bindSecret),
       deleteParameters: held.has(P.deleteParameter),
       probed: true,
     };
