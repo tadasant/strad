@@ -242,8 +242,9 @@ keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful.
 The `secrets` entry gives its two halves **different** namespace lists on purpose:
 the console (`consoleEnv:`) manages `/strad/staging/mcp/` and
 `/strad/staging/gateway/static/`, the MCP container (`env:`) only the first. A
-human addresses both through the console's namespace picker; an agent cannot
-enumerate the deployment's own `${NAME}` references.
+an agent cannot enumerate the deployment's own `${NAME}` references. On the
+console side the list is only a set of suggestions — the field is free text
+unless `SECRETS_NAMESPACES_STRICT` is set.
 
 `test/staging-config.test.ts` is the guard on all of this: it asserts the config
 renders to exactly `["core", "bundle"]`, that the bundle is `apps-s-1vcpu-2gb`, that

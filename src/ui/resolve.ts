@@ -62,6 +62,8 @@ export type ServerView =
        * credential could perform it — see capabilities.ts for that half.
        */
       revealEnabled: boolean;
+      /** When true, `namespaces` bounds the console, not just its suggestions. */
+      namespacesStrict: boolean;
       /** Test seams, when the deployment points at stub Parameter/Secret Managers. */
       pmApiBase?: string;
       smApiBase?: string;
@@ -116,6 +118,20 @@ const SECRETS_ENV = {
    * flag decides what the UI OFFERS; IAM decides what is POSSIBLE.
    */
   revealEnabled: "SECRETS_REVEAL_ENABLED",
+  /**
+   * Restore `SECRETS_NAMESPACES` as a hard limit on the CONSOLE, not merely a
+   * list of suggestions. Absent means off — the namespace field is free text.
+   *
+   * Free text is right for the credential: the console's admin key already
+   * reaches every parameter in the project, so a list checked in code adds no
+   * security against an operator. It is NOT right against a HIJACKED SESSION —
+   * an attacker with a cookie and no ability to redeploy. Against that actor a
+   * deploy-time namespace limit is real defence in depth, and it is the
+   * mitigation `docs/operate/secrets.md` tells you to reach for before putting
+   * the gateway namespace (the token store, the OAuth client secret) in front of
+   * a production console. This flag is how you keep it.
+   */
+  namespacesStrict: "SECRETS_NAMESPACES_STRICT",
   pmApiBase: "SECRETS_PM_API_BASE",
   smApiBase: "SECRETS_SM_API_BASE",
   crmApiBase: "SECRETS_CRM_API_BASE",
@@ -219,6 +235,7 @@ function resolveSecretsView(
     account,
     accountReason,
     revealEnabled: isTrue(value[SECRETS_ENV.revealEnabled]),
+    namespacesStrict: isTrue(value[SECRETS_ENV.namespacesStrict]),
     pmApiBase: value[SECRETS_ENV.pmApiBase] || undefined,
     smApiBase: value[SECRETS_ENV.smApiBase] || undefined,
     crmApiBase: value[SECRETS_ENV.crmApiBase] || undefined,

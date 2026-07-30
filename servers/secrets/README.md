@@ -147,14 +147,19 @@ reference) in a **project of their own**, separate from the one holding strad's 
 without a caveat: the viewer SA can list every parameter in that project and read
 every non-secret one — and read the value of **no** secret in it, ever.
 
-`SECRETS_NAMESPACES` is still **required**. An unset one would mean the empty
-prefix — every parameter in the project — so the server refuses to mount rather
-than defaulting to "everything".
+`SECRETS_NAMESPACES` is still **required** for THIS server. An unset one would
+mean the empty prefix — every parameter in the project — so it refuses to mount
+rather than defaulting to "everything".
+
+On the CONSOLE side the same variable is a list of **suggestions**: an operator
+may type any namespace in the project, because the project is the fence and a
+code-level list over the same credential would only add a redeploy. The MCP half
+keeps the hard scope, because an agent is not an operator.
 
 It is a **list**, and the two halves of this server need not be given the same
 one. The bundle's `env:` scopes what an AGENT can enumerate; the core's
-`consoleEnv:` scopes what a HUMAN can address on `/ui/secrets`, which offers a
-picker over every entry. Staging gives the console
+`consoleEnv:` seeds the SUGGESTIONS on `/ui/secrets`, whose namespace field is
+free text (set `SECRETS_NAMESPACES_STRICT=true` to make the list a limit again). Staging gives the console
 `/strad/staging/mcp/,/strad/staging/gateway/static/` and the MCP container only
 the first: a human manages the deployment's own `${NAME}` references there, and
 an agent has no business listing them.
@@ -206,7 +211,9 @@ image**, mounted like every other server there.
 | Var | Where | Required | Notes |
 | --- | --- | --- | --- |
 | `SECRETS_PROJECT_ID` | bundle + core | yes | The GCP project holding the parameters (and their secrets). |
-| `SECRETS_NAMESPACES` | bundle + core | yes | CSV of managed path prefixes, e.g. `/strad/staging/mcp/`. Unset = refuse to mount. |
+| `SECRETS_NAMESPACES` | **bundle** | yes | CSV of managed path prefixes, e.g. `/strad/staging/mcp/`. A HARD scope here. Unset = refuse to mount. |
+| `SECRETS_NAMESPACES` | **core** | yes | The console's namespace SUGGESTIONS. Free text unless `SECRETS_NAMESPACES_STRICT`. Unset = the console reports a misconfiguration. |
+| `SECRETS_NAMESPACES_STRICT` | core | no | `true` restores the list as a hard limit on the console. Default off. |
 | `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. |
 | `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. |
 | `SECRETS_PM_API_BASE` / `SECRETS_TOKEN_URL` | either | no | **Test seams.** Point at a stub Parameter Manager. Not a production knob. |

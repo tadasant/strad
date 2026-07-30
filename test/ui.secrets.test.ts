@@ -304,13 +304,47 @@ describe("the parameters console, end to end", () => {
     expect(await fake.store.list(NS)).toHaveLength(2); // nothing moved
   });
 
-  it("refuses to act outside the managed namespace", async () => {
+  it("refuses a path that is not well formed", async () => {
+    // The configured namespace list is a convenience, not the fence — the GCP
+    // PROJECT is (servers/secrets/README.md). So what is refused here is a
+    // malformed path, not merely an unlisted one.
     await resetStore();
-    const res = await post("/ui/secrets/delete", {
-      path: "/strad/test/mcp/OTHER/static/X",
-    });
-    expect(await res.text()).toContain("outside this server");
+    for (const path of [
+      "strad/test/mcp/NOT_ABSOLUTE",
+      "/strad/test/mcp//DOUBLE",
+      "/strad/test/../escape/X",
+      "/strad/test/mcp/bad name/X",
+    ]) {
+      const res = await post("/ui/secrets/delete", { path });
+      expect(await res.text()).toMatch(
+        /not (an absolute|a well-formed)|does not end in a valid variable name/,
+      );
+    }
     expect(await fake.store.list(NS)).toHaveLength(2);
+  });
+
+  it("refuses a path that FOLDS onto another parameter's id", async () => {
+    // `parameterId` lowercases and collapses non-alphanumeric runs, so these are
+    // all spellings of SEEDED_KEY's resource. `path` comes from a hidden form
+    // field, so the spelling is the caller's to choose — and a delete under a
+    // colliding spelling would destroy a parameter the caller did not name.
+    await resetStore();
+    const collisions = [
+      `/STRAD/test/mcp/secrets/static/SEEDED_KEY`,
+      `/strad/test/mcp/./secrets/static/SEEDED_KEY`,
+      `/strad-test/mcp/secrets/static/SEEDED_KEY`,
+    ];
+    for (const path of collisions) {
+      for (const action of ["delete", "reveal", "note"]) {
+        const res = await post(`/ui/secrets/${action}`, { path, note: "x" });
+        expect(res.status).toBeGreaterThanOrEqual(400);
+      }
+    }
+    // Both seeded parameters survive, values intact.
+    expect(await fake.store.list(NS)).toHaveLength(2);
+    expect(await fake.store.reveal(`${NS}SEEDED_KEY`)).toBe(
+      "seed-secret-value",
+    );
   });
 
   it("refuses a path whose variable name is malformed", async () => {

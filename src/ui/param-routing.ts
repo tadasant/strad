@@ -5,7 +5,7 @@ import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
  * Where a stored parameter actually GOES — computed from the running config,
  * not asserted in prose.
  *
- * The console can write any path inside a managed namespace. Whether anything
+ * The console can write any well-formed path inside its project. Whether anything
  * ever READS that path is a separate question, and it is the one a human gets
  * wrong: storing `/strad/prod/mcp/slack/static/SLACK_BOT_TOKEN` looks like it
  * configures the `slack` server, and it does not unless that server's config
