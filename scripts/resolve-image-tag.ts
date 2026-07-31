@@ -76,11 +76,16 @@ async function main(): Promise<void> {
     .map((line) => line.trim())
     .filter((line) => line !== "");
 
-  // Classify each commit before asking the registry anything: whether a missing
-  // tag is legitimate depends on what the commit touched, not on the registry.
+  // Classify LAZILY. Whether a missing tag is legitimate depends on what the
+  // commit touched, but only a commit the registry has no image for is ever
+  // asked — and the walk stops at the first one that does, which on a healthy
+  // `main` is HEAD. Classifying all 50 up front asked git about commits whose
+  // answer was never read, and one of them (this repo's root commit) has no
+  // parent to diff against, so the step died before it could deploy the image
+  // HEAD had published all along.
   const candidates: Candidate[] = shas.map((sha) => ({
     sha,
-    docsOnly: isDocsOnly(changedFiles(sha)),
+    docsOnly: () => isDocsOnly(changedFiles(sha)),
   }));
 
   const token = await fetchPullToken({

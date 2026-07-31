@@ -100,21 +100,99 @@ export function isDocsOnly(files: readonly string[]): boolean {
   return files.length > 0 && files.every(isIgnoredPath);
 }
 
-/** Files a commit changed, against its FIRST parent (so merges work). */
-export function changedFiles(sha: string): string[] {
-  const out = execFileSync("git", ["diff", "--name-only", `${sha}^1`, sha], {
+/**
+ * `repo` is the checkout to ask; the deploy asks the one it is standing in.
+ *
+ * `core.quotePath=false` because the default C-quotes a non-ASCII path
+ * (`"docs/\303\251.md"`), which `isIgnoredPath` then matches as neither `.md`
+ * nor `docs/` — a docs-only commit that reads as code. The larger `maxBuffer` is
+ * for `ls-tree -r`, which lists a whole tree where a diff lists one commit's
+ * worth of paths; the 1 MB default would `ENOBUFS` on a big root commit.
+ */
+function git(repo: string | undefined, ...args: string[]): string {
+  return execFileSync("git", ["-c", "core.quotePath=false", ...args], {
     encoding: "utf8",
+    cwd: repo,
+    maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+function lines(out: string): string[] {
   return out
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "");
 }
 
+/**
+ * The commit a diff should be taken against, or `null` when there is none.
+ *
+ * `git rev-list --parents -n 1 <sha>` prints the commit followed by its parents,
+ * which is the walker's view — so a commit grafted by a shallow fetch reports no
+ * parents here even though its parent exists upstream. That is the answer we
+ * want: `<sha>^1` would fail on exactly these commits.
+ */
+function firstParent(sha: string, repo?: string): string | null {
+  const fields = lines(git(repo, "rev-list", "--parents", "-n", "1", sha))[0];
+  return fields?.split(" ")[1] ?? null;
+}
+
+/**
+ * Does the commit OBJECT record a parent?
+ *
+ * The graft a shallow fetch applies lives in `.git/shallow`, not in the object,
+ * so the raw commit still carries its `parent` headers. This is what tells a
+ * true root commit ("there is nothing before me") apart from a shallow boundary
+ * ("there is, and this checkout does not have it") — `firstParent` reports null
+ * for both.
+ */
+function recordsParent(sha: string, repo?: string): boolean {
+  const header = git(repo, "cat-file", "commit", sha).split("\n\n")[0] ?? "";
+  return /^parent /m.test(header);
+}
+
+/**
+ * Files a commit changed, against its FIRST parent (so merges work).
+ *
+ * NOT every commit has one, and assuming otherwise broke every staging deploy:
+ * `git diff --name-only <root>^1 <root>` is a `fatal: ambiguous argument`, and
+ * this repo's root commit sat inside the 50-commit window the resolver reads.
+ *
+ * A root commit introduced its whole tree, so that tree IS its change. A commit
+ * whose parent was simply not fetched is a different thing entirely — nothing
+ * here can say what it changed, and guessing in either direction is worse than
+ * saying so: "docs-only" would walk the deploy back past an unknown commit, and
+ * "code" would report a build failure that never happened.
+ */
+export function changedFiles(sha: string, repo?: string): string[] {
+  const parent = firstParent(sha, repo);
+  if (parent) return lines(git(repo, "diff", "--name-only", parent, sha));
+  if (recordsParent(sha, repo)) {
+    throw new Error(
+      `cannot tell what ${sha.slice(0, 12)} changed: its parent is not in ` +
+        `this checkout (shallow clone).\n` +
+        `Deepen the deploy's \`fetch-depth\`, or dispatch with an explicit ` +
+        `\`version\`.`,
+    );
+  }
+  return lines(git(repo, "ls-tree", "-r", "--name-only", sha));
+}
+
 export interface Candidate {
   sha: string;
-  /** Whether this commit touched only `**\/*.md` and `docs/**`. */
-  docsOnly: boolean;
+  /**
+   * Whether this commit touched only `**\/*.md` and `docs/**`.
+   *
+   * A thunk, and that is load-bearing rather than a style choice: a commit the
+   * walk never reaches must never be classified. The walk stops at the first
+   * commit that published an image, which on a healthy `main` is HEAD, so
+   * classifying the whole window spends a git process per commit on answers
+   * nothing reads — and it lets a question that cannot be answered about some
+   * far-back commit fail a deploy that was fine. Classifying all 35 commits on
+   * `main` up front did exactly that: it reached the root commit, which has no
+   * parent to diff against, and died holding HEAD's image as the answer.
+   */
+  docsOnly: () => boolean;
 }
 
 export interface ResolvedTag {
@@ -149,6 +227,10 @@ export interface ResolvedTag {
  * A `published` that rejects propagates. A registry the deploy cannot read must
  * not look like a registry that is missing a tag — that would silently ship an
  * older image every time GHCR had a bad minute.
+ *
+ * `docsOnly` is asked ONLY about a commit the registry has already said has no
+ * image, and only until the walk stops. On a healthy `main` that is zero calls:
+ * HEAD published, and nothing else is classified at all.
  */
 export async function resolveDeployTag(
   candidates: readonly Candidate[],
@@ -164,7 +246,7 @@ export async function resolveDeployTag(
   for (const [distance, candidate] of candidates.entries()) {
     const tag = shaTag(candidate.sha);
     if (await published(tag)) return { tag, sha: candidate.sha, distance };
-    if (!candidate.docsOnly) {
+    if (!candidate.docsOnly()) {
       throw new Error(
         `commit ${candidate.sha.slice(0, 12)} changed code but published no ` +
           `image (${tag}). release-image.yml is probably still building it, ` +
