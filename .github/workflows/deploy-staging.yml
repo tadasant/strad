@@ -291,7 +291,7 @@ jobs:
         # infra/strad.staging.yaml with a rule that commit had deleted three
         # weeks earlier, and took staging down. `sha-<commit>` names one commit,
         # so the image and the config it is handed cannot drift apart.
-        if: ${{ steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.version }}
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.version }}
         id: coretag
         env:
           # A durable token, because this reads a PRIVATE package. The job's
