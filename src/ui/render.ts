@@ -467,8 +467,9 @@ ${listing}
         listLabel: "Server prefixes on this gateway",
         emptyNote:
           "No server prefix matches. Any prefix is still allowed — it simply routes to nothing.",
+        describedBy: "pfx-help",
       })}
-      <span class="field-h">The segments between the namespace and the variable name. For a
+      <span class="field-h" id="pfx-help">The segments between the namespace and the variable name. For a
         server parameter this is <code>&lt;server-slug&gt;/static/</code> and it is what decides
         which server the value routes to.</span>
     </div>
@@ -549,7 +550,6 @@ function namespacePicker(
         "No suggestion matches. Any namespace in this project is still valid.",
       submitOnChoose: true,
       wrapClass: "combo-ns",
-      inputClass: "nsinput",
     })}
     <button class="btn nsgo">Go</button>
   </form>`;
@@ -574,12 +574,13 @@ interface ComboBoxOptions {
   options: ComboOption[];
   /** Accessible name for the popup listbox, and for the caret that opens it. */
   listLabel: string;
-  /** Shown inside the menu when nothing matches what was typed. */
+  /** Shown under the menu when nothing matches what was typed. */
   emptyNote: string;
   /** Choosing an option submits the owning form. For a GET navigation only. */
   submitOnChoose?: boolean;
+  /** Id of the element describing this field, for `aria-describedby`. */
+  describedBy?: string;
   wrapClass?: string;
-  inputClass?: string;
 }
 
 /**
@@ -596,11 +597,24 @@ interface ComboBoxOptions {
  * PROGRESSIVE ENHANCEMENT. The markup is an ordinary `<input list=…>` and a
  * `<datalist>`, so with no JS the field is free text with the native typeahead
  * and the caret and menu are hidden. The script removes `list=` from the input as
- * it takes over, so the two popups never compete.
+ * it takes over, and it is also what puts the combobox ARIA on: a `role=combobox`
+ * whose `aria-expanded` nothing can ever flip would announce a control that is
+ * not there. A field with no suggestions is rendered as the plain input it is.
  */
 function comboBox(o: ComboBoxOptions): string {
   const listId = `${o.id}-listbox`;
   const dataId = `${o.id}-options`;
+  const described = o.describedBy
+    ? ` aria-describedby="${esc(o.describedBy)}"`
+    : "";
+  const input = (extra: string) =>
+    `<input class="in" id="${esc(o.id)}" type="text" name="${esc(o.name)}"
+             value="${esc(o.value ?? "")}"${described}${extra}
+             autocapitalize="off" autocomplete="off" spellcheck="false"
+             placeholder="${esc(o.placeholder ?? "")}" />`;
+
+  if (!o.options.length) return input("");
+
   const options = o.options
     .map(
       (op, i) =>
@@ -615,20 +629,13 @@ function comboBox(o: ComboBoxOptions): string {
         `<option value="${esc(op.value)}"${op.label ? ` label="${esc(op.label)}"` : ""}></option>`,
     )
     .join("");
-  return `<div class="combo ${esc(o.wrapClass ?? "")}" data-combo${
-    o.submitOnChoose ? " data-combo-submit" : ""
-  }>
-      <input class="in ${esc(o.inputClass ?? "")}" id="${esc(o.id)}" type="text" name="${esc(o.name)}"
-             value="${esc(o.value ?? "")}" list="${esc(dataId)}"
-             role="combobox" aria-expanded="false" aria-controls="${esc(listId)}"
-             aria-autocomplete="list" autocapitalize="off" autocomplete="off" spellcheck="false"
-             placeholder="${esc(o.placeholder ?? "")}" />
+  const wrap = ["combo", o.wrapClass].filter(Boolean).join(" ");
+  return `<div class="${esc(wrap)}" data-combo${o.submitOnChoose ? " data-combo-submit" : ""}>
+      ${input(` list="${esc(dataId)}"`)}
       <button class="combo-caret" type="button" tabindex="-1" data-combo-toggle
               aria-label="${esc(o.listLabel)}">${CARET_SVG}</button>
-      <ul class="combo-menu" id="${esc(listId)}" role="listbox" aria-label="${esc(o.listLabel)}" hidden>
-        ${options}
-        <li class="combo-none" role="presentation" hidden>${esc(o.emptyNote)}</li>
-      </ul>
+      <ul class="combo-menu" id="${esc(listId)}" role="listbox" aria-label="${esc(o.listLabel)}" hidden>${options}</ul>
+      <p class="combo-none" role="status" hidden>${esc(o.emptyNote)}</p>
       <datalist id="${esc(dataId)}">${suggestions}</datalist>
     </div>`;
 }
@@ -638,8 +645,9 @@ function comboBox(o: ComboBoxOptions): string {
  *
  * Keyboard is the whole reason this is more than a click handler: `ArrowDown`
  * opens and walks the list, `Enter` takes the active option, `Escape` closes it
- * and — pressed again — puts back the value you arrived with, so dismissing the
- * menu never costs you the namespace you were on. `aria-activedescendant` moves
+ * and — pressed again — puts back the last value the field committed, so
+ * dismissing the menu never costs you the namespace you were on.
+ * `aria-activedescendant` moves
  * the assistive-technology cursor without touching what you typed, which is also
  * why restoring is possible at all.
  *
@@ -653,7 +661,7 @@ function comboBoxScript(): string {
   Array.prototype.forEach.call(document.querySelectorAll("[data-combo]"), init);
 
   function init(box) {
-    var input = box.querySelector("input[role=combobox]");
+    var input = box.querySelector("input");
     var menu = box.querySelector("[role=listbox]");
     var toggle = box.querySelector("[data-combo-toggle]");
     var none = box.querySelector(".combo-none");
@@ -666,39 +674,49 @@ function comboBoxScript(): string {
     var committed = input.value;
     var quiet = false;
 
-    // Our menu replaces the native one; leaving both would double the popup.
+    // Our menu replaces the native one; leaving both would double the popup. The
+    // ARIA goes on here, with the behaviour it describes.
     input.removeAttribute("list");
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-controls", menu.id);
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-expanded", "false");
     markCurrent();
 
     function shown() {
       return opts.filter(function (o) { return !o.hidden; });
     }
     function isOpen() {
-      return !menu.hidden;
+      return box.hasAttribute("data-open");
     }
     function markCurrent() {
       opts.forEach(function (o) {
         o.classList.toggle("is-current", o.getAttribute("data-value") === committed);
       });
     }
+    /** The menu is shown only when open AND something matches; else the note is. */
+    function paint() {
+      var any = shown().length !== 0;
+      menu.hidden = !isOpen() || !any;
+      if (none) none.hidden = !isOpen() || any;
+      input.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+    }
     function filter(term) {
       var q = term.trim().toLowerCase();
       opts.forEach(function (o) {
-        o.hidden = q !== "" && o.textContent.toLowerCase().indexOf(q) === -1;
+        var v = o.getAttribute("data-value").toLowerCase();
+        o.hidden = q !== "" && v.indexOf(q) === -1;
       });
-      if (none) none.hidden = shown().length !== 0;
+      paint();
     }
     function open(all) {
-      filter(all ? "" : input.value);
-      menu.hidden = false;
       box.setAttribute("data-open", "");
-      input.setAttribute("aria-expanded", "true");
+      filter(all ? "" : input.value);
       setActive(-1);
     }
     function close() {
-      menu.hidden = true;
       box.removeAttribute("data-open");
-      input.setAttribute("aria-expanded", "false");
+      paint();
       setActive(-1);
     }
     function setActive(i) {
@@ -749,7 +767,8 @@ function comboBoxScript(): string {
     input.addEventListener("focus", function () { if (!isOpen()) open(true); });
     // Focus alone cannot carry this: a field that is already focused fires no
     // focus event, so a click after Escape would do nothing at all.
-    input.addEventListener("mousedown", function () {
+    input.addEventListener("mousedown", function (e) {
+      if (e.button !== 0) return;
       if (isOpen()) close();
       else open(true);
     });
@@ -768,9 +787,15 @@ function comboBoxScript(): string {
         }
         return;
       }
+      if (e.key === "Home" && isOpen()) { e.preventDefault(); setActive(0); return; }
+      if (e.key === "End" && isOpen()) {
+        e.preventDefault();
+        setActive(shown().length - 1);
+        return;
+      }
       if (e.key === "Escape") {
-        // First Escape dismisses the menu; a second puts back the value this
-        // field was rendered with, so neither costs you where you were.
+        // First Escape dismisses the menu; a second puts back the last value
+        // this field committed, so neither costs you where you were.
         if (isOpen()) close();
         else if (input.value !== committed) setValue(committed);
         return;
@@ -1445,13 +1470,12 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 
 /* Namespace picker */
 .nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
-.nsinput{font-size:.8rem;padding:.3rem 1.5rem .3rem .45rem}
 .nsgo{font-size:.76rem}
 .nscount{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
 
 /* Combobox: a free-text field whose suggestions open as a dropdown. */
 .combo{position:relative}
-.combo-ns{min-width:17rem}
+.combo-ns{min-width:24rem}
 .combo .in{padding-right:1.6rem}
 .combo-caret{position:absolute;top:0;right:0;height:100%;width:1.6rem;display:flex;align-items:center;
   justify-content:center;padding:0;border:0;border-radius:.35rem;background:transparent;color:var(--g3);
@@ -1468,8 +1492,10 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .combo-val{font-family:var(--font-mono);font-size:.78rem;color:var(--g1);word-break:break-all}
 .combo-opt.is-current .combo-val{color:var(--text-accent);font-weight:500}
 .combo-lbl{font-size:.7rem;color:var(--g4)}
-.combo-none{padding:.4rem .5rem;font-size:.72rem;color:var(--g4);line-height:1.45}
-.combo-none[hidden]{display:none}
+.combo-none{position:absolute;z-index:20;top:calc(100% + .25rem);left:0;min-width:100%;
+  max-width:min(30rem,86vw);margin:0;padding:.45rem .6rem;border:1px solid var(--g5);
+  border-radius:.4rem;background:var(--g6);box-shadow:0 10px 26px rgba(0,0,0,.38);
+  font-size:.72rem;color:var(--g4);line-height:1.45}
 
 /* Help: a control in the top bar, and the guide it opens. */
 .helpbtn{display:inline-flex;align-items:center;gap:.35rem;font:inherit;font-size:.8rem;
