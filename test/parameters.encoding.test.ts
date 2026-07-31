@@ -246,6 +246,31 @@ describe("a secret value survives the round trip, whatever it contains", () => {
       value,
     );
   });
+
+  it("survives a setNote, which rewrites the envelope", async () => {
+    // `setNote` writes a NEW envelope version carrying the same value pointer.
+    // It is the one write that touches a secret parameter's envelope without
+    // touching its bytes, so dropping `encoding` there would leave the pointer
+    // valid, the secret intact, and every subsequent read decoding base64url as
+    // if it were the literal value.
+    const gcp = createFakeGcp();
+    const path = gatewayParameterPath(ENV, "SECRET_UNDER_TEST");
+    await gcp.store.create({ path, secret: true, value: SA_JSON_VALUE });
+
+    await gcp.store.setNote(path, "rotate quarterly");
+
+    const param = gcp.parameters.get(parameterId(path))!;
+    const latest = param.versions[param.versions.length - 1]!;
+    const envelope = decodeEnvelope(
+      Buffer.from(latest.data, "base64").toString(),
+    );
+    expect(envelope.note).toBe("rotate quarterly");
+    expect(envelope.encoding).toBe(SECRET_VALUE_ENCODING);
+    expect(
+      (await gcp.store.resolve(gatewayNamespace(ENV))).SECRET_UNDER_TEST,
+    ).toBe(SA_JSON_VALUE);
+    expect(await gcp.store.reveal(path)).toBe(SA_JSON_VALUE);
+  });
 });
 
 describe("the five names already seeded in prod", () => {
@@ -415,6 +440,10 @@ describe("the two trees agree on the rule", () => {
 
   it("encodes identically", () => {
     identical(/export function encodeSecretValue\(value: string\): string \{/);
+  });
+
+  it("recognises an unrendered pointer identically", () => {
+    identical(/export function isSecretRef\(value: string\): boolean \{/);
   });
 
   it("canonicalises a decoded value identically", () => {

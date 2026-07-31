@@ -115,6 +115,18 @@ export function encodeSecretValue(value: string): string {
 }
 
 /**
+ * Is this value still a POINTER rather than a value?
+ *
+ * A `:render` that could not dereference hands the pointer back rather than
+ * failing, and a reader that decodes it produces mojibake instead of a
+ * diagnosable state. Anchored and exact, matching the src/ half — a `startsWith`
+ * would also claim a literal value that merely begins `__REF__(`.
+ */
+export function isSecretRef(value: string): boolean {
+  return /^__REF__\("\/\/secretmanager\.googleapis\.com\/[^"]+"\)$/.test(value);
+}
+
+/**
  * Invert `encodeSecretValue` for one raw value, given the encoding its envelope
  * declares. `label` names the parameter in an error; it is never the value.
  */

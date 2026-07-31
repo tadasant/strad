@@ -1,6 +1,7 @@
 import {
   decodeStoredValue,
   encodeSecretValue,
+  isSecretRef,
   MANAGED_BY_LABEL,
   MANAGED_BY_VALUE,
   parameterId,
@@ -410,7 +411,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       // A `:render` that could not dereference hands the POINTER back rather
       // than failing, and decoding a pointer would turn a diagnosable state into
       // mojibake. Everything else is decoded per the envelope's own declaration.
-      if (envelope.value.startsWith("__REF__(")) return envelope.value;
+      if (isSecretRef(envelope.value)) return envelope.value;
       return decodeStoredValue(envelope.value, envelope.encoding, path);
     },
   };

@@ -344,6 +344,23 @@ test("the stub refuses a raw structural value, the way Parameter Manager does", 
   await assert.rejects(() => client.readValue(path), /400/);
 });
 
+test("setNote rewrites the envelope without dropping the encoding", async () => {
+  // The one write that touches a secret parameter's envelope without touching
+  // its bytes. Dropping `encoding` here would leave the pointer valid, the
+  // secret intact, and every subsequent read decoding base64url as a literal.
+  const { client, params } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  const value = STRUCTURAL_VALUES["a service-account JSON blob"];
+  await client.create({ path, secret: true, value });
+
+  await client.setNote(path, "rotate quarterly");
+
+  const envelope = JSON.parse(params.get(parameterId(path)).versions.get("v2"));
+  assert.equal(envelope.note, "rotate quarterly");
+  assert.equal(envelope.encoding, "base64url");
+  assert.equal(await client.readValue(path), value);
+});
+
 test("a non-secret value stays literal, so the viewer still shows it", async () => {
   const { client, params } = stubStore();
   const path = `${NS}demo/static/PUBLIC_NOTE`;
