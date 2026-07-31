@@ -101,7 +101,7 @@ image built for that same ref, so both layers come from one commit.
   is the same skew. If a deploy stops that way, wait for the release run to finish
   and re-dispatch, or dispatch with an explicit `version`. The walk only asks what
   a commit changed once the registry says that commit has no image, so on a
-  healthy `main` it reads no history at all; if it ever reaches the edge of the
+  healthy `main` it runs no diff at all; if it ever reaches the edge of the
   checkout (`its parent is not in this checkout`), raise the workflow's
   `fetch-depth` or pass a `version`.
 

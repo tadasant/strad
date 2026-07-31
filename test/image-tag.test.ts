@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import {
@@ -278,6 +279,167 @@ describe("changedFiles", () => {
     }).trim();
     expect(() => changedFiles(head, clone)).toThrow(
       /parent is not in this checkout \(shallow clone\)[\s\S]*fetch-depth/,
+    );
+  });
+
+  it("tells a SIGNED shallow boundary from a root, despite the gpgsig header", () => {
+    // The boundary of a `fetch-depth: 50` checkout of `main` is a GitHub merge
+    // or squash commit, and those are signed. Root-vs-shallow is decided by
+    // reading the raw commit object, so the multi-line `gpgsig` header — armor
+    // blank line and all — sits between the parse and the `parent` line it
+    // looks for. Git space-prefixes every continuation line, including the
+    // blank one, so the header block survives; nothing else in the suite proves
+    // it, because scratch repos commit unsigned.
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    r.commit("src/app.ts", "code");
+    const tree = r.git("rev-parse", "HEAD^{tree}");
+    const parent = r.git("rev-parse", "HEAD~1");
+    const who = "test <test@example.com> 1700000000 +0000";
+    const signed = execFileSync(
+      "git",
+      ["hash-object", "-t", "commit", "-w", "--stdin"],
+      {
+        cwd: r.dir,
+        encoding: "utf8",
+        input:
+          `tree ${tree}\nparent ${parent}\nauthor ${who}\ncommitter ${who}\n` +
+          "gpgsig -----BEGIN PGP SIGNATURE-----\n" +
+          " \n" + // the armor's blank line, as git stores it
+          " iQIzBAABCgAdFiEEfake\n" +
+          " -----END PGP SIGNATURE-----\n" +
+          "\nsigned merge\n",
+      },
+    ).trim();
+    r.git("update-ref", "refs/heads/main", signed);
+
+    const dest = mkdtempSync(join(tmpdir(), "strad-image-tag-signed-"));
+    trash.push(dest);
+    const clone = join(dest, "shallow");
+    execFileSync(
+      "git",
+      ["clone", "-q", "--depth", "1", `file://${r.dir}`, clone],
+      { stdio: "pipe" },
+    );
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: clone,
+      encoding: "utf8",
+    }).trim();
+    expect(head).toBe(signed);
+    // Not "a root commit whose tree is src/app.ts" — a boundary it cannot read.
+    expect(() => changedFiles(head, clone)).toThrow(
+      /parent is not in this checkout \(shallow clone\)/,
+    );
+  });
+
+  it("does NOT let a root commit that carries CODE be stepped over", () => {
+    // The asymmetric half of the root-commit case. strad's own root added only
+    // README.md, so the docs-only test above would pass even if the tree were
+    // ignored entirely; this is what proves it is read.
+    const r = scratchRepo();
+    const root = r.commit("src/index.ts", "root with code");
+    expect(changedFiles(root, r.dir)).toEqual(["src/index.ts"]);
+    expect(isDocsOnly(changedFiles(root, r.dir))).toBe(false);
+  });
+});
+
+const SCRIPT = fileURLToPath(
+  new URL("../scripts/resolve-image-tag.ts", import.meta.url),
+);
+const REGISTRY_STUB = new URL("./fixtures/registry-stub.mjs", import.meta.url)
+  .href;
+
+/** Run the real script in `repo`, with only the registry stubbed. */
+function runResolver(
+  repo: string,
+  publishedTag: string,
+): { status: number; stdout: string; stderr: string } {
+  const shas = execFileSync(
+    "git",
+    ["log", "--first-parent", "--format=%H", "-n", "50"],
+    { cwd: repo, encoding: "utf8" },
+  );
+  const run = spawnSync(
+    process.execPath,
+    [
+      "--experimental-transform-types",
+      "--import",
+      REGISTRY_STUB,
+      SCRIPT,
+      "--repository",
+      "tadasant/strad",
+    ],
+    {
+      cwd: repo,
+      input: shas,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GHCR_PULL_TOKEN: "stub",
+        STRAD_TEST_PUBLISHED_TAG: publishedTag,
+      },
+    },
+  );
+  return { status: run.status ?? -1, stdout: run.stdout, stderr: run.stderr };
+}
+
+describe("scripts/resolve-image-tag.ts", () => {
+  it("resolves HEAD's image over a window that CONTAINS the root commit", () => {
+    // The deploy failure, end to end: this window holds a root commit, and the
+    // script must never ask what it changed, because HEAD published and the walk
+    // stops there. Classifying up front made this exact shape a `fatal`.
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    const head = r.commit("src/app.ts", "code");
+    const out = runResolver(r.dir, `sha-${head}`);
+    expect(out.stderr).not.toMatch(/fatal|ambiguous argument/);
+    expect(out.status).toBe(0);
+    // stdout is $GITHUB_OUTPUT and must carry nothing else.
+    expect(out.stdout).toBe(
+      [
+        `image=ghcr.io/tadasant/strad:sha-${head}`,
+        `tag=sha-${head}`,
+        `sha=${head}`,
+        "distance=0",
+        "",
+      ].join("\n"),
+    );
+    expect(out.stderr).toContain("Deploying the image built for HEAD");
+  });
+
+  it("deploys HEAD even when the window's far end is an unreadable boundary", () => {
+    // Where laziness is not an optimisation but the fix. `fetch-depth: 50`
+    // grafts the far commit, and asking what IT changed is unanswerable — so a
+    // pass that classifies the whole window fails a deploy whose answer (HEAD's
+    // own image) was in hand. This is the shape `main` takes once it passes 50
+    // first-parent commits, so it outlives the root commit that exposed it.
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    r.commit("src/one.ts", "one");
+    const head = r.commit("src/two.ts", "two");
+    const dest = mkdtempSync(join(tmpdir(), "strad-image-tag-window-"));
+    trash.push(dest);
+    const clone = join(dest, "shallow");
+    execFileSync(
+      "git",
+      ["clone", "-q", "--depth", "2", `file://${r.dir}`, clone],
+      { stdio: "pipe" },
+    );
+    const out = runResolver(clone, `sha-${head}`);
+    expect(out.stderr).not.toMatch(/shallow clone|fatal/);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain(`image=ghcr.io/tadasant/strad:sha-${head}`);
+  });
+
+  it("classifies the root commit rather than dying on it, when the walk gets there", () => {
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    r.commit("docs/page.md", "docs");
+    const out = runResolver(r.dir, "sha-nothing-is-published");
+    expect(out.status).toBe(1);
+    expect(out.stderr).not.toMatch(/fatal|ambiguous argument/);
+    expect(out.stderr).toMatch(
+      /no published image in the last 2 commits[\s\S]*all of them are docs-only/,
     );
   });
 });

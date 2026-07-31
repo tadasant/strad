@@ -100,9 +100,21 @@ export function isDocsOnly(files: readonly string[]): boolean {
   return files.length > 0 && files.every(isIgnoredPath);
 }
 
-/** `repo` is the checkout to ask; the deploy asks the one it is standing in. */
+/**
+ * `repo` is the checkout to ask; the deploy asks the one it is standing in.
+ *
+ * `core.quotePath=false` because the default C-quotes a non-ASCII path
+ * (`"docs/\303\251.md"`), which `isIgnoredPath` then matches as neither `.md`
+ * nor `docs/` — a docs-only commit that reads as code. The larger `maxBuffer` is
+ * for `ls-tree -r`, which lists a whole tree where a diff lists one commit's
+ * worth of paths; the 1 MB default would `ENOBUFS` on a big root commit.
+ */
 function git(repo: string | undefined, ...args: string[]): string {
-  return execFileSync("git", args, { encoding: "utf8", cwd: repo });
+  return execFileSync("git", ["-c", "core.quotePath=false", ...args], {
+    encoding: "utf8",
+    cwd: repo,
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
 function lines(out: string): string[] {
