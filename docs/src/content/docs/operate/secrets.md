@@ -384,6 +384,40 @@ unreachable store is not a store that lacks the name, and silently falling back
 to a stale env var during an outage is how a rotated credential comes back from
 the dead.
 
+### The flip is one step, and it has an order
+
+Turning `gateway.secrets.provider` to `gcp-parameter-store` is not incremental,
+whatever `envFallback` suggests. `render-spec` stops baking the boot keys the
+moment the provider changes, and `preflightSecrets()` then requires
+`STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` to be in the store. There is no
+half-flipped state: a deployment either reads its token store from the store or
+from the environment.
+
+So the order matters, and each step gates the next:
+
+1. **The resolver identity must exist.** `STRAD_PARAMS_PROJECT_ID` and
+   `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` in the deploy environment,
+   holding `parametermanager.parameterViewer` **and**
+   `parametermanager.parameterAccessor`. Without it `render-spec` exits before it
+   renders anything. It is not the viewer key, not the console admin key, and not
+   CI's `GCP_SA_KEY` — see [Secrets IAM](/operate/secrets-iam/).
+2. **Every value must be render-safe.** A secret parameter's value is spliced
+   into the envelope's JSON text by `:render`, so a value carrying a quote,
+   brace, newline or backslash is refused — and by
+   [limitation #33](/limitations/#33-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
+   that refusal takes the whole namespace with it, not just the one name.
+   `STRAD_TOKENS` is a JSON array of token records, so it is exactly this shape.
+3. **Seed, then verify by rendering.** `store:check --mode require --resolve`
+   is the gate: presence is not resolvability, and this is the only check that
+   proves the resolver can actually read what was seeded. The staging deploy runs
+   it in report mode on every run.
+4. **Then flip.**
+
+A rehearsal against staging on 2026-07-31 stopped at step 1: staging has no
+resolver credential seeded, so `store:check` exits 3 and a store-backed render
+would refuse. The `secrets` MCP viewer and console admin keys were both present;
+the resolver is the one identity of the three that had never been created.
+
 ## The console index: every server, and whether its secrets are there
 
 `/ui` is the console, and it answers two questions about the same list: what is
