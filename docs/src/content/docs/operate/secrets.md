@@ -414,7 +414,7 @@ So the order matters, and each step gates the next:
    is the gate: presence is not resolvability, and this is the only check that
    proves the resolver can actually read what was seeded. The staging deploy runs
    it in report mode on every run. It matters more than it sounds: by
-   [limitation #35](/limitations/#35-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
+   [limitation #36](/limitations/#36-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
    a single parameter that cannot render takes the **whole namespace** with it,
    so a namespace that is complete but unrenderable is a gateway with no token
    store.

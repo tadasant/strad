@@ -314,7 +314,7 @@ SA and seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
 `store:check --mode require --resolve`, then flip the provider in the deployment's
 config and drop the per-secret baking from the deploy workflow.
 
-### 35. One un-renderable parameter makes the whole gateway namespace resolve to nothing
+### 36. One un-renderable parameter makes the whole gateway namespace resolve to nothing
 
 `resolve()` lists a namespace and calls `:render` on every parameter in it,
 without catching per parameter. The first failure aborts the whole read, so with
