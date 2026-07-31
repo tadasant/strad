@@ -281,20 +281,23 @@ describe("staging config", () => {
    * security decision rather than a convenience, so it gets a test rather than a
    * comment.
    *
-   * Staging's 24 supplementary slugs are backed by the SAME third-party accounts
-   * prod uses — one Slack workspace, one Gmail tenant, one 1Password service
-   * account. The token that holds this role lives in a platform app and is
-   * handed to agent sessions, so every slug added here is a credential handed to
-   * an agent. Two are defensible: `secrets` reaches a project that holds only
-   * parameters, and `echo` is a builtin with no credential at all.
+   * Twenty-one of staging's slugs carry a real third-party credential, backed by
+   * the SAME accounts prod uses — one Slack workspace, one Gmail tenant, one
+   * 1Password service account. The token that holds this role lives in a platform
+   * app and is handed to agent sessions, so every slug added here is a capability
+   * handed to an agent. Three are defensible: `zimmer-secrets` and `secrets` are
+   * two SEPARATE GCP projects, each fenced again by its own namespace list, and
+   * `echo` is a builtin with no credential at all. Neither store is empty — both
+   * hold per-server credentials — so the claim is separation plus fence, not
+   * harmlessness (issue #59).
    *
    * A widening shows up here as a failing assertion naming the slug, which is
    * the review conversation worth having.
    */
   describe("the zimmer role", () => {
-    const ALLOWED = ["echo", "secrets"];
+    const ALLOWED = ["echo", "secrets", "zimmer-secrets"];
 
-    it("names only servers that hold no third-party credential", () => {
+    it("names only servers whose reach is bounded to a fenced parameter store", () => {
       expect(CONFIG.roles.zimmer?.servers.slice().sort()).toEqual(ALLOWED);
     });
 

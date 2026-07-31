@@ -302,7 +302,7 @@ the boot keys and `STRAD_TOKENS` becomes required in the store — a JSON array 
 token records, which at the time of the rehearsal could not be stored as a secret
 parameter at all.
 
-The base64url encoding (#33 below) has since landed and removes that
+The base64url encoding (limitation #33) has since landed and removes that
 impossibility; a token array now renders like any other value. What it leaves is
 an **ordering** requirement. The encoder lives in the core image and in the bundle
 image's write client, so a name seeded by an image that predates it is written as
@@ -314,7 +314,7 @@ SA and seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
 `store:check --mode require --resolve`, then flip the provider in the deployment's
 config and drop the per-secret baking from the deploy workflow.
 
-### 34. One un-renderable parameter makes the whole gateway namespace resolve to nothing
+### 35. One un-renderable parameter makes the whole gateway namespace resolve to nothing
 
 `resolve()` lists a namespace and calls `:render` on every parameter in it,
 without catching per parameter. The first failure aborts the whole read, so with
@@ -327,7 +327,7 @@ failing request against one server — the "worse place to find out" the deploy
 preflight exists to avoid. The cost is that the blast radius of one bad value is
 the deployment.
 
-**The base64url encoding (#33 above) does not fix this.** It stops values
+**The base64url encoding (limitation #33) does not fix this.** It stops values
 _becoming_ un-renderable; this entry is about what the read path does when one
 is, and there are still two live ways to get one: a parameter written before
 strad granted it access to its own secret (#30) renders

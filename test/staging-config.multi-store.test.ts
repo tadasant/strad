@@ -322,17 +322,53 @@ describe("two parameter stores, one strad", () => {
     expect(bare).toContain("consoleEnv:");
   });
 
-  it("entitles Zimmer's own role to its store and to nothing else", () => {
+  it("entitles Zimmer's role to fenced parameter stores and credential-free slugs, and nothing else", () => {
     // Both directions must agree: the role names the slug, and the slug names
-    // the role (src/gateway/entitlements.ts). Widening either one would hand a
-    // Zimmer session the third-party accounts staging shares with prod.
-    expect(CONFIG.roles.zimmer?.servers).toEqual(["zimmer-secrets"]);
-    const zimmer = CONFIG.servers.find((s) => s.slug === "zimmer-secrets");
-    expect(zimmer?.entitlements).toContain("zimmer");
+    // the role (src/gateway/entitlements.ts). Widening either one is how a
+    // Zimmer session would reach the third-party accounts staging shares with
+    // prod, so this is the assertion that has to bite.
+    //
+    // The list is THREE, and each earns it on a different ground:
+    //   zimmer-secrets  Zimmer's own store, in its own GCP project.
+    //   secrets         strad's staging store — a DIFFERENT project, fenced again
+    //                   by its own SECRETS_NAMESPACES, and the one the
+    //                   runtime-secrets migration is rehearsed against.
+    //   echo            a builtin holding no credential at all; the only server
+    //                   whose output is a value the gateway resolved at RUNTIME,
+    //                   which is what makes a rotation observable over /mcp.
+    const ALLOWED = ["echo", "secrets", "zimmer-secrets"];
+    expect(CONFIG.roles.zimmer?.servers.slice().sort()).toEqual(ALLOWED);
+    expect(
+      CONFIG.servers
+        .filter((s) => s.entitlements.includes("zimmer"))
+        .map((s) => s.slug)
+        .sort(),
+    ).toEqual(ALLOWED);
 
-    for (const server of CONFIG.servers) {
-      if (server.slug === "zimmer-secrets") continue;
-      expect(server.entitlements).not.toContain("zimmer");
+    // And the property behind the list, derived from the config rather than
+    // restated — so a NEW slug carrying a third-party credential cannot be added
+    // to this role by editing the array above. A reachable slug must either front
+    // a parameter store (its own project, its own namespace fence) or carry no
+    // `${REF}` credential whatsoever.
+    for (const slug of ALLOWED) {
+      const server = CONFIG.servers.find((s) => s.slug === slug)!;
+      const refs =
+        server.kind === "supplementary-image"
+          ? Object.values(server.env)
+          : server.kind === "builtin"
+            ? Object.values(server.options).filter(
+                (v): v is string => typeof v === "string",
+              )
+            : [server.url, ...Object.values(server.headers)];
+      const fronts =
+        server.kind === "supplementary-image" &&
+        server.env.SECRETS_PROJECT_ID !== undefined &&
+        server.env.SECRETS_NAMESPACES !== undefined;
+      const credentialFree = !refs.some((v) => /\$\{/.test(v));
+      expect(
+        fronts || credentialFree,
+        `"${slug}" is reachable by the zimmer role but is neither a fenced parameter store nor credential-free`,
+      ).toBe(true);
     }
   });
 });
