@@ -70,12 +70,15 @@ the same guard for the same reason.
    (best-effort).
 5. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
 
-`:latest` is mutable, `deploy-staging.yml` deploys it by default, and App Platform
-re-pulls it on every restart and scale event. A `:latest` that has drifted off the
-commit it was built from therefore boots old code against new config and rolls the
-deploy back, hours later and far from the change that caused it. A release that
-pushed successfully but left `:latest` somewhere else is a failed release, and step
-3 makes the run go red.
+`:latest` is mutable and App Platform re-pulls it on every restart and scale
+event. A `:latest` that has drifted off the commit it was built from therefore
+boots old code against new config and rolls the deploy back, hours later and far
+from the change that caused it. A release that pushed successfully but left
+`:latest` somewhere else is a failed release, and step 3 makes the run go red.
+
+That check guards the push. It cannot guard the pull — so **no deploy ships a
+mutable tag at all**. See [which image a deploy
+ships](#which-image-a-deploy-ships).
 
 ## `deploy-staging.yml` — put it on App Platform
 
@@ -85,6 +88,51 @@ defining idiom is the **preflight "safe no-op"**:
 - On an **automatic** release, if prerequisites (`DIGITALOCEAN_ACCESS_TOKEN`,
   `GCP_SA_KEY`) are missing, it **skips and stays green**.
 - A **manual** `workflow_dispatch` with the same gap **fails loudly**.
+
+### Which image a deploy ships
+
+A deploy never hands App Platform a mutable tag. The core image comes from the
+first of these that applies:
+
+1. **A branch build** (`build: true`) — the `branch-<slug>-<sha>` tag it just
+   pushed.
+2. **An explicit `version` input** — `ghcr.io/tadasant/strad:<version>`. This is
+   the release path, and it is how you pin a rollback.
+3. **Otherwise, `sha-<commit>`**, resolved from the checked-out history by
+   `scripts/resolve-image-tag.ts`.
+
+There is deliberately no fallback past those three: `render-spec` refuses a core
+image on `latest` (or `main`, `edge`, `stable`, or a tag-less ref, which means
+`latest`), so a gap fails the deploy instead of shipping an unknown image.
+
+Step 3 walks back through first-parent history, but **only past docs-only
+commits**. `release-image.yml` ignores `**/*.md` and `docs/**`, so a docs-only
+merge advances `main` without cutting an image, and stepping over one is safe —
+the newest ancestor that did publish is the code that should be running anyway.
+The step says how far back it went.
+
+A commit that changed **code** and has no image is a **hard stop**, not another
+step back. A missing tag there means `release-image.yml` is still building or has
+failed, and deploying the previous commit's image against this commit's config is
+exactly the new-config-meets-old-code skew this whole path exists to prevent. The
+deploy fails and tells you to wait for the release or pass an explicit `version`.
+A registry it cannot read is likewise an error, never a silent walk-back to
+something older.
+
+**Why.** Dispatching this workflow on `main` at 96015c6 shipped `:latest` and the
+container booted code from before PR #26 — it rejected the current
+`infra/strad.staging.yaml` with a `each must serve a distinct path` rule that
+commit had deleted three weeks earlier, and staging went down. The same commit
+had deployed cleanly on `:0.1.38` hours before, and pinning `:0.1.33` brought it
+straight back.
+
+Re-cutting the release does not fix it. `release-image.yml` ran on `main` at
+96015c6 and its verify step confirmed `:<version>`, `:latest` and `:sha-<sha>`
+all resolved to one digest at push time; eleven hours later `:latest` was serving
+pre-#26 code again, with nothing in this repo having written the tag in between.
+Whatever moves it is external, so this repo cannot make `:latest` trustworthy —
+only stop depending on it. A tag that names one commit has no "most recent" for
+anything to disagree about.
 
 That split is deliberate: an automatic release shouldn't turn red just because the
 account isn't seeded yet, but a human asking for a deploy should hear "no." When
@@ -178,8 +226,8 @@ A branch build also reads the shared buildx cache but never writes it, so it
 cannot affect what `main` builds from.
 
 **Restoring staging to `main`** needs no teardown: dispatch `deploy-staging.yml`
-on `main` with `build` left off. It renders `main`'s config against `:latest`,
-which is exactly what the release path does — so the next merge to `main` restores
+on `main` with `build` left off. It renders `main`'s config against the
+`sha-<commit>` image built for that commit — so the next merge to `main` restores
 staging on its own regardless.
 
 <aside class="starlight-aside starlight-aside--caution">

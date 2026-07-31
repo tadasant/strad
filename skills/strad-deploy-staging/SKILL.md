@@ -5,7 +5,8 @@ description: >
   Deploy a strad change to the staging environment. Staging is a DigitalOcean App
   Platform app (`strad-staging`) rendered from `infra/strad.staging.yaml`. The
   `Deploy staging` workflow deploys a published image tag
-  (`ghcr.io/tadasant/strad:<version>`, default `latest`) — so the normal path is a
+  (`ghcr.io/tadasant/strad:<version>`, defaulting to the `sha-<commit>` built for
+  the checked-out ref) — so the normal path is a
   merge to `main`, which builds the image and then deploys it — and a manual
   `workflow_dispatch` either re-pins staging to an existing tag (rollback) or,
   with `build: true`, builds the dispatched BRANCH's core and bundle images under
@@ -27,16 +28,18 @@ The single most important thing to internalize: **a deploy has two layers**, and
 change reaches staging through whichever one it lives in. The **spec layer**
 (`infra/strad.staging.yaml`, `scripts/render-spec.ts`) is rendered from the ref
 the workflow runs on. The **image layer** (everything inside the built container)
-comes from an image tag. By default those two can disagree — a bare
-`workflow_dispatch` renders the default branch's spec against whatever `:latest`
-points at — and keeping them in step is what `build: true` is for.
+comes from an image tag. Those two must not disagree: a bare `workflow_dispatch`
+used to render the ref's spec against whatever `:latest` pointed at, which took
+staging down (see "the mutable tag" below). It now resolves the `sha-<commit>`
+image built for that same ref, so both layers come from one commit.
 
 ## The critical facts
 
 - **`Deploy staging` deploys an image tag by default, and can build a branch.**
   `.github/workflows/deploy-staging.yml` (workflow name: **`Deploy staging`**) is
   `workflow_call` + `workflow_dispatch`. `version` selects an already-published
-  `ghcr.io/tadasant/strad` tag, defaulting to `latest`. The `build` input (dispatch
+  `ghcr.io/tadasant/strad` tag; omitted, the workflow resolves the `sha-<commit>`
+  tag built for the checked-out ref. The `build` input (dispatch
   only) instead builds **both** images — core and bundle — from the dispatched ref
   and deploys those, which is how an unmerged branch gets onto staging.
 
@@ -54,7 +57,7 @@ points at — and keeping them in step is what `build: true` is for.
   in that mode it builds nothing.
 
   ```bash
-  gh workflow run deploy-staging.yml -f version=<image-tag>   # e.g. 0.1.6, or omit to use latest
+  gh workflow run deploy-staging.yml -f version=<image-tag>   # e.g. 0.1.6, or omit for this ref's sha- image
   ```
 
 - **To stage an UNMERGED branch, dispatch `Deploy staging` on it with
@@ -76,10 +79,27 @@ points at — and keeping them in step is what `build: true` is for.
   prod. Both refuse to run on any ref but `main`, so the attempt fails fast.
 
 - **Restoring staging to `main` needs no teardown.** Dispatch `Deploy staging` on
-  `main` with `build` left off, and it renders `main`'s config against `:latest` —
+  `main` with `build` left off, and it renders `main`'s config against the
+  `sha-<commit>` image built for that commit —
   identical to what the release path does. The next merge to `main` also restores
   it on its own. A branch deploy is not durable state; nothing has to be cleaned
   up.
+
+- **No deploy ships a mutable tag — this has actually bitten.** Dispatching
+  `Deploy staging` on `main` at 96015c6 shipped `:latest`, and the container booted
+  code from before PR #26: it rejected the current `infra/strad.staging.yaml` with
+  a `each must serve a distinct path` rule that commit had deleted three weeks
+  earlier, and staging went down. The same commit had deployed cleanly on
+  `:0.1.38` hours before, and pinning `:0.1.33` brought it back. App Platform may
+  satisfy a mutable tag from whatever it resolved last, and the spec gives no way
+  to tell which image will boot. So `render-spec` now refuses a core image on
+  `latest` / `main` / `edge` / `stable` (and a tag-less ref, which means
+  `latest`), and the workflow resolves `sha-<commit>` instead. It walks back only
+  past **docs-only** commits, which cut no image by design; a **code** commit with
+  no image is a hard stop, because `release-image.yml` is still building (or
+  failed) and deploying the previous commit's image against this commit's config
+  is the same skew. If a deploy stops that way, wait for the release run to finish
+  and re-dispatch, or dispatch with an explicit `version`.
 
 - **A deploy is a full spec REPLACE — an omitted field is a deletion.** This has
   actually bitten: omitting `domains` from an update _detaches the custom domain_,
@@ -128,8 +148,8 @@ An agent session **can** do this — `gh workflow run` is all it takes. The GitH
 runner holds the DigitalOcean and GCP credentials, not your session.
 
 ```bash
-# Re-deploy staging on the latest published image (or a specific tag):
-gh workflow run deploy-staging.yml                     # version defaults to "latest"
+# Re-deploy staging on the image built for this ref (or a specific tag):
+gh workflow run deploy-staging.yml                     # resolves sha-<commit>
 gh workflow run deploy-staging.yml -f version=0.1.6    # a specific published tag
 
 # Build and deploy a branch, config and binary together:

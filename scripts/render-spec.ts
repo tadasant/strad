@@ -54,6 +54,7 @@ import {
   consoleEnvNames,
   preflightSecrets,
 } from "../src/deploy/preflight.ts";
+import { assertImmutableCoreImage } from "../src/deploy/imageTag.ts";
 
 const { values } = parseArgs({
   options: {
@@ -72,6 +73,16 @@ if (!values.config || !values.image || !values.app) {
   );
   process.exit(1);
 }
+
+// Refuse a mutable core tag at the deploy boundary, BEFORE any of the work
+// below — a bad --image should not cost a config parse and a GCP round trip
+// first. `renderAppSpec` stays permissive on purpose: it shapes specs for tests
+// and for whoever embeds it, and has no business demanding a version number.
+// But every spec that reaches App Platform is rendered here, so this is where
+// the rule holds. Same split as the strict config parse: lenient library,
+// strict deploy gate.
+const coreImage = parseImage(values.image);
+assertImmutableCoreImage(values.image, coreImage.tag);
 
 const raw = readFileSync(values.config, "utf8");
 const config = parseConfig(raw, values.config);
@@ -374,7 +385,7 @@ const spec = renderAppSpec({
   config,
   appName: values.app,
   region: values.region ?? "nyc",
-  image: parseImage(values.image),
+  image: coreImage,
   // --bundle-image swaps the supplementary components onto a branch-scoped
   // bundle tag at render time, so a branch deploy needs no config edit.
   supplementaryImage: values["bundle-image"],

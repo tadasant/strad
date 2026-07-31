@@ -211,6 +211,29 @@ Branch tags also accumulate in GHCR with nothing pruning them.
 `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` — the render-side override
 already exists.
 
+### 32. The bundle component still deploys a mutable tag
+
+The core image is pinned to an immutable tag on every deploy — `sha-<commit>`, an
+explicit `version`, or a branch build — and `render-spec` refuses `latest` for it
+outright. The **bundle** gets none of that: its image is
+`ghcr.io/tadasant/strad-bundle:latest` on all 24 `supplementary-image` entries in
+`infra/strad.staging.yaml`, overridden only by `--bundle-image` on a branch build.
+
+That is the same failure that took staging down — App Platform may serve a mutable
+tag from whatever it resolved last — one component over, and nothing refuses it.
+It has not bitten yet because `release-bundle-image.yml` moves
+`strad-bundle:latest` on every change to `servers/bundle/**`, so the tag is
+usually fresh.
+
+The core had an immutable tag to reach for and is already a render-time argument.
+The bundle's tag is a config value, so pinning it means editing 24 `image:` lines
+per release or adding the `bundle_version` input that **#25** declines to add —
+a change to how the bundle is released, not a line in the deploy workflow.
+
+**Undo:** extend the mutable-tag refusal to every image in the rendered spec, and
+resolve `sha-<commit>` for the bundle the way the core already does. Do it with
+**#25**, which wants the same input for the same reason.
+
 ### 26. The secrets/parameters system is wired but not yet live on GCP
 
 strad has a store-agnostic [secrets and parameters

@@ -934,6 +934,36 @@ project IAM admin, which no strad process holds.
 **Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
 either way — this is an IAM-shaped limitation, not a mechanism in strad.
 
+## 32. The bundle component still deploys a mutable tag
+
+**What.** The core image is now pinned to an immutable tag on every deploy —
+`sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
+refuses `latest` for it outright. The **bundle** gets none of that. Its image is
+written into `infra/strad.staging.yaml` as
+`ghcr.io/tadasant/strad-bundle:latest`, on all 24 `supplementary-image` entries,
+and the only thing that overrides it is `--bundle-image` for a branch build.
+
+**Why it matters.** This is the same failure that took staging down, one
+component over. App Platform may serve a mutable tag from whatever it resolved
+last, so a bundle deploy can boot an image whose mounts do not match the paths
+the spec routes — and unlike the core, nothing refuses it. It has not bitten yet
+because `release-bundle-image.yml` moves `strad-bundle:latest` on every change to
+`servers/bundle/**`, so the tag is usually fresh.
+
+**Why it ships anyway.** The core had an immutable tag to reach for:
+`release-image.yml` publishes `:<version>` and `:sha-<sha>` per commit, and the
+core image is already a render-time argument. The bundle has `:sha-<sha>` too,
+but it is a config value, not an argument — pinning it means either editing 24
+`image:` lines per bundle release or adding the `bundle_version` input that hack
+#25 declines to add. Fixing it properly is a change to how the bundle is
+released, not a line in the deploy workflow, and it does not belong in an outage
+fix.
+
+**Undo.** Extend `assertImmutableCoreImage` to every image in the rendered spec,
+and give `deploy-staging.yml` the same `sha-` resolution for the bundle that it
+does for the core (`--bundle-image` already exists and needs no change). Do it
+together with hack #25, which wants the same input for the same reason.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
