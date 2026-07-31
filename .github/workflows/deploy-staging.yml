@@ -44,6 +44,40 @@ on:
         type: boolean
         required: false
         default: false
+      seed:
+        description: >-
+          Copy this deployment's boot keys from the deploy environment into
+          /strad/staging/gateway/static/ before rendering. The one-time
+          migration step for the provider flip; off on every ordinary deploy.
+        type: boolean
+        required: false
+        default: false
+      seed_rotate:
+        description: >-
+          With seed, overwrite names the store already holds instead of
+          skipping them.
+        type: boolean
+        required: false
+        default: false
+      seed_set:
+        description: >-
+          With seed, an extra NAME=VALUE the environment does not carry.
+          NON-SECRET canaries only — it is echoed in this run's log.
+        type: string
+        required: false
+      seed_delete:
+        description: >-
+          With seed, a name to REMOVE from the gateway namespace. Comma-separated.
+        type: string
+        required: false
+      seed_only:
+        description: >-
+          Seed and stop, without rendering or deploying. Use when the store must
+          change under a RUNNING gateway — a redeploy would restart the process
+          and destroy the thing being observed.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: staging-deploy
@@ -257,7 +291,7 @@ jobs:
         # infra/strad.staging.yaml with a rule that commit had deleted three
         # weeks earlier, and took staging down. `sha-<commit>` names one commit,
         # so the image and the config it is handed cannot drift apart.
-        if: ${{ steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.version }}
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.version }}
         id: coretag
         env:
           # A durable token, because this reads a PRIVATE package. The job's
@@ -277,10 +311,100 @@ jobs:
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
                 --repository "$REPOSITORY" >> "$GITHUB_OUTPUT"
 
+      - name: Seed the gateway namespace from the deploy environment
+        # THE MIGRATION STEP, and it is opt-in for a reason. Under the `env`
+        # provider these values are baked into the app spec on every deploy;
+        # under the store provider the gateway reads them at runtime and the spec
+        # carries only the resolver key. Something has to move them across once,
+        # and CI is the only place that holds them — the console is SSO-gated and
+        # per-value, and the `secrets` MCP server is fenced out of this namespace
+        # on purpose.
+        #
+        # OFF unless dispatched with `seed: true`. Seeding on every deploy would
+        # make the store a mirror of the deploy environment rather than the source
+        # of truth replacing it, which is the inversion the whole flip exists to
+        # undo. It also skips names the store already holds unless
+        # `seed_rotate: true`, so a re-run cannot quietly revert a rotation
+        # somebody made in the console.
+        #
+        # It reads back everything it writes through `:render` — the same path
+        # the gateway uses — and compares by digest. Names and counts only; no
+        # value is printed.
+        # `seed_only` implies `seed`. Gating this on `inputs.seed` alone made a
+        # `seed_only: true` dispatch with `seed` left false run NOTHING and
+        # report green — every other step is gated on `!seed_only`, so the job
+        # skipped its way to success. An input named "seed and stop" must not be
+        # able to mean "stop".
+        if: ${{ (inputs.seed || inputs.seed_only) && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        env:
+          # The ADMIN key, not the resolver's: the resolver cannot write, which
+          # is exactly why the gateway is allowed to hold it.
+          STRAD_STORE_ADMIN_KEY_JSON: ${{ env.SECRETS_ADMIN_KEY_JSON }}
+          SEED_ROTATE: ${{ inputs.seed_rotate }}
+          SEED_SET: ${{ inputs.seed_set }}
+          SEED_DELETE: ${{ inputs.seed_delete }}
+        run: |
+          set -euo pipefail
+          ARGS=(--config infra/strad.staging.yaml --commit)
+          [ "$SEED_ROTATE" = "true" ] && ARGS+=(--rotate)
+          [ -n "$SEED_SET" ] && ARGS+=(--set "$SEED_SET")
+          if [ -n "$SEED_DELETE" ]; then
+            IFS=',' read -ra NAMES <<< "$SEED_DELETE"
+            for n in "${NAMES[@]}"; do ARGS+=(--delete "$n"); done
+          fi
+          node --experimental-transform-types scripts/seed-store.ts "${ARGS[@]}"
+
+      - name: Report what the parameter store holds
+        # The roster: every name this deployment would read from
+        # `/strad/staging/gateway/static/`, which of them are seeded, and — with
+        # --resolve — which of the seeded ones the resolver credential can
+        # actually render. That last part is the one nothing else answers:
+        # presence is not resolvability (`:render` needs
+        # parametermanager.parameterVersions.render, which parameterViewer does
+        # not carry), and a namespace can be complete and still resolve to
+        # nothing.
+        #
+        # REPORT MODE, and NON-FATAL, and that is now a deliberate choice rather
+        # than a stage of the migration. Staging is store-backed, so `--mode
+        # require` is the defensible end state — but `require` counts the 22
+        # supplementary `env:` names too, and those are still resolved from the
+        # deploy environment on purpose (see scripts/seed-store.ts). Requiring
+        # them today would fail every deploy over a decision nobody has taken.
+        # `render-spec`'s own preflight already fails closed on the names that
+        # MUST be in the store, so nothing load-bearing rests on this step's
+        # exit code; it exists to make the roster visible on every deploy rather
+        # than only when someone remembers to run it — the migration's blind spot
+        # was never the check, it was not having looked. Flip to `--mode require`
+        # and drop continue-on-error when the supplementary names move too.
+        #
+        # It prints names, counts and states. No value, in any mode.
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # `|| rc=$?` rather than a bare call followed by `rc=$?`. A `run:` step
+          # is `bash -e`, and `set -uo pipefail` does not clear `-e`, so a bare
+          # non-zero call kills the shell before the next line — every branch
+          # below would be unreachable and the step would just fail. A command on
+          # the left of `||` is exempt from `-e`, which is what makes `rc`
+          # observable at all.
+          rc=0
+          node --experimental-transform-types scripts/check-store.ts \
+            --config infra/strad.staging.yaml --mode report --resolve || rc=$?
+          # Exit 3 is "I could not consult the store", and `--mode report` does
+          # not soften it — by design, since "the namespace is incomplete" and "I
+          # could not find out" call for opposite responses. Staging is
+          # store-backed, so exit 3 means the resolver credential this deployment
+          # depends on has stopped working: a finding, not a stage of migration.
+          if [ "$rc" -eq 3 ]; then
+            echo "::error::the store roster could not be read at all. Staging resolves its \${NAME} refs from the store, so this is the resolver credential failing, not an unseeded namespace; see docs/operate/secrets.md."
+          fi
+          exit "$rc"
+
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
         # It is written to a file, never echoed — a rendered spec is not log-safe.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # A branch build wins over `version`: if we just built this ref, that
           # is unambiguously the code the dispatcher asked to see on staging.
@@ -338,7 +462,7 @@ jobs:
         # If App Platform later 403s pulling the image, the PAT is FINE-GRAINED
         # (package-scoped) and strad's package is not in its scope — a one-line
         # fix on the token. See HACKS.md.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         run: |
@@ -356,13 +480,13 @@ jobs:
         # `self-hosted` every runner process on the box shares /home/runner.
         # `no_auth` skips the write; each doctl step below supplies the token
         # through its own env.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         uses: digitalocean/action-doctl@v2
         with:
           no_auth: "true"
 
       - name: Deploy (create or update strad-staging)
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # doctl reads both of these natively — see the smoke-test step below.
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
@@ -379,7 +503,7 @@ jobs:
           fi
 
       - name: Smoke-test the live endpoint
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # Every doctl step carries its own token rather than reading the
           # config file `doctl auth init` would have left in a shared $HOME.
@@ -427,7 +551,7 @@ jobs:
         # It runs the same probe the containers run, against the same keys, and
         # prints booleans only — the keys are read from the env and never echoed,
         # and testIamPermissions returns no secret material.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         continue-on-error: true
         run: |
           set -uo pipefail

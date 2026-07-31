@@ -30,10 +30,12 @@ import { tokenMinter, type ServiceAccount } from "./google-auth.js";
  * work; this file only stops the surface from advertising what the boundary
  * forbids.
  *
- * STAGING IS THE CASE THIS EXISTS FOR. `strad-secrets-staging` holds nothing
- * sensitive, and being able to create, rotate, read and delete a parameter over
- * `/mcp` is what makes the store testable end to end instead of only through the
- * console.
+ * STAGING IS THE CASE THIS EXISTS FOR. `strad-secrets-staging` is a project
+ * separate from the one holding strad's own `strad-<env>-*` secrets, so the
+ * blast radius of a write surface there is bounded — it is not empty, and
+ * `get_secret_value` on staging returns real per-server credentials (issue #59).
+ * Being able to create, rotate, read and delete a parameter over `/mcp` is what
+ * makes the store testable end to end instead of only through the console.
  *
  * The two-store dance mirrors `src/secrets/parameters/gcp.ts` exactly, including
  * the one thing that is easy to get wrong: a 409 on the parameter-create must NOT
@@ -152,6 +154,45 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       if (!best || n > best.n) best = { vid, n };
     }
     return best?.vid;
+  }
+
+  /**
+   * Every version of a parameter, deleted. All of them must go before the
+   * parameter itself can: Parameter Manager refuses to delete a parameter that
+   * still has one.
+   *
+   * Mirrors `deleteAllVersions` in `src/secrets/parameters/gcp.ts`, including
+   * its tolerances: a 404 listing means there is nothing to delete (the caller
+   * goes on to delete the parameter), and an individual version delete that
+   * fails is swallowed, because the parameter delete that follows is the thing
+   * that actually reports failure.
+   */
+  async function deleteAllVersions(id: string): Promise<void> {
+    let pageToken: string | undefined;
+    do {
+      const qs = new URLSearchParams({ pageSize: "100" });
+      if (pageToken) qs.set("pageToken", pageToken);
+      const page = (await pm(
+        "GET",
+        `${pmParent}/parameters/${id}/versions?${qs}`,
+      ).catch((err) => {
+        if (err instanceof ParameterManagerError && err.status === 404) {
+          return { parameterVersions: [] };
+        }
+        throw err;
+      })) as {
+        parameterVersions?: { name?: string }[];
+        nextPageToken?: string;
+      };
+      for (const v of page.parameterVersions ?? []) {
+        const vid = v.name?.slice(v.name.lastIndexOf("/") + 1);
+        if (!vid) continue;
+        await pm("DELETE", `${pmParent}/parameters/${id}/versions/${vid}`).catch(
+          () => {},
+        );
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
   }
 
   async function addVersion(
@@ -387,7 +428,15 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       // else folded onto the same id. Swallowing the error and deleting anyway
       // would make an id collision a destructive one.
       const prev = await currentEnvelope(path);
-      await pm("DELETE", `${pmParent}/parameters/${id}`);
+      // VERSIONS FIRST. Parameter Manager refuses to delete a parameter that
+      // still has versions, so deleting the parameter directly is a `400 Bad
+      // Request` for every parameter that has ever held a value — which is all
+      // of them, because `create` writes v1.
+      await deleteAllVersions(id);
+      await pm("DELETE", `${pmParent}/parameters/${id}`).catch((err) => {
+        if (err instanceof ParameterManagerError && err.status === 404) return;
+        throw err;
+      });
       if (prev.secret) {
         await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
       }

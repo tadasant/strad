@@ -66,6 +66,24 @@ gateway:
   name: strad
   env: staging
   publicUrl: https://staging.strad.tadasant.com
+  # THE FLIP. Staging reads its `${NAME}` references from
+  # /strad/staging/gateway/static/ while it is running, so a rotation reaches it
+  # within ttlSeconds and the app spec carries exactly one secret: the resolver
+  # key that opens the store.
+  #
+  # This is not incremental, whatever envFallback suggests. `render-spec` stops
+  # baking the boot keys the moment this changes, and `preflightSecrets()` then
+  # demands STRAD_TOKENS and STRAD_INTERNAL_TOKEN be in the store — so the
+  # namespace must be seeded BEFORE this line lands, and both images must already
+  # carry the base64url encoding (HACKS.md #33) or what is seeded cannot render.
+  # docs/operate/secrets.md has the order.
+  #
+  # envFallback / ttlSeconds / negativeTtlSeconds are left at their defaults
+  # (true / 60 / 10) deliberately: the chain keeps the environment behind the
+  # store so a name that is not seeded yet still resolves, and the TTL is the
+  # window a rotation takes to land.
+  secrets:
+    provider: gcp-parameter-store
 
 auth:
   google:
@@ -86,13 +104,35 @@ roles:
   # something is actually withheld from someone.
   echo-only:
     servers: [echo]
-  # Zimmer's own agent sessions. It reaches ONE slug: the store that holds
-  # Zimmer's parameters. Staging's deploy loads the same third-party accounts
-  # prod uses — there is no separate Slack workspace or 1Password service
-  # account — so `admin` here would hand a Zimmer session `onepassword-rw`,
-  # `gmail-rw-external` and the rest. Name the slug, not the wildcard.
+  # Zimmer's own agent sessions, and the narrowest role that still does its job.
+  #
+  # Staging's deploy loads every strad-staging-* secret, and they are the SAME
+  # third-party accounts prod uses — there is no separate Slack workspace, Gmail
+  # tenant or 1Password service account — so `admin` here would hand a Zimmer
+  # session `onepassword-rw`,
+  # `gmail-rw-external`, `slack` and `tailscale-readwrite`, with prod's blast
+  # radius. Name the slugs, never the wildcard.
+  #
+  # Three slugs, and each earns its place:
+  #
+  #   zimmer-secrets  Zimmer's own parameter store, in its own GCP project.
+  #   secrets         strad's staging parameter store. A DIFFERENT project, and
+  #                   the one the runtime-secrets migration is rehearsed against
+  #                   — including /strad/staging/mcp/echo/static/ below, which
+  #                   only this slug can address.
+  #   echo            the rotation observatory. It is the one server whose output
+  #                   is a value the gateway resolved AT RUNTIME (`options.greeting`,
+  #                   and — with `params: true` below — anything under
+  #                   /strad/staging/mcp/echo/static/), which makes it the only way
+  #                   to OBSERVE over /mcp that a rotated secret took effect with
+  #                   no redeploy. A builtin holding no credential of its own: it
+  #                   widens what can be watched, not what can be reached.
+  #
+  # Neither store slug is harmless-by-contents — both hold per-server credentials,
+  # and staging's `secrets` key can read a secret VALUE. What bounds them is
+  # project separation plus each slug's SECRETS_NAMESPACES fence. See issue #59.
   zimmer:
-    servers: [zimmer-secrets]
+    servers: [zimmer-secrets, secrets, echo]
 
 bundles:
   # THE bundle. One image, one component, fifteen upstream MCP servers — the
@@ -151,9 +191,45 @@ servers:
     kind: builtin
     module: "./servers/echo.js"
     bundle: core
-    entitlements: [admin, echo-only]
+    entitlements: [admin, echo-only, zimmer]
+    # THE ROTATION OBSERVATORY, and the only one this deployment has.
+    #
+    # `params: true` on a BUILTIN resolves /strad/staging/mcp/echo/static/* and
+    # merges it over `options:` on EVERY TOOL CALL, through the same TTL cache
+    # (gateway.secrets.ttlSeconds) the runtime secret provider uses — see
+    # gateway/registry.ts `optionsFor`. So setting `greeting` in the store and
+    # calling `whoami` is a direct, external read of what a running gateway
+    # currently resolves, with no redeploy anywhere in the loop.
+    #
+    # That matters because nothing else in this config is observable that way:
+    # a supplementary image's `env:` is baked at render time, `deepwiki` sends no
+    # credential, and the boot keys are read once at startup. Without this, "a
+    # rotated secret takes effect without a redeploy" can be asserted but not
+    # WATCHED — which is how it stayed unproven.
+    #
+    # It is inert until the deployment has a resolver credential (STRAD_PARAMS_*):
+    # `Registry.build` gets a null resolver and skips the merge entirely, so this
+    # costs nothing and changes nothing on a deployment that has not migrated.
+    #
+    # Point `greeting` at a canary, never at a credential. It is returned over
+    # /mcp verbatim, to anyone entitled to this slug.
+    params: true
     options:
-      greeting: "hello from the core gateway"
+      # THE PROBE, and the name is chosen for one property: `STRAD_ENV` is
+      # already on this component's environment (appspec's identityEnvs sets it
+      # to "staging"), so the SAME reference can demonstrate both halves of the
+      # chain. Seeded in /strad/staging/gateway/static/ the store answers and
+      # wins; delete it and the chain falls through to the environment and
+      # answers "staging". Nothing else in this config can show that, because
+      # `preflightSecrets()` requires every config-declared `${NAME}` to be in
+      # the store — so an "unseeded ref" is a deploy that fails, not a fallback
+      # anyone can watch.
+      #
+      # Shadowing it here is inert: `STRAD_ENV` is read from `process.env`
+      # directly by everything that cares (secretSourceFromEnv, identityEnvs),
+      # never through the provider, so a store entry under this name reaches
+      # exactly one place — the string below.
+      greeting: "${STRAD_ENV}"
 
   # kind: remote-http. A real third-party MCP server on the public internet,
   # proxied through strad. No credential needed for this one, which is why it
@@ -384,7 +460,27 @@ servers:
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
     path: /secrets
-    entitlements: [admin]
+    # `zimmer` is here and NOWHERE ELSE in this file except `echo`. The whole
+    # point of that token's narrow role is that 21 other slugs carry real
+    # third-party credentials. See the `zimmer` role above.
+    #
+    # It is entitled to the SERVER, not to the store: what this token can address
+    # is still bounded by SECRETS_NAMESPACES below, which is `/strad/staging/mcp/`
+    # and deliberately does NOT include the gateway's own
+    # `/strad/staging/gateway/static/`. That namespace is where the deployment's
+    # own ${NAME} references live — the 22 supplementary credentials
+    # (SLACK_BOT_TOKEN, the 1Password service-account token, the Gmail private
+    # keys) plus its boot keys and STRAD_ENV, 30 names in all — and staging's MCP
+    # CAN read a secret value (it is read+write here, unlike prod's). Adding the
+    # gateway namespace to the line below would therefore hand this token every
+    # credential the narrow role exists to withhold. Do not.
+    #
+    # The fence bounds WRITES as well as reads, and that is worth stating: a
+    # holder of this role can write anywhere under /strad/staging/mcp/, including
+    # another server's namespace, and a `params: true` server resolves its
+    # namespace into that container's environment. That capability comes with
+    # entitling `secrets` at all; it is not something the `echo` line adds.
+    entitlements: [admin, zimmer]
     env:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
@@ -404,7 +500,9 @@ servers:
       # THE PROD PROPERTY IS UNCHANGED: prod's `/mcp` still cannot read a secret
       # value, because prod's credential still lacks
       # secretmanager.versions.access. Staging relaxing this is deliberate and
-      # scoped to a project that holds nothing worth protecting.
+      # scoped to a project separate from the one holding strad's own
+      # strad-staging-* secrets. That project does hold per-server credentials —
+      # see issue #59; the fence is separation, not harmlessness.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
@@ -414,7 +512,8 @@ servers:
       # Both must say yes and the narrower wins (src/ui/reveal.ts). Absent = off,
       # so a new environment cannot inherit reveal by forgetting to think about it.
       #
-      # Staging says yes because `strad-secrets-staging` holds nothing sensitive
+      # Staging says yes because `strad-secrets-staging` is a separate project
+      # from strad's own secrets, so a reveal there is bounded
       # and round-tripping a value is how the store gets tested. Prod says no,
       # and its admin SA is being downgraded to write-without-read so that the
       # "no" is IAM rather than markup — see servers/secrets/README.md.

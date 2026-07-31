@@ -18,6 +18,20 @@ import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
  * numeric suffix read as 0, "current version" taken as list order, and an id
  * collision that let a write land outside the managed namespace. Each has a test
  * below, because each was invisible until something exercised a mutation.
+ *
+ * A FOURTH, and the reason this paragraph is worth reading before adding a stub
+ * route: a double that cannot fail is worse than no double. This store has now
+ * shipped two bugs behind one, and both were found against real Google rather
+ * than here. `:render` substituted into a PARSED object and re-stringified, so
+ * `JSON.stringify` re-escaped every value perfectly and no input could produce
+ * the `400 … injection detected` that production returned. The parameter DELETE
+ * removed the resource unconditionally, so a client that never deleted its
+ * versions passed while Google answered `400` to every call. Both stubs said yes
+ * to everything, and a green suite meant nothing.
+ *
+ * When you add a route here, model what Google REFUSES before what it accepts.
+ * A stub that only implements the happy path is a stub that can only confirm
+ * what you already believe.
  */
 
 const PROJECT = "test-project";
@@ -184,8 +198,23 @@ function stubStore() {
       if (payload == null) return json({ error: "no" }, 404);
       return json({ payload: { data: Buffer.from(payload, "utf8").toString("base64") } });
     }
+    if (m && method === "DELETE") {
+      const p = params.get(m[1]);
+      if (!p?.versions.has(m[2])) return json({ error: "no" }, 404);
+      p.versions.delete(m[2]);
+      return json({});
+    }
     m = new RegExp(`^${pmRoot}/([^/]+)$`).exec(path);
-    if (m && method === "DELETE") { params.delete(m[1]); return json({}); }
+    if (m && method === "DELETE") {
+      const p = params.get(m[1]);
+      if (!p) return json({ error: "no" }, 404);
+      // Google refuses to delete a parameter that still has versions, so the
+      // stub does too. A client that skips its version deletes fails here rather
+      // than only against the real store.
+      if (p.versions.size > 0) return json({ error: "has versions" }, 400);
+      params.delete(m[1]);
+      return json({});
+    }
     if (m && method === "GET") {
       return params.has(m[1])
         ? json({ policyMember: { iamPolicyUidPrincipal: principalFor(m[1]) } })
@@ -530,4 +559,35 @@ test("a 409 on the parameter create does not delete the parameter that already e
   // The original survives — the rollback must not destroy someone else's resource.
   assert.ok(params.has(parameterId(PATH)));
   assert.equal(await client.readValue(PATH), "original");
+});
+
+/**
+ * DELETE, which this tree could not do.
+ *
+ * Parameter Manager refuses to delete a parameter that still has versions, and
+ * `create` writes v1 — so a client that deletes the parameter directly gets a
+ * `400 Bad Request` for every parameter that has ever held a value. The stub
+ * refuses the same way, so this pair fails against a client that skips its
+ * version deletes.
+ */
+test("destroy deletes a parameter's versions before the parameter itself", async () => {
+  const { client, params } = stubStore();
+  await client.create({ path: PATH, secret: false, value: "one" });
+  await client.rotate(PATH, "two");
+  assert.equal(params.get(parameterId(PATH)).versions.size, 2);
+
+  await client.destroy(PATH);
+
+  assert.equal(params.has(parameterId(PATH)), false);
+});
+
+test("destroy of a secret parameter also drops its Secret Manager secret", async () => {
+  const { client, params, secrets } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "s3cr3t" });
+
+  await client.destroy(path);
+
+  assert.equal(params.has(parameterId(path)), false);
+  assert.equal(secrets.has(parameterId(path)), false);
 });

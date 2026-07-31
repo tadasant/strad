@@ -174,8 +174,8 @@ and a redeploy mid-login is not a failed login. Upstream: tadasant/strad#11.
 
 ## 8. Secret backend: env vars at runtime, GCP at deploy time
 
-**What.** With `gateway.secrets.provider: env` (the default, and what staging
-runs), the runtime container reads secrets from `process.env`.
+**What.** With `gateway.secrets.provider: env` (the schema default, and what
+prod runs), the runtime container reads secrets from `process.env`.
 `deploy-staging.yml` reads `strad-staging-*` from GCP Secret Manager and injects
 them as App Platform SECRET env vars.
 
@@ -697,22 +697,39 @@ DIFFERENT credentials on purpose:
   Manager ONLY: `:render` dereferences the secret under the parameter's own
   principal, so the resolver never touches Secret Manager itself.
 
-What is NOT done, and needs a human with GCP access (see the checklist below and
-`docs/.../limitations.md`): the resolver service account and its key, and the
-seeded parameter values. The project and the viewer/admin service accounts are
-provisioned. Everything above is tested against an in-memory fake, so the logic
-ships proven.
+What is NOT done, for staging: the per-server parameter values. The project, the
+viewer/admin service accounts AND the resolver service account with its key are
+all provisioned — the resolver was the outstanding one and the 2026-07-31
+rehearsal created and proved it. `/strad/staging/mcp/` still holds zero
+parameters, so a `params: true` supplementary server has nothing to receive. Prod
+still needs its own resolver; staging's says nothing about it. Everything above is
+tested against an in-memory fake, so the logic ships proven.
 
 Posture nuance worth stating plainly: the resolver credential runs at DEPLOY time
 (in CI / `render-spec`), NOT in the container, so "the running container holds no
 cloud credential" still holds — the resolved values reach the bundle as ordinary
-SECRET env vars, exactly like every other secret. Until the resolver service
-account exists, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
+SECRET env vars, exactly like every other secret. With an empty per-server
+namespace, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
 boots without its resolved parameters and degrades gracefully.
+
+**And it has been, in staging, since the day it was configured.** The 2026-07-31
+rehearsal confirmed it live: `remote-filesystem-tmp-public` is the one
+`params: true` supplementary server in `infra/strad.staging.yaml`, and
+`/strad/staging/mcp/` holds zero parameters. So that server has
+never once received `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` or
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`. The resolver credential now
+exists, so the cause is no longer a missing identity — it is an empty namespace,
+and seeding it is the remaining fix. "Degrades gracefully" is
+accurate and is exactly the problem: it degrades so gracefully that nothing said
+so. `render-spec` has been printing `server "remote-filesystem-tmp-public" has
+params: true but no resolver credential` on every deploy, in a step whose output
+nobody reads, and `store:check` — the tool that answers this directly — existed
+and had never been run. `deploy-staging.yml` now runs it on every deploy for
+exactly that reason.
 
 ---
 
-## 27. Runtime secret resolution is implemented but no deployment runs it yet
+## 27. Runtime secret resolution runs on staging; prod is still on the env provider
 
 **What.** `gateway.secrets.provider: gcp-parameter-store` makes a running gateway
 resolve `${NAME}` from `/strad/{env}/gateway/static/` with a TTL, so a secret
@@ -720,13 +737,13 @@ rotated in the store reaches production without a deploy, and the app spec carri
 exactly one secret — the store credential. It is implemented, tested end-to-end
 against the in-memory fake (`test/secrets.rotation.test.ts` drives a real MCP
 client through a real gateway to a real upstream that rejects a stale token), and
-**not yet enabled anywhere**. Staging and prod both still run `provider: env`,
-which is unchanged byte-for-byte.
+enabled on STAGING. Prod runs `provider: env`, unchanged byte-for-byte.
 
-**Why it is not on.** Enabling it needs the resolver service account (hack #26,
-still unprovisioned), the gateway-namespace parameters seeded, and workflow
-changes in `tadasant-internal` that are outside this repo. It ships off by default
-so the capability can land and be reviewed without a flag day.
+**Why prod is not on it.** Enabling a deployment needs its own resolver service
+account (hack #26) and its gateway-namespace parameters seeded; prod additionally
+needs workflow changes in `tadasant-internal` that are outside this repo. It ships
+off by default so the capability can land and be reviewed without a flag day, and
+staging is the worked example of switching it on.
 
 **Known boundaries, by design, not by omission.**
 
@@ -760,10 +777,47 @@ a migration that moves one server per day. `--resolve` additionally proves the
 resolver can render what it found — the only way to catch a grant that is bound
 but cannot `:render`. It reads metadata by default and prints no value in any mode.
 
-**Undo.** Provision the resolver SA (hack #26), seed
-`/strad/prod/gateway/static/*`, then flip `gateway.secrets.provider` in the
-deployment's config and drop the per-secret baking from the deploy workflow. The
-cross-repo half is tracked as issues against `tadasant/tadasant-internal`.
+**A live rehearsal against staging ran the flip end to end (2026-07-31), and this
+hack is now retired for staging.** Two things that had been theory were settled,
+and both went the other way from the first attempt earlier the same day:
+
+1. **The resolver credential exists and works.** An earlier pass concluded staging
+   had none; the identity was provisioned during the rehearsal and seeded as
+   `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` alongside
+   `strad-staging-STRAD_PARAMS_PROJECT_ID`. `check-store --mode report --resolve`
+   now reports `render: 5 of 5 present name(s) resolved to a value` — presence AND
+   resolvability, which are different questions.
+2. **`STRAD_TOKENS` is render-safe, so the flip has an order rather than a
+   blocker.** Under the store provider `render-spec` stops baking the boot keys
+   and `preflightSecrets()` counts `STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` as
+   required. `STRAD_TOKENS` is a JSON array of token records, and before the
+   base64url encoding (hack #33) that shape could not be stored at all — which is
+   why the earlier pass concluded no ordering could flip staging first and fix the
+   encoding later. **That conclusion is retired.** The array is seeded, it renders
+   against real Google, and the staging gateway authenticates `/mcp` against it
+   with no baked copy to fall back on.
+
+   What survives is an ORDERING requirement, not an impossibility: the encoder
+   lives in the core image (`create`/`rotate`, and the runtime decode) and in the
+   bundle image (the `secrets` MCP write client), so anything seeded by an image
+   that predates it is written as raw bytes and refuses to render. Publish and pin
+   both images before seeding a single name. Hack #33 also makes an image ROLLBACK
+   of `core` past that commit a data hazard for everything seeded after it.
+
+**And the property the whole migration exists for was measured, not argued.** A
+seeded name resolved from the store; deleting it fell through to the environment;
+and rewriting it in the store took effect in the running gateway within
+`ttlSeconds`, from the same container, with no render and no deploy. The order and
+the worked example are in `docs/src/content/docs/operate/secrets.md`, under
+"Staging ran all four steps, and the property holds".
+
+**Undo.** In order: publish + pin both images at or after the base64url encoding
+(hack #33); provision the resolver SA (hack #26) and seed its key as
+`strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` alongside
+`strad-staging-STRAD_PARAMS_PROJECT_ID`; seed `/strad/staging/gateway/static/*`;
+confirm with `store:check --mode require --resolve`, which the staging deploy now
+prints on every run; then flip `gateway.secrets.provider`. The cross-repo half is
+tracked as issues against `tadasant/tadasant-internal`.
 
 ## 28. An unknown config key is silently ignored at boot; only the deploy gate is strict
 
@@ -892,7 +946,7 @@ path for a case that only exists once, and would still miss every parameter nobo
 rotates.
 
 **Blast radius, today.** Small and knowable: prod runs `provider: env` and has no
-live parameters, and staging has one `params: true` server. The backfill loop is in
+live parameters, and staging has two `params: true` servers. The backfill loop is in
 `docs/operate/secrets-iam.md` ("Backfilling parameters created before strad made
 this grant"); it is idempotent, so running it over a store that is already correct
 is a no-op.
@@ -990,11 +1044,23 @@ detector at least that permissive — but the predicate is also what the in-memo
 double enforces, so if Google is STRICTER than this in some way we have not seen,
 the double would still be the more permissive of the two.
 
-**Live verification is outstanding.** Every test here runs against strad's own
-double. That double now substitutes textually and refuses what `isRenderSafe`
-refuses, which is a faithful model of the reported failure — but it is a model. The
-evidence that closed the original bug report was a `:render` against real Google, and
-nothing in this repo reproduces that. Staging has no token minted for it yet.
+**Live verification is DONE, against real Google.** Every test here runs against
+strad's own double, which substitutes textually and refuses what `isRenderSafe`
+refuses — a faithful model of the reported failure, but a model. The staging
+runtime-secrets rehearsal closed that gap on the value that motivated the encoding:
+`STRAD_TOKENS` — a JSON array of token records, carrying `"`, `[`, `]`, `{` and `}`
+— is seeded as a secret parameter in `/strad/staging/gateway/static/` and
+`:render`s from `strad-secrets-staging`. `check-store --resolve` reports
+`render: 5 of 5 present name(s) resolved to a value`, and the end-to-end proof is
+stronger than the roster: under `provider: gcp-parameter-store` `render-spec` does
+NOT bake `STRAD_TOKENS` into the spec (it is in the `else` branch above), so the
+staging gateway's only copy is the one it renders from the store — and a `/mcp`
+request authenticated against it. The encoding round-trips through live
+Parameter Manager and Secret Manager, byte-exact.
+
+What remains a lower bound is `isRenderSafe`'s BOUNDARY, not the encoding: braces,
+brackets and control characters are still assumed unsafe rather than demonstrated
+so. Nothing rests on it, because base64url emits `[A-Za-z0-9_-]` only.
 
 **Undo, and the one place this design fails SILENTLY.** Delete `encoding` from the
 envelope and stop calling `encodeSecretValue`. Values written before it are
@@ -1131,11 +1197,63 @@ in `servers/bundle/host/src/index.ts`, the `presence`/`store` options on
 `resolveDetailed`/`renderAll` in `src/secrets/parameters/gcp.ts`. The console
 reverts to the `unverified` shrug, which is what it said before.
 
+## 36. One un-renderable parameter makes the WHOLE gateway namespace resolve to nothing
+
+**What.** `resolve()` in `src/secrets/parameters/gcp.ts` lists a namespace and
+then calls `:render` on every parameter in it, in sequence, and does not catch
+per parameter. The first `:render` that throws aborts the whole call. Above it,
+`SnapshotCache` treats that as a failed refresh — which is the right posture for
+an outage (serve the last known good map, warn) but means that with NO snapshot
+yet held, the error propagates and `${NAME}` resolves for nothing in that
+namespace, not merely for the parameter at fault.
+
+**Why it matters, concretely.** A store-backed gateway reads
+`/strad/{env}/gateway/static/` for every `${NAME}` and for its boot keys. So a
+single malformed parameter in that namespace is not a degraded name — it is a
+gateway that comes up with no token store, no internal token and no config
+reference resolved, and `/mcp` rejecting everything. The failure is
+all-or-nothing and the blast radius is the deployment.
+
+**The base64url encoding (hack #33) does not fix this, and should not be read as
+having done so.** That change stops values _becoming_ un-renderable; this entry is
+about what the READ PATH does when one is. The two remaining ways to get an
+un-renderable parameter are both live: a parameter written before strad granted
+it access to its own secret (hack #30) renders `400 SECRET_REFERENCE_ERROR`
+forever until backfilled, and a parameter written by an image that predates the
+encoding, then read by one that follows it, fails `decodeStoredValue`'s
+round-trip guard by design. Either one, anywhere in
+`/strad/{env}/gateway/static/`, takes the whole namespace with it.
+
+So the sequencing in `docs/operate/secrets.md` is not a workaround for an
+encoding bug that is now fixed — it is how you avoid discovering this entry the
+hard way: pin both images, seed, verify with `store:check --resolve`, and only
+then flip.
+
+**Why it ships this way.** Per-parameter tolerance sounds obviously better and is
+not. A resolver that returns a namespace with one name silently absent hands the
+gateway a bag that looks complete, and the missing name surfaces later as one
+failing request against one server — the exact "worse place to find out" that
+`preflightSecrets` exists to avoid. Failing the whole read is loud, and the
+snapshot cache already makes it survivable for a gateway that has read the
+namespace once.
+
+**Undo.** If the all-or-nothing behaviour is judged worse than the alternative,
+collect per-parameter failures in `resolve()` and throw ONE error naming every
+name that could not render, rather than the first — that keeps the failure whole
+while making the diagnosis a single line instead of a bisection.
+`scripts/check-store.ts --resolve` already reports it this way and is the tool to
+reach for before a flip.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
 
-- [ ] **The secrets/parameters GCP project + three service accounts** (hack #26):
+- [x] **The secrets/parameters GCP project + three service accounts** (hack #26) —
+      DONE for STAGING. All three exist; the resolver was the last one and the
+      2026-07-31 rehearsal created it, seeded its key, and proved it renders. PROD
+      still needs its own set — staging having them says nothing about prod. What
+      remains for staging is the per-server VALUES, the last sentence of this item.
+      The original spec, kept because prod has to repeat it:
       a project holding ONLY the `/strad/staging/mcp/*` parameters (its id is a
       LITERAL in `infra/strad.staging.yaml`, `strad-secrets-staging` — not a
       seeded secret, since a project id is not a credential). A fresh project needs

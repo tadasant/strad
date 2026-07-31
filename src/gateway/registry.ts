@@ -93,8 +93,14 @@ export class Registry {
     // resolved, PLUS — when it opts into `params:` — its resolved managed
     // parameters merged on top. That resolution reads secret values (to build
     // the child's env), which is exactly why it uses the RESOLVER credential and
-    // not the MCP one; the values are handed to the builtin's process and never
-    // returned over /mcp.
+    // not the MCP one.
+    //
+    // The values are handed to the BUILTIN. Whether any of them leaves over /mcp
+    // is that builtin's decision, not this file's: `src/servers/echo.ts` returns
+    // `options.greeting` from `whoami`, so a parameter named `greeting` in echo's
+    // namespace is returned verbatim to every caller entitled to the slug. Point
+    // a `params:` builtin's options at a credential only when the builtin is
+    // known not to echo them.
     //
     // `params:` resolution is a NETWORK read — one list plus a render per
     // parameter — and the thunk below runs on every tool call, so it must not

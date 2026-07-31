@@ -24,6 +24,7 @@
     "spec:render": "node --experimental-transform-types src/cli.ts spec render",
     "config:check": "node --experimental-transform-types scripts/check-config.ts",
     "store:check": "node --experimental-transform-types scripts/check-store.ts",
+    "store:seed": "node --experimental-transform-types scripts/seed-store.ts",
     "telemetry:sync": "node scripts/sync-telemetry.mjs",
     "presence:sync": "node scripts/sync-presence.mjs"
   },

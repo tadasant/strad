@@ -384,6 +384,67 @@ unreachable store is not a store that lacks the name, and silently falling back
 to a stale env var during an outage is how a rotated credential comes back from
 the dead.
 
+### The flip is one step, and it has an order
+
+Turning `gateway.secrets.provider` to `gcp-parameter-store` is not incremental,
+whatever `envFallback` suggests. `render-spec` stops baking the boot keys the
+moment the provider changes, and `preflightSecrets()` then requires
+`STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` to be in the store. There is no
+half-flipped state: a deployment either reads its token store from the store or
+from the environment.
+
+So the order matters, and each step gates the next:
+
+1. **The resolver identity must exist.** `STRAD_PARAMS_PROJECT_ID` and
+   `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` in the deploy environment,
+   holding `parametermanager.parameterViewer` **and**
+   `parametermanager.parameterAccessor`. Without it `render-spec` exits before it
+   renders anything. It is not the viewer key, not the console admin key, and not
+   CI's `GCP_SA_KEY` — see [Secrets IAM](/operate/secrets-iam/).
+2. **Both images must carry the base64url encoding, before one name is seeded.**
+   A secret parameter's value is spliced into the envelope's JSON text by
+   `:render`, so it is stored encoded to survive that. The encoder lives in the
+   core image (`create`, `rotate`, and the runtime decode) and in the bundle
+   image (the `secrets` MCP write client), so a name seeded by an image that
+   predates it is written as raw bytes and refuses to render. Publish and pin
+   both, then seed — never the other way round. Rolling `core` back past that
+   commit afterwards is a data hazard, not a rollback; see
+   [limitation #33](/limitations/#33-secret-values-are-base64url-in-secret-manager-and-only-the-boundary-is-unverified).
+3. **Seed, then verify by rendering.** `store:seed` (`scripts/seed-store.ts`) is
+   the seeder — dry-run unless `--commit`, and it reads back every name it writes
+   through `:render`. `store:check --mode require --resolve`
+   is the gate: presence is not resolvability, and this is the only check that
+   proves the resolver can actually read what was seeded. The staging deploy runs
+   it in report mode on every run. It matters more than it sounds: by
+   [limitation #36](/limitations/#36-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
+   a single parameter that cannot render takes the **whole namespace** with it,
+   so a namespace that is complete but unrenderable is a gateway with no token
+   store.
+4. **Then flip.**
+
+### Staging ran all four steps, and the property holds
+
+Staging completed this order on 2026-07-31 and is the worked example. All four
+steps passed, and the three properties the migration exists for were measured
+against a running gateway rather than argued from the code:
+
+- **A seeded `${NAME}` resolves from the store.** `echo`'s
+  `greeting: "${STRAD_ENV}"` returned the store's value, not the container's.
+- **An unseeded `${NAME}` still resolves from the environment.** Deleting the
+  same name from the store returned the container's `STRAD_ENV` instead. This is
+  the `envFallback` no-regression property, and it is observable only at runtime:
+  `preflightSecrets()` runs in `render-spec`, so it constrains the next DEPLOY,
+  not the running process.
+- **A rotated value takes effect with no redeploy.** The name was rewritten in
+  the store with a seed-only dispatch that renders and deploys nothing. Within
+  `ttlSeconds` the running gateway returned the new value, from the same
+  container — the pod's hostname was unchanged across the transition.
+
+`STRAD_TOKENS` was the name step 2 was written for, and it is proved live:
+seeded as a secret parameter, it renders, and because a store-backed spec does
+not bake the boot keys the staging gateway has no other copy to fall back on. A
+`/mcp` request authenticating against that deployment is an end-to-end read of it.
+
 ## The console index: every server, and whether its secrets are there
 
 `/ui` is the console, and it answers two questions about the same list: what is
@@ -988,7 +1049,10 @@ posture and refuses with a 403, so a hand-crafted form post gets nowhere.
 
 - **Prod** — a Parameter Manager viewer. Four read-only tools, and `/mcp` cannot
   read a secret value.
-- **Staging** — read + write on a project holding nothing sensitive. The same
+- **Staging** — read + write on a project separate from the one holding strad's
+  own `strad-<env>-*` secrets. That project holds per-server credentials, so
+  `get_secret_value` there returns real secrets; the bound is separation, not
+  harmlessness (issue #59). The same
   image additionally offers `create_parameter`, `set_parameter_value`,
   `set_parameter_note`, `delete_parameter` and `get_secret_value`.
 
