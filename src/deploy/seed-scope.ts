@@ -59,7 +59,12 @@ export interface SeedScope {
   wanted: string[];
   /** Candidates a scope held back. Empty when the run is not scoped. */
   outOfScope: string[];
-  /** Which flag narrowed the run, or `null` when nothing did. */
+  /**
+   * Which flag held something back, or `null` when nothing was held back. Note
+   * that this is derived from the OUTCOME, not from which flag was passed: an
+   * `--only` naming every candidate reports `null`, because the run it produced
+   * is the whole run and its log should not claim otherwise.
+   */
   scopedBy: "--only" | "--exclude" | null;
   /** Lines worth printing that are not errors — an unmatched `exclude`. */
   notes: string[];
@@ -70,10 +75,32 @@ export class SeedScopeError extends Error {}
 
 export function resolveSeedScope(input: SeedScopeInput): SeedScope {
   const candidates = [...input.candidates];
-  const only = [...new Set(input.only ?? [])];
-  const exclude = [...new Set(input.exclude ?? [])];
+  // TRIMMED, and this is not cosmetic. These names arrive comma-split from a
+  // workflow input, so `seed_except: "A, B"` hands this ` B` — which matches no
+  // candidate. Under `--only` an unmatched name is refused and the mistake is
+  // loud, but under `--exclude` it is a note, so an untrimmed ` B` would seed
+  // the very name the operator asked to hold back and say so in one line nobody
+  // reads. A scope has to fail safe in BOTH directions to be worth having.
+  const clean = (names: readonly string[] | undefined) => [
+    ...new Set((names ?? []).map((n) => n.trim())),
+  ];
+  const only = clean(input.only);
+  const exclude = clean(input.exclude);
   const consoleOnly = new Set(input.consoleOnly ?? []);
   const notes: string[] = [];
+
+  // A trailing comma (`seed_names: "A,"`) becomes an empty name, and the general
+  // refusal below would render it as "--only : this config does not seed that
+  // name." Name the actual mistake instead.
+  for (const [flag, names] of [
+    ["--only", only],
+    ["--exclude", exclude],
+  ] as const) {
+    if (names.includes(""))
+      throw new SeedScopeError(
+        `${flag} was given an empty name — check for a stray comma in the list.`,
+      );
+  }
 
   if (only.length > 0 && exclude.length > 0)
     throw new SeedScopeError(
@@ -109,15 +136,21 @@ export function resolveSeedScope(input: SeedScopeInput): SeedScope {
   const kept = new Set(wanted);
   const outOfScope = candidates.filter((name) => !kept.has(name));
 
-  for (const name of input.overrides ?? []) {
-    if (kept.has(name)) continue;
-    throw new SeedScopeError(
-      only.length > 0
-        ? `--set ${name} is excluded by the scope: --only does not list it. ` +
-            `Add --only ${name}, or drop the --set.`
-        : `--set ${name} is excluded by the scope: --exclude names it. Drop ` +
-            `one of the two.`,
-    );
+  // Only when a scope is actually in play. With neither flag set, nothing here
+  // narrowed anything, so an override missing from `candidates` is the caller's
+  // own bookkeeping — and blaming `--exclude` for it would be a message about a
+  // flag the caller never passed.
+  if (only.length > 0 || exclude.length > 0) {
+    for (const name of input.overrides ?? []) {
+      if (kept.has(name)) continue;
+      throw new SeedScopeError(
+        only.length > 0
+          ? `--set ${name} is excluded by the scope: --only does not list it. ` +
+              `Add --only ${name}, or drop the --set.`
+          : `--set ${name} is excluded by the scope: --exclude names it. Drop ` +
+              `one of the two.`,
+      );
+    }
   }
 
   return {

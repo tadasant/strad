@@ -233,14 +233,22 @@ Two things a scope deliberately does not narrow:
 - **The read-back.** The verify step resolves the whole namespace, because that is
   what the gateway reads. A scoped run whose own names round-trip can still fail
   on a name it never touched, and it should: that failure is the true statement
-  that this gateway would come up with nothing.
+  that this gateway would come up with nothing. It runs on every `--commit`, even
+  one that writes nothing because its names were already seeded — re-running a
+  scoped seed to ask "does this namespace render" is a thing operators do, and it
+  has to answer.
 
 A scoped run says so in its header (`3 of 8 name(s) … — SCOPED by --only`) and
 lists what it held back, so it cannot be misread later as a complete one.
 
 **`seed_set` is for non-secret canaries only.** Its value passes through a workflow
 input and is echoed in the run's log — the masking applied to Secret Manager values
-does not cover it. Never put a credential there.
+does not cover it. Never put a credential there. `seed_names` and `seed_except`
+carry the same hazard for the same reason: they are echoed as names, so a value
+pasted into one by mistake lands in the log. They take NAMES, never values.
+
+`seed_names` and `seed_except` do nothing on their own — like `seed_set` and
+`seed_delete`, they only apply to a run that `seed` (or `seed_only`) turned on.
 
 **Then it reports what the secrets credentials can do.** The secrets surfaces are
 probe-derived — the MCP server lists `get_secret_value` and the write tools only

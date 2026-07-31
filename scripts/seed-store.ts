@@ -136,7 +136,10 @@ import { resolveSeedScope, SeedScopeError } from "../src/deploy/seed-scope.ts";
  * `create`. This one runs in CI, for the length of one job.
  */
 const SEED_ENV = {
-  projectId: "STRAD_PARAMS_PROJECT_ID",
+  // The same project variable the resolver reads, named through its constant
+  // rather than spelled again: the writer and the read-back address one store,
+  // and two literals that must agree are two literals that can stop agreeing.
+  projectId: RESOLVER_ENV.projectId,
   keyJson: "STRAD_STORE_ADMIN_KEY_JSON",
 } as const;
 
@@ -327,6 +330,26 @@ report("no value in the environment — SKIPPED", absent);
 // seed", which may want provisioning, while this is "you said not to", which
 // wants nothing. The gateway still reads these names.
 report("held back by the scope — NOT SEEDED", outOfScope);
+
+/**
+ * An `--only` name with no value is a FINDING, where a derived one is a skip.
+ *
+ * The difference is who chose the name. A derived name the environment does not
+ * carry is the documented, legitimate case — a deployment has no
+ * `GOOGLE_CLIENT_SECRET` until someone provisions one — and failing on it would
+ * make an ordinary seed impossible. A name typed after `--only` is the caller
+ * saying "this one", and skipping it lands exactly where the rest of this script
+ * refuses to land: exit 0, the word "seeded", and nothing written. That is the
+ * likelier operational shape of the mistake, too — a `seed_names` dispatch
+ * during a cutover, against a job whose environment is missing the value.
+ */
+const namedButAbsent = (values.only ?? []).length > 0 ? absent : [];
+if (namedButAbsent.length > 0)
+  console.error(
+    `::error::--only named ${namedButAbsent.length} name(s) with no value in ` +
+      `the environment, so nothing was written for them: ` +
+      `${namedButAbsent.join(", ")}.`,
+  );
 // Under the roster it annotates, and after the header, so it reads with the
 // `--delete` notes below rather than ahead of the run it describes.
 for (const note of notes) console.log(`  ${note}`);
@@ -351,15 +374,21 @@ const toDelete = (values.delete ?? []).filter((name) => {
 });
 report("DELETE", toDelete);
 
+const written = new Map<string, string>();
+// Seeded with the findings raised above, so a dry run reports them too. A dry
+// run exists to say what a `--commit` would do, and "it would write nothing for
+// the name you asked for" is exactly the kind of answer it should be trusted to
+// give before the real run is dispatched.
+let failures = namedButAbsent.length;
+
 if (!values.commit) {
   console.log(
-    `${values.config}: dry run, nothing written. Re-run with --commit.`,
+    failures > 0
+      ? `${values.config}: dry run, nothing written, ${failures} problem(s)`
+      : `${values.config}: dry run, nothing written. Re-run with --commit.`,
   );
-  process.exit(0);
+  process.exit(failures > 0 ? 1 : 0);
 }
-
-const written = new Map<string, string>();
-let failures = 0;
 
 for (const name of toCreate) {
   const value = (overrides.get(name) ?? process.env[name])!;
@@ -403,7 +432,16 @@ for (const name of toDelete) {
 // READ IT BACK, as the gateway would. A value that stored fine and cannot
 // `:render` is the failure that takes the whole namespace down with it, and it
 // is invisible to every check that only asks whether a name exists.
-if (written.size > 0) {
+//
+// This runs for every `--commit`, not only when something was written, and the
+// difference matters most to a SCOPED run. `resolve()` renders the whole
+// namespace, so it answers "would the gateway come up" and not merely "did my
+// writes land" — but gating it on `written.size > 0` meant a scoped re-run that
+// found its names already seeded printed "seeded" having asked the store
+// nothing. That is the one case an operator re-runs a scoped seed FOR, and the
+// prose in `docs/operate/operations.md` promises it unconditionally. One extra
+// call buys the promise being true.
+{
   const resolver = resolverFromEnv(process.env);
   if (!resolver) {
     console.log(
@@ -428,8 +466,10 @@ if (written.size > 0) {
         .map(([name]) => name);
       failures += mismatched.length;
       console.log(
-        `  verify: ${written.size - mismatched.length} of ${written.size} ` +
-          `read back byte-identical through :render`,
+        written.size === 0
+          ? `  verify: nothing written this run; ${namespace} renders`
+          : `  verify: ${written.size - mismatched.length} of ${written.size} ` +
+              `read back byte-identical through :render`,
       );
       report("DID NOT ROUND-TRIP", mismatched);
     }

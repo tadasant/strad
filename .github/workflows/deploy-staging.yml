@@ -378,14 +378,26 @@ jobs:
           # comma inside a single --only would become part of a name and then
           # fail as an unknown one. The script refuses the two together, so this
           # does not have to.
-          if [ -n "$SEED_NAMES" ]; then
-            IFS=',' read -ra NAMES <<< "$SEED_NAMES"
-            for n in "${NAMES[@]}"; do ARGS+=(--only "$n"); done
-          fi
-          if [ -n "$SEED_EXCEPT" ]; then
-            IFS=',' read -ra NAMES <<< "$SEED_EXCEPT"
-            for n in "${NAMES[@]}"; do ARGS+=(--exclude "$n"); done
-          fi
+          #
+          # Whitespace is stripped FIRST, and newlines become commas. A dispatch
+          # text box invites `A, B` and accepts a pasted multi-line list, and
+          # `read` stops at the first newline — so without this, `seed_except`
+          # given either shape would silently seed a name the operator asked to
+          # hold back. `resolveSeedScope` trims too; this is the same rule at the
+          # boundary that produces the mangling, so neither layer is load-bearing
+          # alone.
+          scope_flags() { # $1 = flag, $2 = raw input
+            local cleaned
+            cleaned="$(printf '%s' "$2" | tr '\n' ',' | tr -d '[:space:]')"
+            [ -z "$cleaned" ] && return 0
+            IFS=',' read -ra NAMES <<< "$cleaned"
+            for n in "${NAMES[@]}"; do
+              [ -n "$n" ] && ARGS+=("$1" "$n")
+            done
+            return 0
+          }
+          scope_flags --only "$SEED_NAMES"
+          scope_flags --exclude "$SEED_EXCEPT"
           node --experimental-transform-types scripts/seed-store.ts "${ARGS[@]}"
 
       - name: Report what the parameter store holds

@@ -234,9 +234,10 @@ are **not** baked into the app spec, so the only `STRAD_TOKENS` the staging
 gateway has is the one it renders from the store — and `/mcp` authenticates
 against it.
 
-So there is no such thing as a value too quote-heavy or too long to seed.
-base64url emits `[A-Za-z0-9_-]` and nothing else, whatever went in. What is still
-a lower bound is `isRenderSafe`'s **boundary** — which raw characters Parameter
+So no value is too quote-heavy to seed — base64url emits `[A-Za-z0-9_-]` and
+nothing else, whatever went in — and the only limit on length is Secret Manager's
+own, about 48 KiB of raw value once the encoding is paid for. What is still a
+lower bound is `isRenderSafe`'s **boundary** — which raw characters Parameter
 Manager would have refused — and nothing rests on it, because no encoded value
 contains any of them. See [Known limitations](/limitations/) #33.
 :::
@@ -434,12 +435,14 @@ So the order matters, and each step gates the next:
 ### Seed every name, including the structural ones
 
 Seed the whole set. There is no shape of value that has to be held back, and
-holding one back is the more dangerous choice: by
-[limitation #36](/limitations/#36-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
-a store-backed gateway reads `/strad/{env}/gateway/static/` for every boot key, so
-a `STRAD_TOKENS` left out of a namespace the deployment has already flipped to is
-a gateway with no token store — `/mcp` rejecting every request. The one name most
-worth being careful with is the one it is most tempting to skip.
+holding one back is the more dangerous choice. Under `provider:
+gcp-parameter-store`, `render-spec` stops baking the boot keys into the app spec,
+so the store is the only place a flipped deployment has them: a `STRAD_TOKENS`
+left out is a gateway with no token store, `/mcp` rejecting every request. The
+next deploy's `preflightSecrets` refuses a config whose required names are not in
+the store, so this is normally caught before it ships — but the point of seeding
+is to not need that catch, and the one name most worth being careful with is the
+one it is most tempting to skip.
 
 The question step 2 exists to settle is **which image wrote a value**, and it is
 easy to misread as a question about the value:
@@ -462,10 +465,13 @@ value's:
   it. That parameter cannot be repaired by seeding _around_ it — rotate it (which
   upgrades the envelope) or delete it.
 
-Size is not a dimension of this. A secret parameter's envelope holds a `__REF__`
-pointer, not the bytes, so the parameter payload does not grow with the value at
-all; the bytes land in Secret Manager, whose per-secret ceiling is 64 KiB. An
-802-byte value base64urls to roughly 1,070 bytes — about 1.6% of that.
+Size is not the dimension either, though it is the one with an actual number. A
+secret parameter's envelope holds a `__REF__` pointer, not the bytes, so the
+parameter payload does not grow with the value at all; the bytes land in Secret
+Manager, whose per-secret ceiling is 64 KiB. That ceiling applies to what is
+stored, which is the **encoded** value, and base64url spends a third of it — so
+the effective ceiling on a raw secret is about 48 KiB. An 802-byte value
+base64urls to roughly 1,070 bytes, which is about 1.6% of it.
 
 ### Staging ran all four steps, and the property holds
 

@@ -7,8 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveSeedScope, SeedScopeError } from "../src/deploy/seed-scope.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
+  decodeEnvelope,
+  encodeEnvelope,
   gatewayNamespace,
   gatewayParameterPath,
+  parameterId,
 } from "../src/secrets/parameters/namespace.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { serveFake, type ServedFake } from "./helpers/serve-fake.ts";
@@ -199,6 +202,50 @@ describe("resolveSeedScope", () => {
       only: ["STRAD_TOKENS", "STRAD_TOKENS"],
     });
     expect(scope.wanted).toStrictEqual(["STRAD_TOKENS"]);
+  });
+
+  /**
+   * `seed_except: "A, B"` is the natural spelling in a dispatch text box and
+   * arrives here comma-split as `["A", " B"]`. Untrimmed, ` B` matches nothing —
+   * and because an unmatched `--exclude` is only a note, the run would SEED the
+   * name the operator asked to hold back and mention it in one line.
+   */
+  it("trims a name, so whitespace cannot silently un-exclude it", () => {
+    const scope = resolveSeedScope({
+      candidates: CANDIDATES,
+      exclude: [" STRAD_TOKENS "],
+    });
+    expect(scope.wanted).not.toContain("STRAD_TOKENS");
+    expect(scope.outOfScope).toStrictEqual(["STRAD_TOKENS"]);
+    expect(scope.notes).toStrictEqual([]);
+  });
+
+  it("trims under --only too", () => {
+    const scope = resolveSeedScope({
+      candidates: CANDIDATES,
+      only: ["\tSTRAD_TOKENS"],
+    });
+    expect(scope.wanted).toStrictEqual(["STRAD_TOKENS"]);
+  });
+
+  it("names the actual mistake for a stray comma, not a phantom empty name", () => {
+    expect(() =>
+      resolveSeedScope({ candidates: CANDIDATES, only: ["STRAD_TOKENS", ""] }),
+    ).toThrow(/--only was given an empty name — check for a stray comma/);
+    expect(() =>
+      resolveSeedScope({ candidates: CANDIDATES, exclude: [""] }),
+    ).toThrow(/--exclude was given an empty name/);
+  });
+
+  it("does not blame --exclude for an override when no scope was passed", () => {
+    // Unreachable from the CLI, which derives candidates from the overrides —
+    // but this is an exported module, and a message naming a flag the caller
+    // never passed is a lie about their own invocation.
+    const scope = resolveSeedScope({
+      candidates: CANDIDATES,
+      overrides: ["NOT_A_CANDIDATE"],
+    });
+    expect(scope.wanted).toStrictEqual(CANDIDATES);
   });
 });
 
@@ -424,6 +471,103 @@ describe("scripts/seed-store.ts --only / --exclude", () => {
     expect(r.code).toBe(2);
     expect(r.stderr).toContain("consoleEnv:");
     expect(await namesInStore()).not.toContain("SECRETS_ADMIN_KEY_JSON");
+  });
+
+  it("exits 3 — not 2 — when the arguments are fine and the credential is not", async () => {
+    // The mirror of the both-broken case above, and the reason it is here: the
+    // scope check moved AHEAD of the credential lookup, which is exactly the
+    // edit that could invert these two exit codes.
+    const r = await seed(["--only", "STRAD_TOKENS"], {
+      STRAD_STORE_ADMIN_KEY_JSON: "",
+    });
+    expect(r.code).toBe(3);
+    expect(r.stderr).toContain("no store credential");
+  });
+
+  it("reports an --only name the environment has no value for, and exits 1", async () => {
+    // A DERIVED name with no value is a documented skip; a name the caller typed
+    // is not. Without this the likeliest cutover mistake — a seed_names dispatch
+    // against a job missing the value — printed "seeded" over an empty run.
+    const r = await seed(["--commit", "--only", "GRANOLA_TOKEN"], {
+      GRANOLA_TOKEN: "",
+    });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("--only named 1 name(s) with no value");
+    expect(r.stderr).toContain("GRANOLA_TOKEN");
+    expect(await namesInStore()).toStrictEqual([]);
+  });
+
+  it("fails a DRY RUN the same way, since that is what a dry run is for", async () => {
+    const r = await seed(["--only", "GRANOLA_TOKEN"], { GRANOLA_TOKEN: "" });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toContain("dry run, nothing written, 1 problem(s)");
+  });
+
+  it("still skips a DERIVED name with no value, without failing", async () => {
+    const r = await seed(["--commit"], { GRANOLA_TOKEN: "" });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("no value in the environment — SKIPPED");
+    expect(await namesInStore()).not.toContain("GRANOLA_TOKEN");
+  });
+
+  it("prints an unmatched --exclude note to stdout", async () => {
+    const r = await seed(["--exclude", "NOPE"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain(
+      "not a name this config seeds, nothing to exclude: NOPE",
+    );
+  });
+
+  it("verifies the namespace even when the run wrote nothing", async () => {
+    await seed(["--commit", "--only", "STRAD_TOKENS"]);
+    // Second run: the name is already seeded, so nothing is written — and the
+    // read-back must still happen, because "does this namespace render" is the
+    // question a re-run is asking.
+    const r = await seed(["--commit", "--only", "STRAD_TOKENS"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("already seeded");
+    expect(r.stdout).toContain("verify: nothing written this run");
+    expect(r.stdout).toContain("renders");
+  });
+});
+
+/**
+ * Poison a namespace the way the two live routes do: a parameter whose bytes are
+ * raw (an envelope with no `encoding`, written by a pre-encoding image) and whose
+ * value is structural, so `:render` refuses it — permanently, and for the whole
+ * namespace (`HACKS.md` #36).
+ */
+async function seedUnrenderable(
+  gcp: ReturnType<typeof createFakeGcp>,
+  path: string,
+): Promise<void> {
+  const id = parameterId(path);
+  await gcp.store.create({ path, secret: true, value: "placeholder" });
+  gcp.secrets.get(id)!.push('{"raw":"structural"}');
+  const param = gcp.parameters.get(id)!;
+  const latest = param.versions[param.versions.length - 1]!;
+  const env = decodeEnvelope(Buffer.from(latest.data, "base64").toString());
+  delete env.encoding;
+  latest.data = Buffer.from(encodeEnvelope(env), "utf8").toString("base64");
+}
+
+describe("the read-back is NOT scoped, and that is the point", () => {
+  it("fails a scoped run whose own names round-trip, on a name it never touched", async () => {
+    await seedUnrenderable(
+      fake,
+      gatewayParameterPath(ENV, "STRAD_INTERNAL_TOKEN"),
+    );
+
+    const r = await seed(["--commit", "--only", "STRAD_TOKENS"]);
+
+    // The scoped write itself succeeded...
+    expect(r.stdout).toContain("created STRAD_TOKENS");
+    // ...and the run still fails, because the gateway this namespace serves
+    // would come up with nothing. Scoping the verify to the scoped write would
+    // have reported green on exactly the state --only exists to work around.
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("could not render");
+    expect(r.stderr).toContain("resolves to nothing");
   });
 });
 
