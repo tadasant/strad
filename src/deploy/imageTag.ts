@@ -47,7 +47,7 @@
  * The two images differ in ONE way, and it is the walk-back rule.
  * `release-image.yml` builds every commit except docs-only ones, so a core
  * commit with no image is a hard stop. `release-bundle-image.yml` is
- * `paths:`-filtered to the seven trees the Dockerfile bakes, so MOST commits
+ * `paths:`-filtered to what the image is assembled from, so MOST commits
  * legitimately cut no bundle image and walking past them is the normal case.
  * That difference is the whole of `ImageSource`.
  */
@@ -212,9 +212,22 @@ export function parsePathsFilter(workflow: string, source: string): string[] {
   const paths: string[] = [];
   for (const line of lines.slice(start + 1)) {
     if (line.trim() === "" || /^\s*#/.test(line)) continue;
-    const entry = /^\s*-\s*"?([^"#]+?)"?\s*$/.exec(line);
-    if (!entry) break; // the next key ends the block
-    paths.push(entry[1]!);
+    // Strip a trailing comment BEFORE deciding whether the line is a list item.
+    // `- "servers/secrets/**" # keep in step with the Dockerfile` is a perfectly
+    // ordinary thing to write, and reading it as "the block ended here" would
+    // drop every entry below it — a short list, which is the one outcome the
+    // doc comment above promises this cannot produce.
+    const body = line.replace(/\s+#.*$/, "");
+    if (!/^\s*-/.test(body)) break; // the next key ends the block
+    const entry = /^\s*-\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(body);
+    if (!entry) {
+      throw new Error(
+        `${source}: cannot read \`paths:\` entry ${JSON.stringify(line.trim())}. ` +
+          `A list item this parser cannot read must stop the deploy — treating ` +
+          `it as the end of the block would silently shorten the filter.`,
+      );
+    }
+    paths.push((entry[1] ?? entry[2] ?? entry[3])!);
   }
 
   if (paths.length === 0) {
@@ -234,8 +247,13 @@ export function parsePathsFilter(workflow: string, source: string): string[] {
  * not have, and walk the deploy back onto an older bundle.
  */
 export function matchesPathFilter(file: string, pattern: string): boolean {
-  if (pattern.endsWith("/**")) return file.startsWith(pattern.slice(0, -2));
-  if (!pattern.includes("*")) return file === pattern;
+  // Checked FIRST, because `!dir/**` ends with `/**` and would otherwise take
+  // the prefix branch and quietly match nothing — inverting the filter's meaning
+  // for every file, which reads as "no commit could have published an image".
+  if (!pattern.startsWith("!")) {
+    if (pattern.endsWith("/**")) return file.startsWith(pattern.slice(0, -2));
+    if (!pattern.includes("*")) return file === pattern;
+  }
   throw new Error(
     `unsupported \`paths:\` pattern "${pattern}". ` +
       `matchesPathFilter understands "dir/**" and literal paths only; ` +
@@ -328,15 +346,18 @@ function recordsParent(sha: string, repo?: string): boolean {
  * saying so: "docs-only" would walk the deploy back past an unknown commit, and
  * "code" would report a build failure that never happened.
  */
-export function changedFiles(sha: string, repo?: string): string[] {
+export function changedFiles(
+  sha: string,
+  repo?: string,
+  source: ImageSource = CORE_IMAGE_SOURCE,
+): string[] {
   const parent = firstParent(sha, repo);
   if (parent) return lines(git(repo, "diff", "--name-only", parent, sha));
   if (recordsParent(sha, repo)) {
     throw new Error(
       `cannot tell what ${sha.slice(0, 12)} changed: its parent is not in ` +
         `this checkout (shallow clone).\n` +
-        `Deepen the deploy's \`fetch-depth\`, or dispatch with an explicit ` +
-        `\`version\`.`,
+        `Deepen the deploy's \`fetch-depth\`, or ${source.remedy}.`,
     );
   }
   return lines(git(repo, "ls-tree", "-r", "--name-only", sha));
@@ -350,7 +371,7 @@ export interface Candidate {
    *
    * What that means differs per image, which is the whole of `ImageSource`
    * below: for the core it is "touched only `**\/*.md` and `docs/**`"; for the
-   * bundle it is "touched none of the seven trees the image bakes".
+   * bundle it is "touched nothing release-bundle-image.yml watches".
    *
    * A thunk, and that is load-bearing rather than a style choice: a commit the
    * walk never reaches must never be classified. The walk stops at the first
@@ -415,8 +436,8 @@ export interface ResolvedTag {
  * publishing this image, by design. `release-image.yml` carries
  * `paths-ignore: ["**\/*.md", "docs/**"]` and this repo lands docs in the same
  * PR as the code, so a docs-only merge cuts no core image;
- * `release-bundle-image.yml` carries the inverse, a `paths:` filter naming the
- * seven trees it bakes, so MOST commits cut no bundle image at all. Failing
+ * `release-bundle-image.yml` carries the inverse, a `paths:` filter naming what
+ * the image is built from, so MOST commits cut no bundle image at all. Failing
  * those deploys would punish a commit that has nothing wrong with it, and the
  * newest ancestor that DID publish is the image that should be running anyway.
  *
@@ -435,12 +456,48 @@ export interface ResolvedTag {
  * `mayLackImage` is asked ONLY about a commit the registry has already said has
  * no image, and only until the walk stops. On a healthy `main` that is zero
  * calls for the core: HEAD published, and nothing else is classified at all.
+ *
+ * ## Waiting, and why only one of the two images needs it
+ *
+ * The core never races its own release: `release-image.yml` pushes the image and
+ * THEN calls the deploy, in that order, in one workflow. The bundle has no such
+ * ordering — `release-bundle-image.yml` is a separate trigger on the same push,
+ * and it bakes Chromium and seven npm trees while the core's release is already
+ * calling the deploy. So on a merge that touches a baked tree, `sha-<HEAD>`
+ * reliably does not exist yet, and a bare hard stop would turn EVERY such deploy
+ * red — nine of them in the three weeks before this was written.
+ *
+ * `options.waitMs` closes that gap without weakening the stop: a commit that is
+ * REQUIRED to have an image is re-asked until it appears or the budget runs out,
+ * and only then does it fail. It buys the bundle the same ordering the core gets
+ * for free. It is never reached on a healthy deploy, because the first probe
+ * already answered.
  */
+export interface DeployTagOptions {
+  source?: ImageSource;
+  /**
+   * How long to keep re-asking for a tag a commit is REQUIRED to have, in ms.
+   * Zero (the default) fails on the first miss, which is right for the core.
+   */
+  waitMs?: number;
+  /** Test seams. Unset in production. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/** How often to re-ask while waiting. Slow enough not to hammer the registry. */
+const WAIT_POLL_MS = 20_000;
+
 export async function resolveDeployTag(
   candidates: readonly Candidate[],
   published: (tag: string) => Promise<boolean>,
-  source: ImageSource = CORE_IMAGE_SOURCE,
+  options: DeployTagOptions = {},
 ): Promise<ResolvedTag> {
+  const source = options.source ?? CORE_IMAGE_SOURCE;
+  const waitMs = options.waitMs ?? 0;
+  const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? (() => Date.now());
+
   if (candidates.length === 0) {
     throw new Error(
       "no commits to resolve an image tag from. " +
@@ -452,10 +509,23 @@ export async function resolveDeployTag(
     const tag = shaTag(candidate.sha);
     if (await published(tag)) return { tag, sha: candidate.sha, distance };
     if (!candidate.mayLackImage()) {
+      // This commit owes an image. Wait for the build that owes it, if the
+      // caller allotted time — a rejecting `published` still propagates, so an
+      // unreadable registry never spends the budget looking like an absent tag.
+      const deadline = now() + waitMs;
+      let waited = false;
+      while (now() < deadline) {
+        waited = true;
+        await sleep(WAIT_POLL_MS);
+        if (await published(tag)) return { tag, sha: candidate.sha, distance };
+      }
       throw new Error(
         `commit ${candidate.sha.slice(0, 12)} changed ${source.subject} but ` +
-          `published no image (${tag}). ${source.workflow} is probably still ` +
-          `building it, or it failed.\n` +
+          `published no image (${tag})` +
+          (waited
+            ? `, and none appeared in ${Math.round(waitMs / 1000)}s of waiting. ` +
+              `${source.workflow} is slower than that, or it failed.\n`
+            : `. ${source.workflow} is probably still building it, or it failed.\n`) +
           `Deploying an older image against this commit's config is the skew ` +
           `this check exists to prevent, so this is a hard stop: ` +
           `${source.remedy}.`,

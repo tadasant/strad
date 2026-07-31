@@ -104,6 +104,42 @@ describe("parsePathsFilter", () => {
     );
   });
 
+  it("keeps reading past an entry that carries a trailing comment", () => {
+    // The silent-truncation bug this parser is written to not have. Treating a
+    // commented entry as "the block ended" drops every entry below it, and a
+    // short filter reads as "this commit could not have published an image" —
+    // walking the deploy back onto an older bundle.
+    expect(
+      parsePathsFilter(
+        [
+          "    paths:",
+          '      - "servers/bundle/**" # the host',
+          '      - "servers/secrets/**"',
+          "  workflow_dispatch:",
+        ].join("\n"),
+        "test",
+      ),
+    ).toEqual(["servers/bundle/**", "servers/secrets/**"]);
+  });
+
+  it("THROWS on a list item it cannot read, rather than stopping there", () => {
+    expect(() =>
+      parsePathsFilter(
+        ["    paths:", '      - "a/**"', "      - { weird: true }"].join("\n"),
+        "test",
+      ),
+    ).toThrow(/cannot read `paths:` entry/);
+  });
+
+  it("reads a single-quoted or bare entry", () => {
+    expect(
+      parsePathsFilter(
+        ["    paths:", "      - 'a/**'", "      - b/**"].join("\n"),
+        "test",
+      ),
+    ).toEqual(["a/**", "b/**"]);
+  });
+
   it("every pattern in the real workflow is one this can evaluate", () => {
     // The load-bearing pairing. `matchesPathFilter` understands `dir/**` and
     // literal paths; GitHub's syntax is larger. A pattern it cannot evaluate
@@ -147,6 +183,15 @@ describe("matchesPathFilter", () => {
     expect(() => matchesPathFilter("README.md", "**/*.md")).toThrow(
       /unsupported/,
     );
+  });
+
+  it("THROWS on a negation, which ends in /** and would look supported", () => {
+    // `!servers/bundle/docs/**` takes the prefix branch and matches nothing, so
+    // every commit reads as outside the filter. Checked before the shape tests
+    // for exactly that reason.
+    expect(() =>
+      matchesPathFilter("servers/bundle/x.ts", "!servers/bundle/docs/**"),
+    ).toThrow(/unsupported/);
   });
 });
 
@@ -211,11 +256,9 @@ describe("resolveDeployTag, for the bundle", () => {
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
     await expect(
-      resolveDeployTag(
-        [outside(A), outside(B), baked(C)],
-        published,
-        BUNDLE_IMAGE_SOURCE,
-      ),
+      resolveDeployTag([outside(A), outside(B), baked(C)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+      }),
     ).resolves.toEqual({ tag: `sha-${C}`, sha: C, distance: 2 });
   });
 
@@ -229,7 +272,9 @@ describe("resolveDeployTag, for the bundle", () => {
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
     await expect(
-      resolveDeployTag([baked(A), baked(B)], published, BUNDLE_IMAGE_SOURCE),
+      resolveDeployTag([baked(A), baked(B)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+      }),
     ).rejects.toThrow(
       /changed a tree the bundle image bakes but published no image/,
     );
@@ -242,19 +287,98 @@ describe("resolveDeployTag, for the bundle", () => {
     // going to build this image.
     const published = vi.fn().mockResolvedValue(false);
     await expect(
-      resolveDeployTag([baked(A)], published, BUNDLE_IMAGE_SOURCE),
+      resolveDeployTag([baked(A)], published, { source: BUNDLE_IMAGE_SOURCE }),
     ).rejects.toThrow(/release-bundle-image\.yml[\s\S]*bundle_version/);
   });
 
   it("says which workflow when the whole window published nothing", async () => {
     const published = vi.fn().mockResolvedValue(false);
     await expect(
-      resolveDeployTag(
-        [outside(A), outside(B)],
-        published,
-        BUNDLE_IMAGE_SOURCE,
-      ),
+      resolveDeployTag([outside(A), outside(B)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+      }),
     ).rejects.toThrow(/release-bundle-image\.yml/);
+  });
+
+  it("WAITS for a build that is still running, instead of failing the merge", async () => {
+    // The regression this guards is one this change would otherwise introduce.
+    // release-image.yml pushes the core and THEN calls the deploy, in one
+    // workflow; release-bundle-image.yml is a separate trigger on the same push
+    // and is still baking Chromium when that deploy starts. So on a merge that
+    // touches a baked tree, sha-<HEAD> reliably does not exist yet — nine such
+    // merges in the three weeks before this was written, every one of which a
+    // bare hard stop would have turned red.
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false) // the deploy beats the bundle build
+      .mockResolvedValueOnce(false) // still building
+      .mockResolvedValueOnce(true); // pushed
+    const sleep = vi.fn(async () => {});
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+        now: () => (clock += 20_000),
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up when the wait runs out, and says it waited", async () => {
+    const published = vi.fn().mockResolvedValue(false);
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 60_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+      }),
+    ).rejects.toThrow(/none appeared in 60s of waiting/);
+  });
+
+  it("does not wait for a commit that legitimately has no image", async () => {
+    // The wait exists for the race, not as a general retry. A commit outside the
+    // filter is not owed an image, so the walk steps past it immediately —
+    // spending 15 minutes per docs commit would make every deploy unusable.
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const sleep = vi.fn(async () => {});
+    await expect(
+      resolveDeployTag([outside(A), baked(B)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+      }),
+    ).resolves.toEqual({ tag: `sha-${B}`, sha: B, distance: 1 });
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("does not wait at all by default, which is the core's posture", async () => {
+    const published = vi.fn().mockResolvedValue(false);
+    const sleep = vi.fn(async () => {});
+    await expect(
+      resolveDeployTag([baked(A)], published, { sleep }),
+    ).rejects.toThrow(/probably still building it/);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("lets an unreadable registry through instead of spending the wait on it", async () => {
+    // A rejecting probe is not an absent tag. Swallowing it here would turn one
+    // bad GHCR minute into fifteen minutes of polling and then a misleading
+    // "the build is slower than that".
+    const published = vi.fn().mockRejectedValue(new Error("HTTP 503"));
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow(/HTTP 503/);
   });
 
   it("still defaults to the CORE's rule when no source is passed", async () => {
@@ -424,6 +548,23 @@ describe("deploy-staging.yml", () => {
 
   it("demands immutable images rather than warning about them", () => {
     expect(workflow).toContain("--require-immutable-images");
+  });
+
+  it("waits for a bundle build the core's release outran", () => {
+    expect(workflow).toMatch(/--kind bundle[\s\S]{0,80}--wait-for-image \d+/);
+  });
+
+  it("resolves the bundle even when `version` pins the core", () => {
+    // `version` pins the CORE. Skipping the bundle resolve on it would hand the
+    // bundle back to the config's `:latest` for every rollback — the exact
+    // failure, reintroduced on the one path taken under pressure.
+    const step = workflow.slice(
+      workflow.indexOf("id: bundletag") - 2000,
+      workflow.indexOf("id: bundletag"),
+    );
+    const condition = step.slice(step.lastIndexOf("if: "));
+    expect(condition).toContain("!inputs.bundle_version");
+    expect(condition).not.toContain("!inputs.version");
   });
 
   it("has no `latest` fallback left for the bundle", () => {

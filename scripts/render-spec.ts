@@ -30,8 +30,8 @@
  *
  * `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` overrides the image on
  * every supplementary component that shares that repository, which is how a
- * branch build — and now every ordinary staging deploy — ships a tag that names
- * one commit without editing the config's 25 `image:` lines.
+ * branch build and every ordinary staging deploy ship a tag that names one
+ * commit without editing the config's 25 `image:` lines.
  *
  * `--require-immutable-images` refuses to emit a spec in which ANY component
  * ships a mutable tag. It is opt-in rather than the default because the two

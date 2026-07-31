@@ -12,9 +12,10 @@
  *   core    release-image.yml builds every commit except docs-only ones, so the
  *           walk steps past `**\/*.md` and `docs/**` and stops hard anywhere
  *           else.
- *   bundle  release-bundle-image.yml is `paths:`-filtered to the seven trees the
- *           image bakes, so most commits cut no bundle image and stepping past
- *           them is the normal case. That filter is READ from the workflow, not
+ *   bundle  release-bundle-image.yml is `paths:`-filtered — nine entries: the
+ *           seven trees the Dockerfile bakes, the bundle host, and the workflow
+ *           itself — so most commits cut no bundle image and stepping past them
+ *           is the normal case. That filter is READ from the workflow, not
  *           copied here.
  *
  * Either way a commit that SHOULD have published and did not is a hard stop: the
@@ -60,6 +61,14 @@ const { values } = parseArgs({
     repository: { type: "string" },
     registry: { type: "string", default: "ghcr.io" },
     kind: { type: "string", default: "core" },
+    // Seconds to keep asking for a tag the commit is REQUIRED to have. The
+    // bundle needs it and the core does not: release-image.yml pushes and THEN
+    // deploys, in one workflow, so the core's tag is always there by the time
+    // this runs. release-bundle-image.yml is a separate trigger on the same
+    // push, and it is still baking Chromium while the core's release calls the
+    // deploy — so without this, every merge that touches a baked tree deploys
+    // red. It waits only when the answer would otherwise be a hard stop.
+    "wait-for-image": { type: "string", default: "0" },
   },
 });
 
@@ -75,6 +84,14 @@ const repository = values.repository;
 const registry = values.registry ?? "ghcr.io";
 const kind = values.kind as "core" | "bundle";
 const source = kind === "bundle" ? BUNDLE_IMAGE_SOURCE : CORE_IMAGE_SOURCE;
+const waitSeconds = Number(values["wait-for-image"] ?? "0");
+
+if (!Number.isFinite(waitSeconds) || waitSeconds < 0) {
+  console.error(
+    `::error::--wait-for-image must be a non-negative number of seconds (got "${values["wait-for-image"]}")`,
+  );
+  process.exit(1);
+}
 // GitHub Actions sets GITHUB_ACTOR in every step; the fallback is for a local run.
 const actor = process.env.GITHUB_ACTOR ?? "github-actions";
 const password = process.env.GHCR_PULL_TOKEN || process.env.GITHUB_TOKEN;
@@ -106,7 +123,10 @@ async function main(): Promise<void> {
   const bundlePaths =
     kind === "bundle"
       ? parsePathsFilter(
-          readFileSync(BUNDLE_RELEASE_WORKFLOW, "utf8"),
+          readFileSync(
+            new URL(`../${BUNDLE_RELEASE_WORKFLOW}`, import.meta.url),
+            "utf8",
+          ),
           BUNDLE_RELEASE_WORKFLOW,
         )
       : [];
@@ -122,8 +142,8 @@ async function main(): Promise<void> {
     sha,
     mayLackImage: () =>
       kind === "bundle"
-        ? isOutsidePathFilter(changedFiles(sha), bundlePaths)
-        : isDocsOnly(changedFiles(sha)),
+        ? isOutsidePathFilter(changedFiles(sha, undefined, source), bundlePaths)
+        : isDocsOnly(changedFiles(sha, undefined, source)),
   }));
 
   const token = await fetchPullToken({
@@ -136,7 +156,7 @@ async function main(): Promise<void> {
   const resolved = await resolveDeployTag(
     candidates,
     registryProbe({ registry, repository, token }),
-    source,
+    { source, waitMs: waitSeconds * 1000 },
   );
   const image = `${registry}/${repository}:${resolved.tag}`;
 

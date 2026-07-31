@@ -191,35 +191,41 @@ images or their release workflows would be an outage, not a cleanup.
 **Undo, in order:** re-point prod at `strad-bundle` → confirm it serves → then delete
 the per-server release workflows and images.
 
-### 25. ~~The bundle image cannot be rolled back to a published tag~~ — resolved
+### 25. Branch and `sha-` image tags accumulate in GHCR with nothing pruning them
 
-`deploy-staging.yml` takes a `bundle_version` input that renders
-`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>`, and a deploy that does not
-set it resolves a `sha-<commit>` bundle tag anyway. Pinning the core alone no
-longer hands the bundle back to a tag that moves — it leaves it on the newest
-image an ancestor published.
+Every branch deploy pushes `strad:branch-<slug>-<sha>` and
+`strad-bundle:branch-<slug>-<sha>`, and every release pushes a `sha-<commit>` for
+both images. Nothing deletes any of them. They are cheap and nothing depends on
+them, but the list grows without bound.
 
-The original reasoning still holds as advice: the core and the bundle are meant to
-move together, and pinning one alone can produce a spec that routes paths the
-running bundle does not serve. Nothing forces you to pin both.
+:::note[HACKS #25 is superseded]
+This entry used to be "the bundle image cannot be rolled back to a published tag".
+`deploy-staging.yml` takes a `bundle_version` input, and a deploy that does not
+set it resolves a `sha-<commit>` bundle tag anyway, so pinning the core alone no
+longer hands the bundle back to a tag that moves. The tag-accumulation half is
+what remains. The reasoning still holds as advice: the core and the bundle are
+meant to move together, and pinning one alone can produce a spec that routes paths
+the running bundle does not serve.
+:::
 
-Branch tags still accumulate in GHCR with nothing pruning them.
+### 32. Prod's supplementary components still deploy a mutable tag
 
-### 32. ~~The bundle component still deploys a mutable tag~~ — resolved on staging
+Staging is covered: `deploy-staging.yml` resolves `sha-<commit>` for the bundle
+exactly as it does for the core, passes it on every deploy, and passes
+`--require-immutable-images`, under which `render-spec` refuses to emit a spec
+where any component ships a tag that moves.
 
-`deploy-staging.yml` resolves `sha-<commit>` for the bundle exactly as it does for
-the core, passes it on every deploy, and passes `--require-immutable-images`,
-under which `render-spec` refuses to emit a spec where any component ships a tag
-that moves.
+Prod is not. `strad-deploy-prod.yml` lives in `tadasant-internal`, renders through
+this same script, and passes no `--bundle-image` — so its supplementary components
+still ship `:latest` and remain exposed to exactly what follows. It gets a warning
+naming every affected component on every deploy rather than a failure: failing a
+deploy over a tag it has no way to change would break prod without fixing
+anything. The change there is to resolve a bundle tag the same way and pass both
+flags. It needs no credential and no IAM change.
 
-**Prod is not covered yet.** `strad-deploy-prod.yml` lives in tadasant-internal,
-renders through this same script, and passes no `--bundle-image` — so its
-supplementary components still ship `:latest`. It gets a warning naming every
-affected component on every deploy rather than a failure: failing a deploy over a
-tag it has no way to change would break prod without fixing anything. The change
-there is to resolve a bundle tag the same way and pass both flags.
+**Undo:** make that change in `tadasant-internal`.
 
-What the mutable tag actually did, kept as the record:
+What the mutable tag did on staging, kept as the record:
 
 The core image had been pinned to an immutable tag on every deploy since #60 —
 `sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`

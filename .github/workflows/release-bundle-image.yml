@@ -1,7 +1,13 @@
 name: Release bundle image
 
-# Build THE strad bundle image — all fourteen MCP servers in one container — and
-# push it to ghcr, then roll staging onto it.
+# Build THE strad bundle image — all fifteen MCP servers in one container — and
+# push it to ghcr.
+#
+# It does not deploy. The next `deploy-staging.yml` run resolves the newest
+# `sha-<commit>` bundle an ancestor published, and — because this build is slower
+# than the core release that calls that deploy — waits for this one to land
+# (`--wait-for-image`). See "which image a deploy ships" in
+# docs/operate/operations.md.
 #
 # BUILD CONTEXT IS THE REPO ROOT. This image is assembled from six projects that
 # live in different directories (servers/bundle-api, images/bundle-google,

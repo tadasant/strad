@@ -17,10 +17,17 @@ name: Deploy staging
 # `sha-<commit>` image built for that same commit. There is nothing to clean up.
 
 on:
-  # `build` is deliberately NOT declared here. Leaving it off the workflow_call
-  # surface is what makes "the release path cannot build a branch" structural
-  # rather than a convention: release-image.yml has no input to pass. Do not
-  # "tidy" the two input blocks into agreement.
+  # `build` and `bundle_version` are deliberately NOT declared here, for two
+  # different reasons, and neither block should be "tidied" into agreement with
+  # the other.
+  #
+  # `build`: leaving it off the workflow_call surface is what makes "the release
+  # path cannot build a branch" structural rather than a convention —
+  # release-image.yml has no input to pass.
+  #
+  # `bundle_version`: it is a rollback pin, and the release path has nothing to
+  # roll back to. It resolves the bundle from the ref it is releasing, which is
+  # the pairing a release is for.
   workflow_call:
     inputs:
       version:
@@ -354,23 +361,31 @@ jobs:
         # back to a tag that moves. `bundle_version` is how you pin this half.
         #
         # The walk-back is the normal case here, not an exception. Most commits
-        # touch none of the seven trees the image bakes, so `--kind bundle` steps
+        # touch nothing release-bundle-image.yml watches, so `--kind bundle` steps
         # past them to the newest ancestor that did publish — which is the image
-        # `:latest` was pointing at anyway, now named so the spec changes and the
+        # `:latest` was pointing at anyway, named so the spec changes and the
         # platform actually pulls it.
+        #
+        # `--wait-for-image` is what the core does not need. release-image.yml
+        # pushes the core and THEN calls this workflow, in that order, in one
+        # file. release-bundle-image.yml is a SEPARATE trigger on the same push
+        # and it bakes Chromium and seven npm trees — so on a merge that touches
+        # a baked tree, sha-<HEAD> reliably does not exist yet when this runs,
+        # and a bare hard stop would turn every such deploy red. 900s is roughly
+        # three times the slowest bundle build on record (6m10s).
         if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.bundle_version }}
         id: bundletag
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           # The bundle is its own package, beside the core's: tadasant/strad ->
-          # tadasant/strad-bundle. Derived rather than hardcoded so a fork's
-          # deploy resolves its own.
+          # tadasant/strad-bundle.
           REPOSITORY: ${{ github.repository }}-bundle
         run: |
           set -euo pipefail
           git log --first-parent --format=%H -n 50 \
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
-                --repository "$REPOSITORY" --kind bundle >> "$GITHUB_OUTPUT"
+                --repository "$REPOSITORY" --kind bundle \
+                --wait-for-image 900 >> "$GITHUB_OUTPUT"
 
       - name: Seed the gateway namespace from the deploy environment
         # THE MIGRATION STEP, and it is opt-in for a reason. Under the `env`
@@ -506,7 +521,7 @@ jobs:
           # resolved above. There is deliberately no `latest` fallback left —
           # leaving the config's own `image:` lines in place is what let App
           # Platform keep serving a digest it had cached before the `/secrets`
-          # mount existed, and --require-immutable-images below now refuses it.
+          # mount existed, and --require-immutable-images below refuses it.
           BUNDLE_IMAGE: ${{ needs.build.outputs.bundle_image || (inputs.bundle_version && format('ghcr.io/tadasant/strad-bundle:{0}', inputs.bundle_version)) || steps.bundletag.outputs.image }}
           BUILT: ${{ inputs.build && 'true' || 'false' }}
           # Staging runs the console dev bypass until Google OAuth creds land.

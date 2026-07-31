@@ -102,7 +102,9 @@ The core image comes from the first of these that applies:
 1. **A branch build** (`build: true`) — the `branch-<slug>-<sha>` tag it just
    pushed.
 2. **An explicit `version` input** — `ghcr.io/tadasant/strad:<version>`. This is
-   the release path, and it is how you pin a rollback.
+   the release path, and it is how you pin a rollback. It pins the core only —
+   the bundle is still resolved below, so a rollback taken while a bundle build
+   is in flight wants `bundle_version` too.
 3. **Otherwise, `sha-<commit>`**, resolved from the checked-out history by
    `scripts/resolve-image-tag.ts`.
 
@@ -162,16 +164,24 @@ The same three-step precedence, one image over:
 3. **Otherwise, `sha-<commit>`**, resolved by the same
    `scripts/resolve-image-tag.ts` with `--kind bundle`.
 
-There is no `latest` fallback left here either. The deploy now always passes
-`--bundle-image`, and it passes `--require-immutable-images`, which makes
-`render-spec` refuse to emit a spec in which **any** component ships a tag that
-moves.
+There is no `latest` fallback left here either. The deploy always passes
+`--bundle-image` and `--require-immutable-images`, which makes `render-spec`
+refuse to emit a spec in which **any** component ships a tag that moves.
+
+Step 3 also **waits**, which the core's does not need to. `release-image.yml`
+pushes the core and then calls the deploy, in that order, in one workflow;
+`release-bundle-image.yml` is a separate trigger on the same push and takes
+several minutes longer. So on a merge that touches a baked tree, the bundle's
+`sha-<commit>` does not exist yet when the deploy starts, and without a wait
+every such merge would deploy red. The step re-asks for up to 15 minutes before
+it gives up — only in the case that would otherwise be a hard stop.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter naming the seven trees the
-Dockerfile bakes, so **most** commits cut no bundle image and stepping past them
-is the normal case, not an exception. `--kind bundle` reads that filter out of
+`release-bundle-image.yml` has a `paths:` filter — nine entries: the seven trees
+the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
+commits cut no bundle image and stepping past them is the normal case, not an
+exception. `--kind bundle` reads that filter out of
 the workflow rather than keeping a second copy of the list. A commit that **did**
 touch a baked tree and has no image is still a hard stop, for the same reason as
 the core.

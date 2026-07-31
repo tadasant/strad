@@ -653,16 +653,17 @@ rendering _and_ answers every Slack and Gmail call. If the OpenTelemetry data
 (event-loop lag, CPU, RSS-vs-limit, Chromium launches/crashes) says we are
 saturated, the next move is `apps-d-1vcpu-2gb` ($39, dedicated CPU) — not more RAM.
 
-## 25. ~~The bundle image cannot be rolled back to a published tag~~ — RESOLVED
+## 25. The bundle image cannot be rolled back to a published tag — RESOLVED, except for tag accumulation
 
-**Resolved.** `deploy-staging.yml` takes a `bundle_version` input that renders
+**✅ RESOLVED.** `deploy-staging.yml` takes a `bundle_version` input that renders
 `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>`, and every deploy that does
 not set it resolves a `sha-<commit>` bundle tag anyway. The reasoning below for
 why the pair should move together still holds — nothing forces you to pin one and
-not the other, and pinning the core alone now leaves the bundle on the newest
-image its ancestors published rather than on a tag that moves.
+not the other, and pinning the core alone leaves the bundle on the newest image
+its ancestors published rather than on a tag that moves.
 
-**Still true.** Branch tags accumulate in GHCR with no garbage collection.
+**The "Also" below is NOT resolved.** Branch and `sha-` tags accumulate in GHCR
+with no garbage collection. That half is limitations.md #25 on its own.
 
 **What (as it stood).** `deploy-staging.yml` can pin the **core** to any published tag
 (`-f version=0.1.6`, `sha-<sha>`), because the core image is a render-time
@@ -996,9 +997,9 @@ project IAM admin, which no strad process holds.
 **Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
 either way — this is an IAM-shaped limitation, not a mechanism in strad.
 
-## 32. ~~The bundle component still deploys a mutable tag~~ — RESOLVED
+## 32. The bundle component still deploys a mutable tag — RESOLVED on staging, LIVE on prod
 
-**Resolved.** `deploy-staging.yml` now resolves `sha-<commit>` for the bundle
+**✅ RESOLVED on staging.** `deploy-staging.yml` resolves `sha-<commit>` for the bundle
 exactly as it does for the core (`scripts/resolve-image-tag.ts --kind bundle`),
 passes it as `--bundle-image` on every deploy, and passes
 `--require-immutable-images`, under which `render-spec` refuses to emit a spec in
