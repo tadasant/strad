@@ -228,7 +228,7 @@ stderr, so GitHub annotates the run, and repeated as a list on stdout. Output is
 names and structure only — it never prints a value, and the values it renders
 with are dummies anyway.
 
-Five checks, in order:
+Four checks, in order:
 
 1. **Schema.** The same `parseConfig` the gateway boots with — types, required
    fields, and the cross-field rules (an undefined role, two images in one bundle,
@@ -254,36 +254,24 @@ Five checks, in order:
    every enabled server's map into one flat environment, so a collision means the
    last declaration silently wins and the other server's console runs as the wrong
    identity.
-5. **Bundle scope.** The same collision one layer in: two servers sharing a
-   `bundle:` may not claim one `env:` key with **different** values. A bundle is a
-   component, which is a container, which is one `process.env`, and `renderAppSpec`
-   merges a bundle's servers last-wins exactly as the console does. Declaring a key
-   _identically_ stays legal and is the normal case — capability variants declare
-   their credentials on every variant on purpose, so that disabling one cannot
-   strip the secret from its siblings. The case this exists for is a second
-   `secrets` slug: two of them in one bundle share `SECRETS_PROJECT_ID`, so
-   `?servers=<the-second-slug>` answers with the **first** store's parameters. That
-   is a wrong answer rather than an error, and it passes checks 1–4.
 
-   The collision half is now **also** rejected at schema-validation time (check 2
-   above), which is the earlier and better place to say it — and that check covers
-   `env:` too, per bundle. See [`env:` may be bare; `consoleEnv:` must be
-   slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).
-   This one stays because it inspects the **rendered spec**, which is what actually
-   ships: a renderer regression that dropped or merged a key would produce this
-   state from a config that validated cleanly, and nothing else would notice.
+A collision between two servers' `env:` maps in one bundle is **not** a check
+here — it is rejected earlier, by the schema itself, along with the
+`consoleEnv:`-against-`core` half. That is the better place for it: a schema rule
+fires at boot as well as at this gate. See [`env:` may be bare; `consoleEnv:` must
+be
+slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).
 
-Check 5 covers `env:` against `env:` only, and that is a limit rather than an
-oversight: a `params: true` server's variables land on the same component
-environment, but their names come from **paths in the store** and their values do
-not exist until render time, so this script — which has no store and no
-credentials — cannot see them. `renderAppSpec` can, and it throws when one
-server's resolved parameter would shadow a sibling's variable on the same bundle.
-That case matters more than an ordinary config collision because it is reachable
-by a human action rather than a config edit: the console creates parameters, and a
-parameter's path decides its variable name. A server shadowing its **own** `env:`
-key with its own parameter stays legal — that is the migration path off a
-hand-written `${REF}`.
+What the schema still cannot see is a `params: true` server's variables. They land
+on the same component environment, but their names come from **paths in the store**
+and their values do not exist until render time — so neither the schema nor this
+script, which has no store and no credentials, can know them. `renderAppSpec` can,
+and it throws when one server's resolved parameter would shadow a sibling's
+variable on the same bundle. That case matters more than an ordinary config
+collision because it is reachable by a human action rather than a config edit: the
+console creates parameters, and a parameter's path decides its variable name. A
+server shadowing its **own** `env:` key with its own parameter stays legal — that
+is the migration path off a hand-written `${REF}`.
 
 **It is strict where the gateway is lenient, and that asymmetry is deliberate.**
 `parseConfig` at boot keeps ignoring unknown keys, because the config and the image

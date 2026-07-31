@@ -89,8 +89,7 @@ fifteen `path`s on one container.
 Two servers may also share a `path` in one bundle — that is the capability-variant
 pattern (`gmail-ro` and `gmail-rw`, told apart by their `tools:` policy). What they
 cannot share is a value: a bundle is one `process.env`, so two servers in one
-bundle declaring the same `env:` key with **different** values is a hard error at
-`check-config` time.
+bundle declaring the same `env:` key with **different** values is a schema error.
 
 Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
 start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets),

@@ -80,8 +80,10 @@ for capability. Capability is config and config can be shared; a parameter STORE
 is `process.env`, and a container has one of those — so a second `secrets` slug
 fronting a second GCP project needs a second bundle. Two secrets slugs in ONE
 bundle is the obvious way to write it and is silently wrong (one store answers
-under two slugs); `bundleScopeProblems()` in `src/deploy/preflight.ts` now makes it
-a failed `config:check` rather than a wrong answer.
+under two slugs); the `superRefine` in `src/config/schema.ts` rejects it. What that
+rule cannot see is a `params: true` variable — its NAME comes from a path in the
+store — so `renderAppSpec` throws separately when a resolved parameter would shadow
+a sibling's variable on the same bundle.
 
 **Brand and voice.** All user-facing prose (docs, README, console copy) follows
 `references/BRAND.md` (what strad is and the opinions that follow) and

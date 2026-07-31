@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
-import { bundleScopeProblems } from "../src/deploy/preflight.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 
 /**
@@ -30,8 +29,8 @@ import { resolveServerView } from "../src/ui/resolve.ts";
  *      `consoleEnv:` is merged into one flat environment.
  *   3. NO ADMIN KEY ON ANY BUNDLE. The console's credential can read a secret
  *      value; the container that answers /mcp must never hold it.
- *   4. The `env:`/`consoleEnv:` NAMING ASYMMETRY is what makes (2) work, and
- *      `bundleScopeProblems` is what catches (1) if someone collapses it.
+ *   4. The `env:`/`consoleEnv:` NAMING ASYMMETRY is what makes (2) work, and the
+ *      config schema's collision rule is what catches (1) if someone collapses it.
  *
  * This is the config's half of the proof. The container's half — that the second
  * component boots and answers `/secrets` from its own environment — follows from
@@ -39,10 +38,12 @@ import { resolveServerView } from "../src/ui/resolve.ts";
  * by the staging deploy.
  */
 
-const CONFIG = parseConfig(
-  readFileSync(new URL("../infra/strad.staging.yaml", import.meta.url), "utf8"),
-  "infra/strad.staging.yaml",
+const RAW_STAGING_CONFIG = readFileSync(
+  new URL("../infra/strad.staging.yaml", import.meta.url),
+  "utf8",
 );
+
+const CONFIG = parseConfig(RAW_STAGING_CONFIG, "infra/strad.staging.yaml");
 
 const STRAD_STORE = "strad-secrets-staging";
 const ZIMMER_STORE = "zimmer-secrets-staging";
@@ -274,25 +275,51 @@ describe("two parameter stores, one strad", () => {
     expect(view.projectId).toBe(ZIMMER_STORE);
   });
 
-  it("is clean under the bundle-scope check, and the collapsed shape is not", () => {
-    expect(bundleScopeProblems(CONFIG)).toEqual([]);
+  it("passes the schema's env-collision rule, and the collapsed shape does not", () => {
+    // THE COMPOSITION ASSERTION, and it is cheap insurance for both changes.
+    //
+    // The `superRefine` in src/config/schema.ts exists to catch exactly the shape
+    // this config deliberately avoids. So this config passing it is not a
+    // formality: a rule that collided `env:` GLOBALLY rather than per-bundle would
+    // forbid the correct two-bundle configuration, and this is the only real
+    // two-bundle config in the tree. If someone tightens that rule, this fails.
+    expect(() => parseConfig(RAW_STAGING_CONFIG, "staging")).not.toThrow();
 
-    // The trap: the obvious way to write a second store. It parses, it renders,
-    // and before this check it produced a container fronting one store under two
-    // slugs with nothing reporting it.
-    const collapsed = parseConfig(
-      readFileSync(
-        new URL("../infra/strad.staging.yaml", import.meta.url),
-        "utf8",
-      ).replace("bundle: bundle-zimmer-secrets", "bundle: bundle"),
-      "collapsed.yaml",
-    );
-    const problems = bundleScopeProblems(collapsed);
-    expect(problems.length).toBeGreaterThan(0);
-    expect(problems.join("\n")).toContain("SECRETS_PROJECT_ID");
-    expect(problems.join("\n")).toContain(
-      "one bundle is one container with one environment",
-    );
+    // And the trap it exists for: one bundle, two secrets slugs. Both credentials
+    // and the store id collide, and the message names them.
+    let message = "";
+    try {
+      parseConfig(
+        RAW_STAGING_CONFIG.replace(
+          "bundle: bundle-zimmer-secrets",
+          "bundle: bundle",
+        ),
+        "collapsed.yaml",
+      );
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain("SECRETS_PROJECT_ID");
+    expect(message).toContain("SECRETS_SERVICE_ACCOUNT_KEY_JSON");
+    expect(message).toContain('share the "bundle" bundle');
+
+    // Collapse it AND un-namespace `consoleEnv:` — the full "obvious way" — and
+    // the ADMIN credential collision is named too. That is the one that would
+    // otherwise render /ui/secrets against strad's project holding Zimmer's key.
+    let bare = "";
+    try {
+      parseConfig(
+        RAW_STAGING_CONFIG.replace(
+          "bundle: bundle-zimmer-secrets",
+          "bundle: bundle",
+        ).replaceAll("ZIMMER_SECRETS_SECRETS_", "SECRETS_"),
+        "bare.yaml",
+      );
+    } catch (err) {
+      bare = (err as Error).message;
+    }
+    expect(bare).toContain("SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON");
+    expect(bare).toContain("consoleEnv:");
   });
 
   it("entitles Zimmer's own role to its store and to nothing else", () => {

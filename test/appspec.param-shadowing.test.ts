@@ -1,20 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
-import { bundleScopeProblems } from "../src/deploy/preflight.ts";
 
 /**
- * `bundleScopeProblems` and its render-time sibling, directly.
+ * A managed parameter may not shadow a sibling's variable on the same bundle.
  *
- * One bundle is one container is one `process.env`. Two servers sharing a bundle
- * and claiming one variable with different values is therefore a wrong answer
- * rather than an error — the renderer merges them last-wins and says nothing.
+ * One bundle is one container is one `process.env`. Two servers claiming one
+ * variable with different values is a wrong answer rather than an error — the
+ * renderer merges them last-wins and says nothing.
  *
- * The staging config exercises the happy path already
- * (test/staging-config.multi-store.test.ts). This file exercises the cases a real
- * config does not contain, which is where a check of this shape actually breaks:
- * the legal collision it must NOT flag, the disabled server it must ignore, and
- * the third claimant it must still report.
+ * The `env:`-against-`env:` half of that is caught by the schema
+ * (`superRefine` in src/config/schema.ts), which is the right place: it fires at
+ * boot as well as at the deploy gate. This file covers the half the schema
+ * STRUCTURALLY cannot see. A `params: true` server's variables land on the same
+ * component environment, but their NAMES come from paths in the store and their
+ * VALUES do not exist until render time, so only `renderAppSpec` is in a position
+ * to notice the collision.
+ *
+ * It is worth a check of its own rather than being folded into the config rule,
+ * because it is reachable by a HUMAN ACTION rather than a config edit: the console
+ * creates parameters, and a parameter's path decides its variable name.
  */
 
 function config(servers: string): ReturnType<typeof parseConfig> {
@@ -50,83 +55,11 @@ ${lines.join("\n") || '      NOTHING: "x"'}
 `;
 }
 
-describe("bundleScopeProblems", () => {
-  it("flags one key claimed with different values in one bundle", () => {
-    const problems = bundleScopeProblems(
-      config(
-        server("a", "b1", { SECRETS_PROJECT_ID: "store-a" }) +
-          server("b", "b1", { SECRETS_PROJECT_ID: "store-b" }),
-      ),
-    );
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("SECRETS_PROJECT_ID");
-    expect(problems[0]).toContain('"a" and "b"');
-  });
-
-  it("does NOT flag the same key with the SAME value — that is the normal case", () => {
-    // Capability variants declare their credentials identically on purpose, so
-    // that disabling one cannot strip the secret from its siblings. Flagging
-    // this would make the check unusable on the real config.
-    expect(
-      bundleScopeProblems(
-        config(
-          server("gmail-ro", "b1", { GMAIL_KEY: "${K}" }) +
-            server("gmail-rw", "b1", { GMAIL_KEY: "${K}" }),
-        ),
-      ),
-    ).toEqual([]);
-  });
-
-  it("does NOT flag two bundles, which is the whole point of the escape hatch", () => {
-    expect(
-      bundleScopeProblems(
-        config(
-          server("a", "b1", { SECRETS_PROJECT_ID: "store-a" }) +
-            server("b", "b2", { SECRETS_PROJECT_ID: "store-b" }),
-        ),
-      ),
-    ).toEqual([]);
-  });
-
-  it("ignores a disabled server, because the renderer does too", () => {
-    // A disabled server contributes no env to the component, so reporting it
-    // would be a problem nobody can act on — and it would block disabling a
-    // server as a way OUT of a collision.
-    expect(
-      bundleScopeProblems(
-        config(
-          server("a", "b1", { SECRETS_PROJECT_ID: "store-a" }) +
-            server(
-              "b",
-              "b1",
-              { SECRETS_PROJECT_ID: "store-b" },
-              "    enabled: false\n",
-            ),
-        ),
-      ),
-    ).toEqual([]);
-  });
-
-  it("still reports a THIRD claimant, rather than going quiet after the first", () => {
-    const problems = bundleScopeProblems(
-      config(
-        server("a", "b1", { K: "1" }) +
-          server("b", "b1", { K: "2" }) +
-          server("c", "b1", { K: "3" }),
-      ),
-    );
-    expect(problems).toHaveLength(2);
-    expect(problems.join("\n")).toContain('"a" and "b"');
-    expect(problems.join("\n")).toContain('"a" and "c"');
-  });
-});
-
 describe("a managed parameter may not shadow a sibling on the same bundle", () => {
-  // The half `bundleScopeProblems` structurally cannot cover: a parameter's
-  // VALUE only exists at render time, and its NAME comes from a path a human
-  // types into the console. So a parameter created under one slug's namespace
-  // could silently repoint another slug's variable on the same component. The
-  // renderer is the only place that can see it.
+  // The half the config schema structurally cannot cover: a parameter's VALUE
+  // only exists at render time, and its NAME comes from a path a human types into
+  // the console. So a parameter created under one slug's namespace could silently
+  // repoint another slug's variable on the same component.
   const CONFIG = config(
     server("secrets", "b1", { SECRETS_PROJECT_ID: "store-a" }) +
       server(

@@ -393,10 +393,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   // under some other slug's namespace would repoint the `secrets` server's whole
   // store at the next render, with nothing reporting it.
   //
-  // `scripts/check-config.ts` cannot catch this — it has no store to resolve
-  // against, and the values exist only at render time. Here they do, so this is
-  // the only place the check can live. `bundleScopeProblems()` is its static
-  // sibling, covering the `env:`-vs-`env:` half.
+  // The config schema cannot catch this — a parameter's NAME comes from a path in
+  // the store and its VALUE does not exist until render time. The `superRefine` in
+  // src/config/schema.ts covers the static `env:`-vs-`env:` half; this covers the
+  // half that only exists here.
   //
   // What is NOT an error: a server shadowing its OWN `env:` key with its OWN
   // parameter. That is the documented migration path off a hand-written `${REF}`,
