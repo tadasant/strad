@@ -330,7 +330,12 @@ jobs:
         # It reads back everything it writes through `:render` — the same path
         # the gateway uses — and compares by digest. Names and counts only; no
         # value is printed.
-        if: ${{ inputs.seed && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        # `seed_only` implies `seed`. Gating this on `inputs.seed` alone made a
+        # `seed_only: true` dispatch with `seed` left false run NOTHING and
+        # report green — every other step is gated on `!seed_only`, so the job
+        # skipped its way to success. An input named "seed and stop" must not be
+        # able to mean "stop".
+        if: ${{ (inputs.seed || inputs.seed_only) && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # The ADMIN key, not the resolver's: the resolver cannot write, which
           # is exactly why the gateway is allowed to hold it.
@@ -350,7 +355,7 @@ jobs:
           node --experimental-transform-types scripts/seed-store.ts "${ARGS[@]}"
 
       - name: Report what the parameter store holds
-        # The pre-flip roster: every name this deployment would read from
+        # The roster: every name this deployment would read from
         # `/strad/staging/gateway/static/`, which of them are seeded, and — with
         # --resolve — which of the seeded ones the resolver credential can
         # actually render. That last part is the one nothing else answers:
@@ -359,31 +364,40 @@ jobs:
         # not carry), and a namespace can be complete and still resolve to
         # nothing.
         #
-        # REPORT MODE, and NON-FATAL, because a partially-seeded namespace is the
-        # expected state of a migration in progress and `provider: env` deploys
-        # do not read the store at all. It exists to make the roster visible on
-        # every deploy rather than only when someone remembers to run it — the
-        # migration's blind spot was never the check, it was not having looked.
-        # Flip to `--mode require` and drop continue-on-error once the flip has
-        # landed and an incomplete namespace IS an outage.
+        # REPORT MODE, and NON-FATAL, and that is now a deliberate choice rather
+        # than a stage of the migration. Staging is store-backed, so `--mode
+        # require` is the defensible end state — but `require` counts the 22
+        # supplementary `env:` names too, and those are still resolved from the
+        # deploy environment on purpose (see scripts/seed-store.ts). Requiring
+        # them today would fail every deploy over a decision nobody has taken.
+        # `render-spec`'s own preflight already fails closed on the names that
+        # MUST be in the store, so nothing load-bearing rests on this step's
+        # exit code; it exists to make the roster visible on every deploy rather
+        # than only when someone remembers to run it — the migration's blind spot
+        # was never the check, it was not having looked. Flip to `--mode require`
+        # and drop continue-on-error when the supplementary names move too.
         #
         # It prints names, counts and states. No value, in any mode.
         if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         continue-on-error: true
         run: |
           set -uo pipefail
+          # `|| rc=$?` rather than a bare call followed by `rc=$?`. A `run:` step
+          # is `bash -e`, and `set -uo pipefail` does not clear `-e`, so a bare
+          # non-zero call kills the shell before the next line — every branch
+          # below would be unreachable and the step would just fail. A command on
+          # the left of `||` is exempt from `-e`, which is what makes `rc`
+          # observable at all.
+          rc=0
           node --experimental-transform-types scripts/check-store.ts \
-            --config infra/strad.staging.yaml --mode report --resolve
-          rc=$?
+            --config infra/strad.staging.yaml --mode report --resolve || rc=$?
           # Exit 3 is "I could not consult the store", and `--mode report` does
           # not soften it — by design, since "the namespace is incomplete" and "I
-          # could not find out" call for opposite responses. Before the flip it is
-          # simply the expected state: no resolver credential exists yet. Report
-          # that as a notice, so the step is green until it means something. Any
-          # other non-zero is a real finding and keeps its exit code.
+          # could not find out" call for opposite responses. Staging is
+          # store-backed, so exit 3 means the resolver credential this deployment
+          # depends on has stopped working: a finding, not a stage of migration.
           if [ "$rc" -eq 3 ]; then
-            echo "::notice::no resolver credential yet, so the store roster could not be read. Expected until gateway.secrets.provider is flipped; see docs/operate/secrets.md."
-            exit 0
+            echo "::error::the store roster could not be read at all. Staging resolves its \${NAME} refs from the store, so this is the resolver credential failing, not an unseeded namespace; see docs/operate/secrets.md."
           fi
           exit "$rc"
 

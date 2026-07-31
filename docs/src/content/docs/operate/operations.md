@@ -164,16 +164,50 @@ nothing else answers — which of the seeded ones the resolver credential can
 actually `:render`. Presence is not resolvability, and a namespace can be
 complete and still resolve to nothing.
 
-It is **report mode and non-fatal**, because a partially-seeded namespace is the
-normal state of a migration in progress and a `provider: env` deploy does not read
-the store at all. The point is to make the roster visible on every run rather than
-only when someone remembers to look — the migration's blind spot was never the
-check. Once a deployment has flipped and an incomplete namespace IS an outage,
-move it to `--mode require` and drop `continue-on-error`.
+It is **report mode and non-fatal**, and on a store-backed staging that is a
+deliberate choice rather than a stage of the migration. `--mode require` counts the
+22 supplementary `env:` names too, and those are still resolved from the deploy
+environment on purpose, so requiring them would fail every deploy over a decision
+nobody has taken. Nothing load-bearing rests on this step's exit code either way:
+`render-spec`'s own preflight fails closed on the names that must be in the store.
+The point is to make the roster visible on every run rather than only when someone
+remembers to look — the migration's blind spot was never the check. Move it to
+`--mode require` and drop `continue-on-error` when the supplementary names move
+into the store too.
 
-It prints names, counts and states, and no value in any mode. On a deployment with
-no resolver credential it exits 3 and says which two variables are missing, which
-is how staging's unprovisioned resolver was found.
+It prints names, counts and states, and no value in any mode. Exit 3 is "the store
+could not be consulted at all", which on a store-backed deployment means the
+resolver credential itself has stopped working — the step says so as an error
+rather than softening it.
+
+## Seeding the store from the deploy environment
+
+`scripts/seed-store.ts` moves a deployment's `${NAME}` values out of the deploy
+environment and into `/strad/{env}/gateway/static/`, which is the one-time step the
+provider flip needs and which nothing else can do: the console is SSO-gated and
+per-value, and the `secrets` MCP server is fenced out of the gateway namespace on
+purpose. It runs from `deploy-staging.yml`, is **dry-run unless `--commit`**, skips
+names the store already holds unless `--rotate`, and reads back everything it
+writes through `:render` — comparing by SHA-256, because a value that stores fine
+and cannot render is the failure that takes a whole namespace down.
+
+Five dispatch inputs drive it, all off by default:
+
+| Input         | What it does                                                                |
+| ------------- | --------------------------------------------------------------------------- |
+| `seed`        | Run the seeder before rendering. Off on every ordinary deploy.              |
+| `seed_rotate` | Overwrite names the store already holds instead of skipping them.           |
+| `seed_set`    | An extra `NAME=VALUE` the environment does not carry.                       |
+| `seed_delete` | Comma-separated names to REMOVE from the gateway namespace.                 |
+| `seed_only`   | Seed and stop — no image-tag resolve, no render, no deploy. Implies `seed`. |
+
+`seed_only` is what lets the store change **under a running gateway**: an ordinary
+deploy restarts the process, which destroys the thing a rotation test is trying to
+observe.
+
+**`seed_set` is for non-secret canaries only.** Its value passes through a workflow
+input and is echoed in the run's log — the masking applied to Secret Manager values
+does not cover it. Never put a credential there.
 
 **Then it reports what the secrets credentials can do.** The secrets surfaces are
 probe-derived — the MCP server lists `get_secret_value` and the write tools only

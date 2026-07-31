@@ -174,8 +174,8 @@ and a redeploy mid-login is not a failed login. Upstream: tadasant/strad#11.
 
 ## 8. Secret backend: env vars at runtime, GCP at deploy time
 
-**What.** With `gateway.secrets.provider: env` (the default, and what staging
-runs), the runtime container reads secrets from `process.env`.
+**What.** With `gateway.secrets.provider: env` (the schema default, and what
+prod runs), the runtime container reads secrets from `process.env`.
 `deploy-staging.yml` reads `strad-staging-*` from GCP Secret Manager and injects
 them as App Platform SECRET env vars.
 
@@ -697,17 +697,19 @@ DIFFERENT credentials on purpose:
   Manager ONLY: `:render` dereferences the secret under the parameter's own
   principal, so the resolver never touches Secret Manager itself.
 
-What is NOT done, and needs a human with GCP access (see the checklist below and
-`docs/.../limitations.md`): the resolver service account and its key, and the
-seeded parameter values. The project and the viewer/admin service accounts are
-provisioned. Everything above is tested against an in-memory fake, so the logic
-ships proven.
+What is NOT done, for staging: the per-server parameter values. The project, the
+viewer/admin service accounts AND the resolver service account with its key are
+all provisioned — the resolver was the outstanding one and the 2026-07-31
+rehearsal created and proved it. `/strad/staging/mcp/` still holds zero
+parameters, so a `params: true` supplementary server has nothing to receive. Prod
+still needs its own resolver; staging's says nothing about it. Everything above is
+tested against an in-memory fake, so the logic ships proven.
 
 Posture nuance worth stating plainly: the resolver credential runs at DEPLOY time
 (in CI / `render-spec`), NOT in the container, so "the running container holds no
 cloud credential" still holds — the resolved values reach the bundle as ordinary
-SECRET env vars, exactly like every other secret. Until the resolver service
-account exists, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
+SECRET env vars, exactly like every other secret. With an empty per-server
+namespace, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
 boots without its resolved parameters and degrades gracefully.
 
 **And it has been, in staging, since the day it was configured.** The 2026-07-31
@@ -735,13 +737,13 @@ rotated in the store reaches production without a deploy, and the app spec carri
 exactly one secret — the store credential. It is implemented, tested end-to-end
 against the in-memory fake (`test/secrets.rotation.test.ts` drives a real MCP
 client through a real gateway to a real upstream that rejects a stale token), and
-**not yet enabled anywhere**. Staging and prod both still run `provider: env`,
-which is unchanged byte-for-byte.
+enabled on STAGING. Prod runs `provider: env`, unchanged byte-for-byte.
 
-**Why it is not on.** Enabling it needs the resolver service account (hack #26,
-still unprovisioned), the gateway-namespace parameters seeded, and workflow
-changes in `tadasant-internal` that are outside this repo. It ships off by default
-so the capability can land and be reviewed without a flag day.
+**Why prod is not on it.** Enabling a deployment needs its own resolver service
+account (hack #26) and its gateway-namespace parameters seeded; prod additionally
+needs workflow changes in `tadasant-internal` that are outside this repo. It ships
+off by default so the capability can land and be reviewed without a flag day, and
+staging is the worked example of switching it on.
 
 **Known boundaries, by design, not by omission.**
 
@@ -944,7 +946,7 @@ path for a case that only exists once, and would still miss every parameter nobo
 rotates.
 
 **Blast radius, today.** Small and knowable: prod runs `provider: env` and has no
-live parameters, and staging has one `params: true` server. The backfill loop is in
+live parameters, and staging has two `params: true` servers. The backfill loop is in
 `docs/operate/secrets-iam.md` ("Backfilling parameters created before strad made
 this grant"); it is idempotent, so running it over a store that is already correct
 is a no-op.
@@ -1246,7 +1248,12 @@ reach for before a flip.
 
 A consolidated checklist, cross-referenced above:
 
-- [ ] **The secrets/parameters GCP project + three service accounts** (hack #26):
+- [x] **The secrets/parameters GCP project + three service accounts** (hack #26) —
+      DONE for STAGING. All three exist; the resolver was the last one and the
+      2026-07-31 rehearsal created it, seeded its key, and proved it renders. PROD
+      still needs its own set — staging having them says nothing about prod. What
+      remains for staging is the per-server VALUES, the last sentence of this item.
+      The original spec, kept because prod has to repeat it:
       a project holding ONLY the `/strad/staging/mcp/*` parameters (its id is a
       LITERAL in `infra/strad.staging.yaml`, `strad-secrets-staging` — not a
       seeded secret, since a project id is not a credential). A fresh project needs

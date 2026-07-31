@@ -410,7 +410,9 @@ So the order matters, and each step gates the next:
    both, then seed — never the other way round. Rolling `core` back past that
    commit afterwards is a data hazard, not a rollback; see
    [limitation #33](/limitations/#33-secret-values-are-base64url-in-secret-manager-and-only-the-boundary-is-unverified).
-3. **Seed, then verify by rendering.** `store:check --mode require --resolve`
+3. **Seed, then verify by rendering.** `store:seed` (`scripts/seed-store.ts`) is
+   the seeder — dry-run unless `--commit`, and it reads back every name it writes
+   through `:render`. `store:check --mode require --resolve`
    is the gate: presence is not resolvability, and this is the only check that
    proves the resolver can actually read what was seeded. The staging deploy runs
    it in report mode on every run. It matters more than it sounds: by
@@ -438,7 +440,7 @@ against a running gateway rather than argued from the code:
   `ttlSeconds` the running gateway returned the new value, from the same
   container — the pod's hostname was unchanged across the transition.
 
-`STRAD_TOKENS` was the name step 2 was written for, and it is now proved live:
+`STRAD_TOKENS` was the name step 2 was written for, and it is proved live:
 seeded as a secret parameter, it renders, and because a store-backed spec does
 not bake the boot keys the staging gateway has no other copy to fall back on. A
 `/mcp` request authenticating against that deployment is an end-to-end read of it.

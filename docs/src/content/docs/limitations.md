@@ -234,7 +234,7 @@ a change to how the bundle is released, not a line in the deploy workflow.
 resolve `sha-<commit>` for the bundle the way the core already does. Do it with
 **#25**, which wants the same input for the same reason.
 
-### 26. The secrets/parameters system is wired but not yet live on GCP
+### 26. The per-server parameter namespace is provisioned but unseeded
 
 strad has a store-agnostic [secrets and parameters
 system](/intro/architecture/#the-secrets-and-parameters-system): Parameter Manager
@@ -244,19 +244,22 @@ console **admin** (reads and writes both kinds, behind SSO), and the deploy-time
 **resolver** (injects a `params: true` server's env). All of it is tested against an
 in-memory fake, so the logic ships proven.
 
-What is **deferred** is the last of the GCP provisioning: the dedicated
-`strad-secrets-staging` project and the viewer and admin service accounts exist, but
-the **resolver** service account and the seeded parameter values do not. Until the
-resolver exists, a `params: true` supplementary server —
+What is **deferred** is the values. For staging the provisioning is complete — the
+dedicated `strad-secrets-staging` project, the viewer and admin service accounts,
+and the **resolver** service account with its key all exist, the last of these
+created and proved during the 2026-07-31 rehearsal. But `/strad/staging/mcp/` holds
+zero parameters, so a `params: true` supplementary server —
 `remote-filesystem-tmp-public` — boots **without** its resolved parameters and
-degrades gracefully rather than failing the deploy.
+degrades gracefully rather than failing the deploy. The cause is an empty namespace,
+not a missing identity, which changes the fix. Prod needs its own resolver; staging
+having one says nothing about it.
 
 The posture is intact throughout: the resolver credential runs at **deploy time**
 (in CI / `render-spec`), never in the container, so "the running container holds no
 cloud credential" still holds — the resolved values reach the bundle as ordinary
 SECRET env vars, exactly like every other secret.
 
-**Undo:** provision the resolver service account and its key, then set
+**Undo:** set
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
 `HACKS.md` #26 for the full checklist.
@@ -267,9 +270,9 @@ SECRET env vars, exactly like every other secret.
 `${NAME}` from the parameter store with a TTL, so a rotation reaches production
 with no deploy and the gateway's only secret in the spec is the store credential
 itself. It is tested end-to-end against the in-memory fake — a real MCP client,
-through a real gateway, to an upstream that rejects a stale token — and **staging
-now runs it for real**, with the rotation measured against a live gateway rather
-than a fake. **Prod still uses `provider: env`, unchanged.**
+through a real gateway, to an upstream that rejects a stale token — and staging
+runs it for real, with the rotation measured against a live gateway rather than a
+fake. **Prod still uses `provider: env`, unchanged.**
 
 Turning it on for a deployment needs the resolver service account (#26) and the
 gateway-namespace parameters seeded; prod additionally needs workflow changes in
@@ -293,11 +296,11 @@ pre-flip counterpart: it counts every name the deployment reads from the store,
 names what is absent, and has a report mode for a migration that moves one server
 per day.
 
-**Staging is no longer one of those deployments.** A live rehearsal on 2026-07-31
+Staging is not one of those deployments. A live rehearsal on 2026-07-31
 provisioned the resolver identity, seeded `/strad/staging/gateway/static/`, flipped
 `gateway.secrets.provider` and measured the result against a running gateway. An
 earlier pass the same day had concluded the flip was blocked on a missing resolver
-credential and on `STRAD_TOKENS` being unstorable; **both conclusions are retired.**
+credential and on `STRAD_TOKENS` being unstorable; both conclusions are retired.
 The resolver exists and renders, and the base64url encoding (limitation #33) makes
 a token array render like any other value.
 
@@ -534,7 +537,7 @@ parameter written after this change before rolling back past it. Boot is deliber
 lenient so a rollback cannot become an outage, which makes rollback a path people
 actually take.
 
-**A live `:render` HAS now been run against this change.** The staging
+**A live `:render` has been run against this change.** The staging
 runtime-secrets rehearsal seeded `STRAD_TOKENS` — the array of token records that
 motivated the encoding, carrying `"`, `[`, `]`, `{` and `}` — as a secret parameter
 in `strad-secrets-staging`, and it renders. The roster reports `render: 5 of 5

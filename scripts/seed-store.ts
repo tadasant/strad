@@ -32,7 +32,7 @@
  *
  * A `supplementary-image` server's `env:` is deliberately NOT included. Those are
  * another container's environment, `render-spec` reads them from the store OR the
- * environment, and moving 21 third-party credentials into a store is a decision
+ * environment, and moving 22 supplementary credentials into a store is a decision
  * to take deliberately rather than as a side effect of enabling the flip.
  * `--set NAME=VALUE` adds a name the environment does not carry. It is for
  * non-secret canaries: the value passes through a workflow input and appears in
@@ -163,6 +163,21 @@ const store = createGcpParameterStore({ projectId, account });
 
 /** consoleEnv: names are environment-only, and the store must never hold one. */
 const consoleOnly = new Set(consoleEnvNames(config));
+
+// An explicit --set for a consoleEnv: name is REFUSED rather than filtered. The
+// filter below silently drops it, which for a name derived from the config is
+// right — but a name typed on the command line was asked for, and dropping that
+// without a word would report "seeded" while the one thing the caller named went
+// nowhere. It is also the one name whose absence matters most: consoleEnv: is
+// where the store-ADMIN credential lives.
+for (const name of overrides.keys()) {
+  if (consoleOnly.has(name))
+    usage(
+      `${name} is a consoleEnv: name and is read from the deploy environment ` +
+        `only — the store must never hold it. Remove the --set.`,
+    );
+}
+
 const wanted = [
   ...new Set([...requiredSecretNames(config), ...overrides.keys()]),
 ]

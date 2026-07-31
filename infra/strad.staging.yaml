@@ -106,9 +106,10 @@ roles:
     servers: [echo]
   # Zimmer's own agent sessions, and the narrowest role that still does its job.
   #
-  # Staging's deploy loads 33 secrets, and they are the SAME third-party accounts
-  # prod uses — there is no separate Slack workspace, Gmail tenant or 1Password
-  # service account — so `admin` here would hand a Zimmer session `onepassword-rw`,
+  # Staging's deploy loads every strad-staging-* secret, and they are the SAME
+  # third-party accounts prod uses — there is no separate Slack workspace, Gmail
+  # tenant or 1Password service account — so `admin` here would hand a Zimmer
+  # session `onepassword-rw`,
   # `gmail-rw-external`, `slack` and `tailscale-readwrite`, with prod's blast
   # radius. Name the slugs, never the wildcard.
   #
@@ -467,9 +468,9 @@ servers:
     # is still bounded by SECRETS_NAMESPACES below, which is `/strad/staging/mcp/`
     # and deliberately does NOT include the gateway's own
     # `/strad/staging/gateway/static/`. That namespace is where the deployment's
-    # own ${NAME} references live — the 21 supplementary credentials
+    # own ${NAME} references live — the 22 supplementary credentials
     # (SLACK_BOT_TOKEN, the 1Password service-account token, the Gmail private
-    # keys) plus its boot keys, 28 names in all — and staging's MCP credential
+    # keys) plus its boot keys and STRAD_ENV, 30 names in all — and staging's MCP
     # CAN read a secret value (it is read+write here, unlike prod's). Adding the
     # gateway namespace to the line below would therefore hand this token every
     # credential the narrow role exists to withhold. Do not.
