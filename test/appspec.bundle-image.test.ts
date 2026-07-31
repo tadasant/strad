@@ -224,15 +224,22 @@ describe("the real staging config", () => {
       secrets,
       supplementaryImage: "ghcr.io/tadasant/strad-bundle:branch-x",
     });
-    // Still exactly two components — the count this repo cares most about, and
+    // Still exactly three components — the count this repo cares most about, and
     // the one a bundle-image change could silently split.
-    expect(spec.services.map((s) => s.name)).toEqual(["core", "bundle"]);
+    expect(spec.services.map((s) => s.name)).toEqual([
+      "core",
+      "bundle",
+      "bundle-zimmer-secrets",
+    ]);
     // Nothing anywhere in the rendered spec still points at the bundle's
-    // `:latest` — that is the whole "no config edit needed" claim.
+    // `:latest` — that is the whole "no config edit needed" claim. Note that
+    // covers BOTH bundles: the override is repository-scoped, and both run the
+    // same bundle image, so a branch deploy must move them together or the
+    // second store would answer from `:latest` while the first ran the branch.
     const images = spec.services.map(
       (s) => `${s.image.repository}:${s.image.tag}`,
     );
     expect(images).not.toContain("strad-bundle:latest");
-    expect(images).toContain("strad-bundle:branch-x");
+    expect(images.filter((i) => i === "strad-bundle:branch-x")).toHaveLength(2);
   });
 });

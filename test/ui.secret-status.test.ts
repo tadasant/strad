@@ -29,7 +29,7 @@ import {
  *
  *   1. NOT VISIBLE HERE IS NOT MISSING. A supplementary image's `env:` is baked
  *      onto its own component; core cannot see it. A presence check that answered
- *      "not seeded" would paint a healthy 26-server fleet entirely red.
+ *      "not seeded" would paint a healthy 27-server fleet entirely red.
  *   2. A `consoleEnv:` VALUE IS FILED UNDER THE KEY, NOT THE REF NAME. Asking the
  *      provider for the ref name and believing the `null` is the exact bug
  *      `src/ui/resolve.ts` documents having shipped to production once.

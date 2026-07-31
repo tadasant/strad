@@ -268,7 +268,8 @@ carries only Chromium. When bumping Playwright, bump the base image tag and the
 ## 12. good-eggs staging bundle deployed from the session, off DOCR not ghcr
 
 **⊘ SUPERSEDED.** The component this describes no longer exists. The collapse
-(hack #24) renders exactly two components — `core` and `bundle` — and
+(hack #24) renders `core` and `bundle` — plus `bundle-zimmer-secrets`, which is
+there for a second parameter store rather than for a capability (hack #33) — and
 `bundle-goodeggs` is not one of them; good-eggs is now a mount inside
 `ghcr.io/tadasant/strad-bundle`. Kept for history. Retained below as written.
 
@@ -830,7 +831,7 @@ fine, lists fine and 401s in isolation — and it will miss a plausible-looking 
 resolved at render time and baked onto its own bundle; `appspec.ts` never broadcasts
 it, and the console renders in `core`. So core cannot see those values, and the popout
 reports `unverified` — "not visible here" — rather than `missing`. Reporting
-`missing` would paint a healthy 26-server fleet entirely red, which is the failure
+`missing` would paint a healthy 27-server fleet entirely red, which is the failure
 mode that would make the surface worse than nothing. It still badges `ISSUE`, which
 is the conservative direction and is stated as "could not be checked" rather than
 as a fault. `provider: gcp-parameter-store`
@@ -940,7 +941,7 @@ either way — this is an IAM-shaped limitation, not a mechanism in strad.
 `sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
 refuses `latest` for it outright. The **bundle** gets none of that. Its image is
 written into `infra/strad.staging.yaml` as
-`ghcr.io/tadasant/strad-bundle:latest`, on all 24 `supplementary-image` entries,
+`ghcr.io/tadasant/strad-bundle:latest`, on all 25 `supplementary-image` entries,
 and the only thing that overrides it is `--bundle-image` for a branch build.
 
 **Why it matters.** This is the same failure that took staging down, one
@@ -1008,6 +1009,36 @@ as to a revert. That matters because rollback is a first-class path in this repo
 stays lenient on purpose so a rollback cannot become an outage). Before rolling `core`
 back past this commit, re-seed every secret parameter written after it, or accept that
 those names resolve to gibberish.
+
+## 34. A second parameter store costs a second billed component
+
+**What.** `infra/strad.staging.yaml` renders THREE App Platform components, not
+two. The third, `bundle-zimmer-secrets`, runs the same bundle image as `bundle`
+and is only ever routed `/secrets`. It exists because the secrets server reads
+`SECRETS_PROJECT_ID` from `process.env` and the bundle host calls `loadConfig()`
+with no argument — one container fronts one store — so a slug pointing at a second
+GCP project needs a second container. About $12/month at `apps-s-1vcpu-1gb`, for a
+store a human touches a few times a month.
+
+**Why it ships anyway.** The alternatives are worse, not cheaper. A parallel
+parameters console elsewhere would duplicate the viewer/admin split, the
+reveal-flag-versus-IAM logic, `src/ui/param-routing.ts`'s delivery-state classifier
+and the capability probe — a lot of load-bearing subtlety to rewrite. Folding both
+stores into one GCP project under separate namespaces needs no extra component at
+all, but `parameters.list` is authorized on the PROJECT and `SECRETS_NAMESPACES` is
+a code-level guard that scopes answers rather than permissions, so it collapses
+exactly the boundary the split credentials exist to draw.
+
+**It also wastes most of the container.** The bundle image registers every upstream
+at boot (~200MB of Node) though this one serves a single mount, because there is no
+build that produces a secrets-only image and adding one would be a second image to
+keep current.
+
+**Undo.** An upstream `consoleOnly: true` (or `mcp: false`) flag on a server would
+let a second store be console-only — no MCP surface, no second container, no cost.
+For a store a human manages and no agent should enumerate that is arguably the
+right shape rather than merely the cheaper one. It is not built, and nothing here
+blocks on it.
 
 ## What the human still needs to provision
 

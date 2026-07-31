@@ -53,7 +53,7 @@ export interface RenderOptions {
   resolvedParams?: Readonly<Record<string, Record<string, string>>>;
   /**
    * Override the image a supplementary component runs, without editing the
-   * config's 24 `image:` lines. This is what makes a BRANCH deployable:
+   * config's 25 `image:` lines. This is what makes a BRANCH deployable:
    * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
    * the deploy renders the branch's own config against that tag.
    *
@@ -157,8 +157,8 @@ const PORT = 8080;
  * images.
  *
  * This list exists because of an asymmetry that is easy to miss and silent when
- * you get it wrong. A supplementary component (today there is exactly one, the
- * `bundle`) does NOT receive the broadcast `opts.env` — look below: it gets its
+ * you get it wrong. A supplementary component does NOT receive the broadcast
+ * `opts.env` — look below: it gets its
  * own scoped secrets plus `opts.env.filter(e => e.type === "SECRET")`, and
  * nothing else. That is deliberate and correct for `STRAD_CONFIG_YAML` (a
  * supplementary image does not run strad and has no use for strad's server
@@ -213,8 +213,7 @@ const STRAD_IMAGE_ONLY_SECRET_KEYS = new Set([
 
 /**
  * The identity vars every component gets, so its telemetry can say which of the
- * 2 deployed processes (core, bundle) it is. `STRAD_COMPONENT` is the one that
- * matters: a
+ * deployed processes it is. `STRAD_COMPONENT` is the one that matters: a
  * supplementary image has no STRAD_BUNDLE and could not otherwise name itself.
  *
  * `STRAD_VERSION` is the deployed image's TAG, which makes `service.version` in
@@ -328,6 +327,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     }
   >();
   const builtinBundles = new Set<string>();
+  /** bundle -> variable -> the slugs that contribute it. See the check below. */
+  const paramOwners = new Map<string, Map<string, Set<string>>>();
+  /** bundle -> every variable on it that came from a PARAMETER. */
+  const paramKeys = new Map<string, Set<string>>();
 
   for (const server of config.servers) {
     if (!server.enabled) continue;
@@ -346,6 +349,29 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // unresolved ref and either fail the render or be silently corrupted.
       const params = opts.resolvedParams?.[server.slug] ?? {};
       const prev = imageBundles.get(server.bundle);
+
+      // Who contributed which variable, so the collision check below can tell a
+      // server overriding ITSELF from one server clobbering another. Order-free
+      // on purpose: it is a post-pass, not a running comparison, because a
+      // `params: true` server may be declared either side of the server it would
+      // shadow.
+      const owners = paramOwners.get(server.bundle) ?? new Map();
+      for (const key of Object.keys(server.env)) {
+        (owners.get(key) ?? owners.set(key, new Set()).get(key)!).add(
+          server.slug,
+        );
+      }
+      for (const key of Object.keys(params)) {
+        (owners.get(key) ?? owners.set(key, new Set()).get(key)!).add(
+          server.slug,
+        );
+        (
+          paramKeys.get(server.bundle) ??
+          paramKeys.set(server.bundle, new Set()).get(server.bundle)!
+        ).add(key);
+      }
+      paramOwners.set(server.bundle, owners);
+
       imageBundles.set(server.bundle, {
         image: server.image,
         env: { ...(prev?.env ?? {}), ...server.env },
@@ -353,6 +379,39 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
+    }
+  }
+
+  // A PARAMETER MAY NOT SHADOW ANOTHER SERVER'S VARIABLE ON THE SAME BUNDLE.
+  //
+  // `env:` and `params` are collected separately above but they are emitted into
+  // ONE component environment, params last — so a parameter whose variable name
+  // collides with a sibling's silently wins. That matters more than an ordinary
+  // config collision because it is reachable by a HUMAN action rather than only
+  // by a config edit: the console creates parameters, and a parameter's PATH
+  // decides its variable name. A parameter named `SECRETS_PROJECT_ID` created
+  // under some other slug's namespace would repoint the `secrets` server's whole
+  // store at the next render, with nothing reporting it.
+  //
+  // The config schema cannot catch this — a parameter's NAME comes from a path in
+  // the store and its VALUE does not exist until render time. The `superRefine` in
+  // src/config/schema.ts covers the static `env:`-vs-`env:` half; this covers the
+  // half that only exists here.
+  //
+  // What is NOT an error: a server shadowing its OWN `env:` key with its OWN
+  // parameter. That is the documented migration path off a hand-written `${REF}`,
+  // and it stays a deliberate single-server override.
+  for (const [bundle, owners] of paramOwners) {
+    for (const [key, slugs] of owners) {
+      if (slugs.size < 2) continue;
+      if (!paramKeys.get(bundle)?.has(key)) continue;
+      throw new Error(
+        `bundle "${bundle}": ${key} is contributed by more than one server ` +
+          `(${[...slugs].sort().join(", ")}) and at least one of them resolves it ` +
+          `as a managed parameter. One bundle is one container with one ` +
+          `environment, so the parameter would silently overwrite the other ` +
+          `server's value. Rename the parameter, or give the server its own bundle.`,
+      );
     }
   }
 

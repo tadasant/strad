@@ -2,9 +2,15 @@
 /**
  * bundle — THE strad supplementary image. All 15 upstream MCP servers (15
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 24 supplementary-image entries
+ * gateway's config names more SLUGS than that — 25 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
+ *
+ * TWENTY-FOUR of those are on one component. The twenty-fifth, `zimmer-secrets`,
+ * runs this same image as a SECOND component, because it fronts a second
+ * parameter store and `loadSecrets()` below reads `process.env` — one container,
+ * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
+ * and mounts /secrets against it.
  *
  * WHAT THIS REPLACES. Eleven components: bundle-api, bundle-api-ro, bundle-gcs,
  * bundle-google-{ro,rw,rw-external}, bundle-op-{ro,rw}, bundle-goodeggs,

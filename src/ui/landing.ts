@@ -170,7 +170,7 @@ function consoleCards(consoleMounted: boolean): string[] {
  * One server.
  *
  * The connect URL is NOT rendered as a visible field here. It is the same 40-odd
- * characters on every tile with only the slug varying, so showing it 26 times
+ * characters on every tile with only the slug varying, so showing it 27 times
  * both drowns the page and — at tile width — truncates to `https://staging.st…`,
  * hiding the one part that differs. The slug is displayed; the full URL rides on
  * the button's data attribute and arrives on the clipboard, which is what anyone

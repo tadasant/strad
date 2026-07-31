@@ -192,13 +192,21 @@ limitations](/limitations/).
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
-once. It declares twenty-six server slugs: a core builtin (`echo`), a
+once. It declares twenty-seven server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
-and twenty-four `supplementary-image` entries sharing ONE bundle over the private
-network — which resolve onto the bundle image's fifteen mounts, because every
-read-only / read-write pair is two entries on one path. One of those, `secrets`,
-is also the worked example for the split `env:` / `consoleEnv:` credentials from
-step 4b, and `remote-filesystem-tmp-public` is the `params: true` example from step 4c. It
+and twenty-five `supplementary-image` entries — twenty-four sharing ONE bundle
+over the private network, which resolve onto the bundle image's fifteen mounts
+because every read-only / read-write pair is two entries on one path. One of
+those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
+credentials from step 4b, and `remote-filesystem-tmp-public` is the `params: true`
+example from step 4c.
+
+The twenty-fifth, `zimmer-secrets`, is the worked example for the one case where a
+second **bundle** is the answer rather than a second `path`: it is the same image
+and the same `path: /secrets` as `secrets`, differing only in `bundle:` and in
+which store it points at. [Two stores, one
+gateway](/operate/secrets/#two-stores-one-gateway) explains why sharing a bundle
+there is silently wrong. It
 also keeps a deliberately narrow `echo-only` role, so
 the [424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read
 it alongside

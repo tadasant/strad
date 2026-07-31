@@ -894,6 +894,119 @@ cannot run yields the read-only surface; nothing is opened by a failure.
 The exact grants, per environment, with audit assertions, are in
 [`servers/secrets/README.md`](https://github.com/tadasant/strad/blob/main/servers/secrets/README.md).
 
+## Two stores, one gateway
+
+The `secrets` server is store-**agnostic**: it takes a `SECRETS_PROJECT_ID`, a
+`SECRETS_NAMESPACES` prefix list and a credential. So a second slug pointed at a
+second project gets the same console, the same MCP tools, the same viewer/admin
+split and the same reveal flag — instead of a second parameters console written
+somewhere else. Staging does this for Zimmer's own store, as `zimmer-secrets`.
+
+**One bundle per store.** That is the whole mechanism, and the second slug is
+identical to the first except for its `bundle:` line and its own project,
+namespaces and credentials:
+
+```yaml
+bundles:
+  - name: bundle
+  - name: bundle-zimmer-secrets
+
+servers:
+  - slug: secrets
+    bundle: bundle
+    path: /secrets
+    env:
+      SECRETS_PROJECT_ID: "strad-secrets-staging"
+      SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+    consoleEnv:
+      SECRETS_PROJECT_ID: "strad-secrets-staging"
+      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
+
+  # Same image, same path, DIFFERENT bundle.
+  - slug: zimmer-secrets
+    bundle: bundle-zimmer-secrets
+    path: /secrets
+    env:
+      SECRETS_PROJECT_ID: "zimmer-secrets-staging"
+      SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_VIEWER_KEY_JSON}"
+    consoleEnv:
+      # Only what the console alone needs — see the fallback note below.
+      ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
+```
+
+### Why one bundle cannot hold both
+
+A bundle is a component, which is a container, which is one `process.env`. The
+secrets server reads `SECRETS_PROJECT_ID` from it and the bundle host calls
+`loadConfig()` with no argument, so a container fronts exactly **one** store —
+and `renderAppSpec` merges a bundle's servers' `env:` maps last-wins, with no
+error. Two secrets slugs in one bundle therefore answer from one store under two
+slugs. That is a wrong answer, not a failure, which is why
+`scripts/check-config.ts` now
+[rejects it](/operate/deploy-model/#checking-a-config-before-it-deploys) (check 5).
+
+The gateway resolves each slug's private URL **per bundle** and only then appends
+`path:`, so the same `/secrets` in two bundles is two containers. Two slugs on one
+path in _one_ bundle is the capability-variant pattern, and stays legal.
+
+### `env:` is bare, `consoleEnv:` is slug-namespaced
+
+This asymmetry is the other thing to get right, and getting it backwards is
+silent.
+
+- **`env:`** lands on that slug's own container, which holds nothing else — so it
+  uses the bare `SECRETS_*` names the server actually reads.
+- **`consoleEnv:`** is merged into the **one** `core` component along with every
+  other server's, so bare names there would collide. `/ui/secrets` would render
+  strad's project while holding the **other** store's admin credential — a page
+  that looks entirely correct and acts on the wrong project. The console maps
+  `ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` back down to
+  `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` for that slug alone
+  (`withNamespacedFallback`).
+
+**The mapping is a fallback, not an override** (`out[bare] ??= value`), and
+`env:` and `consoleEnv:` are merged before it runs. So a namespaced key whose
+bare form the slug **also** declares under `env:` is inert — the `env:` value
+wins and the namespaced one does nothing while looking like it does something.
+Declare under `consoleEnv:` only what the console alone needs: the admin
+credential, the reveal flag, `SECRETS_NAMESPACES_STRICT`. The project and
+namespace come from `env:` and the console reads them there.
+
+One consequence worth knowing before you hit it: a second store's console
+therefore **cannot** be given a wider namespace list than its MCP half, the way
+`secrets` does (one namespace under `env:`, two under `consoleEnv:`). That works
+for the first slug precisely because its key is bare in both maps — and bare is
+what a second slug may not use. Making the namespaced form an override would fix
+it, and would also change the `gcs` pair, so it is not a local change.
+
+### The credential, which is IAM and not markup
+
+The MCP-facing (`env:`) credential must be a **viewer** on the second project:
+`parametermanager.parameterViewer` and nothing that renders. A resolver identity
+is the tempting reuse and is the wrong one — it holds
+`parametermanager.parameterAccessor`, which carries `parameterVersions.render`,
+and `:render` dereferences a secret parameter as the _parameter's own_ principal,
+which was granted `secretAccessor` at create time. It is a live read path to a
+secret value. Because the tool surface is
+[probed rather than configured](#the-mcp-tool-surface-is-probed-not-configured), a
+slug handed that key does not merely look wrong — it lists `get_secret_value` and
+the call succeeds.
+
+### The cost
+
+One more billed App Platform component, at the default `apps-s-1vcpu-1gb`. It
+runs the full bundle image (every upstream registers at boot, ~200MB of Node)
+even though it is only ever routed `/secrets` and never launches Chromium.
+
+Whether that is worth it for a store a human touches a few times a month is a
+budget call. The alternatives are worse rather than cheaper: a parallel console
+elsewhere duplicates the viewer/admin split, the reveal-flag-versus-IAM logic, the
+delivery-state classifier and the capability probe; and folding the second store
+into the first project under its own namespace needs no component at all but
+collapses the boundary the split credentials exist to draw — `parameters.list` is
+authorized on the **project**, and `SECRETS_NAMESPACES` is a code-level guard that
+scopes answers, not permissions.
+
 ## The seam
 
 ```

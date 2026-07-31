@@ -86,6 +86,11 @@ One bundle runs one image, but that image may host **many** servers — each on 
 own `path`. strad's own bundle image mounts fifteen MCP servers in one process, so
 fifteen `path`s on one container.
 
+Two servers may also share a `path` in one bundle — that is the capability-variant
+pattern (`gmail-ro` and `gmail-rw`, told apart by their `tools:` policy). What they
+cannot share is a value: a bundle is one `process.env`, so two servers in one
+bundle declaring the same `env:` key with **different** values is a schema error.
+
 Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
 start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets),
 plus two that shape how this server gets its values:
@@ -108,6 +113,20 @@ plus two that shape how this server gets its values:
   resolved value on core under the declared KEY — the ref name itself is never
   injected anywhere, which is what keeps the admin credential off the bundle. The
   console therefore reads the key, not the ref.
+
+  **The two scopes have different collision rules, and this is the trap.** `env:`
+  is per-bundle; `consoleEnv:` is merged into the one `core` component along with
+  every other server's. So two servers can safely use the same `env:` key in
+  different bundles, and cannot safely use the same `consoleEnv:` key anywhere. A
+  second server of a kind that already exists (a second `secrets` slug, say)
+  therefore keeps bare names under `env:` and **slug-namespaces** anything it adds
+  under `consoleEnv:` — `ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`,
+  which the console maps back down to `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` for
+  that slug alone. The mapping is a **fallback** (`??=`) applied after the two maps
+  are merged, so a namespaced key whose bare form `env:` already sets is inert —
+  declare under `consoleEnv:` only what the console alone needs. `check-config`
+  enforces the collision rules; see [Two stores, one
+  gateway](/operate/secrets/#two-stores-one-gateway) for the worked example.
 - **`params`** (default `false`) — opt into parameter resolution. When `true`,
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
   system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and

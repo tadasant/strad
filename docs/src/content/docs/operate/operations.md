@@ -300,18 +300,27 @@ See [Known limitations](/limitations/).
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all three server kinds so the deploy path is proven end-to-end. It
-declares twenty-six server slugs:
+declares twenty-seven server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
-- twenty-four `supplementary-image` entries, all on the one `bundle` component
-  running `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's fifteen
-  mounts, because a read-only and a read-write variant of one upstream are two
-  entries sharing one `path`.
+- twenty-four `supplementary-image` entries on the one `bundle` component running
+  `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's fifteen mounts,
+  because a read-only and a read-write variant of one upstream are two entries
+  sharing one `path`.
+- `zimmer-secrets` — a twenty-fifth `supplementary-image` entry, running that same
+  image on its **own** component, `bundle-zimmer-secrets`. It is the only server
+  that leaves the one bundle, and the only reason to leave it: a parameter store is
+  `process.env`. See [Two stores, one
+  gateway](/operate/secrets/#two-stores-one-gateway).
 
-Roles are `admin: ["*"]` and a deliberately narrow `echo-only: [echo]`, which
-keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful.
+Roles are `admin: ["*"]`, a deliberately narrow `echo-only: [echo]` — which
+keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful —
+and `zimmer: [zimmer-secrets]`, the role Zimmer's own sessions hold. It reaches
+its own store and nothing else: staging's other credentials are the same
+third-party accounts prod uses, so `admin` there would be a much larger grant than
+it looks.
 `google.enabled` is `false` (it flips true when OAuth creds land) and
 `consoleDevBypass.enabled` is `true`.
 
@@ -323,9 +332,13 @@ console side the list is only a set of suggestions — the field is free text
 unless `SECRETS_NAMESPACES_STRICT` is set.
 
 `test/staging-config.test.ts` is the guard on all of this: it asserts the config
-renders to exactly `["core", "bundle"]`, that the bundle is `apps-s-1vcpu-2gb`, that
-no server carries a container-side capability toggle, and that each read-only
-allow-list is a subset of the tier above it.
+renders to exactly `["core", "bundle", "bundle-zimmer-secrets"]`, that the bundle
+is `apps-s-1vcpu-2gb`, that no server carries a container-side capability toggle,
+and that each read-only allow-list is a subset of the tier above it. A fourth
+component appearing there is a billed regression, which is why the list is pinned
+rather than counted. `test/staging-config.multi-store.test.ts` is the guard on the
+second store specifically: which project, namespace and credential land on which
+component, and which admin identity each console page resolves to.
 
 ## Health and console surface
 

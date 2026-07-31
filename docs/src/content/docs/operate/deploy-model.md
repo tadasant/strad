@@ -180,11 +180,18 @@ learn:
 
 ## What strad's own config renders to
 
-`infra/strad.staging.yaml` produces exactly **two** components — `core` and
-`bundle` — and `test/staging-config.test.ts` asserts that. `core` runs
-`ghcr.io/tadasant/strad` with `http_port: 8080`; `bundle` runs
+`infra/strad.staging.yaml` produces exactly **three** components — `core`,
+`bundle` and `bundle-zimmer-secrets` — and `test/staging-config.test.ts` asserts
+that. `core` runs `ghcr.io/tadasant/strad` with `http_port: 8080`; `bundle` runs
 `ghcr.io/tadasant/strad-bundle` at `apps-s-1vcpu-2gb` with `internal_ports: [8080]`
 and no public route.
+
+`bundle-zimmer-secrets` runs the **same** bundle image at the default
+`apps-s-1vcpu-1gb`, and it is the one component that is not there for capability.
+Capability is config, and config can be shared; a parameter STORE is
+`process.env`, and a container has exactly one of those. It exists so a second
+`secrets` slug can front a different project — see [Two stores, one
+gateway](/operate/secrets/#two-stores-one-gateway) for the shape and its cost.
 
 Prod, in `tadasant-internal`, is a separate config against the same renderer.
 
@@ -248,13 +255,23 @@ Four checks, in order:
    last declaration silently wins and the other server's console runs as the wrong
    identity.
 
-   The collision half is now **also** rejected at schema-validation time (check 2
-   above), which is the earlier and better place to say it — and that check covers
-   `env:` too, per bundle. See [`env:` may be bare; `consoleEnv:` must be
-   slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).
-   This one stays because it inspects the **rendered spec**, which is what actually
-   ships: a renderer regression that dropped or merged a key would produce this
-   state from a config that validated cleanly, and nothing else would notice.
+A collision between two servers' `env:` maps in one bundle is **not** a check
+here — it is rejected earlier, by the schema itself, along with the
+`consoleEnv:`-against-`core` half. That is the better place for it: a schema rule
+fires at boot as well as at this gate. See [`env:` may be bare; `consoleEnv:` must
+be
+slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).
+
+What the schema still cannot see is a `params: true` server's variables. They land
+on the same component environment, but their names come from **paths in the store**
+and their values do not exist until render time — so neither the schema nor this
+script, which has no store and no credentials, can know them. `renderAppSpec` can,
+and it throws when one server's resolved parameter would shadow a sibling's
+variable on the same bundle. That case matters more than an ordinary config
+collision because it is reachable by a human action rather than a config edit: the
+console creates parameters, and a parameter's path decides its variable name. A
+server shadowing its **own** `env:` key with its own parameter stays legal — that
+is the migration path off a hand-written `${REF}`.
 
 **It is strict where the gateway is lenient, and that asymmetry is deliberate.**
 `parseConfig` at boot keeps ignoring unknown keys, because the config and the image
