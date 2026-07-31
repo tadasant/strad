@@ -1175,8 +1175,8 @@ reference resolved, and `/mcp` rejecting everything. The failure is
 all-or-nothing and the blast radius is the deployment.
 
 This is not hypothetical: until #61 lands, a secret parameter whose value carries
-a quote, brace, newline or backslash renders `400 … injection detected` (see
-`limitations.md` #32). Seeding one such name — `STRAD_TOKENS` is exactly this
+a quote, brace, newline or backslash renders `400 … injection detected`.
+Seeding one such name — `STRAD_TOKENS` is exactly this
 shape — takes the rest of the namespace down with it. The sequencing that
 follows is in `docs/operate/secrets.md`: land the encoding fix, publish and pin
 the images, seed, verify with `store:check --resolve`, and only then flip.

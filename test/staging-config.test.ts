@@ -316,7 +316,7 @@ describe("staging config", () => {
       // the MCP half must stay scoped to the servers' namespace. The gateway
       // namespace holds every ${NAME} this deployment references — and staging's
       // MCP credential can read a secret VALUE — so listing it here would hand
-      // this token the 31 credentials the narrow role exists to withhold.
+      // this token the 21 supplementary credentials the narrow role withholds.
       const secrets = CONFIG.servers.find((s) => s.slug === "secrets");
       if (secrets?.kind !== "supplementary-image")
         throw new Error("expected a supplementary image");

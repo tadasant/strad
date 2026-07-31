@@ -299,7 +299,8 @@ resolver credential**: `STRAD_PARAMS_PROJECT_ID` and
 `strad-staging-*` secrets, so `store:check` exits 3 and `render-spec` refuses a
 store-backed render. And the flip cannot be partial: `render-spec` stops baking
 the boot keys, `STRAD_TOKENS` becomes required in the store, and a JSON array of
-token records is the value shape `:render` refuses until #32 below lands.
+token records is the value shape `:render` refuses until the value-encoding fix
+(tadasant/strad#61) lands.
 
 **Undo:** land the encoding fix and pin both images, provision the resolver SA and
 seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
@@ -317,7 +318,7 @@ That is deliberate. A resolver that dropped the failing name would hand the
 gateway a bag that looks complete, and the absence would surface later as one
 failing request against one server — the "worse place to find out" the deploy
 preflight exists to avoid. The cost is that the blast radius of one bad value is
-the deployment, which matters most while #32 below is unfixed: seeding a single
+the deployment, which matters most while that refusal is unfixed: seeding a single
 quote-bearing secret takes the rest of the namespace with it.
 
 Run [`store:check --resolve`](/operate/secrets/#is-the-namespace-complete-store-check)

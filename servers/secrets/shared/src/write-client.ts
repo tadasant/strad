@@ -30,10 +30,12 @@ import { tokenMinter, type ServiceAccount } from "./google-auth.js";
  * work; this file only stops the surface from advertising what the boundary
  * forbids.
  *
- * STAGING IS THE CASE THIS EXISTS FOR. `strad-secrets-staging` holds nothing
- * sensitive, and being able to create, rotate, read and delete a parameter over
- * `/mcp` is what makes the store testable end to end instead of only through the
- * console.
+ * STAGING IS THE CASE THIS EXISTS FOR. `strad-secrets-staging` is a project
+ * separate from the one holding strad's own `strad-<env>-*` secrets, so the
+ * blast radius of a write surface there is bounded — it is not empty, and
+ * `get_secret_value` on staging returns real per-server credentials (issue #59).
+ * Being able to create, rotate, read and delete a parameter over `/mcp` is what
+ * makes the store testable end to end instead of only through the console.
  *
  * The two-store dance mirrors `src/secrets/parameters/gcp.ts` exactly, including
  * the one thing that is easy to get wrong: a 409 on the parameter-create must NOT
@@ -429,10 +431,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       // VERSIONS FIRST. Parameter Manager refuses to delete a parameter that
       // still has versions, so deleting the parameter directly is a `400 Bad
       // Request` for every parameter that has ever held a value — which is all
-      // of them, because `create` writes v1. This tree could create and rotate
-      // and could not delete, while the console (src/secrets/parameters/gcp.ts,
-      // which has always deleted versions first) could. Found by driving this
-      // exact path over /mcp against the real store.
+      // of them, because `create` writes v1.
       await deleteAllVersions(id);
       await pm("DELETE", `${pmParent}/parameters/${id}`).catch((err) => {
         if (err instanceof ParameterManagerError && err.status === 404) return;

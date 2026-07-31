@@ -184,7 +184,6 @@ function stubStore() {
       if (payload == null) return json({ error: "no" }, 404);
       return json({ payload: { data: Buffer.from(payload, "utf8").toString("base64") } });
     }
-    m = new RegExp(`^${pmRoot}/([^/]+)/versions/([^/:]+)$`).exec(path);
     if (m && method === "DELETE") {
       const p = params.get(m[1]);
       if (!p?.versions.has(m[2])) return json({ error: "no" }, 404);
@@ -195,10 +194,9 @@ function stubStore() {
     if (m && method === "DELETE") {
       const p = params.get(m[1]);
       if (!p) return json({ error: "no" }, 404);
-      // Google refuses to delete a parameter that still has versions. The stub
-      // used to delete unconditionally, which is why a client that never
-      // deleted its versions passed every test here and 400'd against the real
-      // store on the first `delete_parameter` anyone ran.
+      // Google refuses to delete a parameter that still has versions, so the
+      // stub does too. A client that skips its version deletes fails here rather
+      // than only against the real store.
       if (p.versions.size > 0) return json({ error: "has versions" }, 400);
       params.delete(m[1]);
       return json({});
@@ -553,10 +551,10 @@ test("a 409 on the parameter create does not delete the parameter that already e
  * DELETE, which this tree could not do.
  *
  * Parameter Manager refuses to delete a parameter that still has versions, and
- * `create` writes v1 — so `delete_parameter` was a `400 Bad Request` for every
- * parameter that had ever held a value. It passed here because the stub deleted
- * unconditionally; the stub now refuses, the same way Google does, so this pair
- * fails without the fix.
+ * `create` writes v1 — so a client that deletes the parameter directly gets a
+ * `400 Bad Request` for every parameter that has ever held a value. The stub
+ * refuses the same way, so this pair fails against a client that skips its
+ * version deletes.
  */
 test("destroy deletes a parameter's versions before the parameter itself", async () => {
   const { client, params } = stubStore();

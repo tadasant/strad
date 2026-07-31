@@ -1022,7 +1022,10 @@ posture and refuses with a 403, so a hand-crafted form post gets nowhere.
 
 - **Prod** — a Parameter Manager viewer. Four read-only tools, and `/mcp` cannot
   read a secret value.
-- **Staging** — read + write on a project holding nothing sensitive. The same
+- **Staging** — read + write on a project separate from the one holding strad's
+  own `strad-<env>-*` secrets. That project holds per-server credentials, so
+  `get_secret_value` there returns real secrets; the bound is separation, not
+  harmlessness (issue #59). The same
   image additionally offers `create_parameter`, `set_parameter_value`,
   `set_parameter_note`, `delete_parameter` and `get_secret_value`.
 

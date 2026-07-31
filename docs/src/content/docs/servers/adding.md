@@ -179,6 +179,26 @@ whether it landed: a parameter written under a slug that does not set
 simply boots without those values and degrades gracefully — see [Known
 limitations](/limitations/).
 
+### On a `builtin`, `params:` resolves at runtime instead
+
+The example above is a `supplementary-image`, where resolution happens once, at
+deploy time, into another container's environment. On a **`builtin`** the same
+flag means something meaningfully different: the namespace is resolved
+**in-process, on every tool call**, and merged over the builtin's `options:` —
+through a TTL cache keyed by `gateway.secrets.ttlSeconds` (`gateway/registry.ts`).
+A parameter changed in the store therefore reaches a running gateway within the
+TTL, with no redeploy. That makes a `params: true` builtin the only thing in a
+config that can *demonstrate* runtime rotation from outside the process;
+`infra/strad.staging.yaml` uses `echo` for exactly that.
+
+The sharp edge is the merge target. A supplementary server's resolved parameters
+become container env vars, which nothing returns to a caller. A builtin's become
+**`options:`**, and a builtin is free to put an option in a tool result — `echo`
+returns `options.greeting` from `whoami`. So an option a builtin echoes is an
+option every caller entitled to that slug can read. Point a `params: true`
+builtin's options at a canary, not at a credential, unless you know the builtin
+does not surface them.
+
 ## 5. Deploy
 
 - **Stock image (`remote-http` / `supplementary-image`):** no rebuild. The config
@@ -198,16 +218,15 @@ and twenty-five `supplementary-image` entries — twenty-four sharing ONE bundle
 over the private network, which resolve onto the bundle image's fifteen mounts
 because every read-only / read-write pair is two entries on one path. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
-credentials from step 4b, and `remote-filesystem-tmp-public` is the `params: true`
-example from step 4c.
+credentials from step 4b, and `remote-filesystem-tmp-public` is the deploy-time
+`params: true` example from step 4c — `echo` is the runtime one.
 
 The twenty-fifth, `zimmer-secrets`, is the worked example for the one case where a
 second **bundle** is the answer rather than a second `path`: it is the same image
 and the same `path: /secrets` as `secrets`, differing only in `bundle:` and in
 which store it points at. [Two stores, one
 gateway](/operate/secrets/#two-stores-one-gateway) explains why sharing a bundle
-there is silently wrong. It
-also keeps a deliberately narrow `echo-only` role, so
+there is silently wrong. It also keeps two deliberately narrow roles, `echo-only` and `zimmer`, so
 the [424 fail-closed path](/intro/concepts/#the-424-contract) stays exercised. Read
 it alongside
 [`strad.config.example.yaml`](https://github.com/tadasant/strad/blob/main/strad.config.example.yaml)

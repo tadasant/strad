@@ -88,10 +88,11 @@ roles:
     servers: [echo]
   # Zimmer's own agent sessions, and the narrowest role that still does its job.
   #
-  # Staging's deploy loads the same third-party accounts prod uses — there is no
-  # separate Slack workspace, Gmail tenant or 1Password service account — so
-  # `admin` here would hand a Zimmer session `onepassword-rw`, `gmail-rw-external`
-  # and the rest, with prod's blast radius. Name the slugs, never the wildcard.
+  # Staging's deploy loads 33 secrets, and they are the SAME third-party accounts
+  # prod uses — there is no separate Slack workspace, Gmail tenant or 1Password
+  # service account — so `admin` here would hand a Zimmer session `onepassword-rw`,
+  # `gmail-rw-external`, `slack` and `tailscale-readwrite`, with prod's blast
+  # radius. Name the slugs, never the wildcard.
   #
   # Three slugs, and each earns its place:
   #
@@ -427,19 +428,25 @@ servers:
     bundle: bundle
     path: /secrets
     # `zimmer` is here and NOWHERE ELSE in this file except `echo`. The whole
-    # point of that token's narrow role is that staging's other 24 slugs hold
-    # real third-party credentials; this one reaches a project that holds only
-    # parameters. See the `zimmer` role above.
+    # point of that token's narrow role is that 21 other slugs carry real
+    # third-party credentials. See the `zimmer` role above.
     #
     # It is entitled to the SERVER, not to the store: what this token can address
     # is still bounded by SECRETS_NAMESPACES below, which is `/strad/staging/mcp/`
     # and deliberately does NOT include the gateway's own
-    # `/strad/staging/gateway/static/`. That namespace holds the deployment's 31
-    # ${NAME} references — SLACK_BOT_TOKEN, the 1Password service-account token,
-    # the Gmail private keys — and staging's MCP credential CAN read a secret
-    # value (it is read+write here, unlike prod's). Adding the gateway namespace
-    # to the line below would therefore hand this token every credential the
-    # narrow role exists to withhold. Do not.
+    # `/strad/staging/gateway/static/`. That namespace is where the deployment's
+    # own ${NAME} references live — the 21 supplementary credentials
+    # (SLACK_BOT_TOKEN, the 1Password service-account token, the Gmail private
+    # keys) plus its boot keys, 28 names in all — and staging's MCP credential
+    # CAN read a secret value (it is read+write here, unlike prod's). Adding the
+    # gateway namespace to the line below would therefore hand this token every
+    # credential the narrow role exists to withhold. Do not.
+    #
+    # The fence bounds WRITES as well as reads, and that is worth stating: a
+    # holder of this role can write anywhere under /strad/staging/mcp/, including
+    # another server's namespace, and a `params: true` server resolves its
+    # namespace into that container's environment. That capability comes with
+    # entitling `secrets` at all; it is not something the `echo` line adds.
     entitlements: [admin, zimmer]
     env:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
@@ -460,7 +467,9 @@ servers:
       # THE PROD PROPERTY IS UNCHANGED: prod's `/mcp` still cannot read a secret
       # value, because prod's credential still lacks
       # secretmanager.versions.access. Staging relaxing this is deliberate and
-      # scoped to a project that holds nothing worth protecting.
+      # scoped to a project separate from the one holding strad's own
+      # strad-staging-* secrets. That project does hold per-server credentials —
+      # see issue #59; the fence is separation, not harmlessness.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
@@ -470,7 +479,8 @@ servers:
       # Both must say yes and the narrower wins (src/ui/reveal.ts). Absent = off,
       # so a new environment cannot inherit reveal by forgetting to think about it.
       #
-      # Staging says yes because `strad-secrets-staging` holds nothing sensitive
+      # Staging says yes because `strad-secrets-staging` is a separate project
+      # from strad's own secrets, so a reveal there is bounded
       # and round-tripping a value is how the store gets tested. Prod says no,
       # and its admin SA is being downgraded to write-without-read so that the
       # "no" is IAM rather than markup — see servers/secrets/README.md.

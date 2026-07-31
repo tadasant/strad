@@ -302,6 +302,18 @@ jobs:
           set -uo pipefail
           node --experimental-transform-types scripts/check-store.ts \
             --config infra/strad.staging.yaml --mode report --resolve
+          rc=$?
+          # Exit 3 is "I could not consult the store", and `--mode report` does
+          # not soften it — by design, since "the namespace is incomplete" and "I
+          # could not find out" call for opposite responses. Before the flip it is
+          # simply the expected state: no resolver credential exists yet. Report
+          # that as a notice, so the step is green until it means something. Any
+          # other non-zero is a real finding and keeps its exit code.
+          if [ "$rc" -eq 3 ]; then
+            echo "::notice::no resolver credential yet, so the store roster could not be read. Expected until gateway.secrets.provider is flipped; see docs/operate/secrets.md."
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
