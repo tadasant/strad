@@ -225,12 +225,21 @@ and reveal exactly as before. They are upgraded automatically the first time the
 rotated: the envelope gains its `encoding` before the new bytes are written, so a
 rotate that half-fails reads as a loud error rather than as a plausible wrong value.
 
-:::caution[This encoding has not been exercised against live Google]
-It is proved against strad's in-memory double, which now substitutes textually and
-refuses the characters Parameter Manager refuses. That double previously substituted
-into the _parsed_ envelope and re-stringified, so it could not fail for any input —
-which is exactly how a value that 400s in production passed every test. A green suite
-is not a live `:render`. See [Known limitations](/limitations/) #33.
+:::note[A structural value seeds and renders. This is measured, not argued]
+`STRAD_TOKENS` — a JSON array of token records, packed with `"`, `[`, `]`, `{` and
+`}` — is seeded as a secret parameter in `strad-secrets-staging` and renders. The
+roster reports `render: 5 of 5 present name(s) resolved to a value`, and the
+gateway proves it end to end: under `provider: gcp-parameter-store` the boot keys
+are **not** baked into the app spec, so the only `STRAD_TOKENS` the staging
+gateway has is the one it renders from the store — and `/mcp` authenticates
+against it.
+
+So no value is too quote-heavy to seed — base64url emits `[A-Za-z0-9_-]` and
+nothing else, whatever went in — and the only limit on length is Secret Manager's
+own, about 48 KiB of raw value once the encoding is paid for. What is still a
+lower bound is `isRenderSafe`'s **boundary** — which raw characters Parameter
+Manager would have refused — and nothing rests on it, because no encoded value
+contains any of them. See [Known limitations](/limitations/) #33.
 :::
 
 **Non-secret values are left literal.** They carry no `__REF__`, so `:render`
@@ -419,8 +428,50 @@ So the order matters, and each step gates the next:
    [limitation #36](/limitations/#36-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
    a single parameter that cannot render takes the **whole namespace** with it,
    so a namespace that is complete but unrenderable is a gateway with no token
-   store.
+   store. `--only NAME` and `--exclude NAME` scope which names a run writes, for
+   when one name has to be handled apart from the rest.
 4. **Then flip.**
+
+### Seed every name, including the structural ones
+
+Seed the whole set. There is no shape of value that has to be held back, and
+holding one back is the more dangerous choice. Under `provider:
+gcp-parameter-store`, `render-spec` stops baking the boot keys into the app spec,
+so the store is the only place a flipped deployment has them: a `STRAD_TOKENS`
+left out is a gateway with no token store, `/mcp` rejecting every request. The
+next deploy's `preflightSecrets` refuses a config whose required names are not in
+the store, so this is normally caught before it ships — but the point of seeding
+is to not need that catch, and the one name most worth being careful with is the
+one it is most tempting to skip.
+
+The question step 2 exists to settle is **which image wrote a value**, and it is
+easy to misread as a question about the value:
+
+| The question                                              | The answer                                                                                                                         |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Is this value too quote-heavy, too structural, too long?  | Not a question. `create()` and `rotate()` encode **every** `secret: true` value unconditionally — no shape branch, no size branch. |
+| Was this value written by an image carrying the encoding? | The one that matters. Written before it, the bytes are raw; written after, they are base64url, and the envelope says which.        |
+
+So the answer is version-dependent, and the version is the writer's, not the
+value's:
+
+- **A fresh seed** — `store:seed` on a pinned image — writes base64url for every
+  secret name. Nothing is held back.
+- **A name already in the store from before the encoding** carries no `encoding`
+  field, which means the literal bytes, and keeps resolving. No re-seeding, and
+  `--rotate` upgrades it in place if you want the encoding anyway.
+- **The one broken case** is a structural value written by a pre-encoding image:
+  raw bytes that `:render` refuses, forever, and it takes the whole namespace with
+  it. That parameter cannot be repaired by seeding _around_ it — rotate it (which
+  upgrades the envelope) or delete it.
+
+Size is not the dimension either, though it is the one with an actual number. A
+secret parameter's envelope holds a `__REF__` pointer, not the bytes, so the
+parameter payload does not grow with the value at all; the bytes land in Secret
+Manager, whose per-secret ceiling is 64 KiB. That ceiling applies to what is
+stored, which is the **encoded** value, and base64url spends a third of it — so
+the effective ceiling on a raw secret is about 48 KiB. An 802-byte value
+base64urls to roughly 1,070 bytes, which is about 1.6% of it.
 
 ### Staging ran all four steps, and the property holds
 

@@ -70,6 +70,25 @@ on:
           With seed, a name to REMOVE from the gateway namespace. Comma-separated.
         type: string
         required: false
+      # `seed_names` / `seed_except`, NOT `seed_only` / `seed_exclude`, and the
+      # first half of that is forced: `seed_only` already exists below and means
+      # "seed and stop". Two inputs a letter apart meaning "which names" and
+      # "which steps" is a dispatch form nobody reads correctly under pressure,
+      # and this one is dispatched during a cutover. The SCRIPT flags stay
+      # `--only` / `--exclude`; only the dispatch labels differ, and the step
+      # below is where the two vocabularies meet.
+      seed_names:
+        description: >-
+          With seed, seed ONLY these names (comma-separated) instead of every
+          name the config derives. A name the config does not seed is an error.
+        type: string
+        required: false
+      seed_except:
+        description: >-
+          With seed, seed every derived name EXCEPT these (comma-separated).
+          Mutually exclusive with seed_names.
+        type: string
+        required: false
       seed_only:
         description: >-
           Seed and stop, without rendering or deploying. Use when the store must
@@ -343,6 +362,8 @@ jobs:
           SEED_ROTATE: ${{ inputs.seed_rotate }}
           SEED_SET: ${{ inputs.seed_set }}
           SEED_DELETE: ${{ inputs.seed_delete }}
+          SEED_NAMES: ${{ inputs.seed_names }}
+          SEED_EXCEPT: ${{ inputs.seed_except }}
         run: |
           set -euo pipefail
           ARGS=(--config infra/strad.staging.yaml --commit)
@@ -352,6 +373,31 @@ jobs:
             IFS=',' read -ra NAMES <<< "$SEED_DELETE"
             for n in "${NAMES[@]}"; do ARGS+=(--delete "$n"); done
           fi
+          # The scope. Both are passed through as REPEATED flags rather than one
+          # comma-joined value, because the script takes names one per flag and a
+          # comma inside a single --only would become part of a name and then
+          # fail as an unknown one. The script refuses the two together, so this
+          # does not have to.
+          #
+          # Whitespace is stripped FIRST, and newlines become commas. A dispatch
+          # text box invites `A, B` and accepts a pasted multi-line list, and
+          # `read` stops at the first newline — so without this, `seed_except`
+          # given either shape would silently seed a name the operator asked to
+          # hold back. `resolveSeedScope` trims too; this is the same rule at the
+          # boundary that produces the mangling, so neither layer is load-bearing
+          # alone.
+          scope_flags() { # $1 = flag, $2 = raw input
+            local cleaned
+            cleaned="$(printf '%s' "$2" | tr '\n' ',' | tr -d '[:space:]')"
+            [ -z "$cleaned" ] && return 0
+            IFS=',' read -ra NAMES <<< "$cleaned"
+            for n in "${NAMES[@]}"; do
+              [ -n "$n" ] && ARGS+=("$1" "$n")
+            done
+            return 0
+          }
+          scope_flags --only "$SEED_NAMES"
+          scope_flags --exclude "$SEED_EXCEPT"
           node --experimental-transform-types scripts/seed-store.ts "${ARGS[@]}"
 
       - name: Report what the parameter store holds

@@ -15,7 +15,8 @@
  *
  * Usage:
  *   node --experimental-transform-types scripts/seed-store.ts \
- *     --config <path> [--commit] [--rotate] [--set NAME=VALUE]... [--delete NAME]...
+ *     --config <path> [--commit] [--rotate] [--set NAME=VALUE]... [--delete NAME]... \
+ *     [--only NAME]... | [--exclude NAME]...
  *
  * DRY RUN BY DEFAULT. Without `--commit` it prints exactly what it would write
  * and writes nothing, because the failure mode of a seeder is a store full of
@@ -45,6 +46,45 @@
  * the exact inversion of what the migration is for — the store is meant to
  * become the source of truth, not a mirror of the thing it replaces.
  *
+ * ## Scoping a run: `--only` and `--exclude`
+ *
+ * Without them the derived set is seeded as a unit, and "seed these names but
+ * not that one" is inexpressible. That matters because the READ side is
+ * all-or-nothing: `resolve()` renders a namespace as a unit and throws as a unit
+ * (`HACKS.md` #36), so one parameter that cannot render leaves the gateway with
+ * no token store at all. Without a way to scope the write, the only remedy for a
+ * name that turns out to be a problem is `--delete` — lifting it back out of a
+ * namespace it should not have entered. `--only` lets an operator seed around it
+ * instead, and `--exclude` lets one name be held back from an otherwise whole
+ * run.
+ *
+ * They are MUTUALLY EXCLUSIVE. `--only` already states the set exhaustively, so
+ * an `--exclude` beside it is either a contradiction or a no-op, and neither is
+ * worth guessing at.
+ *
+ * The two disagree about an unmatched name ON PURPOSE, and the rule is whether
+ * the caller's intent is served by silence:
+ *
+ *   - `--only NOPE` is a hard error. The caller named something to seed and it
+ *     would not be seeded; reporting "seeded" over that is the failure this
+ *     script is built to refuse.
+ *   - `--exclude NOPE` is reported and continues. The caller asked for the name
+ *     NOT to be seeded, and it is not going to be — the intent already holds.
+ *     Same posture as a `--delete` for a name the store does not have.
+ *
+ * A `--set` whose name the scope drops is a hard error too, for the reason the
+ * `consoleEnv:` refusal below gives: a name typed on the command line was asked
+ * for, and dropping it without a word reports success over the one thing the
+ * caller named.
+ *
+ * `--delete` is NOT scoped by either flag. It is already explicit — every name
+ * spelled out on the command line, never derived — so there is nothing for a
+ * scope to narrow, and filtering it would let `--only` silently disarm a
+ * deletion the caller also asked for.
+ *
+ * Neither flag scopes the VERIFY below, and that is the point rather than an
+ * oversight. See there.
+ *
  * ## Verification
  *
  * With a resolver credential configured, every name written is read back through
@@ -53,6 +93,15 @@
  * rendered, which is the failure that takes a whole namespace down (see
  * `HACKS.md` #36). Digests are compared, never printed; no value is printed in
  * any mode.
+ *
+ * `--only` and `--exclude` scope what is WRITTEN and deliberately do not scope
+ * this. `resolve()` reads the namespace, because that is what the gateway reads,
+ * so a scoped run whose own names all round-trip can still fail here on a name
+ * it never touched — and it SHOULD. That failure is not a false alarm about
+ * someone else's parameter; it is the true statement that the gateway this
+ * namespace serves would come up with nothing. Scoping the verify to the scoped
+ * write would report green on precisely the state `--only` exists to work
+ * around, which is the one outcome worth engineering against.
  *
  * ## Exit codes
  *
@@ -74,9 +123,11 @@ import {
   gatewayNamespace,
   gatewayParameterPath,
   parseAdminAccount,
+  RESOLVER_ENV,
   resolverFromEnv,
 } from "../src/secrets/parameters/index.ts";
 import { errorSummary } from "../src/secrets/provider/snapshot.ts";
+import { resolveSeedScope, SeedScopeError } from "../src/deploy/seed-scope.ts";
 
 /**
  * The ADMIN credential, and it is deliberately its own variable rather than the
@@ -85,7 +136,10 @@ import { errorSummary } from "../src/secrets/provider/snapshot.ts";
  * `create`. This one runs in CI, for the length of one job.
  */
 const SEED_ENV = {
-  projectId: "STRAD_PARAMS_PROJECT_ID",
+  // The same project variable the resolver reads, named through its constant
+  // rather than spelled again: the writer and the read-back address one store,
+  // and two literals that must agree are two literals that can stop agreeing.
+  projectId: RESOLVER_ENV.projectId,
   keyJson: "STRAD_STORE_ADMIN_KEY_JSON",
 } as const;
 
@@ -93,7 +147,7 @@ function usage(message: string): never {
   console.error(`::error::${message}`);
   console.error(
     "usage: seed-store --config <path> [--commit] [--rotate] " +
-      "[--set NAME=VALUE] [--delete NAME]",
+      "[--set NAME=VALUE] [--delete NAME] [--only NAME | --exclude NAME]",
   );
   process.exit(2);
 }
@@ -104,6 +158,8 @@ let values: {
   rotate?: boolean;
   set?: string[];
   delete?: string[];
+  only?: string[];
+  exclude?: string[];
 };
 try {
   ({ values } = parseArgs({
@@ -113,6 +169,8 @@ try {
       rotate: { type: "boolean" },
       set: { type: "string", multiple: true },
       delete: { type: "string", multiple: true },
+      only: { type: "string", multiple: true },
+      exclude: { type: "string", multiple: true },
     },
   }));
 } catch (err) {
@@ -146,20 +204,6 @@ for (const entry of values.set ?? []) {
 }
 
 const namespace = gatewayNamespace(config.gateway.env);
-const projectId = process.env[SEED_ENV.projectId];
-const { account, reason } = parseAdminAccount(process.env[SEED_ENV.keyJson]);
-if (!projectId || !account) {
-  console.error(
-    !projectId || !process.env[SEED_ENV.keyJson]
-      ? `::error::no store credential: set ${SEED_ENV.projectId} and ` +
-          `${SEED_ENV.keyJson} to the store ADMIN service account's key.`
-      : // `reason` reports by SHAPE — never by content.
-        `::error::${SEED_ENV.keyJson} is set but unusable: it ${reason}.`,
-  );
-  process.exit(3);
-}
-
-const store = createGcpParameterStore({ projectId, account });
 
 /** consoleEnv: names are environment-only, and the store must never hold one. */
 const consoleOnly = new Set(consoleEnvNames(config));
@@ -178,11 +222,59 @@ for (const name of overrides.keys()) {
     );
 }
 
-const wanted = [
+/** Every name this config would seed, before `--only` / `--exclude` narrow it. */
+const candidates = [
   ...new Set([...requiredSecretNames(config), ...overrides.keys()]),
 ]
   .filter((name) => !consoleOnly.has(name))
   .sort();
+
+// The whole argument shape is settled BEFORE the store credential is looked for,
+// so that "called wrong" (exit 2) cannot be masked by "no credential" (exit 3).
+// A typo in --only is the caller's to fix either way, and telling them about the
+// missing key instead sends them to fix the wrong thing.
+const { wanted, outOfScope, scopedBy, notes } = (() => {
+  try {
+    return resolveSeedScope({
+      candidates,
+      only: values.only,
+      exclude: values.exclude,
+      overrides: [...overrides.keys()],
+      consoleOnly: [...consoleOnly],
+    });
+  } catch (err) {
+    if (err instanceof SeedScopeError) usage(err.message);
+    throw err;
+  }
+})();
+
+const projectId = process.env[SEED_ENV.projectId];
+const { account, reason } = parseAdminAccount(process.env[SEED_ENV.keyJson]);
+if (!projectId || !account) {
+  console.error(
+    !projectId || !process.env[SEED_ENV.keyJson]
+      ? `::error::no store credential: set ${SEED_ENV.projectId} and ` +
+          `${SEED_ENV.keyJson} to the store ADMIN service account's key.`
+      : // `reason` reports by SHAPE — never by content.
+        `::error::${SEED_ENV.keyJson} is set but unusable: it ${reason}.`,
+  );
+  process.exit(3);
+}
+
+// The ADMIN credential is its own variable; the ENDPOINTS are not. Which Google
+// this deployment talks to is a property of the deployment, and `resolverFromEnv`
+// already reads it from `STRAD_PARAMS_{LOCATION,PM_API_BASE,SM_API_BASE,TOKEN_URL}`
+// for the read-back below. Building the writer against the defaults instead would
+// let one run seed one endpoint and verify another — the two halves of this script
+// disagreeing about where the store is.
+const store = createGcpParameterStore({
+  projectId,
+  location: process.env[RESOLVER_ENV.location],
+  account,
+  pmApiBase: process.env[RESOLVER_ENV.pmApiBase],
+  smApiBase: process.env[RESOLVER_ENV.smApiBase],
+  tokenUrl: process.env[RESOLVER_ENV.tokenUrl],
+});
 
 const digest = (v: string) => createHash("sha256").update(v).digest("hex");
 
@@ -219,13 +311,48 @@ const report = (label: string, names: string[]) => {
   if (names.length > 0) console.log(`  ${label}:\n    ${names.join("\n    ")}`);
 };
 
+// The header states the SCOPE, not just the count, because "8 name(s) the
+// gateway reads" over a run that touched three is the same sentence a whole run
+// prints. A narrowed run has to be legible as narrowed in the log, months later,
+// to someone asking why a name is missing from the store.
 console.log(
-  `${values.config}: ${wanted.length} name(s) the gateway reads from ${namespace}`,
+  scopedBy === null
+    ? `${values.config}: ${wanted.length} name(s) the gateway reads from ${namespace}`
+    : `${values.config}: ${wanted.length} of ${candidates.length} name(s) the ` +
+        `gateway reads from ${namespace} — SCOPED by ${scopedBy}`,
 );
 report("create", toCreate);
 report("rotate", toRotate);
 report("already seeded (use --rotate to overwrite)", alreadyThere);
 report("no value in the environment — SKIPPED", absent);
+// Listed separately from `absent`, because the two are different findings that a
+// roster would flatten into one: `absent` is "the environment has nothing to
+// seed", which may want provisioning, while this is "you said not to", which
+// wants nothing. The gateway still reads these names.
+report("held back by the scope — NOT SEEDED", outOfScope);
+
+/**
+ * An `--only` name with no value is a FINDING, where a derived one is a skip.
+ *
+ * The difference is who chose the name. A derived name the environment does not
+ * carry is the documented, legitimate case — a deployment has no
+ * `GOOGLE_CLIENT_SECRET` until someone provisions one — and failing on it would
+ * make an ordinary seed impossible. A name typed after `--only` is the caller
+ * saying "this one", and skipping it lands exactly where the rest of this script
+ * refuses to land: exit 0, the word "seeded", and nothing written. That is the
+ * likelier operational shape of the mistake, too — a `seed_names` dispatch
+ * during a cutover, against a job whose environment is missing the value.
+ */
+const namedButAbsent = (values.only ?? []).length > 0 ? absent : [];
+if (namedButAbsent.length > 0)
+  console.error(
+    `::error::--only named ${namedButAbsent.length} name(s) with no value in ` +
+      `the environment, so nothing was written for them: ` +
+      `${namedButAbsent.join(", ")}.`,
+  );
+// Under the roster it annotates, and after the header, so it reads with the
+// `--delete` notes below rather than ahead of the run it describes.
+for (const note of notes) console.log(`  ${note}`);
 
 /**
  * `--delete` removes a name from the namespace.
@@ -247,15 +374,21 @@ const toDelete = (values.delete ?? []).filter((name) => {
 });
 report("DELETE", toDelete);
 
+const written = new Map<string, string>();
+// Seeded with the findings raised above, so a dry run reports them too. A dry
+// run exists to say what a `--commit` would do, and "it would write nothing for
+// the name you asked for" is exactly the kind of answer it should be trusted to
+// give before the real run is dispatched.
+let failures = namedButAbsent.length;
+
 if (!values.commit) {
   console.log(
-    `${values.config}: dry run, nothing written. Re-run with --commit.`,
+    failures > 0
+      ? `${values.config}: dry run, nothing written, ${failures} problem(s)`
+      : `${values.config}: dry run, nothing written. Re-run with --commit.`,
   );
-  process.exit(0);
+  process.exit(failures > 0 ? 1 : 0);
 }
-
-const written = new Map<string, string>();
-let failures = 0;
 
 for (const name of toCreate) {
   const value = (overrides.get(name) ?? process.env[name])!;
@@ -299,7 +432,16 @@ for (const name of toDelete) {
 // READ IT BACK, as the gateway would. A value that stored fine and cannot
 // `:render` is the failure that takes the whole namespace down with it, and it
 // is invisible to every check that only asks whether a name exists.
-if (written.size > 0) {
+//
+// This runs for every `--commit`, not only when something was written, and the
+// difference matters most to a SCOPED run. `resolve()` renders the whole
+// namespace, so it answers "would the gateway come up" and not merely "did my
+// writes land" — but gating it on `written.size > 0` meant a scoped re-run that
+// found its names already seeded printed "seeded" having asked the store
+// nothing. That is the one case an operator re-runs a scoped seed FOR, and the
+// prose in `docs/operate/operations.md` promises it unconditionally. One extra
+// call buys the promise being true.
+{
   const resolver = resolverFromEnv(process.env);
   if (!resolver) {
     console.log(
@@ -324,8 +466,10 @@ if (written.size > 0) {
         .map(([name]) => name);
       failures += mismatched.length;
       console.log(
-        `  verify: ${written.size - mismatched.length} of ${written.size} ` +
-          `read back byte-identical through :render`,
+        written.size === 0
+          ? `  verify: nothing written this run; ${namespace} renders`
+          : `  verify: ${written.size - mismatched.length} of ${written.size} ` +
+              `read back byte-identical through :render`,
       );
       report("DID NOT ROUND-TRIP", mismatched);
     }

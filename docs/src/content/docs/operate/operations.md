@@ -191,7 +191,7 @@ names the store already holds unless `--rotate`, and reads back everything it
 writes through `:render` — comparing by SHA-256, because a value that stores fine
 and cannot render is the failure that takes a whole namespace down.
 
-Five dispatch inputs drive it, all off by default:
+Seven dispatch inputs drive it, all off by default:
 
 | Input         | What it does                                                                |
 | ------------- | --------------------------------------------------------------------------- |
@@ -199,15 +199,56 @@ Five dispatch inputs drive it, all off by default:
 | `seed_rotate` | Overwrite names the store already holds instead of skipping them.           |
 | `seed_set`    | An extra `NAME=VALUE` the environment does not carry.                       |
 | `seed_delete` | Comma-separated names to REMOVE from the gateway namespace.                 |
+| `seed_names`  | Comma-separated: seed ONLY these names (`--only`).                          |
+| `seed_except` | Comma-separated: seed everything EXCEPT these (`--exclude`).                |
 | `seed_only`   | Seed and stop — no image-tag resolve, no render, no deploy. Implies `seed`. |
 
 `seed_only` is what lets the store change **under a running gateway**: an ordinary
 deploy restarts the process, which destroys the thing a rotation test is trying to
 observe.
 
+**`seed_names` is not `seed_only`.** One says which NAMES to seed, the other says
+which STEPS to run, and they are dispatched from the same form. The script's own
+flags are `--only` and `--exclude`; the inputs are named apart from them so the
+two questions cannot be confused in the one place they are asked together.
+
+### Scoping a seeding run
+
+`--only NAME` and `--exclude NAME` (repeatable) narrow a run to a subset of the
+derived set. They exist because the read side is all-or-nothing — `resolve()`
+renders a namespace as a unit and throws as a unit
+([limitation #36](/limitations/#36-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing))
+— so without a scope, an operator who wants one name handled apart from the rest
+has to seed it and then `--delete` it back out.
+
+They are **mutually exclusive**, and they disagree about an unmatched name on
+purpose: `--only NOPE` is an error, because the caller named something to seed
+that would not be seeded, while `--exclude NOPE` is a note, because the caller
+asked for a name not to be seeded and it will not be.
+
+Two things a scope deliberately does not narrow:
+
+- **`--delete`.** Already explicit, every name spelled out, so there is nothing to
+  narrow — and a scope that filtered it could silently disarm a deletion.
+- **The read-back.** The verify step resolves the whole namespace, because that is
+  what the gateway reads. A scoped run whose own names round-trip can still fail
+  on a name it never touched, and it should: that failure is the true statement
+  that this gateway would come up with nothing. It runs on every `--commit`, even
+  one that writes nothing because its names were already seeded — re-running a
+  scoped seed to ask "does this namespace render" is a thing operators do, and it
+  has to answer.
+
+A scoped run says so in its header (`3 of 8 name(s) … — SCOPED by --only`) and
+lists what it held back, so it cannot be misread later as a complete one.
+
 **`seed_set` is for non-secret canaries only.** Its value passes through a workflow
 input and is echoed in the run's log — the masking applied to Secret Manager values
-does not cover it. Never put a credential there.
+does not cover it. Never put a credential there. `seed_names` and `seed_except`
+carry the same hazard for the same reason: they are echoed as names, so a value
+pasted into one by mistake lands in the log. They take NAMES, never values.
+
+`seed_names` and `seed_except` do nothing on their own — like `seed_set` and
+`seed_delete`, they only apply to a run that `seed` (or `seed_only`) turned on.
 
 **Then it reports what the secrets credentials can do.** The secrets surfaces are
 probe-derived — the MCP server lists `get_secret_value` and the write tools only

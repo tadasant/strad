@@ -1229,6 +1229,15 @@ encoding bug that is now fixed — it is how you avoid discovering this entry th
 hard way: pin both images, seed, verify with `store:check --resolve`, and only
 then flip.
 
+**What an operator can do about it.** `scripts/seed-store.ts` takes `--only NAME`
+and `--exclude NAME`, so a run can be scoped to seed around a name rather than
+having to seed it and then `--delete` it back out. That narrows the WRITE and
+deliberately not the read-back, which still resolves the whole namespace — a
+scoped run that fails on a name it never touched is reporting the truth about the
+gateway, not a false alarm about someone else's parameter. Scoping is not a fix
+for this entry and cannot be: the two ways to get an un-renderable parameter are
+above, and neither is caused by seeding too much.
+
 **Why it ships this way.** Per-parameter tolerance sounds obviously better and is
 not. A resolver that returns a namespace with one name silently absent hands the
 gateway a bag that looks complete, and the missing name surfaces later as one
