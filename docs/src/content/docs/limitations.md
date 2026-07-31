@@ -426,6 +426,14 @@ not depend on that boundary being exactly right, because base64url emits
 looked, the double is the more permissive of the two, and would say yes where Google
 says no.
 
+**Rolling `core` back past this change is the one silent failure.** strad reads the
+`encoding` field; an image that predates it does not know the field exists, so it
+hands a child process base64url text as its credential and reports success. Every
+other failure mode here is loud by construction — this one is not. Re-seed any secret
+parameter written after this change before rolling back past it. Boot is deliberately
+lenient so a rollback cannot become an outage, which makes rollback a path people
+actually take.
+
 **No live `:render` has been run against this change.** Everything is proved against
 strad's own double, which now models the failure faithfully — it substitutes
 textually and refuses what `isRenderSafe` refuses — but a model is not the API. That

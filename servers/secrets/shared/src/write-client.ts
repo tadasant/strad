@@ -348,18 +348,27 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
         // bytes-first would make the gap read an encoded value as a literal and
         // hand a child base64 text as its credential, silently; envelope-first
         // makes the gap fail `decodeStoredValue` loudly instead.
-        if (prev.encoding !== SECRET_VALUE_ENCODING) {
+        const upgraded = prev.encoding !== SECRET_VALUE_ENCODING;
+        if (upgraded) {
           await addVersion(id, { ...prev, encoding: SECRET_VALUE_ENCODING });
         }
-        // A secret's bytes go to Secret Manager; the envelope's ref is unchanged
-        // because it points at `versions/latest`.
-        await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
-          payload: {
-            data: Buffer.from(encodeSecretValue(value), "utf8").toString(
-              "base64",
-            ),
-          },
-        });
+        try {
+          // A secret's bytes go to Secret Manager; the envelope's ref is unchanged
+          // because it points at `versions/latest`.
+          await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
+            payload: {
+              data: Buffer.from(encodeSecretValue(value), "utf8").toString(
+                "base64",
+              ),
+            },
+          });
+        } catch (err) {
+          // Put the envelope back, so a failed second write does not strand the
+          // parameter declaring an encoding its bytes do not have. Same rollback
+          // discipline `create()` applies, and the same one the src/ half uses.
+          if (upgraded) await addVersion(id, prev).catch(() => {});
+          throw err;
+        }
         return;
       }
       await addVersion(id, { ...prev, value });

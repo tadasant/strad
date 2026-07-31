@@ -997,9 +997,17 @@ refuses, which is a faithful model of the reported failure — but it is a model
 evidence that closed the original bug report was a `:render` against real Google, and
 nothing in this repo reproduces that. Staging has no token minted for it yet.
 
-**Undo.** Delete `encoding` from the envelope and stop calling `encodeSecretValue`.
-Values written while it was on would then need re-seeding; values written before it
-would be unaffected, because an absent `encoding` has always meant the literal bytes.
+**Undo, and the one place this design fails SILENTLY.** Delete `encoding` from the
+envelope and stop calling `encodeSecretValue`. Values written before it are
+unaffected — an absent `encoding` has always meant the literal bytes — but values
+written while it was on do not merely need re-seeding: code that predates this commit
+does not know the field exists, so it hands a child process base64url TEXT as its
+credential and reports success. Everything else here is built to fail loudly; this is
+the exception, and it applies to an IMAGE ROLLBACK of `core` past this commit as much
+as to a revert. That matters because rollback is a first-class path in this repo (boot
+stays lenient on purpose so a rollback cannot become an outage). Before rolling `core`
+back past this commit, re-seed every secret parameter written after it, or accept that
+those names resolve to gibberish.
 
 ## What the human still needs to provision
 

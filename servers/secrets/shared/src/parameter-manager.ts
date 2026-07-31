@@ -132,10 +132,20 @@ export function isSecretRef(value: string): boolean {
  */
 export function decodeStoredValue(
   value: string,
-  encoding: ValueEncoding | undefined,
+  // `string | undefined`, deliberately. This tree has no `decodeEnvelope` — both
+  // parse sites cast a bare `JSON.parse` — so the unknown-encoding refusal that
+  // src/ makes when it decodes the envelope has to live here instead, or an
+  // encoding this build has never heard of would be decoded as base64url.
+  encoding: string | undefined,
   label: string,
 ): string {
   if (encoding === undefined) return value;
+  if (encoding !== SECRET_VALUE_ENCODING) {
+    throw new ParameterManagerError(
+      `parameter "${label}" declares an unknown value encoding: ${JSON.stringify(encoding)}`,
+      502,
+    );
+  }
   const decoded = Buffer.from(value, "base64url").toString("utf8");
   // Node's base64 decoders are LENIENT — garbage in, garbage out, no error.
   // Re-encode and compare so a value that is not what its envelope claims fails

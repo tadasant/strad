@@ -480,21 +480,38 @@ export function createGcpParameterStore(
       // which `decodeStoredValue` refuses — so reads fail, loudly, and the
       // provider serves its last known good snapshot until the second write
       // lands. A rotate that half-fails should be visible, not plausible.
-      if (cur.envelope.encoding !== SECRET_VALUE_ENCODING) {
+      //
+      // "Loudly" is a strong claim and it deserves its limit stated: the guard
+      // catches a stale literal only when that literal is not ITSELF canonical
+      // base64url decoding to valid UTF-8. All five names seeded in prod fail
+      // that test (verified), and a short value is likelier to pass it, so the
+      // window is closed below rather than merely made improbable.
+      const upgraded = cur.envelope.encoding !== SECRET_VALUE_ENCODING;
+      if (upgraded) {
         await addVersion(id, {
           ...cur.envelope,
           encoding: SECRET_VALUE_ENCODING,
         });
       }
-      // The Secret Manager version is the value; the Parameter Manager `__REF__`
-      // already points at `versions/latest`, so it needs no new version.
-      await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
-        payload: {
-          data: Buffer.from(encodeSecretValue(value), "utf8").toString(
-            "base64",
-          ),
-        },
-      });
+      try {
+        // The Secret Manager version is the value; the Parameter Manager `__REF__`
+        // already points at `versions/latest`, so it needs no new version.
+        await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
+          payload: {
+            data: Buffer.from(encodeSecretValue(value), "utf8").toString(
+              "base64",
+            ),
+          },
+        });
+      } catch (err) {
+        // Put the envelope back. Without this the window above is not a window
+        // at all — a 403 or a socket reset here strands the parameter declaring
+        // an encoding its bytes do not have, permanently, and `resolve()` fails
+        // for the WHOLE namespace until someone rotates it again. Same rollback
+        // discipline `create()` applies, for the same reason.
+        if (upgraded) await addVersion(id, cur.envelope).catch(() => {});
+        throw err;
+      }
     } else {
       await addVersion(id, { ...cur.envelope, value });
     }
@@ -607,6 +624,16 @@ export function createGcpParameterStore(
     } while (pageToken);
   }
 
+  /**
+   * ONE bad parameter fails the WHOLE namespace, deliberately.
+   *
+   * The alternative — skip the name and return the rest — makes a parameter that
+   * exists and cannot be decoded indistinguishable from one that was never
+   * seeded, and "absent" is a state every caller treats as normal: the runtime
+   * provider answers null, boot hydration shrugs, and a gateway comes up with an
+   * empty token store rather than a broken one. Throwing is what lets the
+   * snapshot cache serve its last known good values instead.
+   */
   async function resolve(namespace: string): Promise<Record<string, string>> {
     const metas = await list(namespace);
     const out: Record<string, string> = {};
@@ -624,10 +651,22 @@ export function createGcpParameterStore(
       )) as { renderedPayload?: string; payload?: { data?: string } };
       const data = rendered.renderedPayload ?? rendered.payload?.data;
       if (data == null) continue;
-      const envelope = decodeEnvelope(
-        Buffer.from(data, "base64").toString("utf8"),
-      );
-      out[variableOf(meta.path)] = decodeEnvelopeValue(envelope);
+      try {
+        const envelope = decodeEnvelope(
+          Buffer.from(data, "base64").toString("utf8"),
+        );
+        out[variableOf(meta.path)] = decodeEnvelopeValue(envelope);
+      } catch {
+        // Re-thrown by PATH, never by message, and the original is DROPPED
+        // rather than chained. `JSON.parse` embeds a snippet of its input in the
+        // `SyntaxError` it throws, and the input here is a RENDERED payload — it
+        // holds the secret. That message reaches a log and the console's
+        // unexpected-error page, so it must not travel, not even as a `cause`.
+        throw new ParameterStoreError(
+          `parameter "${meta.path}" did not decode into a usable value`,
+          502,
+        );
+      }
     }
     return out;
   }

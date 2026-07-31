@@ -252,10 +252,20 @@ export function decodeEnvelope(payload: string): ParameterEnvelope {
  */
 export function decodeStoredValue(
   value: string,
-  encoding: ValueEncoding | undefined,
+  // `string | undefined`, deliberately, rather than `ValueEncoding | undefined`.
+  // This is the last gate before a value reaches a process, and what it is
+  // gating is JSON out of a store that a future strad — or a hand-edit — may
+  // have written. A type describes what this code emits; it cannot enforce what
+  // is already in the store.
+  encoding: string | undefined,
   label: string,
 ): string {
   if (encoding === undefined) return value;
+  if (encoding !== SECRET_VALUE_ENCODING) {
+    throw new Error(
+      `parameter "${label}" declares an unknown value encoding: ${JSON.stringify(encoding)}`,
+    );
+  }
   const decoded = Buffer.from(value, "base64url").toString("utf8");
   // Node's base64 decoders are LENIENT — garbage in, garbage out, no error — and
   // the garbage would go straight into a child process's environment as its

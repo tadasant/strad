@@ -208,6 +208,25 @@ function stubStore() {
     params,
     secrets,
     secretPolicies,
+    fetchImpl,
+    /**
+     * A second client over the SAME store state whose Secret Manager
+     * `:addVersion` always 503s. The only way to observe the ordering inside
+     * `rotate`: both orderings reach the same end state when both writes land.
+     */
+    clientWithFailingSecretWrites: () =>
+      createWriteClient({
+        projectId: PROJECT,
+        account: ACCOUNT,
+        pmApiBase: "https://pm.test",
+        smApiBase: "https://sm.test",
+        tokenUrl: "https://oauth2.test/token",
+        fetchImpl: (url, init) =>
+          String(url).includes(":addVersion") &&
+          String(url).includes("/secrets/")
+            ? Promise.resolve(json({ error: "unavailable" }, 503))
+            : fetchImpl(url, init),
+      }),
     failSetIamPolicy: () => {
       setIamPolicyFails = true;
     },
@@ -359,6 +378,72 @@ test("setNote rewrites the envelope without dropping the encoding", async () => 
   assert.equal(envelope.note, "rotate quarterly");
   assert.equal(envelope.encoding, "base64url");
   assert.equal(await client.readValue(path), value);
+});
+
+test("a rotate whose Secret Manager write fails rolls the envelope back", async () => {
+  // The upgrade writes the envelope first and the bytes second, so a failure
+  // between them is the one state that can strand a parameter declaring an
+  // encoding its bytes do not have. Nothing about the END state distinguishes
+  // the two orderings — only a failure injected in the middle pins the choice.
+  const { client, params, secrets, clientWithFailingSecretWrites } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "plain-token" });
+
+  // Back to the pre-fix on-store shape: raw bytes, no `encoding`.
+  const id = parameterId(path);
+  const legacy = JSON.parse(params.get(id).versions.get("v1"));
+  delete legacy.encoding;
+  params.get(id).versions.set("v1", JSON.stringify(legacy));
+  secrets.set(id, ["plain-token"]);
+
+  await assert.rejects(
+    () =>
+      clientWithFailingSecretWrites().rotate(
+        path,
+        STRUCTURAL_VALUES["a multi-line PEM"],
+      ),
+    /503/,
+  );
+
+  // The envelope is back where it started, so the OLD value still reads.
+  const latest = [...params.get(id).versions.keys()].sort().pop();
+  assert.equal(JSON.parse(params.get(id).versions.get(latest)).encoding, undefined);
+  assert.equal(await client.readValue(path), "plain-token");
+});
+
+test("readValue hands back an unrendered pointer untouched", async () => {
+  // `:render` returns the pointer rather than failing when the parameter's own
+  // principal cannot reach the secret. Decoding it would turn a diagnosable
+  // state into mojibake, so `isSecretRef` short-circuits before the decode.
+  const { client, params } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "s3cr3t" });
+
+  // Flip the envelope to non-secret so the stub's `:render` leaves the pointer
+  // in place — exactly the shape a caller sees when the deref does not happen.
+  const id = parameterId(path);
+  const envelope = JSON.parse(params.get(id).versions.get("v1"));
+  const ref = envelope.value;
+  params.get(id).versions.set("v1", JSON.stringify({ ...envelope, secret: false }));
+
+  assert.equal(await client.readValue(path), ref);
+});
+
+test("readValue refuses an encoding this build does not know", async () => {
+  // Not "treat it as literal", and not "decode it as base64url anyway": either
+  // hands a caller bytes that are not the value. This tree has no
+  // `decodeEnvelope`, so the refusal lives in `decodeStoredValue`.
+  const { client, params } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "s3cr3t" });
+
+  const id = parameterId(path);
+  const envelope = JSON.parse(params.get(id).versions.get("v1"));
+  params
+    .get(id)
+    .versions.set("v1", JSON.stringify({ ...envelope, encoding: "gzip+base64" }));
+
+  await assert.rejects(() => client.readValue(path), /unknown value encoding/);
 });
 
 test("a non-secret value stays literal, so the viewer still shows it", async () => {

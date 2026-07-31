@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
+import { createGcpParameterStore } from "../src/secrets/parameters/gcp.ts";
+import type { ServiceAccount } from "../src/secrets/parameters/service-account.ts";
 import {
   decodeEnvelope,
   decodeEnvelopeValue,
@@ -332,6 +334,87 @@ describe("the five names already seeded in prod", () => {
   });
 });
 
+describe("a rotate that half-fails", () => {
+  /**
+   * The upgrade writes the envelope first and the bytes second, so a failure
+   * between them is the one state that can strand a parameter declaring an
+   * encoding its bytes do not have. Nothing about the END state distinguishes
+   * the two orderings, so only a failure injected in the middle pins the choice.
+   */
+  function failSecretWrites(gcp: ReturnType<typeof createFakeGcp>) {
+    const real = gcp.fetchImpl;
+    return ((input, init) => {
+      const url = typeof input === "string" ? input : String(input);
+      if (url.includes(":addVersion") && url.includes("/secrets/")) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          statusText: "Service Unavailable",
+          text: async () => "",
+          json: async () => ({}),
+        } as Response);
+      }
+      return real(input, init);
+    }) as typeof gcp.fetchImpl;
+  }
+
+  it("rolls the envelope back, leaving the parameter readable", async () => {
+    const gcp = createFakeGcp();
+    const path = gatewayParameterPath(ENV, "STRAD_INTERNAL_TOKEN");
+    await seedLegacySecret(gcp, path, CONTROL_VALUE);
+
+    const failing = createGcpParameterStore({
+      projectId: gcp.endpoints.projectId,
+      location: gcp.endpoints.location,
+      account: JSON.parse(gcp.endpoints.keyJson) as ServiceAccount,
+      pmApiBase: gcp.endpoints.pmApiBase,
+      smApiBase: gcp.endpoints.smApiBase,
+      tokenUrl: gcp.endpoints.tokenUrl,
+      fetchImpl: failSecretWrites(gcp),
+    });
+
+    await expect(failing.rotate(path, TOKENS_VALUE)).rejects.toThrow(/503/);
+
+    // The envelope is back where it started, so the OLD value still resolves.
+    // Without the rollback this parameter would declare base64url over literal
+    // bytes forever, and `resolve()` would fail for the whole namespace.
+    const param = gcp.parameters.get(parameterId(path))!;
+    const latest = param.versions[param.versions.length - 1]!;
+    expect(
+      decodeEnvelope(Buffer.from(latest.data, "base64").toString()).encoding,
+    ).toBeUndefined();
+    expect(
+      (await gcp.store.resolve(gatewayNamespace(ENV))).STRAD_INTERNAL_TOKEN,
+    ).toBe(CONTROL_VALUE);
+    expect(await gcp.store.reveal(path)).toBe(CONTROL_VALUE);
+  });
+
+  it("does not roll back an envelope it did not upgrade", async () => {
+    // A parameter already carrying the encoding has nothing to restore, and
+    // writing a redundant version on every failed rotate would be noise.
+    const gcp = createFakeGcp();
+    const path = gatewayParameterPath(ENV, "SECRET_UNDER_TEST");
+    await gcp.store.create({ path, secret: true, value: CONTROL_VALUE });
+    const before = gcp.parameters.get(parameterId(path))!.versions.length;
+
+    const failing = createGcpParameterStore({
+      projectId: gcp.endpoints.projectId,
+      location: gcp.endpoints.location,
+      account: JSON.parse(gcp.endpoints.keyJson) as ServiceAccount,
+      pmApiBase: gcp.endpoints.pmApiBase,
+      smApiBase: gcp.endpoints.smApiBase,
+      tokenUrl: gcp.endpoints.tokenUrl,
+      fetchImpl: failSecretWrites(gcp),
+    });
+    await expect(failing.rotate(path, TOKENS_VALUE)).rejects.toThrow(/503/);
+
+    expect(gcp.parameters.get(parameterId(path))!.versions.length).toBe(before);
+    expect(
+      (await gcp.store.resolve(gatewayNamespace(ENV))).SECRET_UNDER_TEST,
+    ).toBe(CONTROL_VALUE);
+  });
+});
+
 describe("decoding refuses to guess", () => {
   it("fails loudly on an encoding it does not know", () => {
     const payload = JSON.stringify({
@@ -407,18 +490,29 @@ describe("the two trees agree on the rule", () => {
   );
 
   /**
-   * One top-level declaration's full source text, from its header to the `}` in
-   * column 0 that closes it. A single-line `const` has no such brace, so it
-   * falls back to the line.
+   * One top-level declaration's full source text: from its header to the `}` in
+   * column 0 that closes it, or to end of line for a single-line `const`.
+   *
+   * The two assertions are the point. A source-text comparison fails OPEN — two
+   * empty slices, or two not-founds, compare equal and the test passes having
+   * proved nothing at all. So a missing header and an empty slice are both hard
+   * failures here rather than a silently agreeable "".
    */
   function declaration(source: string, header: RegExp, where: string): string {
     const m = header.exec(source);
     expect(m, `${header} not found in ${where}`).not.toBeNull();
-    const from = m!.index;
-    const close = source.indexOf("\n}\n", from);
-    const eol = source.indexOf("\n", from);
-    const end = close === -1 || (eol !== -1 && eol < from) ? eol : close + 2;
-    return source.slice(from, m![0].endsWith("{") ? end : eol).trim();
+    // A header may anchor on the preceding newline to pin itself to column 0.
+    // That newline is not part of the declaration, and slicing from it would
+    // make `indexOf("\n", from)` return `from` and the slice come back empty.
+    const from = m!.index + (m![0].startsWith("\n") ? 1 : 0);
+    const isBlock = m![0].trimEnd().endsWith("{");
+    const close = isBlock ? source.indexOf("\n}\n", from) : -1;
+    if (isBlock)
+      expect(close, `unterminated ${header} in ${where}`).not.toBe(-1);
+    const end = isBlock ? close + 2 : source.indexOf("\n", from);
+    const text = source.slice(from, end).trim();
+    expect(text, `empty slice for ${header} in ${where}`).not.toBe("");
+    return text;
   }
 
   const identical = (header: RegExp) =>
@@ -426,12 +520,14 @@ describe("the two trees agree on the rule", () => {
       declaration(src, header, "src"),
     );
 
+  // The `\n` anchors matter: without them these match from `const`, so adding
+  // `export` to one tree's copy and not the other's would be invisible.
   it("declares the same unsafe-character set", () => {
-    identical(/const RENDER_UNSAFE = .+;/);
+    identical(/\n(?:export )?const RENDER_UNSAFE = .+;/);
   });
 
   it("declares the same encoding tag", () => {
-    identical(/const SECRET_VALUE_ENCODING: ValueEncoding = .+;/);
+    identical(/\n(?:export )?const SECRET_VALUE_ENCODING: ValueEncoding = .+;/);
   });
 
   it("decides render-safety with the same code", () => {
