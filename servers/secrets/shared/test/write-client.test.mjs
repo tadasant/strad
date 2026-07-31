@@ -18,6 +18,20 @@ import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
  * numeric suffix read as 0, "current version" taken as list order, and an id
  * collision that let a write land outside the managed namespace. Each has a test
  * below, because each was invisible until something exercised a mutation.
+ *
+ * A FOURTH, and the reason this paragraph is worth reading before adding a stub
+ * route: a double that cannot fail is worse than no double. This store has now
+ * shipped two bugs behind one, and both were found against real Google rather
+ * than here. `:render` substituted into a PARSED object and re-stringified, so
+ * `JSON.stringify` re-escaped every value perfectly and no input could produce
+ * the `400 … injection detected` that production returned. The parameter DELETE
+ * removed the resource unconditionally, so a client that never deleted its
+ * versions passed while Google answered `400` to every call. Both stubs said yes
+ * to everything, and a green suite meant nothing.
+ *
+ * When you add a route here, model what Google REFUSES before what it accepts.
+ * A stub that only implements the happy path is a stub that can only confirm
+ * what you already believe.
  */
 
 const PROJECT = "test-project";

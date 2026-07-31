@@ -710,6 +710,19 @@ SECRET env vars, exactly like every other secret. Until the resolver service
 account exists, a `params: true` supplementary server (`remote-filesystem-tmp-public`)
 boots without its resolved parameters and degrades gracefully.
 
+**And it has been, in staging, since the day it was configured.** The 2026-07-31
+rehearsal confirmed it live: `remote-filesystem-tmp-public` is the one
+`params: true` server in `infra/strad.staging.yaml`, staging has no resolver
+credential, and `/strad/staging/mcp/` holds zero parameters. So that server has
+never once received `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` or
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`. "Degrades gracefully" is
+accurate and is exactly the problem: it degrades so gracefully that nothing said
+so. `render-spec` has been printing `server "remote-filesystem-tmp-public" has
+params: true but no resolver credential` on every deploy, in a step whose output
+nobody reads, and `store:check` — the tool that answers this directly — existed
+and had never been run. `deploy-staging.yml` now runs it on every deploy for
+exactly that reason.
+
 ---
 
 ## 27. Runtime secret resolution is implemented but no deployment runs it yet
@@ -775,16 +788,26 @@ params: true but no resolver credential`. Under the store provider
    loose end beside the flip; it is the flip's first gate, and no amount of
    seeding moves without it. The `secrets` MCP viewer and console admin keys
    ARE seeded, so this is the one identity of the three that is missing.
-2. **The flip cannot be partial, and `STRAD_TOKENS` is the name that blocks it.**
-   Under the store provider `render-spec` stops baking the boot keys, and
-   `preflightSecrets()` counts `STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` as
-   required. `STRAD_TOKENS` is a JSON array of token records, so as a secret
-   parameter it is exactly the shape `:render` refuses until #61 lands — and by
-   hack #33 that failure is not confined to it. There is no ordering that flips
-   staging first and fixes the encoding later.
+2. **The flip cannot be partial, and `STRAD_TOKENS` is the name that decides
+   when it can happen.** Under the store provider `render-spec` stops baking the
+   boot keys, and `preflightSecrets()` counts `STRAD_TOKENS` and
+   `STRAD_INTERNAL_TOKEN` as required. `STRAD_TOKENS` is a JSON array of token
+   records. At the time of the rehearsal that shape could not be stored as a
+   secret parameter at all, so there was no ordering that flipped staging first
+   and fixed the encoding later.
 
-**Undo.** In order: land #61 and publish + pin both images; provision the resolver
-SA (hack #26) and seed its key as
+   **The base64url encoding (hack #33) has since landed and removes that
+   constraint** — a token array now renders like any other value. What replaces
+   it is an ORDERING requirement rather than an impossibility: the encoder lives
+   in the core image (`create`/`rotate`, and the runtime decode) and in the
+   bundle image (the `secrets` MCP write client), so anything seeded by an image
+   that predates it is written as raw bytes and refuses to render. Publish and
+   pin both images before seeding a single name. Hack #33 also makes an image
+   ROLLBACK of `core` past that commit a data hazard for everything seeded after
+   it.
+
+**Undo.** In order: publish + pin both images at or after the base64url encoding
+(hack #33); provision the resolver SA (hack #26) and seed its key as
 `strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` alongside
 `strad-staging-STRAD_PARAMS_PROJECT_ID`; seed `/strad/staging/gateway/static/*`;
 confirm with `store:check --mode require --resolve`, which the staging deploy now
@@ -1174,12 +1197,20 @@ gateway that comes up with no token store, no internal token and no config
 reference resolved, and `/mcp` rejecting everything. The failure is
 all-or-nothing and the blast radius is the deployment.
 
-This is not hypothetical: until #61 lands, a secret parameter whose value carries
-a quote, brace, newline or backslash renders `400 … injection detected`.
-Seeding one such name — `STRAD_TOKENS` is exactly this
-shape — takes the rest of the namespace down with it. The sequencing that
-follows is in `docs/operate/secrets.md`: land the encoding fix, publish and pin
-the images, seed, verify with `store:check --resolve`, and only then flip.
+**The base64url encoding (hack #33) does not fix this, and should not be read as
+having done so.** That change stops values _becoming_ un-renderable; this entry is
+about what the READ PATH does when one is. The two remaining ways to get an
+un-renderable parameter are both live: a parameter written before strad granted
+it access to its own secret (hack #30) renders `400 SECRET_REFERENCE_ERROR`
+forever until backfilled, and a parameter written by an image that predates the
+encoding, then read by one that follows it, fails `decodeStoredValue`'s
+round-trip guard by design. Either one, anywhere in
+`/strad/{env}/gateway/static/`, takes the whole namespace with it.
+
+So the sequencing in `docs/operate/secrets.md` is not a workaround for an
+encoding bug that is now fixed — it is how you avoid discovering this entry the
+hard way: pin both images, seed, verify with `store:check --resolve`, and only
+then flip.
 
 **Why it ships this way.** Per-parameter tolerance sounds obviously better and is
 not. A resolver that returns a namespace with one name silently absent hands the

@@ -401,16 +401,23 @@ So the order matters, and each step gates the next:
    `parametermanager.parameterAccessor`. Without it `render-spec` exits before it
    renders anything. It is not the viewer key, not the console admin key, and not
    CI's `GCP_SA_KEY` — see [Secrets IAM](/operate/secrets-iam/).
-2. **Every value must be render-safe.** A secret parameter's value is spliced
-   into the envelope's JSON text by `:render`, so a value carrying a quote,
-   brace, newline or backslash is refused — and by
-   [limitation #33](/limitations/#33-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
-   that refusal takes the whole namespace with it, not just the one name.
-   `STRAD_TOKENS` is a JSON array of token records, so it is exactly this shape.
+2. **Both images must carry the base64url encoding, before one name is seeded.**
+   A secret parameter's value is spliced into the envelope's JSON text by
+   `:render`, so it is stored encoded to survive that. The encoder lives in the
+   core image (`create`, `rotate`, and the runtime decode) and in the bundle
+   image (the `secrets` MCP write client), so a name seeded by an image that
+   predates it is written as raw bytes and refuses to render. Publish and pin
+   both, then seed — never the other way round. Rolling `core` back past that
+   commit afterwards is a data hazard, not a rollback; see
+   [limitation #33](/limitations/#33-secret-values-are-base64url-in-secret-manager-and-the-encoding-is-not-yet-verified-against-live-google).
 3. **Seed, then verify by rendering.** `store:check --mode require --resolve`
    is the gate: presence is not resolvability, and this is the only check that
    proves the resolver can actually read what was seeded. The staging deploy runs
-   it in report mode on every run.
+   it in report mode on every run. It matters more than it sounds: by
+   [limitation #34](/limitations/#34-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing)
+   a single parameter that cannot render takes the **whole namespace** with it,
+   so a namespace that is complete but unrenderable is a gateway with no token
+   store.
 4. **Then flip.**
 
 A rehearsal against staging on 2026-07-31 stopped at step 1: staging has no

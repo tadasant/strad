@@ -298,16 +298,23 @@ resolver credential**: `STRAD_PARAMS_PROJECT_ID` and
 `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` are absent from its
 `strad-staging-*` secrets, so `store:check` exits 3 and `render-spec` refuses a
 store-backed render. And the flip cannot be partial: `render-spec` stops baking
-the boot keys, `STRAD_TOKENS` becomes required in the store, and a JSON array of
-token records is the value shape `:render` refuses until the value-encoding fix
-(tadasant/strad#61) lands.
+the boot keys and `STRAD_TOKENS` becomes required in the store — a JSON array of
+token records, which at the time of the rehearsal could not be stored as a secret
+parameter at all.
 
-**Undo:** land the encoding fix and pin both images, provision the resolver SA and
-seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
+The base64url encoding (#33 below) has since landed and removes that
+impossibility; a token array now renders like any other value. What it leaves is
+an **ordering** requirement. The encoder lives in the core image and in the bundle
+image's write client, so a name seeded by an image that predates it is written as
+raw bytes and refuses to render — and rolling `core` back past it turns everything
+seeded after it into gibberish. Pin both images before seeding one name.
+
+**Undo:** pin both images at or after the encoding change, provision the resolver
+SA and seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
 `store:check --mode require --resolve`, then flip the provider in the deployment's
 config and drop the per-secret baking from the deploy workflow.
 
-### 33. One un-renderable parameter makes the whole gateway namespace resolve to nothing
+### 34. One un-renderable parameter makes the whole gateway namespace resolve to nothing
 
 `resolve()` lists a namespace and calls `:render` on every parameter in it,
 without catching per parameter. The first failure aborts the whole read, so with
@@ -318,8 +325,16 @@ That is deliberate. A resolver that dropped the failing name would hand the
 gateway a bag that looks complete, and the absence would surface later as one
 failing request against one server — the "worse place to find out" the deploy
 preflight exists to avoid. The cost is that the blast radius of one bad value is
-the deployment, which matters most while that refusal is unfixed: seeding a single
-quote-bearing secret takes the rest of the namespace with it.
+the deployment.
+
+**The base64url encoding (#33 above) does not fix this.** It stops values
+_becoming_ un-renderable; this entry is about what the read path does when one
+is, and there are still two live ways to get one: a parameter written before
+strad granted it access to its own secret (#30) renders
+`400 SECRET_REFERENCE_ERROR` until backfilled, and a parameter written by an
+image predating the encoding, read by one following it, is refused by the
+round-trip guard by design. Either, anywhere in the gateway namespace, takes the
+whole namespace with it.
 
 Run [`store:check --resolve`](/operate/secrets/#is-the-namespace-complete-store-check)
 before a flip; it renders what it found and names anything that did not.
