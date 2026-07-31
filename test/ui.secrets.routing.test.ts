@@ -445,6 +445,59 @@ describe("the console addresses every managed namespace", () => {
     expect(html).toContain(`<option value="${GATEWAY_NS}"></option>`);
   });
 
+  it("renders the picker as a dropdown: every namespace is in the popup", async () => {
+    const html = await get("/ui/secrets");
+    // Discoverable without typing — and never a <select>, which would take the
+    // free text with it. A namespace outside the list stays typable.
+    expect(html).toContain('<ul class="combo-menu" id="ns-input-listbox"');
+    expect(html).not.toContain("<select");
+    for (const ns of [MCP_NS, GATEWAY_NS]) {
+      expect(html).toMatch(
+        new RegExp(
+          `<li class="combo-opt" role="option" id="ns-input-o\\d+" data-value="${ns}">`,
+        ),
+      );
+    }
+  });
+
+  it("submits on choosing a namespace, and never on choosing a prefix", async () => {
+    // The namespace form is a GET navigation, so taking a suggestion may as well
+    // go there. The create form is a write: choosing a prefix fills the field and
+    // leaves the submit to the human.
+    const html = await get("/ui/secrets");
+    const nsBox = html.slice(html.indexOf('class="combo combo-ns"'));
+    expect(nsBox.slice(0, 80)).toContain("data-combo-submit");
+    const pfxBox = html.slice(html.indexOf('<div class="combo" data-combo'));
+    expect(pfxBox.slice(0, 80)).not.toContain("data-combo-submit");
+  });
+
+  it("keeps the no-JS baseline: an input, a datalist, no dead ARIA", async () => {
+    // The script removes `list=` and puts the combobox ARIA on as it takes over.
+    // Without it the field is a plain free-text input with the native typeahead,
+    // rather than a role=combobox whose aria-expanded nothing can ever flip.
+    const html = await get("/ui/secrets");
+    expect(html).toContain('list="ns-input-options"');
+    expect(html).toContain('<datalist id="ns-input-options">');
+    expect(html).not.toContain('role="combobox"');
+    expect(html).not.toContain('aria-expanded="');
+    expect(html).toContain(
+      "<noscript><style>.combo-caret{display:none}</style>",
+    );
+  });
+
+  it("gives the path-prefix field the same popup, labelled by wiring", async () => {
+    const html = await get("/ui/secrets");
+    expect(html).toContain('id="pfx-listbox"');
+    expect(html).toContain(
+      `<span class="combo-val">wired/static/</span><span class="combo-lbl">wired — params: true</span>`,
+    );
+    expect(html).toContain('<datalist id="pfx-options">');
+    // The help text under the field describes it, and a wrapping <label> can no
+    // longer do that job — a click on an option inside one would refocus the input.
+    expect(html).toContain('aria-describedby="pfx-help"');
+    expect(html).toContain('id="pfx-help"');
+  });
+
   it("lists the SECOND namespace when ?ns= selects it", async () => {
     fake.parameters.clear();
     fake.secrets.clear();

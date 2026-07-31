@@ -709,9 +709,17 @@ addresses the store are worth knowing before you use it.
 
 `SECRETS_NAMESPACES` is a comma-separated **list**, and it seeds the picker's
 suggestions — it does not bound what a human may address. The namespace field is
-free text with the configured list offered as `<datalist>` suggestions; the
-listing, every action and the create form follow it, and the selection rides in
-`?ns=` so a view is linkable.
+free text with the configured list offered as suggestions; the listing, every
+action and the create form follow it, and the selection rides in `?ns=` so a view
+is linkable.
+
+The field is a **combobox**, not a `<select>`. Clicking or focusing it opens the
+whole suggestion list, typing filters that list, and `ArrowUp`/`ArrowDown`,
+`Enter` and `Escape` work as they do in a native control — `Escape` closes the
+menu, and pressed again it puts back the namespace you arrived on. Anything you
+type is still submittable, because the suggestions are not the fence. With
+JavaScript off the same markup is an ordinary `<input list=…>` with a
+`<datalist>`: free text and the browser's native typeahead.
 
 **The fence is the GCP project, not the list.** A list checked in code sits over
 the same credential the console already holds, so it would add no security —
@@ -775,8 +783,9 @@ the variable name — separately from the variable:
 The prefix is the routing key. `{slug}/static/` is what makes a parameter belong
 to one MCP server; without it the console could only ever write
 `{namespace}{VARIABLE}`, which is a well-formed path that no resolver reads. The
-field offers this gateway's own server slugs as suggestions and shows the full
-path it is about to write as you type.
+field is the same combobox as the namespace picker: it opens this gateway's own
+server slugs on click — each labelled with whether that server sets
+`params: true` — and shows the full path it is about to write as you type.
 
 ### The guide lives behind a Help control
 
