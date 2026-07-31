@@ -7,6 +7,7 @@ import {
   STATE_RANK,
   storeProject,
   type FixTarget,
+  type SecretEvidence,
   type SecretObservation,
   type SecretSource,
   type SecretState,
@@ -179,7 +180,10 @@ ${opts.boot.map((o) => bootRow(o)).join("\n")}
   derivation as JSON calls <code>GET /api/secrets/readiness</code> with a static bearer
   token.</p>
 
-${issues.map((e) => fixDialog(e, config, opts.env)).join("\n")}
+${sorted
+  .filter((e) => e.status && e.status.requirements.length > 0)
+  .map((e) => fixDialog(e, config, opts.env))
+  .join("\n")}
 ${FIX_DIALOG_SCRIPT}
 ${INDEX_CSS}`;
 
@@ -231,10 +235,11 @@ function banner(issues: Entry[], enabled: number): string {
   }
 
   if (issues.length === 0) {
-    return `<p class="posture"><strong>Every server is READY.</strong> That means a value
-      EXISTS for each <code>\${NAME}</code> the config references — strad does not call any
-      upstream, so it is not a claim that a credential is still accepted. A server that
-      lists tools and 401s on every call is the shape to suspect next.</p>`;
+    return `<p class="posture"><strong>Every server is READY.</strong> Every
+      <code>\${NAME}</code> the config references was OBSERVED to resolve — each row says by
+      which process and from which source, <code>GSM</code> or <code>ENV</code>. strad does
+      not call any upstream, so it is not a claim that a credential is still accepted. A
+      server that lists tools and 401s on every call is the shape to suspect next.</p>`;
   }
 
   // `isActionable` rather than an inlined `missing || placeholder`: there is one
@@ -260,8 +265,10 @@ function banner(issues: Entry[], enabled: number): string {
   return `<p class="posture posture-warn"><strong>Nothing is known to be broken, but ${unchecked} server${
     unchecked === 1 ? "" : "s"
   } could not be checked.</strong> That is not the same as healthy. <code>unknown</code> means
-    the secret backend could not be consulted; <code>unverified</code> means the value is
-    scoped to a component this process is not. Neither is evidence that anything resolves.</p>`;
+    the secret backend could not be consulted; <code>unverified</code> means nothing
+    established the value — the component holding it did not answer, it runs an image
+    without the presence route, or the server's credentials are managed parameters no
+    component named. Each row says which. Neither is evidence that anything resolves.</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,15 +325,26 @@ function serverCard(entry: Entry): string {
 }
 
 /**
- * READY is inert text: there is nothing behind it to open, and a control that
- * opens an empty panel is worse than no control. ISSUE is a real `<button>`
- * bound to this entry's `<dialog>` — a button rather than a styled `<span>` so
- * it is keyboard-reachable and announced as the control it is.
+ * BOTH badges open, when there is something behind them.
+ *
+ * A READY entry carries a POSITIVE claim — this secret is plumbed, from this
+ * source, established by this process, which booted then. That is the answer
+ * someone came to the page for, so it gets a control; inert text would be the
+ * same mistake as the shrug, information the console holds and does not show.
+ *
+ * A READY entry with no requirements (`no-secrets`) still has nothing behind it
+ * and stays inert. A control that opens an empty panel is worse than no control.
  */
 function badgeMarkup(entry: Entry): string {
   if (!entry.badge) return "";
+  const openable = (entry.status?.requirements.length ?? 0) > 0;
   if (entry.badge === "READY") {
-    return `<span class="chip chip-ok chip-badge" title="Every \${NAME} this server references resolves. Not a claim that the upstream accepts it.">READY</span>`;
+    if (!openable) {
+      return `<span class="chip chip-ok chip-badge" title="This server references no \${NAME}, so there is nothing to seed.">READY</span>`;
+    }
+    return `<button class="chip chip-ok chip-badge chip-button" type="button"
+        data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
+        title="Which secrets resolve, from which source, and which process established it">READY<span class="chip-caret">▾</span></button>`;
   }
   return `<button class="chip chip-bad chip-badge chip-button" type="button"
         data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
@@ -348,10 +366,13 @@ function fixDialogId(slug: string): string {
  * opposite responses and a reader who skims will act on the first line.
  */
 const ISSUE_HEADLINE: Record<ServerState, string> = {
-  ready: "",
+  ready:
+    "Every secret this server needs was OBSERVED to resolve. Each row below says from which source — GSM or ENV — and which process established it. strad does not call the upstream, so this is not a claim that the credential is still accepted.",
   "no-secrets": "",
   missing:
     "A secret this server needs is not seeded. Create the value at the resource named below — the entry goes READY on the next load once it resolves.",
+  unrenderable:
+    "A secret this server needs EXISTS in the parameter store and its value cannot be read. This is neither absent nor healthy: creating it again fails with 409, and nothing that references it gets a value. Rotate it through the console, which rewrites the payload.",
   placeholder:
     "A secret this server needs resolves to evident filler. The gateway boots and lists tools normally and the upstream rejects every call, which looks like a broken server rather than an unset secret. Rotate it to a real credential.",
   unverified:
@@ -386,9 +407,12 @@ function fixDialog(
     (a, b) => STATE_RANK[b.state] - STATE_RANK[a.state],
   );
 
-  return `<dialog class="fixdlg" id="${esc(fixDialogId(slug))}" aria-label="How to resolve ${esc(slug)}">
+  const ready = status.state === "ready";
+  return `<dialog class="fixdlg" id="${esc(fixDialogId(slug))}" aria-label="${
+    ready ? `What is plumbed for ${esc(slug)}` : `How to resolve ${esc(slug)}`
+  }">
   <div class="helpdlg-head">
-    <h2>${esc(slug)} · what to do</h2>
+    <h2>${esc(slug)} · ${ready ? "what is plumbed" : "what to do"}</h2>
     <button class="btn" type="button" data-fix-close aria-label="Close">Close</button>
   </div>
   <div class="helpdlg-body">
@@ -408,14 +432,16 @@ const SECRET_CHIP_CLASS: Record<SecretState, string> = {
   present: "chip-ok",
   placeholder: "chip-warnish",
   missing: "chip-bad",
+  unrenderable: "chip-bad",
   unobservable: "chip-plain",
   error: "chip-warnish",
 };
 
 const SECRET_LABEL: Record<SecretState, string> = {
-  present: "present",
+  present: "plumbed",
   placeholder: "placeholder",
   missing: "not seeded",
+  unrenderable: "cannot render",
   unobservable: "not visible here",
   error: "unknown",
 };
@@ -434,6 +460,40 @@ function sourceBadge(source: SecretSource | null): string {
   return `<span class="chip chip-src chip-src-${esc(source.toLowerCase())}" title="${esc(
     SOURCE_TOOLTIP[source],
   )}">${esc(source)}</span>`;
+}
+
+/**
+ * WHO established this row, and how current it is.
+ *
+ * The line exists because "plumbed" is not one claim, it is three with different
+ * strengths, and a reader is entitled to know which they were handed:
+ *
+ *   core   — this process read the value out of its own environment. Strongest:
+ *            nothing is between the claim and the fact.
+ *   store  — the parameter store answered. True about the store; on a
+ *            bundle-delivered name it is a claim about the NEXT deploy.
+ *   bundle — the component that actually serves the request was asked and
+ *            answered. The boot time is printed because a process older than the
+ *            last render holds the previous deploy's environment, and that is
+ *            precisely the case where "baked" and "held" come apart.
+ *   none   — nothing established it. Printed rather than omitted: a row with no
+ *            provenance line would read as one whose provenance was fine.
+ */
+function evidenceLine(evidence: SecretEvidence): string {
+  switch (evidence.by) {
+    case "core":
+      return "Established by: this gateway process, reading its own environment.";
+    case "store":
+      return "Established by: the parameter store, read from this process.";
+    case "bundle": {
+      const who = evidence.component ?? "the component";
+      const image = evidence.image ? `, image ${evidence.image}` : "";
+      const booted = evidence.bootedAt ? `, up since ${evidence.bootedAt}` : "";
+      return `Established by: ${who} itself, asked over the private network${image}${booted}. It reported presence, never a value.`;
+    }
+    case "none":
+      return "Established by: nothing. No process was able to answer for this name.";
+  }
 }
 
 /** Whether `/ui/<slug>` renders something, so the link is worth offering. */
@@ -460,8 +520,11 @@ function requirementBlock(
         )} — one secret, one problem, however many entries carry the badge.</p>`
     : "";
 
+  // `unrenderable` is in `isActionable`, so a row that offered no resource, no
+  // project and no console link would be telling a reader to act and then not
+  // saying where. The fix targets are the same ones — it is the same parameter.
   const guidance =
-    state === "missing" || state === "placeholder"
+    state === "missing" || state === "placeholder" || state === "unrenderable"
       ? fixTargets(config, requirement, env)
           .map((t) => fixBlock(t, state))
           .join("\n")
@@ -475,6 +538,7 @@ function requirementBlock(
           <span class="sec-delivery">${esc(requirement.deliveries.join(" + "))}</span>
         </div>
         <p class="sec-detail">${esc(detail)}</p>
+        <p class="sec-evidence">${esc(evidenceLine(observation.evidence))}</p>
         ${shared}
 ${guidance}
       </div>`;
@@ -760,6 +824,7 @@ const INDEX_CSS = `<style>
 .sec-detail{color:var(--g2);font-size:.82rem;margin:.45rem 0 0;line-height:1.55}
 .sec-detail-inline{flex:1 1 100%;margin:.2rem 0 0;color:var(--g3);font-size:.78rem}
 .sec-shared{color:var(--g3);font-size:.78rem;margin:.35rem 0 0}
+.sec-evidence{color:var(--g3);font-size:.75rem;margin:.3rem 0 0;font-style:italic}
 .sec-fix{margin:.7rem 0 .2rem;padding:.7rem .9rem;border:1px solid var(--g5);
   border-left:3px solid var(--accent);border-radius:.4rem;background:var(--g6)}
 .sec-fix-head{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap;

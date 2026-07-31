@@ -827,18 +827,16 @@ fires on shapes no credential issuer emits. It catches the concrete case it was
 written for — a `remote-http` bearer token seeded with a placeholder, which boots
 fine, lists fine and 401s in isolation — and it will miss a plausible-looking dud.
 
-**The scope gap.** Under `provider: env` a `supplementary-image` server's `env:` is
-resolved at render time and baked onto its own bundle; `appspec.ts` never broadcasts
-it, and the console renders in `core`. So core cannot see those values, and the popout
-reports `unverified` — "not visible here" — rather than `missing`. Reporting
-`missing` would paint a healthy 27-server fleet entirely red, which is the failure
-mode that would make the surface worse than nothing. It still badges `ISSUE`, which
-is the conservative direction and is stated as "could not be checked" rather than
-as a fault. `provider: gcp-parameter-store`
-closes the gap (the store holds the deploy-time source of truth for those refs too,
-so every name gets a real answer, one deploy before `render-spec` would compute the
-same thing). Under `env` it cannot be closed from inside the container: the value
-lives in CI's environment, which core has no path to.
+**The scope gap, mostly closed — see #35.** Under `provider: env` a
+`supplementary-image` server's `env:` is resolved at render time and baked onto its
+own bundle; `appspec.ts` never broadcasts it, and the console renders in `core`. So
+core cannot READ those values, and reporting `missing` would paint a healthy
+27-server fleet entirely red. The console therefore does not read them: it ASKS the
+component that holds them, over `POST /_strad/presence`
+(`src/gateway/bundle-presence.ts`), and the component answers in presence and never
+in values. `unverified` survives only where nothing could answer — the component is
+down, or it runs an image predating the route — and the row says which. The
+remaining edges are #35.
 
 **What it does NOT do, on purpose.** No secret VALUE is rendered or serialised — not
 revealed, excerpted, length-hinted, or put in a title attribute or a JSON field. The placeholder check reads a
@@ -1039,6 +1037,99 @@ let a second store be console-only — no MCP surface, no second container, no c
 For a store a human manages and no agent should enumerate that is arguably the
 right shape rather than merely the cheaper one. It is not built, and nothing here
 blocks on it.
+
+## 35. The presence probe asserts about the process, and the process can lie by being old
+
+**What.** `/ui` and `/api/secrets/readiness` now make a POSITIVE claim about a
+secret that lives on a component core is not: `POST /_strad/presence` asks each
+bundle what it holds, and the bundle answers with one of five words — `absent`,
+`empty`, `unexpanded`, `placeholder`, `present` — and nothing else. That is what
+turned "this entry could not be checked from the console" into "plumbed, via env,
+on `bundle`, established at 09:12".
+
+**The shape of the claim, and its limit.** It is a claim about the PROCESS, which
+is the strongest one available and still not the same as "the deploy is correct".
+A container that predates the last render holds the previous deploy's
+environment: it can report `present` for a value that has since been rotated in
+Secret Manager, or `absent` for one that the last render baked in but that the
+running instance never restarted to receive. That is not a bug in the probe, it
+is the actual state of the deployment — and it is precisely why `bootedAt` and
+`image` are in every report and printed on every row. The console shows the
+divergence rather than hiding it, but it does not resolve it, and a reader who
+ignores the timestamp can still draw the wrong conclusion.
+
+**The rejected designs, so the trade is legible.** Deriving from `render-spec`
+would have been a claim about the last deploy, not the running process — a
+rollback re-runs an older spec and App Platform can drop a var, so it would have
+said "plumbed" about a process holding nothing. Probing the upstream with the
+credential would confirm the credential works, and would be an ORACLE by
+construction, would spend third-party calls on a page load, and could not tell
+"credential rejected" from "upstream down". Reading the deployed spec from the
+DigitalOcean API would need a new cloud credential in core and still describe the
+spec rather than the process.
+
+**Why it is not an oracle.** The key roster core sends is derived from the config
+core is running, plus whatever the component reports under `STRAD_PARAM_KEYS`.
+There is no path from a request parameter on `/ui` or `/api/secrets/readiness` to
+a probed name, so no caller can ask strad whether a name of its choosing exists.
+The defence is structural, not a filter — which matters, because prod's `/mcp`
+credential structurally cannot read a value and prod's console credential is
+write-without-read, and a presence surface that let an unprivileged caller
+confirm a specific secret would dissolve both. The route itself takes the
+existing `STRAD_INTERNAL_TOKEN`, which is strictly stronger than the surface, and
+fails closed (503) when it is unset.
+
+**The vendored module.** `src/secrets/presence.ts` is copied byte-identical into
+`servers/bundle/host/src/presence.ts` because that tree is a separate npm project
+and cannot import across the boundary. `npm run presence:sync` writes it,
+`test/presence.sync.test.ts` fails CI on drift. Two copies of the placeholder
+table would mean `change-me` reading as filler on one console row and as a
+credential on the next, in one list, under one word.
+
+**IT NEEDS AN IMAGE AND A PIN BUMP TO BECOME VISIBLE.** The core half degrades
+gracefully — a component that answers 404 is reported `unsupported`, "rebuild and
+repin", and its rows fall back to exactly the old `unverified` — so core can ship
+first. But nothing on the fleet actually answers until
+`ghcr.io/tadasant/strad-bundle` is rebuilt with `servers/bundle/host` and the
+`image:` pins in the deployed config move to it. Until then prod's console reads
+exactly as it does today, with a sentence naming the pin bump as the reason.
+
+**Live verification is outstanding.** Every state in this feature is constructed
+in tests — `test/presence.test.ts`, `test/presence.route.test.ts`,
+`test/ui.secret-plumbing.test.ts` — including over a real socket. None of it has
+been exercised against a live store or a live bundle: staging was down when this
+landed and no staging credential was attached. A green unit suite is not the same
+as having run it, and this repo has shipped a bug of exactly that shape before
+(the `format: "JSON"` `__REF__` wrapping, which every test accepted).
+
+**The fourth state's blast radius, stated honestly.** `cannot render` is derived
+from `resolveDetailed()`, which renders each parameter under its own try/catch
+instead of ending the loop at the first failure. So a namespace-wide refusal
+costs a FULL pass where it used to cost one call — strictly more work in the
+failure case, not merely more results. The loop is bounded at a fan-out of ten,
+matching `list()`, so the cost is N/10 round trips rather than N; `resolve()`
+still throws, now after the pass rather than during it, naming the first hard
+failure. That is the right trade for a diagnostic, and it is a real change in
+cost that a namespace of hundreds would feel on the deploy path.
+
+**The freshness of the diagnosis is bounded by a deadline, and can lose.**
+`readStoreDiagnostics` gives the pair of reads six seconds together. On a large
+namespace the render pass can exceed that, and then the whole diagnosis returns
+null and `cannot render` is simply not drawn — the console degrades to the states
+it had without it rather than to a wrong one. The resolver client is cached per
+process so the pass does not also re-mint an OAuth token per page load, but no
+result cache exists yet: every `/ui` render and every `/api/secrets/readiness`
+call performs the reads afresh, which makes the readiness endpoint an amplifier
+for a caller that polls it hard.
+
+**Undo.** Delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
+`src/gateway/bundle-presence.ts`, `src/http/presence.ts`,
+`scripts/sync-presence.mjs`, `servers/bundle/host/src/presence.ts` and its route
+in `servers/bundle/host/src/index.ts`, the `presence`/`store` options on
+`ObserveOptions`, `readDeploymentSecretStatus`, the `unrenderable` state, the
+`STRAD_PARAM_KEYS` env var in `src/deploy/appspec.ts`, and
+`resolveDetailed`/`renderAll` in `src/secrets/parameters/gcp.ts`. The console
+reverts to the `unverified` shrug, which is what it said before.
 
 ## What the human still needs to provision
 

@@ -673,18 +673,21 @@ describe("deriveServerStatuses", () => {
         state: "unobservable" as const,
         source: "GSM" as const,
         detail: "",
+        evidence: { by: "none" as const },
       },
       {
         requirement: requirement("B"),
         state: "missing" as const,
         source: "GSM" as const,
         detail: "",
+        evidence: { by: "none" as const },
       },
       {
         requirement: requirement("C"),
         state: "placeholder" as const,
         source: "ENV" as const,
         detail: "",
+        evidence: { by: "core" as const },
       },
     ];
     const cfg = parseConfig(`
@@ -989,7 +992,7 @@ describe("GET /ui", () => {
     const at = html.indexOf("${SECRETS_ADMIN_KEY_JSON}");
     expect(at).toBeGreaterThan(-1);
     const section = html.slice(at, at + 400);
-    expect(section).toContain(">present<");
+    expect(section).toContain(">plumbed<");
     expect(section).not.toContain("not seeded");
   });
 

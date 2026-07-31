@@ -111,4 +111,68 @@ describe("deploy-time parameter injection", () => {
       ),
     ).toBe(false);
   });
+
+  it("names the resolved VARIABLES on the component, so the console can ask about them", () => {
+    // A managed parameter is not a `${NAME}` reference: the config does not name
+    // it, so core cannot enumerate it and the console can only say, unaided,
+    // "this page does not read that namespace". `STRAD_PARAM_KEYS` is the list of
+    // names — NAMES, not values, and GENERAL rather than SECRET — that lets the
+    // component answer for each one on the presence route.
+    const spec = renderAppSpec({
+      config: CONFIG,
+      appName: "strad-staging",
+      region: "nyc",
+      image: IMAGE,
+      env: [],
+      resolvedParams: {
+        "remote-filesystem-tmp-public": {
+          REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL: "svc@demo.example",
+          REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY: "-----BEGIN KEY-----",
+        },
+      },
+    });
+    const bundle = spec.services.find((s) => s.name === "bundle")!;
+    const manifest = bundle.envs.find((e) => e.key === "STRAD_PARAM_KEYS")!;
+    expect(manifest.type).toBe("GENERAL");
+    expect(JSON.parse(manifest.value!)).toEqual({
+      "remote-filesystem-tmp-public": [
+        "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL",
+        "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY",
+      ],
+    });
+    // Names only. A value must not reach a GENERAL env var.
+    expect(manifest.value).not.toContain("BEGIN KEY");
+    expect(manifest.value).not.toContain("svc@demo.example");
+    // Not on core, which runs no params: true server.
+    const core = spec.services.find((s) => s.name === "core")!;
+    expect(core.envs.some((e) => e.key === "STRAD_PARAM_KEYS")).toBe(false);
+  });
+
+  it("omits the manifest entirely when no server on the component uses params", () => {
+    // A spec diff should only move when the thing it describes does.
+    const plain = parseConfig(`
+version: 1
+gateway: { name: strad, env: staging }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+servers:
+  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /slack
+    entitlements: [admin]
+`);
+    const spec = renderAppSpec({
+      config: plain,
+      appName: "strad-staging",
+      region: "nyc",
+      image: IMAGE,
+      env: [],
+    });
+    const bundle = spec.services.find((s) => s.name === "bundle")!;
+    expect(bundle.envs.some((e) => e.key === "STRAD_PARAM_KEYS")).toBe(false);
+  });
 });

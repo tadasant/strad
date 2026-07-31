@@ -85,6 +85,16 @@ The strad image itself runs in one of two modes, selected by `STRAD_MODE`:
   it holds `builtin` servers; a bundle of `supplementary-image` servers runs _their_
   image instead, and `STRAD_MODE` never enters the picture.
 
+Core also asks every bundle a second question, on `POST /_strad/presence`: which
+of the env keys this deployment expects does the process actually hold? The answer
+is one of five words per key — `absent`, `empty`, `unexpanded`, `placeholder`,
+`present` — and never a value. It exists because a supplementary server's `env:` is
+baked onto its own component and core cannot read it, so unaided the console's only
+honest answer is that it did not check. Both the strad image in bundle mode and
+the `strad-bundle` host image serve it, both behind `STRAD_INTERNAL_TOKEN`, and both
+fail closed when that token is unset. See
+[Secrets](/operate/secrets/#the-presence-route-a-component-answering-for-itself).
+
 When core proxies to a strad-image bundle, it calls
 `${base}/mcp?servers=<slug>` with `Authorization: Bearer ${STRAD_INTERNAL_TOKEN}`.
 Because that bundle is itself a strad that already namespaces its tools, the adapter
@@ -96,8 +106,9 @@ strips and restores the inner `<slug>__` prefix so you never see
 **The private network is not an authorization story.** A strad-image bundle has no
 public route, but it still requires the shared `STRAD_INTERNAL_TOKEN` (constant-time
 compare) — anything else in the VPC could otherwise reach it. The `strad-bundle`
-image is the exception, and it is an open one: it has no bearer auth of its own and
-relies on having no public route. See `HACKS.md` #13.
+image is the exception on its MCP mounts, and it is an open one: they have no bearer
+auth of their own and rely on having no public route. See `HACKS.md` #13. Its
+presence route does not share that exception — see below.
 
 </aside>
 

@@ -436,19 +436,53 @@ before servers without one, and config order breaks the remaining ties. Disabled
 servers sort last and carry no badge at all — strad does not mount them, so they
 need no secrets, and a green would be a claim about a server that answers nothing.
 
-### The six states behind the badges
+### The seven states behind the badges
 
-The popout names which of these it is, because "not seeded" and "could not be
-checked" want opposite responses.
+The popout names which of these it is, because "not seeded", "cannot render" and
+"could not be checked" want three different responses.
 
-| State         | Badge   | What it means                                                                                                      |
-| ------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
-| `ready`       | `READY` | Every `${NAME}` this server references resolves to a value. **Not** a claim the credential works — see below.      |
-| `no secrets`  | `READY` | The server declares no references at all. Nothing to seed.                                                         |
-| `not seeded`  | `ISSUE` | The backend answered, and there is no such secret. The one unambiguous state, and the one the fix guidance is for. |
-| `check value` | `ISSUE` | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string. |
-| `unverified`  | `ISSUE` | The value is scoped to a component this process is not, so the console cannot confirm it either way.               |
-| `unknown`     | `ISSUE` | The secret backend could not be consulted. Not absent.                                                             |
+| State           | Badge   | What it means                                                                                                                       |
+| --------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`         | `READY` | Every `${NAME}` this server references was observed to resolve. **Not** a claim the credential works — see below.                   |
+| `no secrets`    | `READY` | The server declares no references at all. Nothing to seed.                                                                          |
+| `not seeded`    | `ISSUE` | The backend answered, and there is no such secret. The one unambiguous state, and the one the fix guidance is for.                  |
+| `cannot render` | `ISSUE` | The parameter **exists** and its value cannot be produced. Neither absent nor healthy: creating it again fails with 409. Rotate it. |
+| `check value`   | `ISSUE` | A value exists and is evidently filler — an unexpanded `${...}`, a well-known "change-me" string, an empty string.                  |
+| `unverified`    | `ISSUE` | The component holding the value did not answer, so nothing established it either way. The row says which of the two reasons it is.  |
+| `unknown`       | `ISSUE` | The secret backend could not be consulted. Not absent.                                                                              |
+
+Both badges open. A `READY` entry carries a positive claim — which secret, from
+which source, established by which process — and that is usually what somebody
+came to the page for. Only a server with no secrets at all has nothing behind its
+badge.
+
+### `cannot render`: the parameter is there and the value will not come out
+
+A secret parameter is a Parameter Manager entry whose payload holds a `__REF__`
+pointer into Secret Manager, and `:render` is what dereferences it. Parameter
+Manager refuses to dereference a payload whose rendered value carries a quote, a
+brace or a newline — which is every structural credential, a service-account key
+or a PEM — and answers `400 injection detected`.
+
+That leaves a parameter that exists, is indexed, has a version, and hands nothing
+back. Both of the obvious labels are lies about it: `not seeded` sends someone to
+create a resource that is already there (and `create` on an existing path fails
+with 409), and `unknown` says the store did not answer when it answered very
+clearly. So it gets its own state, and the row says to **rotate** the value —
+which rewrites the payload — rather than to seed one.
+
+The console tells this apart from a store outage by asking the store two
+questions rather than one: `list()` reads the index without dereferencing
+anything, and `resolveDetailed()` renders each parameter under its own
+`try`/`catch` so one refusal does not end the loop and cost the other names their
+answer. `resolve()` keeps its fail-fast contract for the injection path, where a
+child process started with half its environment is worse than one that does not
+start.
+
+This diagnosis runs wherever core holds a resolver credential, **including on a
+`provider: env` deployment** — those still resolve `params: true` servers from
+the store at deploy time, and a parameter that cannot render fails that deploy.
+It turns "you find out during the deploy" into a row on a page.
 
 **Seeded is not working, and the page does not pretend otherwise.** strad never
 calls an upstream to prove a credential is accepted, so the good state is `ready`
@@ -458,15 +492,21 @@ token boots fine, lists every other server fine, and 401s in isolation. A page
 that reported presence alone would call that healthy. The `check value` state
 exists for exactly that shape.
 
-**Not visible here is not missing.** The console renders in `core`. A
-supplementary image's `env:` is resolved at render time and injected onto its own
-_bundle_ — `appspec.ts` never broadcasts it — so core cannot see it, and a
-presence check that answered "not seeded" would paint a healthy fleet entirely
-red. That case is `unverified`, and the popout says which process would have to be
-asked. Under `gcp-parameter-store` the picture is better rather than worse: the
-store holds the deploy-time source of truth for a bundle-scoped ref too, so those
-deployments get a real answer for every name — the same answer `render-spec`
-would compute, one deploy earlier.
+**Not visible here is not missing — so the component is asked.** The console
+renders in `core`. A supplementary image's `env:` is resolved at render time and
+injected onto its own _bundle_ — `appspec.ts` never broadcasts it — so core
+cannot see it, and a presence check that answered "not seeded" would paint a
+healthy fleet entirely red. Unaided, the honest answer is therefore
+"could not be checked", for most of the fleet, on every `provider: env`
+deployment. That is honest and useless.
+
+So the component answers for itself. See
+[the presence route](#the-presence-route-a-component-answering-for-itself) below:
+core asks each bundle what it actually holds, the bundle replies in presence and
+never in values, and the row says `plumbed` with the source and the process that
+established it. `unverified` survives for the cases where nothing could answer,
+and the row says which: the component is down, or it runs an image that predates
+the route.
 
 **A `consoleEnv:` value is found under its KEY, not its ref name.** A rendered
 spec carries the resolved value filed under the key the container reads; the ref
@@ -499,16 +539,78 @@ actionable, and "every server's secrets resolve" when nothing is. Neither is tru
 during an outage, so there is a third: **"nothing is known to be broken, but N
 servers could not be checked."** `unknown` and `unverified` are not problems and
 they are not health, and a green headline over a page of `unknown` rows would be
-the page lying in the one place everybody reads.
+the page lying in the one place everybody reads. The presence route shrinks that
+third case to near-nothing; it does not remove it, and it must not.
 
-### A `params: true` server reads `unverified`, not `no secrets`
+### A `params: true` server is graded on its managed parameters
 
 A server that opts into parameter resolution takes its credentials from
-`/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references, and this
-page does not read that namespace. Reporting `no secrets` would be a false green
-on a server whose credentials are simply managed elsewhere — `remote-filesystem-tmp-public`
-in `infra/strad.staging.yaml` is exactly that shape. It reads `unverified`, and the
-row says which namespace was not checked.
+`/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references. The
+config therefore does not name them, and core cannot enumerate them — so the
+unaided the console can only say `unverified`, "this page does not read that
+namespace", about the servers least likely to be checked by anything else.
+`remote-filesystem-tmp-public` in `infra/strad.staging.yaml` is exactly that
+shape.
+
+`render-spec` knows the names, because it resolved them. `appspec.ts` bakes them
+onto the component as `STRAD_PARAM_KEYS`, a **GENERAL** (not `SECRET`) env var
+holding `{"<slug>": ["VARIABLE", ...]}` — names only, and names are what the
+console prints anyway. The component reports presence for each one on the
+presence route, and the server is graded on them like anything else.
+
+Where the component reports no parameters for a slug — an image without the
+manifest, or a deploy that resolved none — the old `unverified` sentence stands,
+because nothing established anything.
+
+### The presence route: a component answering for itself
+
+`POST /_strad/presence`, on every component that holds secrets in its own process
+environment: the bundle host image, and the strad image in `STRAD_MODE=bundle`.
+It is **not** mounted on core, which reads its own environment directly.
+
+```
+POST /_strad/presence            Authorization: Bearer $STRAD_INTERNAL_TOKEN
+{ "keys": ["SLACK_BOT_TOKEN"] }
+
+200 {
+  "protocol": 1,
+  "component": "bundle",
+  "image": "0.4.2",
+  "bootedAt": "2026-07-30T09:12:00.000Z",
+  "observedAt": "2026-07-31T07:00:00.000Z",
+  "keys": { "SLACK_BOT_TOKEN": { "presence": "present", "reason": null } },
+  "paramKeys": { "remote-filesystem-tmp-public": ["…_GCS_PRIVATE_KEY"] }
+}
+```
+
+**The five words.** `absent`, `empty`, `unexpanded`, `placeholder`, `present` —
+and nothing else. No value, no length, no prefix, no hash, no character class.
+The rule lives in `src/secrets/presence.ts`, which is vendored byte-identical
+into `servers/bundle/host/src/presence.ts` (`npm run presence:sync`;
+`test/presence.sync.test.ts` fails CI on drift) so that `change-me` reads as
+filler whichever process holds it.
+
+**It cannot be turned into an oracle.** The key roster core sends is derived from
+the config core is running, plus whatever the component itself reports under
+`STRAD_PARAM_KEYS`. There is no path from a request parameter — on `/ui` or on
+`/api/secrets/readiness` — to a probed name, so no caller can ask strad whether a
+name of its choosing exists. The defence is structural rather than a filter.
+
+**Authentication is the existing `STRAD_INTERNAL_TOKEN`**, the same credential
+core presents to proxy `/mcp` to that component. It is strictly stronger than
+this surface, so mounting the route widens nothing. With no token configured the
+route answers `503` rather than serving anonymously: on the private network is a
+reachability property, not an authorization one.
+
+**Freshness is part of the answer.** `bootedAt` and `image` are reported because
+a container that predates the last render holds the previous deploy's
+environment, and "the value was baked" and "the process has it" are different
+claims. Each console row prints which process established it and when.
+
+**An old image degrades to the old behaviour.** A component that answers `404`
+is reported as `unsupported` — a pin bump, not an outage — and its rows fall back
+to `unverified` with that sentence. This is what lets core deploy ahead of the
+bundle image rather than in lockstep with it.
 
 **The labels are not strad's own invention, and that is the point.** Zimmer's
 Connectors page uses the same two, so the two screens can be read side by side and
@@ -623,6 +725,7 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
       "ready": 5,
       "no-secrets": 3,
       "missing": 1,
+      "unrenderable": 0,
       "placeholder": 1,
       "unverified": 2,
       "unknown": 0
@@ -656,6 +759,14 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
   ]
 }
 ```
+
+`state` on a server and on a secret takes any of the values in the table above,
+`unrenderable` included. The field is additive: `ready` keeps its meaning (a
+conservative presence claim, `false` whenever any server is not `ready` or
+`no-secrets`), and a consumer keying on `ready`, `env`, `store`,
+`servers.total`/`ready`/`issues`, `issues[].slug`/`summary` or `boot[]` needs no
+change for it. A consumer that exhaustively switches on the state gets one more
+arm.
 
 Four shape decisions, each of which could have gone the other way:
 

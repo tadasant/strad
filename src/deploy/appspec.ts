@@ -1,6 +1,7 @@
 import type { StradConfig } from "../config/schema.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { resolveMap } from "../secrets/index.ts";
+import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
 
 /**
  * Render a DigitalOcean App Platform spec from strad.config.yaml.
@@ -220,6 +221,41 @@ const STRAD_IMAGE_ONLY_SECRET_KEYS = new Set([
  * the ingestor the thing that is actually running rather than whatever was in
  * the VERSION file at build time.
  */
+/**
+ * Tell a component which managed-parameter VARIABLES the render put on it.
+ *
+ * GENERAL, not SECRET: it holds names. The names are already in the store, in
+ * the console, and in every fix command the console prints — what is secret is
+ * the values, and none are here.
+ *
+ * It exists because a `params: true` server's credentials are NOT `${NAME}`
+ * references. They are whatever `/strad/{env}/mcp/{slug}/static/` held when the
+ * render ran, so the config does not name them and core cannot derive them. The
+ * console can only answer, unaided, "this server sets `params: true` and this
+ * page does not read that namespace" — a shrug about the servers most likely to
+ * be misconfigured, since nothing else checks them either. With the list baked
+ * on, the component's presence route (secrets/presence.ts) answers for each one
+ * by name.
+ *
+ * Omitted entirely when no server on the component sets `params: true`, so a
+ * spec diff only moves when the thing it describes does.
+ */
+function paramKeysEnv(paramKeys: Record<string, string[]>): EnvVar[] {
+  if (Object.keys(paramKeys).length === 0) return [];
+  const sorted: Record<string, string[]> = {};
+  for (const slug of Object.keys(paramKeys).sort()) {
+    sorted[slug] = paramKeys[slug] ?? [];
+  }
+  return [
+    {
+      key: PARAM_KEYS_ENV,
+      value: JSON.stringify(sorted),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+  ];
+}
+
 function identityEnvs(
   component: string,
   environment: string,
@@ -324,6 +360,8 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       env: Record<string, string>;
       /** Resolved managed parameters — ALREADY literal, so NOT ref-resolved. */
       params: Record<string, string>;
+      /** `slug -> VARIABLE[]` for the `params: true` servers on this component. */
+      paramKeys: Record<string, string[]>;
     }
   >();
   const builtinBundles = new Set<string>();
@@ -376,6 +414,14 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         image: server.image,
         env: { ...(prev?.env ?? {}), ...server.env },
         params: { ...(prev?.params ?? {}), ...params },
+        // Which VARIABLES each `params: true` server contributed, by slug. Names
+        // only — see paramKeysEnv() for why the component needs to be told.
+        paramKeys: server.params
+          ? {
+              ...(prev?.paramKeys ?? {}),
+              [server.slug]: Object.keys(params).sort(),
+            }
+          : (prev?.paramKeys ?? {}),
       });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
@@ -506,6 +552,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               }),
             ),
             ...identityEnvs(name, config.gateway.env, componentImage.tag),
+            ...paramKeysEnv(supplementary.paramKeys),
             ...opts.env.filter(
               (e) =>
                 !STRAD_IMAGE_ONLY_SECRET_KEYS.has(e.key) &&

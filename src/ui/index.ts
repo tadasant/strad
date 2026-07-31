@@ -19,12 +19,13 @@ import {
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
+import type { BundlePresence } from "../gateway/bundle-presence.ts";
 import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
-import { readSecretStatus, secretLookup } from "./secret-status.ts";
+import { readDeploymentSecretStatus } from "./secret-status.ts";
 import type { SecretProvider } from "../secrets/provider/index.ts";
 import { renderGcsBrowse, renderMessage, renderSecrets } from "./render.ts";
 
@@ -102,6 +103,20 @@ export interface ConsoleUiOptions {
    * which is exactly correct under the `env` provider.
    */
   secretProvider?: SecretProvider;
+  /**
+   * Test seam: the transport the bundle presence probe uses. Defaults to fetch.
+   *
+   * The probe is what lets this page assert about a secret that lives on a
+   * component core is not — see src/gateway/bundle-presence.ts.
+   */
+  fetchImpl?: typeof fetch;
+  /** Test seam: an already-probed bundle report, skipping the transport. */
+  presence?: BundlePresence;
+  /**
+   * Test seam: the store the four-state diagnosis reads. Defaults to
+   * `resolverFromEnv(env)`; explicit `null` disables the diagnosis.
+   */
+  diagnosticStore?: Pick<ParameterStore, "list" | "resolveDetailed"> | null;
   /** Session sealers, so the gate can verify a Google login (src/auth/session.ts). */
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
@@ -207,10 +222,14 @@ async function handleIndex(
   res: Response,
   opts: ConsoleUiOptions,
 ): Promise<void> {
-  const { statuses, boot } = await readSecretStatus({
+  const { statuses, boot } = await readDeploymentSecretStatus({
     config: opts.config,
     bag: opts.secrets,
-    lookup: secretLookup(opts.secrets, opts.secretProvider),
+    env: opts.env,
+    secretProvider: opts.secretProvider,
+    fetchImpl: opts.fetchImpl,
+    presence: opts.presence,
+    store: opts.diagnosticStore,
   });
 
   res.type("html").send(

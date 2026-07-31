@@ -14,6 +14,7 @@ export {
   type ParameterAdmin,
   type ParameterResolver,
   type ParameterStore,
+  type ResolvedNamespace,
   ParameterStoreError,
 } from "./types.ts";
 

@@ -20,6 +20,10 @@ a GHCR image.
   would, with no secrets. An unknown key is a hard error there — the schema is
   Zod-default, so `consoleEnvs:` for `consoleEnv:` is otherwise stripped in
   silence. CI runs it over every config in this repo; edit one, run it.
+- `npm run presence:sync` re-vendors `src/secrets/presence.ts` into the bundle
+  host tree. Edit the source, never the copy; `test/presence.sync.test.ts` fails
+  CI on drift, and a drifted copy means one component calls `change-me` filler
+  and the other calls it a credential, on the same console row.
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml`.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
@@ -43,6 +47,8 @@ not a confession.
 | `src/config/schema.ts` — any field, default, or `superRefine` rule         | `servers/interface.md` **and** `strad.config.example.yaml`        |
 | `src/auth/**`                                                              | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                          | `operate/deploy-model.md`                                         |
+| `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts` | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md` |
+| `src/ui/secret-status.ts` — a state, a label, or the source badge          | `operate/secrets.md`, `limitations.md`                            |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate     | `operate/deploy-model.md`, `servers/interface.md`                 |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate  | `operate/deploy-model.md`, `operate/secrets.md`                   |
 | `src/deploy/preflight.ts` — what a deploy demands of the store             | `operate/secrets.md`, `limitations.md`                            |
@@ -109,7 +115,7 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 14 mounted MCP servers, one shared Chromium.
+- `servers/bundle/` — one image, 15 mounted MCP servers, one shared Chromium.
 
 The prose for all of the above is in `docs/`.
 

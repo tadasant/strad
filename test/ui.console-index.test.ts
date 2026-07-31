@@ -224,16 +224,24 @@ describe("sortEntries", () => {
 
 describe("GET /ui — badges", () => {
   it("badges the two entries whose secrets resolve READY", () => {
-    // Two READY chips, two ISSUE buttons, and no badge at all on the disabled
+    // Two READY badges, two ISSUE badges, and no badge at all on the disabled
     // entry — five servers, four badges.
+    //
+    // BOTH kinds are now buttons that open a popout, and that is the point of
+    // the change rather than a side effect: a READY entry carries a POSITIVE
+    // claim — which secret, from which source, established by which process —
+    // and that is the answer someone came to the page for.
+    //
     // Counted on the ENTRY badge's own markup: the lede renders an example chip
     // of each to explain them, and a looser count would be satisfied by those
     // alone with every entry unbadged.
     const ready =
-      html.split('class="chip chip-ok chip-badge" title=').length - 1;
-    const issue = html.split("data-fix-open=").length - 1;
+      html.split('class="chip chip-ok chip-badge chip-button"').length - 1;
+    const issue =
+      html.split('class="chip chip-bad chip-badge chip-button"').length - 1;
     expect(ready).toBe(2);
     expect(issue).toBe(2);
+    expect(html.split("data-fix-open=").length - 1).toBe(4);
   });
 
   it("badges an unresolvable secret ISSUE, with a control that opens a popout", () => {
@@ -360,11 +368,18 @@ describe("GET /ui — the ISSUE popout", () => {
     return html.slice(at, html.indexOf("</dialog>", at));
   };
 
-  it("exists for every ISSUE entry and for no READY one", () => {
+  it("exists for every entry that has a secret to report on, READY included", () => {
+    // A READY entry has something to show — which secret, from which source,
+    // established by which process and how recently. Hiding that would be the
+    // same mistake as the shrug: information the console holds and does not
+    // show.
     expect(html).toContain('id="fix-beta"');
     expect(html).toContain('id="fix-object-store-bad"');
-    expect(html).not.toContain('id="fix-alpha"');
-    expect(html).not.toContain('id="fix-object-store"');
+    expect(html).toContain('id="fix-alpha"');
+    expect(html).toContain('id="fix-object-store"');
+    // A DISABLED server carries no badge and no popout: strad does not mount it,
+    // so it needs no secrets and `deriveServerStatuses` skips it entirely.
+    expect(html).not.toContain('id="fix-retired"');
   });
 
   it("names the secret, the state, and what kind of problem it is", () => {

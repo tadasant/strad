@@ -10,10 +10,13 @@ import { entitledServers } from "../gateway/entitlements.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { SecretProvider } from "../secrets/provider/index.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
-import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
 import {
-  readSecretStatus,
-  secretLookup,
+  RESOLVER_ENV,
+  type ParameterStore,
+} from "../secrets/parameters/index.ts";
+import type { BundlePresence } from "../gateway/bundle-presence.ts";
+import {
+  readDeploymentSecretStatus,
   storeProject,
   tally,
   type SecretReading,
@@ -157,9 +160,16 @@ export interface BootKey {
   detail: string;
 }
 
-/** `missing` is worse news than `unknown`, which is worse than `unverified`. */
+/**
+ * `missing` is worse news than `unrenderable`, which is worse than `placeholder`,
+ * which is worse than `unknown`, which is worse than `unverified`.
+ */
 const ISSUE_RANK: Record<ServerState, number> = {
-  missing: 4,
+  missing: 5,
+  // Between `missing` and `placeholder`, matching STATE_RANK in
+  // ui/secret-status.ts. A caller sorting by severity and a page sorting by
+  // severity must not disagree about which row is worse.
+  unrenderable: 4,
   placeholder: 3,
   unknown: 2,
   unverified: 1,
@@ -284,6 +294,12 @@ export interface ReadinessHandlerOptions {
   secrets: SecretBag;
   /** The runtime provider, when the deployment has one. */
   secretProvider?: SecretProvider;
+  /** Test seam: the transport the bundle presence probe uses. */
+  fetchImpl?: typeof fetch;
+  /** Test seam: an already-probed bundle report. */
+  presence?: BundlePresence;
+  /** Test seam: the store the four-state diagnosis reads. */
+  diagnosticStore?: Pick<ParameterStore, "list" | "resolveDetailed"> | null;
 }
 
 export function createReadinessHandler(
@@ -342,10 +358,14 @@ export function createReadinessHandler(
     }
 
     try {
-      const reading = await readSecretStatus({
+      const reading = await readDeploymentSecretStatus({
         config: opts.config,
         bag: opts.secrets,
-        lookup: secretLookup(opts.secrets, opts.secretProvider),
+        env: opts.env,
+        secretProvider: opts.secretProvider,
+        fetchImpl: opts.fetchImpl,
+        presence: opts.presence,
+        store: opts.diagnosticStore,
       });
 
       // Never cached. The answer changes the moment someone seeds a value, and a

@@ -41,13 +41,19 @@
  * failure (OOM), and that is the risk the telemetry is there to watch.
  */
 import express, { type Request, type Response } from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
+import {
+  authorizePresence,
+  buildPresenceReport,
+  parsePresenceRequest,
+  PRESENCE_ROUTE,
+} from "./presence.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +64,22 @@ const VERSION = (
 ).version;
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
+
+/**
+ * When THIS process started — the freshness half of what the presence route
+ * reports. A container that predates the last render holds the previous deploy's
+ * environment, and "the value is baked" and "the running process has it" are
+ * different claims. This is what lets core tell them apart.
+ */
+const BOOTED_AT = new Date();
+
+/** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
+function constantTimeEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a, "utf8");
+  const right = Buffer.from(b, "utf8");
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
 
 // --- the shape every vendored shared/ factory returns ------------------------
 
@@ -777,6 +799,44 @@ async function main(): Promise<void> {
         ...(m.degraded ? { degraded: m.degraded } : {}),
       })),
     });
+  });
+
+  // Presence, for the console that cannot see this process.
+  //
+  // A supplementary image's `env:` is resolved at deploy time and injected onto
+  // THIS component — core never receives it (appspec.ts, consoleEnvVars). So
+  // "is ${SLACK_BOT_TOKEN} plumbed?" is a question only this process can answer,
+  // and until it did, strad's console printed a shrug for the whole fleet.
+  //
+  // It answers with the five words in presence.ts and nothing else: no value, no
+  // length, no prefix, no hash. Behind the same internal token core already
+  // presents to proxy /mcp here, and fail-closed when that token is unset.
+  app.post(PRESENCE_ROUTE, (req, res) => {
+    const auth = authorizePresence(
+      req.get("authorization"),
+      process.env.STRAD_INTERNAL_TOKEN,
+      // presence.ts stays import-free so it can be vendored, and falls back to a
+      // JS comparator. This caller has node:crypto, so it passes the real one.
+      constantTimeEquals,
+    );
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+    const parsed = parsePresenceRequest(req.body);
+    if (!parsed.ok) {
+      res.status(parsed.status).json({ error: parsed.error });
+      return;
+    }
+    res.set("cache-control", "no-store").json(
+      buildPresenceReport({
+        component: process.env.STRAD_COMPONENT ?? "bundle",
+        image: process.env.STRAD_VERSION ?? VERSION,
+        bootedAt: BOOTED_AT,
+        env: process.env,
+        keys: parsed.keys,
+      }),
+    );
   });
 
   for (const mount of mounts) {
