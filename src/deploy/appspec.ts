@@ -53,7 +53,7 @@ export interface RenderOptions {
   resolvedParams?: Readonly<Record<string, Record<string, string>>>;
   /**
    * Override the image a supplementary component runs, without editing the
-   * config's 24 `image:` lines. This is what makes a BRANCH deployable:
+   * config's 25 `image:` lines. This is what makes a BRANCH deployable:
    * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
    * the deploy renders the branch's own config against that tag.
    *

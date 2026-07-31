@@ -180,11 +180,18 @@ learn:
 
 ## What strad's own config renders to
 
-`infra/strad.staging.yaml` produces exactly **two** components — `core` and
-`bundle` — and `test/staging-config.test.ts` asserts that. `core` runs
-`ghcr.io/tadasant/strad` with `http_port: 8080`; `bundle` runs
+`infra/strad.staging.yaml` produces exactly **three** components — `core`,
+`bundle` and `bundle-zimmer-secrets` — and `test/staging-config.test.ts` asserts
+that. `core` runs `ghcr.io/tadasant/strad` with `http_port: 8080`; `bundle` runs
 `ghcr.io/tadasant/strad-bundle` at `apps-s-1vcpu-2gb` with `internal_ports: [8080]`
 and no public route.
+
+`bundle-zimmer-secrets` runs the **same** bundle image at the default
+`apps-s-1vcpu-1gb`, and it is the one component that is not there for capability.
+Capability is config, and config can be shared; a parameter STORE is
+`process.env`, and a container has exactly one of those. It exists so a second
+`secrets` slug can front a different project — see [Two stores, one
+gateway](/operate/secrets/#two-stores-one-gateway) for the shape and its cost.
 
 Prod, in `tadasant-internal`, is a separate config against the same renderer.
 
@@ -221,7 +228,7 @@ stderr, so GitHub annotates the run, and repeated as a list on stdout. Output is
 names and structure only — it never prints a value, and the values it renders
 with are dummies anyway.
 
-Four checks, in order:
+Five checks, in order:
 
 1. **Schema.** The same `parseConfig` the gateway boots with — types, required
    fields, and the cross-field rules (an undefined role, two images in one bundle,
@@ -247,6 +254,16 @@ Four checks, in order:
    every enabled server's map into one flat environment, so a collision means the
    last declaration silently wins and the other server's console runs as the wrong
    identity.
+5. **Bundle scope.** The same collision one layer in: two servers sharing a
+   `bundle:` may not claim one `env:` key with **different** values. A bundle is a
+   component, which is a container, which is one `process.env`, and `renderAppSpec`
+   merges a bundle's servers last-wins exactly as the console does. Declaring a key
+   _identically_ stays legal and is the normal case — capability variants declare
+   their credentials on every variant on purpose, so that disabling one cannot
+   strip the secret from its siblings. The case this exists for is a second
+   `secrets` slug: two of them in one bundle share `SECRETS_PROJECT_ID`, so
+   `?servers=<the-second-slug>` answers with the **first** store's parameters. That
+   is a wrong answer rather than an error, and it passes checks 1–4.
 
    The collision half is now **also** rejected at schema-validation time (check 2
    above), which is the earlier and better place to say it — and that check covers

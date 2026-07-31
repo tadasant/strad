@@ -10,12 +10,18 @@
 # FAILS the render, loudly, rather than deploying a half-authenticated gateway.
 #
 # ---------------------------------------------------------------------------
-# CAPABILITY LIVES AT THE GATEWAY. TWO COMPONENTS, NOT THIRTEEN.
+# CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares twenty-six server SLUGS: twenty-four supplementary-image
-# entries (which land on fifteen upstream mounts inside the one bundle image,
-# because capability variants share a mount), the `echo` builtin in core, and the
-# `deepwiki` remote-http canary.
+# This file declares twenty-seven server SLUGS: twenty-five supplementary-image
+# entries, the `echo` builtin in core, and the `deepwiki` remote-http canary.
+# Twenty-four of the twenty-five land on fifteen upstream mounts inside the one
+# bundle image, because capability variants share a mount; the twenty-fifth
+# (`zimmer-secrets`) runs that same image on a component of its own.
+#
+# THREE components, not two, and the third is not a capability variant: it is
+# `bundle-zimmer-secrets`, a second copy of the bundle image fronting a SECOND
+# parameter store. Capability is config; a STORE is `process.env`, and one
+# container has one of those. See the bundles block below.
 #
 # It used to be twelve bundles for twenty-six slugs, and the reason was
 # small and stupid: a server's capability was a CONTAINER env var
@@ -80,6 +86,13 @@ roles:
   # something is actually withheld from someone.
   echo-only:
     servers: [echo]
+  # Zimmer's own agent sessions. It reaches ONE slug: the store that holds
+  # Zimmer's parameters. Staging's deploy loads the same third-party accounts
+  # prod uses — there is no separate Slack workspace or 1Password service
+  # account — so `admin` here would hand a Zimmer session `onepassword-rw`,
+  # `gmail-rw-external` and the rest. Name the slug, not the wildcard.
+  zimmer:
+    servers: [zimmer-secrets]
 
 bundles:
   # THE bundle. One image, one component, fifteen upstream MCP servers — the
@@ -91,13 +104,46 @@ bundles:
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
   # and Node with fifteen servers registered adds ~200MB. 0.5GB is absurd here;
-  # 1GB would be one bad page render from an OOM that takes all 26 slugs down
+  # 1GB would be one bad page render from an OOM that takes all 24 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
   # the OpenTelemetry data shows event-loop lag or CPU saturation, the next move
   # is apps-d-1vcpu-2gb ($39, dedicated CPU), not more RAM.
   - name: bundle
     instanceSizeSlug: apps-s-1vcpu-2gb
+
+  # THE SECOND STORE'S BUNDLE. It exists for one reason, and the reason is
+  # `process.env`.
+  #
+  # A bundle is a component, which is a container, which is ONE environment. The
+  # secrets server reads `SECRETS_PROJECT_ID` from `process.env`
+  # (servers/secrets/shared/src/config.ts) and the bundle host calls `loadConfig()`
+  # with no argument, so a container fronts exactly one parameter store. Two
+  # secrets slugs in ONE bundle would therefore share a store — and share it
+  # SILENTLY, because `src/deploy/appspec.ts` merges a bundle's servers' `env:`
+  # maps last-wins. `?servers=zimmer-secrets` would answer with strad's
+  # parameters and nothing would report it.
+  #
+  # A second bundle is the whole fix. `src/gateway/registry.ts` resolves the
+  # private URL PER BUNDLE and only then appends `path:`, and `appspec.ts` keys
+  # its env map by `server.bundle` — so two bundles never merge, and the same
+  # `path: /secrets` in each reaches a different container.
+  #
+  # SIZE. The default 1GB, not the bundle's 2GB. This container runs the same
+  # image (so it registers every upstream at boot, ~200MB of Node) but the
+  # gateway only ever routes it `/secrets`, and it never launches the Chromium
+  # the browser mounts would use.
+  #
+  # COST. This is a real second billed component (~$12/month at this size) for a
+  # store a human touches a few times a month. That is the trade, stated plainly:
+  # the alternative shapes are worse — a parallel secrets console in Rails would
+  # duplicate the viewer/admin split, the reveal-flag-vs-IAM logic, the delivery
+  # -state classifier and the capability probe; and folding Zimmer's parameters
+  # into strad's project under a `/zimmer/` namespace would need no component at
+  # all but collapses the boundary the split credentials exist to draw, because
+  # `parameters.list` is authorized on the PROJECT and `SECRETS_NAMESPACES` is a
+  # code-level guard, not IAM.
+  - name: bundle-zimmer-secrets
 
 servers:
   # kind: builtin, in the gateway process.
@@ -383,6 +429,85 @@ servers:
       SECRETS_NAMESPACES: "/strad/staging/mcp/,/strad/staging/gateway/static/"
       # Parameter Manager admin + Secret Manager admin. Core only. Humans only.
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
+
+  # ---------------------------------------------------------------------------
+  # zimmer-secrets — the SAME server, the SAME image, a DIFFERENT store.
+  #
+  # Zimmer keeps its own parameters in its own GCP project, under the same
+  # envelope convention (it was built by mirroring strad's). So one strad fronts
+  # both stores: same console, same MCP tools, same viewer/admin split, same
+  # reveal flag — instead of a second parameters console written in Rails.
+  #
+  # THREE THINGS ARE LOAD-BEARING HERE, and each of them is a silent failure if
+  # you get it wrong.
+  #
+  # 1. `bundle:` IS THE WHOLE MECHANISM. It names a DIFFERENT bundle from the
+  #    `secrets` slug above, and that is the only structural difference between
+  #    the two entries. Put both slugs in one bundle and they share one
+  #    container, one `process.env` and therefore one store — with `env:` merged
+  #    last-wins and no validation error anywhere. See the bundle comment above.
+  #
+  # 2. `env:` MAY USE THE BARE `SECRETS_*` NAMES; `consoleEnv:` MAY NOT. `env:`
+  #    lands on THIS slug's own container, which holds nothing else, so bare is
+  #    correct and is what the server reads. Every server's `consoleEnv:` merges
+  #    into the ONE `core` component (src/deploy/appspec.ts), so bare names there
+  #    would collide with the `secrets` slug's — `/ui/secrets` would render
+  #    strad's project holding ZIMMER's admin credential. The console maps
+  #    `ZIMMER_SECRETS_SECRETS_*` back down to the bare name for this slug alone
+  #    (`withNamespacedFallback`, src/ui/resolve.ts). `scripts/check-config.ts`
+  #    now rejects the bare-name collision, but the rule is worth knowing rather
+  #    than rediscovering from a failed CI run.
+  #
+  # 3. THE MCP CREDENTIAL IS THE VIEWER, AND IT IS NOT THE RESOLVER.
+  #    `zimmer-secrets-resolver` already exists and would have been the obvious
+  #    key to reuse — do not. It holds `parametermanager.parameterAccessor`,
+  #    which carries `parameterVersions.render`, and `:render` derefs a secret
+  #    parameter AS THE PARAMETER'S OWN PRINCIPAL, which was granted
+  #    `secretAccessor` at create time. It is a live read path for a secret
+  #    VALUE. strad derives this server's tool surface from a live IAM probe
+  #    rather than a flag (servers/secrets/shared/src/capabilities.ts), so a slug
+  #    handed that key would list `get_secret_value` and it would WORK.
+  #    `zimmer-secrets-viewer@zimmer-secrets-staging` holds `parameterViewer`
+  #    only — it can see that a parameter exists, its kind and its note, and read
+  #    a NON-secret value, and Google refuses it every secret value.
+  #
+  # ENTITLEMENT. `admin` (a human's console session) and `zimmer` — the narrow
+  # role Zimmer's own sessions hold, which reaches this slug and nothing else.
+  # Zimmer managing Zimmer's parameters is the point of the slug.
+  #
+  # The project id and namespace are non-secret deployment config, so they are
+  # literals. Only the two service-account KEYS are secret: they are seeded in
+  # staging's Secret Manager as strad-staging-ZIMMER_SECRETS_VIEWER_KEY_JSON and
+  # strad-staging-ZIMMER_SECRETS_ADMIN_KEY_JSON, and render-spec fails the deploy
+  # if either is missing.
+  - slug: zimmer-secrets
+    kind: supplementary-image
+    title: Zimmer secrets & parameters
+    description: Zimmer's own parameter store. Add, rotate, reveal and delete non-secret and secret parameters. The MCP server can never return a secret value.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-zimmer-secrets
+    path: /secrets
+    entitlements: [admin, zimmer]
+    env:
+      SECRETS_PROJECT_ID: "zimmer-secrets-staging"
+      SECRETS_NAMESPACES: "/zimmer/staging/mcp/static/"
+      SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/zimmer-secrets"
+      # Viewer-only. See point 3 above — this is the one line that keeps /mcp
+      # away from a Zimmer secret value, and it is IAM rather than markup.
+      SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_VIEWER_KEY_JSON}"
+    consoleEnv:
+      # SLUG-NAMESPACED, every one of them. See point 2 above.
+      ZIMMER_SECRETS_SECRETS_PROJECT_ID: "zimmer-secrets-staging"
+      ZIMMER_SECRETS_SECRETS_NAMESPACES: "/zimmer/staging/mcp/static/"
+      # Reveal is a human-only surface behind the console's SSO gate, and the
+      # admin key below already holds `secretmanager.admin`, so the flag widens
+      # nothing the console could not already do. It is on for the same reason it
+      # is on for `secrets` in staging: round-tripping a value is how a store gets
+      # tested. Prod's slug is a separate decision, made when prod's slug lands.
+      ZIMMER_SECRETS_SECRETS_REVEAL_ENABLED: "true"
+      # Parameter Manager admin + Secret Manager admin, on Zimmer's project only.
+      # Core only. Humans only. There is no code path from /mcp to it.
+      ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
 
   # ---------------------------------------------------------------------------
   # Gmail — 8 tools full, 7 read-write, 5 read-only. THREE slugs, ONE container.

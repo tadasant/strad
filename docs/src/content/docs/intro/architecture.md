@@ -54,19 +54,25 @@ network and is never reachable from the internet. The core reaches a bundle at
 in-VPC hop (~4ms) with no public-edge hairpin.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
-own `path`. strad's own deployment has a single bundle: one
+own `path`. strad's own deployment has one main bundle: a
 `ghcr.io/tadasant/strad-bundle` container that mounts fifteen MCP servers in one
 Node process. The staging config maps twenty-four `supplementary-image` entries
 onto those fifteen mounts, because capability variants of one upstream are two
 entries pointing at the same path.
 
+It has a **second** bundle, `bundle-zimmer-secrets`, and the reason is worth
+stating because it is the one thing a bundle cannot share: `process.env`. That
+component runs the same image and is only ever routed `/secrets`, but it fronts a
+different parameter store. See [Two stores, one
+gateway](/operate/secrets/#two-stores-one-gateway).
+
 Three numbers, three different things:
 
 | Number | What it counts                                                                      |
 | ------ | ----------------------------------------------------------------------------------- |
-| **2**  | App Platform components (`core`, `bundle`)                                          |
+| **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                 |
 | **15** | MCP servers mounted inside the bundle image                                         |
-| **26** | server slugs in `infra/strad.staging.yaml` (24 supplementary + `echo` + `deepwiki`) |
+| **27** | server slugs in `infra/strad.staging.yaml` (25 supplementary + `echo` + `deepwiki`) |
 
 ### The two modes
 

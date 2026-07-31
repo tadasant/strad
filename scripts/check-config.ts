@@ -37,6 +37,10 @@
  *      values. Both are silent failures with a visible symptom much later: the
  *      first is a console reporting a credential missing that the config plainly
  *      declares, the second is a console running as the wrong identity.
+ *   5. BUNDLE SCOPE. The same collision one layer in: two servers sharing a
+ *      bundle may not claim one `env:` key with different values, because one
+ *      bundle is one container with one environment. Declaring a key IDENTICALLY
+ *      stays legal — capability variants do it on purpose.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -51,6 +55,7 @@ import {
 } from "../src/deploy/appspec.ts";
 import {
   bakedSecretNames,
+  bundleScopeProblems,
   consoleScopeProblems,
 } from "../src/deploy/preflight.ts";
 
@@ -160,6 +165,11 @@ try {
 if (spec) {
   for (const message of consoleScopeProblems(config, spec)) problem(message);
 }
+
+// --- 5. bundle scope --------------------------------------------------------
+//
+// No spec needed: the bundle grouping is in the config.
+for (const message of bundleScopeProblems(config)) problem(message);
 
 // --- what the deployment must seed ------------------------------------------
 //

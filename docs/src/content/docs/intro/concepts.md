@@ -90,8 +90,10 @@ exposing them. See [Architecture](/intro/architecture/).
 
 One bundle runs one image, but any number of servers may share it — each on its
 own `path`, and capability variants of one upstream on the _same_ path. strad's
-own deployment is two components: `core`, and one bundle whose image mounts
-fifteen MCP servers in a single process.
+own deployment is three components: `core`; one bundle whose image mounts fifteen
+MCP servers in a single process; and `bundle-zimmer-secrets`, which runs that same
+image for the one thing a bundle cannot share — its `process.env`, and so the
+parameter store the `secrets` server fronts.
 
 ## Capability
 

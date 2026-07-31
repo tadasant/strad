@@ -543,7 +543,7 @@ function bootRow(entry: {
  * Open and close the per-entry popouts.
  *
  * One delegated listener for every dialog on the page rather than one per card:
- * a 26-server roster would otherwise attach 26 handlers to do one thing. A
+ * a 27-server roster would otherwise attach 27 handlers to do one thing. A
  * missing `showModal` falls back to the `open` attribute, the same degradation
  * the Help control takes — and with no JS at all the `<noscript>` block hides the
  * buttons and renders every panel inline, which is where the guidance lived
@@ -725,7 +725,7 @@ const INDEX_CSS = `<style>
 .stat-ready{color:var(--text-accent)}
 .stat-missing{color:#e8776b}
 /* The entry badge sits where the duplicated slug used to. Loud on purpose: on a
-   26-entry grid it is the one thing that varies from card to card. */
+   27-entry grid it is the one thing that varies from card to card. */
 .chip-badge{font-weight:600;letter-spacing:.08em}
 .chip-button{cursor:pointer;background:none;font-family:var(--font-mono);
   display:inline-flex;align-items:center;gap:.3rem}

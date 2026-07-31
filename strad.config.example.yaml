@@ -9,8 +9,8 @@
 # holds no cloud credentials.
 #
 # This file is an EXAMPLE: it shows every shape the schema allows, with fewer
-# servers than a real deployment. infra/strad.staging.yaml is the real one — 26
-# server slugs across 2 App Platform components.
+# servers than a real deployment. infra/strad.staging.yaml is the real one — 27
+# server slugs across 3 App Platform components.
 
 version: 1
 

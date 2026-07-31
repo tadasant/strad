@@ -67,13 +67,21 @@ numbers describe "how many servers," and they count different things:
 
 | The number | What it counts                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------ |
-| **2**      | App Platform components: `core` and `bundle`                                               |
+| **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                         |
 | **15**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
-| **24**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
-| **26**     | total server slugs in staging (24 + the `echo` builtin + the `deepwiki` remote-http)       |
+| **25**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
+| **27**     | total server slugs in staging (25 + the `echo` builtin + the `deepwiki` remote-http)       |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
+
+`bundle-zimmer-secrets` is the third component and the only one that is not there
+for capability. Capability is config and config can be shared; a parameter STORE
+is `process.env`, and a container has one of those — so a second `secrets` slug
+fronting a second GCP project needs a second bundle. Two secrets slugs in ONE
+bundle is the obvious way to write it and is silently wrong (one store answers
+under two slugs); `bundleScopeProblems()` in `src/deploy/preflight.ts` now makes it
+a failed `config:check` rather than a wrong answer.
 
 **Brand and voice.** All user-facing prose (docs, README, console copy) follows
 `references/BRAND.md` (what strad is and the opinions that follow) and

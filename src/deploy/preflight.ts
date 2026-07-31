@@ -175,6 +175,64 @@ export function consoleScopeProblems(
 }
 
 /**
+ * The same collision, one layer in: two servers sharing a BUNDLE and claiming one
+ * `env:` key with different values.
+ *
+ * A bundle is a component, which is a container, which is one `process.env`.
+ * `renderAppSpec` merges every server in a bundle into that one environment
+ * last-wins, so this is the `env:` analog of `consoleScopeProblems` and it fails
+ * exactly as quietly.
+ *
+ * Sharing a key is NORMAL and must stay legal: capability variants declare their
+ * credentials identically on purpose, so that disabling one variant cannot strip
+ * the secret from its siblings. Only a DIFFERENT VALUE is a problem, because only
+ * a different value means one of the two servers is not getting what it asked
+ * for.
+ *
+ * The case this exists for is a second `secrets` slug. Two of them in one bundle
+ * share `SECRETS_PROJECT_ID`, so `?servers=zimmer-secrets` answers with strad's
+ * parameters under Zimmer's slug — a wrong answer rather than an error, and one
+ * that passes the schema, the render and the console-scope check. The fix is a
+ * second bundle (see `infra/strad.staging.yaml`); this is what tells you so.
+ *
+ * Needs no rendered spec: the bundle grouping is in the config itself.
+ */
+export function bundleScopeProblems(config: StradConfig): string[] {
+  const problems: string[] = [];
+  /** bundle -> key -> the first slug/value that claimed it. */
+  const claimed = new Map<
+    string,
+    Map<string, { slug: string; value: string }>
+  >();
+
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+
+    let byKey = claimed.get(server.bundle);
+    if (!byKey) {
+      byKey = new Map();
+      claimed.set(server.bundle, byKey);
+    }
+
+    for (const [key, value] of Object.entries(server.env)) {
+      const first = byKey.get(key);
+      if (first && first.value !== value) {
+        problems.push(
+          `servers "${first.slug}" and "${server.slug}" share bundle ` +
+            `"${server.bundle}" and both declare ${key} under env: with ` +
+            `different values — one bundle is one container with one ` +
+            `environment, so one silently overwrites the other`,
+        );
+        continue;
+      }
+      if (!first) byKey.set(key, { slug: server.slug, value });
+    }
+  }
+  return problems;
+}
+
+/**
  * Boot keys that may legitimately be absent.
  *
  * Everything in `CORE_BOOT_ENV_KEYS` except the two the deployment cannot work

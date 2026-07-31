@@ -8,9 +8,14 @@ import { renderAppSpec } from "../src/deploy/appspec.ts";
  *
  * Two things are checked here, and they are the two things that would rot:
  *
- *   1. COMPONENT COUNT. 26 servers must render as exactly TWO components —
- *      core + one bundle. A stray `bundle:` name in the config is a $5-$25/month
- *      regression that nobody would otherwise notice.
+ *   1. COMPONENT COUNT. 27 servers must render as exactly THREE components —
+ *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
+ *      the config is a $5-$25/month regression that nobody would otherwise
+ *      notice, so the number is pinned rather than merely bounded. The third one
+ *      is deliberate and is not a capability variant: it fronts a SECOND
+ *      parameter store, which is `process.env` and therefore cannot share a
+ *      container. test/staging-config.multi-store.test.ts is where that property
+ *      is proven; this file only guards the count.
  *
  *   2. THE TOOL COUNTS. The capability tiers are now allow-lists in this file,
  *      derived from each upstream's tool-group definitions. If someone trims one
@@ -31,7 +36,7 @@ const CONFIG = parseConfig(
 const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
 
 describe("staging config", () => {
-  it("renders exactly TWO components: core + one bundle", () => {
+  it("renders exactly THREE components: core + bundle + the second store", () => {
     const spec = renderAppSpec({
       config: CONFIG,
       appName: "strad-staging",
@@ -72,11 +77,17 @@ describe("staging config", () => {
           "SECRETS_PROJECT_ID",
           "SECRETS_VIEWER_KEY_JSON",
           "SECRETS_ADMIN_KEY_JSON",
+          "ZIMMER_SECRETS_VIEWER_KEY_JSON",
+          "ZIMMER_SECRETS_ADMIN_KEY_JSON",
         ].map((name) => [name, "x"]),
       ),
     });
 
-    expect(spec.services.map((s) => s.name)).toEqual(["core", "bundle"]);
+    expect(spec.services.map((s) => s.name)).toEqual([
+      "core",
+      "bundle",
+      "bundle-zimmer-secrets",
+    ]);
 
     const bundle = spec.services[1]!;
     expect(bundle.instance_size_slug).toBe("apps-s-1vcpu-2gb");
@@ -161,14 +172,21 @@ describe("staging config", () => {
     expect(core.envs.find((e) => e.key === KEY)?.type).toBe("SECRET");
   });
 
-  it("every containerised server runs the ONE image, in the ONE bundle", () => {
+  it("every containerised server runs the ONE image, and only the second store leaves the ONE bundle", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(24);
+    expect(supplementary.length).toBe(25);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
-      expect(server.bundle).toBe("bundle");
+      // ONE image, and one bundle for everything whose difference is
+      // CAPABILITY. `zimmer-secrets` is the sole exception, and its difference
+      // is a STORE — `process.env`, which a container has exactly one of. A
+      // second slug appearing here is a second billed component: justify it in
+      // this test or put it back in the bundle.
+      expect(server.bundle).toBe(
+        server.slug === "zimmer-secrets" ? "bundle-zimmer-secrets" : "bundle",
+      );
     }
   });
 

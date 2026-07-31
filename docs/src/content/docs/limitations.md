@@ -441,6 +441,28 @@ is the same class of evidence gap that let the original bug ship: the previous d
 substituted into the parsed object and re-stringified, so it could not fail for any
 input, and the identical value that 400s at Google passed every test here.
 
+### 34. A second parameter store costs a second billed component
+
+Staging renders **three** App Platform components, not two. The third,
+`bundle-zimmer-secrets`, runs the same bundle image as `bundle` and is only ever
+routed `/secrets`. It is there because the secrets server reads
+`SECRETS_PROJECT_ID` from `process.env` and the bundle host calls `loadConfig()`
+with no argument — one container fronts one store — so a slug pointing at a second
+GCP project needs a container of its own. That is roughly $12/month at
+`apps-s-1vcpu-1gb`, for a store a human touches a few times a month. The full
+reasoning, including why the two cheaper shapes are worse rather than cheaper, is
+in [Two stores, one gateway](/operate/secrets/#two-stores-one-gateway).
+
+It also wastes most of the container: the bundle image registers every upstream at
+boot (~200MB of Node) though this one serves a single mount, because there is no
+build that produces a secrets-only image and adding one would be a second image to
+keep current.
+
+An upstream `consoleOnly: true` flag would let a second store be console-only — no
+MCP surface, no second container, no cost — and for a store a human manages and no
+agent should enumerate that is arguably the right shape rather than merely the
+cheaper one. It is not built, and nothing blocks on it.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session
@@ -455,8 +477,9 @@ on an automatic release without prerequisites, while a manual dispatch fails lou
 
 :::note[HACKS #12 is superseded]
 `HACKS.md` #12 describes the `bundle-goodeggs` component being hand-deployed off
-DOCR. That component no longer exists — the collapse renders exactly two components,
-`core` and `bundle`. The entry is kept in `HACKS.md` for history.
+DOCR. That component no longer exists — the collapse renders `core` and `bundle`,
+plus `bundle-zimmer-secrets`, which is there for a second parameter store rather
+than for a capability. The entry is kept in `HACKS.md` for history.
 :::
 
 ## Supply chain and build

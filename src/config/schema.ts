@@ -229,7 +229,7 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * the gateway, they could not even share a container — each needed its own
  * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
  * servers' env maps. That constraint is what made the fleet cost 12 bundles for
- * its 26 slugs. The same fleet is 26 slugs in ONE bundle today.)
+ * its 26 slugs. The same fleet is 24 slugs in ONE bundle today.)
  *
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
