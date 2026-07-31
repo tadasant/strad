@@ -717,6 +717,11 @@ export function createGcpParameterStore(
     }
 
     try {
+      // The one place on the RESOLVE path where a rendered payload becomes the
+      // string a child process runs with. Every consumer funnels through here:
+      // `resolveServerParams` (baked component env), the registry's param cache
+      // (a builtin's options) and `StoreSecretProvider` (`${REF}` resolution).
+      //
       // `decodeEnvelopeValue` undoes the storage encoding a secret value is
       // written with, so `:render` cannot splice raw bytes into the JSON text it
       // returns. Reading `.value` raw would hand a base64url-shaped string to a

@@ -438,6 +438,52 @@ describe("a parameter that exists and whose value will not render", () => {
     expect(stateOf(statuses, "granola", "GRANOLA_TOKEN")).toBe("unrenderable");
   });
 
+  it("NEVER reads plumbed for a parameter that exists and will not render", async () => {
+    // The invariant that has to hold whichever way the encoding fix lands. A
+    // parameter whose `:render` is refused produces no value, so it cannot reach
+    // `values` and cannot be reported present — the state is decided by the
+    // store's own account of what it rendered, not by the absence of a lookup
+    // hit. Asserted directly rather than inferred from the `unrenderable` tests,
+    // because "not plumbed" is the half that would be dangerous to get wrong.
+    const statuses = await read({
+      config: STORE_CONFIG,
+      // A bag hit as well, so the row has every opportunity to read `present`.
+      bag: { GRANOLA_TOKEN: "gra_live_AbCdEfGhIjKl" },
+      store: fakeStore({
+        indexed: ["GRANOLA_TOKEN"],
+        values: {},
+        unrenderable: [
+          { variable: "GRANOLA_TOKEN", hard: true, reason: "400 refused" },
+        ],
+      }),
+    });
+    expect(stateOf(statuses, "granola", "GRANOLA_TOKEN")).toBe("unrenderable");
+    expect(stateOf(statuses, "granola", "GRANOLA_TOKEN")).not.toBe("present");
+    expect(statuses.get("granola")!.label).not.toBe("ready");
+  });
+
+  it("does not mistake an encoded-looking value for filler", async () => {
+    // Secret values are encoded on their way into Secret Manager so `:render`
+    // cannot splice raw bytes into JSON text, and the store decodes on the way
+    // back out — so a value reaching this classifier is plaintext. If one ever
+    // arrives still encoded, the failure mode that would matter is calling it
+    // filler and sending someone to rotate a working credential. It reads
+    // `present`, because the placeholder rule only fires on shapes no issuer
+    // emits.
+    for (const encoded of [
+      "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0",
+      "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTg_-",
+    ]) {
+      const statuses = await read({
+        presence: presence({
+          kind: "ok",
+          report: report({ SLACK_BOT_TOKEN: encoded }),
+        }),
+      });
+      expect(stateOf(statuses, "slack", "SLACK_TOKEN")).toBe("present");
+    }
+  });
+
   it("does not become 'unrenderable' just because the store was down", async () => {
     // The distinction that makes the state worth having. A store that could not
     // be consulted is `unknown`; a store that answered and refused is not.
