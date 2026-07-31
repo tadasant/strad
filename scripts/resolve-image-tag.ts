@@ -6,6 +6,11 @@
  * App Platform a tag that names one commit instead of `latest` — see
  * src/deploy/imageTag.ts for what that mutable tag did to staging.
  *
+ * It walks back ONLY past docs-only commits, which cut no image by design. A
+ * commit that changed code and has no image is a hard stop: the release is
+ * still building or it failed, and deploying the previous commit's image
+ * against this commit's config is the exact skew this whole path prevents.
+ *
  * Usage:
  *
  *   git log --first-parent --format=%H -n 50 \
@@ -21,13 +26,19 @@
  * is readable by anything that can run `ps`.
  */
 import { parseArgs } from "node:util";
-import { resolveDeployTag } from "../src/deploy/imageTag.ts";
+import {
+  changedFiles,
+  fetchPullToken,
+  isDocsOnly,
+  registryProbe,
+  resolveDeployTag,
+  type Candidate,
+} from "../src/deploy/imageTag.ts";
 
 const { values } = parseArgs({
   options: {
     repository: { type: "string" },
     registry: { type: "string", default: "ghcr.io" },
-    actor: { type: "string" },
   },
 });
 
@@ -40,7 +51,8 @@ if (!values.repository) {
 
 const repository = values.repository;
 const registry = values.registry ?? "ghcr.io";
-const actor = values.actor ?? process.env.GITHUB_ACTOR ?? "github-actions";
+// GitHub Actions sets GITHUB_ACTOR in every step; the fallback is for a local run.
+const actor = process.env.GITHUB_ACTOR ?? "github-actions";
 const password = process.env.GHCR_PULL_TOKEN || process.env.GITHUB_TOKEN;
 
 if (!password) {
@@ -50,95 +62,67 @@ if (!password) {
   process.exit(1);
 }
 
-const ACCEPT = [
-  "application/vnd.oci.image.index.v1+json",
-  "application/vnd.oci.image.manifest.v1+json",
-  "application/vnd.docker.distribution.manifest.list.v2+json",
-  "application/vnd.docker.distribution.manifest.v2+json",
-].join(",");
+async function main(): Promise<void> {
+  const stdin = await new Promise<string>((resolve, reject) => {
+    let buf = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => (buf += chunk));
+    process.stdin.on("end", () => resolve(buf));
+    process.stdin.on("error", reject);
+  });
 
-/** A pull-scoped bearer token for this repository. */
-async function pullToken(): Promise<string> {
-  const basic = Buffer.from(`${actor}:${password}`).toString("base64");
-  const res = await fetch(
-    `https://${registry}/token?service=${registry}&scope=repository:${repository}:pull`,
-    { headers: { authorization: `Basic ${basic}` } },
+  const shas = stdin
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+
+  // Classify each commit before asking the registry anything: whether a missing
+  // tag is legitimate depends on what the commit touched, not on the registry.
+  const candidates: Candidate[] = shas.map((sha) => ({
+    sha,
+    docsOnly: isDocsOnly(changedFiles(sha)),
+  }));
+
+  const token = await fetchPullToken({
+    registry,
+    repository,
+    actor,
+    password: password as string,
+  });
+
+  const resolved = await resolveDeployTag(
+    candidates,
+    registryProbe({ registry, repository, token }),
   );
-  if (!res.ok) {
-    throw new Error(`could not obtain a pull token (HTTP ${res.status})`);
-  }
-  const body = (await res.json()) as { token?: string };
-  if (!body.token) throw new Error("registry returned no pull token");
-  return body.token;
+  const image = `${registry}/${repository}:${resolved.tag}`;
+
+  console.error(
+    resolved.distance === 0
+      ? `Deploying the image built for HEAD (${resolved.sha.slice(0, 12)}).`
+      : `::warning::HEAD (${shas[0]?.slice(0, 12)}) published no image — ` +
+          `deploying ${resolved.distance} docs-only commit(s) back, from ` +
+          `${resolved.sha.slice(0, 12)}.`,
+  );
+  console.error(`Resolved core image: ${image}`);
+
+  process.stdout.write(
+    [
+      `image=${image}`,
+      `tag=${resolved.tag}`,
+      `sha=${resolved.sha}`,
+      `distance=${resolved.distance}`,
+      "",
+    ].join("\n"),
+  );
 }
 
-const token = await pullToken();
-
-/**
- * Does this tag exist?
- *
- * 404 is "no image for that commit" and is the ONLY negative. Anything else —
- * a 5xx, a network blip, a revoked credential — throws after a few attempts,
- * because treating an unreadable registry as an absent tag would silently walk
- * the deploy back to an older image every time GHCR had a bad minute.
- */
-async function published(tag: string): Promise<boolean> {
-  let last = "";
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    let res: Response;
-    try {
-      res = await fetch(
-        `https://${registry}/v2/${repository}/manifests/${tag}`,
-        {
-          method: "HEAD",
-          headers: { authorization: `Bearer ${token}`, accept: ACCEPT },
-        },
-      );
-    } catch (err) {
-      last = err instanceof Error ? err.message : String(err);
-      await new Promise((r) => setTimeout(r, attempt * 1000));
-      continue;
-    }
-    if (res.status === 404) return false;
-    if (res.ok) return true;
-    last = `HTTP ${res.status}`;
-    if (res.status < 500) break;
-    await new Promise((r) => setTimeout(r, attempt * 1000));
-  }
-  throw new Error(`could not read ${repository}:${tag} (${last})`);
+try {
+  await main();
+} catch (err) {
+  // An `::error::` annotation, not a raw unhandled rejection: the whole point of
+  // this step is to say which commit it could not resolve and what to do next,
+  // and a undici stack trace says neither.
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`::error::${message.replace(/\n/g, "%0A")}`);
+  process.exit(1);
 }
-
-const stdin = await new Promise<string>((resolve, reject) => {
-  let buf = "";
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk) => (buf += chunk));
-  process.stdin.on("end", () => resolve(buf));
-  process.stdin.on("error", reject);
-});
-
-const shas = stdin
-  .split("\n")
-  .map((line) => line.trim())
-  .filter((line) => line !== "");
-
-const resolved = await resolveDeployTag(shas, published);
-const image = `${registry}/${repository}:${resolved.tag}`;
-
-console.error(
-  resolved.distance === 0
-    ? `Deploying the image built for HEAD (${resolved.sha.slice(0, 12)}).`
-    : `::warning::HEAD (${shas[0]?.slice(0, 12)}) published no image — ` +
-        `deploying ${resolved.distance} commit(s) back, from ` +
-        `${resolved.sha.slice(0, 12)}. A docs-only commit cuts no image.`,
-);
-console.error(`Resolved core image: ${image}`);
-
-process.stdout.write(
-  [
-    `image=${image}`,
-    `tag=${resolved.tag}`,
-    `sha=${resolved.sha}`,
-    `distance=${resolved.distance}`,
-    "",
-  ].join("\n"),
-);

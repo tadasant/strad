@@ -3,9 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import {
   assertImmutableCoreImage,
+  fetchPullToken,
+  isDocsOnly,
   isMutableTag,
+  registryProbe,
   resolveDeployTag,
   shaTag,
+  type Candidate,
 } from "../src/deploy/imageTag.ts";
 import { parseImage } from "../src/deploy/appspec.ts";
 import type {
@@ -83,9 +87,15 @@ describe("isMutableTag", () => {
     }
   });
 
-  it("passes a version and a commit tag", () => {
+  it("is case-insensitive, since a registry tag need not be lowercase", () => {
+    expect(isMutableTag("Latest")).toBe(true);
+    expect(isMutableTag("LATEST")).toBe(true);
+  });
+
+  it("passes a version, a commit tag and a branch tag", () => {
     expect(isMutableTag("0.1.38")).toBe(false);
     expect(isMutableTag(`sha-${A}`)).toBe(false);
+    expect(isMutableTag("branch-fix-thing-96015c6638a7")).toBe(false);
   });
 });
 
@@ -136,37 +146,77 @@ describe("shaTag", () => {
   });
 });
 
+describe("isDocsOnly", () => {
+  it("accepts the paths release-image.yml ignores", () => {
+    expect(isDocsOnly(["README.md"])).toBe(true);
+    expect(isDocsOnly(["docs/src/content/docs/intro.md"])).toBe(true);
+    expect(isDocsOnly(["HACKS.md", "docs/astro.config.mjs"])).toBe(true);
+  });
+
+  it("rejects a commit that touched any code", () => {
+    expect(isDocsOnly(["README.md", "src/index.ts"])).toBe(false);
+    expect(isDocsOnly(["infra/strad.staging.yaml"])).toBe(false);
+  });
+
+  it("treats an EMPTY list as not docs-only", () => {
+    // `every` on an empty array is true, which would license a walk-back past a
+    // commit we know nothing about — the one thing this predicate prevents.
+    expect(isDocsOnly([])).toBe(false);
+  });
+});
+
+/** Newest-first candidates, all docs-only unless stated. */
+const docs = (sha: string): Candidate => ({ sha, docsOnly: true });
+const code = (sha: string): Candidate => ({ sha, docsOnly: false });
+
 describe("resolveDeployTag", () => {
   it("takes HEAD when HEAD published an image", async () => {
     const published = vi.fn().mockResolvedValue(true);
-    await expect(resolveDeployTag([A, B, C], published)).resolves.toEqual({
-      tag: `sha-${A}`,
-      sha: A,
-      distance: 0,
-    });
+    await expect(
+      resolveDeployTag([code(A), code(B), code(C)], published),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
     expect(published).toHaveBeenCalledTimes(1);
   });
 
-  it("walks back past commits that published nothing", async () => {
-    // The docs-only case: this repo lands docs with the code, and
-    // release-image.yml ignores `**/*.md` and `docs/**`.
+  it("walks back past DOCS-ONLY commits, which cut no image by design", async () => {
     const published = vi
       .fn()
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
-    await expect(resolveDeployTag([A, B, C], published)).resolves.toEqual({
-      tag: `sha-${C}`,
-      sha: C,
-      distance: 2,
-    });
+    await expect(
+      resolveDeployTag([docs(A), docs(B), code(C)], published),
+    ).resolves.toEqual({ tag: `sha-${C}`, sha: C, distance: 2 });
   });
 
-  it("throws when nothing in range published, naming the range", async () => {
+  it("HARD STOPS on a code commit with no image, rather than walking back", async () => {
+    // The regression that would reintroduce the outage: merge a code PR, then
+    // deploy while release-image.yml is still building. Walking back would ship
+    // the PREVIOUS commit's image against THIS commit's config — new config
+    // meeting old code, exactly what this module exists to prevent.
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false) // HEAD: code, not built yet
+      .mockResolvedValueOnce(true); // its parent: would have been used
+    await expect(
+      resolveDeployTag([code(A), code(B)], published),
+    ).rejects.toThrow(/changed code but published no image/);
+    // It must not have even asked about the parent.
+    expect(published).toHaveBeenCalledTimes(1);
+  });
+
+  it("says what to do about the hard stop", async () => {
     const published = vi.fn().mockResolvedValue(false);
-    await expect(resolveDeployTag([A, B], published)).rejects.toThrow(
-      /no published image for any of the last 2 commits/,
+    await expect(resolveDeployTag([code(A)], published)).rejects.toThrow(
+      /still building it, or it failed[\s\S]*explicit `version`/,
     );
+  });
+
+  it("throws when every commit in range is docs-only and none published", async () => {
+    const published = vi.fn().mockResolvedValue(false);
+    await expect(
+      resolveDeployTag([docs(A), docs(B)], published),
+    ).rejects.toThrow(/no published image in the last 2 commits/);
   });
 
   it("throws on an empty history rather than inventing a tag", async () => {
@@ -181,9 +231,131 @@ describe("resolveDeployTag", () => {
     // An unreadable registry must not look like a missing tag: that would
     // silently ship an older image every time GHCR had a bad minute.
     const published = vi.fn().mockRejectedValue(new Error("HTTP 503"));
-    await expect(resolveDeployTag([A, B], published)).rejects.toThrow(
-      /HTTP 503/,
-    );
+    await expect(
+      resolveDeployTag([docs(A), docs(B)], published),
+    ).rejects.toThrow(/HTTP 503/);
     expect(published).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** A probe wired to a scripted fetch, with sleeps stubbed out. */
+function probe(responses: (Response | Error)[]) {
+  const calls = { n: 0 };
+  const fetchImpl = vi.fn(async () => {
+    const next = responses[calls.n++] ?? responses[responses.length - 1];
+    if (next instanceof Error) throw next;
+    return next as Response;
+  });
+  return {
+    calls,
+    fetchImpl,
+    published: registryProbe({
+      registry: "ghcr.io",
+      repository: "tadasant/strad",
+      token: "t",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+    }),
+  };
+}
+
+const res = (status: number): Response =>
+  ({ status, ok: status >= 200 && status < 300 }) as Response;
+
+describe("registryProbe", () => {
+  it("reports a published tag", async () => {
+    const p = probe([res(200)]);
+    await expect(p.published("sha-x")).resolves.toBe(true);
+    expect(p.calls.n).toBe(1);
+  });
+
+  it("reports 404 as absent — the ONLY negative", async () => {
+    const p = probe([res(404)]);
+    await expect(p.published("sha-x")).resolves.toBe(false);
+    expect(p.calls.n).toBe(1);
+  });
+
+  it("does NOT treat 403 as absent, and does not retry it", async () => {
+    // A revoked credential must fail the deploy, not silently walk it back to
+    // an older image.
+    const p = probe([res(403)]);
+    await expect(p.published("sha-x")).rejects.toThrow(/HTTP 403/);
+    expect(p.calls.n).toBe(1);
+  });
+
+  it("retries a 5xx and succeeds", async () => {
+    const p = probe([res(503), res(200)]);
+    await expect(p.published("sha-x")).resolves.toBe(true);
+    expect(p.calls.n).toBe(2);
+  });
+
+  it("retries a 429 rather than failing — a long walk-back provokes it", async () => {
+    const p = probe([res(429), res(429), res(404)]);
+    await expect(p.published("sha-x")).resolves.toBe(false);
+    expect(p.calls.n).toBe(3);
+  });
+
+  it("retries a network error, then gives up with the reason", async () => {
+    const p = probe([new Error("fetch failed")]);
+    await expect(p.published("sha-x")).rejects.toThrow(/fetch failed/);
+    expect(p.calls.n).toBe(3);
+  });
+});
+
+describe("fetchPullToken", () => {
+  const base = {
+    registry: "ghcr.io",
+    repository: "tadasant/strad",
+    actor: "a",
+    password: "p",
+    sleep: async () => {},
+  };
+
+  it("returns the token", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ token: "tok" }),
+    }));
+    await expect(
+      fetchPullToken({
+        ...base,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).resolves.toBe("tok");
+  });
+
+  it("retries a transient failure — it is an EARLIER single point of failure", async () => {
+    let n = 0;
+    const fetchImpl = vi.fn(async () => {
+      if (++n === 1) throw new Error("fetch failed");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ token: "tok" }),
+      };
+    });
+    await expect(
+      fetchPullToken({
+        ...base,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).resolves.toBe("tok");
+    expect(n).toBe(2);
+  });
+
+  it("does not retry a bad credential", async () => {
+    let n = 0;
+    const fetchImpl = vi.fn(async () => {
+      n++;
+      return { ok: false, status: 401, json: async () => ({}) };
+    });
+    await expect(
+      fetchPullToken({
+        ...base,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(/HTTP 401/);
+    expect(n).toBe(1);
   });
 });

@@ -94,9 +94,12 @@ image built for that same ref, so both layers come from one commit.
   satisfy a mutable tag from whatever it resolved last, and the spec gives no way
   to tell which image will boot. So `render-spec` now refuses a core image on
   `latest` / `main` / `edge` / `stable` (and a tag-less ref, which means
-  `latest`), and the workflow resolves `sha-<commit>` instead — walking back past
-  docs-only commits, which cut no image. If a deploy fails saying it cannot find
-  an image, dispatch with an explicit `version`.
+  `latest`), and the workflow resolves `sha-<commit>` instead. It walks back only
+  past **docs-only** commits, which cut no image by design; a **code** commit with
+  no image is a hard stop, because `release-image.yml` is still building (or
+  failed) and deploying the previous commit's image against this commit's config
+  is the same skew. If a deploy stops that way, wait for the release run to finish
+  and re-dispatch, or dispatch with an explicit `version`.
 
 - **A deploy is a full spec REPLACE — an omitted field is a deletion.** This has
   actually bitten: omitting `domains` from an update _detaches the custom domain_,

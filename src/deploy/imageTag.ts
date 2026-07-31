@@ -26,18 +26,26 @@
  * release-image.yml for every commit it builds and names exactly one commit, so
  * there is no "most recent" for anything to disagree about.
  */
+import { execFileSync } from "node:child_process";
 
 /**
  * Tags that name "whatever was pushed most recently" rather than one build.
  *
- * `latest` is the only one this repo publishes, and `parseImage` invents it for
- * a tag-less ref — so `--image ghcr.io/tadasant/strad` is caught here too,
- * which is the shape most likely to be typed by hand.
+ * This is a DENYLIST, and deliberately so. An allowlist of known-good shapes
+ * (`<semver>`, `sha-…`, `branch-…`) would be stricter, but `render-spec` is
+ * shared with prod in tadasant-internal, which renders its own config with its
+ * own tag scheme — a shape this repo has never seen is not this repo's to
+ * reject. What IS worth rejecting is a tag that exists and MOVES, and `latest`
+ * is the only one anything here publishes. A typo'd tag needs no gate: it
+ * resolves to nothing and the pull fails loudly.
+ *
+ * Matched case-insensitively; `parseImage` invents `latest` for a tag-less ref,
+ * so `--image ghcr.io/tadasant/strad` is caught here too.
  */
 const MUTABLE_TAGS = new Set(["latest", "main", "edge", "stable"]);
 
 export function isMutableTag(tag: string): boolean {
-  return MUTABLE_TAGS.has(tag);
+  return MUTABLE_TAGS.has(tag.toLowerCase());
 }
 
 /** `sha-<commit>`, the immutable tag release-image.yml publishes per commit. */
@@ -71,6 +79,44 @@ export function assertImmutableCoreImage(ref: string, tag: string): void {
   );
 }
 
+/**
+ * The paths `release-image.yml` ignores, and therefore the ONLY reason a commit
+ * on `main` may legitimately have no image of its own.
+ *
+ * Keep in step with that workflow's `paths-ignore`.
+ */
+export function isIgnoredPath(file: string): boolean {
+  return file.endsWith(".md") || file.startsWith("docs/");
+}
+
+/**
+ * Did this commit change only things that cut no image?
+ *
+ * An EMPTY list is deliberately not docs-only. `every` on an empty array is
+ * true, which would silently license a walk-back past a commit we know nothing
+ * about — the one thing this predicate exists to prevent.
+ */
+export function isDocsOnly(files: readonly string[]): boolean {
+  return files.length > 0 && files.every(isIgnoredPath);
+}
+
+/** Files a commit changed, against its FIRST parent (so merges work). */
+export function changedFiles(sha: string): string[] {
+  const out = execFileSync("git", ["diff", "--name-only", `${sha}^1`, sha], {
+    encoding: "utf8",
+  });
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+export interface Candidate {
+  sha: string;
+  /** Whether this commit touched only `**\/*.md` and `docs/**`. */
+  docsOnly: boolean;
+}
+
 export interface ResolvedTag {
   /** The tag to deploy, e.g. `sha-96015c6…`. */
   tag: string;
@@ -81,40 +127,173 @@ export interface ResolvedTag {
 }
 
 /**
- * The newest commit in `shas` that actually published an image.
+ * The newest commit in `candidates` that actually published an image.
  *
- * `shas` is first-parent history, newest first. The walk-back exists because
- * not every commit cuts an image: release-image.yml carries
+ * `candidates` is first-parent history, newest first.
+ *
+ * The walk-back exists for ONE reason: `release-image.yml` carries
  * `paths-ignore: ["**\/*.md", "docs/**"]`, and this repo lands docs in the same
- * PR as the code — so a docs-only merge advances `main` without publishing a
- * `sha-` tag. Failing that deploy would be punishing a commit that has nothing
- * wrong with it; the newest ancestor that DID publish is the code that should
- * be running anyway.
+ * PR as the code, so a docs-only merge advances `main` without publishing a
+ * `sha-` tag. Failing that deploy would punish a commit that has nothing wrong
+ * with it, and the newest ancestor that DID publish is the code that should be
+ * running anyway.
+ *
+ * It exists for no other reason, which is why a CODE commit with no image is a
+ * hard failure rather than another step back. A missing tag there means the
+ * release is still building or has failed — and walking past it would deploy
+ * the previous commit's image against THIS commit's config, which is precisely
+ * the new-config-meets-old-code outage this module exists to prevent. Better a
+ * red deploy that says "wait for the release" than a green one that quietly
+ * ships the wrong pair.
  *
  * A `published` that rejects propagates. A registry the deploy cannot read must
  * not look like a registry that is missing a tag — that would silently ship an
  * older image every time GHCR had a bad minute.
  */
 export async function resolveDeployTag(
-  shas: readonly string[],
+  candidates: readonly Candidate[],
   published: (tag: string) => Promise<boolean>,
 ): Promise<ResolvedTag> {
-  if (shas.length === 0) {
+  if (candidates.length === 0) {
     throw new Error(
       "no commits to resolve an image tag from. " +
         "Does the checkout have history (fetch-depth)?",
     );
   }
 
-  for (const [distance, sha] of shas.entries()) {
-    const tag = shaTag(sha);
-    if (await published(tag)) return { tag, sha, distance };
+  for (const [distance, candidate] of candidates.entries()) {
+    const tag = shaTag(candidate.sha);
+    if (await published(tag)) return { tag, sha: candidate.sha, distance };
+    if (!candidate.docsOnly) {
+      throw new Error(
+        `commit ${candidate.sha.slice(0, 12)} changed code but published no ` +
+          `image (${tag}). release-image.yml is probably still building it, ` +
+          `or it failed.\n` +
+          `Deploying an older image against this commit's config is the skew ` +
+          `this check exists to prevent, so this is a hard stop: wait for the ` +
+          `release to finish, or dispatch with an explicit \`version\`.`,
+      );
+    }
   }
 
   throw new Error(
-    `no published image for any of the last ${shas.length} commits ` +
-      `(${shas[0]?.slice(0, 12)}…${shas[shas.length - 1]?.slice(0, 12)}). ` +
-      `Has release-image.yml run for this branch? ` +
-      `Dispatch with an explicit \`version\` to deploy a known tag.`,
+    `no published image in the last ${candidates.length} commits ` +
+      `(${candidates[0]?.sha.slice(0, 12)}…` +
+      `${candidates[candidates.length - 1]?.sha.slice(0, 12)}), and all of ` +
+      `them are docs-only. Dispatch with an explicit \`version\`.`,
   );
+}
+
+export interface RegistryOptions {
+  registry: string;
+  repository: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+  /** Overridable so tests do not actually sleep. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const ACCEPT = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+].join(",");
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A "does this tag exist?" probe against a registry.
+ *
+ * 404 is "no image for that commit" and is the ONLY negative. A 5xx, a 429, or
+ * a network error is retried; anything else (401, 403) is fatal. Treating an
+ * unreadable registry as an absent tag would silently walk the deploy back to
+ * an older image every time GHCR had a bad minute.
+ *
+ * 429 is retried rather than fatal because a long walk-back is exactly what
+ * provokes it: up to 50 sequential HEADs at one registry.
+ */
+export function registryProbe(
+  opts: RegistryOptions,
+): (tag: string) => Promise<boolean> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const sleep = opts.sleep ?? defaultSleep;
+
+  return async function published(tag: string): Promise<boolean> {
+    let last = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let res: Response;
+      try {
+        res = await doFetch(
+          `https://${opts.registry}/v2/${opts.repository}/manifests/${tag}`,
+          {
+            method: "HEAD",
+            headers: {
+              authorization: `Bearer ${opts.token}`,
+              accept: ACCEPT,
+            },
+          },
+        );
+      } catch (err) {
+        last = err instanceof Error ? err.message : String(err);
+        if (attempt < 3) await sleep(attempt * 1000);
+        continue;
+      }
+      if (res.status === 404) return false;
+      if (res.ok) return true;
+      last = `HTTP ${res.status}`;
+      if (res.status < 500 && res.status !== 429) break;
+      if (attempt < 3) await sleep(attempt * 1000);
+    }
+    throw new Error(`could not read ${opts.repository}:${tag} (${last})`);
+  };
+}
+
+/**
+ * A pull-scoped bearer token.
+ *
+ * Retried on the same reasoning as the probe above, and for a stronger one: it
+ * is a strictly EARLIER single point of failure, so one transient blip here
+ * fails a deploy that had nothing wrong with it.
+ */
+export async function fetchPullToken(opts: {
+  registry: string;
+  repository: string;
+  actor: string;
+  password: string;
+  fetchImpl?: typeof fetch;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<string> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const sleep = opts.sleep ?? defaultSleep;
+  const basic = Buffer.from(`${opts.actor}:${opts.password}`).toString(
+    "base64",
+  );
+  let last = "";
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await doFetch(
+        `https://${opts.registry}/token?service=${opts.registry}` +
+          `&scope=repository:${opts.repository}:pull`,
+        { headers: { authorization: `Basic ${basic}` } },
+      );
+      if (res.ok) {
+        const body = (await res.json()) as { token?: string };
+        if (body.token) return body.token;
+        last = "registry returned no pull token";
+      } else {
+        last = `HTTP ${res.status}`;
+        // 401/403 will not improve on a retry; a bad credential is a bad
+        // credential.
+        if (res.status < 500 && res.status !== 429) break;
+      }
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err);
+    }
+    if (attempt < 3) await sleep(attempt * 1000);
+  }
+
+  throw new Error(`could not obtain a pull token (${last})`);
 }

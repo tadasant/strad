@@ -91,12 +91,17 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Verify the three tags resolve to one digest
-        # `:latest` is a MUTABLE tag and staging deploys it by default, so a
-        # `:latest` that has drifted off the commit we just built is an outage
-        # waiting for the next App Platform restart — the container boots old
-        # code against new config and rolls back. The push above claims to write
-        # all three tags from one digest; this step goes back to the registry and
-        # checks that it did, and that nothing else has since moved them.
+        # `:latest` is a MUTABLE tag, and a `:latest` that has drifted off the
+        # commit we just built is an outage waiting for the next App Platform
+        # restart — a container boots old code against new config and rolls
+        # back. The push above claims to write all three tags from one digest;
+        # this step goes back to the registry and checks that it did, and that
+        # nothing else has since moved them.
+        #
+        # This guards the PUSH. It cannot guard the pull, and `:latest` has been
+        # observed drifting hours AFTER this step passed (issue #38), so no
+        # deploy consumes it: deploy-staging.yml ships `sha-<commit>` or an
+        # explicit version. See src/deploy/imageTag.ts.
         #
         # A build that pushed successfully but left `:latest` pointing elsewhere
         # is a FAILED release: better a red run here than a silent rollback in

@@ -13,8 +13,8 @@ name: Deploy staging
 # It builds the core AND bundle images from that ref, pushes them under
 # branch-scoped tags ONLY, and deploys the branch's own config against them.
 # To put staging back on `main`, dispatch this workflow on `main` with
-# `build: false` (the default) — it renders main's config against `:latest`,
-# which is exactly what the release path does. There is nothing to clean up.
+# `build: false` (the default) — it renders main's config against the
+# `sha-<commit>` image built for that same commit. There is nothing to clean up.
 
 on:
   # `build` is deliberately NOT declared here. Leaving it off the workflow_call
@@ -24,13 +24,17 @@ on:
   workflow_call:
     inputs:
       version:
-        description: Image tag to deploy (e.g. 0.1.3). Defaults to latest.
+        description: >-
+          Image tag to deploy (e.g. 0.1.3). Omit to use the sha-<commit> image
+          built for this ref. A mutable tag (latest) is refused.
         type: string
         required: false
   workflow_dispatch:
     inputs:
       version:
-        description: Image tag to deploy (e.g. 0.1.3). Defaults to latest.
+        description: >-
+          Image tag to deploy (e.g. 0.1.3). Omit to use the sha-<commit> image
+          built for this ref. A mutable tag (latest) is refused.
         type: string
         required: false
       build:
@@ -260,14 +264,18 @@ jobs:
           # GITHUB_TOKEN can write this repo's packages but the deploy already
           # depends on GHCR_PULL_TOKEN for the pull, so use the same one.
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           # --first-parent: on main that is the merge history, so the walk skips
           # a PR's internal commits, none of which ever published an image.
+          # The script walks back only past DOCS-ONLY commits; a code commit
+          # with no image is a hard stop, because deploying the previous
+          # commit's image against this commit's config is the very skew this
+          # step exists to prevent.
           git log --first-parent --format=%H -n 50 \
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
-                --repository tadasant/strad >> "$GITHUB_OUTPUT"
+                --repository "$REPOSITORY" >> "$GITHUB_OUTPUT"
 
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.

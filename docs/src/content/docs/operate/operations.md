@@ -105,10 +105,18 @@ There is deliberately no fallback past those three: `render-spec` refuses a core
 image on `latest` (or `main`, `edge`, `stable`, or a tag-less ref, which means
 `latest`), so a gap fails the deploy instead of shipping an unknown image.
 
-Step 3 walks back through first-parent history to the newest commit that actually
-published an image, because `release-image.yml` ignores `**/*.md` and `docs/**` —
-a docs-only merge advances `main` without cutting an image. The step says how far
-back it went; a registry it cannot read is an error, never a silent walk-back to
+Step 3 walks back through first-parent history, but **only past docs-only
+commits**. `release-image.yml` ignores `**/*.md` and `docs/**`, so a docs-only
+merge advances `main` without cutting an image, and stepping over one is safe —
+the newest ancestor that did publish is the code that should be running anyway.
+The step says how far back it went.
+
+A commit that changed **code** and has no image is a **hard stop**, not another
+step back. A missing tag there means `release-image.yml` is still building or has
+failed, and deploying the previous commit's image against this commit's config is
+exactly the new-config-meets-old-code skew this whole path exists to prevent. The
+deploy fails and tells you to wait for the release or pass an explicit `version`.
+A registry it cannot read is likewise an error, never a silent walk-back to
 something older.
 
 **Why.** Dispatching this workflow on `main` at 96015c6 shipped `:latest` and the
