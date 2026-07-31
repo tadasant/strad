@@ -99,7 +99,11 @@ image built for that same ref, so both layers come from one commit.
   no image is a hard stop, because `release-image.yml` is still building (or
   failed) and deploying the previous commit's image against this commit's config
   is the same skew. If a deploy stops that way, wait for the release run to finish
-  and re-dispatch, or dispatch with an explicit `version`.
+  and re-dispatch, or dispatch with an explicit `version`. The walk only asks what
+  a commit changed once the registry says that commit has no image, so on a
+  healthy `main` it reads no history at all; if it ever reaches the edge of the
+  checkout (`its parent is not in this checkout`), raise the workflow's
+  `fetch-depth` or pass a `version`.
 
 - **A deploy is a full spec REPLACE — an omitted field is a deletion.** This has
   actually bitten: omitting `domains` from an update _detaches the custom domain_,

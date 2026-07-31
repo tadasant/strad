@@ -1,8 +1,18 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import {
   assertImmutableCoreImage,
+  changedFiles,
   fetchPullToken,
   isDocsOnly,
   isMutableTag,
@@ -165,9 +175,122 @@ describe("isDocsOnly", () => {
   });
 });
 
-/** Newest-first candidates, all docs-only unless stated. */
-const docs = (sha: string): Candidate => ({ sha, docsOnly: true });
-const code = (sha: string): Candidate => ({ sha, docsOnly: false });
+/**
+ * A throwaway repo, driven by real git — the failure this file exists to fix was
+ * git's, not a mock's, and a stub of `git diff` would have agreed with the code.
+ */
+const trash: string[] = [];
+
+function scratchRepo(): {
+  dir: string;
+  git: (...args: string[]) => string;
+  commit: (file: string, message: string) => string;
+} {
+  const dir = mkdtempSync(join(tmpdir(), "strad-image-tag-"));
+  trash.push(dir);
+  const git = (...args: string[]): string =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "test");
+  git("config", "commit.gpgsign", "false");
+  const commit = (file: string, message: string): string => {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), `${message}\n`);
+    git("add", file);
+    git("commit", "-q", "-m", message);
+    return git("rev-parse", "HEAD");
+  };
+  return { dir, git, commit };
+}
+
+afterAll(() => {
+  for (const dir of trash) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("changedFiles", () => {
+  it("diffs an ordinary commit against its parent", () => {
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    const sha = r.commit("app.ts", "code");
+    expect(changedFiles(sha, r.dir)).toEqual(["app.ts"]);
+  });
+
+  it("diffs a MERGE against its first parent, not its second", () => {
+    // On `main` every candidate is a squash or a merge; second-parent files are
+    // the PR's internal history and would make every merge look like a code
+    // change even when the PR was docs-only.
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    r.commit("app.ts", "base");
+    r.git("checkout", "-q", "-b", "side");
+    r.commit("docs/page.md", "docs on a branch");
+    r.git("checkout", "-q", "main");
+    r.commit("other.ts", "main moved on");
+    r.git("merge", "-q", "--no-ff", "-m", "merge side", "side");
+    const merge = r.git("rev-parse", "HEAD");
+    expect(changedFiles(merge, r.dir)).toEqual(["docs/page.md"]);
+  });
+
+  it("reads the ROOT commit's whole tree instead of dying on `<sha>^1`", () => {
+    // The exact failure that blocked every staging deploy:
+    //   fatal: ambiguous argument '0c824d8…^1': unknown revision
+    // A root commit introduced its entire tree, so that tree IS its change.
+    const r = scratchRepo();
+    const root = r.commit("README.md", "root");
+    expect(() =>
+      execFileSync("git", ["diff", "--name-only", `${root}^1`, root], {
+        cwd: r.dir,
+        stdio: "pipe",
+      }),
+    ).toThrow();
+    expect(changedFiles(root, r.dir)).toEqual(["README.md"]);
+  });
+
+  it("classifies strad's own root commit as docs-only", () => {
+    // `main`'s root added README.md and nothing else, so the resolver may step
+    // over it — the walk-back's rule, applied to the commit that broke it.
+    const r = scratchRepo();
+    const root = r.commit("README.md", "root");
+    expect(isDocsOnly(changedFiles(root, r.dir))).toBe(true);
+  });
+
+  it("REFUSES to guess when the parent was not fetched (shallow clone)", () => {
+    // `fetch-depth: N` grafts the Nth commit to look parentless. It is not a
+    // root: its parent exists, this checkout just does not have it. Calling that
+    // docs-only would walk the deploy past a commit nothing can vouch for.
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    r.commit("app.ts", "code");
+    const dest = mkdtempSync(join(tmpdir(), "strad-image-tag-shallow-"));
+    trash.push(dest);
+    const clone = join(dest, "shallow");
+    execFileSync(
+      "git",
+      ["clone", "-q", "--depth", "1", `file://${r.dir}`, clone],
+      {
+        stdio: "pipe",
+      },
+    );
+    const head = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: clone,
+      encoding: "utf8",
+    }).trim();
+    expect(() => changedFiles(head, clone)).toThrow(
+      /parent is not in this checkout \(shallow clone\)[\s\S]*fetch-depth/,
+    );
+  });
+});
+
+/**
+ * Newest-first candidates. `docsOnly` is a spy, because WHETHER it is called is
+ * as load-bearing as what it answers — see the laziness test below.
+ */
+const docs = (sha: string): Candidate => ({ sha, docsOnly: vi.fn(() => true) });
+const code = (sha: string): Candidate => ({
+  sha,
+  docsOnly: vi.fn(() => false),
+});
 
 describe("resolveDeployTag", () => {
   it("takes HEAD when HEAD published an image", async () => {
@@ -175,6 +298,52 @@ describe("resolveDeployTag", () => {
     await expect(
       resolveDeployTag([code(A), code(B), code(C)], published),
     ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+    expect(published).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies NOTHING when HEAD published — the outage this fixes", async () => {
+    // Every staging deploy died here. The caller classified all 35 commits on
+    // `main` up front, one of them the root commit, and `git diff <root>^1
+    // <root>` is a fatal — so the step failed while holding the answer, which
+    // was HEAD's own image. A commit the walk never reaches must never be asked
+    // about at all.
+    const published = vi.fn().mockResolvedValue(true);
+    const candidates = [code(A), code(B), code(C)];
+    await expect(resolveDeployTag(candidates, published)).resolves.toEqual({
+      tag: `sha-${A}`,
+      sha: A,
+      distance: 0,
+    });
+    for (const c of candidates) expect(c.docsOnly).not.toHaveBeenCalled();
+  });
+
+  it("asks only about commits the registry has no image for", async () => {
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const candidates = [docs(A), docs(B), docs(C)];
+    await resolveDeployTag(candidates, published);
+    // A: probed, absent, so classified. B: probed and found. C: untouched.
+    expect(candidates[0]!.docsOnly).toHaveBeenCalledTimes(1);
+    expect(candidates[1]!.docsOnly).not.toHaveBeenCalled();
+    expect(candidates[2]!.docsOnly).not.toHaveBeenCalled();
+  });
+
+  it("propagates a classification error rather than guessing", async () => {
+    // `changedFiles` throws when a commit's parent is not in the checkout. That
+    // is unknowable, not docs-only: swallowing it would walk the deploy back
+    // past a commit nothing can vouch for.
+    const published = vi.fn().mockResolvedValue(false);
+    const unknowable: Candidate = {
+      sha: A,
+      docsOnly: () => {
+        throw new Error("its parent is not in this checkout (shallow clone)");
+      },
+    };
+    await expect(
+      resolveDeployTag([unknowable, docs(B)], published),
+    ).rejects.toThrow(/parent is not in this checkout/);
     expect(published).toHaveBeenCalledTimes(1);
   });
 

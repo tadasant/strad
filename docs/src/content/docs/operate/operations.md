@@ -119,6 +119,17 @@ deploy fails and tells you to wait for the release or pass an explicit `version`
 A registry it cannot read is likewise an error, never a silent walk-back to
 something older.
 
+The walk asks what a commit changed **only** about a commit the registry has no
+image for, and only until it stops — so on a healthy `main` it inspects no
+history at all, because HEAD published. That matters beyond speed: it means a
+commit the walk never reaches cannot fail the deploy. Classifying the whole
+window up front did exactly that, dying on the repo's root commit (`git diff
+<root>^1 <root>` is a fatal) while already holding HEAD's image as the answer.
+A root commit is now read as its whole tree, which is what it introduced. A
+commit whose parent is simply **not in the checkout** — the edge of a shallow
+`fetch-depth` — is unknowable rather than docs-only, so the step says so and
+stops instead of stepping past a commit nothing can vouch for.
+
 **Why.** Dispatching this workflow on `main` at 96015c6 shipped `:latest` and the
 container booted code from before PR #26 — it rejected the current
 `infra/strad.staging.yaml` with a `each must serve a distinct path` rule that
