@@ -277,6 +277,32 @@ jobs:
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
                 --repository "$REPOSITORY" >> "$GITHUB_OUTPUT"
 
+      - name: Report what the parameter store holds
+        # The pre-flip roster: every name this deployment would read from
+        # `/strad/staging/gateway/static/`, which of them are seeded, and — with
+        # --resolve — which of the seeded ones the resolver credential can
+        # actually render. That last part is the one nothing else answers:
+        # presence is not resolvability (`:render` needs
+        # parametermanager.parameterVersions.render, which parameterViewer does
+        # not carry), and a namespace can be complete and still resolve to
+        # nothing.
+        #
+        # REPORT MODE, and NON-FATAL, because a partially-seeded namespace is the
+        # expected state of a migration in progress and `provider: env` deploys
+        # do not read the store at all. It exists to make the roster visible on
+        # every deploy rather than only when someone remembers to run it — the
+        # migration's blind spot was never the check, it was not having looked.
+        # Flip to `--mode require` and drop continue-on-error once the flip has
+        # landed and an incomplete namespace IS an outage.
+        #
+        # It prints names, counts and states. No value, in any mode.
+        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          node --experimental-transform-types scripts/check-store.ts \
+            --config infra/strad.staging.yaml --mode report --resolve
+
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
         # It is written to a file, never echoed — a rendered spec is not log-safe.
