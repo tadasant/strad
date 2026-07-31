@@ -261,19 +261,20 @@ SECRET env vars, exactly like every other secret.
 `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console. See
 `HACKS.md` #26 for the full checklist.
 
-### 27. Runtime secret resolution is implemented but not enabled anywhere
+### 27. Runtime secret resolution runs on staging; prod is still on the env provider
 
 `gateway.secrets.provider: gcp-parameter-store` makes a running gateway resolve
 `${NAME}` from the parameter store with a TTL, so a rotation reaches production
 with no deploy and the gateway's only secret in the spec is the store credential
-itself. It is implemented and
-tested end-to-end against the in-memory fake — a real MCP client, through a real
-gateway, to an upstream that rejects a stale token — and **no deployment runs it
-yet**. Staging and prod both still use `provider: env`, unchanged.
+itself. It is tested end-to-end against the in-memory fake — a real MCP client,
+through a real gateway, to an upstream that rejects a stale token — and **staging
+now runs it for real**, with the rotation measured against a live gateway rather
+than a fake. **Prod still uses `provider: env`, unchanged.**
 
-Turning it on needs the resolver service account (#26), the gateway-namespace
-parameters seeded, and workflow changes in `tadasant-internal`. It ships off by
-default so the capability can land without a flag day.
+Turning it on for a deployment needs the resolver service account (#26) and the
+gateway-namespace parameters seeded; prod additionally needs workflow changes in
+`tadasant-internal`. It ships off by default so the capability can land without a
+flag day, and staging is the worked example of switching it on.
 
 Three boundaries are by design rather than omission, and
 [Secrets](/operate/secrets/) states each one: a `supplementary-image` server's

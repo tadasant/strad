@@ -712,10 +712,12 @@ boots without its resolved parameters and degrades gracefully.
 
 **And it has been, in staging, since the day it was configured.** The 2026-07-31
 rehearsal confirmed it live: `remote-filesystem-tmp-public` is the one
-`params: true` server in `infra/strad.staging.yaml`, staging has no resolver
-credential, and `/strad/staging/mcp/` holds zero parameters. So that server has
+`params: true` supplementary server in `infra/strad.staging.yaml`, and
+`/strad/staging/mcp/` holds zero parameters. So that server has
 never once received `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` or
-`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`. "Degrades gracefully" is
+`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`. The resolver credential now
+exists, so the cause is no longer a missing identity — it is an empty namespace,
+and seeding it is the remaining fix. "Degrades gracefully" is
 accurate and is exactly the problem: it degrades so gracefully that nothing said
 so. `render-spec` has been printing `server "remote-filesystem-tmp-public" has
 params: true but no resolver credential` on every deploy, in a step whose output
@@ -725,7 +727,7 @@ exactly that reason.
 
 ---
 
-## 27. Runtime secret resolution is implemented but no deployment runs it yet
+## 27. Runtime secret resolution runs on staging; prod is still on the env provider
 
 **What.** `gateway.secrets.provider: gcp-parameter-store` makes a running gateway
 resolve `${NAME}` from `/strad/{env}/gateway/static/` with a TTL, so a secret
@@ -803,8 +805,9 @@ and both went the other way from the first attempt earlier the same day:
 **And the property the whole migration exists for was measured, not argued.** A
 seeded name resolved from the store; deleting it fell through to the environment;
 and rewriting it in the store took effect in the running gateway within
-`ttlSeconds`, from the same container, with no render and no deploy. See
-[the flip's order](/operate/secrets/#staging-ran-all-four-steps-and-the-property-holds).
+`ttlSeconds`, from the same container, with no render and no deploy. The order and
+the worked example are in `docs/src/content/docs/operate/secrets.md`, under
+"Staging ran all four steps, and the property holds".
 
 **Undo.** In order: publish + pin both images at or after the base64url encoding
 (hack #33); provision the resolver SA (hack #26) and seed its key as
