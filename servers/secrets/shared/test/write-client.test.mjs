@@ -184,8 +184,25 @@ function stubStore() {
       if (payload == null) return json({ error: "no" }, 404);
       return json({ payload: { data: Buffer.from(payload, "utf8").toString("base64") } });
     }
+    m = new RegExp(`^${pmRoot}/([^/]+)/versions/([^/:]+)$`).exec(path);
+    if (m && method === "DELETE") {
+      const p = params.get(m[1]);
+      if (!p?.versions.has(m[2])) return json({ error: "no" }, 404);
+      p.versions.delete(m[2]);
+      return json({});
+    }
     m = new RegExp(`^${pmRoot}/([^/]+)$`).exec(path);
-    if (m && method === "DELETE") { params.delete(m[1]); return json({}); }
+    if (m && method === "DELETE") {
+      const p = params.get(m[1]);
+      if (!p) return json({ error: "no" }, 404);
+      // Google refuses to delete a parameter that still has versions. The stub
+      // used to delete unconditionally, which is why a client that never
+      // deleted its versions passed every test here and 400'd against the real
+      // store on the first `delete_parameter` anyone ran.
+      if (p.versions.size > 0) return json({ error: "has versions" }, 400);
+      params.delete(m[1]);
+      return json({});
+    }
     if (m && method === "GET") {
       return params.has(m[1])
         ? json({ policyMember: { iamPolicyUidPrincipal: principalFor(m[1]) } })
@@ -530,4 +547,35 @@ test("a 409 on the parameter create does not delete the parameter that already e
   // The original survives — the rollback must not destroy someone else's resource.
   assert.ok(params.has(parameterId(PATH)));
   assert.equal(await client.readValue(PATH), "original");
+});
+
+/**
+ * DELETE, which this tree could not do.
+ *
+ * Parameter Manager refuses to delete a parameter that still has versions, and
+ * `create` writes v1 — so `delete_parameter` was a `400 Bad Request` for every
+ * parameter that had ever held a value. It passed here because the stub deleted
+ * unconditionally; the stub now refuses, the same way Google does, so this pair
+ * fails without the fix.
+ */
+test("destroy deletes a parameter's versions before the parameter itself", async () => {
+  const { client, params } = stubStore();
+  await client.create({ path: PATH, secret: false, value: "one" });
+  await client.rotate(PATH, "two");
+  assert.equal(params.get(parameterId(PATH)).versions.size, 2);
+
+  await client.destroy(PATH);
+
+  assert.equal(params.has(parameterId(PATH)), false);
+});
+
+test("destroy of a secret parameter also drops its Secret Manager secret", async () => {
+  const { client, params, secrets } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "s3cr3t" });
+
+  await client.destroy(path);
+
+  assert.equal(params.has(parameterId(path)), false);
+  assert.equal(secrets.has(parameterId(path)), false);
 });

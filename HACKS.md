@@ -760,10 +760,36 @@ a migration that moves one server per day. `--resolve` additionally proves the
 resolver can render what it found — the only way to catch a grant that is bound
 but cannot `:render`. It reads metadata by default and prints no value in any mode.
 
-**Undo.** Provision the resolver SA (hack #26), seed
-`/strad/prod/gateway/static/*`, then flip `gateway.secrets.provider` in the
-deployment's config and drop the per-secret baking from the deploy workflow. The
-cross-repo half is tracked as issues against `tadasant/tadasant-internal`.
+**What a live rehearsal against staging established (2026-07-31).** The flip was
+attempted on `infra/strad.staging.yaml` and does not currently get off the ground,
+for two reasons that were both theory until now:
+
+1. **Staging has no resolver credential at all.** The deploy job loads every
+   `strad-staging-*` secret into its environment, and neither
+   `STRAD_PARAMS_PROJECT_ID` nor
+   `STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` is among them. `check-store`
+   exits 3 ("no store credential in the environment") and `render-spec` says so
+   independently on every deploy — `server "remote-filesystem-tmp-public" has
+params: true but no resolver credential`. Under the store provider
+   `render-spec` exits 1 outright. So hack #26's unprovisioned resolver is not a
+   loose end beside the flip; it is the flip's first gate, and no amount of
+   seeding moves without it. The `secrets` MCP viewer and console admin keys
+   ARE seeded, so this is the one identity of the three that is missing.
+2. **The flip cannot be partial, and `STRAD_TOKENS` is the name that blocks it.**
+   Under the store provider `render-spec` stops baking the boot keys, and
+   `preflightSecrets()` counts `STRAD_TOKENS` and `STRAD_INTERNAL_TOKEN` as
+   required. `STRAD_TOKENS` is a JSON array of token records, so as a secret
+   parameter it is exactly the shape `:render` refuses until #61 lands — and by
+   hack #33 that failure is not confined to it. There is no ordering that flips
+   staging first and fixes the encoding later.
+
+**Undo.** In order: land #61 and publish + pin both images; provision the resolver
+SA (hack #26) and seed its key as
+`strad-staging-STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` alongside
+`strad-staging-STRAD_PARAMS_PROJECT_ID`; seed `/strad/staging/gateway/static/*`;
+confirm with `store:check --mode require --resolve`, which the staging deploy now
+prints on every run; then flip `gateway.secrets.provider`. The cross-repo half is
+tracked as issues against `tadasant/tadasant-internal`.
 
 ## 28. An unknown config key is silently ignored at boot; only the deploy gate is strict
 
@@ -1130,6 +1156,45 @@ in `servers/bundle/host/src/index.ts`, the `presence`/`store` options on
 `STRAD_PARAM_KEYS` env var in `src/deploy/appspec.ts`, and
 `resolveDetailed`/`renderAll` in `src/secrets/parameters/gcp.ts`. The console
 reverts to the `unverified` shrug, which is what it said before.
+
+## 36. One un-renderable parameter makes the WHOLE gateway namespace resolve to nothing
+
+**What.** `resolve()` in `src/secrets/parameters/gcp.ts` lists a namespace and
+then calls `:render` on every parameter in it, in sequence, and does not catch
+per parameter. The first `:render` that throws aborts the whole call. Above it,
+`SnapshotCache` treats that as a failed refresh — which is the right posture for
+an outage (serve the last known good map, warn) but means that with NO snapshot
+yet held, the error propagates and `${NAME}` resolves for nothing in that
+namespace, not merely for the parameter at fault.
+
+**Why it matters, concretely.** A store-backed gateway reads
+`/strad/{env}/gateway/static/` for every `${NAME}` and for its boot keys. So a
+single malformed parameter in that namespace is not a degraded name — it is a
+gateway that comes up with no token store, no internal token and no config
+reference resolved, and `/mcp` rejecting everything. The failure is
+all-or-nothing and the blast radius is the deployment.
+
+This is not hypothetical: until #61 lands, a secret parameter whose value carries
+a quote, brace, newline or backslash renders `400 … injection detected` (see
+`limitations.md` #32). Seeding one such name — `STRAD_TOKENS` is exactly this
+shape — takes the rest of the namespace down with it. The sequencing that
+follows is in `docs/operate/secrets.md`: land the encoding fix, publish and pin
+the images, seed, verify with `store:check --resolve`, and only then flip.
+
+**Why it ships this way.** Per-parameter tolerance sounds obviously better and is
+not. A resolver that returns a namespace with one name silently absent hands the
+gateway a bag that looks complete, and the missing name surfaces later as one
+failing request against one server — the exact "worse place to find out" that
+`preflightSecrets` exists to avoid. Failing the whole read is loud, and the
+snapshot cache already makes it survivable for a gateway that has read the
+namespace once.
+
+**Undo.** If the all-or-nothing behaviour is judged worse than the alternative,
+collect per-parameter failures in `resolve()` and throw ONE error naming every
+name that could not render, rather than the first — that keeps the failure whole
+while making the diagnosis a single line instead of a bisection.
+`scripts/check-store.ts --resolve` already reports it this way and is the tool to
+reach for before a flip.
 
 ## What the human still needs to provision
 

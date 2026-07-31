@@ -154,6 +154,45 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     return best?.vid;
   }
 
+  /**
+   * Every version of a parameter, deleted. All of them must go before the
+   * parameter itself can: Parameter Manager refuses to delete a parameter that
+   * still has one.
+   *
+   * Mirrors `deleteAllVersions` in `src/secrets/parameters/gcp.ts`, including
+   * its tolerances: a 404 listing means there is nothing to delete (the caller
+   * goes on to delete the parameter), and an individual version delete that
+   * fails is swallowed, because the parameter delete that follows is the thing
+   * that actually reports failure.
+   */
+  async function deleteAllVersions(id: string): Promise<void> {
+    let pageToken: string | undefined;
+    do {
+      const qs = new URLSearchParams({ pageSize: "100" });
+      if (pageToken) qs.set("pageToken", pageToken);
+      const page = (await pm(
+        "GET",
+        `${pmParent}/parameters/${id}/versions?${qs}`,
+      ).catch((err) => {
+        if (err instanceof ParameterManagerError && err.status === 404) {
+          return { parameterVersions: [] };
+        }
+        throw err;
+      })) as {
+        parameterVersions?: { name?: string }[];
+        nextPageToken?: string;
+      };
+      for (const v of page.parameterVersions ?? []) {
+        const vid = v.name?.slice(v.name.lastIndexOf("/") + 1);
+        if (!vid) continue;
+        await pm("DELETE", `${pmParent}/parameters/${id}/versions/${vid}`).catch(
+          () => {},
+        );
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+  }
+
   async function addVersion(
     id: string,
     envelope: ParameterEnvelope,
@@ -387,7 +426,18 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       // else folded onto the same id. Swallowing the error and deleting anyway
       // would make an id collision a destructive one.
       const prev = await currentEnvelope(path);
-      await pm("DELETE", `${pmParent}/parameters/${id}`);
+      // VERSIONS FIRST. Parameter Manager refuses to delete a parameter that
+      // still has versions, so deleting the parameter directly is a `400 Bad
+      // Request` for every parameter that has ever held a value — which is all
+      // of them, because `create` writes v1. This tree could create and rotate
+      // and could not delete, while the console (src/secrets/parameters/gcp.ts,
+      // which has always deleted versions first) could. Found by driving this
+      // exact path over /mcp against the real store.
+      await deleteAllVersions(id);
+      await pm("DELETE", `${pmParent}/parameters/${id}`).catch((err) => {
+        if (err instanceof ParameterManagerError && err.status === 404) return;
+        throw err;
+      });
       if (prev.secret) {
         await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
       }

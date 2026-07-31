@@ -156,6 +156,25 @@ credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` 
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
 `401`).
 
+**Before it renders, it reports what the parameter store holds.** Every deploy
+runs `store:check --mode report --resolve` over
+`/strad/staging/gateway/static/` and prints the roster: every name this
+deployment would read from the store, which of them are seeded, and — the part
+nothing else answers — which of the seeded ones the resolver credential can
+actually `:render`. Presence is not resolvability, and a namespace can be
+complete and still resolve to nothing.
+
+It is **report mode and non-fatal**, because a partially-seeded namespace is the
+normal state of a migration in progress and a `provider: env` deploy does not read
+the store at all. The point is to make the roster visible on every run rather than
+only when someone remembers to look — the migration's blind spot was never the
+check. Once a deployment has flipped and an incomplete namespace IS an outage,
+move it to `--mode require` and drop `continue-on-error`.
+
+It prints names, counts and states, and no value in any mode. On a deployment with
+no resolver credential it exits 3 and says which two variables are missing, which
+is how staging's unprovisioned resolver was found.
+
 **Then it reports what the secrets credentials can do.** The secrets surfaces are
 probe-derived — the MCP server lists `get_secret_value` and the write tools only
 if its credential holds the permissions, and the console offers reveal on the same
@@ -317,12 +336,35 @@ declares twenty-seven server slugs:
 
 Roles are `admin: ["*"]`, a deliberately narrow `echo-only: [echo]` — which
 keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful —
-and `zimmer: [zimmer-secrets]`, the role Zimmer's own sessions hold. It reaches
-its own store and nothing else: staging's other credentials are the same
-third-party accounts prod uses, so `admin` there would be a much larger grant than
-it looks.
-`google.enabled` is `false` (it flips true when OAuth creds land) and
+and `zimmer: [zimmer-secrets, secrets, echo]`, the role Zimmer's own sessions
+hold. `google.enabled` is `false` (it flips true when OAuth creds land) and
 `consoleDevBypass.enabled` is `true`.
+
+The breadth of `zimmer` is a security decision rather than a default, and it is
+asserted rather than described. Twenty-one of staging's slugs carry a real
+third-party credential, backed by the **same accounts prod uses** — one Slack
+workspace, one Gmail tenant, one 1Password service account — so `admin` there
+would be a far larger grant than it looks. The three it does name are bounded
+rather than harmless: `zimmer-secrets` and `secrets` are two **separate GCP
+projects**, each fenced again by its own `SECRETS_NAMESPACES`, and `echo` is a
+builtin with no credential at all. Both stores hold per-server credentials and
+staging's `secrets` key can read a secret value, so "separate project plus fence"
+is the claim, not "nothing sensitive".
+`test/staging-config.test.ts` asserts the list from both directions, because
+entitlement is an intersection and a slug could otherwise add `zimmer` to its own
+`entitlements:` unnoticed.
+
+`echo` carries `params: true`, which makes it the deployment's **rotation
+observatory**. A builtin with `params: true` re-resolves
+`/strad/staging/mcp/echo/static/*` over its `options:` on every tool call, through
+the same TTL cache the runtime secret provider uses, so `whoami` reports what a
+running gateway currently resolves. Nothing else in this config is observable that
+way — a supplementary image's `env:` is baked at render time, and the boot keys
+are read once at startup — so without it, "a rotated secret takes effect without a
+redeploy" can be asserted but not watched. It is inert on a deployment with no
+resolver credential: `Registry.build` gets a null resolver and skips the merge.
+Point that parameter at a canary and never at a credential; it is returned over
+`/mcp` verbatim to anyone entitled to the slug.
 
 The `secrets` entry gives its two halves **different** namespace lists on purpose:
 the console (`consoleEnv:`) manages `/strad/staging/mcp/` and

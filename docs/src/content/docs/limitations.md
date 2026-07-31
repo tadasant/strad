@@ -292,9 +292,40 @@ pre-flip counterpart: it counts every name the deployment reads from the store,
 names what is absent, and has a report mode for a migration that moves one server
 per day.
 
-**Undo:** provision the resolver SA, seed `/strad/prod/gateway/static/*`, flip the
-provider in the deployment's config, and drop the per-secret baking from the
-deploy workflow.
+A live rehearsal against staging on 2026-07-31 found the flip blocked on two
+prerequisites, both now confirmed rather than assumed. Staging holds **no
+resolver credential**: `STRAD_PARAMS_PROJECT_ID` and
+`STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` are absent from its
+`strad-staging-*` secrets, so `store:check` exits 3 and `render-spec` refuses a
+store-backed render. And the flip cannot be partial: `render-spec` stops baking
+the boot keys, `STRAD_TOKENS` becomes required in the store, and a JSON array of
+token records is the value shape `:render` refuses until #32 below lands.
+
+**Undo:** land the encoding fix and pin both images, provision the resolver SA and
+seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
+`store:check --mode require --resolve`, then flip the provider in the deployment's
+config and drop the per-secret baking from the deploy workflow.
+
+### 33. One un-renderable parameter makes the whole gateway namespace resolve to nothing
+
+`resolve()` lists a namespace and calls `:render` on every parameter in it,
+without catching per parameter. The first failure aborts the whole read, so with
+no snapshot yet cached a single malformed parameter is not a degraded name — it
+is a gateway that boots with no token store and `/mcp` rejecting everything.
+
+That is deliberate. A resolver that dropped the failing name would hand the
+gateway a bag that looks complete, and the absence would surface later as one
+failing request against one server — the "worse place to find out" the deploy
+preflight exists to avoid. The cost is that the blast radius of one bad value is
+the deployment, which matters most while #32 below is unfixed: seeding a single
+quote-bearing secret takes the rest of the namespace with it.
+
+Run [`store:check --resolve`](/operate/secrets/#is-the-namespace-complete-store-check)
+before a flip; it renders what it found and names anything that did not.
+
+**Undo:** collect per-parameter failures in `resolve()` and throw one error naming
+every name that could not render, rather than the first. That keeps the failure
+whole while making the diagnosis a single line.
 
 ### 29. The console's secret badges prove presence, not that a credential works
 
