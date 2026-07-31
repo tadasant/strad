@@ -273,6 +273,18 @@ Five checks, in order:
    ships: a renderer regression that dropped or merged a key would produce this
    state from a config that validated cleanly, and nothing else would notice.
 
+Check 5 covers `env:` against `env:` only, and that is a limit rather than an
+oversight: a `params: true` server's variables land on the same component
+environment, but their names come from **paths in the store** and their values do
+not exist until render time, so this script — which has no store and no
+credentials — cannot see them. `renderAppSpec` can, and it throws when one
+server's resolved parameter would shadow a sibling's variable on the same bundle.
+That case matters more than an ordinary config collision because it is reachable
+by a human action rather than a config edit: the console creates parameters, and a
+parameter's path decides its variable name. A server shadowing its **own** `env:`
+key with its own parameter stays legal — that is the migration path off a
+hand-written `${REF}`.
+
 **It is strict where the gateway is lenient, and that asymmetry is deliberate.**
 `parseConfig` at boot keeps ignoring unknown keys, because the config and the image
 version independently: an image that refused to boot on a key it had never heard of

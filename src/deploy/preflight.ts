@@ -217,16 +217,19 @@ export function bundleScopeProblems(config: StradConfig): string[] {
 
     for (const [key, value] of Object.entries(server.env)) {
       const first = byKey.get(key);
-      if (first && first.value !== value) {
-        problems.push(
-          `servers "${first.slug}" and "${server.slug}" share bundle ` +
-            `"${server.bundle}" and both declare ${key} under env: with ` +
-            `different values — one bundle is one container with one ` +
-            `environment, so one silently overwrites the other`,
-        );
+      if (!first) {
+        byKey.set(key, { slug: server.slug, value });
         continue;
       }
-      if (!first) byKey.set(key, { slug: server.slug, value });
+      // The first claimant is never replaced, so a THIRD server colliding is
+      // reported against the same one rather than going silent.
+      if (first.value === value) continue;
+      problems.push(
+        `servers "${first.slug}" and "${server.slug}" share bundle ` +
+          `"${server.bundle}" and both declare ${key} under env: with ` +
+          `different values — one bundle is one container with one ` +
+          `environment, so one silently overwrites the other`,
+      );
     }
   }
   return problems;

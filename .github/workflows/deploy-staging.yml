@@ -434,15 +434,24 @@ jobs:
           rc=0
           probe() {
             node --experimental-transform-types scripts/probe-capabilities.ts \
-              --project strad-secrets-staging --key-env "$1" --label "$2" || {
-              echo "::warning::capability probe for $2 did not complete (see above)"
+              --project "$1" --key-env "$2" --label "$3" || {
+              echo "::warning::capability probe for $3 did not complete (see above)"
               rc=1
             }
           }
           # The viewer key is the /mcp tool surface; the admin key is the
           # console's reveal. Both, because they answer different questions.
-          probe SECRETS_VIEWER_KEY_JSON "staging MCP server (viewer key)"
-          probe SECRETS_ADMIN_KEY_JSON  "staging console (admin key)"
+          probe strad-secrets-staging SECRETS_VIEWER_KEY_JSON "staging MCP server (viewer key)"
+          probe strad-secrets-staging SECRETS_ADMIN_KEY_JSON  "staging console (admin key)"
+          # The SECOND store, and this pair is the load-bearing one. The whole
+          # claim of the zimmer-secrets slug is that its /mcp credential is a
+          # VIEWER — no parameterVersions.render, so no reachable secret VALUE —
+          # and that claim lives in IAM on a project nothing in this repo can see.
+          # `readSecretValues: false` on the viewer line is what confirms it; if
+          # that ever reads true, the slug is listing get_secret_value against
+          # Zimmer's store.
+          probe zimmer-secrets-staging ZIMMER_SECRETS_VIEWER_KEY_JSON "zimmer-secrets MCP server (viewer key)"
+          probe zimmer-secrets-staging ZIMMER_SECRETS_ADMIN_KEY_JSON  "zimmer-secrets console (admin key)"
           exit "$rc"
 
       - name: Dump the failing container's logs
@@ -474,7 +483,14 @@ jobs:
             | sort -k2 -r | head -1 | awk '{print $1}')
           echo "app=$APP_ID deployment=${DEPLOY_ID:-<none>}"
           [ -z "$DEPLOY_ID" ] && { echo "no deployments found."; exit 0; }
-          for comp in core bundle; do
+          # Derived from the rendered spec, not hardcoded: the component list is
+          # a property of the config, and the one most likely to have just been
+          # added is the one whose logs are wanted. A hardcoded pair would dump
+          # the two components that are fine and skip the new one that died.
+          COMPS=$(jq -r '.services[].name' /tmp/spec.json 2>/dev/null | tr '\n' ' ')
+          [ -z "$COMPS" ] && COMPS="core bundle"
+          echo "components: $COMPS"
+          for comp in $COMPS; do
             for kind in run deploy; do
               echo "::group::${comp} (${kind})"
               doctl apps logs "$APP_ID" "$comp" --deployment "$DEPLOY_ID" --type "$kind" --tail 60 2>&1

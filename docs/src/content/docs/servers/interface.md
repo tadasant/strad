@@ -120,10 +120,13 @@ plus two that shape how this server gets its values:
   every other server's. So two servers can safely use the same `env:` key in
   different bundles, and cannot safely use the same `consoleEnv:` key anywhere. A
   second server of a kind that already exists (a second `secrets` slug, say)
-  therefore keeps bare names under `env:` and **slug-namespaces** them under
-  `consoleEnv:` — `ZIMMER_SECRETS_SECRETS_PROJECT_ID`, which the console maps back
-  down to `SECRETS_PROJECT_ID` for that slug alone. `check-config` enforces both
-  directions; see [Two stores, one
+  therefore keeps bare names under `env:` and **slug-namespaces** anything it adds
+  under `consoleEnv:` — `ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`,
+  which the console maps back down to `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` for
+  that slug alone. The mapping is a **fallback** (`??=`) applied after the two maps
+  are merged, so a namespaced key whose bare form `env:` already sets is inert —
+  declare under `consoleEnv:` only what the console alone needs. `check-config`
+  enforces the collision rules; see [Two stores, one
   gateway](/operate/secrets/#two-stores-one-gateway) for the worked example.
 - **`params`** (default `false`) — opt into parameter resolution. When `true`,
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters

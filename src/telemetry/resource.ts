@@ -8,11 +8,12 @@ import type { Resource } from "@opentelemetry/resources";
 /**
  * Who is emitting this telemetry?
  *
- * strad deploys 2 App Platform components (core + bundle), and the whole
- * question we are trying to answer — "which one is dying, and of what" — is
- * unanswerable if they both report as "strad". So the resource has to say
- * precisely which component this is. (Nothing here assumes 2: a config with more
- * bundles gets more components, and each names itself the same way.)
+ * strad deploys several App Platform components (staging: core, bundle and
+ * bundle-zimmer-secrets), and the whole question we are trying to answer —
+ * "which one is dying, and of what" — is unanswerable if they all report as
+ * "strad". So the resource has to say precisely which component this is.
+ * (Nothing here assumes a count: a config with more bundles gets more
+ * components, and each names itself the same way.)
  *
  * The one attribute that matters most now that everything shares one bundle
  * is `service.instance.id`: it is regenerated on every process start, so

@@ -8,8 +8,10 @@ Fifteen MCP servers. One container. One Chromium. One `op` binary.
 /good-eggs /fetchpet /pointsyeah
 ```
 
-strad's staging app is now **two components**: `core` (the public gateway) and
-`bundle` (this). It used to be thirteen.
+strad's staging app is **three components**: `core` (the public gateway),
+`bundle` (this), and `bundle-zimmer-secrets` — a second copy of this image that
+exists only because a parameter store is `process.env` and a container has one of
+those. It used to be thirteen, for a much worse reason.
 
 ## Why this could not exist before
 

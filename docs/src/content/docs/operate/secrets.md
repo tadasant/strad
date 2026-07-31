@@ -930,7 +930,7 @@ servers:
       SECRETS_PROJECT_ID: "zimmer-secrets-staging"
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_VIEWER_KEY_JSON}"
     consoleEnv:
-      ZIMMER_SECRETS_SECRETS_PROJECT_ID: "zimmer-secrets-staging"
+      # Only what the console alone needs — see the fallback note below.
       ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
 ```
 
@@ -960,8 +960,24 @@ silent.
   other server's, so bare names there would collide. `/ui/secrets` would render
   strad's project while holding the **other** store's admin credential — a page
   that looks entirely correct and acts on the wrong project. The console maps
-  `ZIMMER_SECRETS_SECRETS_PROJECT_ID` back down to `SECRETS_PROJECT_ID` for that
-  slug alone (`withNamespacedFallback`).
+  `ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` back down to
+  `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` for that slug alone
+  (`withNamespacedFallback`).
+
+**The mapping is a fallback, not an override** (`out[bare] ??= value`), and
+`env:` and `consoleEnv:` are merged before it runs. So a namespaced key whose
+bare form the slug **also** declares under `env:` is inert — the `env:` value
+wins and the namespaced one does nothing while looking like it does something.
+Declare under `consoleEnv:` only what the console alone needs: the admin
+credential, the reveal flag, `SECRETS_NAMESPACES_STRICT`. The project and
+namespace come from `env:` and the console reads them there.
+
+One consequence worth knowing before you hit it: a second store's console
+therefore **cannot** be given a wider namespace list than its MCP half, the way
+`secrets` does (one namespace under `env:`, two under `consoleEnv:`). That works
+for the first slug precisely because its key is bare in both maps — and bare is
+what a second slug may not use. Making the namespaced form an override would fix
+it, and would also change the `gcs` pair, so it is not a local change.
 
 ### The credential, which is IAM and not markup
 

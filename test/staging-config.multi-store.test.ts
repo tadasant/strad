@@ -221,6 +221,57 @@ describe("two parameter stores, one strad", () => {
     for (const key of Object.keys(zimmer.consoleEnv)) {
       expect(key.startsWith("ZIMMER_SECRETS_SECRETS_")).toBe(true);
     }
+
+    // AND IT DECLARES ONLY THE KEYS THAT ARE NOT ALREADY BARE UNDER `env:`.
+    //
+    // `withNamespacedFallback` maps the namespaced form down with `??=` — a
+    // fallback, not an override — and `env:`/`consoleEnv:` are merged before it
+    // runs. So a namespaced key whose bare form `env:` already sets is INERT: it
+    // reads as meaningful and does nothing. Assert the shape rather than trust
+    // it, because the failure is invisible.
+    for (const key of Object.keys(zimmer.consoleEnv)) {
+      const bare = key.slice("ZIMMER_SECRETS_".length);
+      expect(Object.keys(zimmer.env)).not.toContain(bare);
+    }
+  });
+
+  it("resolves the console from the values that actually win, not the ones that look declarative", () => {
+    // The regression this pins: if someone adds
+    // `ZIMMER_SECRETS_SECRETS_PROJECT_ID` back alongside the bare `env:` key,
+    // the config would suggest the console can be pointed somewhere else and it
+    // could not. Diverge every namespaced key from its bare twin and assert
+    // which one the console reads — a test that only checked key PREFIXES would
+    // pass either way.
+    const diverged = parseConfig(
+      readFileSync(
+        new URL("../infra/strad.staging.yaml", import.meta.url),
+        "utf8",
+      ).replace(
+        'ZIMMER_SECRETS_SECRETS_REVEAL_ENABLED: "true"',
+        'ZIMMER_SECRETS_SECRETS_REVEAL_ENABLED: "false"',
+      ),
+      "diverged.yaml",
+    );
+    const spec = renderAppSpec({
+      config: diverged,
+      appName: "strad-staging",
+      region: "nyc",
+      image: { registry_type: "GHCR", repository: "strad", tag: "test" },
+      env: [],
+      secrets: SECRETS,
+    });
+    const core = Object.fromEntries(
+      spec.services
+        .find((s) => s.name === "core")!
+        .envs.map((e) => [e.key, e.value]),
+    );
+    const view = resolveServerView(diverged, "zimmer-secrets", core);
+    if (view.kind !== "secrets") throw new Error("not a secrets view");
+
+    // The namespaced flag has no bare twin under `env:`, so it DOES win.
+    expect(view.revealEnabled).toBe(false);
+    // And the project still comes from `env:`, which is the only place it is set.
+    expect(view.projectId).toBe(ZIMMER_STORE);
   });
 
   it("is clean under the bundle-scope check, and the collapsed shape is not", () => {

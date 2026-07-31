@@ -43,9 +43,10 @@ the usual 60s — a 60s window can miss the entire memory ramp that precedes an 
 kill), `OTEL_TRACES_SAMPLER`.
 
 :::caution[Don't set `OTEL_SERVICE_NAME` unless you mean it]
-Left unset, each component names itself from `STRAD_COMPONENT`: `strad-core` and
-`strad-bundle`. Setting `OTEL_SERVICE_NAME` collapses both processes into **one**
-service name — which is exactly the averaging that hides which component is dying.
+Left unset, each component names itself from `STRAD_COMPONENT`: `strad-core`,
+`strad-bundle`, `strad-bundle-zimmer-secrets`. Setting `OTEL_SERVICE_NAME`
+collapses every process into **one** service name — which is exactly the
+averaging that hides which component is dying.
 If you do set it, split by the `strad.component` resource attribute, which is always
 present.
 :::
