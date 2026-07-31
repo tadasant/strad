@@ -7,6 +7,7 @@ import { createApp } from "../src/http/app.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 import { serverLooksSecrets } from "../src/ui/render.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
+import { encodeSecretValue } from "../src/secrets/parameters/namespace.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
@@ -247,9 +248,16 @@ describe("the parameters console, end to end", () => {
       `Created GCS_PRIVATE_KEY (secret) at ${NS}GCS_PRIVATE_KEY.`,
     );
     expect(html).not.toContain(CANARY);
-    // The value lives in Secret Manager; the PM payload holds only a __REF__.
-    expect([...fake.secrets.values()].flat()).toContain(CANARY);
+    // The value lives in Secret Manager — base64url-encoded, so it survives
+    // `:render`'s substitution into the JSON payload — and the PM payload holds
+    // only a __REF__. Neither spelling of the value may appear there.
+    expect([...fake.secrets.values()].flat()).toContain(
+      encodeSecretValue(CANARY),
+    );
     expect(fake.pmPayloads().join("\n")).not.toContain(CANARY);
+    expect(fake.pmPayloads().join("\n")).not.toContain(
+      encodeSecretValue(CANARY),
+    );
   });
 
   it("REVEAL: shows the secret value once, in the body, never in a URL", async () => {

@@ -8,9 +8,13 @@ import {
 } from "./service-account.ts";
 import {
   decodeEnvelope,
+  decodeEnvelopeValue,
+  decodeStoredValue,
   encodeEnvelope,
+  encodeSecretValue,
   parameterId,
   secretRef,
+  SECRET_VALUE_ENCODING,
   variableOf,
   type ParameterEnvelope,
 } from "./namespace.ts";
@@ -380,7 +384,14 @@ export function createGcpParameterStore(
       try {
         await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
           payload: {
-            data: Buffer.from(input.value, "utf8").toString("base64"),
+            // base64url of the value, THEN base64 for the wire. The inner
+            // encoding is what `:render` will substitute into a JSON payload, so
+            // it is the one that has to be inert — see `encodeSecretValue`. A PEM
+            // key, a service-account blob or a JSON array of token records is
+            // rejected outright without it.
+            data: Buffer.from(encodeSecretValue(input.value), "utf8").toString(
+              "base64",
+            ),
           },
         });
       } catch (err) {
@@ -428,6 +439,7 @@ export function createGcpParameterStore(
         secret: input.secret,
         note: input.note,
         value: envelopeValue,
+        ...(input.secret ? { encoding: SECRET_VALUE_ENCODING } : {}),
       });
     } catch (err) {
       // The parameter above is ours — this call created it — so rolling it back
@@ -456,10 +468,32 @@ export function createGcpParameterStore(
     assertSamePath(cur.envelope, path);
 
     if (cur.envelope.secret) {
+      // A parameter written before strad encoded secret values carries no
+      // `encoding`, and its readers would take the base64url about to be written
+      // for the value itself. Declare the encoding BEFORE writing the bytes.
+      //
+      // The ordering is the whole point, and it is not the intuitive one. Neither
+      // write can be rolled into the other, so one of them lands first and there
+      // is a window. Bytes-first means the window reads an encoded value as a
+      // literal: the child process gets base64 text as its credential, silently.
+      // Envelope-first means the window reads the OLD literal value as base64url,
+      // which `decodeStoredValue` refuses — so reads fail, loudly, and the
+      // provider serves its last known good snapshot until the second write
+      // lands. A rotate that half-fails should be visible, not plausible.
+      if (cur.envelope.encoding !== SECRET_VALUE_ENCODING) {
+        await addVersion(id, {
+          ...cur.envelope,
+          encoding: SECRET_VALUE_ENCODING,
+        });
+      }
       // The Secret Manager version is the value; the Parameter Manager `__REF__`
       // already points at `versions/latest`, so it needs no new version.
       await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
-        payload: { data: Buffer.from(value, "utf8").toString("base64") },
+        payload: {
+          data: Buffer.from(encodeSecretValue(value), "utf8").toString(
+            "base64",
+          ),
+        },
       });
     } else {
       await addVersion(id, { ...cur.envelope, value });
@@ -496,7 +530,15 @@ export function createGcpParameterStore(
         404,
       );
     }
-    return Buffer.from(data, "base64").toString("utf8");
+    // `:access` is the DIRECT read — it hands back exactly the bytes that were
+    // written, with no `:render` in the path to undo the encoding. So the
+    // envelope's declared encoding has to be applied here too, or the console
+    // shows a human base64 and calls it their credential.
+    return decodeStoredValue(
+      Buffer.from(data, "base64").toString("utf8"),
+      cur.envelope.encoding,
+      path,
+    );
   }
 
   async function destroy(path: string): Promise<void> {
@@ -585,7 +627,7 @@ export function createGcpParameterStore(
       const envelope = decodeEnvelope(
         Buffer.from(data, "base64").toString("utf8"),
       );
-      out[variableOf(meta.path)] = envelope.value;
+      out[variableOf(meta.path)] = decodeEnvelopeValue(envelope);
     }
     return out;
   }

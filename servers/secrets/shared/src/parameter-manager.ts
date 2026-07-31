@@ -64,6 +64,82 @@ export interface ParameterEnvelope {
   note?: string;
   /** Literal value (non-secret) or a `__REF__(...)` string (secret). */
   value: string;
+  /**
+   * How the value behind this envelope is encoded. Absent means the literal
+   * bytes; `base64url` means the value must be decoded after `:render`. See
+   * `SECRET_VALUE_ENCODING` below. The viewer never decodes anything — it never
+   * holds a value — but the field is part of the wire contract and dropping it
+   * from this shape would let a writer in this tree omit it.
+   */
+  encoding?: ValueEncoding;
+}
+
+/**
+ * MIRROR OF `src/secrets/parameters/namespace.ts`. The two trees have separate
+ * lockfiles and cannot import each other, and they write to the SAME GCP store,
+ * so a drift here is a value one half writes and the other half cannot read.
+ * `test/parameters.encoding.test.ts` in the root suite compares the two copies.
+ *
+ * A strad parameter is created with `parameter-format=JSON`. `:render` splices a
+ * secret's raw bytes into the payload TEXT where the `__REF__(…)` token sits and
+ * then checks the result for structural damage — so a value carrying a quote, a
+ * backslash, a brace, a bracket or a newline is rejected with
+ * `400 INVALID_ARGUMENT … injection detected`. Every secret value is therefore
+ * stored base64url-encoded, and the envelope says so.
+ */
+export type ValueEncoding = "base64url";
+
+/** The encoding every secret value is written with. */
+export const SECRET_VALUE_ENCODING: ValueEncoding = "base64url";
+
+/** Characters a rendered secret must not contain. See `SECRET_VALUE_ENCODING`. */
+const RENDER_UNSAFE = /["\\{}[\]]/;
+
+/** Would substituting this value into a JSON parameter payload survive `:render`? */
+export function isRenderSafe(value: string): boolean {
+  if (RENDER_UNSAFE.test(value)) return false;
+  // Control characters, by code point rather than by a regex literal holding raw
+  // control characters — the latter is both unreadable and lint-flagged. A raw
+  // byte below 0x20 is illegal INSIDE a JSON string, so a newline or a tab in a
+  // secret breaks the payload just as surely as a quote does.
+  for (const ch of value) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x20 || cp === 0x7f) return false;
+  }
+  return true;
+}
+
+/** Encode a secret's bytes for Secret Manager: `[A-Za-z0-9_-]` only, so inert. */
+export function encodeSecretValue(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+/**
+ * Invert `encodeSecretValue` for one raw value, given the encoding its envelope
+ * declares. `label` names the parameter in an error; it is never the value.
+ */
+export function decodeStoredValue(
+  value: string,
+  encoding: ValueEncoding | undefined,
+  label: string,
+): string {
+  if (encoding === undefined) return value;
+  const decoded = Buffer.from(value, "base64url").toString("utf8");
+  // Node's base64 decoders are LENIENT — garbage in, garbage out, no error.
+  // Re-encode and compare so a value that is not what its envelope claims fails
+  // loudly, canonicalising alphabet and padding first so a hand-seeded standard
+  // base64 value is accepted rather than rejected for its spelling.
+  const canonical = value
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  if (Buffer.from(decoded, "utf8").toString("base64url") !== canonical) {
+    throw new ParameterManagerError(
+      `parameter "${label}" is labelled ${encoding} but its stored value is not`,
+      502,
+    );
+  }
+  return decoded;
 }
 
 /** Metadata about one managed parameter. Note the absence of a value field. */

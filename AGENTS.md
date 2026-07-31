@@ -133,6 +133,12 @@ opening any PR.
     `GCP_SA_KEY`. A secret parameter also grants its OWN principal
     `secretmanager.secretAccessor` on its secret; `create()` does that, and
     without it every `:render` is a `400 SECRET_REFERENCE_ERROR`.
+    A secret value is stored BASE64URL-encoded in Secret Manager, and its
+    envelope carries `"encoding":"base64url"`. `:render` splices the bytes into
+    the JSON payload as TEXT and rejects a structurally damaged result, so a raw
+    `"`, `\`, `{`, `}` or newline is a `400 … injection detected` — i.e. every PEM
+    key and every JSON blob. An ABSENT `encoding` means the literal bytes, which
+    is what parameters written before this carry; do not make it mean "unknown".
     Because that grant exists, `:render` is a live read path for secret values,
     and **the `secrets` MCP credential must NEVER hold
     `roles/parametermanager.parameterAccessor`** — withholding it is the only

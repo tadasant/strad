@@ -11,6 +11,7 @@ import {
   resolveServerParams,
   staticNamespace,
 } from "../src/secrets/parameters/index.ts";
+import { encodeSecretValue } from "../src/secrets/parameters/namespace.ts";
 
 /**
  * The two-store model, exercised end to end against the in-memory GCP fake.
@@ -63,8 +64,13 @@ describe("gcp parameter store — two-store model", () => {
       note: "rotate quarterly",
     });
 
-    // The value is in Secret Manager...
-    expect([...gcp.secrets.values()].flat()).toContain(KEY_VALUE);
+    // The value is in Secret Manager — base64url-encoded, which is what makes it
+    // survive `:render`'s substitution into a JSON payload. See
+    // `test/parameters.encoding.test.ts` for why it is encoded at all; here the
+    // load-bearing claim is unchanged, that the bytes are in the OTHER store.
+    expect([...gcp.secrets.values()].flat()).toContain(
+      encodeSecretValue(KEY_VALUE),
+    );
     // ...and NEVER in any Parameter Manager payload — only a __REF__ is.
     const pm = gcp.pmPayloads().join("\n");
     expect(pm).not.toContain("SUPER-SECRET-CANARY");

@@ -1,8 +1,11 @@
 import {
+  decodeStoredValue,
+  encodeSecretValue,
   MANAGED_BY_LABEL,
   MANAGED_BY_VALUE,
   parameterId,
   ParameterManagerError,
+  SECRET_VALUE_ENCODING,
   variableOf,
   type ParameterEnvelope,
 } from "./parameter-manager.js";
@@ -276,7 +279,14 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
         try {
           await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
             payload: {
-              data: Buffer.from(input.value, "utf8").toString("base64"),
+              // base64url of the value, THEN base64 for the wire. The inner
+              // encoding is what `:render` substitutes into a JSON payload, so it
+              // is the one that has to be inert — a PEM key or a JSON blob is
+              // rejected as an injection without it. Same as the src/ half.
+              data: Buffer.from(
+                encodeSecretValue(input.value),
+                "utf8",
+              ).toString("base64"),
             },
           });
         } catch (err) {
@@ -317,6 +327,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
           secret: input.secret,
           note: input.note,
           value: envelopeValue,
+          ...(input.secret ? { encoding: SECRET_VALUE_ENCODING } : {}),
         });
       } catch (err) {
         await pm("DELETE", `${pmParent}/parameters/${id}`).catch(() => {});
@@ -331,10 +342,22 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       const id = parameterId(path);
       const prev = await currentEnvelope(path);
       if (prev.secret) {
+        // Declare the encoding BEFORE writing the bytes, for a parameter written
+        // before strad encoded them. Same ordering, same reason, as the src/ half:
+        // bytes-first would make the gap read an encoded value as a literal and
+        // hand a child base64 text as its credential, silently; envelope-first
+        // makes the gap fail `decodeStoredValue` loudly instead.
+        if (prev.encoding !== SECRET_VALUE_ENCODING) {
+          await addVersion(id, { ...prev, encoding: SECRET_VALUE_ENCODING });
+        }
         // A secret's bytes go to Secret Manager; the envelope's ref is unchanged
         // because it points at `versions/latest`.
         await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
-          payload: { data: Buffer.from(value, "utf8").toString("base64") },
+          payload: {
+            data: Buffer.from(encodeSecretValue(value), "utf8").toString(
+              "base64",
+            ),
+          },
         });
         return;
       }
@@ -384,7 +407,11 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
       const envelope = JSON.parse(
         Buffer.from(data, "base64").toString("utf8"),
       ) as ParameterEnvelope;
-      return envelope.value;
+      // A `:render` that could not dereference hands the POINTER back rather
+      // than failing, and decoding a pointer would turn a diagnosable state into
+      // mojibake. Everything else is decoded per the envelope's own declaration.
+      if (envelope.value.startsWith("__REF__(")) return envelope.value;
+      return decodeStoredValue(envelope.value, envelope.encoding, path);
     },
   };
 }

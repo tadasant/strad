@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { createGcpParameterStore } from "./gcp.ts";
+import { isRenderSafe } from "./namespace.ts";
 import type { FetchLike, ServiceAccount } from "./service-account.ts";
 import type { ParameterStore } from "./types.ts";
 
@@ -159,8 +160,17 @@ const ACCOUNT: ServiceAccount = {
   private_key: TEST_PRIVATE_KEY,
 };
 
-const REF_RE =
-  /^__REF__\("\/\/secretmanager\.googleapis\.com\/projects\/([^/]+)\/secrets\/([^/]+)\/versions\/([^"]+)"\)$/;
+/**
+ * The reference token AS IT APPEARS IN THE RAW PAYLOAD TEXT.
+ *
+ * Not anchored, and it tolerates the quotes being JSON-escaped, because that is
+ * the form the token actually has: the envelope is a JSON object, so the ref sits
+ * inside a string and its own quotes are written `\"`. Matching the payload text
+ * rather than a parsed field is what makes the substitution below textual, which
+ * is what makes it faithful.
+ */
+const RAW_REF_RE =
+  /__REF__\(\\?"\/\/secretmanager\.googleapis\.com\/projects\/[^/]+\/secrets\/([^/"\\]+)\/versions\/[^"\\]+\\?"\)/g;
 
 export function createFakeGcp(): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
@@ -342,24 +352,41 @@ export function createFakeGcp(): FakeGcp {
   }
 
   /**
-   * Dereference every `__REF__`, AS THE PARAMETER.
+   * Dereference every `__REF__`, AS THE PARAMETER, BY TEXT.
    *
-   * The IAM check is the point of this function, not decoration. Parameter
-   * Manager resolves a reference under the parameter's own principal, so a
-   * reference whose target has not granted that principal `secretAccessor`
-   * fails — `400 SECRET_REFERENCE_ERROR` — no matter what the caller holds.
-   * Modelling that is what lets a test prove `create()` makes the grant: delete
-   * the binding and `resolve()` stops working, which is precisely the production
-   * failure.
+   * Two things are modelled here, and the second one is the reason this function
+   * was rewritten.
+   *
+   * ONE: the IAM check. Parameter Manager resolves a reference under the
+   * parameter's own principal, so a reference whose target has not granted that
+   * principal `secretAccessor` fails — `400 SECRET_REFERENCE_ERROR` — no matter
+   * what the caller holds. That is what lets a test prove `create()` makes the
+   * grant: delete the binding and `resolve()` stops working.
+   *
+   * TWO: the substitution is TEXTUAL, and it is checked. This double used to
+   * `JSON.parse` the payload, replace the value in the parsed object, and
+   * `JSON.stringify` it back — which re-escapes the secret perfectly and can
+   * therefore never fail. Google does not do that. It splices the secret's raw
+   * bytes into the payload TEXT and then looks for structural damage, so a value
+   * carrying a quote, a brace or a newline is rejected as an injection. The
+   * double accepting what the API rejects is how a `STRAD_TOKENS` value that
+   * cannot render in production passed every test in this repo.
+   *
+   * The refusal is derived from `isRenderSafe` — the same rule
+   * `encodeSecretValue` is built to satisfy — so the fix and the check it is
+   * proved against cannot drift apart into two different opinions.
    */
   function renderRefs(payload: string, parameterId: string): string {
     const principal = principalFor(parameterId);
-    const env = JSON.parse(payload) as Record<string, unknown>;
-    for (const [k, v] of Object.entries(env)) {
-      if (typeof v !== "string") continue;
-      const m = REF_RE.exec(v);
-      if (!m) continue;
-      const secretId = m[2]!;
+    let out = "";
+    let last = 0;
+    RAW_REF_RE.lastIndex = 0;
+    for (
+      let m = RAW_REF_RE.exec(payload);
+      m !== null;
+      m = RAW_REF_RE.exec(payload)
+    ) {
+      const secretId = m[1]!;
       const versions = secrets.get(secretId);
       if (!versions || versions.length === 0) throw new HttpError(404);
       // An UNCONDITIONAL binding only. A conditional one is modelled as
@@ -373,9 +400,27 @@ export function createFakeGcp(): FakeGcp {
           b.members.includes(principal),
       );
       if (!granted) throw new HttpError(400);
-      env[k] = versions[versions.length - 1]!;
+      const value = versions[versions.length - 1]!;
+      // `400 INVALID_ARGUMENT … injection detected`. A different failure from the
+      // 400 above, and the fake cannot tell them apart by status — the assertion
+      // that distinguishes them is which secret is in the store, not which code
+      // came back.
+      if (!isRenderSafe(value)) throw new HttpError(400);
+      out += payload.slice(last, m.index) + value;
+      last = m.index + m[0].length;
     }
-    return JSON.stringify(env);
+    out += payload.slice(last);
+    // Belt and braces, and a second derivation of the same fact: whatever
+    // `isRenderSafe` permits must still leave a payload that parses. A value that
+    // slipped past the predicate and broke the JSON is a bug in the predicate,
+    // and it should surface as a render failure rather than as a decode failure
+    // three layers up.
+    try {
+      JSON.parse(out);
+    } catch {
+      throw new HttpError(400);
+    }
+    return out;
   }
 
   function handleSm(

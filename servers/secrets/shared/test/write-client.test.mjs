@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createWriteClient } from "../build/write-client.js";
-import { parameterId } from "../build/parameter-manager.js";
+import {
+  encodeSecretValue,
+  isRenderSafe,
+  parameterId,
+} from "../build/parameter-manager.js";
 // A REAL RSA key: the client signs a JWT before any fetch, so a placeholder
 // string fails in node:crypto long before the stub is reached.
 import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
@@ -25,6 +29,15 @@ function principalFor(id) {
 }
 
 const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
+/**
+ * The ref token AS IT APPEARS IN THE RAW PAYLOAD TEXT — its quotes JSON-escaped,
+ * because the envelope is a JSON object and the token sits inside a string.
+ * Matching the text rather than a parsed field is what makes the stub's
+ * substitution textual, which is what makes it able to fail the way Google does.
+ */
+const RAW_REF_RE =
+  /__REF__\(\\?"\/\/secretmanager\.googleapis\.com\/projects\/[^/]+\/secrets\/[^/"\\]+\/versions\/[^"\\]+\\?"\)/g;
 
 /**
  * A Parameter Manager + Secret Manager stub that records what it is told.
@@ -126,13 +139,17 @@ function stubStore() {
       }));
       return json({ parameterVersions: names });
     }
-    // `:render` derefs a `__REF__` the way Parameter Manager does.
+    // `:render` derefs a `__REF__` the way Parameter Manager does — TEXTUALLY,
+    // and with the injection check. Substituting into the parsed object and
+    // re-stringifying (which is what this stub used to do) re-escapes the secret
+    // perfectly and so can never fail, which is exactly how a value that cannot
+    // render in production passed here. See `isRenderSafe`.
     m = new RegExp(`^${pmRoot}/([^/]+)/versions/([^/:]+):render$`).exec(path);
     if (m && method === "GET") {
       const payload = params.get(m[1])?.versions.get(m[2]);
       if (payload == null) return json({ error: "no" }, 404);
-      const envelope = JSON.parse(payload);
-      if (envelope.secret) {
+      let rendered = payload;
+      if (JSON.parse(payload).secret) {
         // The deref runs as the PARAMETER. Without its binding on the secret,
         // Google answers 400 SECRET_REFERENCE_ERROR — so the stub does too, and
         // a client that skips the grant fails here instead of silently passing.
@@ -144,10 +161,21 @@ function stubStore() {
         );
         if (!granted) return json({ error: "SECRET_REFERENCE_ERROR" }, 400);
         const versions = secrets.get(m[1]) ?? [];
-        envelope.value = versions[versions.length - 1] ?? "";
+        const value = versions[versions.length - 1] ?? "";
+        if (!isRenderSafe(value)) {
+          return json({ error: "INVALID_ARGUMENT: injection detected" }, 400);
+        }
+        // A FUNCTION replacement: a string one would interpret `$&`, `$1` and
+        // friends inside the secret, quietly mangling any value containing `$`.
+        rendered = payload.replace(RAW_REF_RE, () => value);
+        try {
+          JSON.parse(rendered);
+        } catch {
+          return json({ error: "INVALID_ARGUMENT: injection detected" }, 400);
+        }
       }
       return json({
-        renderedPayload: Buffer.from(JSON.stringify(envelope), "utf8").toString("base64"),
+        renderedPayload: Buffer.from(rendered, "utf8").toString("base64"),
       });
     }
     m = new RegExp(`^${pmRoot}/([^/]+)/versions/([^/:]+)$`).exec(path);
@@ -237,11 +265,93 @@ test("a secret create writes the value to Secret Manager and a ref to the envelo
   await client.create({ path, secret: true, value: "s3cr3t" });
 
   const id = parameterId(path);
-  assert.deepEqual(secrets.get(id), ["s3cr3t"]);
+  // base64url in Secret Manager, and the envelope says so. The encoding is what
+  // lets `:render` splice the value into a JSON payload without breaking it.
+  assert.deepEqual(secrets.get(id), [encodeSecretValue("s3cr3t")]);
   const envelope = JSON.parse(params.get(id).versions.get("v1"));
   assert.equal(envelope.secret, true);
+  assert.equal(envelope.encoding, "base64url");
   assert.match(envelope.value, /^__REF__\("\/\/secretmanager\.googleapis\.com\//);
   assert.ok(!JSON.stringify(envelope).includes("s3cr3t"));
+  // Encoding a value must not become a way of smuggling it into the store the
+  // VIEWER can read.
+  assert.ok(!JSON.stringify(envelope).includes(encodeSecretValue("s3cr3t")));
+});
+
+/**
+ * The three value shapes the supplementary names actually take, plus the control.
+ *
+ * `:render` splices a secret's raw bytes into the JSON payload TEXT and rejects
+ * the result if it looks structurally damaged, so a quote, a brace, a backslash
+ * or a newline is a `400 INVALID_ARGUMENT … injection detected`. This tree writes
+ * to the SAME store the gateway's resolver reads, so a fix only in `src/` would
+ * leave exactly half the defect standing.
+ */
+const STRUCTURAL_VALUES = {
+  "a quote-bearing JSON array": JSON.stringify([
+    { pubid: "7f3a91c2", label: 'ci "deploy" probe', roles: ["admin"] },
+  ]),
+  "a multi-line PEM": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END PRIVATE KEY-----\n",
+  "a service-account JSON blob": JSON.stringify({
+    type: "service_account",
+    private_key: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n",
+  }),
+  "a value with a lone backslash": "domain\\user",
+};
+
+for (const [name, value] of Object.entries(STRUCTURAL_VALUES)) {
+  test(`create then readValue round-trips ${name}`, async () => {
+    const { client } = stubStore();
+    const path = `${NS}demo/static/SECRET_TOKEN`;
+    await client.create({ path, secret: true, value });
+    assert.equal(await client.readValue(path), value);
+  });
+
+  test(`rotate to ${name} round-trips, including from a legacy envelope`, async () => {
+    const { client, params, secrets } = stubStore();
+    const path = `${NS}demo/static/SECRET_TOKEN`;
+    await client.create({ path, secret: true, value: "plain-token" });
+
+    // Rewrite v1 the way the PRE-FIX writer left it: raw bytes in Secret
+    // Manager, no `encoding` in the envelope. This is the on-store state of the
+    // names seeded before this change.
+    const id = parameterId(path);
+    const legacy = JSON.parse(params.get(id).versions.get("v1"));
+    delete legacy.encoding;
+    params.get(id).versions.set("v1", JSON.stringify(legacy));
+    secrets.set(id, ["plain-token"]);
+    assert.equal(await client.readValue(path), "plain-token");
+
+    await client.rotate(path, value);
+    assert.equal(await client.readValue(path), value);
+  });
+}
+
+test("the stub refuses a raw structural value, the way Parameter Manager does", async () => {
+  // Constraint 1, in this tree: the double must reject what Google rejects.
+  // Before this change the stub substituted into the PARSED envelope and
+  // re-stringified, which re-escapes any value and so could never fail.
+  const { client, params, secrets } = stubStore();
+  const path = `${NS}demo/static/SECRET_TOKEN`;
+  await client.create({ path, secret: true, value: "plain-token" });
+
+  const id = parameterId(path);
+  const legacy = JSON.parse(params.get(id).versions.get("v1"));
+  delete legacy.encoding;
+  params.get(id).versions.set("v1", JSON.stringify(legacy));
+  secrets.set(id, [STRUCTURAL_VALUES["a quote-bearing JSON array"]]);
+
+  await assert.rejects(() => client.readValue(path), /400/);
+});
+
+test("a non-secret value stays literal, so the viewer still shows it", async () => {
+  const { client, params } = stubStore();
+  const path = `${NS}demo/static/PUBLIC_NOTE`;
+  await client.create({ path, secret: false, value: '{"not":"a secret"}' });
+
+  const envelope = JSON.parse(params.get(parameterId(path)).versions.get("v1"));
+  assert.equal(envelope.value, '{"not":"a secret"}');
+  assert.equal(envelope.encoding, undefined);
 });
 
 test("a secret create grants the parameter's own principal secretAccessor", async () => {

@@ -385,6 +385,17 @@ A `400 SECRET_REFERENCE_ERROR` here means the binding did not land. **Give it a
 minute first** — an IAM change takes up to ~2 minutes to propagate (occasionally
 longer), and during that window the failure is indistinguishable from the bug.
 
+Two other 400s are not this bug, and the message does not distinguish them:
+
+- `INVALID_ARGUMENT … injection detected` means the secret's bytes broke the JSON
+  payload they were substituted into — a value carrying `"`, `\`, `{`, `}` or a
+  newline, written before strad encoded secret values. Rotating it through the
+  console or the `secrets` MCP server re-writes it encoded and fixes it. See
+  [Secrets](/operate/secrets/#what-a-secret-value-looks-like-in-the-store).
+- The rendered `value` coming back as base64url rather than the value is not an
+  error at all: that is the encoding, and strad's own readers decode it. Pipe it
+  through `base64 -d` if you are reading by hand.
+
 ## The resolver's roles: `parameterViewer` is not enough
 
 `roles/parametermanager.parameterViewer` does **not** include
