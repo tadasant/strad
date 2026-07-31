@@ -1,5 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { metrics } from "@opentelemetry/api";
+import {
+  AggregationTemporality,
+  InMemoryMetricExporter,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+  type DataPoint,
+} from "@opentelemetry/sdk-metrics";
 import express from "express";
 import type { Server as HttpServer } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -13,6 +21,7 @@ import {
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
+import { resetInstruments } from "../src/telemetry/index.ts";
 
 /**
  * The staging failure, reproduced end to end.
@@ -394,6 +403,69 @@ describe("ToolSurfaceMonitor", () => {
     // Three degraded probes spend the budget; the fourth waits out the steady
     // interval, which this test is far too short to reach.
     expect(probes).toBe(3);
+  });
+});
+
+describe("the metric, which is the half that leaves the container", () => {
+  // strad exports metrics and traces and deliberately exports NO logs, because
+  // stdout carries upstream text this process did not author. The consequence
+  // was paid in full: the `secrets` slug served nothing for a week and the only
+  // record was a stdout line no ingestor reads. So the observation has to be a
+  // metric, and this asserts it really is one — and that it carries none of the
+  // upstream prose the log line does.
+  it("exports strad.mcp.tool_surface at zero for a slug serving nothing", async () => {
+    const exporter = new InMemoryMetricExporter(
+      AggregationTemporality.CUMULATIVE,
+    );
+    const reader = new PeriodicExportingMetricReader({
+      exporter,
+      exportIntervalMillis: 600_000, // the test drives the flush
+    });
+    const provider = new MeterProvider({ readers: [reader] });
+    metrics.setGlobalMeterProvider(provider);
+    // Instruments memoise their meter; drop the no-op one captured above.
+    resetInstruments();
+
+    try {
+      const monitor = new ToolSurfaceMonitor({
+        registry,
+        timeoutMs: 5000,
+        log: () => {},
+        warn: () => {},
+      });
+      await monitor.refresh();
+      await reader.forceFlush();
+
+      // `MetricData.dataPoints` is a union (number | Histogram) that flatMap
+      // widens to `{}`; a gauge only ever carries the number arm.
+      const points = exporter
+        .getMetrics()
+        .flatMap((m) => m.scopeMetrics)
+        .flatMap((s) => s.metrics)
+        .filter((m) => m.descriptor.name === "strad.mcp.tool_surface")
+        .flatMap((m) => m.dataPoints as DataPoint<number>[]);
+
+      const dead = points.find(
+        (p) => p.attributes["mcp.server"] === "stale-mount",
+      );
+      expect(dead?.value).toBe(0);
+      expect(dead?.attributes["mcp.tool_surface.state"]).toBe("unreachable");
+      expect(dead?.attributes["mcp.upstream.kind"]).toBe("supplementary-image");
+
+      const alive = points.find(
+        (p) => p.attributes["mcp.server"] === "healthy",
+      );
+      expect(alive?.value).toBeGreaterThan(0);
+
+      // The same rule the redaction canary enforces one module over: an
+      // upstream's error page is not ours to export.
+      expect(JSON.stringify(exporter.getMetrics())).not.toMatch(
+        /DOCTYPE|Cannot POST|<pre>/i,
+      );
+    } finally {
+      await reader.shutdown().catch(() => {});
+      resetInstruments();
+    }
   });
 });
 

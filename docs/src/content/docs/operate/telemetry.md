@@ -153,6 +153,28 @@ defaults to **60s and applies at every hop**, so a slow tool behind the gateway
 dies at exactly 60s and presents as a mysterious platform failure. Counting them
 separately turns that into a one-glance diagnosis.
 
+### `strad.mcp.tool_surface` — is a slug serving anything at all?
+
+A gauge: how many tools each mounted server is currently offering, attributed by
+`mcp.server`, `mcp.upstream.kind` and `mcp.tool_surface.state` (`ok` / `empty` /
+`unreachable`). The background monitor
+([architecture](/intro/architecture/#adapters)) records it on every probe.
+
+**It is the signal this fleet was missing.** A slug can be configured, entitled,
+routed and dead, and the only symptom is a `tools/list` that comes back empty —
+which reads exactly like a server that has no tools. That state ran for a week on
+both environments and left nothing behind but a stdout line, because strad ships
+metrics and traces and deliberately ships no logs (see below). A gauge pinned at
+zero for a slug, on the other hand, is a thing you can alert on:
+
+```promql
+min_over_time(strad_mcp_tool_surface{mcp_server!=""}[15m]) == 0
+```
+
+`strad.mcp.unlistable` is its request-side companion — a `tools/list` that failed
+for a server the client named. It needs its own counter because that failure
+answers with a JSON-RPC error inside an HTTP **200**, so it moves nothing else.
+
 ## What strad will never send
 
 :::danger[The hard rule]
@@ -179,6 +201,15 @@ Two things that look like omissions and are not:
   error messages, and that is fine where it is — stdout is the operator's own
   console. Shipping it to an external ingestor would drag those messages across
   this boundary. If you ever add a log exporter, redact those lines first.
+
+  Know the cost of that choice, because it has been paid: an event that only ever
+  appears on stdout is, on App Platform, an event nobody reads. The `secrets`
+  slug served zero tools for a week on both environments and wrote
+  `mcp.list_tools_failed` every single time anyone asked — into a stream with no
+  ingestor. **So a signal worth acting on belongs in a metric, not only in a log
+  line.** `strad.mcp.tool_surface` above is that lesson applied: the same fact,
+  in the channel that actually leaves the container, carrying only strad's own
+  vocabulary.
 
 `test/telemetry.redaction.test.ts` pins all of this: it drives a real MCP tool
 call with a credential-shaped canary planted in **both** the arguments and the

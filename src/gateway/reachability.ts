@@ -1,3 +1,4 @@
+import { instruments } from "../telemetry/index.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
@@ -227,6 +228,23 @@ export class ToolSurfaceMonitor {
     const { snapshot, failures } = await probeToolSurfaces(this.opts);
     const first = this.current === null;
     this.current = snapshot;
+
+    // METRICS, not just a log line. strad exports metrics and traces to the
+    // collector and deliberately exports no logs — stdout carries upstream text
+    // this process did not author, and shipping it would drive through
+    // telemetry/redact.ts. So the log below is for whoever reads container
+    // output, and THIS is the half that reaches the obs stack: a gauge that sits
+    // at zero for a slug serving nothing, attributed by slug, so it can be
+    // alerted on. The attributes are a slug, a state word and a kind — all
+    // strad's own vocabulary, none of it an upstream's.
+    const inst = instruments();
+    for (const surface of snapshot.surfaces) {
+      inst.toolSurface.record(surface.tools, {
+        "mcp.server": surface.slug,
+        "mcp.upstream.kind": surface.kind,
+        "mcp.tool_surface.state": surface.state,
+      });
+    }
 
     for (const surface of snapshot.surfaces) {
       const was = this.previous.get(surface.slug);

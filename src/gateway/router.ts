@@ -289,7 +289,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
               onUnlistable: (slug: string) => {
                 setOutcome("upstream_unlistable");
                 span.setAttribute("mcp.list_tools.unlistable", slug);
-                inst.unavailable.add(1, {
+                inst.unlistable.add(1, {
                   "strad.mode": opts.mode,
                   "mcp.server": slug,
                 });
