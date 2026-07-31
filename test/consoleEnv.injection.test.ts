@@ -163,7 +163,14 @@ describe("consoleEnv: render -> run", () => {
     // its credential to the bundle and declares no consoleEnv, must NOT resolve
     // the key `gcs` filed on core under the same name — or /ui/gcs-private would
     // browse a private bucket as the OTHER server's service account, silently.
-    // The two already collide on the bare GCS_* names by design.
+    // The two declare the same bare GCS_* names on SEPARATE bundles — which is
+    // the only way two containers may both read `GCS_SERVICE_ACCOUNT_KEY_JSON`
+    // and mean different keys. (On ONE bundle that is a config-time error now: a
+    // component's env is the union of its servers' maps, so one value would
+    // silently win. See the env collision block in src/config/schema.ts.)
+    // CORE's environment has no such fence — every server's consoleEnv: merges
+    // into it whatever bundle they are on — which is exactly why resolveEnv()
+    // needs one of its own.
     const twoServers = parseConfig(`
 version: 1
 gateway: { name: strad, env: prod }
@@ -171,6 +178,7 @@ auth: { staticTokens: { enabled: true, store: env } }
 roles: { admin: { servers: ["*"] } }
 bundles:
   - name: bundle
+  - name: bundle-private
 servers:
   - slug: gcs
     kind: supplementary-image
@@ -187,7 +195,7 @@ servers:
   - slug: gcs-private
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
-    bundle: bundle
+    bundle: bundle-private
     path: /gcs-private
     entitlements: [admin]
     env:

@@ -418,6 +418,93 @@ export const StradConfig = z
       }
     }
 
+    // ENV COLLISIONS.
+    //
+    // A component's environment is ONE flat namespace, and both merges that
+    // build it are last-wins:
+    //
+    //   `env:`        -> per BUNDLE  (appspec.ts: `{...prev.env, ...server.env}`)
+    //   `consoleEnv:` -> onto CORE   (appspec.ts: `Object.assign(merged, ...)`)
+    //
+    // THE SCOPES ARE NOT THE SAME, and the asymmetry is the whole rule. A bundle
+    // is a component is a container is one `process.env`, so `env:` may safely
+    // use BARE names — `SECRETS_PROJECT_ID` on two bundles is two containers
+    // reading their own. `consoleEnv:` has no such fence: every enabled server's
+    // map merges into the single `core` component, so a name there must be
+    // SLUG-NAMESPACED or the last declaration wins and the other server's console
+    // silently runs as the wrong identity.
+    //
+    // That is not hypothetical in either direction. Two secrets slugs in one
+    // bundle renders `/ui/secrets` showing strad's project while holding the
+    // OTHER store's admin service account, and hands the `/mcp` container the
+    // wrong store under strad's slug — and before this check, both shapes parsed
+    // and rendered with zero validation errors. `remote-filesystem-tmp-public`
+    // had to be moved off the bare `GCS_BUCKET` name for the same reason, by
+    // hand, in the bundle host, after the fact.
+    //
+    // Same key with the SAME value is legal and stays legal: that is the
+    // capability-variant pattern. `gmail-ro` and `gmail-rw` repeat their whole
+    // `env:` on purpose, because putting the credential on only one of them means
+    // disabling THAT one strips it from its sibling.
+    const flagCollisions = (
+      entries: { slug: string; key: string; value: string }[],
+      field: "env" | "consoleEnv",
+      why: string,
+    ): void => {
+      const claimed = new Map<string, { slug: string; value: string }>();
+      for (const { slug, key, value } of entries) {
+        const first = claimed.get(key);
+        if (!first) {
+          claimed.set(key, { slug, value });
+          continue;
+        }
+        if (first.value === value) continue;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `servers "${first.slug}" and "${slug}" both declare ${key} under ` +
+            `${field}: with different values, and ${why}. One silently ` +
+            `overwrites the other. Give one of them a slug-namespaced name ` +
+            `(e.g. ${slug.toUpperCase().replace(/-/g, "_")}_${key}).`,
+          path: ["servers"],
+        });
+      }
+    };
+
+    const consoleEntries: { slug: string; key: string; value: string }[] = [];
+    const envByBundle = new Map<
+      string,
+      { slug: string; key: string; value: string }[]
+    >();
+    for (const s of cfg.servers) {
+      // A server strad does not mount collides with nothing: its env reaches no
+      // component, and render-spec skips it too.
+      if (!s.enabled) continue;
+      if (s.kind !== "supplementary-image") continue;
+      for (const [key, value] of Object.entries(s.consoleEnv)) {
+        consoleEntries.push({ slug: s.slug, key, value });
+      }
+      const list = envByBundle.get(s.bundle) ?? [];
+      for (const [key, value] of Object.entries(s.env)) {
+        list.push({ slug: s.slug, key, value });
+      }
+      envByBundle.set(s.bundle, list);
+    }
+    flagCollisions(
+      consoleEntries,
+      "consoleEnv",
+      "consoleEnv: is merged into the core component's one environment " +
+        "whatever bundle each server is on",
+    );
+    for (const [bundle, entries] of envByBundle) {
+      flagCollisions(
+        entries,
+        "env",
+        `they share the "${bundle}" bundle — one bundle is one container with ` +
+          `one environment, which is the union of its servers' env: maps`,
+      );
+    }
+
     // Bundle occupancy rules.
     const byBundle = new Map<string, typeof cfg.servers>();
     for (const s of cfg.servers) {

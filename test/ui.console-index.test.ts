@@ -41,17 +41,23 @@ roles:
   admin: { servers: ["*"] }
 bundles:
   - name: bundle
+  - name: bundle-bad
 servers:
   - slug: beta
     kind: remote-http
     url: https://beta.example.com/mcp
     headers: { Authorization: "Bearer \${BETA_TOKEN}" }
     entitlements: [admin]
+  # Its OWN bundle. It points at a different bucket than object-store under the
+  # same bare GCS_* names, and two servers declaring one env key with different
+  # values on ONE bundle is a config-time error now (src/config/schema.ts). Two
+  # bundles are two containers, each reading its own environment — which is
+  # exactly what makes the bare names correct here.
   - slug: object-store-bad
     kind: supplementary-image
     title: Broken bucket
     image: ghcr.io/tadasant/strad-bundle:latest
-    bundle: bundle
+    bundle: bundle-bad
     path: /gcs-bad
     entitlements: [admin]
     env:
@@ -100,6 +106,7 @@ const ENV: NodeJS.ProcessEnv = {
   ALLOW_DEV_AUTH: "true",
   ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
   STRAD_BUNDLE_URL_BUNDLE: "http://127.0.0.1:1",
+  STRAD_BUNDLE_URL_BUNDLE_BAD: "http://127.0.0.1:1",
   STRAD_TOKENS: "[]",
 };
 

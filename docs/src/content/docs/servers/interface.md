@@ -173,14 +173,58 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 - A `supplementary-image` is placed in the `core` bundle.
 - A server references a `bundle` that isn't declared under `bundles:`.
 - A `tools:` policy is present but sets neither `allow` nor `deny`.
+- **Two enabled servers declare the same env key with different values, in a
+  scope where one would silently overwrite the other.** See below — the scope is
+  not the same for the two maps.
 
 Note what is deliberately **not** an error: many servers in one bundle, and two
 servers on the same `path` of one bundle. Both are load-bearing — the first is how
 fifteen MCP servers fit in one container, the second is how a read-only and a
 read-write variant share it.
 
+Nor is repeating one env key across servers with the **same value**. That is the
+capability-variant pattern working as designed: `gmail-ro` and `gmail-rw` repeat
+their whole `env:` on purpose, because putting the credential on only one of them
+means disabling *that* one strips it from its sibling. The rule is same key,
+*different* value.
+
 Failing loudly at boot is the point: a misconfigured gateway never comes up
 half-wired.
+
+### `env:` may be bare; `consoleEnv:` must be slug-namespaced
+
+The two maps land on different components, so they collide in different scopes —
+and getting the asymmetry backwards is the easy mistake.
+
+| Map | Lands on | Collides | So a bare name is |
+| --- | --- | --- | --- |
+| `env:` | the server's own **bundle** | within that bundle only | **fine**, unless a sibling on the *same* bundle declares it differently |
+| `consoleEnv:` | the one **`core`** component | **globally**, whatever bundle each server is on | **wrong** as soon as a second server wants the same key |
+
+A bundle is a component is a container is one `process.env` — and `bundles:` is a
+list. So two servers on two bundles may both read a bare `SECRETS_PROJECT_ID` and
+mean different stores: the gateway resolves the private URL **per bundle**
+(`registry.ts`) and the renderer keys its env map by `server.bundle`
+(`appspec.ts`), so even an identical `path:` on each reaches its own container.
+
+`core` has no such fence. `consoleEnvVars()` merges every enabled server's
+`consoleEnv:` into one flat environment, so a second server declaring a bare
+`SECRETS_PROJECT_ID` there makes `/ui/<one-of-them>` render one store's project
+while holding the **other** store's admin service account — a working-looking page
+pointed at the wrong identity. Slug-namespace it
+(`ZIMMER_SECRETS_SECRETS_PROJECT_ID`); `withNamespacedFallback()` in
+`src/ui/resolve.ts` maps it back down to the bare name for that slug alone.
+
+Both halves are enforced, and the error names both servers, the key, the scope,
+and the namespaced spelling that fixes it:
+
+```
+servers "secrets" and "zimmer-secrets" both declare SECRETS_PROJECT_ID under
+env: with different values, and they share the "bundle" bundle — one bundle is
+one container with one environment, which is the union of its servers' env:
+maps. One silently overwrites the other. Give one of them a slug-namespaced
+name (e.g. ZIMMER_SECRETS_SECRETS_PROJECT_ID).
+```
 
 ### What boot does *not* catch: a key that isn't a key
 
