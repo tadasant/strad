@@ -292,22 +292,23 @@ pre-flip counterpart: it counts every name the deployment reads from the store,
 names what is absent, and has a report mode for a migration that moves one server
 per day.
 
-A live rehearsal against staging on 2026-07-31 found the flip blocked on two
-prerequisites, both now confirmed rather than assumed. Staging holds **no
-resolver credential**: `STRAD_PARAMS_PROJECT_ID` and
-`STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON` are absent from its
-`strad-staging-*` secrets, so `store:check` exits 3 and `render-spec` refuses a
-store-backed render. And the flip cannot be partial: `render-spec` stops baking
-the boot keys and `STRAD_TOKENS` becomes required in the store — a JSON array of
-token records, which at the time of the rehearsal could not be stored as a secret
-parameter at all.
+**Staging is no longer one of those deployments.** A live rehearsal on 2026-07-31
+provisioned the resolver identity, seeded `/strad/staging/gateway/static/`, flipped
+`gateway.secrets.provider` and measured the result against a running gateway. An
+earlier pass the same day had concluded the flip was blocked on a missing resolver
+credential and on `STRAD_TOKENS` being unstorable; **both conclusions are retired.**
+The resolver exists and renders, and the base64url encoding (limitation #33) makes
+a token array render like any other value.
 
-The base64url encoding (limitation #33) has since landed and removes that
-impossibility; a token array now renders like any other value. What it leaves is
-an **ordering** requirement. The encoder lives in the core image and in the bundle
-image's write client, so a name seeded by an image that predates it is written as
-raw bytes and refuses to render — and rolling `core` back past it turns everything
-seeded after it into gibberish. Pin both images before seeding one name.
+What the encoding leaves is an **ordering** requirement, not an impossibility. The
+encoder lives in the core image and in the bundle image's write client, so a name
+seeded by an image that predates it is written as raw bytes and refuses to render —
+and rolling `core` back past it turns everything seeded after it into gibberish. Pin
+both images before seeding one name.
+
+Prod has not flipped. The order it must follow, and the three properties staging
+measured, are in
+[Migrating](/operate/secrets/#staging-ran-all-four-steps-and-the-property-holds).
 
 **Undo:** pin both images at or after the encoding change, provision the resolver
 SA and seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
@@ -493,7 +494,7 @@ project IAM admin, which no strad process holds, so it is a human step and is no
 applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
 console's ability to create a secret parameter at all.
 
-### 33. Secret values are base64url in Secret Manager, and the encoding is not yet verified against live Google
+### 33. Secret values are base64url in Secret Manager, and only the boundary is unverified
 
 A secret parameter is created with `parameter-format=JSON`, and `:render` does not
 rebuild that JSON — it splices the secret's raw bytes into the payload **text** and
@@ -532,12 +533,18 @@ parameter written after this change before rolling back past it. Boot is deliber
 lenient so a rollback cannot become an outage, which makes rollback a path people
 actually take.
 
-**No live `:render` has been run against this change.** Everything is proved against
-strad's own double, which now models the failure faithfully — it substitutes
-textually and refuses what `isRenderSafe` refuses — but a model is not the API. That
-is the same class of evidence gap that let the original bug ship: the previous double
-substituted into the parsed object and re-stringified, so it could not fail for any
-input, and the identical value that 400s at Google passed every test here.
+**A live `:render` HAS now been run against this change.** The staging
+runtime-secrets rehearsal seeded `STRAD_TOKENS` — the array of token records that
+motivated the encoding, carrying `"`, `[`, `]`, `{` and `}` — as a secret parameter
+in `strad-secrets-staging`, and it renders. The roster reports `render: 5 of 5
+present name(s) resolved to a value`, and the gateway proves it end to end: under
+`provider: gcp-parameter-store` the boot keys are not baked into the app spec, so
+the only `STRAD_TOKENS` the staging gateway has is the one it renders from the
+store — and `/mcp` authenticates against it. That closes the evidence gap that let
+the original bug ship, where a double substituting into the parsed object could not
+fail for any input.
+
+What is still unverified is the boundary above, not the mechanism.
 
 ### 34. A second parameter store costs a second billed component
 

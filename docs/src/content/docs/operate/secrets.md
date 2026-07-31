@@ -409,7 +409,7 @@ So the order matters, and each step gates the next:
    predates it is written as raw bytes and refuses to render. Publish and pin
    both, then seed — never the other way round. Rolling `core` back past that
    commit afterwards is a data hazard, not a rollback; see
-   [limitation #33](/limitations/#33-secret-values-are-base64url-in-secret-manager-and-the-encoding-is-not-yet-verified-against-live-google).
+   [limitation #33](/limitations/#33-secret-values-are-base64url-in-secret-manager-and-only-the-boundary-is-unverified).
 3. **Seed, then verify by rendering.** `store:check --mode require --resolve`
    is the gate: presence is not resolvability, and this is the only check that
    proves the resolver can actually read what was seeded. The staging deploy runs
@@ -420,10 +420,28 @@ So the order matters, and each step gates the next:
    store.
 4. **Then flip.**
 
-A rehearsal against staging on 2026-07-31 stopped at step 1: staging has no
-resolver credential seeded, so `store:check` exits 3 and a store-backed render
-would refuse. The `secrets` MCP viewer and console admin keys were both present;
-the resolver is the one identity of the three that had never been created.
+### Staging ran all four steps, and the property holds
+
+Staging completed this order on 2026-07-31 and is the worked example. All four
+steps passed, and the three properties the migration exists for were measured
+against a running gateway rather than argued from the code:
+
+- **A seeded `${NAME}` resolves from the store.** `echo`'s
+  `greeting: "${STRAD_ENV}"` returned the store's value, not the container's.
+- **An unseeded `${NAME}` still resolves from the environment.** Deleting the
+  same name from the store returned the container's `STRAD_ENV` instead. This is
+  the `envFallback` no-regression property, and it is observable only at runtime:
+  `preflightSecrets()` runs in `render-spec`, so it constrains the next DEPLOY,
+  not the running process.
+- **A rotated value takes effect with no redeploy.** The name was rewritten in
+  the store with a seed-only dispatch that renders and deploys nothing. Within
+  `ttlSeconds` the running gateway returned the new value, from the same
+  container — the pod's hostname was unchanged across the transition.
+
+`STRAD_TOKENS` was the name step 2 was written for, and it is now proved live:
+seeded as a secret parameter, it renders, and because a store-backed spec does
+not bake the boot keys the staging gateway has no other copy to fall back on. A
+`/mcp` request authenticating against that deployment is an end-to-end read of it.
 
 ## The console index: every server, and whether its secrets are there
 
