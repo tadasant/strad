@@ -1,6 +1,7 @@
 import { tokenStoreFromConfig } from "./auth/index.ts";
 import { assertDevBypassAllowed } from "./auth/dev.ts";
 import { configPathFromEnv, loadConfig } from "./config/load.ts";
+import { ToolSurfaceMonitor } from "./gateway/reachability.ts";
 import { Registry, type Mode } from "./gateway/registry.ts";
 import { createApp } from "./http/app.ts";
 import { loadSecrets } from "./secrets/index.ts";
@@ -115,6 +116,18 @@ async function main(): Promise<void> {
   // readiness endpoint that mirrors it: it is the only seam that can answer "does
   // this ${NAME} resolve?" for a store-backed deployment, where the answer is in
   // the parameter store and in no bag.
+  // Which of the mounted slugs actually serve tools.
+  //
+  // A slug can be configured, entitled, routed and dead, and the only symptom is
+  // an empty `tools/list` that reads exactly like a server with no tools. This
+  // watches for that from inside the process, says so in the logs, and publishes
+  // the answer on /healthz so a deploy can assert on it. It never blocks the
+  // boot and never fails it — see gateway/reachability.ts.
+  const toolSurfaces = new ToolSurfaceMonitor({
+    registry,
+    intervalMs: Number(env.STRAD_TOOL_SURFACE_INTERVAL_MS ?? 60_000),
+  });
+
   const app = createApp({
     config,
     registry,
@@ -123,6 +136,7 @@ async function main(): Promise<void> {
     env,
     secrets,
     secretProvider,
+    toolSurfaces: () => toolSurfaces.snapshot(),
   });
 
   // App Platform: a PUBLIC component sets http_port. An INTERNAL component sets
@@ -144,12 +158,18 @@ async function main(): Promise<void> {
         telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
       }),
     );
+    // AFTER listening, deliberately: the first probe reaches every upstream, and
+    // on a bundle-hosted builtin that upstream is another strad which may still
+    // be coming up. Starting here costs the boot nothing and the interval
+    // catches whatever was not ready yet.
+    toolSurfaces.start();
   });
 
   // App Platform sends SIGTERM and does not wait long. Close cleanly.
   const shutdown = async (signal: string) => {
     console.log(JSON.stringify({ evt: "strad.shutdown", signal }));
     server.close();
+    toolSurfaces.stop();
     await registry.close();
     // Flush telemetry LAST and before exit. When App Platform OOM-kills this
     // container, the final few seconds of memory metrics are the entire

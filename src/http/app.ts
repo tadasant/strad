@@ -25,6 +25,7 @@ import { BYPASS_COOKIE, googlePrincipal } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
 import type { Mode, Registry } from "../gateway/registry.ts";
+import type { ToolSurfaceSnapshot } from "../gateway/reachability.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
@@ -78,6 +79,15 @@ export interface AppOptions {
    * stub that returns an already-verified identity.
    */
   googleProvider?: ConsoleOAuthProvider | null;
+  /**
+   * The last tool-surface observation, for `/healthz`.
+   *
+   * A getter rather than a value, because the monitor re-probes on an interval
+   * and this route must always read the current answer. Absent (and absent from
+   * the response) when nothing is monitoring — a test app, or a mode that
+   * mounts no monitor. See gateway/reachability.ts.
+   */
+  toolSurfaces?: () => ToolSurfaceSnapshot | null;
 }
 
 /** The slice of GoogleOAuthProvider the console actually drives. */
@@ -95,16 +105,36 @@ export function createApp(opts: AppOptions): Express {
   app.use(express.json({ limit: "4mb" }));
 
   // --- health -------------------------------------------------------------
-  // App Platform polls this. Keep it dependency-free: if it checked upstream
-  // MCP servers, a flaky third party would make our component look unhealthy
-  // and get it restarted, which helps nobody.
+  // App Platform polls this. Keep it dependency-free: if it CHECKED upstream
+  // MCP servers here, a flaky third party would make our component look
+  // unhealthy and get it restarted, which helps nobody.
+  //
+  // But listing the slugs and stopping there was its own problem: this route
+  // answered 200 with all 27 names while three of them served no tools at all,
+  // so nothing short of holding a token and polling `tools/list` could tell the
+  // two apart. `toolSurfaces` is the last observation from the background
+  // monitor (gateway/reachability.ts) — read, never taken, so this stays
+  // instant — and `degraded` is the one field a deploy job needs to assert on.
+  //
+  // `ok` stays true regardless. This route is liveness; a degraded upstream is
+  // not a reason to restart core.
   app.get("/healthz", (_req, res) => {
+    const surfaces = opts.toolSurfaces?.() ?? null;
     res.json({
       ok: true,
       mode: opts.mode,
       bundle: env.STRAD_BUNDLE ?? "core",
       env: opts.config.gateway.env,
       servers: opts.registry.slugs,
+      ...(surfaces
+        ? {
+            toolSurfaces: {
+              observedAt: surfaces.observedAt,
+              servers: surfaces.surfaces,
+            },
+            degraded: surfaces.degraded,
+          }
+        : {}),
     });
   });
 

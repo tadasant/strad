@@ -271,7 +271,16 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     );
 
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: await listToolsFor(selected, opts.registry, policies, log),
+      tools: await listToolsFor(
+        selected,
+        opts.registry,
+        policies,
+        log,
+        // Did the CALLER name these servers, or is this "everything I'm
+        // entitled to"? It decides whether a broken upstream is an error or a
+        // smaller toolset. See listToolsFor.
+        requested.length > 0,
+      ),
     }));
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -414,15 +423,31 @@ function elapsedSeconds(startedAt: bigint): number {
  * read-only and read-write slugs alike — so this is where the two diverge. It is
  * the cosmetic half of enforcement; the load-bearing half is on tools/call.
  *
- * One slow upstream must not take down the whole tools/list, so a failing
- * server contributes zero tools and a log line rather than a 500. The client
- * sees a smaller toolset; it does not see a broken gateway.
+ * ## A failing upstream is degraded when the caller took what it was given, and
+ * ## an ERROR when the caller asked for it by name
+ *
+ * `resolveSelection` already draws this line for entitlement: a `?servers=slack`
+ * the token cannot have is a 424, never a silently smaller toolset, because "a
+ * client that asked for slack and got a toolset without Slack in it would look
+ * like a broken Slack integration". Reachability deserves the same answer, and
+ * for a while it did not get it: `?servers=secrets` against a bundle that 404'd
+ * `/secrets` returned `200 {"tools":[]}`, which reads as "that server has no
+ * tools" and is indistinguishable from a server that genuinely offers none. The
+ * failure had to be discovered by polling.
+ *
+ * So: when the request NAMED its servers, an upstream that cannot be listed
+ * fails the request. When it did not — the unfiltered "everything I'm entitled
+ * to" listing, which is a fleet-wide question — one sick server still must not
+ * take down the other twenty-six, so it contributes zero tools and a log line.
+ * That asymmetry is the whole rule. `ToolSurfaceMonitor` is what makes the
+ * degraded case visible without anyone having to ask (see reachability.ts).
  */
 async function listToolsFor(
   selected: string[],
   registry: Registry,
   policies: ToolPolicies,
   log: (event: Record<string, unknown>) => void,
+  explicit: boolean,
 ): Promise<Tool[]> {
   const lists = await Promise.all(
     selected.map(async (slug) => {
@@ -450,9 +475,21 @@ async function listToolsFor(
           JSON.stringify({
             evt: "mcp.list_tools_failed",
             slug,
+            explicit,
             error: err instanceof Error ? err.message : String(err),
           }),
         );
+        if (explicit) {
+          // The upstream's own message is NOT relayed. It is arbitrary text from
+          // someone else's server — the one that motivated this branch was a
+          // full HTML error page — and it would land in a client's error
+          // surface. The slug is ours and is the actionable half.
+          throw new McpError(
+            ErrorCode.InternalError,
+            `server "${slug}" was requested by name but its upstream could not be listed, ` +
+              `so it is serving no tools. This is a failure, not an empty toolset.`,
+          );
+        }
         return [];
       }
     }),

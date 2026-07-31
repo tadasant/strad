@@ -577,7 +577,38 @@ jobs:
           curl -fsS "$HOST/healthz"
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/mcp")
           [ "$code" = "401" ] || { echo "::error::/mcp not gated (got $code)"; exit 1; }
-          echo "OK: staging healthy and /mcp gated."
+
+          # Does every slug actually SERVE something?
+          #
+          # This is the check that was missing. `/healthz` used to answer 200
+          # with all 27 slugs listed while three of them served no tools at all:
+          # the bundle was running an image that predated the `/secrets` mount,
+          # core POSTed to `/secrets`, Express answered 404, and the gateway
+          # turned that into `200 {"tools":[]}`. A green deploy, a healthy app,
+          # and a secrets server that could not place a secret — discoverable
+          # only by holding a token and polling `tools/list`.
+          #
+          # `degraded` is core's own answer (gateway/reachability.ts): the slugs
+          # whose last probe was `unreachable` or `empty`. It converges after a
+          # deploy — core comes up before the bundles do — so poll it rather than
+          # reading it once. A slug still listed at the end is a real fault, and
+          # a red deploy is the point.
+          for i in $(seq 1 30); do
+            degraded=$(curl -fsS "$HOST/healthz" | jq -c '.degraded // "pending"')
+            [ "$degraded" = "[]" ] && break
+            sleep 6
+          done
+          if [ "$degraded" != "[]" ]; then
+            echo "::error::these slugs are mounted but serve NO tools: $degraded"
+            echo "A slug serving nothing answers tools/list with [] and looks like a"
+            echo "server that simply has no tools. Usual cause: the component is"
+            echo "running an image that does not mount the path the slug routes to"
+            echo "(re-run release-bundle-image.yml and redeploy), or the upstream"
+            echo "withheld every tool because a credential it probes did not resolve."
+            curl -fsS "$HOST/healthz" | jq '.toolSurfaces'
+            exit 1
+          fi
+          echo "OK: staging healthy, /mcp gated, and every slug is serving tools."
 
       - name: Report what the secrets credentials can do
         # The secrets surfaces are PROBE-DERIVED: the MCP server lists

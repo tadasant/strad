@@ -127,11 +127,30 @@ intersected with `?servers=`. Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
 
-A slow or failing upstream contributes **zero tools** to `tools/list` (and logs
-it) rather than failing the whole request with a 500. Selection is re-checked at
-`tools/call` time too: `tools/list` filters by the current `?servers=`, but a
-client could call any tool name it saw on a prior request, so authorization is
-re-enforced on the action itself.
+A failing upstream is handled differently depending on **who chose that server**:
+
+- **The request named it** (`?servers=secrets`) — `tools/list` **fails**. A
+  slug the caller asked for by name that answers with an empty toolset is
+  indistinguishable from a server that genuinely has no tools, and that is how a
+  dead `secrets` slug went unnoticed on staging. This is the same posture
+  `?servers=` already had for entitlement, where a server you cannot have is a
+  424 and never a silently smaller toolset.
+- **The request did not** (no `?servers=`, meaning "everything I'm entitled to")
+  — the failing server contributes **zero tools** and a log line, rather than
+  taking the other twenty-six down with it.
+
+Because the second case is still silent to the caller, core watches it from the
+inside: a background **tool-surface monitor**
+(`src/gateway/reachability.ts`) probes every mounted slug on an interval and
+classifies it `ok`, `empty` (answered, offered no tools) or `unreachable`
+(refused, 404'd or timed out). It logs `strad.tool_surface_degraded` when a slug's
+state changes for the worse, and publishes the current answer on
+[`/healthz`](/operate/operations/#endpoints) as `degraded`, which the staging
+deploy asserts is empty.
+
+Selection is re-checked at `tools/call` time too: `tools/list` filters by the
+current `?servers=`, but a client could call any tool name it saw on a prior
+request, so authorization is re-enforced on the action itself.
 
 ## Capability (read-only vs read-write)
 

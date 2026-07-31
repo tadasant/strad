@@ -154,7 +154,11 @@ Manager (masked, into `$GITHUB_ENV` — same skip-vs-error split if none are fou
 renders the spec to `/tmp/spec.json` (never echoed), attaches a durable GHCR pull
 credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` for
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
-`401`).
+`401`, and **`/healthz`'s `degraded` list empty** — every mounted slug is actually
+serving tools). The last of those polls for up to three minutes, because core
+comes up before the bundles do; a slug still listed at the end fails the deploy.
+That check exists because a green deploy of a healthy app once left three slugs
+serving nothing at all — see [Known limitations](/limitations/).
 
 **Before it renders, it reports what the parameter store holds.** Every deploy
 runs `store:check --mode report --resolve` over
@@ -473,7 +477,14 @@ component, and which admin identity each console page resolves to.
   **Disabled** servers are omitted: the page answers "what can I connect to", and
   a connect URL for a disabled server is one the gateway would reject.
 - **`/healthz`** is dependency-free and returns `mode`, `bundle`, `env`, and
-  `servers` — used by the App Platform health check and the deploy smoke test.
+  `servers` — used by the App Platform health check and the deploy smoke test. It
+  also carries `toolSurfaces` and `degraded`: the last observation from the
+  background tool-surface monitor, naming the slugs that are mounted but serving
+  **no tools**. Listing the slugs and stopping there was compatible with three of
+  them being dead, which is exactly what happened. `ok` stays `true` regardless —
+  this route is liveness, and a sick upstream is not a reason for App Platform to
+  restart core. The values are read, never computed on request, so the route
+  stays instant.
 - **`/mcp`** is handled by `app.all("/mcp", …)` and always requires a token.
 - **`/console`**, `/console/login`, `/console/oauth/callback` and
   `/console/logout` are mounted only in `core` mode. Login state — the PKCE

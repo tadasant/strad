@@ -221,14 +221,26 @@ outright. The **bundle** gets none of that: its image is
 
 That is the same failure that took staging down — App Platform may serve a mutable
 tag from whatever it resolved last — one component over, and nothing refuses it.
-It has not bitten yet because `release-bundle-image.yml` moves
-`strad-bundle:latest` on every change to `servers/bundle/**`, so the tag is
-usually fresh.
+
+**It has bitten.** On 2026-07-31 both bundle components were serving an image
+that predated the `/secrets` mount by a week, while a fresh `:latest` sat in the
+registry and the containers had restarted after it was pushed. Three slugs —
+`secrets`, `zimmer-secrets` and `remote-filesystem-tmp-public` — were routed to
+paths that image does not mount. The gateway POSTed to `/secrets`, got a 404, and
+answered the client `200 {"tools":[]}`; `/healthz` said 200 with all 27 slugs
+listed. A secrets server that registers no tools cannot place a secret, and
+nothing in the deployment said so.
 
 The core had an immutable tag to reach for and is already a render-time argument.
 The bundle's tag is a config value, so pinning it means editing 24 `image:` lines
 per release or adding the `bundle_version` input that **#25** declines to add —
 a change to how the bundle is released, not a line in the deploy workflow.
+
+**What detects it now:** not the tag, the consequence. Core probes each slug's
+`tools/list` on an interval and publishes the slugs serving nothing on
+`/healthz` as `degraded`; the staging deploy fails when that list is non-empty.
+That catches a stale image only when the staleness changes a **mount** — an image
+that keeps every path and changes what a tool does is still invisible.
 
 **Undo:** extend the mutable-tag refusal to every image in the rendered spec, and
 resolve `sha-<commit>` for the bundle the way the core already does. Do it with
