@@ -142,6 +142,12 @@ jobs:
     environment: staging
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The image tag is resolved by walking back through history to the
+          # newest commit that published one, so a shallow checkout would have
+          # nothing to walk. 50 is far more than the walk ever needs — it only
+          # skips docs-only commits — and still cheap.
+          fetch-depth: 50
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -236,6 +242,33 @@ jobs:
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "Loaded ${#NAMES[@]} secret(s) from Secret Manager."
 
+      - name: Resolve an immutable core image tag
+        # Only when nothing else already names the image: a branch build has its
+        # own tag, and an explicit `version` is a deliberate pin (a rollback).
+        #
+        # This step exists because the default used to be `:latest`, and a
+        # mutable tag is a deploy whose contents the spec does not determine.
+        # Dispatching this workflow on main at 96015c6 shipped `:latest` and
+        # booted code from before PR #26 — it rejected the current
+        # infra/strad.staging.yaml with a rule that commit had deleted three
+        # weeks earlier, and took staging down. `sha-<commit>` names one commit,
+        # so the image and the config it is handed cannot drift apart.
+        if: ${{ steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.version }}
+        id: coretag
+        env:
+          # A durable token, because this reads a PRIVATE package. The job's
+          # GITHUB_TOKEN can write this repo's packages but the deploy already
+          # depends on GHCR_PULL_TOKEN for the pull, so use the same one.
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          # --first-parent: on main that is the merge history, so the walk skips
+          # a PR's internal commits, none of which ever published an image.
+          git log --first-parent --format=%H -n 50 \
+            | node --experimental-transform-types scripts/resolve-image-tag.ts \
+                --repository tadasant/strad >> "$GITHUB_OUTPUT"
+
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
         # It is written to a file, never echoed — a rendered spec is not log-safe.
@@ -243,7 +276,11 @@ jobs:
         env:
           # A branch build wins over `version`: if we just built this ref, that
           # is unambiguously the code the dispatcher asked to see on staging.
-          CORE_IMAGE: ${{ needs.build.outputs.core_image || format('ghcr.io/tadasant/strad:{0}', inputs.version || 'latest') }}
+          # Then an explicit `version` (the release path, and a rollback pin).
+          # Then the `sha-<commit>` resolved above. There is deliberately no
+          # `latest` fallback left: render-spec refuses a mutable core tag, so a
+          # gap here fails the deploy instead of shipping an unknown image.
+          CORE_IMAGE: ${{ needs.build.outputs.core_image || (inputs.version && format('ghcr.io/tadasant/strad:{0}', inputs.version)) || steps.coretag.outputs.image }}
           # Empty on the release path, which leaves the config's own
           # `image:` lines (…/strad-bundle:latest) untouched.
           BUNDLE_IMAGE: ${{ needs.build.outputs.bundle_image || '' }}

@@ -31,7 +31,10 @@ servers:
     entitlements: [admin]
 `;
 
-function render(args: string[]): {
+function render(
+  args: string[],
+  image = "ghcr.io/tadasant/strad:0.1.38",
+): {
   domains?: { domain: string; type?: string }[];
 } {
   const dir = mkdtempSync(join(tmpdir(), "strad-domains-"));
@@ -45,7 +48,7 @@ function render(args: string[]): {
       "--config",
       cfg,
       "--image",
-      "ghcr.io/tadasant/strad:latest",
+      image,
       "--app",
       "strad-staging",
       ...args,
@@ -61,6 +64,41 @@ function render(args: string[]): {
   );
   return JSON.parse(out);
 }
+
+/** Render, expecting failure, and return what the process said on stderr. */
+function renderStderr(image: string): string {
+  try {
+    render([], image);
+  } catch (err) {
+    // execFileSync puts the child's stderr on the error, not in its message.
+    return String((err as { stderr?: Buffer | string }).stderr ?? err);
+  }
+  throw new Error(`render-spec unexpectedly accepted --image ${image}`);
+}
+
+describe("render-spec image", () => {
+  it("refuses a mutable core tag, which is what shipped old code to staging", () => {
+    // The whole failure: `:latest` rendered fine, deployed fine, and booted a
+    // pre-#26 image that rejected the config it was handed.
+    const stderr = renderStderr("ghcr.io/tadasant/strad:latest");
+    expect(stderr).toMatch(/mutable tag "latest"/);
+    // It must also say what to pass instead, or the operator is stuck.
+    expect(stderr).toMatch(/sha-<commit>/);
+  });
+
+  it("refuses a tag-less ref, which silently means :latest", () => {
+    expect(renderStderr("ghcr.io/tadasant/strad")).toMatch(
+      /mutable tag "latest"/,
+    );
+  });
+
+  it("renders an immutable commit tag", () => {
+    const sha = `sha-${"a".repeat(40)}`;
+    expect(render([], `ghcr.io/tadasant/strad:${sha}`).domains).toEqual([
+      { domain: "staging.strad.tadasant.com", type: "PRIMARY" },
+    ]);
+  });
+});
 
 describe("render-spec domains", () => {
   it("defaults the custom domain from gateway.publicUrl when --domain is omitted", () => {
