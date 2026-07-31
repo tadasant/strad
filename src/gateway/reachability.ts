@@ -1,3 +1,4 @@
+import { event } from "../telemetry/events.ts";
 import { instruments } from "../telemetry/instruments.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
@@ -215,8 +216,10 @@ export class ToolSurfaceMonitor {
   private readonly warn: (event: Record<string, unknown>) => void;
 
   constructor(private readonly opts: MonitorOptions) {
-    this.log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
-    this.warn = opts.warn ?? ((e) => console.error(JSON.stringify(e)));
+    // `event` for both: it routes a `_degraded` evt to stderr itself, and
+    // ships the allowlisted fields to the collector on the way past.
+    this.log = opts.log ?? event;
+    this.warn = opts.warn ?? event;
   }
 
   /** The last observation, or null before the first probe completes. */

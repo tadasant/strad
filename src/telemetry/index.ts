@@ -1,9 +1,12 @@
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { installBrowserTelemetry } from "./browser.ts";
+import { disableEventExport, enableEventExport } from "./events.ts";
 import { resetInstruments } from "./instruments.ts";
 import {
   buildResource,
@@ -27,6 +30,13 @@ export {
   serverAttrs,
   tracer,
 } from "./instruments.ts";
+export {
+  disableEventExport,
+  enableEventExport,
+  event,
+  eventExportEnabled,
+  EXPORTABLE,
+} from "./events.ts";
 export {
   installBrowserTelemetry,
   uninstallBrowserTelemetry,
@@ -66,9 +76,23 @@ export {
  *     the diag logger is pinned to ERROR — enough to see "your collector is
  *     wrong", quiet enough not to bury the app's own logs.
  *
- * Deliberately NOT configured: a log exporter. strad's stdout carries upstream
- * error messages, which are arbitrary text we did not author. Shipping those to
- * an external ingestor would drive straight through the boundary in redact.ts.
+ * ── Logs: strad's OWN events, and only those ─────────────────────────────────
+ *
+ * There is a log exporter, and for a long time there deliberately was not. The
+ * old reasoning was right as far as it went: stdout carries upstream error
+ * messages, which are arbitrary text we did not author, and shipping the stream
+ * wholesale would drive straight through the boundary in redact.ts.
+ *
+ * What that reasoning missed is the cost. The `secrets` slug served zero tools
+ * in production for over a week. `mcp.list_tools_failed` named the failure on
+ * every request, and went to a stream with no ingestor — on App Platform, a log
+ * nobody ships is a log nobody reads. The boundary was intact and the deployment
+ * was broken, invisibly, the whole time.
+ *
+ * So this exports strad's own structured events against a per-event field
+ * ALLOWLIST (see events.ts), never the stdout stream. `error` is on no list; an
+ * event that carries one exports `error.kind` — a word from redact.ts — instead.
+ * stdout is unchanged and still carries everything, in full.
  */
 
 export interface TelemetryHandle {
@@ -135,6 +159,12 @@ export function startTelemetry(
           ),
         }),
       ],
+      // BATCHED, not simple. These are diagnostics, not an audit trail: a
+      // per-record HTTP round trip on the failure path would add latency to
+      // exactly the requests that are already going badly.
+      logRecordProcessors: [
+        new BatchLogRecordProcessor({ exporter: new OTLPLogExporter() }),
+      ],
       // No auto-instrumentation, on purpose. It would monkey-patch http and
       // express to produce spans that are strictly worse than the ones the
       // gateway emits by hand (ours know the server slug, the tool name and the
@@ -148,6 +178,9 @@ export function startTelemetry(
     // registered is permanently the no-op meter, and the metrics would silently
     // never appear. Same reason instruments.ts memoises lazily.
     resetInstruments();
+    // Same ordering rule as the instruments: a logger resolved before the
+    // provider is registered is permanently the no-op logger.
+    enableEventExport(name, "0.1.0");
     const runtime: RuntimeMetricsHandle = startRuntimeMetrics();
 
     if (opts.browser) {
@@ -170,8 +203,10 @@ export function startTelemetry(
       memoryUtilization: runtime.memoryUtilization,
       async shutdown() {
         runtime.stop();
+        disableEventExport();
         // Flush what we have. A container being torn down for OOM is exactly when
-        // the last few seconds of metrics matter most.
+        // the last few seconds of metrics matter most — and the last few log
+        // records are how you find out whether it went quietly.
         await sdk.shutdown().catch(() => {});
       },
     };

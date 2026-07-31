@@ -10,7 +10,7 @@ import {
   buildSecretProvider,
   hydrateBootEnv,
 } from "./secrets/provider/index.ts";
-import { startTelemetry } from "./telemetry/index.ts";
+import { event, startTelemetry } from "./telemetry/index.ts";
 
 async function main(): Promise<void> {
   const env = process.env;
@@ -45,13 +45,11 @@ async function main(): Promise<void> {
   const hydrated = await hydrateBootEnv(secretProvider, mode, env);
   if (hydrated.length > 0) {
     // Names only. Never a value, and never a name paired with one.
-    console.log(
-      JSON.stringify({
-        evt: "strad.secrets_hydrated",
-        provider: secretProvider.name,
-        keys: hydrated,
-      }),
-    );
+    event({
+      evt: "strad.secrets_hydrated",
+      provider: secretProvider.name,
+      keys: hydrated,
+    });
   }
 
   // Telemetry starts before the registry connects to anything and before we
@@ -152,18 +150,16 @@ async function main(): Promise<void> {
   const port = Number(env.PORT ?? 8080);
 
   const server = app.listen(port, () => {
-    console.log(
-      JSON.stringify({
-        evt: "strad.listening",
-        port,
-        mode,
-        bundle: bundleName ?? "core",
-        env: config.gateway.env,
-        servers: registry.slugs,
-        tokens: tokenCount,
-        telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
-      }),
-    );
+    event({
+      evt: "strad.listening",
+      port,
+      mode,
+      bundle: bundleName ?? "core",
+      env: config.gateway.env,
+      servers: registry.slugs,
+      tokens: tokenCount,
+      telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
+    });
     // AFTER listening, deliberately: the first probe reaches every upstream, and
     // on a bundle-hosted builtin that upstream is another strad which may still
     // be coming up. Starting here costs the boot nothing and the interval

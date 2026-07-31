@@ -1,6 +1,12 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { metrics } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
 import {
   AggregationTemporality,
   InMemoryMetricExporter,
@@ -21,7 +27,12 @@ import {
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
-import { resetInstruments } from "../src/telemetry/index.ts";
+import {
+  disableEventExport,
+  enableEventExport,
+  event,
+  resetInstruments,
+} from "../src/telemetry/index.ts";
 
 /**
  * The staging failure, reproduced end to end.
@@ -488,6 +499,62 @@ describe("the metric, which is the half that leaves the container", () => {
       await reader.shutdown().catch(() => {});
       metrics.disable();
       resetInstruments();
+    }
+  });
+});
+
+describe("the exported log, which is the other half", () => {
+  // The `mcp.list_tools_failed` line is the one that named this failure on every
+  // request for a week and went nowhere. It now ships — but its `error` field is
+  // a whole HTML page from someone else's Express, so what ships is the
+  // CLASSIFICATION and never the text. stdout still gets both.
+  it("ships the failure event with error.kind, and none of the upstream's page", async () => {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    logs.disable();
+    logs.setGlobalLoggerProvider(provider);
+    enableEventExport("strad-test", "0.0.0");
+
+    try {
+      const client = await connect("stale-mount");
+      await expect(client.listTools()).rejects.toThrow();
+      await client.close();
+
+      const records = exporter.getFinishedLogRecords();
+      const failed = records.find((r) => r.body === "mcp.list_tools_failed");
+      expect(failed).toBeDefined();
+      expect(failed?.attributes["slug"]).toBe("stale-mount");
+      expect(failed?.attributes["explicit"]).toBe(true);
+      // The classification, from redact.ts's fixed vocabulary.
+      expect(failed?.attributes["error.kind"]).toBe("upstream_error");
+      // NOT the message. Not truncated, not escaped — absent.
+      expect(failed?.attributes).not.toHaveProperty("error");
+      expect(JSON.stringify(records)).not.toMatch(/DOCTYPE|Cannot POST|<pre>/i);
+    } finally {
+      disableEventExport();
+      await provider.shutdown().catch(() => {});
+      logs.disable();
+    }
+  });
+
+  it("does not ship an event that is not on the allowlist", async () => {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    logs.disable();
+    logs.setGlobalLoggerProvider(provider);
+    enableEventExport("strad-test", "0.0.0");
+
+    try {
+      event({ evt: "some.event.nobody.reviewed", secret: "should-not-ship" });
+      expect(exporter.getFinishedLogRecords()).toHaveLength(0);
+    } finally {
+      disableEventExport();
+      await provider.shutdown().catch(() => {});
+      logs.disable();
     }
   });
 });

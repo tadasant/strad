@@ -25,6 +25,7 @@ import type { StradConfig } from "../config/schema.ts";
 import {
   argShape,
   errorKind,
+  event,
   instruments,
   resultShape,
   tracer,
@@ -83,7 +84,10 @@ export interface McpHandlerOptions {
 
 export function createMcpHandler(opts: McpHandlerOptions) {
   const env = opts.env ?? process.env;
-  const log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
+  // `event`, not a bare console.log: the auth and 424 lines are on the export
+  // allowlist, so they reach the obs stack as well as stdout. Still injectable,
+  // because a test wants the payload rather than the stream.
+  const log = opts.log ?? event;
 
   // Compiled once: the policy is a property of the config, not of the request.
   const policies = compileToolPolicies(opts.config);
@@ -502,14 +506,13 @@ async function listToolsFor(
           .filter((t) => toolAllowed(policy, t.name))
           .map((t) => ({ ...t, name: namespaced(slug, t.name) }));
       } catch (err) {
-        console.error(
-          JSON.stringify({
-            evt: "mcp.list_tools_failed",
-            slug,
-            explicit: Boolean(explicit),
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
+        event({
+          evt: "mcp.list_tools_failed",
+          slug,
+          explicit: Boolean(explicit),
+          // Stays on stdout in full; the exporter substitutes `error.kind`.
+          error: err instanceof Error ? err.message : String(err),
+        });
         if (explicit) {
           explicit.onUnlistable(slug);
           // The upstream's own message is NOT relayed. It is arbitrary text from
@@ -548,13 +551,11 @@ async function listResourcesFor(
       try {
         return await adapter.listResources();
       } catch (err) {
-        console.error(
-          JSON.stringify({
-            evt: "mcp.list_resources_failed",
-            slug,
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
+        event({
+          evt: "mcp.list_resources_failed",
+          slug,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return [];
       }
     }),
