@@ -1027,10 +1027,11 @@ fix.
 
 **What now detects it.** Not the tag — the consequence. Core probes every mounted
 slug's `tools/list` on an interval (`src/gateway/reachability.ts`), logs
-`strad.tool_surface_degraded` for any slug that is `unreachable` or `empty`, and
-publishes the list on `/healthz` as `degraded`; the staging deploy fails if that
-list is non-empty three minutes after the flip. A stale bundle image no longer
-deploys green. It still deploys.
+`strad.tool_surface_degraded` when a slug's state changes to `unreachable` or
+`empty`, and publishes the roster on `/healthz`. The staging deploy polls for
+three minutes after the flip and fails if a slug of a kind we DEPLOY is
+`unreachable` — a third-party `remote-http` having a bad afternoon is annotated,
+not fatal. A stale bundle image no longer deploys green. It still deploys.
 
 **Undo.** Extend `assertImmutableCoreImage` to every image in the rendered spec,
 and give `deploy-staging.yml` the same `sha-` resolution for the bundle that it

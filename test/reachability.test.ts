@@ -48,6 +48,12 @@ servers:
     bundle: bundle
     path: /not-mounted
     entitlements: [admin]
+  - slug: policy-emptied
+    kind: builtin
+    module: "./servers/echo.js"
+    entitlements: [admin]
+    tools:
+      allow: [a_tool_this_server_does_not_have]
 `);
 
 const admin = mintToken({ env: "test", label: "admin", roles: ["admin"] });
@@ -152,8 +158,22 @@ describe("the unfiltered listing", () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.length).toBeGreaterThan(0);
-    expect(tools.every((t) => t.name.startsWith("healthy__"))).toBe(true);
+    expect(tools.some((t) => t.name.startsWith("healthy__"))).toBe(true);
     expect(tools.some((t) => t.name.startsWith("stale-mount__"))).toBe(false);
+    await client.close();
+  });
+});
+
+describe("the boundary of the hard failure", () => {
+  // Where the new rule STOPS. `policy-emptied` answers tools/list perfectly
+  // well and its `tools:` allow-list then filters every tool away, so the
+  // caller gets an empty list — and that is correct. The failure is a listing
+  // that THREW, not a listing that came back short; conflating them would turn
+  // every deny-everything policy into a 500.
+  it("a named server that answers with no tools is an empty list, not an error", async () => {
+    const client = await connect("policy-emptied");
+    const { tools } = await client.listTools();
+    expect(tools).toEqual([]);
     await client.close();
   });
 });
@@ -168,11 +188,41 @@ describe("probeToolSurfaces", () => {
 
     expect(byslug.get("healthy")?.state).toBe("ok");
     expect(byslug.get("healthy")?.tools).toBeGreaterThan(0);
+    expect(byslug.get("healthy")?.kind).toBe("builtin");
     expect(byslug.get("stale-mount")?.state).toBe("unreachable");
     expect(byslug.get("stale-mount")?.tools).toBe(0);
+    // The kind is what lets the deploy gate tell "our component is broken" from
+    // "someone else's server is having an afternoon".
+    expect(byslug.get("stale-mount")?.kind).toBe("supplementary-image");
     expect(snapshot.degraded).toEqual(["stale-mount"]);
     // The upstream's message is available to the LOGGER and to nobody else.
     expect(failures.get("stale-mount")).toMatch(/stale-mount/);
+  });
+
+  it("classifies an upstream that never answers as unreachable, on its own deadline", async () => {
+    // A wedged upstream, not a failing one: listTools() never settles. Without
+    // withDeadline the probe hangs and the monitor silently stops reporting —
+    // the failure mode it exists to catch.
+    const wedged = {
+      slugs: ["wedged"],
+      get: () => ({
+        slug: "wedged",
+        kind: "remote-http" as const,
+        listTools: () => new Promise<never>(() => {}),
+        callTool: () => Promise.reject(new Error("unused")),
+        close: () => Promise.resolve(),
+      }),
+      has: () => true,
+      close: () => Promise.resolve(),
+    };
+    const started = Date.now();
+    const { snapshot, failures } = await probeToolSurfaces({
+      registry: wedged as unknown as Registry,
+      timeoutMs: 100,
+    });
+    expect(snapshot.surfaces[0]?.state).toBe("unreachable");
+    expect(failures.get("wedged")).toMatch(/did not answer within 100ms/);
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 
   it("calls a server that answers with no tools `empty`, not `unreachable`", async () => {
@@ -237,7 +287,126 @@ describe("ToolSurfaceMonitor", () => {
     const monitor = new ToolSurfaceMonitor({ registry });
     expect(monitor.snapshot()).toBeNull();
   });
+
+  it("logs a recovery when a slug starts serving again", async () => {
+    let dead = true;
+    const flapping = {
+      slugs: ["flapping"],
+      get: () => ({
+        slug: "flapping",
+        kind: "supplementary-image" as const,
+        listTools: () =>
+          dead
+            ? Promise.reject(new Error("upstream refused"))
+            : Promise.resolve([{ name: "t", inputSchema: { type: "object" } }]),
+        callTool: () => Promise.reject(new Error("unused")),
+        close: () => Promise.resolve(),
+      }),
+      has: () => true,
+      close: () => Promise.resolve(),
+    };
+    const logs: Record<string, unknown>[] = [];
+    const monitor = new ToolSurfaceMonitor({
+      registry: flapping as unknown as Registry,
+      log: (e) => logs.push(e),
+      warn: () => {},
+    });
+
+    await monitor.refresh();
+    dead = false;
+    await monitor.refresh();
+
+    const recovered = logs.find(
+      (l) => l.evt === "strad.tool_surface_recovered",
+    );
+    expect(recovered?.slug).toBe("flapping");
+    expect(monitor.snapshot()?.degraded).toEqual([]);
+  });
+
+  it("keeps probing on a timer, and stops when told to", async () => {
+    let probes = 0;
+    const counting = {
+      slugs: ["counted"],
+      get: () => ({
+        slug: "counted",
+        kind: "builtin" as const,
+        listTools: () => {
+          probes += 1;
+          return Promise.resolve([]);
+        },
+        callTool: () => Promise.reject(new Error("unused")),
+        close: () => Promise.resolve(),
+      }),
+      has: () => true,
+      close: () => Promise.resolve(),
+    };
+    const monitor = new ToolSurfaceMonitor({
+      registry: counting as unknown as Registry,
+      // Degraded (the slug is `empty`), so the RETRY interval is the one in
+      // play — which is the interval a deploy converges on.
+      retryIntervalMs: 5,
+      intervalMs: 60_000,
+      log: () => {},
+      warn: () => {},
+    });
+
+    monitor.start();
+    await waitFor(() => probes >= 3);
+    monitor.stop();
+
+    const afterStop = probes;
+    await new Promise((r) => setTimeout(r, 40));
+    // stop() means stop. A tick that was in flight must not re-arm.
+    expect(probes).toBe(afterStop);
+  });
+
+  it("falls back to the steady interval rather than fast-probing a fault forever", async () => {
+    let probes = 0;
+    const alwaysEmpty = {
+      slugs: ["counted"],
+      get: () => ({
+        slug: "counted",
+        kind: "builtin" as const,
+        listTools: () => {
+          probes += 1;
+          return Promise.resolve([]);
+        },
+        callTool: () => Promise.reject(new Error("unused")),
+        close: () => Promise.resolve(),
+      }),
+      has: () => true,
+      close: () => Promise.resolve(),
+    };
+    const monitor = new ToolSurfaceMonitor({
+      registry: alwaysEmpty as unknown as Registry,
+      retryIntervalMs: 5,
+      retryProbes: 3,
+      // Long enough that reaching it means the fast retries were exhausted.
+      intervalMs: 60_000,
+      log: () => {},
+      warn: () => {},
+    });
+
+    monitor.start();
+    await waitFor(() => probes >= 3);
+    await new Promise((r) => setTimeout(r, 60));
+    monitor.stop();
+    // Three degraded probes spend the budget; the fourth waits out the steady
+    // interval, which this test is far too short to reach.
+    expect(probes).toBe(3);
+  });
 });
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("condition never became true");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 describe("/healthz", () => {
   it("names the slugs that are serving nothing, instead of only listing them", async () => {
@@ -246,7 +415,10 @@ describe("/healthz", () => {
       ok: boolean;
       servers: string[];
       degraded: string[];
-      toolSurfaces: { observedAt: string; servers: { slug: string }[] };
+      toolSurfaces: {
+        observedAt: string;
+        servers: { slug: string; state: string; kind: string }[];
+      };
     };
 
     // Still 200, still liveness: a degraded upstream is not a reason for App
@@ -255,8 +427,20 @@ describe("/healthz", () => {
     expect(body.ok).toBe(true);
     expect(body.servers).toContain("stale-mount");
     expect(body.degraded).toEqual(["stale-mount"]);
-    expect(body.toolSurfaces.servers).toHaveLength(2);
+    expect(body.toolSurfaces.servers).toHaveLength(3);
     expect(body.toolSurfaces.observedAt).toMatch(/^\d{4}-/);
+    expect(
+      body.toolSurfaces.servers.find((s) => s.slug === "stale-mount"),
+    ).toMatchObject({ state: "unreachable", kind: "supplementary-image" });
+  });
+
+  it("puts no upstream-authored text on this public, unauthenticated route", async () => {
+    // The probe that motivated this file failed with a whole HTML error page
+    // from someone else's Express. It belongs in our logs and nowhere else —
+    // this route needs no token.
+    const res = await fetch(`${baseUrl}/healthz`);
+    const raw = JSON.stringify(await res.json());
+    expect(raw).not.toMatch(/DOCTYPE|Cannot POST|<pre>/i);
   });
 
   it("omits the surface fields entirely when nothing is monitoring", async () => {

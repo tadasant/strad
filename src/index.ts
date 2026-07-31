@@ -116,6 +116,7 @@ async function main(): Promise<void> {
   // readiness endpoint that mirrors it: it is the only seam that can answer "does
   // this ${NAME} resolve?" for a store-backed deployment, where the answer is in
   // the parameter store and in no bag.
+
   // Which of the mounted slugs actually serve tools.
   //
   // A slug can be configured, entitled, routed and dead, and the only symptom is
@@ -123,9 +124,14 @@ async function main(): Promise<void> {
   // watches for that from inside the process, says so in the logs, and publishes
   // the answer on /healthz so a deploy can assert on it. It never blocks the
   // boot and never fails it — see gateway/reachability.ts.
+  //
+  // The interval is an escape hatch, not configuration anyone should need. It is
+  // VALIDATED rather than coerced: `Number("")` is 0 and `Number("60s")` is NaN,
+  // and setTimeout clamps both to 1ms — a typo would turn this into a hot loop
+  // probing every upstream continuously.
   const toolSurfaces = new ToolSurfaceMonitor({
     registry,
-    intervalMs: Number(env.STRAD_TOOL_SURFACE_INTERVAL_MS ?? 60_000),
+    intervalMs: positiveMs(env.STRAD_TOOL_SURFACE_INTERVAL_MS, 60_000),
   });
 
   const app = createApp({
@@ -168,8 +174,11 @@ async function main(): Promise<void> {
   // App Platform sends SIGTERM and does not wait long. Close cleanly.
   const shutdown = async (signal: string) => {
     console.log(JSON.stringify({ evt: "strad.shutdown", signal }));
-    server.close();
+    // BEFORE the adapters it probes through: a probe still in flight when
+    // registry.close() lands would fail against a closed adapter and write a
+    // "this slug serves NOTHING" line on the way out the door.
     toolSurfaces.stop();
+    server.close();
     await registry.close();
     // Flush telemetry LAST and before exit. When App Platform OOM-kills this
     // container, the final few seconds of memory metrics are the entire
@@ -181,6 +190,13 @@ async function main(): Promise<void> {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+}
+
+/** A positive, finite millisecond count, or the default. Never NaN, never 0. */
+function positiveMs(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 main().catch((err: unknown) => {

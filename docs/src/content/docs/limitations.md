@@ -238,9 +238,10 @@ a change to how the bundle is released, not a line in the deploy workflow.
 
 **What detects it now:** not the tag, the consequence. Core probes each slug's
 `tools/list` on an interval and publishes the slugs serving nothing on
-`/healthz` as `degraded`; the staging deploy fails when that list is non-empty.
-That catches a stale image only when the staleness changes a **mount** — an image
-that keeps every path and changes what a tool does is still invisible.
+`/healthz`; the staging deploy fails when a component **we deploy** is
+unreachable. That catches a stale image only when the staleness changes a
+**mount** — an image that keeps every path and changes what a tool does is still
+invisible.
 
 **Undo:** extend the mutable-tag refusal to every image in the rendered spec, and
 resolve `sha-<commit>` for the bundle the way the core already does. Do it with

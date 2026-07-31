@@ -279,7 +279,23 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         // Did the CALLER name these servers, or is this "everything I'm
         // entitled to"? It decides whether a broken upstream is an error or a
         // smaller toolset. See listToolsFor.
-        requested.length > 0,
+        requested.length > 0
+          ? {
+              // A JSON-RPC error rides inside a 200, so the request-level
+              // signal cannot come from the status code. Without this the
+              // failure this whole change exists to make loud would be
+              // invisible in the request metrics — visible only as the
+              // upstream-error counter the adapter's hop() already bumps.
+              onUnlistable: (slug: string) => {
+                setOutcome("upstream_unlistable");
+                span.setAttribute("mcp.list_tools.unlistable", slug);
+                inst.unavailable.add(1, {
+                  "strad.mode": opts.mode,
+                  "mcp.server": slug,
+                });
+              },
+            }
+          : undefined,
       ),
     }));
 
@@ -441,13 +457,28 @@ function elapsedSeconds(startedAt: bigint): number {
  * take down the other twenty-six, so it contributes zero tools and a log line.
  * That asymmetry is the whole rule. `ToolSurfaceMonitor` is what makes the
  * degraded case visible without anyone having to ask (see reachability.ts).
+ *
+ * ANY named server failing fails the listing, not all of them, and that is the
+ * uncomfortable half. `?servers=slack,secrets` loses Slack's tools because
+ * `secrets` is down. It is deliberate and it is the same rule
+ * `resolveSelection` applies to the same query string one step earlier — an
+ * unavailable member there fails the request rather than narrowing it, and a
+ * caller already has to handle that. The alternative, dropping just the broken
+ * one, is precisely the behaviour that hid a dead `secrets` slug. In practice
+ * the multi-slug case is rare: the console hands out one `?servers=<slug>` per
+ * server (src/ui/landing.ts).
+ *
+ * NOTE the boundary. This fires when `listTools()` THROWS. A named server that
+ * answers with an empty list is still an empty list — that is a server with no
+ * tools, and it is `ToolSurfaceMonitor`'s job to notice, not this one's.
  */
 async function listToolsFor(
   selected: string[],
   registry: Registry,
   policies: ToolPolicies,
   log: (event: Record<string, unknown>) => void,
-  explicit: boolean,
+  /** Present exactly when the caller named its servers. See above. */
+  explicit?: { onUnlistable: (slug: string) => void },
 ): Promise<Tool[]> {
   const lists = await Promise.all(
     selected.map(async (slug) => {
@@ -475,11 +506,12 @@ async function listToolsFor(
           JSON.stringify({
             evt: "mcp.list_tools_failed",
             slug,
-            explicit,
+            explicit: Boolean(explicit),
             error: err instanceof Error ? err.message : String(err),
           }),
         );
         if (explicit) {
+          explicit.onUnlistable(slug);
           // The upstream's own message is NOT relayed. It is arbitrary text from
           // someone else's server — the one that motivated this branch was a
           // full HTML error page — and it would land in a client's error

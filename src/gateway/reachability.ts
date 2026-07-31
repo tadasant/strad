@@ -1,3 +1,4 @@
+import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
 /**
@@ -20,10 +21,15 @@ import type { Registry } from "./registry.ts";
  *
  * `unreachable` is an outage or a routing fault — the upstream refused, 404'd or
  * timed out. `empty` is a server that answered and offered no tools, which is
- * legal but is nearly always a credential the upstream declined to probe (see
- * servers/secrets/shared/src/capabilities.ts) or a `tools:` allow-list that
- * matched nothing. `ok` is a slug with a tool on it. Collapsing the first two
- * into "unhealthy" would send someone to the wrong page.
+ * legal but is nearly always a credential the upstream declined to grant, on a
+ * server that derives its tool surface from a live IAM probe (see
+ * servers/secrets/shared/src/capabilities.ts). `ok` is a slug with a tool on it.
+ * Collapsing the first two into "unhealthy" would send someone to the wrong page.
+ *
+ * `kind` rides along because the three are not equally actionable: a
+ * `supplementary-image` that cannot be reached is a component WE deploy and is a
+ * deploy failure, while a `remote-http` on the public internet having a bad
+ * afternoon is somebody else's. The deploy gate filters on it.
  *
  * ## What it will not do
  *
@@ -37,6 +43,14 @@ import type { Registry } from "./registry.ts";
  * snapshot is served on a public, unauthenticated route, and the message on the
  * probe that motivated this file was a whole HTML error page from someone else's
  * Express. Same rule as gateway/bundle-presence.ts — the status, not the body.
+ * What IS public is a state word and a count, about slugs `/healthz` already
+ * named; the tool NAMES still require a token.
+ *
+ * **It does not apply the `tools:` policy.** This measures what the UPSTREAM
+ * serves, not what a given slug's clients see, so a slug whose allow-list
+ * filtered every tool away reads `ok` here. That case has its own signal —
+ * `mcp.policy_unmatched_tools` on the listing path — and conflating the two
+ * would make one number answer two questions.
  */
 
 export type SurfaceState = "ok" | "empty" | "unreachable";
@@ -46,6 +60,8 @@ export interface ToolSurface {
   state: SurfaceState;
   /** How many tools the slug offered. Zero for anything but `ok`. */
   tools: number;
+  /** Ours to fix, or a third party's. See the header. */
+  kind: ServerAdapter["kind"] | "unmounted";
 }
 
 export interface ToolSurfaceSnapshot {
@@ -85,18 +101,19 @@ export async function probeToolSurfaces(
       const adapter = opts.registry.get(slug);
       if (!adapter) {
         failures.set(slug, "the registry mounted no adapter for this slug");
-        return { slug, state: "unreachable", tools: 0 };
+        return { slug, state: "unreachable", tools: 0, kind: "unmounted" };
       }
       try {
-        const tools = await withDeadline(adapter.listTools(), timeoutMs, slug);
+        const tools = await withDeadline(adapter.listTools(), timeoutMs);
         return {
           slug,
           state: tools.length > 0 ? "ok" : "empty",
           tools: tools.length,
+          kind: adapter.kind,
         };
       } catch (err) {
         failures.set(slug, err instanceof Error ? err.message : String(err));
-        return { slug, state: "unreachable", tools: 0 };
+        return { slug, state: "unreachable", tools: 0, kind: adapter.kind };
       }
     }),
   );
@@ -119,22 +136,14 @@ export async function probeToolSurfaces(
  * monitor that can hang is a monitor that stops reporting, which is the failure
  * mode it exists to catch.
  */
-function withDeadline<T>(
-  work: Promise<T>,
-  timeoutMs: number,
-  slug: string,
-): Promise<T> {
+function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout;
   return Promise.race([
     work,
     new Promise<never>((_, reject) => {
       timer = setTimeout(
         () =>
-          reject(
-            new Error(`tools/list did not answer within ${timeoutMs}ms`, {
-              cause: slug,
-            }),
-          ),
+          reject(new Error(`tools/list did not answer within ${timeoutMs}ms`)),
         timeoutMs,
       );
       timer.unref?.();
@@ -154,12 +163,25 @@ export interface MonitorOptions extends ProbeOptions {
    * interval to watch it converge.
    */
   retryIntervalMs?: number;
+  /**
+   * How many consecutive degraded probes get the fast interval before it gives
+   * up and falls back to `intervalMs`.
+   *
+   * Bounded, because the fast interval exists for a deploy converging in the
+   * next couple of minutes — not for a fault that lasts a week. The one that
+   * motivated this file lasted seven days; at 10s and no bound that is 60,000
+   * `tools/list` round trips, most of them at third parties, to re-learn a fact
+   * nothing had changed.
+   */
+  retryProbes?: number;
   log?: (event: Record<string, unknown>) => void;
   warn?: (event: Record<string, unknown>) => void;
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_RETRY_INTERVAL_MS = 10_000;
+/** ~2 minutes of fast retries, which covers a deploy and not much else. */
+const DEFAULT_RETRY_PROBES = 12;
 
 /**
  * Keeps a current answer to "which slugs serve nothing", and says so out loud.
@@ -168,16 +190,26 @@ const DEFAULT_RETRY_INTERVAL_MS = 10_000;
  * liveness probe and must not wait on 27 upstreams — it reads the last snapshot
  * and returns immediately.
  *
- * Logging is on CHANGE, not on every tick: a slug that has been dead for six
- * hours should not have written 360 identical lines, and the current state is
- * always readable from `/healthz` anyway. The first probe always logs, so a boot
- * that comes up degraded says so in the logs of that boot.
+ * Everything it logs is on CHANGE, not on every tick — a per-slug line when a
+ * slug's state moves, and the summary when the degraded SET moves. A slug that
+ * has been dead for six hours should not have written 2,000 identical lines, and
+ * the current state is readable from `/healthz` at any time anyway. The first
+ * probe always logs both, so a boot that comes up degraded says so in the logs
+ * of that boot.
  */
 export class ToolSurfaceMonitor {
   private current: ToolSurfaceSnapshot | null = null;
   private previous = new Map<string, SurfaceState>();
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  /**
+   * Bumped by every start()/stop(). A tick from a previous run whose refresh()
+   * was still in flight when stop() landed would otherwise re-arm itself against
+   * a monitor that has since been restarted, and the two chains would both tick.
+   */
+  private generation = 0;
+  private consecutiveDegraded = 0;
+  private lastSummary: string | null = null;
   private readonly log: (event: Record<string, unknown>) => void;
   private readonly warn: (event: Record<string, unknown>) => void;
 
@@ -227,15 +259,20 @@ export class ToolSurfaceMonitor {
               "A client selecting it sees an empty toolset. Check that the component " +
               "is running an image that mounts the path this slug routes to."
             : "this slug answered tools/list with no tools, so it serves NOTHING. " +
-              "Either its upstream withheld every tool (a credential it probes may " +
-              "not resolve) or its `tools:` allow-list matched nothing.",
+              "Its upstream withheld every tool it has — on a server that derives " +
+              "its surface from a live credential probe, that means the credential " +
+              "did not grant what the probe asked about.",
         ...(failures.has(surface.slug)
           ? { detail: failures.get(surface.slug) }
           : {}),
       });
     }
 
-    if (first || snapshot.degraded.length > 0) {
+    // The SET, not its length: `a` recovering while `b` dies is a change worth a
+    // line, and two degraded slugs for six hours is not.
+    const summary = snapshot.degraded.join(",");
+    if (first || summary !== this.lastSummary) {
+      this.lastSummary = summary;
       this.log({
         evt: "strad.tool_surface",
         observedAt: snapshot.observedAt,
@@ -244,6 +281,9 @@ export class ToolSurfaceMonitor {
         degraded: snapshot.degraded,
       });
     }
+
+    this.consecutiveDegraded =
+      snapshot.degraded.length > 0 ? this.consecutiveDegraded + 1 : 0;
 
     return snapshot;
   }
@@ -258,16 +298,13 @@ export class ToolSurfaceMonitor {
   start(): void {
     if (this.running) return;
     this.running = true;
+    const generation = ++this.generation;
     const tick = (): void => {
       void this.refresh()
         .catch(() => {})
         .finally(() => {
-          if (!this.running) return;
-          const degraded = (this.current?.degraded.length ?? 0) > 0;
-          const delay = degraded
-            ? (this.opts.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS)
-            : (this.opts.intervalMs ?? DEFAULT_INTERVAL_MS);
-          const timer = setTimeout(tick, delay);
+          if (!this.running || this.generation !== generation) return;
+          const timer = setTimeout(tick, this.nextDelay());
           timer.unref?.();
           this.timer = timer;
         });
@@ -275,8 +312,24 @@ export class ToolSurfaceMonitor {
     tick();
   }
 
+  /**
+   * Fast while a deploy might still be converging, then steady.
+   *
+   * Falling back rather than staying fast is the whole point of `retryProbes`:
+   * a fault that has survived two minutes of retries is not going to be fixed by
+   * a third, and 27 upstreams do not need asking every ten seconds about it.
+   */
+  private nextDelay(): number {
+    const degraded = (this.current?.degraded.length ?? 0) > 0;
+    const budget = this.opts.retryProbes ?? DEFAULT_RETRY_PROBES;
+    return degraded && this.consecutiveDegraded < budget
+      ? (this.opts.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS)
+      : (this.opts.intervalMs ?? DEFAULT_INTERVAL_MS);
+  }
+
   stop(): void {
     this.running = false;
+    this.generation += 1;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
