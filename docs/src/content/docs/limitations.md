@@ -344,6 +344,13 @@ whole namespace with it.
 Run [`store:check --resolve`](/operate/secrets/#is-the-namespace-complete-store-check)
 before a flip; it renders what it found and names anything that did not.
 
+`scripts/seed-store.ts` takes `--only NAME` and `--exclude NAME`, so a seeding run
+can be scoped around a name rather than seeding it and then deleting it back out.
+That narrows what is written and deliberately not the read-back, which still
+resolves the whole namespace. It is a way to work around this entry, not a fix for
+it — neither way of getting an un-renderable parameter is caused by seeding too
+much.
+
 **Undo:** collect per-parameter failures in `resolve()` and throw one error naming
 every name that could not render, rather than the first. That keeps the failure
 whole while making the diagnosis a single line.
