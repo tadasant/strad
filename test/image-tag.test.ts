@@ -353,6 +353,7 @@ const REGISTRY_STUB = new URL("./fixtures/registry-stub.mjs", import.meta.url)
 function runResolver(
   repo: string,
   publishedTag: string,
+  extraArgs: string[] = [],
 ): { status: number; stdout: string; stderr: string } {
   const shas = execFileSync(
     "git",
@@ -368,6 +369,7 @@ function runResolver(
       SCRIPT,
       "--repository",
       "tadasant/strad",
+      ...extraArgs,
     ],
     {
       cwd: repo,
@@ -429,6 +431,45 @@ describe("scripts/resolve-image-tag.ts", () => {
     expect(out.stderr).not.toMatch(/shallow clone|fatal/);
     expect(out.status).toBe(0);
     expect(out.stdout).toContain(`image=ghcr.io/tadasant/strad:sha-${head}`);
+  });
+
+  it("--kind bundle walks past a commit that touched no baked tree", () => {
+    // End to end, through the real script, with the REAL `paths:` filter — the
+    // script reads it from its own checkout (not the scratch repo's), which is
+    // the point of resolving that path against `import.meta.url`.
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    const bundle = r.commit("servers/secrets/shared/src/tools.ts", "secrets");
+    r.commit("src/gateway/router.ts", "gateway only");
+    const out = runResolver(r.dir, `sha-${bundle}`, ["--kind", "bundle"]);
+    expect(out.status).toBe(0);
+    expect(out.stdout).toContain(`image=ghcr.io/tadasant/strad:sha-${bundle}`);
+    // Ordinary news for the bundle, not a ::warning:: — most commits bake nothing.
+    expect(out.stderr).toContain("touched no tree the bundle image bakes");
+    expect(out.stderr).not.toContain("::warning::");
+  });
+
+  it("--kind bundle HARD STOPS on a commit that did touch a baked tree", () => {
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    r.commit("servers/fetchpet/shared/src/x.ts", "a baked tree, unbuilt");
+    const out = runResolver(r.dir, "sha-nothing-is-published", [
+      "--kind",
+      "bundle",
+    ]);
+    expect(out.status).toBe(1);
+    expect(out.stderr).toContain("changed a tree the bundle image bakes");
+    // The BUNDLE's remedy, not the core's.
+    expect(out.stderr).toContain("release-bundle-image.yml");
+    expect(out.stderr).toContain("bundle_version");
+  });
+
+  it("rejects a --kind it does not implement instead of guessing", () => {
+    const r = scratchRepo();
+    r.commit("README.md", "root");
+    const out = runResolver(r.dir, "sha-x", ["--kind", "sidecar"]);
+    expect(out.status).toBe(1);
+    expect(out.stderr).toContain("--kind core|bundle");
   });
 
   it("classifies the root commit rather than dying on it, when the walk gets there", () => {

@@ -373,6 +373,14 @@ jobs:
         # a baked tree, sha-<HEAD> reliably does not exist yet when this runs,
         # and a bare hard stop would turn every such deploy red. 900s is roughly
         # three times the slowest bundle build on record (6m10s).
+        #
+        # ON `main` ONLY, and that is not a shortcut. Both release workflows
+        # refuse to run on any other ref, so a BRANCH commit that touches a baked
+        # tree has no image coming — waiting fifteen minutes for a build nobody
+        # started is fifteen minutes of a runner spent reaching the same failure.
+        # The branch answers are `build: true` (which builds that ref's bundle
+        # and skips this step entirely) or an explicit `bundle_version`, and the
+        # error names both.
         if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.bundle_version }}
         id: bundletag
         env:
@@ -380,12 +388,13 @@ jobs:
           # The bundle is its own package, beside the core's: tadasant/strad ->
           # tadasant/strad-bundle.
           REPOSITORY: ${{ github.repository }}-bundle
+          WAIT: ${{ github.ref == 'refs/heads/main' && '900' || '0' }}
         run: |
           set -euo pipefail
           git log --first-parent --format=%H -n 50 \
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
                 --repository "$REPOSITORY" --kind bundle \
-                --wait-for-image 900 >> "$GITHUB_OUTPUT"
+                --wait-for-image "$WAIT" >> "$GITHUB_OUTPUT"
 
       - name: Seed the gateway namespace from the deploy environment
         # THE MIGRATION STEP, and it is opt-in for a reason. Under the `env`

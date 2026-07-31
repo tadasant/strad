@@ -550,8 +550,15 @@ describe("deploy-staging.yml", () => {
     expect(workflow).toContain("--require-immutable-images");
   });
 
-  it("waits for a bundle build the core's release outran", () => {
-    expect(workflow).toMatch(/--kind bundle[\s\S]{0,80}--wait-for-image \d+/);
+  it("waits for a bundle build the core's release outran, on main only", () => {
+    expect(workflow).toMatch(
+      /--kind bundle[\s\S]{0,80}--wait-for-image "\$WAIT"/,
+    );
+    // Both release workflows refuse to run off `main`, so a branch commit inside
+    // the filter has no build coming and waiting for one is dead runner time.
+    expect(workflow).toMatch(
+      /WAIT: \$\{\{ github\.ref == 'refs\/heads\/main' && '\d+' \|\| '0' \}\}/,
+    );
   });
 
   it("resolves the bundle even when `version` pins the core", () => {
