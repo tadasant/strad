@@ -1,4 +1,4 @@
-import { instruments } from "../telemetry/index.ts";
+import { instruments } from "../telemetry/instruments.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
@@ -234,15 +234,23 @@ export class ToolSurfaceMonitor {
     // this process did not author, and shipping it would drive through
     // telemetry/redact.ts. So the log below is for whoever reads container
     // output, and THIS is the half that reaches the obs stack: a gauge that sits
-    // at zero for a slug serving nothing, attributed by slug, so it can be
-    // alerted on. The attributes are a slug, a state word and a kind — all
-    // strad's own vocabulary, none of it an upstream's.
+    // at zero for a slug serving nothing, so it can be alerted on.
+    //
+    // THE ATTRIBUTES ARE ONLY THINGS THAT CANNOT CHANGE FOR A SLUG. `state`
+    // belongs in the log line and on /healthz, and emphatically NOT here: OTLP
+    // defaults to CUMULATIVE temporality, under which every attribute set ever
+    // recorded is re-exported at its last value on every cycle, forever, with no
+    // expiry. A `state="unreachable"` series would be minted by the first probe
+    // of nearly every deploy — core comes up before the bundles do — and would
+    // then sit at 0 for the life of the process, so an alert on
+    // `min_over_time(... ) == 0` would latch permanently the first time anything
+    // recovered. The VALUE already carries the fact: zero means serving nothing.
+    // `slug` and `kind` are fixed at Registry.build time and cannot go stale.
     const inst = instruments();
     for (const surface of snapshot.surfaces) {
       inst.toolSurface.record(surface.tools, {
         "mcp.server": surface.slug,
         "mcp.upstream.kind": surface.kind,
-        "mcp.tool_surface.state": surface.state,
       });
     }
 

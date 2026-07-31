@@ -147,10 +147,13 @@ background **tool-surface monitor** (`src/gateway/reachability.ts`) probes every
 mounted slug on an interval and classifies it `ok`, `empty` (answered, offered
 nothing) or `unreachable` (refused, 404'd or timed out), tagged with the server
 `kind` so a third-party remote is not confused with a component we deploy. It
-logs `strad.tool_surface_degraded` when a slug's state changes, and publishes the
+logs `strad.tool_surface_degraded` when a slug's state changes, publishes the
 current answer on
-[`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`. The
-staging deploy fails when a slug we ship is `unreachable`.
+[`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`, and
+records [`strad.mcp.tool_surface`](/operate/telemetry/#stradmcptool_surface--is-a-slug-serving-anything-at-all)
+— the metric matters most of the three, because strad exports no logs and a
+stdout line on App Platform is a line nobody reads. The staging deploy fails when
+a slug we ship is `unreachable`.
 
 Selection is re-checked at `tools/call` time too: `tools/list` filters by the
 current `?servers=`, but a client could call any tool name it saw on a prior

@@ -58,7 +58,11 @@ interface GatewayInstruments {
    * routed and dead, and the only symptom is an empty `tools/list` — for a week,
    * on both environments, the only trace of that was a stdout line nothing
    * ingests. A gauge at zero, attributed by slug, is the thing an alert can be
-   * hung on. See gateway/reachability.ts.
+   * hung on.
+   *
+   * Recorded with `mcp.server` and `mcp.upstream.kind` and NOTHING that varies
+   * over the life of a slug: under cumulative temporality a stale attribute set
+   * is re-exported at its last value forever. See gateway/reachability.ts.
    */
   toolSurface: Gauge;
 

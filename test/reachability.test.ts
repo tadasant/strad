@@ -413,7 +413,7 @@ describe("the metric, which is the half that leaves the container", () => {
   // record was a stdout line no ingestor reads. So the observation has to be a
   // metric, and this asserts it really is one — and that it carries none of the
   // upstream prose the log line does.
-  it("exports strad.mcp.tool_surface at zero for a slug serving nothing", async () => {
+  it("exports a gauge at zero for a slug serving nothing, and a counter for the failed listing", async () => {
     const exporter = new InMemoryMetricExporter(
       AggregationTemporality.CUMULATIVE,
     );
@@ -422,6 +422,12 @@ describe("the metric, which is the half that leaves the container", () => {
       exportIntervalMillis: 600_000, // the test drives the flush
     });
     const provider = new MeterProvider({ readers: [reader] });
+    // `setGlobalMeterProvider` does NOT allow override — if another file in this
+    // process already registered one it is silently refused, and this test would
+    // read an empty exporter and fail confusingly. Vitest's default per-file
+    // isolation makes that unreachable today; disabling first means it stays
+    // unreachable if someone turns isolation off to speed CI up.
+    metrics.disable();
     metrics.setGlobalMeterProvider(provider);
     // Instruments memoise their meter; drop the no-op one captured above.
     resetInstruments();
@@ -434,28 +440,44 @@ describe("the metric, which is the half that leaves the container", () => {
         warn: () => {},
       });
       await monitor.refresh();
+
+      // Drive the request path too, so the counter has something to count.
+      const client = await connect("stale-mount");
+      await expect(client.listTools()).rejects.toThrow();
+      await client.close();
+
       await reader.forceFlush();
 
-      // `MetricData.dataPoints` is a union (number | Histogram) that flatMap
-      // widens to `{}`; a gauge only ever carries the number arm.
-      const points = exporter
-        .getMetrics()
-        .flatMap((m) => m.scopeMetrics)
-        .flatMap((s) => s.metrics)
-        .filter((m) => m.descriptor.name === "strad.mcp.tool_surface")
-        .flatMap((m) => m.dataPoints as DataPoint<number>[]);
+      const series = (name: string) =>
+        exporter
+          .getMetrics()
+          .flatMap((m) => m.scopeMetrics)
+          .flatMap((s) => s.metrics)
+          .filter((m) => m.descriptor.name === name)
+          // `MetricData.dataPoints` is a union (number | Histogram) that flatMap
+          // widens to `{}`; neither of these carries the histogram arm.
+          .flatMap((m) => m.dataPoints as DataPoint<number>[]);
 
+      const points = series("strad.mcp.tool_surface");
       const dead = points.find(
         (p) => p.attributes["mcp.server"] === "stale-mount",
       );
       expect(dead?.value).toBe(0);
-      expect(dead?.attributes["mcp.tool_surface.state"]).toBe("unreachable");
       expect(dead?.attributes["mcp.upstream.kind"]).toBe("supplementary-image");
+      // NO `state` attribute. Under cumulative temporality a stale attribute set
+      // is re-exported forever, so a slug that recovered would leave a permanent
+      // zero series behind and latch the alert this metric exists to drive.
+      expect(dead?.attributes).not.toHaveProperty("mcp.tool_surface.state");
 
       const alive = points.find(
         (p) => p.attributes["mcp.server"] === "healthy",
       );
       expect(alive?.value).toBeGreaterThan(0);
+
+      const failed = series("strad.mcp.unlistable").find(
+        (p) => p.attributes["mcp.server"] === "stale-mount",
+      );
+      expect(failed?.value).toBeGreaterThan(0);
 
       // The same rule the redaction canary enforces one module over: an
       // upstream's error page is not ours to export.
@@ -464,6 +486,7 @@ describe("the metric, which is the half that leaves the container", () => {
       );
     } finally {
       await reader.shutdown().catch(() => {});
+      metrics.disable();
       resetInstruments();
     }
   });
