@@ -44,6 +44,27 @@ on:
         type: boolean
         required: false
         default: false
+      seed:
+        description: >-
+          Copy this deployment's boot keys from the deploy environment into
+          /strad/staging/gateway/static/ before rendering. The one-time
+          migration step for the provider flip; off on every ordinary deploy.
+        type: boolean
+        required: false
+        default: false
+      seed_rotate:
+        description: >-
+          With seed, overwrite names the store already holds instead of
+          skipping them.
+        type: boolean
+        required: false
+        default: false
+      seed_set:
+        description: >-
+          With seed, an extra NAME=VALUE the environment does not carry.
+          NON-SECRET canaries only — it is echoed in this run's log.
+        type: string
+        required: false
 
 concurrency:
   group: staging-deploy
@@ -276,6 +297,39 @@ jobs:
           git log --first-parent --format=%H -n 50 \
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
                 --repository "$REPOSITORY" >> "$GITHUB_OUTPUT"
+
+      - name: Seed the gateway namespace from the deploy environment
+        # THE MIGRATION STEP, and it is opt-in for a reason. Under the `env`
+        # provider these values are baked into the app spec on every deploy;
+        # under the store provider the gateway reads them at runtime and the spec
+        # carries only the resolver key. Something has to move them across once,
+        # and CI is the only place that holds them — the console is SSO-gated and
+        # per-value, and the `secrets` MCP server is fenced out of this namespace
+        # on purpose.
+        #
+        # OFF unless dispatched with `seed: true`. Seeding on every deploy would
+        # make the store a mirror of the deploy environment rather than the source
+        # of truth replacing it, which is the inversion the whole flip exists to
+        # undo. It also skips names the store already holds unless
+        # `seed_rotate: true`, so a re-run cannot quietly revert a rotation
+        # somebody made in the console.
+        #
+        # It reads back everything it writes through `:render` — the same path
+        # the gateway uses — and compares by digest. Names and counts only; no
+        # value is printed.
+        if: ${{ inputs.seed && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        env:
+          # The ADMIN key, not the resolver's: the resolver cannot write, which
+          # is exactly why the gateway is allowed to hold it.
+          STRAD_STORE_ADMIN_KEY_JSON: ${{ env.SECRETS_ADMIN_KEY_JSON }}
+          SEED_ROTATE: ${{ inputs.seed_rotate }}
+          SEED_SET: ${{ inputs.seed_set }}
+        run: |
+          set -euo pipefail
+          ARGS=(--config infra/strad.staging.yaml --commit)
+          [ "$SEED_ROTATE" = "true" ] && ARGS+=(--rotate)
+          [ -n "$SEED_SET" ] && ARGS+=(--set "$SEED_SET")
+          node --experimental-transform-types scripts/seed-store.ts "${ARGS[@]}"
 
       - name: Report what the parameter store holds
         # The pre-flip roster: every name this deployment would read from

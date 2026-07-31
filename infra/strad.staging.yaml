@@ -66,6 +66,24 @@ gateway:
   name: strad
   env: staging
   publicUrl: https://staging.strad.tadasant.com
+  # THE FLIP. Staging reads its `${NAME}` references from
+  # /strad/staging/gateway/static/ while it is running, so a rotation reaches it
+  # within ttlSeconds and the app spec carries exactly one secret: the resolver
+  # key that opens the store.
+  #
+  # This is not incremental, whatever envFallback suggests. `render-spec` stops
+  # baking the boot keys the moment this changes, and `preflightSecrets()` then
+  # demands STRAD_TOKENS and STRAD_INTERNAL_TOKEN be in the store — so the
+  # namespace must be seeded BEFORE this line lands, and both images must already
+  # carry the base64url encoding (HACKS.md #33) or what is seeded cannot render.
+  # docs/operate/secrets.md has the order.
+  #
+  # envFallback / ttlSeconds / negativeTtlSeconds are left at their defaults
+  # (true / 60 / 10) deliberately: the chain keeps the environment behind the
+  # store so a name that is not seeded yet still resolves, and the TTL is the
+  # window a rotation takes to land.
+  secrets:
+    provider: gcp-parameter-store
 
 auth:
   google:
@@ -196,7 +214,21 @@ servers:
     # /mcp verbatim, to anyone entitled to this slug.
     params: true
     options:
-      greeting: "hello from the core gateway"
+      # THE PROBE, and the name is chosen for one property: `STRAD_ENV` is
+      # already on this component's environment (appspec's identityEnvs sets it
+      # to "staging"), so the SAME reference can demonstrate both halves of the
+      # chain. Seeded in /strad/staging/gateway/static/ the store answers and
+      # wins; delete it and the chain falls through to the environment and
+      # answers "staging". Nothing else in this config can show that, because
+      # `preflightSecrets()` requires every config-declared `${NAME}` to be in
+      # the store — so an "unseeded ref" is a deploy that fails, not a fallback
+      # anyone can watch.
+      #
+      # Shadowing it here is inert: `STRAD_ENV` is read from `process.env`
+      # directly by everything that cares (secretSourceFromEnv, identityEnvs),
+      # never through the provider, so a store entry under this name reaches
+      # exactly one place — the string below.
+      greeting: "${STRAD_ENV}"
 
   # kind: remote-http. A real third-party MCP server on the public internet,
   # proxied through strad. No credential needed for this one, which is why it

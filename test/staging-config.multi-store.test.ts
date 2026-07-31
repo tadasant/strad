@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
+import { CORE_BOOT_ENV_KEYS } from "../src/secrets/provider/hydrate.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 
@@ -364,10 +365,30 @@ describe("two parameter stores, one strad", () => {
         server.kind === "supplementary-image" &&
         server.env.SECRETS_PROJECT_ID !== undefined &&
         server.env.SECRETS_NAMESPACES !== undefined;
-      const credentialFree = !refs.some((v) => /\$\{/.test(v));
+      // A reachable slug may hold a `${REF}` — `echo` deliberately does, because
+      // returning a resolved value is the whole point of the observatory. What it
+      // may NOT do is point at a name that carries a credential, because whatever
+      // `echo` resolves it hands straight back over /mcp. So the check is not
+      // "no refs", it is "no ref to anything this deployment treats as secret":
+      // every name in a supplementary server's `env:`, plus the boot keys.
+      const credentialNames = new Set([
+        ...CONFIG.servers
+          .flatMap((s) =>
+            s.kind === "supplementary-image"
+              ? Object.values(s.env).flatMap((v) => [
+                  ...v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g),
+                ])
+              : [],
+          )
+          .map((m) => m[1]!),
+        ...CORE_BOOT_ENV_KEYS,
+      ]);
+      const pointsAtACredential = refs
+        .flatMap((v) => [...v.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)])
+        .some((m) => credentialNames.has(m[1]!));
       expect(
-        fronts || credentialFree,
-        `"${slug}" is reachable by the zimmer role but is neither a fenced parameter store nor credential-free`,
+        fronts || !pointsAtACredential,
+        `"${slug}" is reachable by the zimmer role and references a name this deployment holds a credential under`,
       ).toBe(true);
     }
   });
