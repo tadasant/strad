@@ -445,6 +445,42 @@ describe("the console addresses every managed namespace", () => {
     expect(html).toContain(`<option value="${GATEWAY_NS}"></option>`);
   });
 
+  it("renders the picker as a combobox: every namespace is in the popup", async () => {
+    const html = await get("/ui/secrets");
+    // A dropdown, so the list is discoverable without typing — and a combobox
+    // rather than a <select>, so a namespace outside the list is still typable.
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('id="ns-input-listbox"');
+    expect(html).not.toContain("<select");
+    for (const ns of [MCP_NS, GATEWAY_NS]) {
+      expect(html).toContain(
+        `<li class="combo-opt" role="option" id="ns-input-o${
+          ns === MCP_NS ? 0 : 1
+        }" data-value="${ns}">`,
+      );
+    }
+  });
+
+  it("keeps the no-JS baseline: the input still carries its <datalist>", async () => {
+    // The script removes `list=` as it takes over. Without it, the field is what
+    // it always was: free text with the native typeahead.
+    const html = await get("/ui/secrets");
+    expect(html).toContain('list="ns-input-options"');
+    expect(html).toContain('<datalist id="ns-input-options">');
+    expect(html).toContain(
+      "<noscript><style>.combo-caret{display:none}</style>",
+    );
+  });
+
+  it("gives the path-prefix field the same popup, labelled by wiring", async () => {
+    const html = await get("/ui/secrets");
+    expect(html).toContain('id="pfx-listbox"');
+    expect(html).toContain(
+      `<span class="combo-val">wired/static/</span><span class="combo-lbl">wired — params: true</span>`,
+    );
+    expect(html).toContain('<datalist id="pfx-options">');
+  });
+
   it("lists the SECOND namespace when ?ns= selects it", async () => {
     fake.parameters.clear();
     fake.secrets.clear();

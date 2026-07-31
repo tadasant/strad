@@ -457,15 +457,21 @@ ${listing}
       <code class="pathpart">${esc(ns)}</code>
       <span class="field-h">Type or pick one above; the suggestions are a convenience, not a limit.</span>
     </div>
-    <label class="field">
-      <span class="field-l">Path prefix <span class="field-opt">optional</span></span>
-      <input class="in" id="pfx" type="text" name="prefix" list="prefix-options" autocapitalize="off" autocomplete="off"
-             placeholder="${esc(examplePrefix(config))}" />
-      <datalist id="prefix-options">${prefixOptions(config)}</datalist>
+    <div class="field">
+      <label class="field-l" for="pfx">Path prefix <span class="field-opt">optional</span></label>
+      ${comboBox({
+        id: "pfx",
+        name: "prefix",
+        placeholder: examplePrefix(config),
+        options: prefixOptions(config),
+        listLabel: "Server prefixes on this gateway",
+        emptyNote:
+          "No server prefix matches. Any prefix is still allowed — it simply routes to nothing.",
+      })}
       <span class="field-h">The segments between the namespace and the variable name. For a
         server parameter this is <code>&lt;server-slug&gt;/static/</code> and it is what decides
         which server the value routes to.</span>
-    </label>
+    </div>
     <label class="field">
       <span class="field-l">Variable name</span>
       <input class="in" id="varname" type="text" name="variable" required autocapitalize="off" autocomplete="off"
@@ -493,7 +499,8 @@ ${listing}
     <button class="btn btn-primary">Create parameter</button>
   </form>
 </section>
-${pathPreviewScript(ns)}`;
+${pathPreviewScript(ns)}
+${comboBoxScript()}`;
 
   return layout({
     title: `${slug} · parameters`,
@@ -518,27 +525,280 @@ ${pathPreviewScript(ns)}`;
  * suggestions.
  *
  * A plain GET form, so switching is an ordinary navigation the SSO gate already
- * covers and the result is linkable. The `<datalist>` is a convenience; what
+ * covers and the result is linkable. The suggestions are a convenience; what
  * bounds the value is its SHAPE (see validateNamespace) and, underneath that,
- * the project the credential is scoped to.
+ * the project the credential is scoped to. Hence a combobox rather than a
+ * `<select>` — see comboBox for what that costs and buys.
  */
 function namespacePicker(
   action: string,
   namespaces: string[],
   selected: string,
 ): string {
-  const options = namespaces
-    .map((n) => `<option value="${esc(n)}"></option>`)
-    .join("");
   return `
   <form class="nsform" method="get" action="${action}">
     <label class="scope-l" for="ns-input">namespace</label>
-    <input class="in nsinput" id="ns-input" name="ns" list="ns-options" value="${esc(selected)}"
-           autocapitalize="off" autocomplete="off" spellcheck="false"
-           placeholder="/strad/prod/mcp/" />
-    <datalist id="ns-options">${options}</datalist>
+    ${comboBox({
+      id: "ns-input",
+      name: "ns",
+      value: selected,
+      placeholder: "/strad/prod/mcp/",
+      options: namespaces.map((n) => ({ value: n })),
+      listLabel: "Suggested namespaces",
+      emptyNote:
+        "No suggestion matches. Any namespace in this project is still valid.",
+      submitOnChoose: true,
+      wrapClass: "combo-ns",
+      inputClass: "nsinput",
+    })}
     <button class="btn nsgo">Go</button>
   </form>`;
+}
+
+// ---------------------------------------------------------------------------
+// The combobox: a dropdown you can also type into.
+// ---------------------------------------------------------------------------
+
+export interface ComboOption {
+  value: string;
+  /** Secondary text shown under the value in the menu. */
+  label?: string;
+}
+
+interface ComboBoxOptions {
+  /** The input's id. The listbox and datalist ids are derived from it. */
+  id: string;
+  name: string;
+  value?: string;
+  placeholder?: string;
+  options: ComboOption[];
+  /** Accessible name for the popup listbox, and for the caret that opens it. */
+  listLabel: string;
+  /** Shown inside the menu when nothing matches what was typed. */
+  emptyNote: string;
+  /** Choosing an option submits the owning form. For a GET navigation only. */
+  submitOnChoose?: boolean;
+  wrapClass?: string;
+  inputClass?: string;
+}
+
+/**
+ * A free-text input whose suggestions open as a DROPDOWN, not a typeahead.
+ *
+ * A native `<datalist>` only reveals itself once you type, so a field backed by
+ * one cannot tell you that a set of known values exists — you have to already
+ * know what to type in order to discover what you could have typed. A `<select>`
+ * would fix the discovery and break the field: every namespace in the project is
+ * addressable, not just the configured suggestions, and the same is true of a
+ * path prefix. So: click or focus opens the whole list, typing filters it, and
+ * anything you type is still submittable.
+ *
+ * PROGRESSIVE ENHANCEMENT. The markup is an ordinary `<input list=…>` and a
+ * `<datalist>`, so with no JS the field is free text with the native typeahead
+ * and the caret and menu are hidden. The script removes `list=` from the input as
+ * it takes over, so the two popups never compete.
+ */
+function comboBox(o: ComboBoxOptions): string {
+  const listId = `${o.id}-listbox`;
+  const dataId = `${o.id}-options`;
+  const options = o.options
+    .map(
+      (op, i) =>
+        `<li class="combo-opt" role="option" id="${esc(o.id)}-o${i}" data-value="${esc(op.value)}"><span class="combo-val">${esc(op.value)}</span>${
+          op.label ? `<span class="combo-lbl">${esc(op.label)}</span>` : ""
+        }</li>`,
+    )
+    .join("");
+  const suggestions = o.options
+    .map(
+      (op) =>
+        `<option value="${esc(op.value)}"${op.label ? ` label="${esc(op.label)}"` : ""}></option>`,
+    )
+    .join("");
+  return `<div class="combo ${esc(o.wrapClass ?? "")}" data-combo${
+    o.submitOnChoose ? " data-combo-submit" : ""
+  }>
+      <input class="in ${esc(o.inputClass ?? "")}" id="${esc(o.id)}" type="text" name="${esc(o.name)}"
+             value="${esc(o.value ?? "")}" list="${esc(dataId)}"
+             role="combobox" aria-expanded="false" aria-controls="${esc(listId)}"
+             aria-autocomplete="list" autocapitalize="off" autocomplete="off" spellcheck="false"
+             placeholder="${esc(o.placeholder ?? "")}" />
+      <button class="combo-caret" type="button" tabindex="-1" data-combo-toggle
+              aria-label="${esc(o.listLabel)}">${CARET_SVG}</button>
+      <ul class="combo-menu" id="${esc(listId)}" role="listbox" aria-label="${esc(o.listLabel)}" hidden>
+        ${options}
+        <li class="combo-none" role="presentation" hidden>${esc(o.emptyNote)}</li>
+      </ul>
+      <datalist id="${esc(dataId)}">${suggestions}</datalist>
+    </div>`;
+}
+
+/**
+ * The one script that drives every combobox on the page.
+ *
+ * Keyboard is the whole reason this is more than a click handler: `ArrowDown`
+ * opens and walks the list, `Enter` takes the active option, `Escape` closes it
+ * and — pressed again — puts back the value you arrived with, so dismissing the
+ * menu never costs you the namespace you were on. `aria-activedescendant` moves
+ * the assistive-technology cursor without touching what you typed, which is also
+ * why restoring is possible at all.
+ *
+ * A programmatic change dispatches `input`, because the full-path preview listens
+ * for it (see pathPreviewScript) and a value set by a click must reach it.
+ */
+function comboBoxScript(): string {
+  return `<noscript><style>.combo-caret{display:none}</style></noscript>
+<script>
+(function () {
+  Array.prototype.forEach.call(document.querySelectorAll("[data-combo]"), init);
+
+  function init(box) {
+    var input = box.querySelector("input[role=combobox]");
+    var menu = box.querySelector("[role=listbox]");
+    var toggle = box.querySelector("[data-combo-toggle]");
+    var none = box.querySelector(".combo-none");
+    if (!input || !menu) return;
+    var opts = Array.prototype.slice.call(menu.querySelectorAll("[role=option]"));
+    if (!opts.length) return;
+
+    var submits = box.hasAttribute("data-combo-submit");
+    var active = -1;
+    var committed = input.value;
+    var quiet = false;
+
+    // Our menu replaces the native one; leaving both would double the popup.
+    input.removeAttribute("list");
+    markCurrent();
+
+    function shown() {
+      return opts.filter(function (o) { return !o.hidden; });
+    }
+    function isOpen() {
+      return !menu.hidden;
+    }
+    function markCurrent() {
+      opts.forEach(function (o) {
+        o.classList.toggle("is-current", o.getAttribute("data-value") === committed);
+      });
+    }
+    function filter(term) {
+      var q = term.trim().toLowerCase();
+      opts.forEach(function (o) {
+        o.hidden = q !== "" && o.textContent.toLowerCase().indexOf(q) === -1;
+      });
+      if (none) none.hidden = shown().length !== 0;
+    }
+    function open(all) {
+      filter(all ? "" : input.value);
+      menu.hidden = false;
+      box.setAttribute("data-open", "");
+      input.setAttribute("aria-expanded", "true");
+      setActive(-1);
+    }
+    function close() {
+      menu.hidden = true;
+      box.removeAttribute("data-open");
+      input.setAttribute("aria-expanded", "false");
+      setActive(-1);
+    }
+    function setActive(i) {
+      var list = shown();
+      opts.forEach(function (o) {
+        o.classList.remove("is-active");
+        o.removeAttribute("aria-selected");
+      });
+      active = i < 0 || i >= list.length ? -1 : i;
+      if (active < 0) {
+        input.removeAttribute("aria-activedescendant");
+        return;
+      }
+      var el = list[active];
+      el.classList.add("is-active");
+      el.setAttribute("aria-selected", "true");
+      input.setAttribute("aria-activedescendant", el.id);
+      if (el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+    }
+    function move(delta) {
+      var list = shown();
+      if (!list.length) return;
+      if (!isOpen()) { open(true); }
+      list = shown();
+      var next = active < 0
+        ? (delta > 0 ? 0 : list.length - 1)
+        : (active + delta + list.length) % list.length;
+      setActive(next);
+    }
+    function setValue(v) {
+      quiet = true;
+      input.value = v;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      quiet = false;
+    }
+    function choose(el) {
+      setValue(el.getAttribute("data-value"));
+      committed = input.value;
+      markCurrent();
+      close();
+      input.focus();
+      if (submits && input.form) {
+        if (input.form.requestSubmit) input.form.requestSubmit();
+        else input.form.submit();
+      }
+    }
+
+    input.addEventListener("focus", function () { if (!isOpen()) open(true); });
+    // Focus alone cannot carry this: a field that is already focused fires no
+    // focus event, so a click after Escape would do nothing at all.
+    input.addEventListener("mousedown", function () {
+      if (isOpen()) close();
+      else open(true);
+    });
+    input.addEventListener("input", function () {
+      if (quiet) return;
+      open(false);
+    });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowDown") { e.preventDefault(); move(1); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return; }
+      if (e.key === "Enter") {
+        var list = shown();
+        if (isOpen() && active >= 0 && list[active]) {
+          e.preventDefault();
+          choose(list[active]);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        // First Escape dismisses the menu; a second puts back the value this
+        // field was rendered with, so neither costs you where you were.
+        if (isOpen()) close();
+        else if (input.value !== committed) setValue(committed);
+        return;
+      }
+      if (e.key === "Tab") close();
+    });
+
+    // mousedown on the menu would blur the input before the click lands.
+    menu.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    menu.addEventListener("click", function (e) {
+      var el = e.target.closest ? e.target.closest("[role=option]") : null;
+      if (el) choose(el);
+    });
+    if (toggle) {
+      // Keep focus on the input: a caret that stole it would blur the field and
+      // then re-open the menu through the focus handler it just closed.
+      toggle.addEventListener("mousedown", function (e) { e.preventDefault(); });
+      toggle.addEventListener("click", function () {
+        if (isOpen()) close();
+        else { input.focus(); open(true); }
+      });
+    }
+    document.addEventListener("mousedown", function (e) {
+      if (isOpen() && !box.contains(e.target)) close();
+    });
+  }
+})();
+</script>`;
 }
 
 /** The chip that says whether anything reads a path. */
@@ -849,16 +1109,12 @@ function namespaceList(namespaces: string[], selected: string): string {
     .join("");
 }
 
-/** `<datalist>` entries: every server slug, flagged with whether it is wired. */
-function prefixOptions(config: StradConfig): string {
-  return prefixSuggestions(config)
-    .map(
-      (s) =>
-        `<option value="${esc(s.prefix)}" label="${esc(
-          s.wired ? `${s.slug} — params: true` : `${s.slug} — not wired`,
-        )}"></option>`,
-    )
-    .join("");
+/** Suggestions: every server slug, flagged with whether it is wired. */
+function prefixOptions(config: StradConfig): ComboOption[] {
+  return prefixSuggestions(config).map((s) => ({
+    value: s.prefix,
+    label: s.wired ? `${s.slug} — params: true` : `${s.slug} — not wired`,
+  }));
 }
 
 /** A prefix worth showing as a placeholder: a wired server if one exists. */
@@ -1059,6 +1315,8 @@ const TAG_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" ari
 
 const QUESTION_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M9.6 9.3a2.4 2.4 0 1 1 3.2 2.26c-.5.19-.8.67-.8 1.2v.54" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12 16.7h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>`;
 
+const CARET_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
 const INFO_SVG = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v5M12 8h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
 
 // ---------------------------------------------------------------------------
@@ -1187,9 +1445,31 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 
 /* Namespace picker */
 .nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
-.nsinput{width:auto;min-width:17rem;font-size:.8rem;padding:.3rem .45rem}
+.nsinput{font-size:.8rem;padding:.3rem 1.5rem .3rem .45rem}
 .nsgo{font-size:.76rem}
 .nscount{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
+
+/* Combobox: a free-text field whose suggestions open as a dropdown. */
+.combo{position:relative}
+.combo-ns{min-width:17rem}
+.combo .in{padding-right:1.6rem}
+.combo-caret{position:absolute;top:0;right:0;height:100%;width:1.6rem;display:flex;align-items:center;
+  justify-content:center;padding:0;border:0;border-radius:.35rem;background:transparent;color:var(--g3);
+  cursor:pointer;transition:color .12s ease}
+.combo-caret:hover{color:var(--text-accent)}
+.combo[data-open] .combo-caret{color:var(--text-accent);transform:rotate(180deg)}
+.combo-menu{position:absolute;z-index:20;top:calc(100% + .25rem);left:0;min-width:100%;max-width:min(30rem,86vw);
+  max-height:15rem;overflow-y:auto;margin:0;padding:.25rem;list-style:none;border:1px solid var(--g5);
+  border-radius:.4rem;background:var(--g6);box-shadow:0 10px 26px rgba(0,0,0,.38)}
+.combo-opt{display:flex;flex-direction:column;gap:.05rem;padding:.32rem .5rem;border-radius:.3rem;cursor:pointer}
+.combo-opt[hidden]{display:none}
+.combo-opt:hover,.combo-opt.is-active{background:color-mix(in srgb,var(--accent) 20%,transparent)}
+.combo-opt.is-active{outline:1px solid color-mix(in srgb,var(--accent) 55%,var(--g5))}
+.combo-val{font-family:var(--font-mono);font-size:.78rem;color:var(--g1);word-break:break-all}
+.combo-opt.is-current .combo-val{color:var(--text-accent);font-weight:500}
+.combo-lbl{font-size:.7rem;color:var(--g4)}
+.combo-none{padding:.4rem .5rem;font-size:.72rem;color:var(--g4);line-height:1.45}
+.combo-none[hidden]{display:none}
 
 /* Help: a control in the top bar, and the guide it opens. */
 .helpbtn{display:inline-flex;align-items:center;gap:.35rem;font:inherit;font-size:.8rem;
