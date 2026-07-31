@@ -109,6 +109,86 @@ export function isSecretRef(value: string): boolean {
 }
 
 /**
+ * Characters a rendered secret must not contain — the rule the whole encoding
+ * below exists to satisfy.
+ *
+ * A strad parameter is created with `parameter-format=JSON` and its payload is a
+ * JSON object. `:render` does NOT rebuild that object: it substitutes the secret's
+ * raw bytes into the payload TEXT where the `__REF__(…)` token sits, then checks
+ * the result for structural damage. A value carrying a `"` closes the string it
+ * landed in; a `\` starts an escape; a raw newline is illegal inside a JSON
+ * string; a brace or bracket reads as structure. Any of them and Parameter
+ * Manager answers `400 INVALID_ARGUMENT … injection detected`, which is what a
+ * `STRAD_TOKENS` JSON array of token records does, every time.
+ *
+ * This set is a LOWER BOUND on Google's strictness, established from the two
+ * things actually known: values containing `"` fail (reproduced against the live
+ * API), and the five names seeded in prod render fine — one of which
+ * (`OTEL_EXPORTER_OTLP_HEADERS`) carries `,` and `=`, so those are not flagged.
+ * Braces, brackets, backslashes and control characters are assumed unsafe rather
+ * than demonstrated so.
+ *
+ * Nothing depends on the boundary being drawn in exactly the right place.
+ * `encodeSecretValue` emits `[A-Za-z0-9_-]` only, so it is safe under any
+ * detector at least as permissive as "letters, digits, dash and underscore" —
+ * comfortably above the strictest rule Parameter Manager could plausibly apply.
+ * The predicate exists so the in-memory double can refuse what Google refuses
+ * (see `src/secrets/parameters/fake.ts`), and so that refusal and this encoding
+ * are derived from ONE statement of the rule.
+ */
+const RENDER_UNSAFE = /["\\{}[\]]/;
+
+/**
+ * Would substituting this value into a JSON parameter payload survive
+ * Parameter Manager's injection detection?
+ */
+export function isRenderSafe(value: string): boolean {
+  if (RENDER_UNSAFE.test(value)) return false;
+  // Control characters, by code point rather than by a regex literal holding raw
+  // control characters — the latter is both unreadable and lint-flagged. A raw
+  // byte below 0x20 is illegal INSIDE a JSON string, so a newline or a tab in a
+  // secret breaks the payload just as surely as a quote does.
+  for (const ch of value) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x20 || cp === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * How a parameter version's `value` is encoded.
+ *
+ * `undefined` — the literal bytes. Every parameter written before strad encoded
+ * anything is this, and so is every non-secret parameter: a non-secret value is
+ * never substituted by `:render`, so it has nothing to survive, and encoding it
+ * would only make the console and the `secrets` MCP viewer display base64 to a
+ * human who asked for a value.
+ *
+ * `base64url` — the value is base64url of the real bytes. This is what every
+ * SECRET parameter written from now on carries. Absent is not "unknown": it is a
+ * documented state with a documented meaning, which is what lets the five names
+ * already seeded in prod keep resolving without being re-seeded.
+ */
+export type ValueEncoding = "base64url";
+
+/** The encoding every secret value is written with. */
+export const SECRET_VALUE_ENCODING: ValueEncoding = "base64url";
+
+/**
+ * Encode a secret's bytes for Secret Manager.
+ *
+ * base64url rather than plain base64, and unpadded: the alphabet is exactly
+ * `[A-Za-z0-9_-]`, so the rendered payload contains no `+`, `/` or `=` either.
+ * None of those three is JSON-structural, so this is not a correctness argument
+ * — it is that the value we substitute into someone else's parser should be the
+ * most inert string available, and the cheapest way to never revisit this is to
+ * emit nothing that any detector could have an opinion about.
+ */
+export function encodeSecretValue(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+/**
  * The JSON envelope stored as a parameter version's payload.
  *
  * A non-secret parameter carries its literal value here. A secret parameter
@@ -124,6 +204,12 @@ export interface ParameterEnvelope {
   note?: string;
   /** Literal value (non-secret) or a `secretRef()` string (secret). */
   value: string;
+  /**
+   * How the value behind this envelope is encoded. Absent means the literal
+   * bytes. See `ValueEncoding` — the envelope declares it so a reader never has
+   * to guess, and so an existing parameter does not have to be rewritten.
+   */
+  encoding?: ValueEncoding;
 }
 
 export function encodeEnvelope(env: ParameterEnvelope): string {
@@ -139,12 +225,78 @@ export function decodeEnvelope(payload: string): ParameterEnvelope {
   ) {
     throw new Error("parameter payload is not a strad envelope");
   }
+  // An encoding this reader does not know is a HARD failure, not an absent one.
+  // Falling back to "literal" would hand the caller an encoded blob dressed as a
+  // value — a wrong secret injected into a child process, silently, which is
+  // strictly worse than a parameter that does not resolve.
+  if (
+    parsed.encoding !== undefined &&
+    parsed.encoding !== SECRET_VALUE_ENCODING
+  ) {
+    throw new Error(
+      `parameter payload declares an unknown value encoding: ${JSON.stringify(String(parsed.encoding))}`,
+    );
+  }
   return {
     path: parsed.path,
     secret: parsed.secret,
     note: typeof parsed.note === "string" ? parsed.note : undefined,
     value: parsed.value,
+    ...(parsed.encoding === undefined ? {} : { encoding: parsed.encoding }),
   };
+}
+
+/**
+ * Invert `encodeSecretValue` for one raw value, given the encoding its envelope
+ * declares. `label` names the parameter in an error; it is never the value.
+ */
+export function decodeStoredValue(
+  value: string,
+  // `string | undefined`, deliberately, rather than `ValueEncoding | undefined`.
+  // This is the last gate before a value reaches a process, and what it is
+  // gating is JSON out of a store that a future strad — or a hand-edit — may
+  // have written. A type describes what this code emits; it cannot enforce what
+  // is already in the store.
+  encoding: string | undefined,
+  label: string,
+): string {
+  if (encoding === undefined) return value;
+  if (encoding !== SECRET_VALUE_ENCODING) {
+    throw new Error(
+      `parameter "${label}" declares an unknown value encoding: ${JSON.stringify(encoding)}`,
+    );
+  }
+  const decoded = Buffer.from(value, "base64url").toString("utf8");
+  // Node's base64 decoders are LENIENT — garbage in, garbage out, no error — and
+  // the garbage would go straight into a child process's environment as its
+  // credential. Re-encode and compare, so a value that is not what its envelope
+  // claims fails loudly. The comparison canonicalises the input's alphabet and
+  // padding first: a value seeded by hand with standard base64 decodes correctly
+  // and must not be rejected for its spelling.
+  const canonical = value
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  if (Buffer.from(decoded, "utf8").toString("base64url") !== canonical) {
+    throw new Error(
+      `parameter "${label}" is labelled ${encoding} but its stored value is not`,
+    );
+  }
+  return decoded;
+}
+
+/**
+ * The real value behind a RENDERED envelope.
+ *
+ * The `isSecretRef` guard is not defensive tidiness. A `:render` that could not
+ * dereference hands the pointer back rather than failing, and the pointer is the
+ * one string that must reach the caller UNTOUCHED — `checkStore` recognises it to
+ * report "present but unrenderable", and base64url-decoding it would turn that
+ * diagnosis into a shrug.
+ */
+export function decodeEnvelopeValue(envelope: ParameterEnvelope): string {
+  if (isSecretRef(envelope.value)) return envelope.value;
+  return decodeStoredValue(envelope.value, envelope.encoding, envelope.path);
 }
 
 /**

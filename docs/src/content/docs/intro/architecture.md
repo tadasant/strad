@@ -221,7 +221,10 @@ is the first backend behind the interface; a second store implements the same
 parameter's value lives directly in Parameter Manager. A secret parameter's value
 lives in Secret Manager, and Parameter Manager holds a `__REF__(...)` pointer at the
 Secret Manager version; a `:render` dereferences it, for a credential that can reach
-Secret Manager.
+Secret Manager. A secret value is stored **base64url-encoded**, because `:render`
+splices the bytes into the JSON payload as text and rejects anything that looks
+structurally damaged — see
+[Secrets](/operate/secrets/#what-a-secret-value-looks-like-in-the-store).
 
 **Three credentials, deliberately different.** The whole design is that reading a
 secret value is a power the agent path does not have:

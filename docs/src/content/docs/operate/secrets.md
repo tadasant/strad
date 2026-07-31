@@ -163,6 +163,81 @@ exists — see below. If you only changed a value, nothing else is needed.
 With `provider: env`, add it to whatever seeds the deploy job's environment and
 re-run the deploy.
 
+### Secret or not: the one question to ask
+
+Not "will this value store cleanly" — that used to matter and no longer does, see
+[what a secret value looks like in the store](#what-a-secret-value-looks-like-in-the-store)
+below. The only question is who may read it:
+
+> Mark it **`secret: true`** unless you would be comfortable with the value
+> appearing in an agent's transcript.
+
+A **non-secret** value lives in the Parameter Manager envelope in the clear. Anything
+holding `parametermanager.parameterViewer` reads it with an ordinary `get` — and that
+includes the `secrets` MCP server the agents talk to. That is the point of a
+non-secret parameter, not a leak: a bucket name, a region, a public client id.
+
+A **secret** value lives in Secret Manager behind a `__REF__`, and reaching it takes
+one of two calls prod's MCP credential does not hold. Cost: one extra API call per
+read, and a value the console shows only behind an explicit reveal.
+
+When in doubt, `secret: true`. Hash-only material — `STRAD_TOKENS` holds SHA-256
+digests, not token plaintext — is still the gateway's auth table, so it is
+`secret: true` too. The rule is about the blast radius of the value being read, not
+about whether reading it is immediately catastrophic.
+
+### What a secret value looks like in the store
+
+A secret parameter's bytes are stored **base64url-encoded** in Secret Manager, and
+its Parameter Manager envelope records `"encoding":"base64url"`:
+
+```json
+{
+  "path": "/strad/prod/gateway/static/STRAD_TOKENS",
+  "secret": true,
+  "encoding": "base64url",
+  "value": "__REF__(\"//secretmanager.googleapis.com/projects/…/versions/latest\")"
+}
+```
+
+**Why.** The parameter is created with `parameter-format=JSON`, and `:render` does
+not rebuild that JSON — it splices the secret's raw bytes into the payload **text**
+where the `__REF__(…)` token sits, then rejects a result that looks structurally
+damaged. A value containing `"`, `\`, `{`, `}` or a newline breaks the envelope and
+comes back `400 INVALID_ARGUMENT … injection detected`. That is not an edge case: it
+is every PEM key, every service-account JSON blob, and any value that is itself
+JSON. Encoding makes the substituted text `[A-Za-z0-9_-]` and the problem goes away.
+
+**What it means day to day:**
+
+| If you…                                                       | Then…                                                                                                      |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| add or rotate through the console or the `secrets` MCP server | nothing. You type the real value; strad encodes and decodes it.                                            |
+| read through `reveal`, the resolver, or MCP `readValue`       | nothing. All three decode.                                                                                 |
+| read with `gcloud secrets versions access`                    | you get base64url. Pipe it through `base64 -d`.                                                            |
+| seed a secret **by hand**, outside strad                      | encode it, and add `"encoding":"base64url"` to the envelope — or omit both, and strad reads it as literal. |
+| have parameters written before this change                    | they carry no `encoding` field, which means the literal bytes. **No re-seeding.** See below.               |
+
+**Parameters written before this change keep working.** An absent `encoding` field
+means the literal bytes, so the names seeded into `strad-secrets-prod` earlier — none
+of which contains a structural character, which is why they render at all — resolve
+and reveal exactly as before. They are upgraded automatically the first time they are
+rotated: the envelope gains its `encoding` before the new bytes are written, so a
+rotate that half-fails reads as a loud error rather than as a plausible wrong value.
+
+:::caution[This encoding has not been exercised against live Google]
+It is proved against strad's in-memory double, which now substitutes textually and
+refuses the characters Parameter Manager refuses. That double previously substituted
+into the _parsed_ envelope and re-stringified, so it could not fail for any input —
+which is exactly how a value that 400s in production passed every test. A green suite
+is not a live `:render`. See [Known limitations](/limitations/) #33.
+:::
+
+**Non-secret values are left literal.** They carry no `__REF__`, so `:render`
+substitutes nothing into them and there is nothing to survive; encoding them would
+only make the console and the `secrets` MCP viewer show base64 to a human who asked
+for a value.
+
 ## Fail-loud, without reading a value
 
 Baking every `${NAME}` into the spec has one genuinely good property: a reference

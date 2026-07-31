@@ -395,6 +395,52 @@ project IAM admin, which no strad process holds, so it is a human step and is no
 applied yet. Removing `setIamPolicy` instead is not an option: it would remove the
 console's ability to create a secret parameter at all.
 
+### 33. Secret values are base64url in Secret Manager, and the encoding is not yet verified against live Google
+
+A secret parameter is created with `parameter-format=JSON`, and `:render` does not
+rebuild that JSON — it splices the secret's raw bytes into the payload **text** and
+then rejects a result that looks structurally damaged. So a value containing `"`,
+`\`, `{`, `}` or a newline comes back `400 INVALID_ARGUMENT … injection detected`,
+which is every PEM key, every service-account blob, and a `STRAD_TOKENS` array of
+token records.
+
+strad therefore stores every secret value **base64url-encoded** in Secret Manager
+and records `"encoding":"base64url"` in the Parameter Manager envelope. Two
+consequences an operator sees:
+
+- `gcloud secrets versions access latest --secret=<id>` prints base64url, not the
+  value. Pipe it through `base64 -d`. strad's own reads decode it for you; the
+  console's reveal, the resolver and the `secrets` MCP `readValue` all return the
+  real value.
+- An envelope with **no** `encoding` field means the literal bytes, which is what
+  every parameter written before this change carries. They keep working untouched;
+  see [Secrets](/operate/secrets/#what-a-secret-value-looks-like-in-the-store).
+
+The unverified part is the boundary, not the mechanism. `isRenderSafe` — the
+predicate the in-memory double enforces — is a lower bound built from one live
+repro (quotes fail) and one live control (the five names seeded in prod, one of
+which carries `,` and `=`, render fine). Braces, brackets, backslashes and control
+characters are assumed unsafe rather than demonstrated so. The encoding itself does
+not depend on that boundary being exactly right, because base64url emits
+`[A-Za-z0-9_-]` only. But if Parameter Manager is stricter somewhere we have not
+looked, the double is the more permissive of the two, and would say yes where Google
+says no.
+
+**Rolling `core` back past this change is the one silent failure.** strad reads the
+`encoding` field; an image that predates it does not know the field exists, so it
+hands a child process base64url text as its credential and reports success. Every
+other failure mode here is loud by construction — this one is not. Re-seed any secret
+parameter written after this change before rolling back past it. Boot is deliberately
+lenient so a rollback cannot become an outage, which makes rollback a path people
+actually take.
+
+**No live `:render` has been run against this change.** Everything is proved against
+strad's own double, which now models the failure faithfully — it substitutes
+textually and refuses what `isRenderSafe` refuses — but a model is not the API. That
+is the same class of evidence gap that let the original bug ship: the previous double
+substituted into the parsed object and re-stringified, so it could not fail for any
+input, and the identical value that 400s at Google passed every test here.
+
 ### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
 
 `strad-staging` was originally created with a hand-rendered spec from a build session

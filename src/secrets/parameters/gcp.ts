@@ -8,9 +8,13 @@ import {
 } from "./service-account.ts";
 import {
   decodeEnvelope,
+  decodeEnvelopeValue,
+  decodeStoredValue,
   encodeEnvelope,
+  encodeSecretValue,
   parameterId,
   secretRef,
+  SECRET_VALUE_ENCODING,
   variableOf,
   type ParameterEnvelope,
 } from "./namespace.ts";
@@ -380,7 +384,14 @@ export function createGcpParameterStore(
       try {
         await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
           payload: {
-            data: Buffer.from(input.value, "utf8").toString("base64"),
+            // base64url of the value, THEN base64 for the wire. The inner
+            // encoding is what `:render` will substitute into a JSON payload, so
+            // it is the one that has to be inert — see `encodeSecretValue`. A PEM
+            // key, a service-account blob or a JSON array of token records is
+            // rejected outright without it.
+            data: Buffer.from(encodeSecretValue(input.value), "utf8").toString(
+              "base64",
+            ),
           },
         });
       } catch (err) {
@@ -428,6 +439,7 @@ export function createGcpParameterStore(
         secret: input.secret,
         note: input.note,
         value: envelopeValue,
+        ...(input.secret ? { encoding: SECRET_VALUE_ENCODING } : {}),
       });
     } catch (err) {
       // The parameter above is ours — this call created it — so rolling it back
@@ -456,11 +468,50 @@ export function createGcpParameterStore(
     assertSamePath(cur.envelope, path);
 
     if (cur.envelope.secret) {
-      // The Secret Manager version is the value; the Parameter Manager `__REF__`
-      // already points at `versions/latest`, so it needs no new version.
-      await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
-        payload: { data: Buffer.from(value, "utf8").toString("base64") },
-      });
+      // A parameter written before strad encoded secret values carries no
+      // `encoding`, and its readers would take the base64url about to be written
+      // for the value itself. Declare the encoding BEFORE writing the bytes.
+      //
+      // The ordering is the whole point, and it is not the intuitive one. Neither
+      // write can be rolled into the other, so one of them lands first and there
+      // is a window. Bytes-first means the window reads an encoded value as a
+      // literal: the child process gets base64 text as its credential, silently.
+      // Envelope-first means the window reads the OLD literal value as base64url,
+      // which `decodeStoredValue` refuses — so reads fail, loudly, and the
+      // provider serves its last known good snapshot until the second write
+      // lands. A rotate that half-fails should be visible, not plausible.
+      //
+      // "Loudly" is a strong claim and it deserves its limit stated: the guard
+      // catches a stale literal only when that literal is not ITSELF canonical
+      // base64url decoding to valid UTF-8. All five names seeded in prod fail
+      // that test (verified), and a short value is likelier to pass it, so the
+      // window is closed below rather than merely made improbable.
+      const upgraded = cur.envelope.encoding !== SECRET_VALUE_ENCODING;
+      if (upgraded) {
+        await addVersion(id, {
+          ...cur.envelope,
+          encoding: SECRET_VALUE_ENCODING,
+        });
+      }
+      try {
+        // The Secret Manager version is the value; the Parameter Manager `__REF__`
+        // already points at `versions/latest`, so it needs no new version.
+        await sm("POST", `${smParent}/secrets/${id}:addVersion`, {
+          payload: {
+            data: Buffer.from(encodeSecretValue(value), "utf8").toString(
+              "base64",
+            ),
+          },
+        });
+      } catch (err) {
+        // Put the envelope back. Without this the window above is not a window
+        // at all — a 403 or a socket reset here strands the parameter declaring
+        // an encoding its bytes do not have, permanently, and `resolve()` fails
+        // for the WHOLE namespace until someone rotates it again. Same rollback
+        // discipline `create()` applies, for the same reason.
+        if (upgraded) await addVersion(id, cur.envelope).catch(() => {});
+        throw err;
+      }
     } else {
       await addVersion(id, { ...cur.envelope, value });
     }
@@ -496,7 +547,15 @@ export function createGcpParameterStore(
         404,
       );
     }
-    return Buffer.from(data, "base64").toString("utf8");
+    // `:access` is the DIRECT read — it hands back exactly the bytes that were
+    // written, with no `:render` in the path to undo the encoding. So the
+    // envelope's declared encoding has to be applied here too, or the console
+    // shows a human base64 and calls it their credential.
+    return decodeStoredValue(
+      Buffer.from(data, "base64").toString("utf8"),
+      cur.envelope.encoding,
+      path,
+    );
   }
 
   async function destroy(path: string): Promise<void> {
@@ -565,6 +624,16 @@ export function createGcpParameterStore(
     } while (pageToken);
   }
 
+  /**
+   * ONE bad parameter fails the WHOLE namespace, deliberately.
+   *
+   * The alternative — skip the name and return the rest — makes a parameter that
+   * exists and cannot be decoded indistinguishable from one that was never
+   * seeded, and "absent" is a state every caller treats as normal: the runtime
+   * provider answers null, boot hydration shrugs, and a gateway comes up with an
+   * empty token store rather than a broken one. Throwing is what lets the
+   * snapshot cache serve its last known good values instead.
+   */
   async function resolve(namespace: string): Promise<Record<string, string>> {
     const metas = await list(namespace);
     const out: Record<string, string> = {};
@@ -582,10 +651,22 @@ export function createGcpParameterStore(
       )) as { renderedPayload?: string; payload?: { data?: string } };
       const data = rendered.renderedPayload ?? rendered.payload?.data;
       if (data == null) continue;
-      const envelope = decodeEnvelope(
-        Buffer.from(data, "base64").toString("utf8"),
-      );
-      out[variableOf(meta.path)] = envelope.value;
+      try {
+        const envelope = decodeEnvelope(
+          Buffer.from(data, "base64").toString("utf8"),
+        );
+        out[variableOf(meta.path)] = decodeEnvelopeValue(envelope);
+      } catch {
+        // Re-thrown by PATH, never by message, and the original is DROPPED
+        // rather than chained. `JSON.parse` embeds a snippet of its input in the
+        // `SyntaxError` it throws, and the input here is a RENDERED payload — it
+        // holds the secret. That message reaches a log and the console's
+        // unexpected-error page, so it must not travel, not even as a `cause`.
+        throw new ParameterStoreError(
+          `parameter "${meta.path}" did not decode into a usable value`,
+          502,
+        );
+      }
     }
     return out;
   }

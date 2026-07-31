@@ -306,6 +306,80 @@ describe("render-spec, store-backed", () => {
     expect(projectVar?.type).toBe("GENERAL");
   });
 
+  /**
+   * The one path where a resolved value's BYTES end up in a deploy artifact.
+   *
+   * A supplementary image is a container the gateway does not run, so its `env:`
+   * cannot be resolved at runtime — `render-spec` reads it from the store and
+   * BAKES it onto that component. That is the path all 23 supplementary names
+   * take, and the values are the ones that broke: PEM keys and service-account
+   * blobs, both full of the characters `:render` refuses.
+   *
+   * Everything else proving the encoding runs in-process against the double.
+   * This runs the real `render-spec` in a SUBPROCESS, over real HTTP, and
+   * compares the baked value to the original byte for byte — so an encode that
+   * round-trips in a unit test but not through the deploy path fails here. It is
+   * still strad's own double answering, which is the limit of what this repo can
+   * prove; see the caveat in the PR body.
+   */
+  it("bakes a supplementary env value with its structural bytes intact", async () => {
+    const PEM = [
+      "-----BEGIN PRIVATE KEY-----",
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKj",
+      "-----END PRIVATE KEY-----",
+      "",
+    ].join("\n");
+    const SA_JSON = JSON.stringify({
+      type: "service_account",
+      project_id: "strad-secrets-test",
+      private_key: PEM,
+      client_email: "svc@strad-secrets-test.iam.gserviceaccount.com",
+    });
+
+    await fake.store.create({
+      path: gatewayParameterPath("test", "BAKED_PEM"),
+      secret: true,
+      value: PEM,
+    });
+    await fake.store.create({
+      path: gatewayParameterPath("test", "BAKED_SA_JSON"),
+      secret: true,
+      value: SA_JSON,
+    });
+
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: gcs
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    path: /gcs
+    entitlements: [admin]
+    env:
+      GCS_PRIVATE_KEY: "\${BAKED_PEM}"
+      GCS_SA_JSON: "\${BAKED_SA_JSON}"
+`,
+        "  - name: bundle\n",
+      ),
+    );
+    expect(result.stderr).toBe("");
+    expect(result.ok).toBe(true);
+
+    const envs = result.spec!.services.flatMap((s) => s.envs) as {
+      key: string;
+      value?: string;
+    }[];
+    // Byte for byte — newlines, braces, quotes and all. `toBe` rather than
+    // `toContain`: a decode that dropped a trailing newline or mangled an
+    // escape would still "contain" most of the key.
+    expect(envs.find((e) => e.key === "GCS_PRIVATE_KEY")?.value).toBe(PEM);
+    expect(envs.find((e) => e.key === "GCS_SA_JSON")?.value).toBe(SA_JSON);
+    // And the base64url never leaks through as the value.
+    expect(JSON.stringify(result.spec)).not.toContain(
+      Buffer.from(PEM, "utf8").toString("base64url"),
+    );
+  });
+
   it("FAILS the deploy when the config references a secret the store lacks", async () => {
     const result = await render(
       CONFIG_YAML(`  - slug: other

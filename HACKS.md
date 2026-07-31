@@ -964,6 +964,51 @@ and give `deploy-staging.yml` the same `sha-` resolution for the bundle that it
 does for the core (`--bundle-image` already exists and needs no change). Do it
 together with hack #25, which wants the same input for the same reason.
 
+## 33. Secret values are base64url in Secret Manager, and the encoding is unverified against live Google
+
+**What.** A secret parameter's bytes are stored base64url-encoded in Secret Manager,
+and the Parameter Manager envelope carries `"encoding":"base64url"` to say so. The
+value a human sees with `gcloud secrets versions access` is therefore not the value
+— it has to be piped through `base64 -d`. strad's own reads (`resolve`, `reveal`,
+the MCP `readValue`) decode it, so this is only visible to someone bypassing strad.
+
+**Why.** A strad parameter is created with `parameter-format=JSON`, so `:render`
+splices the secret's raw bytes into the payload TEXT and rejects a result that looks
+structurally damaged. A value carrying `"`, `\`, `{`, `}` or a newline is a
+`400 INVALID_ARGUMENT … injection detected` — which is every PEM key, every
+service-account blob and the `STRAD_TOKENS` array. The alternative fixes are worse:
+a non-JSON parameter format loses the envelope that carries the canonical path (the
+id-collision guard depends on it), and per-value escaping means owning an escaping
+scheme for someone else's parser.
+
+**The part that is not verified.** `isRenderSafe` — the predicate that says which
+characters break a render — is a LOWER BOUND assembled from one live repro (quotes
+fail) and one live control (the five seeded prod names, one of which carries `,` and
+`=`, render fine). Braces, brackets, backslashes and control characters are assumed
+unsafe rather than demonstrated so. Nothing rests on the boundary being in exactly
+the right place, because base64url emits `[A-Za-z0-9_-]` only and is inert under any
+detector at least that permissive — but the predicate is also what the in-memory
+double enforces, so if Google is STRICTER than this in some way we have not seen,
+the double would still be the more permissive of the two.
+
+**Live verification is outstanding.** Every test here runs against strad's own
+double. That double now substitutes textually and refuses what `isRenderSafe`
+refuses, which is a faithful model of the reported failure — but it is a model. The
+evidence that closed the original bug report was a `:render` against real Google, and
+nothing in this repo reproduces that. Staging has no token minted for it yet.
+
+**Undo, and the one place this design fails SILENTLY.** Delete `encoding` from the
+envelope and stop calling `encodeSecretValue`. Values written before it are
+unaffected — an absent `encoding` has always meant the literal bytes — but values
+written while it was on do not merely need re-seeding: code that predates this commit
+does not know the field exists, so it hands a child process base64url TEXT as its
+credential and reports success. Everything else here is built to fail loudly; this is
+the exception, and it applies to an IMAGE ROLLBACK of `core` past this commit as much
+as to a revert. That matters because rollback is a first-class path in this repo (boot
+stays lenient on purpose so a rollback cannot become an outage). Before rolling `core`
+back past this commit, re-seed every secret parameter written after it, or accept that
+those names resolve to gibberish.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
