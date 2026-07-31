@@ -20,9 +20,17 @@ on:
     branches:
       - main
     paths:
+      # ONE ENTRY PER TREE THE DOCKERFILE BUILDS. `servers/secrets/**` was
+      # missing, and the way that fails is the worst available: a change to the
+      # secrets MCP client lands on `main`, cuts no image, and the bundle keeps
+      # serving the old code — so the fix is merged, believed shipped, and not
+      # running. That is how a secret-value encoding fix would have reached
+      # `main` while `/mcp` carried on writing unencoded values.
+      # Cross-check against `COPY --from=build-*` in servers/bundle/Dockerfile.
       - "servers/bundle/**"
       - "servers/bundle-api/**"
       - "servers/onepassword/**"
+      - "servers/secrets/**"
       - "servers/good-eggs/**"
       - "servers/fetchpet/**"
       - "servers/pointsyeah/**"
