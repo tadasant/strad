@@ -65,6 +65,19 @@ on:
           NON-SECRET canaries only — it is echoed in this run's log.
         type: string
         required: false
+      seed_delete:
+        description: >-
+          With seed, a name to REMOVE from the gateway namespace. Comma-separated.
+        type: string
+        required: false
+      seed_only:
+        description: >-
+          Seed and stop, without rendering or deploying. Use when the store must
+          change under a RUNNING gateway — a redeploy would restart the process
+          and destroy the thing being observed.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: staging-deploy
@@ -324,11 +337,16 @@ jobs:
           STRAD_STORE_ADMIN_KEY_JSON: ${{ env.SECRETS_ADMIN_KEY_JSON }}
           SEED_ROTATE: ${{ inputs.seed_rotate }}
           SEED_SET: ${{ inputs.seed_set }}
+          SEED_DELETE: ${{ inputs.seed_delete }}
         run: |
           set -euo pipefail
           ARGS=(--config infra/strad.staging.yaml --commit)
           [ "$SEED_ROTATE" = "true" ] && ARGS+=(--rotate)
           [ -n "$SEED_SET" ] && ARGS+=(--set "$SEED_SET")
+          if [ -n "$SEED_DELETE" ]; then
+            IFS=',' read -ra NAMES <<< "$SEED_DELETE"
+            for n in "${NAMES[@]}"; do ARGS+=(--delete "$n"); done
+          fi
           node --experimental-transform-types scripts/seed-store.ts "${ARGS[@]}"
 
       - name: Report what the parameter store holds
@@ -372,7 +390,7 @@ jobs:
       - name: Render the App Platform spec
         # Emits /tmp/spec.json with secret VALUES inlined as SECRET env vars.
         # It is written to a file, never echoed — a rendered spec is not log-safe.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # A branch build wins over `version`: if we just built this ref, that
           # is unambiguously the code the dispatcher asked to see on staging.
@@ -430,7 +448,7 @@ jobs:
         # If App Platform later 403s pulling the image, the PAT is FINE-GRAINED
         # (package-scoped) and strad's package is not in its scope — a one-line
         # fix on the token. See HACKS.md.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
         run: |
@@ -448,13 +466,13 @@ jobs:
         # `self-hosted` every runner process on the box shares /home/runner.
         # `no_auth` skips the write; each doctl step below supplies the token
         # through its own env.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         uses: digitalocean/action-doctl@v2
         with:
           no_auth: "true"
 
       - name: Deploy (create or update strad-staging)
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # doctl reads both of these natively — see the smoke-test step below.
           DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
@@ -471,7 +489,7 @@ jobs:
           fi
 
       - name: Smoke-test the live endpoint
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         env:
           # Every doctl step carries its own token rather than reading the
           # config file `doctl auth init` would have left in a shared $HOME.
@@ -519,7 +537,7 @@ jobs:
         # It runs the same probe the containers run, against the same keys, and
         # prints booleans only — the keys are read from the env and never echoed,
         # and testIamPermissions returns no secret material.
-        if: steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
         continue-on-error: true
         run: |
           set -uo pipefail

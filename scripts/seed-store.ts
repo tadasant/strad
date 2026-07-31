@@ -15,7 +15,7 @@
  *
  * Usage:
  *   node --experimental-transform-types scripts/seed-store.ts \
- *     --config <path> [--commit] [--rotate] [--set NAME=VALUE]...
+ *     --config <path> [--commit] [--rotate] [--set NAME=VALUE]... [--delete NAME]...
  *
  * DRY RUN BY DEFAULT. Without `--commit` it prints exactly what it would write
  * and writes nothing, because the failure mode of a seeder is a store full of
@@ -92,7 +92,8 @@ const SEED_ENV = {
 function usage(message: string): never {
   console.error(`::error::${message}`);
   console.error(
-    "usage: seed-store --config <path> [--commit] [--rotate] [--set NAME=VALUE]",
+    "usage: seed-store --config <path> [--commit] [--rotate] " +
+      "[--set NAME=VALUE] [--delete NAME]",
   );
   process.exit(2);
 }
@@ -102,6 +103,7 @@ let values: {
   commit?: boolean;
   rotate?: boolean;
   set?: string[];
+  delete?: string[];
 };
 try {
   ({ values } = parseArgs({
@@ -110,6 +112,7 @@ try {
       commit: { type: "boolean" },
       rotate: { type: "boolean" },
       set: { type: "string", multiple: true },
+      delete: { type: "string", multiple: true },
     },
   }));
 } catch (err) {
@@ -209,6 +212,26 @@ report("rotate", toRotate);
 report("already seeded (use --rotate to overwrite)", alreadyThere);
 report("no value in the environment — SKIPPED", absent);
 
+/**
+ * `--delete` removes a name from the namespace.
+ *
+ * A seeder that cannot unseed is half a tool: a name written under the wrong
+ * spelling, or one that should never have moved into the store, otherwise has no
+ * remedy short of the console. It is also how the `envFallback` half of the chain
+ * is demonstrated — drop a name the environment still carries and the running
+ * gateway falls through to it.
+ *
+ * It is NOT derived from the config. Deleting is the one action here with no
+ * undo, so every name is named explicitly on the command line, and a name the
+ * store does not hold is reported rather than treated as an error.
+ */
+const toDelete = (values.delete ?? []).filter((name) => {
+  if (held.has(name)) return true;
+  console.log(`  not in the namespace, nothing to delete: ${name}`);
+  return false;
+});
+report("DELETE", toDelete);
+
 if (!values.commit) {
   console.log(
     `${values.config}: dry run, nothing written. Re-run with --commit.`,
@@ -245,6 +268,16 @@ for (const name of toRotate) {
   } catch (err) {
     failures++;
     console.error(`::error::rotate ${name} failed: ${errorSummary(err)}`);
+  }
+}
+
+for (const name of toDelete) {
+  try {
+    await store.destroy(gatewayParameterPath(config.gateway.env, name));
+    console.log(`  deleted ${name}`);
+  } catch (err) {
+    failures++;
+    console.error(`::error::delete ${name} failed: ${errorSummary(err)}`);
   }
 }
 
