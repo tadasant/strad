@@ -42,10 +42,15 @@ flowchart LR
   core and bundle images under branch-scoped tags and deploys them — without
   moving `:latest` or touching the handshake below. See [deploying a
   branch](/operate/operations/#deploying-a-branch-to-staging).
-- **A deploy ships an immutable tag.** `:latest` exists for humans and for
-  `docker pull`; no deploy uses it. `render-spec` refuses a core image on a
-  mutable tag, and `deploy-staging.yml` resolves `sha-<commit>` instead. See
-  [which image a deploy
+- **A deploy ships an immutable tag — for every component.** `:latest` exists for
+  humans and for `docker pull`; no deploy uses it. `render-spec` refuses a core
+  image on a mutable tag outright, and `deploy-staging.yml` resolves
+  `sha-<commit>` for the core **and** the bundle. Under
+  `--require-immutable-images` — which the staging deploy passes —
+  `render-spec` refuses to emit a spec in which any component at all ships a tag
+  that moves; without it, the same finding is a warning naming every component,
+  because prod renders this script against a config in another repository whose
+  `image:` lines it cannot change. See [which image a deploy
   ships](/operate/operations/#which-image-a-deploy-ships).
 - **`tadasant-internal` runs prod.** It is a separate, deliberate act with a
   different DigitalOcean token. It consumes the published image plus its **own

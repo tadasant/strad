@@ -37,6 +37,13 @@ on:
           built for this ref. A mutable tag (latest) is refused.
         type: string
         required: false
+      bundle_version:
+        description: >-
+          Bundle image tag to deploy (e.g. sha-<commit>). Omit to use the newest
+          bundle image an ancestor of this ref published. A mutable tag is
+          refused.
+        type: string
+        required: false
       build:
         description: >-
           Build core+bundle images from THIS ref and deploy them under
@@ -330,6 +337,41 @@ jobs:
             | node --experimental-transform-types scripts/resolve-image-tag.ts \
                 --repository "$REPOSITORY" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve an immutable bundle image tag
+        # THE SAME RULE, ON THE OTHER IMAGE — and it took a week-long outage to
+        # get here. The bundle's tag lives in the config, on all 25
+        # `supplementary-image` entries, as `strad-bundle:latest`. That block is
+        # byte-identical on every deploy, so App Platform kept serving the digest
+        # it had resolved for that tag once: on 2026-07-31 both bundle components
+        # were running an image from before PR #33 (2026-07-24) — no `/secrets`
+        # mount at all — while release-bundle-image.yml had pushed a fresh
+        # `:latest` nine minutes before they last restarted. `/healthz` was 200,
+        # every slug was listed, and `?servers=secrets` answered `{"tools":[]}`.
+        #
+        # Skipped only for a branch build, which already names its own bundle
+        # image. An explicit `version` does NOT skip it: that input pins the
+        # CORE, and pinning the core has never been a reason to hand the bundle
+        # back to a tag that moves. `bundle_version` is how you pin this half.
+        #
+        # The walk-back is the normal case here, not an exception. Most commits
+        # touch none of the seven trees the image bakes, so `--kind bundle` steps
+        # past them to the newest ancestor that did publish — which is the image
+        # `:latest` was pointing at anyway, now named so the spec changes and the
+        # platform actually pulls it.
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' && !inputs.build && !inputs.bundle_version }}
+        id: bundletag
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          # The bundle is its own package, beside the core's: tadasant/strad ->
+          # tadasant/strad-bundle. Derived rather than hardcoded so a fork's
+          # deploy resolves its own.
+          REPOSITORY: ${{ github.repository }}-bundle
+        run: |
+          set -euo pipefail
+          git log --first-parent --format=%H -n 50 \
+            | node --experimental-transform-types scripts/resolve-image-tag.ts \
+                --repository "$REPOSITORY" --kind bundle >> "$GITHUB_OUTPUT"
+
       - name: Seed the gateway namespace from the deploy environment
         # THE MIGRATION STEP, and it is opt-in for a reason. Under the `env`
         # provider these values are baked into the app spec on every deploy;
@@ -459,9 +501,13 @@ jobs:
           # `latest` fallback left: render-spec refuses a mutable core tag, so a
           # gap here fails the deploy instead of shipping an unknown image.
           CORE_IMAGE: ${{ needs.build.outputs.core_image || (inputs.version && format('ghcr.io/tadasant/strad:{0}', inputs.version)) || steps.coretag.outputs.image }}
-          # Empty on the release path, which leaves the config's own
-          # `image:` lines (…/strad-bundle:latest) untouched.
-          BUNDLE_IMAGE: ${{ needs.build.outputs.bundle_image || '' }}
+          # Same precedence as the core, one image over: a branch build wins,
+          # then an explicit `bundle_version` pin, then the `sha-<commit>`
+          # resolved above. There is deliberately no `latest` fallback left —
+          # leaving the config's own `image:` lines in place is what let App
+          # Platform keep serving a digest it had cached before the `/secrets`
+          # mount existed, and --require-immutable-images below now refuses it.
+          BUNDLE_IMAGE: ${{ needs.build.outputs.bundle_image || (inputs.bundle_version && format('ghcr.io/tadasant/strad-bundle:{0}', inputs.bundle_version)) || steps.bundletag.outputs.image }}
           BUILT: ${{ inputs.build && 'true' || 'false' }}
           # Staging runs the console dev bypass until Google OAuth creds land.
           # The container runs NODE_ENV=production, so the bypass also demands
@@ -486,15 +532,20 @@ jobs:
               *) echo "::error::build was requested but produced no branch images (core='${CORE_IMAGE}' bundle='${BUNDLE_IMAGE}')"; exit 1 ;;
             esac
           fi
-          BUNDLE_ARG=()
-          if [ -n "$BUNDLE_IMAGE" ]; then
-            BUNDLE_ARG=(--bundle-image "$BUNDLE_IMAGE")
+          # Every path above now names a bundle image, so an empty one means the
+          # resolve step did not run or produced nothing — and falling through to
+          # the config's `:latest` is the failure this whole change exists to
+          # end. Say which, rather than deploying an image nobody chose.
+          if [ -z "$BUNDLE_IMAGE" ]; then
+            echo "::error::no bundle image resolved. The deploy must name one — the config's :latest is a tag App Platform may satisfy from a digest it cached earlier (HACKS.md #32). Re-run release-bundle-image.yml, or dispatch with an explicit bundle_version."
+            exit 1
           fi
-          echo "Deploying core=${CORE_IMAGE} bundle=${BUNDLE_IMAGE:-<from config>}"
+          echo "Deploying core=${CORE_IMAGE} bundle=${BUNDLE_IMAGE}"
           node --experimental-transform-types scripts/render-spec.ts \
             --config infra/strad.staging.yaml \
             --image "$CORE_IMAGE" \
-            ${BUNDLE_ARG[@]+"${BUNDLE_ARG[@]}"} \
+            --bundle-image "$BUNDLE_IMAGE" \
+            --require-immutable-images \
             --app strad-staging \
             --region nyc \
             --domain staging.strad.tadasant.com > /tmp/spec.json

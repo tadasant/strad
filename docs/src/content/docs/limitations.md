@@ -191,36 +191,45 @@ images or their release workflows would be an outage, not a cleanup.
 **Undo, in order:** re-point prod at `strad-bundle` → confirm it serves → then delete
 the per-server release workflows and images.
 
-### 25. The bundle image cannot be rolled back to a published tag
+### 25. ~~The bundle image cannot be rolled back to a published tag~~ — resolved
 
-A staging deploy can pin the **core** to any published tag (`-f version=0.1.6`, or
-a `sha-<sha>`), because the core image is a render-time argument. The **bundle**
-image is written into `infra/strad.staging.yaml`, and the only override —
-`--bundle-image` — is passed solely for a branch build. So staging's bundle is
-either whatever `strad-bundle:latest` points at, or a branch build. There is no
-"the bundle from three commits ago", even though `release-bundle-image.yml`
-publishes `:sha-<sha>` for exactly that.
+`deploy-staging.yml` takes a `bundle_version` input that renders
+`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>`, and a deploy that does not
+set it resolves a `sha-<commit>` bundle tag anyway. Pinning the core alone no
+longer hands the bundle back to a tag that moves — it leaves it on the newest
+image an ancestor published.
 
-This is a deliberate omission rather than an oversight: the core and the bundle
-are meant to move together, and rolling one back alone produces a spec that routes
-paths the running bundle no longer serves.
+The original reasoning still holds as advice: the core and the bundle are meant to
+move together, and pinning one alone can produce a spec that routes paths the
+running bundle does not serve. Nothing forces you to pin both.
 
-Branch tags also accumulate in GHCR with nothing pruning them.
+Branch tags still accumulate in GHCR with nothing pruning them.
 
-**Undo:** add a `bundle_version` input that renders
-`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` — the render-side override
-already exists.
+### 32. ~~The bundle component still deploys a mutable tag~~ — resolved on staging
 
-### 32. The bundle component still deploys a mutable tag
+`deploy-staging.yml` resolves `sha-<commit>` for the bundle exactly as it does for
+the core, passes it on every deploy, and passes `--require-immutable-images`,
+under which `render-spec` refuses to emit a spec where any component ships a tag
+that moves.
 
-The core image is pinned to an immutable tag on every deploy — `sha-<commit>`, an
-explicit `version`, or a branch build — and `render-spec` refuses `latest` for it
-outright. The **bundle** gets none of that: its image is
-`ghcr.io/tadasant/strad-bundle:latest` on all 24 `supplementary-image` entries in
+**Prod is not covered yet.** `strad-deploy-prod.yml` lives in tadasant-internal,
+renders through this same script, and passes no `--bundle-image` — so its
+supplementary components still ship `:latest`. It gets a warning naming every
+affected component on every deploy rather than a failure: failing a deploy over a
+tag it has no way to change would break prod without fixing anything. The change
+there is to resolve a bundle tag the same way and pass both flags.
+
+What the mutable tag actually did, kept as the record:
+
+The core image had been pinned to an immutable tag on every deploy since #60 —
+`sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
+refused `latest` for it outright. The **bundle** got none of that: its image was
+`ghcr.io/tadasant/strad-bundle:latest` on all 25 `supplementary-image` entries in
 `infra/strad.staging.yaml`, overridden only by `--bundle-image` on a branch build.
 
-That is the same failure that took staging down — App Platform may serve a mutable
-tag from whatever it resolved last — one component over, and nothing refuses it.
+That was the same failure that took staging down — App Platform may serve a
+mutable tag from whatever it resolved last — one component over, and nothing
+refused it.
 
 **It has bitten.** On 2026-07-31 both bundle components were serving an image
 that predated the `/secrets` mount by a week, while a fresh `:latest` sat in the
@@ -231,21 +240,19 @@ answered the client `200 {"tools":[]}`; `/healthz` said 200 with all 27 slugs
 listed. A secrets server that registers no tools cannot place a secret, and
 nothing in the deployment said so.
 
-The core had an immutable tag to reach for and is already a render-time argument.
-The bundle's tag is a config value, so pinning it means editing 24 `image:` lines
-per release or adding the `bundle_version` input that **#25** declines to add —
-a change to how the bundle is released, not a line in the deploy workflow.
+The core had an immutable tag to reach for and was already a render-time argument.
+The bundle's tag is a config value, which is why it took a `--bundle-image` the
+deploy always passes rather than editing 25 `image:` lines per release.
 
-**What detects it now:** not the tag, the consequence. Core probes each slug's
+**What also detects it:** not the tag, the consequence. Core probes each slug's
 `tools/list` on an interval and publishes the slugs serving nothing on
 `/healthz`; the staging deploy fails when a component **we deploy** is
-unreachable. That catches a stale image only when the staleness changes a
-**mount** — an image that keeps every path and changes what a tool does is still
-invisible.
+unreachable.
 
-**Undo:** extend the mutable-tag refusal to every image in the rendered spec, and
-resolve `sha-<commit>` for the bundle the way the core already does. Do it with
-**#25**, which wants the same input for the same reason.
+**What detection is still worth:** it catches a stale image only when the
+staleness changes a **mount**. An image that keeps every path and changes what a
+tool does is invisible to it, and the tag is the only thing that can speak for
+that — which is why both now exist.
 
 ### 26. The per-server parameter namespace is provisioned but unseeded
 

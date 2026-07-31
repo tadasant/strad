@@ -439,19 +439,22 @@ describe("scripts/resolve-image-tag.ts", () => {
     expect(out.status).toBe(1);
     expect(out.stderr).not.toMatch(/fatal|ambiguous argument/);
     expect(out.stderr).toMatch(
-      /no published image in the last 2 commits[\s\S]*all of them are docs-only/,
+      /no published image in the last 2 commits[\s\S]*none of them was required to publish one/,
     );
   });
 });
 
 /**
- * Newest-first candidates. `docsOnly` is a spy, because WHETHER it is called is
- * as load-bearing as what it answers — see the laziness test below.
+ * Newest-first candidates. `mayLackImage` is a spy, because WHETHER it is
+ * called is as load-bearing as what it answers — see the laziness test below.
  */
-const docs = (sha: string): Candidate => ({ sha, docsOnly: vi.fn(() => true) });
+const docs = (sha: string): Candidate => ({
+  sha,
+  mayLackImage: vi.fn(() => true),
+});
 const code = (sha: string): Candidate => ({
   sha,
-  docsOnly: vi.fn(() => false),
+  mayLackImage: vi.fn(() => false),
 });
 
 describe("resolveDeployTag", () => {
@@ -476,7 +479,7 @@ describe("resolveDeployTag", () => {
       sha: A,
       distance: 0,
     });
-    for (const c of candidates) expect(c.docsOnly).not.toHaveBeenCalled();
+    for (const c of candidates) expect(c.mayLackImage).not.toHaveBeenCalled();
   });
 
   it("asks only about commits the registry has no image for", async () => {
@@ -487,9 +490,9 @@ describe("resolveDeployTag", () => {
     const candidates = [docs(A), docs(B), docs(C)];
     await resolveDeployTag(candidates, published);
     // A: probed, absent, so classified. B: probed and found. C: untouched.
-    expect(candidates[0]!.docsOnly).toHaveBeenCalledTimes(1);
-    expect(candidates[1]!.docsOnly).not.toHaveBeenCalled();
-    expect(candidates[2]!.docsOnly).not.toHaveBeenCalled();
+    expect(candidates[0]!.mayLackImage).toHaveBeenCalledTimes(1);
+    expect(candidates[1]!.mayLackImage).not.toHaveBeenCalled();
+    expect(candidates[2]!.mayLackImage).not.toHaveBeenCalled();
   });
 
   it("propagates a classification error rather than guessing", async () => {
@@ -499,7 +502,7 @@ describe("resolveDeployTag", () => {
     const published = vi.fn().mockResolvedValue(false);
     const unknowable: Candidate = {
       sha: A,
-      docsOnly: () => {
+      mayLackImage: () => {
         throw new Error("its parent is not in this checkout (shallow clone)");
       },
     };
@@ -543,7 +546,7 @@ describe("resolveDeployTag", () => {
     );
   });
 
-  it("throws when every commit in range is docs-only and none published", async () => {
+  it("throws when nothing in range published and nothing had to", async () => {
     const published = vi.fn().mockResolvedValue(false);
     await expect(
       resolveDeployTag([docs(A), docs(B)], published),
