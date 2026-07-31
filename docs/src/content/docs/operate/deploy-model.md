@@ -248,6 +248,14 @@ Four checks, in order:
    last declaration silently wins and the other server's console runs as the wrong
    identity.
 
+   The collision half is now **also** rejected at schema-validation time (check 2
+   above), which is the earlier and better place to say it — and that check covers
+   `env:` too, per bundle. See [`env:` may be bare; `consoleEnv:` must be
+   slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).
+   This one stays because it inspects the **rendered spec**, which is what actually
+   ships: a renderer regression that dropped or merged a key would produce this
+   state from a config that validated cleanly, and nothing else would notice.
+
 **It is strict where the gateway is lenient, and that asymmetry is deliberate.**
 `parseConfig` at boot keeps ignoring unknown keys, because the config and the image
 version independently: an image that refused to boot on a key it had never heard of

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
+import type { ServerConfig, StradConfig } from "../src/config/schema.ts";
 import { unknownConfigKeys } from "../src/config/strict.ts";
 import { consoleScopeProblems } from "../src/deploy/preflight.ts";
 
@@ -252,6 +253,20 @@ describe("check-config", () => {
 // Check 4, driven directly — the CLI cannot falsify it
 // =============================================================================
 
+/**
+ * A config carrying a server the SCHEMA would refuse.
+ *
+ * Only for asserting a downstream defence against a state the config gate now
+ * blocks. Building it by hand keeps the deeper check honest: "unreachable
+ * through the front door" is a reason to keep a fence, not to stop testing it.
+ */
+function withExtraServer(
+  config: StradConfig,
+  server: ServerConfig,
+): StradConfig {
+  return { ...config, servers: [...config.servers, server] };
+}
+
 describe("consoleScopeProblems", () => {
   // Through the CLI this check can only ever pass: the renderer and the check
   // walk the same servers, so the spec always carries the keys. Drive it with a
@@ -291,16 +306,30 @@ describe("consoleScopeProblems", () => {
   it("catches two servers claiming one key with different values", () => {
     // core holds ONE flat environment, so the second declaration silently
     // overwrites the first and one console runs as the wrong identity.
-    const twoServers = parseConfig(`${BASE}  - slug: secrets-two
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle:1.0.0
-    bundle: bundle
-    path: /secrets-two
-    entitlements: [admin]
-    consoleEnv:
-      SECRETS_PROJECT_ID: "other-project"
-      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${OTHER_ADMIN_KEY}"
-`);
+    //
+    // The config is assembled rather than parsed on purpose: `parseConfig` now
+    // REJECTS this shape outright (the env collision block in
+    // src/config/schema.ts), which is the earlier and better gate. This check
+    // still has to hold, because it reads the RENDERED SPEC — a renderer that
+    // dropped or merged a key would produce this state from a config that
+    // validated cleanly, and nothing else would notice.
+    const twoServers = withExtraServer(parseConfig(BASE), {
+      kind: "supplementary-image",
+      slug: "secrets-two",
+      image: "ghcr.io/tadasant/strad-bundle:1.0.0",
+      bundle: "bundle",
+      path: "/secrets-two",
+      entitlements: ["admin"],
+      enabled: true,
+      timeoutMs: 120_000,
+      params: false,
+      env: {},
+      headers: {},
+      consoleEnv: {
+        SECRETS_PROJECT_ID: "other-project",
+        SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${OTHER_ADMIN_KEY}",
+      },
+    });
     const problems = consoleScopeProblems(
       twoServers,
       specWith([
