@@ -10,7 +10,7 @@ import {
   buildSecretProvider,
   hydrateBootEnv,
 } from "./secrets/provider/index.ts";
-import { startTelemetry } from "./telemetry/index.ts";
+import { event, startTelemetry } from "./telemetry/index.ts";
 
 async function main(): Promise<void> {
   const env = process.env;
@@ -43,16 +43,6 @@ async function main(): Promise<void> {
   // Under the env provider this finds everything already set and does nothing.
   // A bundle asks for strictly less than core — see hydrate.ts.
   const hydrated = await hydrateBootEnv(secretProvider, mode, env);
-  if (hydrated.length > 0) {
-    // Names only. Never a value, and never a name paired with one.
-    console.log(
-      JSON.stringify({
-        evt: "strad.secrets_hydrated",
-        provider: secretProvider.name,
-        keys: hydrated,
-      }),
-    );
-  }
 
   // Telemetry starts before the registry connects to anything and before we
   // listen, so that a slow or failing boot is itself observable. A boot that
@@ -77,6 +67,18 @@ async function main(): Promise<void> {
       environment: config.gateway.env,
     },
   });
+
+  // Reported AFTER telemetry starts, not at the moment it happened. Hydration
+  // has to run first — it is what SUPPLIES the OTLP headers — so an event
+  // emitted there would reach stdout and never the collector, which is the
+  // failure mode this whole change is about. Names only, never a value.
+  if (hydrated.length > 0) {
+    event({
+      evt: "strad.secrets_hydrated",
+      provider: secretProvider.name,
+      keys: hydrated,
+    });
+  }
 
   // The boot-time bag, read AFTER hydration so it reflects anything the provider
   // supplied. It backs the console's `consoleEnv:` resolution (src/ui) — a
@@ -152,18 +154,16 @@ async function main(): Promise<void> {
   const port = Number(env.PORT ?? 8080);
 
   const server = app.listen(port, () => {
-    console.log(
-      JSON.stringify({
-        evt: "strad.listening",
-        port,
-        mode,
-        bundle: bundleName ?? "core",
-        env: config.gateway.env,
-        servers: registry.slugs,
-        tokens: tokenCount,
-        telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
-      }),
-    );
+    event({
+      evt: "strad.listening",
+      port,
+      mode,
+      bundle: bundleName ?? "core",
+      env: config.gateway.env,
+      servers: registry.slugs,
+      tokens: tokenCount,
+      telemetry: telemetry.enabled ? telemetry.serviceName : "disabled",
+    });
     // AFTER listening, deliberately: the first probe reaches every upstream, and
     // on a bundle-hosted builtin that upstream is another strad which may still
     // be coming up. Starting here costs the boot nothing and the interval
@@ -173,7 +173,10 @@ async function main(): Promise<void> {
 
   // App Platform sends SIGTERM and does not wait long. Close cleanly.
   const shutdown = async (signal: string) => {
-    console.log(JSON.stringify({ evt: "strad.shutdown", signal }));
+    // Through `event`, so a clean SIGTERM leaves a record in the ingestor. Its
+    // ABSENCE next to a restart is how you tell an orderly stop from an OOM
+    // kill, and that distinction is only useful if the line ships.
+    event({ evt: "strad.shutdown", signal });
     // BEFORE the adapters it probes through: a probe still in flight when
     // registry.close() lands would fail against a closed adapter and write a
     // "this slug serves NOTHING" line on the way out the door.

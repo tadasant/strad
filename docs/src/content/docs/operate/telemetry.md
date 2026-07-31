@@ -165,9 +165,10 @@ attributed by `mcp.server` and `mcp.upstream.kind`. The background monitor
 **It is the signal this fleet was missing.** A slug can be configured, entitled,
 routed and dead, and the only symptom is a `tools/list` that comes back empty —
 which reads exactly like a server that has no tools. That state ran for a week on
-both environments and left nothing behind but a stdout line, because strad ships
-metrics and traces and deliberately ships no logs (see below). A gauge pinned at
-zero for a slug, on the other hand, is a thing you can alert on:
+both environments and left nothing behind but a stdout line nothing ingested (the
+[log exporter](#logs--strads-own-events-and-only-those) is new, and is the other
+half of this fix). A gauge pinned at zero for a slug, on the other hand, is a
+thing you can alert on:
 
 ```promql
 min_over_time(strad_mcp_tool_surface{mcp_upstream_kind="supplementary-image"}[15m]) == 0
@@ -219,27 +220,86 @@ Two things that look like omissions and are not:
   `exception.stacktrace` as span-event attributes, and an upstream MCP server's
   error text is arbitrary text we did not author — it can echo the request back.
   Errors are _classified_ instead.
-- **No OTLP log exporter is configured.** strad's stdout does contain upstream
-  error messages, and that is fine where it is — stdout is the operator's own
-  console. Shipping it to an external ingestor would drag those messages across
-  this boundary. If you ever add a log exporter, redact those lines first.
-
-  Know the cost of that choice, because it has been paid: an event that only ever
-  appears on stdout is, on App Platform, an event nobody reads. The `secrets`
-  slug served zero tools for a week on both environments and wrote
-  `mcp.list_tools_failed` every single time anyone asked — into a stream with no
-  ingestor. **So a signal worth acting on belongs in a metric, not only in a log
-  line.** `strad.mcp.tool_surface` above is that lesson applied: the same fact,
-  in the channel that actually leaves the container, carrying only strad's own
-  vocabulary.
+- **The stdout STREAM is never shipped.** It carries upstream error messages —
+  arbitrary text strad did not author — and exporting it wholesale would drag
+  those across this boundary. What is exported is strad's own events, field by
+  field, against an allowlist. See below.
 
 `test/telemetry.redaction.test.ts` pins all of this: it drives a real MCP tool
 call with a credential-shaped canary planted in **both** the arguments and the
-result, serialises every exported span and metric, and asserts the canary appears
-nowhere. It also asserts the useful signals _do_ emit — otherwise it would pass
-happily on an implementation that exports nothing at all.
+result, serialises every exported span, metric **and log record**, and asserts
+the canary appears nowhere. It also asserts the useful signals _do_ emit —
+otherwise it would pass happily on an implementation that exports nothing at all.
 
 See `src/telemetry/redact.ts`.
+
+## Logs — strad's own events, and only those
+
+strad exports its structured events as OTLP logs. It does **not** export stdout.
+
+That distinction is the entire design, and it was learned the expensive way. For
+a long time there was no log exporter at all, on the reasoning above: stdout
+carries upstream error text, so shipping the stream would breach the boundary.
+Correct — and it cost a week. The `secrets` slug served zero tools in production;
+`mcp.list_tools_failed` named the failure on every single request and went to a
+stream with no ingestor. On App Platform, a log nobody ships is a log nobody
+reads. The boundary held perfectly while the deployment was silently broken.
+
+So `src/telemetry/events.ts` carries an **allowlist**: every event that may leave
+the process, and for each one the exact fields that may go with it.
+
+| Event                                                  | Why it is exported                                 |
+| ------------------------------------------------------ | -------------------------------------------------- |
+| `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                  |
+| `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                    |
+| `strad.tool_surface`                                   | the fleet summary, on change                       |
+| `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled |
+| `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset       |
+| `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing      |
+| `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved   |
+| `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill    |
+
+Three rules make it safe, and they are worth stating because the boundary is the
+reason this exists at all rather than a `pino` transport:
+
+1. **Deny by default.** A field not on its event's list is not exported — not
+   truncated, not redacted, absent. Adding a field to a log call does not
+   silently start shipping it; getting it on the list is how it ships.
+2. **`error` is on no list.** Every upstream error message in this codebase lands
+   in a field of that name — the one that mattered here was a full HTML page from
+   someone else's Express. Where an event carries one, the exporter substitutes
+   `error.kind`, the classification from `redact.ts`, which is one of a fixed set
+   of words strad wrote.
+3. **The streams still carry every event in full**, upstream text and all. An
+   operator with a shell sees the upstream's own words; the ingestor sees
+   strad's. One thing did change about them: an event whose name ends `_failed`
+   or `_degraded` now goes to **stderr** regardless of which call site emitted
+   it, so `mcp.auth_failed` moved off stdout. The stream now agrees with what the
+   event is rather than with how it was written.
+
+Two things are deliberately absent. **`mcp.auth_failed`** is not exported at all:
+its fields are safe, but it fires before authentication succeeds, so anyone who
+can POST `/mcp` could fill the batch queue and evict the signals that matter.
+`strad.mcp.auth_failures` counts the same thing by the same `reason`, in a
+channel with no queue to starve. And the **424's requested-server list** is
+filtered to slugs that actually exist in the config, with the rest reduced to a
+count — `?servers=` is validated against nothing, so it is the one place a client
+writes free text into strad's own vocabulary. The same filtering applies to the
+`mcp.server` attribute on `strad.mcp.unavailable`, where an unfiltered value
+would let any token holder mint metric series at will.
+
+Every exportable event a client can drive — `mcp.list_tools_failed`,
+`mcp.list_resources_failed`, `mcp.policy_unmatched_tools` and `mcp.unavailable` —
+is throttled to one exported record per slug per minute, for the same
+queue-starvation reason. A repeated fault is therefore under-reported by up to a
+minute in the ingestor; the streams are never throttled, and
+`strad.mcp.tool_surface` carries the same fact continuously. Fault events export
+at `SeverityNumber.ERROR`, so `severity >= ERROR` finds them.
+
+Records are batched, not sent per-record: these are diagnostics, and a synchronous
+round trip on the failure path would add latency to exactly the requests already
+going badly. As with every other signal here, no `OTEL_EXPORTER_OTLP_ENDPOINT`
+means no exporter and no behaviour change.
 
 ## The supplementary images
 

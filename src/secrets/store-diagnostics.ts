@@ -1,6 +1,7 @@
 import type { ParameterStore } from "./parameters/index.ts";
 import { variableOf } from "./parameters/namespace.ts";
 import { errorSummary } from "./provider/snapshot.ts";
+import { event } from "../telemetry/index.ts";
 
 /**
  * What the parameter store holds, and what it cannot hand over.
@@ -138,12 +139,10 @@ async function withDeadline<T>(
   } catch (err) {
     // Logged by class, never by message, for the reason snapshot.ts states: a
     // failure on this path can embed a window of a rendered secret.
-    console.warn(
-      JSON.stringify({
-        evt: "strad.store_diagnostics_failed",
-        error: errorSummary(err),
-      }),
-    );
+    event({
+      evt: "strad.store_diagnostics_failed",
+      error: errorSummary(err),
+    });
     return null;
   } finally {
     if (timer) clearTimeout(timer);

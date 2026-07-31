@@ -1,3 +1,4 @@
+import { event } from "../telemetry/events.ts";
 import { instruments } from "../telemetry/instruments.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
@@ -215,8 +216,10 @@ export class ToolSurfaceMonitor {
   private readonly warn: (event: Record<string, unknown>) => void;
 
   constructor(private readonly opts: MonitorOptions) {
-    this.log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
-    this.warn = opts.warn ?? ((e) => console.error(JSON.stringify(e)));
+    // `event` for both: it routes a `_degraded` evt to stderr itself, and
+    // ships the allowlisted fields to the collector on the way past.
+    this.log = opts.log ?? event;
+    this.warn = opts.warn ?? event;
   }
 
   /** The last observation, or null before the first probe completes. */
@@ -229,12 +232,11 @@ export class ToolSurfaceMonitor {
     const first = this.current === null;
     this.current = snapshot;
 
-    // METRICS, not just a log line. strad exports metrics and traces to the
-    // collector and deliberately exports no logs — stdout carries upstream text
-    // this process did not author, and shipping it would drive through
-    // telemetry/redact.ts. So the log below is for whoever reads container
-    // output, and THIS is the half that reaches the obs stack: a gauge that sits
-    // at zero for a slug serving nothing, so it can be alerted on.
+    // METRICS as well as the log line, and they answer different questions. The
+    // events below ship too (telemetry/events.ts), but they are discrete and
+    // change-triggered; a gauge is the thing you can alert on without having to
+    // reason about whether the interesting record was emitted while you were
+    // looking. It sits at zero for a slug serving nothing.
     //
     // THE ATTRIBUTES ARE ONLY THINGS THAT CANNOT CHANGE FOR A SLUG. `state`
     // belongs in the log line and on /healthz, and emphatically NOT here: OTLP
@@ -266,7 +268,7 @@ export class ToolSurfaceMonitor {
           this.log({
             evt: "strad.tool_surface_recovered",
             slug: surface.slug,
-            tools: surface.tools,
+            tool_count: surface.tools,
           });
         }
         continue;
@@ -302,8 +304,8 @@ export class ToolSurfaceMonitor {
       this.log({
         evt: "strad.tool_surface",
         observedAt: snapshot.observedAt,
-        servers: snapshot.surfaces.length,
-        serving: snapshot.surfaces.filter((s) => s.state === "ok").length,
+        server_count: snapshot.surfaces.length,
+        serving_count: snapshot.surfaces.filter((s) => s.state === "ok").length,
         degraded: snapshot.degraded,
       });
     }

@@ -1,6 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { metrics, trace } from "@opentelemetry/api";
+import { logs } from "@opentelemetry/api-logs";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+  type ReadableLogRecord,
+} from "@opentelemetry/sdk-logs";
 import {
   AggregationTemporality,
   InMemoryMetricExporter,
@@ -21,6 +28,10 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import {
+  disableEventExport,
+  enableEventExport,
+  EXPORTABLE,
+  resetEventThrottle,
   resetInstruments,
   startRuntimeMetrics,
   type RuntimeMetricsHandle,
@@ -91,6 +102,7 @@ const env: NodeJS.ProcessEnv = {
 };
 
 const spanExporter = new InMemorySpanExporter();
+const logExporter = new InMemoryLogRecordExporter();
 const metricExporter = new InMemoryMetricExporter(
   AggregationTemporality.CUMULATIVE,
 );
@@ -102,6 +114,7 @@ const metricReader = new PeriodicExportingMetricReader({
 
 let tracerProvider: NodeTracerProvider;
 let meterProvider: MeterProvider;
+let loggerProvider: LoggerProvider;
 let runtime: RuntimeMetricsHandle;
 let server: Server;
 let baseUrl: string;
@@ -118,6 +131,16 @@ beforeAll(async () => {
 
   meterProvider = new MeterProvider({ readers: [metricReader] });
   metrics.setGlobalMeterProvider(meterProvider);
+
+  // strad exports its OWN structured events as OTLP logs (src/telemetry/events.ts),
+  // against a per-event field allowlist. That is a NEW way for text to leave this
+  // process, so it goes under the same canary as spans and metrics.
+  loggerProvider = new LoggerProvider({
+    processors: [new SimpleLogRecordProcessor({ exporter: logExporter })],
+  });
+  logs.disable();
+  logs.setGlobalLoggerProvider(loggerProvider);
+  enableEventExport("strad-test", "0.0.0");
 
   // Instruments memoise their meter, so drop any no-op ones captured by an
   // earlier test file in the same worker.
@@ -194,6 +217,28 @@ beforeAll(async () => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
   });
 
+  // 4. A 424 for a server that does not EXIST, named with the canary.
+  //
+  //    The throttle keys `mcp.unavailable` on one global bucket, so the 424
+  //    above would suppress this one's export. Two distinct scenarios, not a
+  //    repeated fault — reset between them.
+  resetEventThrottle();
+  //
+  //    `?servers=` is parsed and deduped and validated against nothing, so this
+  //    is the one place a client writes free text into strad's own vocabulary.
+  //    An earlier draft of the event allowlist echoed it straight into an
+  //    exported log record, and the metric attribute minted a new time series
+  //    per distinct string on top. Neither is caught by planting the canary in
+  //    a tool argument, which is why it is planted HERE as well.
+  await fetch(`${baseUrl}/mcp?servers=${encodeURIComponent(CANARY_ARG)}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${adminToken.plaintext}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+
   await tracerProvider.forceFlush();
   await metricReader.forceFlush();
 });
@@ -204,6 +249,9 @@ afterAll(async () => {
   await metricReader.shutdown().catch(() => {});
   await tracerProvider.shutdown().catch(() => {});
   await meterProvider.shutdown().catch(() => {});
+  disableEventExport();
+  await loggerProvider?.shutdown().catch(() => {});
+  logs.disable();
   trace.disable();
   metrics.disable();
   resetInstruments();
@@ -221,7 +269,14 @@ function exportedPayload(): string {
     resource: s.resource.attributes,
   }));
   const metricPayload = metricExporter.getMetrics();
-  return JSON.stringify({ spans, metrics: metricPayload });
+  const logRecords = logExporter
+    .getFinishedLogRecords()
+    .map((r: ReadableLogRecord) => ({
+      body: r.body,
+      attributes: r.attributes,
+      severityNumber: r.severityNumber,
+    }));
+  return JSON.stringify({ spans, metrics: metricPayload, logs: logRecords });
 }
 
 describe("telemetry never exports secrets", () => {
@@ -335,6 +390,64 @@ describe("telemetry exports the signals we actually need", () => {
     expect(names).toContain("strad.mcp.in_flight");
     // Per-server latency: which server is starving the others.
     expect(names).toContain("strad.mcp.tool_call.duration");
+  });
+
+  it("ships strad's own events as logs — otherwise the canary above passes for nothing", () => {
+    // Without this, every log assertion in this file would be vacuously true on
+    // an implementation that exports no logs at all. Which is exactly the
+    // implementation that let a dead slug hide for a week.
+    const records = logExporter.getFinishedLogRecords();
+    expect(records.length).toBeGreaterThan(0);
+
+    // `mcp.auth_failed` is deliberately NOT exported, even though its fields are
+    // safe: it fires before authentication succeeds, so anyone who can POST
+    // /mcp could fill the batch queue and evict the signals that matter. The
+    // metric counts it instead, in a channel with no queue to starve.
+    expect(records.some((r) => r.body === "mcp.auth_failed")).toBe(false);
+    expect(allMetricNames()).toContain("strad.mcp.auth_failures");
+
+    // The 424 for `beta`: a CONFIGURED slug, so it may be named.
+    const unavailable = records.filter((r) => r.body === "mcp.unavailable");
+    expect(
+      unavailable.some((r) =>
+        (r.attributes["unavailable"] as string[] | undefined)?.includes("beta"),
+      ),
+    ).toBe(true);
+
+    // The 424 for the canary: a slug that names NOTHING, so it is counted and
+    // never repeated back. `requested` is on no allowlist at all.
+    const invented = unavailable.find(
+      (r) => (r.attributes["unknown_count"] as number) > 0,
+    );
+    expect(invented).toBeDefined();
+    expect(invented?.attributes["unavailable"]).toEqual([]);
+    expect(invented?.attributes).not.toHaveProperty("requested");
+  });
+
+  it("mints no metric series from a slug the caller invented", () => {
+    // Not just a redaction problem: an unbounded `mcp.server` attribute is a
+    // cardinality bomb any token holder could set off.
+    const servers = findMetric("strad.mcp.unavailable")!.dataPoints.map(
+      (d) => d.attributes["mcp.server"],
+    );
+    expect(servers).toContain("beta");
+    expect(servers).toContain("(not configured)");
+    expect(servers).not.toContain(CANARY_ARG);
+  });
+
+  it("exports no field that is not on that event's allowlist", () => {
+    // The boundary is deny-by-default, so this holds for fields nobody has
+    // thought of yet — including any added to a log call later by someone who
+    // has never read events.ts.
+    for (const record of logExporter.getFinishedLogRecords()) {
+      const evt = String(record.body);
+      const allowed = new Set([...(EXPORTABLE[evt] ?? []), "strad.evt"]);
+      // `error.kind` is a substitution, not a passthrough: see events.ts.
+      allowed.add("error.kind");
+      for (const key of Object.keys(record.attributes)) {
+        expect(allowed.has(key), `${evt} exported "${key}"`).toBe(true);
+      }
+    }
   });
 });
 

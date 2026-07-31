@@ -611,6 +611,31 @@ plus `bundle-zimmer-secrets`, which is there for a second parameter store rather
 than for a capability. The entry is kept in `HACKS.md` for history.
 :::
 
+### 37. Exported logs are an allowlist, so most of stdout reaches no ingestor
+
+strad ships its own structured events as OTLP logs, against a per-event field
+allowlist. It does not ship the stdout stream — that carries upstream-authored
+text, and the whole point is to keep it out of an external ingestor.
+
+Three consequences worth knowing before you go looking for something and do not
+find it:
+
+- **`mcp.auth_failed` is not exported.** It fires before authentication
+  succeeds, so anyone who can POST `/mcp` could fill the batch queue and evict
+  the signals that matter. `strad.mcp.auth_failures` counts the same thing by the
+  same `reason`; the per-request detail is on stderr only.
+- **A repeated fault is under-reported by up to a minute.** Every exportable
+  event a client can drive is throttled to one record per slug per minute. The
+  first occurrence always ships, and `strad.mcp.tool_surface` carries the same
+  fact continuously.
+- **An upstream's error message is never in the ingestor.** `error` is on no
+  allowlist; the classification ships instead. Finding out _what_ an upstream
+  said means reading the container console.
+
+The alternative was the status quo, which cost a week of a production `secrets`
+slug serving nothing while writing `mcp.list_tools_failed` on every request. See
+[Telemetry](/operate/telemetry/#logs--strads-own-events-and-only-those).
+
 ## Supply chain and build
 
 ### 10 & 15. The `shared/` trees are vendored, not depended on

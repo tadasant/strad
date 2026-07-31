@@ -169,7 +169,14 @@ opening any PR.
     image (`STRAD_IMAGE_ONLY_SECRET_KEYS` in `src/deploy/appspec.ts`): a plain
     SECRET in the app spec is BROADCAST to every supplementary container.
 - Telemetry never records tool arguments or results. See `src/telemetry/redact.ts`;
-  `test/telemetry.redaction.test.ts` is the canary that enforces it.
+  `test/telemetry.redaction.test.ts` is the canary that enforces it — over spans,
+  metrics AND exported log records.
+- Logs: the stdout STREAM is never shipped (it carries upstream text we did not
+  author). strad's own events are, field by field, against the allowlist in
+  `src/telemetry/events.ts` — deny by default, and `error` is on no list. Use
+  `event()` rather than `console.log(JSON.stringify(...))` for anything an
+  operator would need in an incident; a line that only reaches stdout, on App
+  Platform, reaches nobody.
 
 ## Known sharp edge
 

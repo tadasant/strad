@@ -25,6 +25,7 @@ import type { StradConfig } from "../config/schema.ts";
 import {
   argShape,
   errorKind,
+  event,
   instruments,
   resultShape,
   tracer,
@@ -83,7 +84,10 @@ export interface McpHandlerOptions {
 
 export function createMcpHandler(opts: McpHandlerOptions) {
   const env = opts.env ?? process.env;
-  const log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
+  // `event`, not a bare console.log: the auth and 424 lines are on the export
+  // allowlist, so they reach the obs stack as well as stdout. Still injectable,
+  // because a test wants the payload rather than the stream.
+  const log = opts.log ?? event;
 
   // Compiled once: the policy is a property of the config, not of the request.
   const policies = compileToolPolicies(opts.config);
@@ -202,11 +206,34 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     );
 
     if (!selection.ok) {
+      const unavailable = selection.unavailable.map((u) => u.slug);
+
+      // A requested slug that is NOT CONFIGURED is a string the caller invented
+      // — `?servers=` is parsed, trimmed and deduped, and validated against
+      // nothing. So it is split here, once, and the two halves are treated
+      // differently everywhere below: a configured slug is our own vocabulary
+      // and may be named; an unconfigured one is counted and never repeated
+      // back. Echoing it would put caller-authored text in an exported log
+      // record, and — worse, because it is silent — mint a new metric time
+      // series per distinct string, from anyone holding a token.
+      // `resolveSelection` already made this call — `not_configured` is set from
+      // the same `cfg.servers` lookup — so read its verdict rather than
+      // recomputing it. One rule in two places is one rule that drifts the day
+      // a fifth status appears.
+      const known = selection.unavailable
+        .filter((u) => u.status !== "not_configured")
+        .map((u) => u.slug);
+      const unknown = unavailable.length - known.length;
+
       log({
         evt: "mcp.unavailable",
         principal: principal.id,
+        // Full detail on stdout; the allowlist in telemetry/events.ts ships the
+        // counts and the known slugs and drops the rest.
         requested,
-        unavailable: selection.unavailable.map((u) => u.slug),
+        requested_count: requested.length,
+        unavailable: known,
+        unknown_count: unknown,
       });
       // The 424 fail-closed path. Worth its own counter rather than being folded
       // into "4xx": a 424 is not a client error in the usual sense, it is strad
@@ -214,14 +241,21 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       // not available to it. A spike here means an entitlement or a config is
       // wrong, which is a completely different investigation from a spike in 401s.
       setOutcome("unavailable");
-      const unavailable = selection.unavailable.map((u) => u.slug);
-      for (const slug of unavailable) {
+      for (const slug of known) {
         inst.unavailable.add(1, {
           "strad.mode": opts.mode,
           "mcp.server": slug,
         });
       }
-      span.setAttribute("mcp.servers.unavailable", unavailable);
+      if (unknown > 0) {
+        // One bounded series for every string that names nothing, rather than
+        // one series per string.
+        inst.unavailable.add(unknown, {
+          "strad.mode": opts.mode,
+          "mcp.server": "(not configured)",
+        });
+      }
+      span.setAttribute("mcp.servers.unavailable", known);
       res.status(424).json({
         error: "downstream_not_authenticated",
         message:
@@ -502,14 +536,13 @@ async function listToolsFor(
           .filter((t) => toolAllowed(policy, t.name))
           .map((t) => ({ ...t, name: namespaced(slug, t.name) }));
       } catch (err) {
-        console.error(
-          JSON.stringify({
-            evt: "mcp.list_tools_failed",
-            slug,
-            explicit: Boolean(explicit),
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
+        event({
+          evt: "mcp.list_tools_failed",
+          slug,
+          explicit: Boolean(explicit),
+          // Stays on stdout in full; the exporter substitutes `error.kind`.
+          error: err instanceof Error ? err.message : String(err),
+        });
         if (explicit) {
           explicit.onUnlistable(slug);
           // The upstream's own message is NOT relayed. It is arbitrary text from
@@ -548,13 +581,11 @@ async function listResourcesFor(
       try {
         return await adapter.listResources();
       } catch (err) {
-        console.error(
-          JSON.stringify({
-            evt: "mcp.list_resources_failed",
-            slug,
-            error: err instanceof Error ? err.message : String(err),
-          }),
-        );
+        event({
+          evt: "mcp.list_resources_failed",
+          slug,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return [];
       }
     }),

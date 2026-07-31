@@ -25,16 +25,18 @@
  *     event attributes, and an upstream MCP server's error message is arbitrary
  *     text that we did not author — it can, and in the wild does, echo the
  *     request back. We classify errors instead (see `errorKind`).
- *   - No OTel LOG exporter is configured. strad's stdout already contains
- *     error messages (`mcp.list_tools_failed` logs `err.message`), and that is
- *     fine where it is: stdout is the operator's own console. Piping it to an
- *     external ingestor would drag those messages across the boundary this file
- *     exists to defend. If you ever add a log exporter, you must first redact
- *     those log lines.
+ *   - The stdout STREAM is never exported. It contains upstream error messages
+ *     (`mcp.list_tools_failed` logs `err.message`), and that is fine where it
+ *     is: stdout is the operator's own console. Piping the stream to an external
+ *     ingestor would drag those messages across the boundary this file exists to
+ *     defend. What IS exported is strad's own events, field by field, against
+ *     the allowlist in `events.ts` — where `error` appears on no list and an
+ *     event carrying one ships `errorKind()` instead. Adding a field to that
+ *     list is a decision about this boundary; make it here, deliberately.
  *
  * `test/telemetry.redaction.test.ts` pins all of this by driving a real tool
  * call whose arguments AND result are stuffed with a canary secret, then
- * asserting the canary appears nowhere in any exported span or metric.
+ * asserting the canary appears nowhere in any exported span, metric or log record.
  */
 
 /** How an error is allowed to be described in telemetry: a fixed, closed set. */
