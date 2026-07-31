@@ -653,9 +653,19 @@ rendering _and_ answers every Slack and Gmail call. If the OpenTelemetry data
 (event-loop lag, CPU, RSS-vs-limit, Chromium launches/crashes) says we are
 saturated, the next move is `apps-d-1vcpu-2gb` ($39, dedicated CPU) — not more RAM.
 
-## 25. The bundle image cannot be rolled back to a published tag
+## 25. The bundle image cannot be rolled back to a published tag — RESOLVED, except for tag accumulation
 
-**What.** `deploy-staging.yml` can pin the **core** to any published tag
+**✅ RESOLVED.** `deploy-staging.yml` takes a `bundle_version` input that renders
+`--bundle-image ghcr.io/tadasant/strad-bundle:<tag>`, and every deploy that does
+not set it resolves a `sha-<commit>` bundle tag anyway. The reasoning below for
+why the pair should move together still holds — nothing forces you to pin one and
+not the other, and pinning the core alone leaves the bundle on the newest image
+its ancestors published rather than on a tag that moves.
+
+**The "Also" below is NOT resolved.** Branch and `sha-` tags accumulate in GHCR
+with no garbage collection. That half is limitations.md #25 on its own.
+
+**What (as it stood).** `deploy-staging.yml` can pin the **core** to any published tag
 (`-f version=0.1.6`, `sha-<sha>`), because the core image is a render-time
 argument. The bundle image is not: it is written into `infra/strad.staging.yaml`,
 and the only thing that overrides it is `--bundle-image`, which the workflow
@@ -987,9 +997,27 @@ project IAM admin, which no strad process holds.
 **Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
 either way — this is an IAM-shaped limitation, not a mechanism in strad.
 
-## 32. The bundle component still deploys a mutable tag
+## 32. The bundle component still deploys a mutable tag — RESOLVED on staging, LIVE on prod
 
-**What.** The core image is now pinned to an immutable tag on every deploy —
+**✅ RESOLVED on staging.** `deploy-staging.yml` resolves `sha-<commit>` for the bundle
+exactly as it does for the core (`scripts/resolve-image-tag.ts --kind bundle`),
+passes it as `--bundle-image` on every deploy, and passes
+`--require-immutable-images`, under which `render-spec` refuses to emit a spec in
+which any component ships a tag that moves. `bundle_version` pins the bundle half
+for a rollback, which also resolves hack #25. The entry below is kept because it
+is the record of what the mutable tag actually did.
+
+**One half is NOT resolved, and it is prod.** `strad-deploy-prod.yml` in
+tadasant-internal renders through this same script and passes no
+`--bundle-image`, so its supplementary components still ship `:latest` and are
+still exposed to exactly this. It gets a `::warning::` naming every affected
+component on every deploy rather than a failure, because failing a deploy over a
+tag it has no way to change would break prod without fixing anything. The prod
+change is two lines in that workflow — resolve a bundle tag the same way, pass
+`--bundle-image` and `--require-immutable-images` — and it belongs to whoever
+owns that repository.
+
+**What (as it stood).** The core image is now pinned to an immutable tag on every deploy —
 `sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
 refuses `latest` for it outright. The **bundle** gets none of that. Its image is
 written into `infra/strad.staging.yaml` as
@@ -1033,13 +1061,15 @@ three minutes after the flip and fails if a slug of a kind we DEPLOY is
 `unreachable` — a third-party `remote-http` having a bad afternoon is annotated,
 not fatal. A stale bundle image no longer deploys green. It still deploys.
 
-**Undo.** Extend `assertImmutableCoreImage` to every image in the rendered spec,
-and give `deploy-staging.yml` the same `sha-` resolution for the bundle that it
-does for the core (`--bundle-image` already exists and needs no change). Do it
-together with hack #25, which wants the same input for the same reason. The
-detection above is not a substitute: it catches a stale image only when the
-staleness happens to change a MOUNT. An image that keeps every path and changes
-what a tool does is still invisible.
+**Undone, exactly as written here.** `mutableImageComponents()` checks every
+image in the rendered spec, `deploy-staging.yml` resolves the bundle's `sha-` tag
+the way it always resolved the core's, and `--bundle-image` needed no change.
+Hack #25 went with it.
+
+The detection is still not a substitute, and is still worth having: it catches a
+stale image only when the staleness happens to change a MOUNT. An image that
+keeps every path and changes what a tool does is invisible to it, and the tag is
+the only thing that can speak for that.
 
 ## 33. Secret values are base64url in Secret Manager, and the encoding is unverified against live Google
 

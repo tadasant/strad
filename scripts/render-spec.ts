@@ -30,7 +30,16 @@
  *
  * `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` overrides the image on
  * every supplementary component that shares that repository, which is how a
- * feature branch gets deployed without editing the config's `image:` lines.
+ * branch build and every ordinary staging deploy ship a tag that names one
+ * commit without editing the config's 25 `image:` lines.
+ *
+ * `--require-immutable-images` refuses to emit a spec in which ANY component
+ * ships a mutable tag. It is opt-in rather than the default because the two
+ * deploys that render through this script do not have the same options: staging
+ * resolves a `sha-` tag for both images and can demand it, while prod renders
+ * this repo's tooling against tadasant-internal's config, whose supplementary
+ * `image:` lines it would have to change first. Without the flag the same list
+ * is printed as a warning, so a deploy that cannot yet fail on it still says so.
  *
  * The output contains secret values. Never echo it into a build log.
  */
@@ -54,7 +63,10 @@ import {
   consoleEnvNames,
   preflightSecrets,
 } from "../src/deploy/preflight.ts";
-import { assertImmutableCoreImage } from "../src/deploy/imageTag.ts";
+import {
+  assertImmutableCoreImage,
+  mutableImageComponents,
+} from "../src/deploy/imageTag.ts";
 
 const { values } = parseArgs({
   options: {
@@ -64,6 +76,7 @@ const { values } = parseArgs({
     app: { type: "string" },
     region: { type: "string" },
     domain: { type: "string", multiple: true },
+    "require-immutable-images": { type: "boolean", default: false },
   },
 });
 
@@ -394,6 +407,39 @@ const spec = renderAppSpec({
   resolvedParams,
   domains: resolveDomains(),
 });
+
+// THE OTHER HALF of the immutable-tag rule, and the half that was missing.
+//
+// `assertImmutableCoreImage` above guards the one image passed as an argument.
+// Every other component takes its image from the config, and for a year that
+// meant `ghcr.io/tadasant/strad-bundle:latest` on all 25 `supplementary-image`
+// entries. App Platform resolved that tag once and kept the answer: staging ran
+// a bundle from before the `/secrets` mount existed for a week, restarting daily
+// onto the same cached digest, while `/healthz` stayed 200 and
+// `?servers=secrets` answered `{"tools":[]}`. See HACKS.md #32.
+//
+// So the check runs on the RENDERED spec, after --bundle-image has had its say —
+// what matters is the tag a component actually ships, not where it came from.
+const mutable = mutableImageComponents(spec.services);
+if (mutable.length > 0) {
+  const detail = mutable.map((m) => `${m.component} -> ${m.ref}`).join(", ");
+  const why =
+    `App Platform may serve a mutable tag from whatever digest it resolved ` +
+    `last, so the spec does not determine what boots.`;
+  if (values["require-immutable-images"]) {
+    console.error(
+      `::error::${mutable.length} component(s) would ship a mutable tag: ` +
+        `${detail}.\n${why}\n` +
+        `Pass --bundle-image with a :sha-<commit> tag (published per commit by ` +
+        `release-bundle-image.yml), or drop --require-immutable-images.`,
+    );
+    process.exit(1);
+  }
+  console.error(
+    `::warning::${mutable.length} component(s) ship a mutable tag: ${detail}. ` +
+      `${why} This deploy cannot verify which image those components will run.`,
+  );
+}
 
 // A BARE spec, not { spec }. This file is fed to `doctl apps create/update
 // --spec`, which parses an App Platform spec and rejects an unknown top-level

@@ -70,11 +70,12 @@ the same guard for the same reason.
    (best-effort).
 5. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
 
-`:latest` is mutable and App Platform re-pulls it on every restart and scale
-event. A `:latest` that has drifted off the commit it was built from therefore
-boots old code against new config and rolls the deploy back, hours later and far
-from the change that caused it. A release that pushed successfully but left
-`:latest` somewhere else is a failed release, and step 3 makes the run go red.
+`:latest` is mutable, and what a platform does with a mutable tag is not
+something the tag's publisher controls. A `:latest` that has drifted off the
+commit it was built from boots old code against new config and rolls the deploy
+back, hours later and far from the change that caused it. A release that pushed
+successfully but left `:latest` somewhere else is a failed release, and step 3
+makes the run go red.
 
 That check guards the push. It cannot guard the pull — so **no deploy ships a
 mutable tag at all**. See [which image a deploy
@@ -91,13 +92,19 @@ defining idiom is the **preflight "safe no-op"**:
 
 ### Which image a deploy ships
 
-A deploy never hands App Platform a mutable tag. The core image comes from the
-first of these that applies:
+A deploy never hands App Platform a mutable tag — for **either** image. There are
+two, they are resolved separately, and both end up naming one commit.
+
+#### The core image
+
+The core image comes from the first of these that applies:
 
 1. **A branch build** (`build: true`) — the `branch-<slug>-<sha>` tag it just
    pushed.
 2. **An explicit `version` input** — `ghcr.io/tadasant/strad:<version>`. This is
-   the release path, and it is how you pin a rollback.
+   the release path, and it is how you pin a rollback. It pins the core only —
+   the bundle is still resolved below, so a rollback taken while a bundle build
+   is in flight wants `bundle_version` too.
 3. **Otherwise, `sha-<commit>`**, resolved from the checked-out history by
    `scripts/resolve-image-tag.ts`.
 
@@ -144,6 +151,72 @@ pre-#26 code again, with nothing in this repo having written the tag in between.
 Whatever moves it is external, so this repo cannot make `:latest` trustworthy —
 only stop depending on it. A tag that names one commit has no "most recent" for
 anything to disagree about.
+
+#### The bundle image
+
+The same three-step precedence, one image over:
+
+1. **A branch build** (`build: true`) — the `branch-<slug>-<sha>` bundle it just
+   pushed.
+2. **An explicit `bundle_version` input** — `ghcr.io/tadasant/strad-bundle:<tag>`.
+   This is how you pin or roll back the bundle half on its own; `version` pins
+   the core and says nothing about this one.
+3. **Otherwise, `sha-<commit>`**, resolved by the same
+   `scripts/resolve-image-tag.ts` with `--kind bundle`.
+
+There is no `latest` fallback left here either. The deploy always passes
+`--bundle-image` and `--require-immutable-images`, which makes `render-spec`
+refuse to emit a spec in which **any** component ships a tag that moves.
+
+Step 3 also **waits**, which the core's does not need to. `release-image.yml`
+pushes the core and then calls the deploy, in that order, in one workflow;
+`release-bundle-image.yml` is a separate trigger on the same push and takes
+several minutes longer. So on a merge that touches a baked tree, the bundle's
+`sha-<commit>` does not exist yet when the deploy starts, and without a wait
+every such merge would deploy red. The step re-asks for up to 15 minutes before
+it gives up — only in the case that would otherwise be a hard stop.
+
+The walk-back rule is the one thing that differs from the core, and it is
+inverted. `release-image.yml` builds every commit except docs-only ones;
+`release-bundle-image.yml` has a `paths:` filter — nine entries: the seven trees
+the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
+commits cut no bundle image and stepping past them is the normal case, not an
+exception. `--kind bundle` reads that filter out of
+the workflow rather than keeping a second copy of the list. A commit that **did**
+touch a baked tree and has no image is still a hard stop, for the same reason as
+the core.
+
+**Why.** On 2026-07-31, `POST /mcp?servers=secrets` returned `200 {"tools":[]}`
+on staging and prod, and had never returned anything else in any window the
+telemetry could see. The `secrets` server serves four tools with no credential at
+all, so an empty list meant the upstream call failed —
+`strad_mcp_upstream_errors_total{mcp_upstream_op="connect"}` equalled the request
+count exactly.
+
+The bundle container was healthy and 32 hours old. Its own boot line was the only
+thing that said what was wrong:
+
+```
+streamable-HTTP on :8080 — 14 servers: /slack … /onepassword /good-eggs /fetchpet /pointsyeah
+```
+
+Fourteen mounts, not fifteen: no `/secrets`, and `/remote-filesystem` under the
+slug PR #33 had renamed it away from a week earlier. Core POSTed `initialize` to
+`/secrets`, Express answered 404, and the gateway turned a dead upstream into an
+empty tool list.
+
+`strad-bundle:latest` is written into all 25 `supplementary-image` entries, so
+those components' image block was byte-identical on every deploy and App Platform
+kept serving the digest it had resolved for that tag once —
+`sha256:6bb4e861…` on every `main` deploy for days, including one that had
+finished twenty minutes before this was diagnosed, while
+`release-bundle-image.yml` pushed three fresh `:latest` images that same day. The
+tag being fresh in the registry never mattered: what App Platform serves for a
+mutable tag is not decided by what the registry holds.
+
+Three slugs were dead, not one — `secrets`, `zimmer-secrets` (its own component,
+same image, same cached digest) and `remote-filesystem-tmp-public`, whose path
+that same PR had renamed.
 
 That split is deliberate: an automatic release shouldn't turn red just because the
 account isn't seeded yet, but a human asking for a deploy should hear "no." When
@@ -345,10 +418,11 @@ staging on its own regardless.
 
 <aside class="starlight-aside starlight-aside--caution">
 
-Never push a branch bundle to `strad-bundle:latest`. Live staging pulls that tag
-on every restart, and a bundle whose mounts have moved will serve paths the
-_deployed_ spec does not route. Build and deploy have to happen together, which is
-what the `build: true` dispatch does.
+Never push a branch bundle to `strad-bundle:latest`. It is the tag the config's
+`image:` lines still name, so anything that resolves it — a fresh App Platform
+deploy, a `docker pull`, a human checking what shipped — would get a bundle whose
+mounts have moved out from under the routes the deployed spec carries. Build and
+deploy have to happen together, which is what the `build: true` dispatch does.
 
 </aside>
 
@@ -391,8 +465,8 @@ so a change to one server doesn't rebuild the rest:
 Everything below `release-bundle-image.yml` in that table is a **per-server image
 that staging no longer deploys** — staging runs the one collapsed bundle. They are
 still built and still pushed on purpose: production, in `tadasant-internal`, has not
-been re-pointed at the collapsed bundle yet, and App Platform re-pulls `:latest` on
-every restart. Deleting them before prod moves would be an outage, not a cleanup.
+been re-pointed at the collapsed bundle yet, and its spec still names those
+repositories. Deleting them before prod moves would be an outage, not a cleanup.
 See [Known limitations](/limitations/).
 
 `bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the

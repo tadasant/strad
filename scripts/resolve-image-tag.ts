@@ -1,21 +1,36 @@
 /**
- * Resolve the immutable core image tag a staging deploy should ship.
+ * Resolve the immutable image tag a staging deploy should ship.
  *
  * Given the branch's recent history, find the newest commit that actually
  * published an image and print its `sha-<commit>` tag. The deploy then hands
  * App Platform a tag that names one commit instead of `latest` — see
- * src/deploy/imageTag.ts for what that mutable tag did to staging.
+ * src/deploy/imageTag.ts for what that mutable tag did to staging, twice.
  *
- * It walks back ONLY past docs-only commits, which cut no image by design. A
- * commit that changed code and has no image is a hard stop: the release is
- * still building or it failed, and deploying the previous commit's image
- * against this commit's config is the exact skew this whole path prevents.
+ * `--kind` says WHICH image, and the only thing it changes is when a missing tag
+ * is legitimate:
+ *
+ *   core    release-image.yml builds every commit except docs-only ones, so the
+ *           walk steps past `**\/*.md` and `docs/**` and stops hard anywhere
+ *           else.
+ *   bundle  release-bundle-image.yml is `paths:`-filtered — nine entries: the
+ *           seven trees the Dockerfile bakes, the bundle host, and the workflow
+ *           itself — so most commits cut no bundle image and stepping past them
+ *           is the normal case. That filter is READ from the workflow, not
+ *           copied here.
+ *
+ * Either way a commit that SHOULD have published and did not is a hard stop: the
+ * release is still building or it failed, and deploying an older image against
+ * this commit's config is the exact skew this whole path prevents.
  *
  * Usage:
  *
  *   git log --first-parent --format=%H -n 50 \
  *     | node --experimental-transform-types scripts/resolve-image-tag.ts \
  *         --repository tadasant/strad >> "$GITHUB_OUTPUT"
+ *
+ *   git log --first-parent --format=%H -n 50 \
+ *     | node --experimental-transform-types scripts/resolve-image-tag.ts \
+ *         --repository tadasant/strad-bundle --kind bundle >> "$GITHUB_OUTPUT"
  *
  * Reads the sha list on stdin, one per line. Writes `key=value` lines on stdout
  * for GITHUB_OUTPUT (`image`, `tag`, `sha`, `distance`) and everything human on
@@ -25,11 +40,17 @@
  * environment, never argv — this runs on a shared self-hosted runner where argv
  * is readable by anything that can run `ps`.
  */
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
+  BUNDLE_IMAGE_SOURCE,
+  BUNDLE_RELEASE_WORKFLOW,
   changedFiles,
+  CORE_IMAGE_SOURCE,
   fetchPullToken,
   isDocsOnly,
+  isOutsidePathFilter,
+  parsePathsFilter,
   registryProbe,
   resolveDeployTag,
   type Candidate,
@@ -39,18 +60,38 @@ const { values } = parseArgs({
   options: {
     repository: { type: "string" },
     registry: { type: "string", default: "ghcr.io" },
+    kind: { type: "string", default: "core" },
+    // Seconds to keep asking for a tag the commit is REQUIRED to have. The
+    // bundle needs it and the core does not: release-image.yml pushes and THEN
+    // deploys, in one workflow, so the core's tag is always there by the time
+    // this runs. release-bundle-image.yml is a separate trigger on the same
+    // push, and it is still baking Chromium while the core's release calls the
+    // deploy — so without this, every merge that touches a baked tree deploys
+    // red. It waits only when the answer would otherwise be a hard stop.
+    "wait-for-image": { type: "string", default: "0" },
   },
 });
 
-if (!values.repository) {
+if (!values.repository || !["core", "bundle"].includes(values.kind ?? "")) {
   console.error(
-    "usage: resolve-image-tag --repository <owner/name> [--registry ghcr.io]",
+    "usage: resolve-image-tag --repository <owner/name> " +
+      "[--kind core|bundle] [--registry ghcr.io]",
   );
   process.exit(1);
 }
 
 const repository = values.repository;
 const registry = values.registry ?? "ghcr.io";
+const kind = values.kind as "core" | "bundle";
+const source = kind === "bundle" ? BUNDLE_IMAGE_SOURCE : CORE_IMAGE_SOURCE;
+const waitSeconds = Number(values["wait-for-image"] ?? "0");
+
+if (!Number.isFinite(waitSeconds) || waitSeconds < 0) {
+  console.error(
+    `::error::--wait-for-image must be a non-negative number of seconds (got "${values["wait-for-image"]}")`,
+  );
+  process.exit(1);
+}
 // GitHub Actions sets GITHUB_ACTOR in every step; the fallback is for a local run.
 const actor = process.env.GITHUB_ACTOR ?? "github-actions";
 const password = process.env.GHCR_PULL_TOKEN || process.env.GITHUB_TOKEN;
@@ -76,6 +117,20 @@ async function main(): Promise<void> {
     .map((line) => line.trim())
     .filter((line) => line !== "");
 
+  // The bundle's `paths:` filter, read ONCE from the workflow that owns it —
+  // eagerly, so a filter this script cannot parse fails here, naming the file,
+  // rather than partway through a walk where it would look like a missing tag.
+  const bundlePaths =
+    kind === "bundle"
+      ? parsePathsFilter(
+          readFileSync(
+            new URL(`../${BUNDLE_RELEASE_WORKFLOW}`, import.meta.url),
+            "utf8",
+          ),
+          BUNDLE_RELEASE_WORKFLOW,
+        )
+      : [];
+
   // Classify LAZILY. Whether a missing tag is legitimate depends on what the
   // commit touched, but only a commit the registry has no image for is ever
   // asked — and the walk stops at the first one that does, which on a healthy
@@ -85,7 +140,10 @@ async function main(): Promise<void> {
   // HEAD had published all along.
   const candidates: Candidate[] = shas.map((sha) => ({
     sha,
-    docsOnly: () => isDocsOnly(changedFiles(sha)),
+    mayLackImage: () =>
+      kind === "bundle"
+        ? isOutsidePathFilter(changedFiles(sha, undefined, source), bundlePaths)
+        : isDocsOnly(changedFiles(sha, undefined, source)),
   }));
 
   const token = await fetchPullToken({
@@ -98,17 +156,32 @@ async function main(): Promise<void> {
   const resolved = await resolveDeployTag(
     candidates,
     registryProbe({ registry, repository, token }),
+    { source, waitMs: waitSeconds * 1000 },
   );
   const image = `${registry}/${repository}:${resolved.tag}`;
 
-  console.error(
-    resolved.distance === 0
-      ? `Deploying the image built for HEAD (${resolved.sha.slice(0, 12)}).`
-      : `::warning::HEAD (${shas[0]?.slice(0, 12)}) published no image — ` +
-          `deploying ${resolved.distance} docs-only commit(s) back, from ` +
-          `${resolved.sha.slice(0, 12)}.`,
-  );
-  console.error(`Resolved core image: ${image}`);
+  // A walk-back is a WARNING for the core, where HEAD normally publishes, and
+  // ordinary for the bundle, where most commits do not touch a baked tree. Same
+  // fact, different news — annotating every bundle deploy would train everyone
+  // to scroll past the annotation that matters.
+  if (resolved.distance === 0) {
+    console.error(
+      `Deploying the image built for HEAD (${resolved.sha.slice(0, 12)}).`,
+    );
+  } else if (kind === "bundle") {
+    console.error(
+      `HEAD (${shas[0]?.slice(0, 12)}) touched no tree the bundle image bakes; ` +
+        `deploying the newest one that did, ${resolved.distance} commit(s) ` +
+        `back (${resolved.sha.slice(0, 12)}).`,
+    );
+  } else {
+    console.error(
+      `::warning::HEAD (${shas[0]?.slice(0, 12)}) published no image — ` +
+        `deploying ${resolved.distance} docs-only commit(s) back, from ` +
+        `${resolved.sha.slice(0, 12)}.`,
+    );
+  }
+  console.error(`Resolved ${kind} image: ${image}`);
 
   process.stdout.write(
     [
