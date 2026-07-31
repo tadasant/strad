@@ -31,6 +31,7 @@ import {
   disableEventExport,
   enableEventExport,
   EXPORTABLE,
+  resetEventThrottle,
   resetInstruments,
   startRuntimeMetrics,
   type RuntimeMetricsHandle,
@@ -217,6 +218,11 @@ beforeAll(async () => {
   });
 
   // 4. A 424 for a server that does not EXIST, named with the canary.
+  //
+  //    The throttle keys `mcp.unavailable` on one global bucket, so the 424
+  //    above would suppress this one's export. Two distinct scenarios, not a
+  //    repeated fault — reset between them.
+  resetEventThrottle();
   //
   //    `?servers=` is parsed and deduped and validated against nothing, so this
   //    is the one place a client writes free text into strad's own vocabulary.

@@ -10,7 +10,7 @@ import {
   readCgroupMemoryLimit,
   readCgroupMemoryUsage,
 } from "../src/telemetry/runtime.ts";
-import { startTelemetry } from "../src/telemetry/index.ts";
+import { eventExportEnabled, startTelemetry } from "../src/telemetry/index.ts";
 
 describe("telemetry no-ops cleanly when unconfigured", () => {
   // staging and prod are LIVE. The single most important property of this whole
@@ -26,6 +26,24 @@ describe("telemetry no-ops cleanly when unconfigured", () => {
   it("shuts down without throwing when disabled", async () => {
     const handle = startTelemetry({ env: {}, log: () => {} });
     await expect(handle.shutdown()).resolves.toBeUndefined();
+  });
+
+  it("wires the event exporter only when an SDK actually started", async () => {
+    // The log exporter is registered by sdk.start(); with no endpoint there is
+    // no SDK, so `event()` must stay stdout-only. A logger left wired to a
+    // DISABLED handle would point at something whose shutdown() is a no-op —
+    // records enqueued and never flushed.
+    startTelemetry({ env: {}, log: () => {} });
+    expect(eventExportEnabled()).toBe(false);
+
+    const live = startTelemetry({
+      env: { OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318" },
+      log: () => {},
+    });
+    expect(eventExportEnabled()).toBe(true);
+
+    await live.shutdown();
+    expect(eventExportEnabled()).toBe(false);
   });
 
   it("survives a malformed endpoint rather than failing the boot", () => {

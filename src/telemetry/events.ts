@@ -143,17 +143,26 @@ export function eventExportEnabled(): boolean {
 /**
  * Events that fire on the REQUEST path, throttled per (evt, slug).
  *
- * `mcp.list_tools_failed` is emitted once per failing slug per listing, so a
- * client polling a 27-slug gateway can produce 27 records a second. The batch
- * processor's queue is shared, and a flood of the same fact would evict the
- * OTHER facts — including, in the incident that motivated all of this, the one
- * line anybody needed. One record a minute per slug says exactly as much.
+ * EVERY exportable event a client can drive is here, and that is the rule rather
+ * than a list of the noisy ones. `mcp.list_tools_failed` is emitted once per
+ * failing slug per listing, so a client polling a 27-slug gateway can produce 27
+ * records a second; `mcp.policy_unmatched_tools` fires on every `tools/list` for
+ * a slug with one typo in its `tools.allow`; `mcp.unavailable` fires on every
+ * 424. The batch processor's queue is shared, and a flood of one fact evicts the
+ * others — which is the same argument that keeps `mcp.auth_failed` off the
+ * allowlist entirely. The only difference here is that it takes a valid token.
+ *
+ * One record a minute per slug says exactly as much. `mcp.unavailable` carries
+ * no slug, so it keys on one global bucket, which is the right granularity for
+ * it anyway.
  *
  * stdout is never throttled. It has no queue to starve.
  */
 const THROTTLED = new Set([
   "mcp.list_tools_failed",
   "mcp.list_resources_failed",
+  "mcp.policy_unmatched_tools",
+  "mcp.unavailable",
 ]);
 const THROTTLE_MS = 60_000;
 const lastExported = new Map<string, number>();
@@ -174,10 +183,10 @@ export function event(payload: Record<string, unknown>): void {
   // which the router used to write to stdout. That is a deliberate change and
   // the only one: everything a log scraper would key on now agrees with what the
   // event is, rather than with which call site happened to emit it.
-  const stream =
-    evt && (evt.endsWith("_failed") || evt.endsWith("_degraded"))
-      ? console.error
-      : console.log;
+  const fault = Boolean(
+    evt && (evt.endsWith("_failed") || evt.endsWith("_degraded")),
+  );
+  const stream = fault ? console.error : console.log;
 
   try {
     stream(JSON.stringify(payload));
@@ -201,9 +210,12 @@ export function event(payload: Record<string, unknown>): void {
 
   try {
     logger.emit({
-      severityNumber: CLASSIFY_ERROR.has(evt)
-        ? SeverityNumber.ERROR
-        : SeverityNumber.INFO,
+      // From the FAULT rule, not from CLASSIFY_ERROR — those answer different
+      // questions, and conflating them shipped `strad.tool_surface_degraded`
+      // and `strad.readiness_failed` at INFO. `severity >= ERROR` is the first
+      // filter any operator writes, and a fault invisible to it is a fault
+      // nobody sees.
+      severityNumber: fault ? SeverityNumber.ERROR : SeverityNumber.INFO,
       // The event name, not the message. A body is free text and free text is
       // how an upstream's words get in; there is nothing to put here that the
       // attributes do not already say in a queryable form.

@@ -114,7 +114,10 @@ export function resolveSelection(
           : "not_entitled",
       ...(publicUrl
         ? {
-            authorize_url: `${publicUrl.replace(/\/$/, "")}/console/servers/${slug}`,
+            // ENCODED: `slug` here may be a string the caller invented (a
+            // `not_configured` entry is whatever they put in `?servers=`), and
+            // an unencoded `../` makes this URL claim a path that is not ours.
+            authorize_url: `${publicUrl.replace(/\/$/, "")}/console/servers/${encodeURIComponent(slug)}`,
           }
         : {}),
     });

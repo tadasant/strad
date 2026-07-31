@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { metrics } from "@opentelemetry/api";
-import { logs } from "@opentelemetry/api-logs";
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
 import {
   InMemoryLogRecordExporter,
   LoggerProvider,
@@ -535,6 +535,63 @@ describe("the exported log, which is the other half", () => {
       // NOT the message. Not truncated, not escaped — absent.
       expect(failed?.attributes).not.toHaveProperty("error");
       expect(JSON.stringify(records)).not.toMatch(/DOCTYPE|Cannot POST|<pre>/i);
+    } finally {
+      disableEventExport();
+      await provider.shutdown().catch(() => {});
+      logs.disable();
+    }
+  });
+
+  it("ships a fault at ERROR severity, so `severity >= ERROR` finds it", async () => {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    logs.disable();
+    logs.setGlobalLoggerProvider(provider);
+    enableEventExport("strad-test", "0.0.0");
+
+    try {
+      resetEventThrottle();
+      // A degraded event carries no `error` to classify, and an earlier draft
+      // derived severity from the classification — so this shipped at INFO,
+      // invisible to the first filter any operator writes.
+      event({ evt: "strad.tool_surface_degraded", slug: "x", state: "empty" });
+      event({ evt: "strad.listening", port: 1, mode: "core" });
+
+      const [degraded, listening] = exporter.getFinishedLogRecords();
+      expect(degraded?.severityNumber).toBe(SeverityNumber.ERROR);
+      expect(listening?.severityNumber).toBe(SeverityNumber.INFO);
+    } finally {
+      disableEventExport();
+      await provider.shutdown().catch(() => {});
+      logs.disable();
+    }
+  });
+
+  it("throttles a repeated request-path fault to one export per slug", async () => {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    logs.disable();
+    logs.setGlobalLoggerProvider(provider);
+    enableEventExport("strad-test", "0.0.0");
+
+    try {
+      resetEventThrottle();
+      // The FIRST occurrence always ships — a throttle that swallowed it would
+      // defeat the point. The repeats inside the window do not, so one noisy
+      // slug cannot evict every other fact from the batch queue.
+      for (let i = 0; i < 5; i++) {
+        event({ evt: "mcp.list_tools_failed", slug: "noisy", explicit: true });
+      }
+      event({ evt: "mcp.list_tools_failed", slug: "other", explicit: false });
+
+      const shipped = exporter
+        .getFinishedLogRecords()
+        .map((r) => r.attributes["slug"]);
+      expect(shipped).toEqual(["noisy", "other"]);
     } finally {
       disableEventExport();
       await provider.shutdown().catch(() => {});

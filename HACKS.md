@@ -1277,6 +1277,42 @@ while making the diagnosis a single line instead of a bisection.
 `scripts/check-store.ts --resolve` already reports it this way and is the tool to
 reach for before a flip.
 
+## 37. Exported logs are an allowlist, so most of stdout reaches no ingestor
+
+**What.** strad ships its own structured events as OTLP logs, against the
+per-event field allowlist in `src/telemetry/events.ts`. It does not ship the
+stdout stream. Ten event types are on the list; everything else strad writes —
+and every `console.log` in a vendored server — reaches the container console and
+stops there.
+
+**Why it matters.** Three consequences an operator will meet:
+
+- **`mcp.auth_failed` never reaches the ingestor.** It is emitted before
+  authentication succeeds, so anyone who can POST `/mcp` could fill the batch
+  queue and evict the signals that matter. `strad.mcp.auth_failures` counts the
+  same thing by the same `reason`; the per-request detail is on stderr only.
+- **A repeated fault is under-reported by up to a minute.** Every exportable
+  event a client can drive is throttled to one record per slug per minute, for
+  the same queue-starvation reason. The first occurrence always ships, and
+  `strad.mcp.tool_surface` carries the same fact continuously, so the gap is in
+  the narration rather than in the signal.
+- **An upstream's error message is never in the ingestor.** `error` is on no
+  allowlist; an event carrying one exports `errorKind()` instead. Diagnosing
+  _what_ an upstream said still means reading the container console.
+
+**Why it ships anyway.** The alternative was the status quo, and the status quo
+cost a week: the `secrets` slug served zero tools on prod and staging, wrote
+`mcp.list_tools_failed` on every request, and shipped none of it. Shipping the
+stream instead would drag upstream-authored text — in that incident, a whole HTML
+error page — across the boundary `src/telemetry/redact.ts` exists to defend. An
+allowlist is the version of this that can be reasoned about; a `pino` transport
+is not.
+
+**Undo.** Add events and fields to `EXPORTABLE` as the need for them is
+demonstrated, one at a time, each with an answer to "where does this value come
+from at every call site". Do not widen it to a denylist: the point is that a
+field nobody considered cannot ship.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

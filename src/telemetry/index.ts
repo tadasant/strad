@@ -140,6 +140,10 @@ export function startTelemetry(
       reason: "OTEL_EXPORTER_OTLP_ENDPOINT is not set",
       service: name,
     });
+    // Both early returns hand back the DISABLED handle, whose shutdown() is a
+    // no-op — so a logger left wired here would point at an SDK nothing will
+    // ever flush, and would persist across a second call in the same process.
+    disableEventExport();
     return { ...DISABLED, serviceName: name, identity };
   }
 
@@ -224,6 +228,10 @@ export function startTelemetry(
       service: name,
       error: err instanceof Error ? err.message : String(err),
     });
+    // See the other early return: a wired logger on a DISABLED handle is a
+    // logger nothing will flush. `startRuntimeMetrics` and the browser hooks run
+    // after `enableEventExport`, so this path is reachable.
+    disableEventExport();
     return { ...DISABLED, serviceName: name, identity };
   }
 }

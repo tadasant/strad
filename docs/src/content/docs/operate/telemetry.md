@@ -248,15 +248,16 @@ reads. The boundary held perfectly while the deployment was silently broken.
 So `src/telemetry/events.ts` carries an **allowlist**: every event that may leave
 the process, and for each one the exact fields that may go with it.
 
-| Event                                                 | Why it is exported                                 |
-| ----------------------------------------------------- | -------------------------------------------------- |
-| `mcp.list_tools_failed` / `mcp.list_resources_failed` | a mounted slug is serving nothing                  |
-| `strad.tool_surface_degraded` / `_recovered`          | which slug, and when it changed                    |
-| `strad.tool_surface`                                  | the fleet summary, on change                       |
-| `mcp.unavailable`                                     | 424 fail-closed: a slug asked for and not entitled |
-| `mcp.policy_unmatched_tools`                          | a `tools:` typo silently narrowing a toolset       |
-| `mcp.auth_failed`                                     | 401s, by reason                                    |
-| `strad.listening` / `strad.secrets_hydrated`          | what this build mounted, and which keys resolved   |
+| Event                                                  | Why it is exported                                 |
+| ------------------------------------------------------ | -------------------------------------------------- |
+| `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                  |
+| `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                    |
+| `strad.tool_surface`                                   | the fleet summary, on change                       |
+| `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled |
+| `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset       |
+| `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing      |
+| `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved   |
+| `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill    |
 
 Three rules make it safe, and they are worth stating because the boundary is the
 reason this exists at all rather than a `pino` transport:
@@ -269,9 +270,12 @@ reason this exists at all rather than a `pino` transport:
    someone else's Express. Where an event carries one, the exporter substitutes
    `error.kind`, the classification from `redact.ts`, which is one of a fixed set
    of words strad wrote.
-3. **stdout is unchanged.** It still carries every event in full, upstream text
-   and all. An operator with a shell sees the upstream's own words; the ingestor
-   sees strad's.
+3. **The streams still carry every event in full**, upstream text and all. An
+   operator with a shell sees the upstream's own words; the ingestor sees
+   strad's. One thing did change about them: an event whose name ends `_failed`
+   or `_degraded` now goes to **stderr** regardless of which call site emitted
+   it, so `mcp.auth_failed` moved off stdout. The stream now agrees with what the
+   event is rather than with how it was written.
 
 Two things are deliberately absent. **`mcp.auth_failed`** is not exported at all:
 its fields are safe, but it fires before authentication succeeds, so anyone who
@@ -284,8 +288,13 @@ writes free text into strad's own vocabulary. The same filtering applies to the
 `mcp.server` attribute on `strad.mcp.unavailable`, where an unfiltered value
 would let any token holder mint metric series at will.
 
-The request-path events are also throttled to one exported record per slug per
-minute. stdout is never throttled; it has no queue to starve.
+Every exportable event a client can drive — `mcp.list_tools_failed`,
+`mcp.list_resources_failed`, `mcp.policy_unmatched_tools` and `mcp.unavailable` —
+is throttled to one exported record per slug per minute, for the same
+queue-starvation reason. A repeated fault is therefore under-reported by up to a
+minute in the ingestor; the streams are never throttled, and
+`strad.mcp.tool_surface` carries the same fact continuously. Fault events export
+at `SeverityNumber.ERROR`, so `severity >= ERROR` finds them.
 
 Records are batched, not sent per-record: these are diagnostics, and a synchronous
 round trip on the failure path would add latency to exactly the requests already

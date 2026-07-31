@@ -36,7 +36,7 @@
  *
  * `test/telemetry.redaction.test.ts` pins all of this by driving a real tool
  * call whose arguments AND result are stuffed with a canary secret, then
- * asserting the canary appears nowhere in any exported span or metric.
+ * asserting the canary appears nowhere in any exported span, metric or log record.
  */
 
 /** How an error is allowed to be described in telemetry: a fixed, closed set. */

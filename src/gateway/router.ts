@@ -91,9 +91,6 @@ export function createMcpHandler(opts: McpHandlerOptions) {
 
   // Compiled once: the policy is a property of the config, not of the request.
   const policies = compileToolPolicies(opts.config);
-  // Every slug this deployment knows about. The membership test that separates
-  // "a server that exists and you may not have" from "a string you made up".
-  const configuredSlugs = new Set(opts.config.servers.map((s) => s.slug));
 
   return async function handleMcp(req: Request, res: Response): Promise<void> {
     // --- telemetry: one SERVER span per /mcp request ------------------------
@@ -219,7 +216,13 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       // back. Echoing it would put caller-authored text in an exported log
       // record, and — worse, because it is silent — mint a new metric time
       // series per distinct string, from anyone holding a token.
-      const known = unavailable.filter((s) => configuredSlugs.has(s));
+      // `resolveSelection` already made this call — `not_configured` is set from
+      // the same `cfg.servers` lookup — so read its verdict rather than
+      // recomputing it. One rule in two places is one rule that drifts the day
+      // a fifth status appears.
+      const known = selection.unavailable
+        .filter((u) => u.status !== "not_configured")
+        .map((u) => u.slug);
       const unknown = unavailable.length - known.length;
 
       log({
