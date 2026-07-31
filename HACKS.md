@@ -996,12 +996,25 @@ written into `infra/strad.staging.yaml` as
 `ghcr.io/tadasant/strad-bundle:latest`, on all 25 `supplementary-image` entries,
 and the only thing that overrides it is `--bundle-image` for a branch build.
 
-**Why it matters.** This is the same failure that took staging down, one
-component over. App Platform may serve a mutable tag from whatever it resolved
-last, so a bundle deploy can boot an image whose mounts do not match the paths
-the spec routes — and unlike the core, nothing refuses it. It has not bitten yet
-because `release-bundle-image.yml` moves `strad-bundle:latest` on every change to
-`servers/bundle/**`, so the tag is usually fresh.
+**Why it matters, and it has now bitten.** This is the same failure that took
+staging down, one component over. App Platform may serve a mutable tag from
+whatever it resolved last, so a bundle deploy can boot an image whose mounts do
+not match the paths the spec routes — and unlike the core, nothing refuses it.
+
+On **2026-07-31** that is exactly what staging was doing. Both `bundle` and
+`bundle-zimmer-secrets` were running an image that predated PR #33 (2026-07-24):
+they served 14 and 13 mounts respectively, with **no `/secrets`** and with
+`/remote-filesystem` under the slug it was renamed away from. `release-bundle-image.yml`
+had pushed a fresh `:latest` at 16:33 that same day and the containers restarted
+at 16:42 — and still came up on the old image. So "the tag is usually fresh" was
+true and did not help: what App Platform serves for a mutable tag is not decided
+by what the registry holds.
+
+The symptom was silent. `/mcp?servers=secrets` answered `200 {"tools":[]}` —
+core POSTed to `/secrets`, Express answered `404 Cannot POST /secrets`, and the
+gateway turned that into an empty list. `/healthz` was 200 with all 27 slugs
+listed. Nothing was unhealthy; the `secrets` slug simply could not place a
+secret, which is the entire point of it.
 
 **Why it ships anyway.** The core had an immutable tag to reach for:
 `release-image.yml` publishes `:<version>` and `:sha-<sha>` per commit, and the
@@ -1012,10 +1025,21 @@ but it is a config value, not an argument — pinning it means either editing 24
 released, not a line in the deploy workflow, and it does not belong in an outage
 fix.
 
+**What now detects it.** Not the tag — the consequence. Core probes every mounted
+slug's `tools/list` on an interval (`src/gateway/reachability.ts`), logs
+`strad.tool_surface_degraded` when a slug's state changes to `unreachable` or
+`empty`, and publishes the roster on `/healthz`. The staging deploy polls for
+three minutes after the flip and fails if a slug of a kind we DEPLOY is
+`unreachable` — a third-party `remote-http` having a bad afternoon is annotated,
+not fatal. A stale bundle image no longer deploys green. It still deploys.
+
 **Undo.** Extend `assertImmutableCoreImage` to every image in the rendered spec,
 and give `deploy-staging.yml` the same `sha-` resolution for the bundle that it
 does for the core (`--bundle-image` already exists and needs no change). Do it
-together with hack #25, which wants the same input for the same reason.
+together with hack #25, which wants the same input for the same reason. The
+detection above is not a substitute: it catches a stale image only when the
+staleness happens to change a MOUNT. An image that keeps every path and changes
+what a tool does is still invisible.
 
 ## 33. Secret values are base64url in Secret Manager, and the encoding is unverified against live Google
 

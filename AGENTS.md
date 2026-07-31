@@ -41,7 +41,7 @@ not a confession.
 
 | You changed…                                                                        | Update…                                                           |
 | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `src/gateway/router.ts`, `registry.ts`, `adapters/**`                               | `intro/architecture.md`                                           |
+| `src/gateway/router.ts`, `registry.ts`, `adapters/**`, `reachability.ts`            | `intro/architecture.md`                                           |
 | `src/gateway/entitlements.ts` (roles, `?servers=`, the 424)                         | `intro/concepts.md`, `auth/overview.md`                           |
 | `src/gateway/toolPolicy.ts` (the `tools:` allow/deny policy)                        | `intro/architecture.md`, `intro/concepts.md`, `servers/adding.md` |
 | `src/config/schema.ts` — any field, default, or `superRefine` rule                  | `servers/interface.md` **and** `strad.config.example.yaml`        |
@@ -109,6 +109,10 @@ slop behind when you fix a stale fact.
   `tools/list` and on `tools/call`.
 - `src/gateway/adapters/` — the one `ServerAdapter` interface (`listTools`,
   `callTool`, `close`) that all three server kinds reduce to.
+- `src/gateway/reachability.ts` — which slugs actually SERVE tools. A slug can be
+  configured, entitled, routed and dead, and the only symptom is an empty
+  `tools/list`. Probed on an interval, logged when it changes for the worse,
+  published on `/healthz` as `degraded`, asserted by the staging deploy.
 - `src/config/schema.ts` — the Zod config schema. It is the product's contract.
 - `src/config/strict.ts` — the deploy-time strict parse. Zod strips unknown keys
   and boot stays lenient on purpose (a rollback must not become an outage), so

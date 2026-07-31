@@ -143,15 +143,59 @@ serving fetchpet".
 
 **Metrics:** `strad.mcp.requests`, `strad.mcp.request.duration`,
 `strad.mcp.in_flight` (concurrency), `strad.mcp.auth_failures` (401, by reason),
-`strad.mcp.unavailable` (424 fail-closed, by server), `strad.mcp.tool_calls` and
-`strad.mcp.tool_call.duration` (by server + tool), `strad.mcp.upstream.duration`
-(**per-server latency — this is what shows you which server is starving the
-others**), `strad.mcp.upstream.errors`, and `strad.mcp.upstream.timeouts`.
+`strad.mcp.unavailable` (424 fail-closed, by server), `strad.mcp.unlistable` (a
+`tools/list` that failed for a server the client named, by server),
+`strad.mcp.tool_calls` and `strad.mcp.tool_call.duration` (by server + tool),
+`strad.mcp.upstream.duration` (**per-server latency — this is what shows you
+which server is starving the others**), `strad.mcp.upstream.errors`,
+`strad.mcp.upstream.timeouts`, and `strad.mcp.tool_surface` (**is a slug serving
+anything at all** — see below).
 
 Timeouts get their own counter deliberately. The MCP SDK's request timeout
 defaults to **60s and applies at every hop**, so a slow tool behind the gateway
 dies at exactly 60s and presents as a mysterious platform failure. Counting them
 separately turns that into a one-glance diagnosis.
+
+### `strad.mcp.tool_surface` — is a slug serving anything at all?
+
+A gauge: how many tools each mounted server's **upstream** is currently offering,
+attributed by `mcp.server` and `mcp.upstream.kind`. The background monitor
+([architecture](/intro/architecture/#adapters)) records it on every probe.
+
+**It is the signal this fleet was missing.** A slug can be configured, entitled,
+routed and dead, and the only symptom is a `tools/list` that comes back empty —
+which reads exactly like a server that has no tools. That state ran for a week on
+both environments and left nothing behind but a stdout line, because strad ships
+metrics and traces and deliberately ships no logs (see below). A gauge pinned at
+zero for a slug, on the other hand, is a thing you can alert on:
+
+```promql
+min_over_time(strad_mcp_tool_surface{mcp_upstream_kind="supplementary-image"}[15m]) == 0
+```
+
+Scope it by `mcp_upstream_kind`. A `remote-http` is somebody else's server on the
+public internet, and paging you at 3am because deepwiki is having an afternoon is
+how an alert gets muted. Scope by component too (`service_name`) if you want one
+page per fault: core and each bundle run their own monitor, so a slug mounted in
+both is two series for one problem.
+
+**Only immutable attributes are on it, deliberately.** The `state` word — `ok` /
+`empty` / `unreachable` — is on `/healthz` and in the log line and is _not_ here.
+OTLP defaults to cumulative temporality, under which every attribute set ever
+recorded keeps being re-exported at its last value, with no expiry. A
+`state="unreachable"` series would be minted by the first probe of nearly every
+deploy, since core comes up before its bundles do, and would then sit at zero for
+the life of the process — latching the alert above the first time anything
+recovered. The value already carries the fact.
+
+It measures the **upstream's** surface, not what a client sees: the `tools:`
+allow-list is applied on the listing path and not in the probe, so a slug whose
+policy filters every tool away reads healthy here. `mcp.policy_unmatched_tools` is
+the signal for that one.
+
+`strad.mcp.unlistable` is its request-side companion — a `tools/list` that failed
+for a server the client named. It needs its own counter because that failure
+answers with a JSON-RPC error inside an HTTP **200**, so it moves nothing else.
 
 ## What strad will never send
 
@@ -179,6 +223,15 @@ Two things that look like omissions and are not:
   error messages, and that is fine where it is — stdout is the operator's own
   console. Shipping it to an external ingestor would drag those messages across
   this boundary. If you ever add a log exporter, redact those lines first.
+
+  Know the cost of that choice, because it has been paid: an event that only ever
+  appears on stdout is, on App Platform, an event nobody reads. The `secrets`
+  slug served zero tools for a week on both environments and wrote
+  `mcp.list_tools_failed` every single time anyone asked — into a stream with no
+  ingestor. **So a signal worth acting on belongs in a metric, not only in a log
+  line.** `strad.mcp.tool_surface` above is that lesson applied: the same fact,
+  in the channel that actually leaves the container, carrying only strad's own
+  vocabulary.
 
 `test/telemetry.redaction.test.ts` pins all of this: it drives a real MCP tool
 call with a credential-shaped canary planted in **both** the arguments and the

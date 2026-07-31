@@ -577,7 +577,64 @@ jobs:
           curl -fsS "$HOST/healthz"
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/mcp")
           [ "$code" = "401" ] || { echo "::error::/mcp not gated (got $code)"; exit 1; }
-          echo "OK: staging healthy and /mcp gated."
+
+          # Does every component we DEPLOY actually serve something?
+          #
+          # This is the check that was missing. `/healthz` used to answer 200
+          # with all 27 slugs listed while three of them served no tools at all:
+          # the bundle was running an image that predated the `/secrets` mount,
+          # core POSTed to `/secrets`, Express answered 404, and the gateway
+          # turned that into `200 {"tools":[]}`. A green deploy, a healthy app,
+          # and a secrets server that could not place a secret — discoverable
+          # only by holding a token and polling `tools/list`.
+          #
+          # WHAT IT GATES ON, and what it deliberately does not. `toolSurfaces`
+          # is core's own observation (gateway/reachability.ts). This asserts on
+          # `unreachable` for the kinds WE ship — a `supplementary-image` or a
+          # bundle-hosted `builtin` that cannot be listed is this deploy's fault.
+          # It does NOT gate on:
+          #   - `remote-http`. deepwiki lives on the public internet and having a
+          #     bad afternoon is not a reason to fail strad's deploy. Annotated.
+          #   - `empty`. A server that ANSWERS with no tools is a credential
+          #     story, and the capability report below is deliberately non-gating
+          #     for exactly that reason. Annotated too, never fatal.
+          #
+          # It converges after a deploy — core comes up before the bundles do —
+          # so poll rather than read once, and treat a failed poll as "not yet"
+          # rather than letting `set -e` kill the step without a message.
+          bad='pending'
+          for _ in $(seq 1 30); do
+            if body=$(curl -fsS "$HOST/healthz" 2>/dev/null); then
+              if printf '%s' "$body" | jq -e '.toolSurfaces' >/dev/null 2>&1; then
+                bad=$(printf '%s' "$body" | jq -c '[.toolSurfaces.servers[]
+                  | select(.kind != "remote-http" and .state == "unreachable")
+                  | .slug]')
+                [ "$bad" = "[]" ] && break
+              else
+                bad='no-toolsurfaces'
+              fi
+            fi
+            sleep 6
+          done
+
+          if [ "$bad" = 'no-toolsurfaces' ] || [ "$bad" = 'pending' ]; then
+            echo "::warning::/healthz never reported toolSurfaces, so this deploy is"
+            echo "unverified: the image may predate the tool-surface monitor, or the"
+            echo "host was unreachable for the whole poll. Not failing on it."
+          elif [ "$bad" != "[]" ]; then
+            echo "::error::these slugs are mounted but serve NO tools: $bad"
+            echo "A slug serving nothing answers tools/list with [] and looks like a"
+            echo "server that simply has no tools. Usual cause: the component is"
+            echo "running an image that does not mount the path the slug routes to"
+            echo "— re-run release-bundle-image.yml and redeploy."
+            printf '%s' "$body" | jq '.toolSurfaces' || true
+            exit 1
+          else
+            others=$(printf '%s' "$body" | jq -c '[.toolSurfaces.servers[]
+              | select(.state != "ok") | {slug, state, kind}]')
+            [ "$others" = "[]" ] || echo "::warning::not gating on these: $others"
+            echo "OK: staging healthy, /mcp gated, every deployed slug serving tools."
+          fi
 
       - name: Report what the secrets credentials can do
         # The secrets surfaces are PROBE-DERIVED: the MCP server lists

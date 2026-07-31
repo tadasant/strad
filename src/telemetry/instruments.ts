@@ -1,6 +1,7 @@
 import {
   metrics,
   trace,
+  type Gauge,
   type Histogram,
   type Counter,
   type UpDownCounter,
@@ -41,6 +42,29 @@ interface GatewayInstruments {
   authFailures: Counter;
   /** 424 fail-closed: the client asked for a server it may not have. */
   unavailable: Counter;
+  /**
+   * A server the client named whose upstream could not be listed at all.
+   *
+   * Distinct from `unavailable`, which is an entitlement answer and a 424. This
+   * one is a reachability answer and rides inside a 200 (a JSON-RPC error is
+   * still an HTTP 200), so without its own counter it moves nothing.
+   */
+  unlistable: Counter;
+
+  /**
+   * How many tools each mounted slug is currently serving.
+   *
+   * THE metric this fleet was missing. A slug can be configured, entitled,
+   * routed and dead, and the only symptom is an empty `tools/list` — for a week,
+   * on both environments, the only trace of that was a stdout line nothing
+   * ingests. A gauge at zero, attributed by slug, is the thing an alert can be
+   * hung on.
+   *
+   * Recorded with `mcp.server` and `mcp.upstream.kind` and NOTHING that varies
+   * over the life of a slug: under cumulative temporality a stale attribute set
+   * is re-exported at its last value forever. See gateway/reachability.ts.
+   */
+  toolSurface: Gauge;
 
   toolCalls: Counter;
   toolCallDuration: Histogram;
@@ -81,6 +105,14 @@ export function instruments(): GatewayInstruments {
     unavailable: meter.createCounter("strad.mcp.unavailable", {
       description:
         "424 fail-closed responses: a requested server was not available to this principal",
+    }),
+    unlistable: meter.createCounter("strad.mcp.unlistable", {
+      description:
+        "tools/list failures for a server the client named: it is serving nothing",
+    }),
+    toolSurface: meter.createGauge("strad.mcp.tool_surface", {
+      description:
+        "Tools each mounted server is currently serving; 0 means it serves nothing",
     }),
     toolCalls: meter.createCounter("strad.mcp.tool_calls", {
       description: "tools/call invocations, by server and outcome",

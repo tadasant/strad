@@ -127,11 +127,37 @@ intersected with `?servers=`. Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
 
-A slow or failing upstream contributes **zero tools** to `tools/list` (and logs
-it) rather than failing the whole request with a 500. Selection is re-checked at
-`tools/call` time too: `tools/list` filters by the current `?servers=`, but a
-client could call any tool name it saw on a prior request, so authorization is
-re-enforced on the action itself.
+A failing upstream is handled differently depending on **who chose that server**:
+
+- **The request named it** (`?servers=secrets`) — `tools/list` **fails**. A slug
+  the caller asked for by name whose upstream cannot be listed would otherwise
+  contribute an empty list, which is indistinguishable from a server that
+  genuinely has no tools — and that is how a dead `secrets` slug went unnoticed
+  on staging. This is the same posture `?servers=` already had for entitlement,
+  where a server you cannot have is a 424 and never a silently smaller toolset.
+  Any named server failing fails the listing, not all of them.
+- **The request did not** (no `?servers=`, meaning "everything I'm entitled to")
+  — the failing server contributes **zero tools** and a log line, rather than
+  taking the other twenty-six down with it.
+
+The trigger is a `tools/list` that **throws**. A server that answers with an
+empty list is a server with no tools, and no amount of error handling can tell
+those apart from the outside — which is why core also watches from the inside. A
+background **tool-surface monitor** (`src/gateway/reachability.ts`) probes every
+mounted slug on an interval and classifies it `ok`, `empty` (answered, offered
+nothing) or `unreachable` (refused, 404'd or timed out), tagged with the server
+`kind` so a third-party remote is not confused with a component we deploy. It
+logs `strad.tool_surface_degraded` when a slug's state changes, publishes the
+current answer on
+[`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`, and
+records [`strad.mcp.tool_surface`](/operate/telemetry/#stradmcptool_surface--is-a-slug-serving-anything-at-all)
+— the metric matters most of the three, because strad exports no logs and a
+stdout line on App Platform is a line nobody reads. The staging deploy fails when
+a slug we ship is `unreachable`.
+
+Selection is re-checked at `tools/call` time too: `tools/list` filters by the
+current `?servers=`, but a client could call any tool name it saw on a prior
+request, so authorization is re-enforced on the action itself.
 
 ## Capability (read-only vs read-write)
 
