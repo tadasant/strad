@@ -306,6 +306,40 @@ describe("a gateway-resolved secret under a store-backed provider", () => {
     expect(observation.evidence.by).toBe("store");
   });
 
+  it.each([
+    ["base64 of a JSON service account", "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0"],
+    [
+      "base64url of a PEM header",
+      "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTg_-",
+    ],
+  ])(
+    "does not mistake %s for filler on the store path",
+    async (_name, encoded) => {
+      // If a secret value is ever stored ENCODED — so `:render` cannot splice raw
+      // bytes into the JSON text it returns — the store decodes on the way back
+      // out and this classifier sees plaintext. Should one ever arrive still
+      // encoded, the failure that would MATTER is calling it filler and sending
+      // someone to rotate a working credential.
+      //
+      // Asserted on the STORE path, which is where an un-decoded value would
+      // actually surface (renderAll -> values -> gatewayHalf), rather than on the
+      // bundle path, which never carries one.
+      const statuses = await read({
+        config: STORE_CONFIG,
+        bag: { GRANOLA_TOKEN: encoded },
+        store: fakeStore({
+          indexed: ["GRANOLA_TOKEN"],
+          values: { GRANOLA_TOKEN: encoded },
+        }),
+      });
+      const observation = statuses
+        .get("granola")!
+        .requirements.find((r) => r.requirement.name === "GRANOLA_TOKEN")!;
+      expect(observation.state).toBe("present");
+      expect(observation.source).toBe("GSM");
+    },
+  );
+
   it("still reads ENV under the default provider, so the badge means something", async () => {
     // GSM and ENV are Zimmer's own two labels, and the workflow is to read that
     // screen and this one and compare. A page that said GSM for everything would
@@ -458,30 +492,7 @@ describe("a parameter that exists and whose value will not render", () => {
       }),
     });
     expect(stateOf(statuses, "granola", "GRANOLA_TOKEN")).toBe("unrenderable");
-    expect(stateOf(statuses, "granola", "GRANOLA_TOKEN")).not.toBe("present");
     expect(statuses.get("granola")!.label).not.toBe("ready");
-  });
-
-  it("does not mistake an encoded-looking value for filler", async () => {
-    // Secret values are encoded on their way into Secret Manager so `:render`
-    // cannot splice raw bytes into JSON text, and the store decodes on the way
-    // back out — so a value reaching this classifier is plaintext. If one ever
-    // arrives still encoded, the failure mode that would matter is calling it
-    // filler and sending someone to rotate a working credential. It reads
-    // `present`, because the placeholder rule only fires on shapes no issuer
-    // emits.
-    for (const encoded of [
-      "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0",
-      "LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTg_-",
-    ]) {
-      const statuses = await read({
-        presence: presence({
-          kind: "ok",
-          report: report({ SLACK_BOT_TOKEN: encoded }),
-        }),
-      });
-      expect(stateOf(statuses, "slack", "SLACK_TOKEN")).toBe("present");
-    }
   });
 
   it("does not become 'unrenderable' just because the store was down", async () => {
