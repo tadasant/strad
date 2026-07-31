@@ -273,6 +273,20 @@ reason this exists at all rather than a `pino` transport:
    and all. An operator with a shell sees the upstream's own words; the ingestor
    sees strad's.
 
+Two things are deliberately absent. **`mcp.auth_failed`** is not exported at all:
+its fields are safe, but it fires before authentication succeeds, so anyone who
+can POST `/mcp` could fill the batch queue and evict the signals that matter.
+`strad.mcp.auth_failures` counts the same thing by the same `reason`, in a
+channel with no queue to starve. And the **424's requested-server list** is
+filtered to slugs that actually exist in the config, with the rest reduced to a
+count — `?servers=` is validated against nothing, so it is the one place a client
+writes free text into strad's own vocabulary. The same filtering applies to the
+`mcp.server` attribute on `strad.mcp.unavailable`, where an unfiltered value
+would let any token holder mint metric series at will.
+
+The request-path events are also throttled to one exported record per slug per
+minute. stdout is never throttled; it has no queue to starve.
+
 Records are batched, not sent per-record: these are diagnostics, and a synchronous
 round trip on the failure path would add latency to exactly the requests already
 going badly. As with every other signal here, no `OTEL_EXPORTER_OTLP_ENDPOINT`

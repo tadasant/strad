@@ -137,6 +137,7 @@ beforeAll(async () => {
   loggerProvider = new LoggerProvider({
     processors: [new SimpleLogRecordProcessor({ exporter: logExporter })],
   });
+  logs.disable();
   logs.setGlobalLoggerProvider(loggerProvider);
   enableEventExport("strad-test", "0.0.0");
 
@@ -210,6 +211,23 @@ beforeAll(async () => {
     method: "POST",
     headers: {
       authorization: `Bearer ${limitedToken.plaintext}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+
+  // 4. A 424 for a server that does not EXIST, named with the canary.
+  //
+  //    `?servers=` is parsed and deduped and validated against nothing, so this
+  //    is the one place a client writes free text into strad's own vocabulary.
+  //    An earlier draft of the event allowlist echoed it straight into an
+  //    exported log record, and the metric attribute minted a new time series
+  //    per distinct string on top. Neither is caught by planting the canary in
+  //    a tool argument, which is why it is planted HERE as well.
+  await fetch(`${baseUrl}/mcp?servers=${encodeURIComponent(CANARY_ARG)}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${adminToken.plaintext}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
@@ -375,19 +393,40 @@ describe("telemetry exports the signals we actually need", () => {
     const records = logExporter.getFinishedLogRecords();
     expect(records.length).toBeGreaterThan(0);
 
-    // The 401 driven above, with the canary token in the header.
-    const authFailed = records.find((r) => r.body === "mcp.auth_failed");
-    expect(authFailed).toBeDefined();
-    // One of the fixed reason words this repo authors — never the token that
-    // caused it, which is the whole point of exporting `reason` and not the
-    // header. (The canary is rejected as `malformed`: it is not a strad token.)
-    expect(authFailed?.attributes["reason"]).toBe("malformed");
-    // `ip` is NOT on the allowlist for this event, so it does not travel.
-    expect(authFailed?.attributes).not.toHaveProperty("ip");
+    // `mcp.auth_failed` is deliberately NOT exported, even though its fields are
+    // safe: it fires before authentication succeeds, so anyone who can POST
+    // /mcp could fill the batch queue and evict the signals that matter. The
+    // metric counts it instead, in a channel with no queue to starve.
+    expect(records.some((r) => r.body === "mcp.auth_failed")).toBe(false);
+    expect(allMetricNames()).toContain("strad.mcp.auth_failures");
 
-    // The 424 for `beta`, naming the slug and the principal but nothing else.
-    const unavailable = records.find((r) => r.body === "mcp.unavailable");
-    expect(unavailable?.attributes["unavailable"]).toEqual(["beta"]);
+    // The 424 for `beta`: a CONFIGURED slug, so it may be named.
+    const unavailable = records.filter((r) => r.body === "mcp.unavailable");
+    expect(
+      unavailable.some((r) =>
+        (r.attributes["unavailable"] as string[] | undefined)?.includes("beta"),
+      ),
+    ).toBe(true);
+
+    // The 424 for the canary: a slug that names NOTHING, so it is counted and
+    // never repeated back. `requested` is on no allowlist at all.
+    const invented = unavailable.find(
+      (r) => (r.attributes["unknown_count"] as number) > 0,
+    );
+    expect(invented).toBeDefined();
+    expect(invented?.attributes["unavailable"]).toEqual([]);
+    expect(invented?.attributes).not.toHaveProperty("requested");
+  });
+
+  it("mints no metric series from a slug the caller invented", () => {
+    // Not just a redaction problem: an unbounded `mcp.server` attribute is a
+    // cardinality bomb any token holder could set off.
+    const servers = findMetric("strad.mcp.unavailable")!.dataPoints.map(
+      (d) => d.attributes["mcp.server"],
+    );
+    expect(servers).toContain("beta");
+    expect(servers).toContain("(not configured)");
+    expect(servers).not.toContain(CANARY_ARG);
   });
 
   it("exports no field that is not on that event's allowlist", () => {

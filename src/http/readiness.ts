@@ -23,6 +23,7 @@ import {
   type SecretState,
   type ServerState,
 } from "../ui/secret-status.ts";
+import { event } from "../telemetry/index.ts";
 
 /**
  * `GET /api/secrets/readiness` — the machine's answer to "is the secrets side of
@@ -378,12 +379,10 @@ export function createReadinessHandler(
       // so reaching here means something structural failed. The message is
       // withheld rather than echoed: this is the one path whose error text did
       // not come from code that promises to be value-free.
-      console.error(
-        JSON.stringify({
-          evt: "strad.readiness_failed",
-          error: err instanceof Error ? err.name : "unknown",
-        }),
-      );
+      event({
+        evt: "strad.readiness_failed",
+        error: err instanceof Error ? err.name : "unknown",
+      });
       if (!res.headersSent) res.status(500).json({ error: "readiness_failed" });
     }
   };

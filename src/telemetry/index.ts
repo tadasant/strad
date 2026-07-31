@@ -35,6 +35,7 @@ export {
   enableEventExport,
   event,
   eventExportEnabled,
+  resetEventThrottle,
   EXPORTABLE,
 } from "./events.ts";
 export {
@@ -113,6 +114,9 @@ export interface StartTelemetryOptions {
   log?: (event: Record<string, unknown>) => void;
 }
 
+/** The instrumentation-scope version on exported log records. */
+const VERSION = "0.1.0";
+
 const DISABLED: Omit<TelemetryHandle, "serviceName" | "identity"> = {
   enabled: false,
   memoryUtilization: () => null,
@@ -178,9 +182,11 @@ export function startTelemetry(
     // registered is permanently the no-op meter, and the metrics would silently
     // never appear. Same reason instruments.ts memoises lazily.
     resetInstruments();
-    // Same ordering rule as the instruments: a logger resolved before the
-    // provider is registered is permanently the no-op logger.
-    enableEventExport(name, "0.1.0");
+    // AFTER sdk.start(), which is what registers the logger provider. (Unlike
+    // the metrics API, `logs.getLogger` before registration returns a proxy that
+    // resolves later rather than a permanent no-op — but relying on that would
+    // make the ordering look incidental when it is not.)
+    enableEventExport(name, VERSION);
     const runtime: RuntimeMetricsHandle = startRuntimeMetrics();
 
     if (opts.browser) {

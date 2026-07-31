@@ -37,34 +37,80 @@ import { errorKind } from "./redact.ts";
  *
  * Everything still goes to stdout in full, unchanged. An operator with a shell
  * sees the upstream's own words; the ingestor sees strad's.
+ *
+ * ## What is deliberately NOT on the list
+ *
+ * `mcp.auth_failed`. Its attributes are safe — `reason` is a closed set — but it
+ * is emitted BEFORE authentication succeeds, so anyone who can reach `/mcp`
+ * produces one exported record per request. A bot spraying bad bearer tokens
+ * would fill the batch queue and evict `mcp.list_tools_failed`, which is the one
+ * signal this file exists to deliver. `strad.mcp.auth_failures` already counts
+ * the same thing, by the same `reason`, in a channel with no queue to starve.
  */
 
 /**
  * evt -> the fields that may be exported with it.
  *
- * Add an event here only if you can say, for each field, that its VALUES come
- * from strad's config or strad's vocabulary. A slug is config. A tool name is
- * the upstream's. A reason sentence written in this repo is ours; an error
- * message caught from a client is not.
+ * Add an event here only if you can say, for each field, WHERE ITS VALUE COMES
+ * FROM at every call site that emits it. That is the part this table cannot
+ * check for you: it guarantees which KEYS ship, never what is under them. A slug
+ * that came from the config is ours. The same field populated from
+ * `req.query.servers` is the caller's, and `mcp.unavailable` shipped exactly
+ * that until a review caught it — a client could write any string it liked into
+ * the ingestor by asking for a server that does not exist.
+ *
+ * The rule of thumb that survives that: a value is exportable if a hostile
+ * client and a broken upstream can BOTH only ever cause it to take one of a set
+ * of values this repo wrote down. A count is safe. A word from a closed set is
+ * safe. A string that reached us over the wire is not, however harmless it looks.
+ *
+ * Keys are also globally consistent in TYPE across events, because an ingestor
+ * that derives a schema (Elasticsearch and friends) treats the second type for a
+ * key as a mapping conflict and drops the record. Hence `tool_count` and
+ * `server_count` rather than reusing `tools` and `servers`, which are arrays
+ * elsewhere in this table.
  */
-export const EXPORTABLE: Record<string, readonly string[]> = {
-  /** Boot. The roster proves which build is running and what it mounted. */
-  "strad.listening": ["port", "mode", "bundle", "env", "servers", "tokens"],
-  /** THE line this whole change exists for. `error` is excluded; see above. */
-  "mcp.list_tools_failed": ["slug", "explicit"],
-  "mcp.list_resources_failed": ["slug"],
-  /** A slug that is mounted and serving nothing. */
-  "strad.tool_surface_degraded": ["slug", "state", "reason"],
-  "strad.tool_surface_recovered": ["slug", "tools"],
-  "strad.tool_surface": ["servers", "serving", "degraded"],
-  /** 424 fail-closed, and the policy typo that silently narrows a toolset. */
-  "mcp.unavailable": ["principal", "requested", "unavailable"],
-  "mcp.policy_unmatched_tools": ["slug", "tools"],
-  /** Auth. `reason` is an enum-ish string this repo authors, never a token. */
-  "mcp.auth_failed": ["reason"],
-  /** Secrets plumbing, where a silent failure has the same shape as this one. */
-  "strad.secrets_hydrated": ["provider", "keys"],
-};
+export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
+  Object.freeze({
+    /** Boot. The roster proves which build is running and what it mounted. */
+    "strad.listening": ["port", "mode", "bundle", "env", "servers", "tokens"],
+    /** THE line this whole change exists for. `error` is excluded; see above. */
+    "mcp.list_tools_failed": ["slug", "explicit"],
+    "mcp.list_resources_failed": ["slug"],
+    /** A slug that is mounted and serving nothing. */
+    "strad.tool_surface_degraded": ["slug", "state", "reason"],
+    "strad.tool_surface_recovered": ["slug", "tool_count"],
+    "strad.tool_surface": ["server_count", "serving_count", "degraded"],
+    /**
+     * 424 fail-closed. `requested` and the raw `unavailable` list are NOT here:
+     * both are the caller's own query string, echoed back. What ships is the
+     * subset that names a CONFIGURED slug plus counts — enough to see "a client
+     * keeps asking for `secrets` and being refused", which is the operational
+     * question, with nothing a caller can write into.
+     */
+    "mcp.unavailable": [
+      "principal",
+      "requested_count",
+      "unavailable",
+      "unknown_count",
+    ],
+    /** Entries of the config's own `tools.allow`, not the upstream's names. */
+    "mcp.policy_unmatched_tools": ["slug", "tools"],
+    /** Secrets plumbing, where a silent failure has the same shape as this one. */
+    "strad.secrets_hydrated": ["provider", "keys"],
+    /** Clean SIGTERM or an OOM kill — the difference is one line, or its absence. */
+    "strad.shutdown": ["signal"],
+    /**
+     * THE EVENT NAME AND NOTHING ELSE. Both of these already reduce their error
+     * to a class name or a summary before logging, and both are still text this
+     * repo did not fully author — a rendered secret can end up inside a store
+     * client's exception. "This surface is failing" is the operational fact and
+     * it needs no field at all; the message stays on stderr for whoever is
+     * holding a shell.
+     */
+    "strad.readiness_failed": [],
+    "strad.store_diagnostics_failed": [],
+  });
 
 /**
  * Events whose `error` field should become `error.kind`.
@@ -95,29 +141,63 @@ export function eventExportEnabled(): boolean {
 }
 
 /**
+ * Events that fire on the REQUEST path, throttled per (evt, slug).
+ *
+ * `mcp.list_tools_failed` is emitted once per failing slug per listing, so a
+ * client polling a 27-slug gateway can produce 27 records a second. The batch
+ * processor's queue is shared, and a flood of the same fact would evict the
+ * OTHER facts — including, in the incident that motivated all of this, the one
+ * line anybody needed. One record a minute per slug says exactly as much.
+ *
+ * stdout is never throttled. It has no queue to starve.
+ */
+const THROTTLED = new Set([
+  "mcp.list_tools_failed",
+  "mcp.list_resources_failed",
+]);
+const THROTTLE_MS = 60_000;
+const lastExported = new Map<string, number>();
+
+/**
  * Emit one structured event.
  *
- * ALWAYS writes the full payload to stdout — that stream is the operator's own
- * console and nothing here narrows it. Then, if the event is exportable and an
- * SDK is running, ships the allowlisted subset.
+ * ALWAYS writes the full payload to stdout/stderr — those streams are the
+ * operator's own console and nothing here narrows them. Then, if the event is
+ * exportable and an SDK is running, ships the allowlisted subset.
  *
  * Never throws. A telemetry pipeline must not be able to break a request path,
  * and this one is called from inside the gateway's error handling.
  */
 export function event(payload: Record<string, unknown>): void {
-  const line = JSON.stringify(payload);
   const evt = typeof payload.evt === "string" ? payload.evt : undefined;
-  // Failures keep going to stderr, so `docker logs` and App Platform's error
-  // stream still separate them the way they did before this existed.
-  if (evt && (evt.endsWith("_failed") || evt.endsWith("_degraded"))) {
-    console.error(line);
-  } else {
-    console.log(line);
+  // A failure or a degradation goes to stderr — including `mcp.auth_failed`,
+  // which the router used to write to stdout. That is a deliberate change and
+  // the only one: everything a log scraper would key on now agrees with what the
+  // event is, rather than with which call site happened to emit it.
+  const stream =
+    evt && (evt.endsWith("_failed") || evt.endsWith("_degraded"))
+      ? console.error
+      : console.log;
+
+  try {
+    stream(JSON.stringify(payload));
+  } catch {
+    // A circular reference or a BigInt in a payload is a bug in the caller, not
+    // a reason to take down the request that was already failing.
+    stream(JSON.stringify({ evt, unserializable: true }));
   }
 
   if (!logger || !evt) return;
   const allowed = EXPORTABLE[evt];
   if (!allowed) return;
+
+  if (THROTTLED.has(evt)) {
+    const key = `${evt}:${String(payload.slug ?? "")}`;
+    const now = Date.now();
+    const last = lastExported.get(key);
+    if (last !== undefined && now - last < THROTTLE_MS) return;
+    lastExported.set(key, now);
+  }
 
   try {
     logger.emit({
@@ -133,6 +213,11 @@ export function event(payload: Record<string, unknown>): void {
   } catch {
     // An export failure is not this request's problem.
   }
+}
+
+/** Test seam: the throttle is process-global and would leak between cases. */
+export function resetEventThrottle(): void {
+  lastExported.clear();
 }
 
 function exportableAttributes(

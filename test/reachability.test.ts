@@ -31,6 +31,7 @@ import {
   disableEventExport,
   enableEventExport,
   event,
+  resetEventThrottle,
   resetInstruments,
 } from "../src/telemetry/index.ts";
 
@@ -340,6 +341,7 @@ describe("ToolSurfaceMonitor", () => {
       (l) => l.evt === "strad.tool_surface_recovered",
     );
     expect(recovered?.slug).toBe("flapping");
+    expect(recovered?.tool_count).toBe(1);
     expect(monitor.snapshot()?.degraded).toEqual([]);
   });
 
@@ -518,6 +520,7 @@ describe("the exported log, which is the other half", () => {
     enableEventExport("strad-test", "0.0.0");
 
     try {
+      resetEventThrottle();
       const client = await connect("stale-mount");
       await expect(client.listTools()).rejects.toThrow();
       await client.close();

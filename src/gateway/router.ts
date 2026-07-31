@@ -91,6 +91,9 @@ export function createMcpHandler(opts: McpHandlerOptions) {
 
   // Compiled once: the policy is a property of the config, not of the request.
   const policies = compileToolPolicies(opts.config);
+  // Every slug this deployment knows about. The membership test that separates
+  // "a server that exists and you may not have" from "a string you made up".
+  const configuredSlugs = new Set(opts.config.servers.map((s) => s.slug));
 
   return async function handleMcp(req: Request, res: Response): Promise<void> {
     // --- telemetry: one SERVER span per /mcp request ------------------------
@@ -206,11 +209,28 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     );
 
     if (!selection.ok) {
+      const unavailable = selection.unavailable.map((u) => u.slug);
+
+      // A requested slug that is NOT CONFIGURED is a string the caller invented
+      // — `?servers=` is parsed, trimmed and deduped, and validated against
+      // nothing. So it is split here, once, and the two halves are treated
+      // differently everywhere below: a configured slug is our own vocabulary
+      // and may be named; an unconfigured one is counted and never repeated
+      // back. Echoing it would put caller-authored text in an exported log
+      // record, and — worse, because it is silent — mint a new metric time
+      // series per distinct string, from anyone holding a token.
+      const known = unavailable.filter((s) => configuredSlugs.has(s));
+      const unknown = unavailable.length - known.length;
+
       log({
         evt: "mcp.unavailable",
         principal: principal.id,
+        // Full detail on stdout; the allowlist in telemetry/events.ts ships the
+        // counts and the known slugs and drops the rest.
         requested,
-        unavailable: selection.unavailable.map((u) => u.slug),
+        requested_count: requested.length,
+        unavailable: known,
+        unknown_count: unknown,
       });
       // The 424 fail-closed path. Worth its own counter rather than being folded
       // into "4xx": a 424 is not a client error in the usual sense, it is strad
@@ -218,14 +238,21 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       // not available to it. A spike here means an entitlement or a config is
       // wrong, which is a completely different investigation from a spike in 401s.
       setOutcome("unavailable");
-      const unavailable = selection.unavailable.map((u) => u.slug);
-      for (const slug of unavailable) {
+      for (const slug of known) {
         inst.unavailable.add(1, {
           "strad.mode": opts.mode,
           "mcp.server": slug,
         });
       }
-      span.setAttribute("mcp.servers.unavailable", unavailable);
+      if (unknown > 0) {
+        // One bounded series for every string that names nothing, rather than
+        // one series per string.
+        inst.unavailable.add(unknown, {
+          "strad.mode": opts.mode,
+          "mcp.server": "(not configured)",
+        });
+      }
+      span.setAttribute("mcp.servers.unavailable", known);
       res.status(424).json({
         error: "downstream_not_authenticated",
         message:
