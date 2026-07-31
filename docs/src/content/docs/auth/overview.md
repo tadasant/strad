@@ -205,6 +205,32 @@ credential has to match the scope: a token entitled to every enabled server, or 
 `403`. Zimmer's `admin` token (`servers: ["*"]`) clears it; a per-server token
 does not. See [Secrets](/operate/secrets/#get-apisecretsreadiness--the-same-answer-for-a-machine).
 
+### `POST /_strad/presence` is a bundle surface, and core does not serve it
+
+The other authenticated surface the Google gate does not guard — because it is not
+on core at all. Every component that holds secrets in its own process environment
+serves it: the `strad-bundle` host image, and the strad image in
+`STRAD_MODE=bundle`. Core is the only caller.
+
+It takes the shared **`STRAD_INTERNAL_TOKEN`**, the same credential core already
+presents to proxy `/mcp` to that component, and that choice is the security
+argument rather than a convenience: the token is strictly stronger than the
+surface — a holder can already proxy `/mcp` to every server on the component — so
+mounting the route widens nothing. With the token unset the route answers `503`
+rather than serving anonymously; "on the private network" is a reachability
+property, not an authorization one.
+
+**It cannot be turned into a presence oracle.** The names core asks about come
+from the config core is running plus what the component itself reports under
+`STRAD_PARAM_KEYS`. No request parameter on `/ui` or `/api/secrets/readiness`
+reaches a probed name, so no caller — however privileged — can ask strad whether a
+name of its own choosing exists. That matters because prod's `/mcp` credential
+structurally cannot read a secret value and prod's console credential is
+write-without-read: a surface that let an unprivileged caller confirm a specific
+secret would dissolve both. The answer vocabulary is presence, source and
+freshness; contents are not in it. See
+[Secrets](/operate/secrets/#the-presence-route-a-component-answering-for-itself).
+
 ### Console dev bypass (temporary)
 
 While Google OAuth credentials are being provisioned, a human can enter `/console`

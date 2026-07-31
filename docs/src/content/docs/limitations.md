@@ -314,26 +314,18 @@ unmistakable substrings: entropy scoring would send someone to rotate a working
 secret, and they cannot check without revealing it, so both directions of wrong
 are costly.
 
-The second gap is scope. Under `provider: env` a `supplementary-image` server's
-`env:` is baked onto its own bundle and never broadcast to core, where the console
-renders — so core cannot see it and the popout says `unverified` rather than
-guessing. That badges the entry `ISSUE`, because `READY` has to mean observed. That is honest but it is not an answer, and on an `env`-provider
-deployment it is the state most servers land in. `provider: gcp-parameter-store`
-closes it: the store holds the deploy-time source of truth for those refs too, so
-every name gets a real answer. Closing it under `env` would mean the console
-reading CI's environment, which it has no path to.
+The second gap was scope, and it is mostly closed — see
+[#35](#35-the-presence-probe-asserts-about-the-process-and-the-process-can-lie-by-being-old).
+Under `provider: env` a `supplementary-image` server's `env:` is baked onto its own
+bundle and never broadcast to core, where the console renders. Core still cannot
+_read_ those values; it asks the component that holds them instead, and the
+component answers in presence and never in values. `unverified` survives only
+where nothing could answer.
 
 An upstream `initialize` probe per server would close the first gap, at the cost of
 a page that makes N authenticated calls to third parties on every load. That is
-the trade not yet made.
-
-A third gap is `params: true`. Such a server takes its credentials from
-`/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references, and the
-page does not read that namespace — so it reports `unverified` and names the
-namespace it did not check. That is honest but it is not an answer, and
-`remote-filesystem-tmp-public` on staging is exactly that shape. Listing the
-namespace through the resolver would close it; `preflightSecrets` already shows
-the listing is metadata-only, so nothing about it needs a value-reading credential.
+the trade not yet made, and it is the one that would turn this surface into an
+oracle for credential validity.
 
 A fourth, smaller edge: the popout's `GSM` / `ENV` source badge uses Zimmer's
 Connectors-page labels on purpose, so the two screens can be compared — a
@@ -345,6 +337,65 @@ inside this repo.
 **Undo:** delete `src/ui/secret-status.ts` and `src/http/readiness.ts`, drop the
 `/secrets` redirect in `src/ui/index.ts`, and revert `src/ui/index-page.ts` to the
 plain server grid it renders around. Nothing else reads any of it.
+
+### 35. The presence probe asserts about the process, and the process can lie by being old
+
+`/ui` and `/api/secrets/readiness` now make a positive claim about a secret that
+lives on a component core is not: `POST /_strad/presence` asks each bundle what it
+holds, and the bundle answers with one of five words — `absent`, `empty`,
+`unexpanded`, `placeholder`, `present` — and nothing else. That is what turned
+"this entry could not be checked from the console" into "plumbed, via env, on
+`bundle`, established at 09:12".
+
+It is a claim about the **process**, which is the strongest one available and
+still not the same as "the deploy is correct". A container that predates the last
+render holds the previous deploy's environment: it can report `present` for a
+value since rotated, or `absent` for one the last render baked in but that the
+running instance never restarted to receive. That is the actual state of the
+deployment rather than a bug in the probe, and it is why `bootedAt` and `image`
+are in every report and printed on every row. The console shows the divergence; it
+does not resolve it.
+
+The designs not taken, so the trade is legible. Deriving from `render-spec` would
+be a claim about the last deploy, not the running process — a rollback re-runs an
+older spec — so it could say "plumbed" about a process holding nothing. Probing
+the upstream would be an oracle by construction, would spend third-party calls on
+a page load, and could not tell "credential rejected" from "upstream down".
+Reading the deployed spec from the DigitalOcean API would need a new cloud
+credential in core and still describe the spec rather than the process.
+
+**It is not an oracle.** The key roster core sends is derived from the config core
+is running plus what the component reports under `STRAD_PARAM_KEYS`; no request
+parameter reaches a probed name, so no caller can ask strad whether a name of its
+choosing exists. The route takes the existing `STRAD_INTERNAL_TOKEN` — strictly
+stronger than the surface, so it widens nothing — and fails closed with `503` when
+that token is unset.
+
+**It needs an image and a pin bump to become visible.** The core half degrades
+gracefully: a component answering `404` is reported `unsupported` with "rebuild
+and repin" as the sentence, and its rows fall back to exactly the old
+`unverified`. So core ships first and nothing regresses — but nothing on the fleet
+actually answers until `ghcr.io/tadasant/strad-bundle` is rebuilt with
+`servers/bundle/host` and the deployed config's `image:` pins move to it.
+
+**The `cannot render` diagnosis can lose a race and simply not appear.**
+`readStoreDiagnostics` gives its two store reads six seconds together, and the
+per-parameter render pass is bounded at a fan-out of ten. A large namespace can
+exceed the deadline, and then the diagnosis returns null and the state is not
+drawn — the console degrades to the states it had without it, never to a wrong
+one. There is no result cache yet, so every `/ui` render and every
+`/api/secrets/readiness` call performs the reads afresh.
+
+**Live verification is outstanding.** Every state is constructed in tests,
+including over a real socket, and none of it has been exercised against a live
+store or a live bundle — staging was down when this landed. A green unit suite is
+not the same as having run it, and this repo has shipped a bug of exactly that
+shape before.
+
+**Undo:** delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
+`src/gateway/bundle-presence.ts`, `src/http/presence.ts`, the vendored copy and
+its route in the bundle host, the `STRAD_PARAM_KEYS` env var in `appspec.ts`, and
+`resolveDetailed` in `gcp.ts`. The console reverts to the shrug.
 
 ### 30. Secret parameters written before strad granted them access need a manual backfill
 

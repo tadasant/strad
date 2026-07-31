@@ -23,6 +23,7 @@ import {
   type CreateParameterInput,
   type ParameterMeta,
   type ParameterStore,
+  type ResolvedNamespace,
 } from "./types.ts";
 
 /**
@@ -625,50 +626,149 @@ export function createGcpParameterStore(
   }
 
   /**
-   * ONE bad parameter fails the WHOLE namespace, deliberately.
+   * Render every parameter in a namespace, keeping the failures apart from the
+   * values.
    *
-   * The alternative — skip the name and return the rest — makes a parameter that
-   * exists and cannot be decoded indistinguishable from one that was never
-   * seeded, and "absent" is a state every caller treats as normal: the runtime
-   * provider answers null, boot hydration shrugs, and a gateway comes up with an
-   * empty token store rather than a broken one. Throwing is what lets the
-   * snapshot cache serve its last known good values instead.
+   * `resolve()` is fail-fast on purpose — a child process must not be started
+   * with half its environment — and that is exactly why it cannot tell anyone
+   * WHICH parameter broke: the first `:render` to throw ends the loop and the
+   * error names one resource out of a namespace the caller then has to guess at.
+   *
+   * The console needs the other half of that fact. A parameter that exists and
+   * cannot be dereferenced is neither seeded-and-healthy nor absent, and naming
+   * it is the difference between "rotate this one value" and "the secret backend
+   * is down". So the loop is written once, here, and the two callers differ only
+   * in what they do with `unrenderable`.
+   *
+   * The reason attached to a failure is `errorSummary`-shaped — method and
+   * resource, never a body. A `:render` failure's payload IS the dereferenced
+   * secret, and a raw message is how it would reach a page.
    */
-  async function resolve(namespace: string): Promise<Record<string, string>> {
+  async function renderAll(namespace: string): Promise<ResolvedNamespace> {
     const metas = await list(namespace);
-    const out: Record<string, string> = {};
-    for (const meta of metas) {
-      const id = parameterId(meta.path);
-      const vid = await currentVersionId(id);
-      if (!vid) continue;
-      // `:render` returns the payload with every `__REF__` dereferenced against
-      // Secret Manager. For a non-secret parameter it is the raw payload; for a
-      // secret one it now contains the actual value. Either way we parse the
-      // envelope and take `.value`.
+    const values: Record<string, string> = {};
+    const unrenderable: ResolvedNamespace["unrenderable"] = [];
+
+    // Bounded fan-out, the same shape `list()` uses and for the same reason: a
+    // namespace of 500 parameters must not open 500 connections. Sequential was
+    // tolerable while the loop stopped at the first failure; it is not now that
+    // every parameter is rendered on its own, because a namespace-wide 403 would
+    // otherwise cost N round trips end to end on the deploy path.
+    const FANOUT = 10;
+    for (let i = 0; i < metas.length; i += FANOUT) {
+      const batch = await Promise.all(
+        metas.slice(i, i + FANOUT).map((meta) => renderOne(meta.path)),
+      );
+      for (const outcome of batch) {
+        if ("value" in outcome) values[outcome.variable] = outcome.value;
+        else unrenderable.push(outcome);
+      }
+    }
+    return { values, unrenderable };
+  }
+
+  type RenderOutcome =
+    | { variable: string; value: string }
+    | { variable: string; hard: boolean; reason: string };
+
+  /**
+   * One parameter: its value, or the shape of why it has none.
+   *
+   * `hard` is what `resolve()` throws on, and it is drawn exactly where the
+   * old loop's `throw` was. A `:render` that errors and an envelope that will
+   * not decode are hard; a versionless parameter and an empty payload are the
+   * two the old loop skipped with `continue`, so they stay soft and `resolve()`
+   * keeps returning the rest.
+   */
+  async function renderOne(path: string): Promise<RenderOutcome> {
+    const id = parameterId(path);
+    const variable = variableOf(path);
+
+    const vid = await currentVersionId(id);
+    if (!vid) {
+      return {
+        variable,
+        hard: false,
+        reason:
+          "the parameter exists but has no version, so there is nothing to render",
+      };
+    }
+
+    // `:render` returns the payload with every `__REF__` dereferenced against
+    // Secret Manager. For a non-secret parameter it is the raw payload; for a
+    // secret one it carries the actual value. Either way we parse the envelope
+    // and take `.value`.
+    let data: string | undefined;
+    try {
       const rendered = (await pm(
         "GET",
         `${pmParent}/parameters/${id}/versions/${vid}:render`,
       )) as { renderedPayload?: string; payload?: { data?: string } };
-      const data = rendered.renderedPayload ?? rendered.payload?.data;
-      if (data == null) continue;
-      try {
-        const envelope = decodeEnvelope(
-          Buffer.from(data, "base64").toString("utf8"),
-        );
-        out[variableOf(meta.path)] = decodeEnvelopeValue(envelope);
-      } catch {
-        // Re-thrown by PATH, never by message, and the original is DROPPED
-        // rather than chained. `JSON.parse` embeds a snippet of its input in the
-        // `SyntaxError` it throws, and the input here is a RENDERED payload — it
-        // holds the secret. That message reaches a log and the console's
-        // unexpected-error page, so it must not travel, not even as a `cause`.
-        throw new ParameterStoreError(
-          `parameter "${meta.path}" did not decode into a usable value`,
-          502,
-        );
-      }
+      data = rendered.renderedPayload ?? rendered.payload?.data;
+    } catch (err) {
+      return { variable, hard: true, reason: renderFailureReason(err) };
     }
-    return out;
+    if (data == null) {
+      return {
+        variable,
+        hard: false,
+        reason: "the render returned no payload",
+      };
+    }
+
+    try {
+      // The one place on the RESOLVE path where a rendered payload becomes the
+      // string a child process runs with. Every consumer funnels through here:
+      // `resolveServerParams` (baked component env), the registry's param cache
+      // (a builtin's options) and `StoreSecretProvider` (`${REF}` resolution).
+      //
+      // `decodeEnvelopeValue` undoes the storage encoding a secret value is
+      // written with, so `:render` cannot splice raw bytes into the JSON text it
+      // returns. Reading `.value` raw would hand a base64url-shaped string to a
+      // server, which would boot with a credential no upstream accepts and fail
+      // nowhere until the first real call.
+      return {
+        variable,
+        value: decodeEnvelopeValue(
+          decodeEnvelope(Buffer.from(data, "base64").toString("utf8")),
+        ),
+      };
+    } catch {
+      // The reason is a CLASS, and the thrown error is DROPPED rather than
+      // chained. `JSON.parse` embeds a window of its input in the `SyntaxError`
+      // it throws, and the input here is a rendered payload — it holds the
+      // secret. That message must not travel, not even as a `cause`.
+      return {
+        variable,
+        hard: true,
+        reason: "the rendered payload did not decode into a usable value",
+      };
+    }
+  }
+
+  async function resolve(namespace: string): Promise<Record<string, string>> {
+    const { values, unrenderable } = await renderAll(namespace);
+    // FAIL FAST on exactly what used to throw, and no more. A `:render` that
+    // errored, a payload that came back empty and an envelope that would not
+    // decode all propagated out of the old loop on the first occurrence; a
+    // versionless parameter was skipped and the call succeeded. Widening the set
+    // here would break deploys that work today, which is why `hard` exists.
+    const hard = unrenderable.filter((u) => u.hard);
+    const first = hard[0];
+    if (first) {
+      throw new ParameterStoreError(
+        `${hard.length} parameter(s) under ${namespace} could not be rendered ` +
+          `(first: ${first.variable} — ${first.reason})`,
+        500,
+      );
+    }
+    return values;
+  }
+
+  async function resolveDetailed(
+    namespace: string,
+  ): Promise<ResolvedNamespace> {
+    return renderAll(namespace);
   }
 
   return {
@@ -680,7 +780,33 @@ export function createGcpParameterStore(
     reveal,
     destroy,
     resolve,
+    resolveDetailed,
   };
+}
+
+/**
+ * Why one `:render` failed, in a form safe to print.
+ *
+ * A `ParameterStoreError` is method + resource with the query and `:verb`
+ * stripped, so its message is known value-free and passes through. Anything else
+ * is reduced to its class name — a `SyntaxError` from a malformed response body
+ * embeds a window of that body, and on THIS path the body is the dereferenced
+ * secret. Same rule as snapshot.ts's `errorSummary`, restated here rather than
+ * imported so this file keeps no dependency on the provider layer above it.
+ *
+ * The 400 is called out by name because it is the one an operator can act on:
+ * Parameter Manager refuses to dereference a payload whose rendered value
+ * carries a quote, a brace or a newline, which is every structural credential.
+ */
+function renderFailureReason(err: unknown): string {
+  if (err instanceof ParameterStoreError) {
+    return err.status === 400
+      ? `Parameter Manager refused to dereference this parameter (${err.message}). ` +
+          `A rendered value carrying a quote, a brace or a newline — a service-account ` +
+          `key, a PEM — is the known cause.`
+      : err.message;
+  }
+  return err instanceof Error ? err.name : "unknown error";
 }
 
 /** Parse an admin service-account key; report malformed keys by shape, not content. */

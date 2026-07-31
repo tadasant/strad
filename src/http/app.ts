@@ -30,6 +30,8 @@ import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
 import { createReadinessHandler } from "./readiness.ts";
+import { createPresenceHandler } from "./presence.ts";
+import { PRESENCE_ROUTE } from "../secrets/presence.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -53,6 +55,17 @@ export interface AppOptions {
    * in no bag, so presence can only be established by asking the provider.
    */
   secretProvider?: ConsoleUiOptions["secretProvider"];
+  /**
+   * Test seam: the transport the bundle presence probe uses. Defaults to fetch.
+   *
+   * The probe is how the console and the readiness report assert about secrets
+   * that live on a component core is not — see src/gateway/bundle-presence.ts.
+   */
+  fetchImpl?: typeof fetch;
+  /** Test seam: an already-probed bundle report, skipping the transport. */
+  presence?: ConsoleUiOptions["presence"];
+  /** Test seam: the store the four-state diagnosis reads. */
+  diagnosticStore?: ConsoleUiOptions["diagnosticStore"];
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
@@ -126,6 +139,9 @@ export function createApp(opts: AppOptions): Express {
         env,
         secrets: opts.secrets ?? {},
         secretProvider: opts.secretProvider,
+        fetchImpl: opts.fetchImpl,
+        presence: opts.presence,
+        diagnosticStore: opts.diagnosticStore,
       }),
     );
 
@@ -144,9 +160,36 @@ export function createApp(opts: AppOptions): Express {
       gcsList: opts.gcsList,
       parametersStore: opts.parametersStore,
       capabilities: opts.capabilities,
+      fetchImpl: opts.fetchImpl,
+      presence: opts.presence,
+      diagnosticStore: opts.diagnosticStore,
       sessions: auth.sessions,
       googleReady: auth.ready,
     });
+  }
+
+  if (opts.mode === "bundle") {
+    // BUNDLE ONLY, and it is the mirror image of the readiness endpoint above.
+    //
+    // A bundle component holds secrets core cannot see: a supplementary
+    // server's `env:` and a `params: true` server's managed parameters are
+    // resolved at render time and injected onto that component alone
+    // (appspec.ts). Core asking "does ${SLACK_BOT_TOKEN} resolve?" of its own
+    // environment gets a true "no" about a deployment that is completely
+    // healthy — which is where the console's shrug came from.
+    //
+    // So the component answers for itself, in the five words of
+    // secrets/presence.ts. Never a value. Mounting it on core too would be
+    // pointless (core already reads its own environment directly) and would put
+    // a presence surface on the one component with a public route.
+    app.post(
+      PRESENCE_ROUTE,
+      createPresenceHandler({
+        component: env.STRAD_COMPONENT ?? env.STRAD_BUNDLE ?? "bundle",
+        image: env.STRAD_VERSION ?? null,
+        env,
+      }),
+    );
   }
 
   return app;

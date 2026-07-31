@@ -143,6 +143,19 @@ the gateway process does not run, so nothing inside strad can change it while it
 runs. A `bundle: core` builtin with `params: true` resolves **at runtime**, on
 every call, and does pick up a change without a restart.
 
+The render also bakes **`STRAD_PARAM_KEYS`** onto each component that carries a
+`params: true` server: a `GENERAL` (not `SECRET`) env var holding
+`{"<slug>": ["VARIABLE", ...]}`. Names only, and only when at least one server on
+the component uses `params:` — so a spec diff moves only when the thing it
+describes does.
+
+It exists because a managed parameter is not a `${NAME}` reference: the config
+does not name it, so the console running on `core` cannot enumerate it, and the
+only honest thing it could say about a `params: true` server was that it had not
+looked. With the names on the component, the component's
+[presence route](/operate/secrets/#the-presence-route-a-component-answering-for-itself)
+answers for each one — presence, never a value.
+
 ## App Platform: the hard-won facts
 
 These are encoded in `src/deploy/appspec.ts` because each one cost something to

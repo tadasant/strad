@@ -78,8 +78,42 @@ export interface ParameterAdmin {
  * child PROCESS, not to an MCP tool result.
  */
 export interface ParameterResolver {
-  /** VARIABLE_NAME -> value, for every parameter under `namespace`. */
+  /**
+   * VARIABLE_NAME -> value, for every parameter under `namespace`.
+   *
+   * FAIL FAST: one parameter that cannot be rendered fails the whole call. That
+   * is correct for the injection path — a child started with half its
+   * environment looks up and then fails on its first real call — and it is
+   * exactly why a diagnostic caller needs `resolveDetailed` instead.
+   */
   resolve(namespace: string): Promise<Record<string, string>>;
+  /**
+   * The same read, with the failures kept apart from the values.
+   *
+   * Optional because it is a diagnostic, not part of what makes a server run:
+   * a backend that cannot separate the two is still a usable resolver, and the
+   * console degrades to "the store did not answer" rather than refusing to
+   * render. What it buys where it exists is the difference between "this ONE
+   * parameter cannot be dereferenced — rotate it" and "the secret backend is
+   * down", which are the same symptom and opposite responses.
+   */
+  resolveDetailed?(namespace: string): Promise<ResolvedNamespace>;
+}
+
+export interface ResolvedNamespace {
+  /** VARIABLE_NAME -> value, for every parameter that rendered. */
+  values: Record<string, string>;
+  /**
+   * Parameters that EXIST and whose value could not be produced, with a reason
+   * describing the failure's shape. Never a body: a `:render` failure's payload
+   * is the dereferenced secret.
+   *
+   * `hard` marks the ones `resolve()` throws on — the failures that propagated
+   * out of it before this method existed. A versionless parameter is reported
+   * (it resolves to nothing, which the console should say) but is NOT hard,
+   * because `resolve()` has always skipped it and returned the rest.
+   */
+  unrenderable: { variable: string; hard: boolean; reason: string }[];
 }
 
 /** A store that provides both admin and resolver surfaces. */

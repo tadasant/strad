@@ -347,6 +347,74 @@ describe("secret parameters grant their own principal secretAccessor", () => {
  * to read parameters — would silently open the path. These tests are what turns
  * that into a CI failure instead of a quiet capability.
  */
+describe("resolveDetailed keeps the failures apart from the values", () => {
+  /**
+   * `resolve()` is fail-fast because a child process started with half its
+   * environment is worse than one that does not start. That is also why it can
+   * never say WHICH parameter broke: the first `:render` to throw ends the loop.
+   *
+   * The console needs the other half of that fact — "rotate this ONE value"
+   * versus "the secret backend is down" are the same symptom and opposite
+   * responses — which is what `resolveDetailed()` is for.
+   */
+  it("names the parameter that will not render, and still returns the ones that do", async () => {
+    const gcp = createFakeGcp();
+    await gcp.store.create({
+      path: emailPath,
+      secret: false,
+      value: EMAIL_VALUE,
+    });
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+
+    // Break exactly ONE parameter: take away the secret one's own binding, which
+    // is what makes its `:render` fail while everything else in the namespace is
+    // untouched. That is the real production shape — one bad value, not an
+    // outage — and it is the one `resolve()` cannot describe.
+    gcp.secretPolicies.set(parameterId(keyPath), []);
+    const detailed = await gcp.store.resolveDetailed!(
+      staticNamespace(ENV, SLUG),
+    );
+
+    expect(detailed.unrenderable.map((u) => u.variable)).toEqual([KEY_VAR]);
+    expect(detailed.unrenderable[0]!.hard).toBe(true);
+    expect(detailed.unrenderable[0]!.reason).toContain("400");
+    // The 400 is the shape an operator can act on, so it is named rather than
+    // passed through as a bare status.
+    expect(detailed.unrenderable[0]!.reason).toContain("dereference");
+    // The reason describes the failure, never the payload it failed on.
+    expect(detailed.unrenderable[0]!.reason).not.toContain(
+      "SUPER-SECRET-CANARY",
+    );
+
+    // One refusal did not cost the other name its answer — which is the whole
+    // difference from `resolve()`.
+    expect(detailed.values).toEqual({ [EMAIL_VAR]: EMAIL_VALUE });
+  });
+
+  it("leaves resolve() throwing on exactly what it threw on before", async () => {
+    // The regression this guards: `resolve()` now goes through the same loop, so
+    // widening what counts as a failure would break deploys that work today.
+    const gcp = createFakeGcp();
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+    const viewer = gcp.storeAs(PARAMETER_VIEWER_PERMISSIONS);
+
+    await expect(viewer.resolve(staticNamespace(ENV, SLUG))).rejects.toThrow(
+      /403/,
+    );
+    // And the accessor-holding caller is unaffected.
+    expect(await gcp.store.resolve(staticNamespace(ENV, SLUG))).toEqual({
+      [KEY_VAR]: KEY_VALUE,
+    });
+  });
+
+  it("reports an empty namespace as neither values nor failures", async () => {
+    const gcp = createFakeGcp();
+    expect(
+      await gcp.store.resolveDetailed!(staticNamespace(ENV, SLUG)),
+    ).toEqual({ values: {}, unrenderable: [] });
+  });
+});
+
 describe("a parameterViewer credential cannot reach a secret VALUE", () => {
   it("lists and reads envelopes, and is refused the render", async () => {
     const gcp = createFakeGcp();
