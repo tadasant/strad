@@ -275,4 +275,62 @@ describe("staging config", () => {
       expect(a.image).toBe(b.image);
     }
   });
+
+  /**
+   * The `zimmer` role is the one entitlement in this file whose breadth is a
+   * security decision rather than a convenience, so it gets a test rather than a
+   * comment.
+   *
+   * Staging's 24 supplementary slugs are backed by the SAME third-party accounts
+   * prod uses — one Slack workspace, one Gmail tenant, one 1Password service
+   * account. The token that holds this role lives in a platform app and is
+   * handed to agent sessions, so every slug added here is a credential handed to
+   * an agent. Two are defensible: `secrets` reaches a project that holds only
+   * parameters, and `echo` is a builtin with no credential at all.
+   *
+   * A widening shows up here as a failing assertion naming the slug, which is
+   * the review conversation worth having.
+   */
+  describe("the zimmer role", () => {
+    const ALLOWED = ["echo", "secrets"];
+
+    it("names only servers that hold no third-party credential", () => {
+      expect(CONFIG.roles.zimmer?.servers.slice().sort()).toEqual(ALLOWED);
+    });
+
+    it("is entitled by exactly those servers and no others", () => {
+      // Entitlement is an INTERSECTION (see gateway/entitlements.ts): the role
+      // must name the server AND the server must name the role. Asserting only
+      // the role would miss a slug that quietly added `zimmer` to its own
+      // `entitlements:` — harmless today because the role does not name it, and
+      // a live grant the moment someone widens the role.
+      const declaring = CONFIG.servers
+        .filter((s) => s.entitlements.includes("zimmer"))
+        .map((s) => s.slug)
+        .sort();
+      expect(declaring).toEqual(ALLOWED);
+    });
+
+    it("cannot reach the store's own namespace through the server it is given", () => {
+      // `secrets` is entitled, so the fence that matters is SECRETS_NAMESPACES:
+      // the MCP half must stay scoped to the servers' namespace. The gateway
+      // namespace holds every ${NAME} this deployment references — and staging's
+      // MCP credential can read a secret VALUE — so listing it here would hand
+      // this token the 31 credentials the narrow role exists to withhold.
+      const secrets = CONFIG.servers.find((s) => s.slug === "secrets");
+      if (secrets?.kind !== "supplementary-image")
+        throw new Error("expected a supplementary image");
+      expect(secrets.env.SECRETS_NAMESPACES).toBe("/strad/staging/mcp/");
+      expect(secrets.env.SECRETS_NAMESPACES).not.toContain("gateway");
+    });
+
+    it("can watch a rotation, because echo resolves its options at call time", () => {
+      // `params: true` is what makes /strad/staging/mcp/echo/static/* re-resolve
+      // per tool call. Without it `whoami` reports a value fixed at boot and the
+      // rotation property is unobservable from outside the process.
+      const echo = CONFIG.servers.find((s) => s.slug === "echo");
+      if (echo?.kind !== "builtin") throw new Error("expected a builtin");
+      expect(echo.params).toBe(true);
+    });
+  });
 });

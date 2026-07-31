@@ -86,13 +86,33 @@ roles:
   # something is actually withheld from someone.
   echo-only:
     servers: [echo]
-  # Zimmer's own agent sessions. It reaches ONE slug: the store that holds
-  # Zimmer's parameters. Staging's deploy loads the same third-party accounts
-  # prod uses — there is no separate Slack workspace or 1Password service
-  # account — so `admin` here would hand a Zimmer session `onepassword-rw`,
-  # `gmail-rw-external` and the rest. Name the slug, not the wildcard.
+  # Zimmer's own agent sessions, and the narrowest role that still does its job.
+  #
+  # Staging's deploy loads the same third-party accounts prod uses — there is no
+  # separate Slack workspace, Gmail tenant or 1Password service account — so
+  # `admin` here would hand a Zimmer session `onepassword-rw`, `gmail-rw-external`
+  # and the rest, with prod's blast radius. Name the slugs, never the wildcard.
+  #
+  # Three slugs, and each earns its place:
+  #
+  #   zimmer-secrets  Zimmer's own parameter store, in its own GCP project.
+  #   secrets         strad's staging parameter store. A DIFFERENT project, and
+  #                   the one the runtime-secrets migration is rehearsed against
+  #                   — including /strad/staging/mcp/echo/static/ below, which
+  #                   only this slug can address.
+  #   echo            the rotation observatory. It is the one server whose output
+  #                   is a value the gateway resolved AT RUNTIME (`options.greeting`,
+  #                   and — with `params: true` below — anything under
+  #                   /strad/staging/mcp/echo/static/), which makes it the only way
+  #                   to OBSERVE over /mcp that a rotated secret took effect with
+  #                   no redeploy. A builtin holding no credential of its own: it
+  #                   widens what can be watched, not what can be reached.
+  #
+  # Neither store slug is harmless-by-contents — both hold per-server credentials,
+  # and staging's `secrets` key can read a secret VALUE. What bounds them is
+  # project separation plus each slug's SECRETS_NAMESPACES fence. See issue #59.
   zimmer:
-    servers: [zimmer-secrets]
+    servers: [zimmer-secrets, secrets, echo]
 
 bundles:
   # THE bundle. One image, one component, fifteen upstream MCP servers — the
@@ -151,7 +171,29 @@ servers:
     kind: builtin
     module: "./servers/echo.js"
     bundle: core
-    entitlements: [admin, echo-only]
+    entitlements: [admin, echo-only, zimmer]
+    # THE ROTATION OBSERVATORY, and the only one this deployment has.
+    #
+    # `params: true` on a BUILTIN resolves /strad/staging/mcp/echo/static/* and
+    # merges it over `options:` on EVERY TOOL CALL, through the same TTL cache
+    # (gateway.secrets.ttlSeconds) the runtime secret provider uses — see
+    # gateway/registry.ts `optionsFor`. So setting `greeting` in the store and
+    # calling `whoami` is a direct, external read of what a running gateway
+    # currently resolves, with no redeploy anywhere in the loop.
+    #
+    # That matters because nothing else in this config is observable that way:
+    # a supplementary image's `env:` is baked at render time, `deepwiki` sends no
+    # credential, and the boot keys are read once at startup. Without this, "a
+    # rotated secret takes effect without a redeploy" can be asserted but not
+    # WATCHED — which is how it stayed unproven.
+    #
+    # It is inert until the deployment has a resolver credential (STRAD_PARAMS_*):
+    # `Registry.build` gets a null resolver and skips the merge entirely, so this
+    # costs nothing and changes nothing on a deployment that has not migrated.
+    #
+    # Point `greeting` at a canary, never at a credential. It is returned over
+    # /mcp verbatim, to anyone entitled to this slug.
+    params: true
     options:
       greeting: "hello from the core gateway"
 
@@ -384,7 +426,21 @@ servers:
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
     path: /secrets
-    entitlements: [admin]
+    # `zimmer` is here and NOWHERE ELSE in this file except `echo`. The whole
+    # point of that token's narrow role is that staging's other 24 slugs hold
+    # real third-party credentials; this one reaches a project that holds only
+    # parameters. See the `zimmer` role above.
+    #
+    # It is entitled to the SERVER, not to the store: what this token can address
+    # is still bounded by SECRETS_NAMESPACES below, which is `/strad/staging/mcp/`
+    # and deliberately does NOT include the gateway's own
+    # `/strad/staging/gateway/static/`. That namespace holds the deployment's 31
+    # ${NAME} references — SLACK_BOT_TOKEN, the 1Password service-account token,
+    # the Gmail private keys — and staging's MCP credential CAN read a secret
+    # value (it is read+write here, unlike prod's). Adding the gateway namespace
+    # to the line below would therefore hand this token every credential the
+    # narrow role exists to withhold. Do not.
+    entitlements: [admin, zimmer]
     env:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
       SECRETS_NAMESPACES: "/strad/staging/mcp/"
