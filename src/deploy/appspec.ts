@@ -2,6 +2,7 @@ import type { StradConfig } from "../config/schema.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { resolveMap } from "../secrets/index.ts";
 import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
+import { BUNDLE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
 
 /**
  * Render a DigitalOcean App Platform spec from strad.config.yaml.
@@ -71,6 +72,19 @@ export interface RenderOptions {
    *   - a ref whose tag is `latest`, explicitly or by omission.
    */
   supplementaryImage?: string;
+  /**
+   * The boot env a component cannot fetch for itself, by name -> value.
+   *
+   * Supplied by a STORE-BACKED render only, and read from the store rather than
+   * the deploy environment, so it is still one place a human manages. Under the
+   * `env` provider these same names arrive as broadcast SECRETs in `env` and
+   * this is empty.
+   *
+   * Only `BUNDLE_BOOT_ENV_KEYS` are taken from it, and only onto components that
+   * cannot hydrate — see `bundleBootEnvVars` below for why that is not the same
+   * set as "every bundle".
+   */
+  bootSecrets?: Readonly<Record<string, string>>;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
   coreInstanceSizeSlug?: string;
@@ -211,6 +225,98 @@ const TELEMETRY_ENV_KEYS = new Set([
 const STRAD_IMAGE_ONLY_SECRET_KEYS = new Set([
   "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON",
 ]);
+
+/**
+ * The boot env a SUPPLEMENTARY component is BAKED, because it can never read the
+ * store for itself.
+ *
+ * `hydrateBootEnv` fills these in from the provider at boot, and that is what
+ * lets a store-backed render stop baking them (see scripts/render-spec.ts). But
+ * it only runs where strad's own process runs: the core, and a bundle running
+ * the strad image. A `supplementary-image` component is a THIRD-PARTY container
+ * — it does not run strad, it holds no store credential (the set above is what
+ * keeps the resolver key off it), and giving it one would not help, because
+ * nothing in that image knows how to ask.
+ *
+ * So a store-backed render left those components with NEITHER source: the
+ * renderer stopped baking on the assumption hydration would cover it, and
+ * hydration cannot reach them. Both keys are silent when missing, which is the
+ * whole problem:
+ *
+ *   - `OTEL_EXPORTER_OTLP_HEADERS` — the exporter still starts and still sends;
+ *     the ingestor rejects every batch. The component answering every
+ *     supplementary slug goes blind about a minute after a deploy that reports
+ *     success, while `/healthz` stays 200 with every slug listed. That is
+ *     precisely the blind spot that let a dead `secrets` slug look healthy for a
+ *     week (HACKS.md #32).
+ *   - `STRAD_INTERNAL_TOKEN` — the component's presence route
+ *     (`src/secrets/presence.ts`) fails closed, so the console stops being able
+ *     to say whether that container holds its credentials and reports that the
+ *     component "REFUSED the internal token" instead.
+ *
+ * The values are read from the STORE by the renderer, not from the deploy
+ * environment, so a human still manages them in exactly one place. The cost is
+ * stated rather than hidden: a baked value changes on a redeploy, not on a
+ * restart, so rotating one of these is a deploy — the same trade every
+ * supplementary `env:` name already makes, for the same reason.
+ * `docs/operate/secrets.md` carries the table.
+ */
+function bundleBootEnvVars(
+  bootSecrets: Readonly<Record<string, string>>,
+  taken: ReadonlySet<string>,
+): EnvVar[] {
+  const out: EnvVar[] = [];
+  for (const key of BUNDLE_BOOT_ENV_KEYS) {
+    // The component's own `env:` or a managed parameter wins. One container has
+    // one environment, and a server that deliberately sets one of these names
+    // for its own upstream must not be overwritten from underneath.
+    if (taken.has(key)) continue;
+    const value = bootSecrets[key];
+    // Absent is ORDINARY: an ingestor that needs no auth header has no
+    // OTEL_EXPORTER_OTLP_HEADERS to bake, and telemetry is optional everywhere.
+    if (value === undefined || value === "") continue;
+    out.push({ key, value, scope: "RUN_TIME", type: "SECRET" });
+  }
+  return out;
+}
+
+/**
+ * Components that will boot without a boot key they need and with no way to get
+ * it — the rendered-spec check for the failure above.
+ *
+ * It reads the SPEC rather than the config, because the question is structural:
+ * a component either carries the store credential (so it can hydrate) or it
+ * carries the value (so it does not need to). A component with neither is the
+ * bug, and it is invisible until something downstream goes quiet.
+ *
+ * `held` is the boot keys this render actually has a value for. A key nobody
+ * configured is not a gap — telemetry with no ingestor is a supported state and
+ * must stay one.
+ *
+ * Returns human-readable messages, or an empty array. Never a value.
+ */
+export function bootEnvGaps(spec: AppSpec, held: readonly string[]): string[] {
+  const wanted = BUNDLE_BOOT_ENV_KEYS.filter((k) => held.includes(k));
+  if (wanted.length === 0) return [];
+
+  const problems: string[] = [];
+  for (const service of spec.services) {
+    const keys = new Set(service.envs.map((e) => e.key));
+    // Holding the store credential IS the ability to hydrate: that key reaches
+    // the strad image and stops there (STRAD_IMAGE_ONLY_SECRET_KEYS), and the
+    // strad image is what runs hydrateBootEnv.
+    if ([...keys].some((k) => STRAD_IMAGE_ONLY_SECRET_KEYS.has(k))) continue;
+    for (const key of wanted) {
+      if (keys.has(key)) continue;
+      problems.push(
+        `component "${service.name}" is missing ${key}: it holds no store ` +
+          `credential, so it cannot hydrate the value, and the spec does not ` +
+          `carry it either`,
+      );
+    }
+  }
+  return problems;
+}
 
 /**
  * The identity vars every component gets, so its telemetry can say which of the
@@ -504,6 +610,58 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     },
   ];
 
+  /**
+   * A supplementary component's environment, in one place, so the boot keys can
+   * be appended only where the component has not already claimed the name.
+   */
+  const supplementaryEnvs = (
+    name: string,
+    supplementary: NonNullable<ReturnType<typeof imageBundles.get>>,
+    componentImage: ImageRef,
+  ): EnvVar[] => {
+    const envs: EnvVar[] = [
+      // Resolve `${NAME}` refs against the secret bag so the credential
+      // lands ONLY on this bundle. resolveMap throws on an unresolved
+      // ref — a supplementary image that silently shipped the literal
+      // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
+      ...Object.entries(resolveMap(supplementary.env, opts.secrets ?? {})).map(
+        ([key, value]): EnvVar => ({
+          key,
+          value,
+          scope: "RUN_TIME",
+          type: "SECRET",
+        }),
+      ),
+      // Resolved managed parameters are already literal — emit them as
+      // SECRET env vars directly, WITHOUT resolveMap, so a value containing
+      // `${…}` cannot be mistaken for an unresolved ref.
+      ...Object.entries(supplementary.params).map(([key, value]): EnvVar => ({
+        key,
+        value,
+        scope: "RUN_TIME",
+        type: "SECRET",
+      })),
+      ...identityEnvs(name, config.gateway.env, componentImage.tag),
+      ...paramKeysEnv(supplementary.paramKeys),
+      ...opts.env.filter(
+        (e) =>
+          !STRAD_IMAGE_ONLY_SECRET_KEYS.has(e.key) &&
+          (e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key)),
+      ),
+    ];
+    // LAST, and only for names nothing above claimed. Under the `env` provider
+    // these arrive in the broadcast just above and this adds nothing; under the
+    // store provider the broadcast does not carry them and this is the only
+    // thing that can.
+    envs.push(
+      ...bundleBootEnvVars(
+        opts.bootSecrets ?? {},
+        new Set(envs.map((e) => e.key)),
+      ),
+    );
+    return envs;
+  };
+
   for (const name of bundleNames) {
     const declared = config.bundles.find((b) => b.name === name);
     const supplementary = imageBundles.get(name);
@@ -527,38 +685,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // Internal-only: internal_ports, and NO http_port. Both is an API error.
       internal_ports: [PORT],
       envs: supplementary
-        ? [
-            // Resolve `${NAME}` refs against the secret bag so the credential
-            // lands ONLY on this bundle. resolveMap throws on an unresolved
-            // ref — a supplementary image that silently shipped the literal
-            // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
-            ...Object.entries(
-              resolveMap(supplementary.env, opts.secrets ?? {}),
-            ).map(([key, value]): EnvVar => ({
-              key,
-              value,
-              scope: "RUN_TIME",
-              type: "SECRET",
-            })),
-            // Resolved managed parameters are already literal — emit them as
-            // SECRET env vars directly, WITHOUT resolveMap, so a value containing
-            // `${…}` cannot be mistaken for an unresolved ref.
-            ...Object.entries(supplementary.params).map(
-              ([key, value]): EnvVar => ({
-                key,
-                value,
-                scope: "RUN_TIME",
-                type: "SECRET",
-              }),
-            ),
-            ...identityEnvs(name, config.gateway.env, componentImage.tag),
-            ...paramKeysEnv(supplementary.paramKeys),
-            ...opts.env.filter(
-              (e) =>
-                !STRAD_IMAGE_ONLY_SECRET_KEYS.has(e.key) &&
-                (e.type === "SECRET" || TELEMETRY_ENV_KEYS.has(e.key)),
-            ),
-          ]
+        ? supplementaryEnvs(name, supplementary, componentImage)
         : [
             {
               key: "STRAD_MODE",

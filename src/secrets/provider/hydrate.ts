@@ -22,6 +22,21 @@ import type { SecretProvider } from "./types.ts";
  * them, which is what leaves the app spec holding one credential for the gateway
  * itself: the one that reaches the store.
  *
+ * ## Where this runs, and where it CANNOT
+ *
+ * In the strad image: the core, and a bundle component running that image in
+ * `STRAD_MODE=bundle`. Both hold the resolver credential (see
+ * `STRAD_IMAGE_ONLY_SECRET_KEYS` in deploy/appspec.ts), and holding it is what
+ * makes hydration possible at all.
+ *
+ * NOT in a `supplementary-image` component. That is a third-party container: it
+ * does not run strad, it deliberately holds no store credential, and giving it
+ * one would not help because nothing in it knows how to ask. Its share of these
+ * names — `BUNDLE_BOOT_ENV_KEYS` — is read from the store by the RENDERER and
+ * baked onto that component, which is the only place it can come from. Assuming
+ * otherwise is what took a store-backed bundle off telemetry 44 seconds after a
+ * green deploy; see `bundleBootEnvVars` in deploy/appspec.ts.
+ *
  * ## What is deliberately NOT hydrated
  *
  * A server's `consoleEnv:` — the SSO console's store-ADMIN credential, which can
@@ -29,18 +44,23 @@ import type { SecretProvider } from "./types.ts";
  * (see deploy/appspec.ts `consoleEnvVars`). Two reasons, and both are load
  * bearing:
  *
- *   1. Hydration runs in every strad process, bundles included. The whole point
- *      of `consoleEnv:` is that the admin key never enters the container an agent
- *      talks to. Hydrating it would put it there.
+ *   1. Hydration runs in every process running the strad image, bundles
+ *      included. The whole point of `consoleEnv:` is that the admin key never
+ *      enters the container an agent talks to. Hydrating it would put it there.
  *   2. It is a credential FOR the store, not a secret managed BY it. Filing it
  *      inside the store would let the weaker resolver credential read the
  *      stronger admin one, and the three-role IAM split would be theatre.
  *
  * The trade is stated plainly rather than hidden: **a hydrated value is read
  * once, at boot.** Rotating one of these names takes effect on the next restart,
- * not within the TTL. That is not a shortcut — a token store and a shared
- * internal token are boot-scoped by nature, and pretending otherwise would mean
- * claiming a rotation had landed when half the fleet still trusted the old value.
+ * not within the TTL — and on a component that was BAKED instead, on the next
+ * deploy. That is not a shortcut — a token store and a shared internal token are
+ * boot-scoped by nature, and pretending otherwise would mean claiming a rotation
+ * had landed when half the fleet still trusted the old value. The consequence
+ * that follows: rotating `STRAD_INTERNAL_TOKEN` is a REDEPLOY, not a restart,
+ * because core hydrates it and its supplementary components are handed it — and
+ * a restart of core alone would leave the two disagreeing. The table in
+ * docs/operate/secrets.md says which names land where.
  *
  * An existing env var is never overwritten. A value injected by the platform is
  * the more specific instruction, and this must not fight it.
@@ -90,6 +110,13 @@ export const REQUIRED_BOOT_ENV_KEYS = [
  * no public route. It has no use for the token store or the OAuth client, so it
  * is not given them — the same reasoning that keeps `consoleEnv:` off it. Least
  * privilege is cheap here; it is one array.
+ *
+ * It has a second reader: `deploy/appspec.ts` bakes exactly these names onto a
+ * `supplementary-image` component, which cannot hydrate them. Same list, because
+ * it is the same question — what a bundle needs and nothing more — answered for
+ * a container that has to be handed it rather than fetching it. Adding a name
+ * here therefore widens what a third-party image is given; that is the review
+ * this array deserves.
  */
 export const BUNDLE_BOOT_ENV_KEYS = [
   "STRAD_INTERNAL_TOKEN",

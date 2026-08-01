@@ -114,12 +114,12 @@ have parameters that predate this, run the one-time backfill in
 
 Not instant. The numbers, and where they come from:
 
-| Change                                       | Visible within                     | Why                                                                                                                                                                                                         |
-| -------------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Rotating** an existing secret              | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale.                                                                                                                                  |
-| **Adding** a name that was absent            | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                             |
-| A change written through strad's own console | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                     |
-| A brand-new **secret** parameter             | up to ~2 minutes                   | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug. |
+| Change                                         | Visible within                     | Why                                                                                                                                                                                                                                          |
+| ---------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rotating** a secret read on the request path | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
+| **Adding** a name that was absent              | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                                                              |
+| A change written through strad's own console   | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                                                      |
+| A brand-new **secret** parameter               | up to ~2 minutes                   | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                  |
 
 Two behaviours matter more than the numbers:
 
@@ -349,37 +349,58 @@ resolver's roles](/operate/secrets-iam/#the-resolvers-roles-parameterviewer-is-n
 and [why a parameter must be granted access to its own
 secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-secret).
 
-## What still needs a redeploy
+## What rotates live, what needs a restart, and what needs a redeploy
 
-Two categories, both honestly bounded:
+`ttlSeconds` governs one of these three, not all of them. Which one a name falls
+into is decided by _who reads it_, and that is a property of the name rather than
+of the store:
 
-**A supplementary image's `env:`.** Those are environment variables on a
-_container strad does not run_. No amount of runtime resolution inside the
-gateway can change what is in another component's environment. Under the store
-provider the values are still read **from the store** at render time — so a human
-still manages them in exactly one place — but changing one needs a redeploy of
-that component. A supplementary server that wants live rotation should read the
-store itself, the way `servers/secrets` does.
+| The name                                                                                                                           | Rotating it takes effect | Because                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                  |
+| A `params: true` server's managed parameters                                                                                       | on the next **deploy**   | Resolved at render time onto that server's own component.                                                                                                  |
+| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                  |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                               | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree. |
+| A supplementary image's `env:`                                                                                                     | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                   |
+| A `consoleEnv:` name                                                                                                               | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                      |
 
-**The boot keys.** `STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`,
-`ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
-`OTEL_EXPORTER_OTLP_HEADERS` are read once, at boot, by code with no provider in
-scope. Under the store provider they are **hydrated from the store** at startup —
-so they leave the app spec entirely — but a change takes effect on the next
-restart, not within the TTL. That is not a shortcut: a token store and a shared
-internal token are boot-scoped by nature, and claiming a rotation had landed
-while half the fleet still trusted the old value would be worse than saying so.
+So `ttlSeconds` is the answer for **request-path references and nothing else**. A
+deployment whose config has no request-path `${NAME}` and no `params: true`
+server has no name that rotates live, however the TTL is set. That is a real
+deployment shape, not a hypothetical: check your own config before promising
+anyone a rotation that lands without a deploy.
 
-Hydration is scoped by mode. A **bundle** component receives only
-`STRAD_INTERNAL_TOKEN` and `OTEL_EXPORTER_OTLP_HEADERS` — it serves no console
-and no public route, so it is handed neither the token store nor the OAuth
-client.
+### Why the bundle boot env is baked rather than hydrated
+
+Hydration runs in strad's own process — the core, and a bundle component running
+the strad image. A `supplementary-image` component is a **third-party container**.
+It does not run strad, it deliberately holds no store credential (that key
+reaches the strad image and stops there), and handing it one would not help,
+because nothing inside it knows how to ask.
+
+So the two names a bundle needs are read **from the store, by the renderer**, and
+baked onto those components. A human still manages them in exactly one place; the
+cost is that changing one is a deploy. Both fail _silently_ when absent, which is
+why the renderer refuses to emit a spec where a component holds neither the value
+nor the credential to fetch it:
+
+- **`OTEL_EXPORTER_OTLP_HEADERS`** — the exporter still starts and still sends;
+  the ingestor rejects every batch. The component answering every supplementary
+  slug goes blind about a minute after a deploy that reported success, with
+  `/healthz` still 200 and every slug still listed.
+- **`STRAD_INTERNAL_TOKEN`** — the component's presence route fails closed, so
+  the console stops being able to say what that container holds and reports that
+  it refused the internal token.
+
+A supplementary server that wants genuinely live rotation should read the store
+itself, the way `servers/secrets` does.
 
 A server's `consoleEnv:` is **never** hydrated. It carries the console's
 store-_admin_ credential, which can write and reveal, and two things depend on it
-staying out of the store: hydration runs in every process including bundles, and
-filing an admin credential inside the store would let the weaker resolver
-credential read the stronger one. It stays deploy-time baked, onto core alone.
+staying out of the store: hydration runs in every process running the strad
+image, bundles included, and filing an admin credential inside the store would
+let the weaker resolver credential read the stronger one. It stays deploy-time
+baked, onto core alone.
 
 ## Migrating
 
@@ -490,6 +511,14 @@ against a running gateway rather than argued from the code:
   the store with a seed-only dispatch that renders and deploys nothing. Within
   `ttlSeconds` the running gateway returned the new value, from the same
   container — the pod's hostname was unchanged across the transition.
+
+Read the third one for exactly what it says: `echo`'s `greeting: "${STRAD_ENV}"`
+is a **request-path** reference, which is the one class that rotates within the
+TTL. Staging can demonstrate it because staging's config contains such a
+reference. A deployment whose only `${NAME}` sits on a server nothing reaches,
+and which sets `params: true` on no server, has nothing that rotates live — see
+[what rotates live](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy)
+before promising otherwise.
 
 `STRAD_TOKENS` was the name step 2 was written for, and it is proved live:
 seeded as a secret parameter, it renders, and because a store-backed spec does

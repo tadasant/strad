@@ -308,10 +308,18 @@ flag day, and staging is the worked example of switching it on.
 Three boundaries are by design rather than omission, and
 [Secrets](/operate/secrets/) states each one: a `supplementary-image` server's
 `env:` is another container's environment and still needs a redeploy to change;
-the boot keys are hydrated from the store at startup and so take effect on the
-next restart, not within the TTL; and `consoleEnv:` is never hydrated, because
-filing the store-admin credential inside the store would let the weaker resolver
-credential read the stronger one.
+the core's boot keys are hydrated from the store at startup and so take effect on
+the next restart, not within the TTL — and the two a bundle needs are _baked_ onto
+a third-party component that cannot hydrate, so those take a redeploy (#38); and
+`consoleEnv:` is never hydrated, because filing the store-admin credential inside
+the store would let the weaker resolver credential read the stronger one.
+
+What is left rotating within `ttlSeconds` is narrower than "secrets rotate live":
+**request-path `${NAME}` references, and nothing else.** A deployment whose config
+has no `params: true` server and no `${NAME}` on a server anyone reaches has no
+name that rotates without a restart or a deploy, however the TTL is set. Check the
+config before promising it; the table is in
+[Secrets](/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
 The deploy preflight is a deploy gate and does not make the flip safe: of the boot
 keys it counts only the two a deployment cannot work without, so a namespace
@@ -344,6 +352,43 @@ measured, are in
 SA and seed its key, seed `/strad/{env}/gateway/static/*`, confirm with
 `store:check --mode require --resolve`, then flip the provider in the deployment's
 config and drop the per-secret baking from the deploy workflow.
+
+### 38. A third-party bundle cannot read the store, so its boot env is baked and rotating it is a deploy
+
+Hydration is what lets a store-backed spec stop carrying the gateway's boot keys,
+and it runs in strad's own process: the core, and a bundle component running the
+strad image. A `supplementary-image` component runs a **third-party image**. It
+never executes strad's code and it holds no store credential — that key reaches
+the strad image and stops there, deliberately, so one env-dumping tool in one
+vendored server is not worth the whole gateway namespace.
+
+That gap shipped once. Prod's parameter-store cutover rendered a spec in which the
+bundle had neither `OTEL_EXPORTER_OTLP_HEADERS` baked nor any way to fetch it; the
+component answering every supplementary slug stopped exporting telemetry 44
+seconds after a deploy that reported success, with `/healthz` at 200, every slug
+listed and nothing user-visible broken. The cutover was rolled back.
+
+The fix is to bake those two names — `STRAD_INTERNAL_TOKEN` and
+`OTEL_EXPORTER_OTLP_HEADERS` — from the **store** onto the components that cannot
+fetch them. Three checks then guard it, and they answer different questions:
+preflight asks whether the store **holds** a required name; a second check fails
+the deploy when a required boot key **resolves to nothing**, which presence
+cannot see; and `bootEnvGaps()` fails it when a component in the rendered spec
+holds neither a boot key it needs nor the credential to fetch it. The OTLP header
+is not on the required list — an ingestor that needs no auth is ordinary — so an
+endpoint with no resolvable header is a warning naming the parameter. What that costs, stated rather than
+hidden: rotating either name is a **redeploy**, not a restart, and rotating
+`STRAD_INTERNAL_TOKEN` must be a redeploy even for core, since core hydrates it
+and a restart of core alone would leave the two sides disagreeing and the presence
+route answering 401.
+
+The alternative — give every bundle the resolver credential so hydration works as
+the comment claimed — was rejected twice over: it widens a store-reading credential
+to every third-party image, and it would not work anyway, because nothing in those
+images knows how to ask.
+
+**Undo:** a supplementary server that needs live rotation reads the store itself,
+the way `servers/secrets` does. Nothing else removes the redeploy.
 
 ### 36. One un-renderable parameter makes the whole gateway namespace resolve to nothing
 

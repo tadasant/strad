@@ -202,6 +202,11 @@ beforeAll(async () => {
     secret: true,
     value: "internal-shared",
   });
+  await fake.store.create({
+    path: gatewayParameterPath("test", "OTEL_EXPORTER_OTLP_HEADERS"),
+    secret: true,
+    value: "Authorization=Bearer otlp-from-the-store",
+  });
 });
 
 afterAll(async () => {
@@ -218,16 +223,27 @@ afterAll(async () => {
  */
 const run = promisify(execFile);
 
+interface RenderedSpec {
+  services: {
+    name: string;
+    envs: { key: string; value?: string; type?: string }[];
+  }[];
+}
+
 async function render(yaml: string): Promise<{
   ok: boolean;
-  spec?: { services: { envs: { key: string; type?: string }[] }[] };
+  spec?: RenderedSpec;
   stderr: string;
 }> {
   const dir = mkdtempSync(join(tmpdir(), "strad-secrets-"));
   const cfg = join(dir, "cfg.yaml");
   writeFileSync(cfg, yaml);
   try {
-    const { stdout } = await run(
+    // stderr is RETURNED, not discarded, and that is load-bearing: it is the
+    // deploy job's log, and this file's own header says a rendered spec must
+    // never be echoed into one. A render that started printing values instead of
+    // names would otherwise pass every test here.
+    const { stdout, stderr } = await run(
       process.execPath,
       [
         "--experimental-transform-types",
@@ -262,10 +278,8 @@ async function render(yaml: string): Promise<{
     );
     return {
       ok: true,
-      spec: JSON.parse(stdout) as {
-        services: { envs: { key: string; type?: string }[] }[];
-      },
-      stderr: "",
+      spec: JSON.parse(stdout) as RenderedSpec,
+      stderr,
     };
   } catch (err) {
     const e = err as { stderr?: string };
@@ -362,8 +376,12 @@ describe("render-spec, store-backed", () => {
         "  - name: bundle\n",
       ),
     );
-    expect(result.stderr).toBe("");
     expect(result.ok).toBe(true);
+    // The deploy job's log is not a place for any of this. The render talks
+    // about names and counts on stderr; the values go to stdout, into a file
+    // the workflow never echoes.
+    expect(result.stderr).not.toContain(PEM);
+    expect(result.stderr).not.toContain(SA_JSON);
 
     const envs = result.spec!.services.flatMap((s) => s.envs) as {
       key: string;
@@ -378,6 +396,106 @@ describe("render-spec, store-backed", () => {
     expect(JSON.stringify(result.spec)).not.toContain(
       Buffer.from(PEM, "utf8").toString("base64url"),
     );
+  });
+
+  /**
+   * The boot env a third-party container cannot fetch for itself.
+   *
+   * `hydrateBootEnv` is why this script stops baking the gateway's boot keys
+   * under the store provider — and it runs in strad's process. A supplementary
+   * image does not run strad and holds no store credential, so under the store
+   * provider it was left with neither the value nor a way to get it. The symptom
+   * was a bundle that stopped exporting telemetry about a minute after a green
+   * deploy, with /healthz still 200 and every slug still listed.
+   *
+   * The values must come from the STORE, not from the deploy environment: the
+   * hostile env below carries a stale twin of both names, and a render that
+   * picked either up would hand a rotated secret a copy that outranks it.
+   */
+  it("bakes the bundle's boot env onto a supplementary component, from the store", async () => {
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "\${GRANOLA_TOKEN}"
+`,
+        "  - name: bundle\n",
+      ),
+    );
+    expect(result.ok).toBe(true);
+
+    const bundle = result.spec!.services.find((s) => s.name === "bundle")!;
+    const at = (key: string) => bundle.envs.find((e) => e.key === key);
+
+    expect(at("OTEL_EXPORTER_OTLP_HEADERS")?.value).toBe(
+      "Authorization=Bearer otlp-from-the-store",
+    );
+    expect(at("OTEL_EXPORTER_OTLP_HEADERS")?.type).toBe("SECRET");
+    expect(at("STRAD_INTERNAL_TOKEN")?.value).toBe("internal-shared");
+    // Not the deploy environment's stale copy, which is sitting right there.
+    expect(JSON.stringify(result.spec)).not.toContain("STALE-ENV-VALUE");
+    // And the credential that reads the store still stops at the strad image.
+    expect(at(RESOLVER_ENV.keyJson)).toBeUndefined();
+
+    // The run log says WHICH names were baked onto a third-party container —
+    // that roster is operationally useful and it is a roster, not a reveal.
+    // Printing the values instead would be a leak into a build log that no
+    // other assertion in this file can see.
+    expect(result.stderr).toContain("OTEL_EXPORTER_OTLP_HEADERS");
+    expect(result.stderr).toContain("STRAD_INTERNAL_TOKEN");
+    expect(result.stderr).not.toContain("otlp-from-the-store");
+    expect(result.stderr).not.toContain("internal-shared");
+  });
+
+  /**
+   * Presence is not resolvability, and the deploy gate that knows the difference.
+   *
+   * `preflightSecrets` asks `list()`, so a parameter that exists and reports a
+   * value passes it and can still render to nothing. For a name a supplementary
+   * component cannot go and fetch for itself, that is a container booting without
+   * a credential it needs — so the render refuses rather than shipping it.
+   */
+  it("FAILS the deploy when a REQUIRED boot key renders to nothing", async () => {
+    // Its own namespace, so the empty parameter cannot affect any other test.
+    const yaml = CONFIG_YAML(
+      `  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "\${GRANOLA_TOKEN}"
+`,
+      "  - name: bundle\n",
+    ).replace("env: test", "env: emptyboot");
+
+    for (const [name, value] of [
+      ["GRANOLA_TOKEN", "gran"],
+      ["STRAD_TOKENS", "[]"],
+      // Present to `list()` — `hasValue` is true, so preflight is satisfied —
+      // and empty to `:render`. That is the gap between presence and
+      // resolvability, on a name a third-party container cannot go and fetch.
+      ["STRAD_INTERNAL_TOKEN", ""],
+    ]) {
+      await fake.store.create({
+        path: gatewayParameterPath("emptyboot", name!),
+        secret: true,
+        value: value!,
+      });
+    }
+
+    const result = await render(yaml);
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toContain("STRAD_INTERNAL_TOKEN");
+    expect(result.stderr).toContain("/strad/emptyboot/gateway/static/");
+    // The RESOLVABILITY check, not preflight's presence check — the two have
+    // different fixes, so the deploy has to say which one it hit.
+    expect(result.stderr).toContain("cannot read the store for itself");
+    expect(result.stderr).not.toContain("missing from");
   });
 
   it("FAILS the deploy when the config references a secret the store lacks", async () => {

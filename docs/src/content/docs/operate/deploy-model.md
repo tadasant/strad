@@ -113,15 +113,50 @@ flowchart LR
 ```
 
 The gateway needs one credential in the spec — the service-account key it uses to
-reach the store. Everything the gateway resolves is read while it runs, so adding
-or rotating one of those needs no deploy: a rotation lands
-within `ttlSeconds` (default 60s), an addition within `negativeTtlSeconds`
-(default 10s).
+reach the store. Everything the gateway resolves **on the request path** is read
+while it runs, so adding or rotating one of those needs no deploy: a rotation
+lands within `ttlSeconds` (default 60s), an addition within `negativeTtlSeconds`
+(default 10s). A boot key is a restart and a baked one is a deploy — see
+[what rotates live](/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
 `render-spec` still fails loudly on a reference to a secret that does not exist —
 that is the **preflight**, which asks the store which names exist and never asks
 for a value. What it does not do is bake one: a baked copy would silently outrank
 a rotated stored one, and there would be two ways again.
+
+#### The exception: a container that cannot ask the store
+
+"Read it at runtime instead" is a claim about strad's own process. A
+`supplementary-image` component does not run strad — it is a third-party image —
+and it holds no store credential, because that key reaches the strad image and
+stops there. It cannot hydrate, and giving it the credential would not change
+that, since nothing inside it knows how to ask.
+
+So `render-spec` reads that component's two boot keys — `STRAD_INTERNAL_TOKEN`
+and `OTEL_EXPORTER_OTLP_HEADERS` — **from the store** and bakes them onto it,
+exactly as it already does for that component's `env:`. One place to manage them;
+a redeploy to change them.
+
+Both of those keys fail silently when absent — a bundle with no OTLP header
+exports into rejection about a minute after a green deploy, with `/healthz` still
+200 — so the render checks rather than trusts, in three places that answer
+different questions:
+
+| Check                                        | Fails the deploy when                                                                                                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `preflightSecrets()`                         | the store does not **hold** a required name. It reads metadata, so it cannot tell whether the value renders.                                                                                           |
+| the required-boot-key check in `render-spec` | a required boot key resolves to **nothing** — the parameter is there, `list()` reports a value, and `:render` returns empty. Presence is not resolvability, and this is the half preflight cannot see. |
+| `bootEnvGaps()`                              | a component in the **rendered spec** holds neither a boot key it needs nor the credential to fetch it. A cross-check on the renderer itself.                                                           |
+
+The OTLP header is deliberately not on the **required** list: an ingestor that
+needs no auth is ordinary, and demanding a header would fail correct deploys. (It
+is still inside `bootEnvGaps` — once the store yields a value, a component
+missing it is a gap like any other.) An **endpoint with no resolvable header** is
+warned about by name instead, because it is
+indistinguishable from a healthy deploy right up until the ingestor starts
+refusing batches — and the staging deploy's [telemetry
+report](/operate/operations/#deploy-stagingyml--put-it-on-app-platform) is what
+catches it after the fact.
 
 ### Deploy-time parameter resolution
 
