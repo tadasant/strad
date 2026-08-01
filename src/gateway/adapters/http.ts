@@ -469,9 +469,22 @@ export class HttpServerAdapter implements ServerAdapter {
     }
   }
 
-  /** Read one resource by URI from this upstream. */
+  /**
+   * Read one resource by URI from this upstream.
+   *
+   * Gated on the same advertised capability as `listResources`, because the
+   * router SWEEPS: a read whose URI hint misses tries every other selected
+   * server in turn. Without the gate that sweep spends a round trip on each
+   * tools-only slug — most of them — to be told `-32601` every time.
+   */
   async readResource(uri: string): Promise<ReadResourceResult> {
     const conn = await this.connect();
+    if (!conn.client.getServerCapabilities()?.resources) {
+      throw new UpstreamError(
+        this.slug,
+        new Error("this server does not serve resources"),
+      );
+    }
     // The URI is NOT recorded as an attribute. A `ui://` app template is
     // harmless, but readResource is a general-purpose read and a URI can name
     // a file path or an object key. Identifier-shaped is not the same as

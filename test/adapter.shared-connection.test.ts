@@ -256,6 +256,14 @@ describe("a shared upstream connection survives one method's failure", () => {
     // Answered from the handshake, so it never reached the wire at all.
     expect(stub.seen("resources/list")).toBe(0);
 
+    // A read is gated the same way. The router sweeps every selected server
+    // when a URI hint misses, and this is what keeps that sweep from costing a
+    // round trip per tools-only slug.
+    await expect(adapter.readResource("ui://stub/panel")).rejects.toThrow(
+      /does not serve resources/,
+    );
+    expect(stub.seen("resources/read")).toBe(0);
+
     stub.releaseTools();
     await expect(tools).resolves.toHaveLength(1);
     expect(stub.seen("initialize")).toBe(1);
