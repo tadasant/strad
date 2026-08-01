@@ -720,7 +720,7 @@ jobs:
         # deploy says success, on the component that answers every supplementary
         # slug, and nothing else in this job would notice. That is what happened
         # to prod's parameter-store cutover: the bundle went blind 44 seconds in
-        # while /healthz stayed 200 with 26 slugs. See HACKS.md #38.
+        # while /healthz stayed 200 with every prod slug listed. See HACKS.md #38.
         #
         # `render-spec` now fails closed on the STRUCTURAL half (bootEnvGaps:
         # every component either holds the value or holds the credential to
@@ -745,7 +745,19 @@ jobs:
         run: |
           set -uo pipefail
           APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
-          COMPS=$(jq -r '.services[].name' /tmp/spec.json 2>/dev/null | tr '\n' ' ')
+          # awk exits 0 on no match, so an empty APP_ID is silent. Every doctl
+          # call below would then fail into /dev/null and this step would report
+          # "no telemetry lines" for every component and go green — a check that
+          # passes because it could not look is the failure mode it exists to end.
+          if [ -z "$APP_ID" ]; then
+            echo "::warning::no strad-staging app found, so nothing was checked."
+            exit 1
+          fi
+          # `|| true` for the same reason as the grep below: a `run:` step is
+          # `bash -e`, `set -uo pipefail` does not clear it, and a missing or
+          # unparsable spec would otherwise kill the step on this line instead of
+          # falling through to the default on the next one.
+          COMPS=$(jq -r '.services[].name' /tmp/spec.json 2>/dev/null | tr '\n' ' ') || true
           [ -z "$COMPS" ] && COMPS="core bundle"
           # One export interval is 15s (OTEL_METRIC_EXPORT_INTERVAL). Give the
           # containers two of them plus start-up before reading the log, or a
@@ -771,14 +783,14 @@ jobs:
             # The status codes are matched with non-digit boundaries: a bare
             # `401` also occurs inside a port or an id, and a false "REFUSED"
             # sends an operator after a credential that is fine.
+            # ONE echo per annotation, with %0A for the line breaks: a second
+            # echo is a second line of ordinary log output, not a continuation,
+            # so a multi-line annotation shows up truncated mid-sentence.
             if printf '%s' "$lines" | grep -qiE 'unauthorized|forbidden|(^|[^0-9])(401|403)([^0-9]|$)'; then
-              echo "::warning::${comp} is being REFUSED by the OTLP ingestor. Its"
-              echo "OTEL_EXPORTER_OTLP_HEADERS is missing or stale — a supplementary"
-              echo "component cannot hydrate it, so the render has to bake it (HACKS.md #38)."
+              echo "::warning::${comp} is being REFUSED by the OTLP ingestor.%0AIts OTEL_EXPORTER_OTLP_HEADERS is missing or stale — a supplementary component cannot hydrate it, so the render has to bake it (HACKS.md #38)."
               rc=1
             elif printf '%s' "$lines" | grep -qE 'OTLPExporter|Failed to export|Items were dropped'; then
-              echo "::warning::${comp} logged an OTLP export failure. Not a credential"
-              echo "shape; check the collector."
+              echo "::warning::${comp} logged an OTLP export failure.%0ANot a credential shape; check the collector."
               rc=1
             fi
           done

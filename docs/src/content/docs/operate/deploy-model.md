@@ -137,12 +137,24 @@ and `OTEL_EXPORTER_OTLP_HEADERS` — **from the store** and bakes them onto it,
 exactly as it already does for that component's `env:`. One place to manage them;
 a redeploy to change them.
 
-This is not optional, and the renderer enforces it rather than trusting it:
-`bootEnvGaps()` runs over the rendered spec and **fails the deploy** if any
-component holds neither a boot key it needs nor the credential to fetch it. Both
-of those keys fail silently when absent — a bundle with no OTLP header exports
-into rejection about a minute after a green deploy, with `/healthz` still 200 —
-so the check has to be structural rather than something a reviewer notices.
+Both of those keys fail silently when absent — a bundle with no OTLP header
+exports into rejection about a minute after a green deploy, with `/healthz` still
+200 — so the render checks rather than trusts, in three places that answer
+different questions:
+
+| Check                                        | Fails the deploy when                                                                                                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `preflightSecrets()`                         | the store does not **hold** a required name. It reads metadata, so it cannot tell whether the value renders.                                                                                           |
+| the required-boot-key check in `render-spec` | a required boot key resolves to **nothing** — the parameter is there, `list()` reports a value, and `:render` returns empty. Presence is not resolvability, and this is the half preflight cannot see. |
+| `bootEnvGaps()`                              | a component in the **rendered spec** holds neither a boot key it needs nor the credential to fetch it. A cross-check on the renderer itself.                                                           |
+
+The OTLP header is deliberately outside that last line: an ingestor that needs no
+auth is ordinary, and demanding a header would fail correct deploys. An
+**endpoint with no header** is warned about by name instead, because it is
+indistinguishable from a healthy deploy right up until the ingestor starts
+refusing batches — and the staging deploy's [telemetry
+report](/operate/operations/#deploy-stagingyml--put-it-on-app-platform) is what
+catches it after the fact.
 
 ### Deploy-time parameter resolution
 

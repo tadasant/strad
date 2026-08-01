@@ -90,15 +90,15 @@ defining idiom is the **preflight "safe no-op"**:
   `GCP_SA_KEY`) are missing, it **skips and stays green**.
 - A **manual** `workflow_dispatch` with the same gap **fails loudly**.
 
-Three post-deploy reports run after the smoke test, all of them
-`continue-on-error` — they exit non-zero and go yellow rather than failing a
-deploy that is otherwise healthy:
+Three of its steps are `continue-on-error` reports — they exit non-zero and go
+yellow rather than failing a deploy that is otherwise healthy. One runs before
+the render; the other two run after the smoke test:
 
-| Report                     | Answers                                                                                                                                                                                                                                               |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| the parameter-store roster | which names the gateway namespace holds, and which of them the resolver can actually render                                                                                                                                                           |
-| **telemetry**              | whether each component's exporter is being **accepted**. It greps that component's own run log for `telemetry.started` and for OTLP export failures, 45s after the deploy — one export interval is 15s, and a boot-only check would see none of this. |
-| the secrets credentials    | what each `secrets` key can do, probed the way the containers probe it                                                                                                                                                                                |
+| Report                              | Answers                                                                                                                                                                                                                                               |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the parameter-store roster (before) | which names the gateway namespace holds, and which of them the resolver can actually render                                                                                                                                                           |
+| **telemetry** (after)               | whether each component's exporter is being **accepted**. It greps that component's own run log for `telemetry.started` and for OTLP export failures, 45s after the deploy — one export interval is 15s, and a boot-only check would see none of this. |
+| the secrets credentials (after)     | what each `secrets` key can do, probed the way the containers probe it                                                                                                                                                                                |
 
 The telemetry one exists because a component with an endpoint and no auth header
 boots perfectly and is refused on every batch, about a minute later, with nothing
@@ -533,16 +533,16 @@ running gateway currently resolves. Nothing else in this config is observable th
 way — a supplementary image's `env:` and its two boot keys are baked at render
 time, and the core's boot keys are read once at startup — so without it, "a
 rotated secret takes effect without a redeploy" can be asserted but not watched.
+It is inert on a deployment with no resolver credential: `Registry.build` gets a
+null resolver and skips the merge. Point that parameter at a canary and never at a
+credential; it is returned over `/mcp` verbatim to anyone entitled to the slug.
 
 Take that literally when reading a config that is not this one. A deployment with
 no `params: true` server and no request-path `${NAME}` on a reachable server has
 **nothing** that rotates within `ttlSeconds`, whatever the TTL says; every name it
 holds is a restart or a deploy. [What rotates
 live](/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy)
-is the table to check before telling anyone a rotation will land on its own. It is inert on a deployment with no
-resolver credential: `Registry.build` gets a null resolver and skips the merge.
-Point that parameter at a canary and never at a credential; it is returned over
-`/mcp` verbatim to anyone entitled to the slug.
+is the table to check before telling anyone a rotation will land on its own.
 
 The `secrets` entry gives its two halves **different** namespace lists on purpose:
 the console (`consoleEnv:`) manages `/strad/staging/mcp/` and

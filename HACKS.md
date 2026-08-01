@@ -1353,13 +1353,23 @@ image, it never executes `hydrateBootEnv`, and it holds no store credential —
 `STRAD_IMAGE_ONLY_SECRET_KEYS` keeps the resolver key off it on purpose. So
 `render-spec` reads that component's two boot keys —
 `BUNDLE_BOOT_ENV_KEYS`: `STRAD_INTERNAL_TOKEN` and `OTEL_EXPORTER_OTLP_HEADERS` —
-from the store at render time and bakes them onto it, and `bootEnvGaps()` fails
-the deploy if any component would end up holding neither the value nor the
-credential to fetch it.
+from the store at render time and bakes them onto it.
+
+**What the render gates, and what it only warns about.** A REQUIRED boot key
+(`STRAD_INTERNAL_TOKEN`) that resolves to nothing fails the deploy — preflight
+asks `list()`, so a parameter that exists and reports a value can still render
+empty, and that half is invisible to it. `bootEnvGaps()` then fails the deploy if
+any component in the rendered spec holds neither a boot key it needs nor the
+credential to fetch it; that one is a cross-check on the renderer, not on the
+store. The OTLP header is deliberately not gated — an ingestor that needs no auth
+is ordinary — so an ENDPOINT configured with no header resolvable is a
+`::warning::` naming the parameter, and the staging deploy's telemetry report is
+the behavioural half.
 
 **Why it matters.** This gap took prod's cutover down and it did it quietly. The
 bundle stopped exporting telemetry 44 seconds after a deploy every gate had
-passed: `/healthz` 200 with 26 slugs, `secrets` serving its 4 tools, `/mcp` 401,
+passed: `/healthz` 200 with all of prod's 26 slugs, `secrets` serving its 4
+tools, `/mcp` 401,
 `/ui` 302 — nothing user-visible, and the blind component was the one answering
 every supplementary slug. That is the same blindness that let a dead `secrets`
 slug look healthy for a week (#32). The other name is quieter still:

@@ -53,7 +53,10 @@ import {
   renderAppSpec,
   type EnvVar,
 } from "../src/deploy/appspec.ts";
-import { BUNDLE_BOOT_ENV_KEYS } from "../src/secrets/provider/hydrate.ts";
+import {
+  BUNDLE_BOOT_ENV_KEYS,
+  REQUIRED_BOOT_ENV_KEYS,
+} from "../src/secrets/provider/hydrate.ts";
 import {
   gatewayNamespace,
   resolverFromEnv,
@@ -286,7 +289,15 @@ const hasSupplementary = config.servers.some(
   (s) => s.enabled && s.kind === "supplementary-image",
 );
 
-/** The gateway namespace, resolved at most once, and only when it is needed. */
+/**
+ * The gateway namespace, resolved at most once, and only when it is needed.
+ *
+ * `resolve()` renders the WHOLE namespace and throws on any parameter in it that
+ * cannot be rendered (HACKS #36), so a config that needs this read inherits that
+ * blast radius — including for a broken parameter it does not itself use. That
+ * is why it is lazy: a deployment that needs neither a supplementary `env:` nor
+ * the bundle boot keys never asks.
+ */
 let namespaceValues: Record<string, string> | null = null;
 async function storeValues(): Promise<Record<string, string>> {
   if (!storeBacked || !store) return {};
@@ -373,6 +384,43 @@ if (storeBacked && hasSupplementary) {
     `[render-spec] boot env baked onto supplementary components: ` +
       `${Object.keys(bootSecrets).sort().join(", ") || "(none)"}.`,
   );
+
+  // A REQUIRED boot key that resolved to nothing fails the deploy here.
+  //
+  // Preflight already demands these by NAME, and it asks `list()` — so a
+  // parameter that exists, reports a value, and renders to nothing passes it and
+  // arrives here empty. Under the `env` provider the same name is
+  // `secret(key, required)` and a missing one fails the render; this is that
+  // line, held on the store path, for the component that cannot go and look for
+  // itself.
+  for (const key of REQUIRED_BOOT_ENV_KEYS) {
+    if (!(BUNDLE_BOOT_ENV_KEYS as readonly string[]).includes(key)) continue;
+    if (bootSecrets[key]) continue;
+    console.error(
+      `::error::${key} resolved to no value in ` +
+        `${gatewayNamespace(config.gateway.env)}, and a supplementary component ` +
+        `cannot read the store for itself. Seed or repair that parameter — ` +
+        `presence is not resolvability, so store:check --resolve is what says which.`,
+    );
+    process.exit(1);
+  }
+
+  // The OTLP header is OPTIONAL — an ingestor that needs no auth is ordinary —
+  // so this warns rather than failing. But an ENDPOINT with no header is the
+  // exact shape that took prod's bundle off telemetry, and it is indistinguishable
+  // from a healthy deploy until the ingestor starts refusing batches. Say so.
+  if (
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT &&
+    !bootSecrets.OTEL_EXPORTER_OTLP_HEADERS
+  ) {
+    console.error(
+      `::warning::telemetry has an endpoint but ` +
+        `${gatewayNamespace(config.gateway.env)}OTEL_EXPORTER_OTLP_HEADERS ` +
+        `resolved to nothing, so every supplementary component will export ` +
+        `unauthenticated. Correct if the ingestor takes anonymous OTLP; if it ` +
+        `does not, those components go blind about a minute after this deploy.`,
+    );
+  }
 }
 
 /**
