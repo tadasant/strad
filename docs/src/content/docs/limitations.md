@@ -93,6 +93,30 @@ schema keeps every one. A misspelled env var name is still silent. (A role's own
 fields are ordinary schema keys and _are_ checked: `roles.admin.serverz` is
 caught.)
 
+### 40. The tool-surface monitor asks one question, so it can only catch one kind of failure
+
+The [tool-surface monitor](/intro/architecture/#adapters) probes every mounted slug
+by calling `tools/list`. That is the whole probe: it never asks for resources,
+never calls a tool, and never runs two methods against one slug at once. So
+`/healthz` answers "is this slug serving tools to a client that only wants tools",
+which is narrower than it reads.
+
+It has already been narrower than a real failure. For seven days in prod, the
+`secrets` slug answered a lone `tools/list` perfectly and failed `tools/list` for
+any client that asked for resources at the same time — one method's failure closed
+the shared upstream connection out from under the other. The metric stayed at four
+tools, `/healthz` stayed green, and real clients kept getting `-32603`. The alert
+that eventually caught it watched the failure _events_, not the monitor.
+
+That teardown bug is fixed and regression-tested. The blind spot is not: a future
+failure that only appears when two methods are in flight will again be invisible
+here.
+
+**Undo:** give the probe a mixed-method shape — a concurrent `tools/list` +
+`resources/list` per slug, with "answers one but not both" classified as
+`degraded`. The cost is a second round trip per slug per interval against
+containers that already share one CPU (#24).
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth

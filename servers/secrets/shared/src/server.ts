@@ -18,10 +18,11 @@ export interface CreateMCPServerOptions {
   config?: SecretsConfig;
   readerFactory?: () => ParametersReader;
   /**
-   * Test seam: override the capability probe. Production asks Google once, at
-   * registerHandlers time, and caches the answer for the process lifetime — an
-   * IAM grant does not change mid-request, and the tool LIST must be stable
-   * within a session or a client's cached listing goes stale in a confusing way.
+   * Test seam: override the capability probe. Production asks Google on the
+   * first listing that needs an answer and caches it for the lifetime of the
+   * factory — an IAM grant does not change mid-request, and the tool LIST must
+   * be stable within a session or a client's cached listing goes stale in a
+   * confusing way.
    */
   capabilities?: () => Promise<Capabilities>;
   writerFactory?: () => ParametersWriter;
@@ -40,6 +41,17 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     { name: "secrets-mcp-server", version: options.version },
     { capabilities: { tools: {} } },
   );
+
+  // Process-lifetime memos, and they have to live OUT here.
+  //
+  // The bundle host serves this mount statelessly: a fresh `Server` and a fresh
+  // `registerHandlers` call PER HTTP REQUEST. Anything declared inside that
+  // function is therefore per-request, and a memo that is per-request is not a
+  // memo — it is a round trip to Google (an OAuth token mint plus
+  // `projects:testIamPermissions`) added to every single `tools/list`, which is
+  // what made this mount's listing several times slower than its peers'.
+  let probed: Promise<Capabilities> | undefined;
+  let writer: ParametersWriter | undefined;
 
   const registerHandlers = async (
     target: Server,
@@ -68,7 +80,6 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     // property of the credential, and re-asking on every tools/list would add a
     // round trip to every listing for a value that changes when a human edits
     // IAM. A revoked permission still fails closed at Google.
-    let probed: Promise<Capabilities> | undefined;
     const capabilities =
       options.capabilities ??
       (() => {
@@ -88,7 +99,6 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     // The mutating client is built LAZILY and only ever reached through a
     // capability check in tools.ts. Constructing it is not the permission; the
     // probe is.
-    let writer: ParametersWriter | undefined;
     const writerFactory =
       options.writerFactory ??
       ((): ParametersWriter => {
