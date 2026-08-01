@@ -1361,19 +1361,19 @@ asks `list()`, so a parameter that exists and reports a value can still render
 empty, and that half is invisible to it. `bootEnvGaps()` then fails the deploy if
 any component in the rendered spec holds neither a boot key it needs nor the
 credential to fetch it; that one is a cross-check on the renderer, not on the
-store. The OTLP header is deliberately not gated — an ingestor that needs no auth
-is ordinary — so an ENDPOINT configured with no header resolvable is a
+store. The OTLP header is deliberately not on the REQUIRED list — an ingestor
+that needs no auth is ordinary — though it is still inside `bootEnvGaps()` once
+the store yields a value. An ENDPOINT with no resolvable header is a
 `::warning::` naming the parameter, and the staging deploy's telemetry report is
 the behavioural half.
 
 **Why it matters.** This gap took prod's cutover down and it did it quietly. The
 bundle stopped exporting telemetry 44 seconds after a deploy every gate had
 passed: `/healthz` 200 with all of prod's 26 slugs, `secrets` serving its 4
-tools, `/mcp` 401,
-`/ui` 302 — nothing user-visible, and the blind component was the one answering
-every supplementary slug. That is the same blindness that let a dead `secrets`
-slug look healthy for a week (#32). The other name is quieter still:
-without `STRAD_INTERNAL_TOKEN` the component's presence route fails closed, and
+tools, `/mcp` 401, `/ui` 302 — nothing user-visible, and the blind component was
+the one answering every supplementary slug. That is the same blindness that let a
+dead `secrets` slug look healthy for a week (#32). The other name is quieter
+still: without `STRAD_INTERNAL_TOKEN` the component's presence route fails closed, and
 the console reports that the component refused the internal token rather than
 saying what it holds.
 
@@ -1390,6 +1390,12 @@ credential that reads the entire gateway namespace to every third-party image �
 the posture the console's write-without-read role (#31) and the refused
 `secretmanager.admin` grant were both built to protect — and it would not even
 work, because nothing inside those images knows how to ask.
+
+**The boundary, written down.** The required check is scoped to a store-backed
+render that has a supplementary component, because that is the population being
+handed a value it cannot fetch. A store-backed deployment whose bundles all run
+the strad image is untouched by it: those hydrate, and `hydrateBootEnv` assigning
+an empty string is the same hazard it always was.
 
 **Undo.** A supplementary server that needs live rotation reads the store itself,
 the way `servers/secrets` does. Short of that, the redeploy is the mechanism.

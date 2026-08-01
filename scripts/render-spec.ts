@@ -59,6 +59,7 @@ import {
 } from "../src/secrets/provider/hydrate.ts";
 import {
   gatewayNamespace,
+  gatewayParameterPath,
   resolverFromEnv,
   resolveServerParams,
   RESOLVER_ENV,
@@ -415,7 +416,7 @@ if (storeBacked && hasSupplementary) {
   ) {
     console.error(
       `::warning::telemetry has an endpoint but ` +
-        `${gatewayNamespace(config.gateway.env)}OTEL_EXPORTER_OTLP_HEADERS ` +
+        `${gatewayParameterPath(config.gateway.env, "OTEL_EXPORTER_OTLP_HEADERS")} ` +
         `resolved to nothing, so every supplementary component will export ` +
         `unauthenticated. Correct if the ingestor takes anonymous OTLP; if it ` +
         `does not, those components go blind about a minute after this deploy.`,

@@ -148,9 +148,11 @@ different questions:
 | the required-boot-key check in `render-spec` | a required boot key resolves to **nothing** — the parameter is there, `list()` reports a value, and `:render` returns empty. Presence is not resolvability, and this is the half preflight cannot see. |
 | `bootEnvGaps()`                              | a component in the **rendered spec** holds neither a boot key it needs nor the credential to fetch it. A cross-check on the renderer itself.                                                           |
 
-The OTLP header is deliberately outside that last line: an ingestor that needs no
-auth is ordinary, and demanding a header would fail correct deploys. An
-**endpoint with no header** is warned about by name instead, because it is
+The OTLP header is deliberately not on the **required** list: an ingestor that
+needs no auth is ordinary, and demanding a header would fail correct deploys. (It
+is still inside `bootEnvGaps` — once the store yields a value, a component
+missing it is a gap like any other.) An **endpoint with no resolvable header** is
+warned about by name instead, because it is
 indistinguishable from a healthy deploy right up until the ingestor starts
 refusing batches — and the staging deploy's [telemetry
 report](/operate/operations/#deploy-stagingyml--put-it-on-app-platform) is what

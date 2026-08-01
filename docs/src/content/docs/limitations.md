@@ -370,8 +370,13 @@ listed and nothing user-visible broken. The cutover was rolled back.
 
 The fix is to bake those two names — `STRAD_INTERNAL_TOKEN` and
 `OTEL_EXPORTER_OTLP_HEADERS` — from the **store** onto the components that cannot
-fetch them, and to fail the render (`bootEnvGaps()`) if any component would end up
-with neither the value nor the credential. What that costs, stated rather than
+fetch them. Three checks then guard it, and they answer different questions:
+preflight asks whether the store **holds** a required name; a second check fails
+the deploy when a required boot key **resolves to nothing**, which presence
+cannot see; and `bootEnvGaps()` fails it when a component in the rendered spec
+holds neither a boot key it needs nor the credential to fetch it. The OTLP header
+is not on the required list — an ingestor that needs no auth is ordinary — so an
+endpoint with no resolvable header is a warning naming the parameter. What that costs, stated rather than
 hidden: rotating either name is a **redeploy**, not a restart, and rotating
 `STRAD_INTERNAL_TOKEN` must be a redeploy even for core, since core hydrates it
 and a restart of core alone would leave the two sides disagreeing and the presence
