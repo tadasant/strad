@@ -1343,6 +1343,47 @@ demonstrated, one at a time, each with an answer to "where does this value come
 from at every call site". Do not widen it to a denylist: the point is that a
 field nobody considered cannot ship.
 
+## 38. A third-party bundle's boot env is BAKED, because it cannot read the store
+
+**What.** Under `gateway.secrets.provider: gcp-parameter-store`, `render-spec`
+stops baking the gateway's boot keys and lets each process hydrate them from the
+store instead. That works for the core and for a bundle running the strad image.
+It does not work for a `supplementary-image` component: it runs a third-party
+image, it never executes `hydrateBootEnv`, and it holds no store credential —
+`STRAD_IMAGE_ONLY_SECRET_KEYS` keeps the resolver key off it on purpose. So
+`render-spec` reads that component's two boot keys —
+`BUNDLE_BOOT_ENV_KEYS`: `STRAD_INTERNAL_TOKEN` and `OTEL_EXPORTER_OTLP_HEADERS` —
+from the store at render time and bakes them onto it, and `bootEnvGaps()` fails
+the deploy if any component would end up holding neither the value nor the
+credential to fetch it.
+
+**Why it matters.** This gap took prod's cutover down and it did it quietly. The
+bundle stopped exporting telemetry 44 seconds after a deploy every gate had
+passed: `/healthz` 200 with 26 slugs, `secrets` serving its 4 tools, `/mcp` 401,
+`/ui` 302 — nothing user-visible, and the blind component was the one answering
+every supplementary slug. That is the same blindness that let a dead `secrets`
+slug look healthy for a week (#32). The other name is quieter still:
+without `STRAD_INTERNAL_TOKEN` the component's presence route fails closed, and
+the console reports that the component refused the internal token rather than
+saying what it holds.
+
+**The cost, stated.** A baked value changes on a redeploy, not on a restart. So
+rotating `OTEL_EXPORTER_OTLP_HEADERS` is a deploy, and rotating
+`STRAD_INTERNAL_TOKEN` is a deploy _even for core_ — core hydrates it, the bundles
+are handed it, and a restart of core alone would leave the two disagreeing.
+`docs/.../operate/secrets.md` carries the table of which names rotate within
+`ttlSeconds`, which need a restart, and which need a deploy.
+
+**The rejected alternative.** Give bundle components the resolver credential so
+hydration works as the comment claimed. It fails on both counts: it hands a
+credential that reads the entire gateway namespace to every third-party image —
+the posture the console's write-without-read role (#31) and the refused
+`secretmanager.admin` grant were both built to protect — and it would not even
+work, because nothing inside those images knows how to ask.
+
+**Undo.** A supplementary server that needs live rotation reads the store itself,
+the way `servers/secrets` does. Short of that, the redeploy is the mechanism.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

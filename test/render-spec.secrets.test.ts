@@ -218,9 +218,16 @@ afterAll(async () => {
  */
 const run = promisify(execFile);
 
+interface RenderedSpec {
+  services: {
+    name: string;
+    envs: { key: string; value?: string; type?: string }[];
+  }[];
+}
+
 async function render(yaml: string): Promise<{
   ok: boolean;
-  spec?: { services: { envs: { key: string; type?: string }[] }[] };
+  spec?: RenderedSpec;
   stderr: string;
 }> {
   const dir = mkdtempSync(join(tmpdir(), "strad-secrets-"));
@@ -262,9 +269,7 @@ async function render(yaml: string): Promise<{
     );
     return {
       ok: true,
-      spec: JSON.parse(stdout) as {
-        services: { envs: { key: string; type?: string }[] }[];
-      },
+      spec: JSON.parse(stdout) as RenderedSpec,
       stderr: "",
     };
   } catch (err) {
@@ -378,6 +383,56 @@ describe("render-spec, store-backed", () => {
     expect(JSON.stringify(result.spec)).not.toContain(
       Buffer.from(PEM, "utf8").toString("base64url"),
     );
+  });
+
+  /**
+   * The boot env a third-party container cannot fetch for itself.
+   *
+   * `hydrateBootEnv` is why this script stops baking the gateway's boot keys
+   * under the store provider — and it runs in strad's process. A supplementary
+   * image does not run strad and holds no store credential, so under the store
+   * provider it was left with neither the value nor a way to get it. The symptom
+   * was a bundle that stopped exporting telemetry about a minute after a green
+   * deploy, with /healthz still 200 and every slug still listed.
+   *
+   * The values must come from the STORE, not from the deploy environment: the
+   * hostile env below carries a stale twin of both names, and a render that
+   * picked either up would hand a rotated secret a copy that outranks it.
+   */
+  it("bakes the bundle's boot env onto a supplementary component, from the store", async () => {
+    await fake.store.create({
+      path: gatewayParameterPath("test", "OTEL_EXPORTER_OTLP_HEADERS"),
+      secret: true,
+      value: "Authorization=Bearer otlp-from-the-store",
+    });
+
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "\${GRANOLA_TOKEN}"
+`,
+        "  - name: bundle\n",
+      ),
+    );
+    expect(result.ok).toBe(true);
+
+    const bundle = result.spec!.services.find((s) => s.name === "bundle")!;
+    const at = (key: string) => bundle.envs.find((e) => e.key === key);
+
+    expect(at("OTEL_EXPORTER_OTLP_HEADERS")?.value).toBe(
+      "Authorization=Bearer otlp-from-the-store",
+    );
+    expect(at("OTEL_EXPORTER_OTLP_HEADERS")?.type).toBe("SECRET");
+    expect(at("STRAD_INTERNAL_TOKEN")?.value).toBe("internal-shared");
+    // Not the deploy environment's stale copy, which is sitting right there.
+    expect(JSON.stringify(result.spec)).not.toContain("STALE-ENV-VALUE");
+    // And the credential that reads the store still stops at the strad image.
+    expect(at(RESOLVER_ENV.keyJson)).toBeUndefined();
   });
 
   it("FAILS the deploy when the config references a secret the store lacks", async () => {

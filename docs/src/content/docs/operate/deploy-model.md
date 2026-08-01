@@ -113,15 +113,36 @@ flowchart LR
 ```
 
 The gateway needs one credential in the spec — the service-account key it uses to
-reach the store. Everything the gateway resolves is read while it runs, so adding
-or rotating one of those needs no deploy: a rotation lands
-within `ttlSeconds` (default 60s), an addition within `negativeTtlSeconds`
-(default 10s).
+reach the store. Everything the gateway resolves **on the request path** is read
+while it runs, so adding or rotating one of those needs no deploy: a rotation
+lands within `ttlSeconds` (default 60s), an addition within `negativeTtlSeconds`
+(default 10s). A boot key is a restart and a baked one is a deploy — see
+[what rotates live](/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
 `render-spec` still fails loudly on a reference to a secret that does not exist —
 that is the **preflight**, which asks the store which names exist and never asks
 for a value. What it does not do is bake one: a baked copy would silently outrank
 a rotated stored one, and there would be two ways again.
+
+#### The exception: a container that cannot ask the store
+
+"Read it at runtime instead" is a claim about strad's own process. A
+`supplementary-image` component does not run strad — it is a third-party image —
+and it holds no store credential, because that key reaches the strad image and
+stops there. It cannot hydrate, and giving it the credential would not change
+that, since nothing inside it knows how to ask.
+
+So `render-spec` reads that component's two boot keys — `STRAD_INTERNAL_TOKEN`
+and `OTEL_EXPORTER_OTLP_HEADERS` — **from the store** and bakes them onto it,
+exactly as it already does for that component's `env:`. One place to manage them;
+a redeploy to change them.
+
+This is not optional, and the renderer enforces it rather than trusting it:
+`bootEnvGaps()` runs over the rendered spec and **fails the deploy** if any
+component holds neither a boot key it needs nor the credential to fetch it. Both
+of those keys fail silently when absent — a bundle with no OTLP header exports
+into rejection about a minute after a green deploy, with `/healthz` still 200 —
+so the check has to be structural rather than something a reviewer notices.
 
 ### Deploy-time parameter resolution
 

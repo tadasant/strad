@@ -711,6 +711,71 @@ jobs:
             echo "OK: staging healthy, /mcp gated, every deployed slug serving tools."
           fi
 
+      - name: Report whether each component is actually exporting telemetry
+        # THE CHECK THAT WAS MISSING, and it cost a prod rollback.
+        #
+        # A component with a telemetry ENDPOINT and no auth HEADER boots
+        # perfectly, reports healthy, serves every slug — and every batch it
+        # exports is rejected. The symptom arrives about a minute after the
+        # deploy says success, on the component that answers every supplementary
+        # slug, and nothing else in this job would notice. That is what happened
+        # to prod's parameter-store cutover: the bundle went blind 44 seconds in
+        # while /healthz stayed 200 with 26 slugs. See HACKS.md #38.
+        #
+        # `render-spec` now fails closed on the STRUCTURAL half (bootEnvGaps:
+        # every component either holds the value or holds the credential to
+        # fetch it). This is the BEHAVIOURAL half: the container's own log,
+        # after it has had time to try. `telemetry.started` says the SDK came
+        # up; an OTLPExporter error says it came up and is being refused.
+        #
+        # NON-FATAL by design, like the capability probe below: a collector
+        # having a bad minute is not a reason to fail a deploy, and "telemetry
+        # not configured" is a supported state. It still EXITS non-zero on a
+        # rejection, so the step goes yellow and names the component rather than
+        # passing in silence.
+        #
+        # It prints ONLY lines matching the telemetry pattern. The container log
+        # carries upstream-authored text (see src/telemetry/redact.ts for why
+        # that is never shipped wholesale), so this greps rather than dumps.
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        continue-on-error: true
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          DIGITALOCEAN_CONTEXT: default
+        run: |
+          set -uo pipefail
+          APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
+          COMPS=$(jq -r '.services[].name' /tmp/spec.json 2>/dev/null | tr '\n' ' ')
+          [ -z "$COMPS" ] && COMPS="core bundle"
+          # One export interval is 15s (OTEL_METRIC_EXPORT_INTERVAL). Give the
+          # containers two of them plus start-up before reading the log, or a
+          # healthy deploy reports "no telemetry lines yet" every time.
+          sleep 45
+          rc=0
+          PATTERN='telemetry\.(started|disabled|start_failed)|OTLPExporter|Failed to export|Items were dropped'
+          for comp in $COMPS; do
+            echo "::group::${comp}"
+            lines=$(doctl apps logs "$APP_ID" "$comp" --type run --tail 300 2>/dev/null \
+              | grep -E "$PATTERN" | tail -20)
+            if [ -z "$lines" ]; then
+              echo "no telemetry lines in the last 300 (component may predate the instrumentation)"
+            else
+              printf '%s\n' "$lines"
+            fi
+            echo "::endgroup::"
+            if printf '%s' "$lines" | grep -qiE 'unauthorized|forbidden|401|403'; then
+              echo "::warning::${comp} is being REFUSED by the OTLP ingestor. Its"
+              echo "OTEL_EXPORTER_OTLP_HEADERS is missing or stale — a supplementary"
+              echo "component cannot hydrate it, so the render has to bake it (HACKS.md #38)."
+              rc=1
+            elif printf '%s' "$lines" | grep -qE 'OTLPExporter|Failed to export|Items were dropped'; then
+              echo "::warning::${comp} logged an OTLP export failure. Not a credential"
+              echo "shape; check the collector."
+              rc=1
+            fi
+          done
+          exit "$rc"
+
       - name: Report what the secrets credentials can do
         # The secrets surfaces are PROBE-DERIVED: the MCP server lists
         # get_secret_value and the write tools only if its credential holds the

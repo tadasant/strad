@@ -32,6 +32,15 @@ collector URL is not a credential, and an operator should be able to see what th
 deployment is pointed at in the App Platform console), and the headers become a
 **SECRET** env var, encrypted at rest, on the same path as every other credential.
 
+On a **store-backed** deployment the header is not in the deploy environment at
+all — it is read from `/strad/{env}/gateway/static/OTEL_EXPORTER_OTLP_HEADERS`.
+The core and any strad-image bundle hydrate it themselves at boot; a third-party
+`supplementary-image` component cannot, so the renderer reads it from the store
+and bakes it onto that component. Rotating it is therefore a **deploy**, not a
+restart, and a deploy where any component would end up without it
+[fails](/operate/deploy-model/#the-exception-a-container-that-cannot-ask-the-store)
+rather than shipping a container that exports into a rejection.
+
 The endpoint must speak **OTLP over HTTP/protobuf** — the OTLP spec's default for
 the HTTP transport, port `4318` on a standard collector. strad appends the signal
 paths itself, so give it the base URL (`https://host:4318`), not

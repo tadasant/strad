@@ -173,15 +173,20 @@ holds no cloud credential. The cost is that rotating one does nothing until the
 deploy runs again.
 
 **`gcp-parameter-store`.** `${NAME}` resolves from the parameter store while the
-gateway is **running**. Add or rotate a secret and it reaches production with no
-deploy — a rotation within `ttlSeconds` (default 60s), an addition within
-`negativeTtlSeconds` (default 10s), and instantly for a change written through
-strad's own console. The gateway then needs exactly **one** secret in the app
-spec: the key it uses to reach the store. A key cannot be kept behind the lock it
-opens; that is the only exception. (A `supplementary-image` server's `env:` and a
-server's `consoleEnv:` are still baked — they are another container's environment
-and the console's store-admin credential — but they are read _from the store_, so
-they are still managed in one place.)
+gateway is **running**. Add or rotate a secret a server references on the request
+path and it reaches production with no deploy — a rotation within `ttlSeconds`
+(default 60s), an addition within `negativeTtlSeconds` (default 10s), and
+instantly for a change written through strad's own console. The gateway then
+needs exactly **one** secret in the app spec: the key it uses to reach the store.
+A key cannot be kept behind the lock it opens; that is the only exception.
+
+Two categories keep a deploy, and both are honest about it: a name read once at
+boot takes effect on the next restart, and anything baked onto another
+container takes effect on the next deploy — a `supplementary-image` server's
+`env:`, the two boot keys such a component cannot fetch for itself, and a
+server's `consoleEnv:`. All of them are read _from the store_, so they are still
+managed in one place. [Which name is
+which](https://strad.tadasant.com/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
 Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`
 against the store and fails the deploy on a missing one — reading metadata only,
