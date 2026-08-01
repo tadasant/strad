@@ -755,15 +755,23 @@ jobs:
           PATTERN='telemetry\.(started|disabled|start_failed)|OTLPExporter|Failed to export|Items were dropped'
           for comp in $COMPS; do
             echo "::group::${comp}"
+            # `|| true` is load-bearing twice over. A `run:` step is `bash -e`,
+            # and `set -uo pipefail` above does not clear it — so with pipefail
+            # on, a grep that matches NOTHING fails the pipeline, fails the
+            # assignment, and kills the step before it can print the "no
+            # telemetry lines" branch that exists for exactly that case.
             lines=$(doctl apps logs "$APP_ID" "$comp" --type run --tail 300 2>/dev/null \
-              | grep -E "$PATTERN" | tail -20)
+              | grep -E "$PATTERN" | tail -20) || true
             if [ -z "$lines" ]; then
               echo "no telemetry lines in the last 300 (component may predate the instrumentation)"
             else
               printf '%s\n' "$lines"
             fi
             echo "::endgroup::"
-            if printf '%s' "$lines" | grep -qiE 'unauthorized|forbidden|401|403'; then
+            # The status codes are matched with non-digit boundaries: a bare
+            # `401` also occurs inside a port or an id, and a false "REFUSED"
+            # sends an operator after a credential that is fine.
+            if printf '%s' "$lines" | grep -qiE 'unauthorized|forbidden|(^|[^0-9])(401|403)([^0-9]|$)'; then
               echo "::warning::${comp} is being REFUSED by the OTLP ingestor. Its"
               echo "OTEL_EXPORTER_OTLP_HEADERS is missing or stale — a supplementary"
               echo "component cannot hydrate it, so the render has to bake it (HACKS.md #38)."
