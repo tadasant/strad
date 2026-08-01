@@ -465,9 +465,16 @@ names, because the two have unrelated fixes. See
 parameters, so the store can be exercised end to end through the agent surface
 rather than only through the console.
 
-**This is scoped to staging on purpose.** `strad-secrets-staging` holds nothing
-sensitive. In **prod** the MCP credential stays the Parameter Manager viewer with
-neither `secretmanager.versions.access` **nor
+**This is scoped to staging on purpose, and what scopes it is the project.**
+`strad-secrets-staging` is separate from the project holding strad's own
+`strad-<env>-*` secrets, so the blast radius stops at its boundary. Inside that
+boundary sit the per-server credentials staging's servers run on, so
+`get_secret_value` returns a real secret and the write tools can rewrite or delete
+a parameter a `params: true` server resolves at boot, breaking the next staging
+deploy. The bound is separation, not harmlessness.
+
+In **prod** the MCP credential stays the Parameter Manager viewer with neither
+`secretmanager.versions.access` **nor
 `parametermanager.parameterVersions.render`**, so the property from
 `tadasant-internal#202` — the `/mcp` channel cannot
 read a secret value — is unchanged there. That property is load-bearing and this

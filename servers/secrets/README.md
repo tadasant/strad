@@ -20,11 +20,22 @@ value, because the credential it runs as could not fetch one if it tried**:
 tools:  list_managed_namespaces   list_parameters   get_parameter   open_secrets_manager
 ```
 
-In **staging** the credential is read+write on a project that holds nothing
-sensitive, so the same image additionally offers `create_parameter`,
-`set_parameter_value`, `set_parameter_note`, `delete_parameter` and
-`get_secret_value`. That is deliberate and scoped to staging: it is what makes the
-store testable end to end over `/mcp` instead of only through the console.
+In **staging** the credential is read+write, so the same image additionally offers
+`create_parameter`, `set_parameter_value`, `set_parameter_note`,
+`delete_parameter` and `get_secret_value`. That is deliberate and scoped to
+staging: it is what makes the store testable end to end over `/mcp` instead of
+only through the console.
+
+**What bounds that surface is the project, not the contents.**
+`strad-secrets-staging` is a separate GCP project from the one holding strad's own
+`strad-<env>-*` secrets, so the blast radius stops at its boundary. It is not an
+empty project: the namespace holds the per-server credentials staging's servers
+run on, including the `(secret)` GCS service-account private key listed below, so
+`get_secret_value` on staging returns a real secret. The write tools reach the
+same parameters — rewriting or deleting one that a `params: true` server resolves
+at boot breaks the next staging deploy. The fence is separation; it is not
+harmlessness. See [Namespaces, and where the blast radius actually comes
+from](#namespaces-and-where-the-blast-radius-actually-comes-from).
 
 **Fail closed.** A probe that cannot run — no credential, Cloud Resource Manager
 not enabled, a network fault — yields no capabilities, and the surface is the

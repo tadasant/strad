@@ -1102,8 +1102,10 @@ grant alone offers a button in an environment that decided not to have one.
 Absent means off. A new environment cannot inherit reveal by forgetting to think
 about it.
 
-Staging enables it (nothing in `strad-secrets-staging` is sensitive, and
-round-tripping a value is how the store gets tested). Prod does not.
+Staging enables it, because `strad-secrets-staging` is a separate project from the
+one holding strad's own `strad-<env>-*` secrets and round-tripping a value is how
+the store gets tested. What a reveal there returns is a real per-server
+credential; the bound is the project, not the contents. Prod does not.
 
 ### When they disagree
 
