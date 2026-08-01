@@ -179,9 +179,63 @@ console surface — `/ui/secrets` and the [secret roster](/operate/secrets/) on
 `roles: []` that reads like "signed in, no permissions" grants the same console as
 `roles: [admin]`. Roles are carried on the Principal and consumed by
 `entitledServers()` for the `/mcp` selection; they are not a console ACL, and the
-dev bypass's `consoleDevBypass.roles` has always worked the same way. Treat
-`hostedDomain` as the console's authorization boundary, and keep the Workspace
-membership that clears it tight.
+dev bypass's `consoleDevBypass.roles` works the same way. Treat `hostedDomain` as
+the console's authorization boundary, and keep the Workspace membership that
+clears it tight.
+
+One surface reads those roles, and it is the one that issues MCP calls rather
+than rendering config: [the playground](#the-console-playground) resolves what it
+may reach through `entitledServers()`, so `roles: []` reaches every console page
+and no server's tools.
+
+### The console playground
+
+`/playground/:server` is a human MCP client in the console: it lists a server's
+tools and calls them with arguments a human types. That makes it the one console
+surface that has to answer an MCP question, and the two doors share no credential
+— a browser holding a console session cannot present a bearer token to `/mcp`,
+and `/mcp` reads no cookie.
+
+Three ways to bridge that, and strad takes the third.
+
+- **Teach `/mcp` to accept a console session.** Refused. The endpoint's single
+  credential type is the security model, and a cookie-authenticated `/mcp` is a
+  CSRF target the moment it is not a preflighted JSON `POST`.
+- **Ask the human to paste a bearer token.** Honest, and it moves a long-lived
+  credential into a browser tab. The store keeps only a SHA-256, so a token's
+  plaintext exists at mint time and nowhere else — most operators would mint a
+  **new** permanent token to read a tool list once.
+- **Keep the session on the server.** The page's two `POST` routes run an MCP
+  session in the core process: an SDK `Client` linked by an in-memory transport
+  to the same `Server` object `/mcp` builds per request
+  (`src/gateway/mcpServer.ts`). A real `initialize`, a real `tools/list`, a real
+  `tools/call`, through the real adapters and the real `tools:` policy. No token
+  is minted, held or presented, and `/mcp` is untouched.
+
+What it deliberately does not do is cross the HTTP boundary, and the page says so
+rather than claiming a hop it did not make.
+
+**Roles decide what it shows, and that is a departure from the rule above.** Every
+other console surface renders config, so a Principal is enough. This one issues
+MCP calls, so it applies the MCP rule: `entitledServers()` then
+`resolveSelection()`, on the console Principal, exactly as the endpoint does. A
+server the identity is not entitled to answers `424` here as it does there, and a
+deployment whose `auth.google.roles` is empty gets a console whose playground
+opens on nothing. That is fail-closed and intended — the playground is the console
+session's own entitlement rendered, not a privileged view of the registry.
+
+**CSRF** rests on the same `SameSite=Lax` cookie as the `/ui` writes: a cross-site
+`POST` arrives without it and the gate `401`s. Both routes additionally require
+`Content-Type: application/json`, which a cross-site `<form>` cannot send and
+which puts any scripted attempt behind a CORS preflight this app answers for
+nobody.
+
+**A call is real.** The tool runs against the real upstream with the real
+credentials — it sends the email, writes the row. The read-only variant of a slug
+is what to inspect when that matters. Arguments and results reach no ingestor:
+the tool-call span carries the slug, the tool name, the argument count and byte
+size and nothing else, tagged `strad.surface=playground` so a human poking at a
+tool is not counted as an agent calling it.
 
 ### `/api/secrets/readiness` is not a console surface
 

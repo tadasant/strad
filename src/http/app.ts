@@ -184,6 +184,7 @@ export function createApp(opts: AppOptions): Express {
     // browser at /ui. Same gate as /console; not /mcp.
     mountConsoleUi(app, {
       config: opts.config,
+      registry: opts.registry,
       secrets: opts.secrets ?? {},
       secretProvider: opts.secretProvider,
       env,

@@ -137,6 +137,11 @@ spec: the server list decides how many containers exist and how they're wired.
   Only the SHA-256 is stored; the plaintext is shown once at mint. Constant-time
   compare, soft revocation.
 
+The two doors share no credential, which is why the console's **playground**
+(`/playground/<slug>` — list a server's tools and call them by hand, no model
+involved) opens its MCP session inside the core process rather than presenting a
+token to `/mcp`. See [the console playground](docs/src/content/docs/auth/overview.md).
+
 The console at `/ui` is an installable PWA. Its service worker caches a fixed list
 of brand assets and one offline page — never an authenticated response, never a
 revealed secret. See [the console as an installed

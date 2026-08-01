@@ -235,6 +235,28 @@ variants are just two config entries.
 The trade is real and worth stating: read-only is now **policy** (a gateway that
 declines), not **physics** (a process that lacks the tool). See HACKS.md #22.
 
+## One MCP server object, two doors
+
+`/mcp` owns authentication, `?servers=` and the 424. The protocol half — `tools/list`,
+`tools/call`, resource proxying, and the capability check on the action — is
+`buildGatewayServer()` in `src/gateway/mcpServer.ts`, and it has two callers:
+
+- the `/mcp` handler, per request, over Streamable HTTP;
+- the console **playground** (`/playground/:server`), per request, over an
+  in-memory transport in the same process.
+
+The playground is a human MCP client: a signed-in operator lists a server's tools
+and calls them by hand, with no model anywhere in the path. It shares the builder
+rather than reaching into the registry, so a tool a `tools:` policy withholds is
+missing from the human's list and refused on the human's call, by the same code
+that refuses an agent. A second listing path would be a second opinion about what
+a policy means, and the first `tools:` rule that changed would leave the console
+showing a human something they cannot call.
+
+The console holds no `/mcp` token and mints none — see
+[the console playground](/auth/overview/#the-console-playground) for why the
+session stops one layer short of the wire.
+
 ## Sizing bundles
 
 The server list drives how containers are grouped:

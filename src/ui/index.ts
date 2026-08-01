@@ -20,6 +20,8 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import type { BundlePresence } from "../gateway/bundle-presence.ts";
+import type { Registry } from "../gateway/registry.ts";
+import { mountPlayground } from "./playground.ts";
 import { renderLanding } from "./landing.ts";
 import { resolveServerView, type ServerView } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
@@ -80,6 +82,15 @@ function validateNote(note: string): string | null {
 
 export interface ConsoleUiOptions {
   config: StradConfig;
+  /**
+   * The mounted servers, for the playground.
+   *
+   * The console renders from the CONFIG everywhere else — what a server is
+   * scoped to and whether its secrets are seeded are both config questions. The
+   * playground asks the only question config cannot answer ("what does this
+   * thing actually serve, right now"), and that needs the adapters.
+   */
+  registry: Registry;
   /** The same injected secret bag the registry resolves ${refs} against. */
   secrets: SecretBag;
   env: NodeJS.ProcessEnv;
@@ -169,15 +180,21 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     );
   });
 
-  app.get("/ui", gate, async (_req, res) => {
+  app.get("/ui", gate, async (req, res) => {
     // Express 4 does not catch a rejected async handler, so guard it here: any
     // unexpected error becomes a 500 page rather than a hung request.
     try {
-      await handleIndex(res, opts);
+      await handleIndex(req, res, opts);
     } catch (err) {
       renderUnexpected(res, err);
     }
   });
+
+  // `/playground/:server` and its two POST routes. Same gate, same process, and
+  // deliberately NOT under `/ui/:server` — that path is the per-server resource
+  // browser and its `:server` param already means "a slug with a viewer". See
+  // src/ui/playground.ts for how it authenticates without touching either gate.
+  mountPlayground(app, gate, { config: opts.config, registry: opts.registry });
 
   // The secret roster used to live here, as its own destination. It does not any
   // more — it is on `/ui`, on the entry it describes. The redirect stays because
@@ -233,6 +250,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
  * app can trust it says what this page says.
  */
 async function handleIndex(
+  req: Request,
   res: Response,
   opts: ConsoleUiOptions,
 ): Promise<void> {
@@ -246,6 +264,13 @@ async function handleIndex(
     store: opts.diagnosticStore,
   });
 
+  // The origin the request arrived on, used only when `gateway.publicUrl` is
+  // unset. `trust proxy` is on, so behind App Platform this is the public
+  // hostname rather than the container's own host:port. It is what makes the
+  // copied `?servers=` URL pasteable on a deployment that declares no publicUrl
+  // — the same fallback the landing page takes.
+  const host = req.get("host");
+
   res.type("html").send(
     renderIndex({
       config: opts.config,
@@ -253,6 +278,7 @@ async function handleIndex(
       boot,
       env: opts.env,
       signedInAs: signedInLabel(res),
+      requestOrigin: host ? `${req.protocol}://${host}` : undefined,
     }),
   );
 }
