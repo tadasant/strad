@@ -43,7 +43,7 @@ bundles:
   - name: bundle
   - name: bundle-secrets
 servers:
-  # Bare names: it was there first, so it kept them.
+  # Bare names: on the container these two share, gcs is the one that holds them.
   - slug: gcs
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -78,7 +78,8 @@ servers:
     consoleEnv:
       ARCHIVE_GCS_BUCKET: "archive-bucket"
       ARCHIVE_GCS_SERVICE_ACCOUNT_KEY_JSON: "\${ARCHIVE_KEY_JSON}"
-  # A second store, so its console keys are namespaced the way staging's are.
+  # A second store, shaped the way staging shapes one: bare under env:, which is
+  # its own container, and slug-namespaced under consoleEnv:, which is shared.
   - slug: zimmer-secrets
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle-secrets:latest
@@ -86,10 +87,17 @@ servers:
     path: /secrets
     entitlements: [admin]
     env:
+      SECRETS_PROJECT_ID: "zimmer-store"
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "\${ZIMMER_VIEWER_KEY_JSON}"
     consoleEnv:
-      ZIMMER_SECRETS_SECRETS_PROJECT_ID: "zimmer-store"
       ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${ZIMMER_ADMIN_KEY_JSON}"
+  # A builtin declares through options:, which is the third shape serverEnv reads.
+  - slug: local-store
+    kind: builtin
+    module: "./servers/echo.js"
+    entitlements: [admin]
+    options:
+      GCS_BUCKET: "builtin-bucket"
   - slug: echo
     kind: builtin
     module: "./servers/echo.js"
@@ -120,6 +128,10 @@ const BOOTSTRAP = "bootstrap-secret-xyz";
 // --- the invariant ---------------------------------------------------------
 
 describe("index detectors and the page resolver cannot disagree", () => {
+  // Holds by construction while the detector and the resolver share their
+  // predicates, and that is the property worth guarding: the case it fails on is
+  // the one where someone forks the two readings apart again. The four cases
+  // below are what pin the readings themselves.
   it("every server's detector matches the view it actually resolves to", () => {
     for (const server of CONFIG.servers) {
       const view = resolveServerView(CONFIG, server.slug, SECRETS);
@@ -157,7 +169,7 @@ describe("index detectors and the page resolver cannot disagree", () => {
     expect(view.bucket).toBe("archive-bucket");
   });
 
-  it("sees a slug-namespaced secrets store", () => {
+  it("sees a second secrets store, whose console key is slug-namespaced", () => {
     const server = CONFIG.servers.find((s) => s.slug === "zimmer-secrets");
     if (!server) throw new Error("fixture");
     expect(serverLooksSecrets(server)).toBe(true);
@@ -166,6 +178,19 @@ describe("index detectors and the page resolver cannot disagree", () => {
     const view = resolveServerView(CONFIG, server.slug, SECRETS);
     if (view.kind !== "secrets") throw new Error("unreachable");
     expect(view.projectId).toBe("zimmer-store");
+    // Through the namespaced fallback: the admin key is declared as
+    // ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON.
+    expect(view.account?.client_email).toBe("svc@demo.iam.gserviceaccount.com");
+  });
+
+  it("reads a builtin's options:, which is neither env: nor consoleEnv:", () => {
+    const server = CONFIG.servers.find((s) => s.slug === "local-store");
+    if (!server) throw new Error("fixture");
+    expect(serverLooksGcs(server)).toBe(true);
+
+    const view = resolveServerView(CONFIG, server.slug, SECRETS);
+    if (view.kind !== "gcs") throw new Error("unreachable");
+    expect(view.bucket).toBe("builtin-bucket");
   });
 
   it("claims no view for a server that declares neither", () => {
