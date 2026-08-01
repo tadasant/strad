@@ -171,6 +171,13 @@ opening any PR.
 - Telemetry never records tool arguments or results. See `src/telemetry/redact.ts`;
   `test/telemetry.redaction.test.ts` is the canary that enforces it — over spans,
   metrics AND exported log records.
+- Exception reporting (`src/telemetry/errors.ts`, `SENTRY_DSN`, off by default) is
+  the ONE channel that ships free text: strad's own crashes, message and stack. It
+  reports uncaught exceptions, unhandled rejections and boot failures, and
+  deliberately NOT the `event()` fault path — those carry upstream-authored text
+  and already export as allowlisted log records. Everything it sends is rebuilt
+  from a key allowlist and scrubbed by `scrubText()`. Widening either is a
+  decision about the same boundary; make it in `redact.ts`, deliberately.
 - Logs: the stdout STREAM is never shipped (it carries upstream text we did not
   author). strad's own events are, field by field, against the allowlist in
   `src/telemetry/events.ts` — deny by default, and `error` is on no list. Use

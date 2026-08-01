@@ -78,6 +78,7 @@ const CANDIDATES = [
   "GOOGLE_CLIENT_SECRET",
   "GRANOLA_TOKEN",
   "OTEL_EXPORTER_OTLP_HEADERS",
+  "SENTRY_DSN",
   "STRAD_INTERNAL_TOKEN",
   "STRAD_TOKENS",
 ];
@@ -104,6 +105,7 @@ describe("resolveSeedScope", () => {
       "GOOGLE_CLIENT_ID",
       "GOOGLE_CLIENT_SECRET",
       "OTEL_EXPORTER_OTLP_HEADERS",
+      "SENTRY_DSN",
       "STRAD_INTERNAL_TOKEN",
     ]);
     expect(scope.scopedBy).toBe("--only");

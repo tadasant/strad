@@ -17,6 +17,8 @@ import type { SecretProvider } from "./types.ts";
  *                            session cookie, read when the auth layer is built
  *   - `OTEL_EXPORTER_OTLP_HEADERS`  read by the OpenTelemetry SDK, from env, on
  *                            the SDK's own terms
+ *   - `SENTRY_DSN`          the GlitchTip ingest credential, read once when the
+ *                            exception reporter starts (telemetry/errors.ts)
  *
  * Hydrating these from the provider is what lets the deploy renderer stop baking
  * them, which is what leaves the app spec holding one credential for the gateway
@@ -80,6 +82,7 @@ export const CORE_BOOT_ENV_KEYS = [
   "GOOGLE_CLIENT_SECRET",
   "CONSOLE_SESSION_SECRET",
   "OTEL_EXPORTER_OTLP_HEADERS",
+  "SENTRY_DSN",
 ] as const;
 
 /**

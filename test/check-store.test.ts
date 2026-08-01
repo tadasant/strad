@@ -88,6 +88,7 @@ const SEEDED = [
   ["GOOGLE_CLIENT_SECRET", "leak-canary-google-9f2a"],
   ["CONSOLE_SESSION_SECRET", "leak-canary-session-9f2a"],
   ["OTEL_EXPORTER_OTLP_HEADERS", "leak-canary-otel-9f2a"],
+  ["SENTRY_DSN", "leak-canary-sentry-9f2a"],
   ["SHOP_PASSWORD", "leak-canary-shop-9f2a"],
 ] as const;
 
@@ -317,13 +318,13 @@ describe("scripts/check-store.ts", () => {
       `::error file=`, // annotated for GitHub, on the config file
     );
     expect(result.stderr).toContain(`GOOGLE_CLIENT_ID is not in ${NAMESPACE}`);
-    expect(result.stdout).toContain("8 of 9 expected name(s) present");
+    expect(result.stdout).toContain("9 of 10 expected name(s) present");
   });
 
   it("reports the same names without failing, in report mode", async () => {
     const result = await check(["--mode", "report"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("8 of 9 expected name(s) present");
+    expect(result.stdout).toContain("9 of 10 expected name(s) present");
     expect(result.stdout).toContain("GOOGLE_CLIENT_ID");
     expect(result.stdout).toContain("reported, not failed");
     // Reported, not annotated red: a partially-seeded namespace mid-migration is
@@ -346,7 +347,7 @@ describe("scripts/check-store.ts", () => {
     const result = await check(["--resolve", "--mode", "report"]);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain(
-      "8 of 8 present name(s) resolved to a value",
+      "9 of 9 present name(s) resolved to a value",
     );
   });
 
@@ -409,7 +410,7 @@ describe("scripts/check-store.ts", () => {
       "report",
     ]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("0 of 9 expected name(s) present");
+    expect(result.stdout).toContain("0 of 10 expected name(s) present");
     expect(result.stdout).toContain("/strad/nowhere/");
   });
 

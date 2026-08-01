@@ -211,6 +211,13 @@ Tool arguments and results never become span or metric attributes.
 `src/telemetry/redact.ts` is the boundary and `test/telemetry.redaction.test.ts` is
 the canary that enforces it.
 
+Crashes are the one thing that path cannot see: an uncaught exception goes through
+no `event()` call, and stdout is never shipped. `SENTRY_DSN` turns on exception
+reporting into a GlitchTip instance over the Sentry protocol — also **off by
+default**, down to not importing the SDK — with every credential the process holds
+struck out of the report first. See
+[docs/operate/telemetry](https://strad.tadasant.com/operate/telemetry/).
+
 ## Docs
 
 The documentation site lives in [`docs/`](./docs) (Astro Starlight). It is the

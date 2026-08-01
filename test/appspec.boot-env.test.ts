@@ -290,6 +290,27 @@ describe("bootEnvGaps — the rendered-spec check", () => {
     expect(gaps.some((g) => g.includes('"bundle-echo"'))).toBe(false);
   });
 
+  it("is the STORE CREDENTIAL that exempts a component, not any scoped secret", () => {
+    // The check asks "can this component fetch the value for itself", and the
+    // answer is "does it hold the resolver key". `SENTRY_DSN` is scoped to the
+    // strad image by the same mechanism (STRAD_IMAGE_ONLY_SECRET_KEYS) and says
+    // nothing whatever about reaching the store — a component holding one and
+    // not the other still has a gap, and a predicate that asked "does it hold
+    // ANY image-only key" would wave it through.
+    const spec = render({ env: STORE_ENV });
+    const bundle = spec.services.find((s) => s.name === "bundle")!;
+    bundle.envs.push({
+      key: "SENTRY_DSN",
+      value: "https://k@glitchtip.invalid/1",
+      scope: "RUN_TIME",
+      type: "SECRET",
+    });
+
+    const gaps = bootEnvGaps(spec, held);
+    expect(gaps.join("\n")).toContain("OTEL_EXPORTER_OTLP_HEADERS");
+    expect(gaps.every((g) => g.includes('component "bundle"'))).toBe(true);
+  });
+
   it("says nothing about a key the deployment never configured", () => {
     // A gateway with no OTLP ingestor is not a broken gateway.
     const gaps = bootEnvGaps(render({ env: STORE_ENV }), [

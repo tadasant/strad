@@ -207,6 +207,12 @@ if (storeBacked) {
 // is baked from the store further down (`bootSecrets`).
 if (!storeBacked) {
   secret("OTEL_EXPORTER_OTLP_HEADERS"); // e.g. "Authorization=Bearer <token>"
+  // The GlitchTip DSN, on the same terms: seeded as `strad-<env>-SENTRY_DSN`,
+  // optional everywhere, and a SECRET because it is a write credential for the
+  // ingestor. Unlike the OTLP header it does NOT reach a supplementary image —
+  // it is in STRAD_IMAGE_ONLY_SECRET_KEYS, because only strad's own process
+  // reports exceptions. Absent, the exception reporter never starts.
+  secret("SENTRY_DSN"); // e.g. "https://<key>@glitchtip.example.com/1"
 }
 
 // The endpoint and the sampler knobs are NOT secrets — a collector URL is not a

@@ -124,6 +124,194 @@ export function resultShape(result: unknown): {
   };
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Free text, and the one channel that carries it
+ *
+ * Everything above answers the same way: do not emit the text, emit its shape.
+ * That works because a span attribute is a field we CHOSE to write, and there is
+ * always a count or a closed-set word that says as much.
+ *
+ * A crash report is the one place where it does not work. The whole content of
+ * "strad died of an uncaught TypeError" is the message and the stack, and a
+ * report stripped of both says only "something happened", which is what we
+ * already have. So the exception reporter (see `errors.ts`) is the single
+ * channel in strad that ships text it did not fully author, and this is the
+ * filter that stands in front of it.
+ *
+ * The filter is narrow on purpose, and it is NOT a substitute for the boundary
+ * above it:
+ *
+ *   - Only strad's OWN uncaught exceptions and unhandled rejections go through
+ *     it. An upstream MCP server's error message never does — those are caught,
+ *     classified by `errorKind()` and never reported (see `errors.ts` for why
+ *     the `event()` fault path deliberately does not capture).
+ *   - It scrubs by VALUE, not by hope: every credential-shaped env var this
+ *     process holds is looked up and struck out of the text, including the
+ *     string leaves of a JSON one like `STRAD_TOKENS`. A stack that echoes a
+ *     token strad is actually holding cannot carry it out.
+ *   - It scrubs by SHAPE as a second pass: PEM blocks, JWTs, `Bearer` lines,
+ *     URL userinfo, and `secret-ish-key = value` pairs, for the credentials this
+ *     process does not hold in its own environment (an upstream's, a caller's).
+ *   - It truncates. A message long enough to be a payload is a payload.
+ *
+ * Over-redaction is the intended failure direction. A crash report that says
+ * `[redacted]` where a filename should be is a mild annoyance; one that says
+ * `Bearer eyJ…` is an incident.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** What `scrubText` writes in place of anything it strikes out. */
+export const REDACTED = "[redacted]";
+
+/**
+ * Longer than any legitimate error message, short enough that a payload cannot
+ * hide in one. Sentry truncates to `maxValueLength` (250) on its own; this
+ * bounds what we hand it in the first place, including stack frames.
+ */
+const MAX_TEXT = 2048;
+
+/**
+ * An env var whose VALUE is treated as a credential.
+ *
+ * Matched on the NAME, deny-by-default in the direction that matters: a name
+ * this misses costs us a scrub we would have liked, a name it catches
+ * needlessly costs us a `[redacted]` in a crash report. `DSN` is here because
+ * the reporter's own DSN is a write credential for the ingestor, and an error
+ * thrown while talking to it would otherwise quote it back.
+ */
+const CREDENTIAL_ENV_NAME =
+  /(TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|APIKEY|API_KEY|_KEY|KEY_JSON|PRIVATE|AUTH|DSN|HEADERS|COOKIE|SESSION|SIGNATURE|WEBHOOK)/i;
+
+/**
+ * Short enough to be a flag, a port or a boolean rather than a credential.
+ * Striking out every occurrence of `true` would redact the English language.
+ */
+const MIN_SECRET_LENGTH = 8;
+
+/**
+ * Every credential-shaped value this process is holding, longest first.
+ *
+ * Longest-first matters: `STRAD_TOKENS` (the whole JSON document) and the
+ * individual token inside it are both in this list, and replacing the long one
+ * first means the report says `[redacted]` once instead of once per leaf.
+ *
+ * Read fresh on each call rather than captured at boot, so a value that arrived
+ * by hydration — or by a rotation the provider picked up an hour in — is
+ * scrubbed too.
+ */
+export function credentialValues(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const values = new Set<string>();
+  for (const [name, value] of Object.entries(env)) {
+    if (!value || value.length < MIN_SECRET_LENGTH) continue;
+    if (!CREDENTIAL_ENV_NAME.test(name)) continue;
+    values.add(value);
+    // A JSON-valued credential (`STRAD_TOKENS` is an array of token records)
+    // leaks one LEAF at a time, not the whole document — so the leaves are
+    // secrets in their own right.
+    for (const leaf of jsonStringLeaves(value)) values.add(leaf);
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+/** The string leaves of a JSON document, if it is one. Bounded, never throws. */
+function jsonStringLeaves(raw: string): string[] {
+  if (!/^\s*[[{]/.test(raw)) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const walk = (node: unknown, depth: number): void => {
+    if (out.length >= 256 || depth > 6) return;
+    if (typeof node === "string") {
+      if (node.length >= MIN_SECRET_LENGTH) out.push(node);
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item, depth + 1);
+      return;
+    }
+    if (node && typeof node === "object") {
+      for (const value of Object.values(node)) walk(value, depth + 1);
+    }
+  };
+  walk(parsed, 0);
+  return out;
+}
+
+/**
+ * Credential SHAPES, for the secrets this process does not hold itself.
+ *
+ * Each entry rewrites the value and keeps enough of the shape that a reader can
+ * still tell what kind of thing was there — "the Authorization header was
+ * present and wrong" is a different bug from "there was no Authorization
+ * header", and a blanket `[redacted]` erases the difference.
+ */
+const CREDENTIAL_SHAPES: ReadonlyArray<readonly [RegExp, string]> = [
+  // A PEM block. This is the shape a GCP service-account key takes when it ends
+  // up inside an exception, and it is the single worst thing that could ship.
+  [
+    /-----BEGIN [A-Z0-9 ]*-----[\s\S]*?-----END [A-Z0-9 ]*-----/g,
+    `${REDACTED}:pem`,
+  ],
+  // A JWT. Three base64url segments; the first is always `eyJ` ("{"...).
+  [
+    /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g,
+    `${REDACTED}:jwt`,
+  ],
+  // `Authorization: Bearer <token>`, and the Basic/Token spellings of it.
+  [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{6,}/gi, `$1 ${REDACTED}`],
+  // Userinfo in a URL: `https://user:password@host/…`.
+  [/\/\/[^/\s:@]+:[^/\s@]+@/g, `//${REDACTED}@`],
+  // `token=…`, `"api_key": "…"`, `password = …` — a credential-shaped KEY, in
+  // a query string, a JSON fragment or a config echo, with its value. The
+  // lookahead leaves an `Authorization: Bearer …` to the rule above, which has
+  // already redacted it and keeps the scheme word; without it this would eat
+  // the word `Bearer` as if it were the credential.
+  [
+    /((?:api[-_]?key|access[-_]?token|auth(?:orization)?|credential|passwd|password|private[-_]?key|refresh[-_]?token|secret|session|signature|token)["']?\s*[=:]\s*["']?)(?!(?:Bearer|Basic|Token)\b)[^\s,;&"'`)\]}]{4,}/gi,
+    `$1${REDACTED}`,
+  ],
+];
+
+/**
+ * Strike every credential out of a piece of free text, then bound its length.
+ *
+ * `secrets` is the exact-value list from `credentialValues()`. It runs FIRST:
+ * a value we know is a secret is struck out whatever it looks like, and only
+ * then do the shape rules run over what is left.
+ *
+ * Never throws — this runs inside a crash reporter, and a reporter that throws
+ * while reporting a crash is how a crash becomes a silence.
+ */
+export function scrubText(
+  text: string,
+  secrets: readonly string[] = [],
+): string {
+  // Truncate FIRST. Two of the shape rules scan to end-of-string for every
+  // unmatched prefix (`-----BEGIN `, `//`), so running them over a multi-megabyte
+  // message — an upstream's HTML body wrapped in an Error, a payload dumped into
+  // one — is quadratic work on the one path that must not stall: the crash path.
+  const truncated = text.length > MAX_TEXT;
+  let out = truncated ? text.slice(0, MAX_TEXT) : text;
+  try {
+    for (const secret of secrets) {
+      if (secret.length < MIN_SECRET_LENGTH) continue;
+      out = out.split(secret).join(REDACTED);
+    }
+    for (const [pattern, replacement] of CREDENTIAL_SHAPES) {
+      out = out.replace(pattern, replacement);
+    }
+  } catch {
+    // Whatever went wrong in there, the text loses rather than the report.
+    return REDACTED;
+  }
+  return truncated ? `${out}…[truncated]` : out;
+}
+
 /**
  * Serialized size in bytes, without retaining the serialization.
  *

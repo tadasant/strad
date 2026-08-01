@@ -224,6 +224,12 @@ const TELEMETRY_ENV_KEYS = new Set([
  */
 const STRAD_IMAGE_ONLY_SECRET_KEYS = new Set([
   "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON",
+  // The GlitchTip DSN. Only strad's own process reports exceptions (see
+  // src/telemetry/errors.ts); a supplementary image runs someone else's code
+  // and has nothing to do with it. A DSN is a write credential for the
+  // ingestor, and broadcasting one to every third-party container would hand
+  // each of them the ability to write into strad's issue tracker.
+  "SENTRY_DSN",
 ]);
 
 /**
@@ -302,10 +308,12 @@ export function bootEnvGaps(spec: AppSpec, held: readonly string[]): string[] {
   const problems: string[] = [];
   for (const service of spec.services) {
     const keys = new Set(service.envs.map((e) => e.key));
-    // Holding the store credential IS the ability to hydrate: that key reaches
-    // the strad image and stops there (STRAD_IMAGE_ONLY_SECRET_KEYS), and the
-    // strad image is what runs hydrateBootEnv.
-    if ([...keys].some((k) => STRAD_IMAGE_ONLY_SECRET_KEYS.has(k))) continue;
+    // Holding the STORE CREDENTIAL is the ability to hydrate: it reaches the
+    // strad image and stops there, and the strad image is what runs
+    // hydrateBootEnv. Named explicitly rather than asking whether the component
+    // holds ANY image-only key — that set has other members now (the GlitchTip
+    // DSN), and none of them says anything about reaching the store.
+    if (keys.has("STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON")) continue;
     for (const key of wanted) {
       if (keys.has(key)) continue;
       problems.push(

@@ -694,6 +694,26 @@ The alternative was the status quo, which cost a week of a production `secrets`
 slug serving nothing while writing `mcp.list_tools_failed` on every request. See
 [Telemetry](/operate/telemetry/#logs--strads-own-events-and-only-those).
 
+### 39. A crash report carries free text, and the filter in front of it is heuristic
+
+`SENTRY_DSN` turns on exception reporting into GlitchTip. It is the one channel
+in strad that ships text strad did not fully author — an exception message and a
+stack trace. Everything else ships shape and closed-set words.
+
+The filter has two halves. The first is exact: every credential-shaped env var the
+process holds, and the string leaves of a JSON one like `STRAD_TOKENS`, is struck
+out **by value**. The second is **by shape** — PEM blocks, JWTs, `Bearer` lines,
+URL userinfo, `secret-ish-key = value` pairs — and a shape rule only catches
+shapes somebody thought of. A credential strad does not hold itself, in a form
+none of those rules match, could reach the ingestor inside a message.
+
+What bounds it: the event is rebuilt from a key allowlist, so `request`, `user`,
+`extra`, `breadcrumbs`, stack-frame local variables and source context never
+travel; and the reporter never captures the `event()` fault path, which is where
+upstream-authored text actually lives. Unset `SENTRY_DSN` — the default — and none
+of this runs. See
+[Telemetry](/operate/telemetry/#exception-reporting--glitchtip-over-the-sentry-protocol).
+
 ## Supply chain and build
 
 ### 10 & 15. The `shared/` trees are vendored, not depended on
