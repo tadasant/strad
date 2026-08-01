@@ -1,5 +1,6 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
-import { esc, layout, serverLooksGcs } from "./render.ts";
+import { esc, layout } from "./render.ts";
+import { serverLooksGcs } from "./resolve.ts";
 
 /**
  * The front door: `/`.

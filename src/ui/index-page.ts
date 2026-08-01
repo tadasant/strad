@@ -1,5 +1,6 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
-import { esc, layout, serverLooksGcs, serverLooksSecrets } from "./render.ts";
+import { esc, layout } from "./render.ts";
+import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
 import {
   fixTargets,
   isActionable,
