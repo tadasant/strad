@@ -66,8 +66,9 @@ import {
  *     defaults would attach request data (headers, cookies, query strings),
  *     console output as breadcrumbs (which is every upstream error message strad
  *     logs) and source-context lines. Every one of those is a channel for
- *     something we did not author. The only integrations installed are the two
- *     process handlers and `dedupe`.
+ *     something we did not author. The only integrations installed are the
+ *     uncaught-exception handler and `dedupe`; the rejection handler is strad's
+ *     own, for the reason given at its call site.
  *   - `beforeSend` rebuilds the event from a key ALLOWLIST — the same discipline
  *     as `events.ts` — and runs `scrubText()` over every string that survives.
  *     A field a future SDK version adds is dropped rather than shipped, because
@@ -89,15 +90,14 @@ const DSN_ENV = "SENTRY_DSN";
 export interface ErrorReporterHandle {
   readonly enabled: boolean;
   /**
-   * Report a fatal that is about to end the process by a route the handlers
-   * cannot see, and flush before it does.
+   * Report a fatal that is about to end the process, and flush before it does.
    *
-   * There is exactly one: a boot that throws. `main().catch()` prints it and
-   * calls `process.exit(1)` — it never becomes an `uncaughtException`, so the
-   * integration never fires. That path is also the likeliest crash strad has (a
-   * malformed config, an unreachable bundle, a store that will not answer), and
-   * leaving it out would mean the reporter covered every failure except the
-   * common one.
+   * Two callers, both of them faults the SDK's own integrations do not cover:
+   * a boot that throws (`main().catch()` prints it and calls `process.exit(1)`,
+   * so it never becomes an `uncaughtException`), and strad's own
+   * `unhandledRejection` handler. The first is the likeliest crash strad has —
+   * a malformed config, an unreachable bundle, a store that will not answer —
+   * and leaving it out would mean covering every failure except the common one.
    */
   captureFatal(err: unknown, phase: string): Promise<void>;
   /** Flush pending events, bounded. Safe to call when disabled. */
@@ -157,14 +157,23 @@ export async function startErrorReporter(
         env,
         identity,
         integrations: [
-          // The two handlers this exists for. `mode: "strict"` on rejections
-          // preserves Node's own behaviour — report, print, exit non-zero.
-          // The SDK's default ("warn") would install a handler that SWALLOWS
-          // the rejection, turning a crash into a warning: a behaviour change
-          // smuggled in by a telemetry feature, which is not a trade this
-          // change is allowed to make.
-          Sentry.onUncaughtExceptionIntegration(),
-          Sentry.onUnhandledRejectionIntegration({ mode: "strict" }),
+          // `exitEvenIfOtherHandlersAreRegistered` is NOT the SDK default, and
+          // the default is a trap: merely registering this listener suppresses
+          // Node's own print-and-exit, but the SDK then declines to exit if any
+          // OTHER `uncaughtException` listener exists. One dependency adding one
+          // handler would turn a crash into a process that reports, does not
+          // print, and keeps running in an undefined state. Telemetry does not
+          // get to change what a crash does.
+          Sentry.onUncaughtExceptionIntegration({
+            exitEvenIfOtherHandlersAreRegistered: true,
+          }),
+          // NO `onUnhandledRejectionIntegration`. Its ignore list is
+          // unconditional — `[...DEFAULT_IGNORES, ...options.ignore]`, and
+          // `AbortError` is on it — so an aborted `AbortSignal.timeout` (which
+          // this codebase uses on every store read) would be neither reported
+          // NOR fatal, while the listener's mere presence disabled Node's own
+          // crash. strad registers its own handler below instead.
+          //
           // One report per distinct fault. A restart loop otherwise reports the
           // same stack until the quota says stop.
           Sentry.dedupeIntegration(),
@@ -173,6 +182,11 @@ export async function startErrorReporter(
       }),
     );
 
+    // stdout, not `event()`, and that is not an oversight: this runs before
+    // `startTelemetry`, so the log exporter does not exist yet and an `event()`
+    // would reach the same stream by a longer route. The fact it carries —
+    // "reporting is on, pointed there" — is a boot-time fact for whoever is
+    // reading the container console, and the reports themselves are the signal.
     log({
       evt: "errors.started",
       service: name,
@@ -184,7 +198,7 @@ export async function startErrorReporter(
       ingest: dsnHost(dsn),
     });
 
-    return {
+    const handle: ErrorReporterHandle = {
       enabled: true,
       async captureFatal(err: unknown, phase: string) {
         try {
@@ -210,6 +224,24 @@ export async function startErrorReporter(
         await Sentry.close(2000).catch(() => false);
       },
     };
+
+    // strad's own unhandled-rejection handler, in place of the SDK's.
+    //
+    // It reproduces exactly what Node does with no listener registered — print
+    // the reason, exit non-zero — and reports on the way out. Node's default is
+    // only "default" while nobody is listening, and the SDK's version of this
+    // listener declines to act on two error NAMES it hardcodes, one of which
+    // (`AbortError`) is the shape every timed-out store read in this repo takes.
+    // A rejection that is silently neither reported nor fatal is the worst of
+    // the three outcomes.
+    process.on("unhandledRejection", (reason: unknown) => {
+      console.error(reason);
+      void handle
+        .captureFatal(reason, "unhandled_rejection")
+        .finally(() => process.exit(1));
+    });
+
+    return handle;
   } catch (err) {
     log({
       evt: "errors.start_failed",
@@ -270,6 +302,12 @@ export function errorReporterOptions(args: {
     beforeSendTransaction: () => null,
     // Leave the global OTel provider to src/telemetry/index.ts.
     skipOpenTelemetrySetup: true,
+    // `Sentry.init` otherwise registers an `import-in-the-middle` ESM loader
+    // hook, which exists to let OTel instrumentation patch ESM modules. There is
+    // no instrumentation here to patch anything, so the hook buys nothing — and
+    // strad runs native type-stripping on Node 22, where a global module-loading
+    // hook is the last place anyone wants a surprise.
+    registerEsmLoaderHooks: false,
 
     ...(args.transport ? { transport: args.transport } : {}),
   };
@@ -307,11 +345,16 @@ const EVENT_KEYS = [
 ] as const;
 
 /**
- * Contexts that may travel. `runtime` and `os` are the process's own facts and
- * are exactly what you want when reading a crash; `trace` is two ids; `app` is
- * start time and version.
+ * Contexts that may travel.
+ *
+ * Two, because two is all that exists here: `runtime` (node and its version,
+ * set by the client itself) and `trace` (two ids). `os` and `app` come from
+ * `nodeContextIntegration`, which is a DEFAULT integration and therefore not
+ * installed — allowlisting them would be allowlisting nothing. Their string
+ * leaves are scrubbed like every other string that survives, because
+ * `contexts.trace` is typed as arbitrary attributes.
  */
-const CONTEXT_KEYS = new Set(["trace", "runtime", "os", "app"]);
+const CONTEXT_KEYS = new Set(["trace", "runtime"]);
 
 /**
  * Stack-frame keys that may travel.
@@ -351,12 +394,22 @@ export function redactErrorEvent(
       if (source[key] !== undefined) out[key] = source[key];
     }
 
-    if (typeof out.message === "string") {
-      out.message = scrubText(out.message, secrets);
+    // A string in every SDK version this pins, and dropped rather than trusted
+    // if that ever stops being true — an unscrubbed shape is the one thing this
+    // function must not pass through.
+    if (out.message !== undefined) {
+      out.message =
+        typeof out.message === "string"
+          ? scrubText(out.message, secrets)
+          : undefined;
+      if (out.message === undefined) delete out.message;
     }
     if (out.contexts) {
-      out.contexts = pick(out.contexts as Record<string, unknown>, (key) =>
-        CONTEXT_KEYS.has(key),
+      out.contexts = scrubStrings(
+        pick(out.contexts as Record<string, unknown>, (key) =>
+          CONTEXT_KEYS.has(key),
+        ),
+        secrets,
       );
     }
     if (out.tags) {
@@ -404,7 +457,19 @@ function redactException(
             ? scrubText(value.value, secrets)
             : value.value,
       };
-      if (value.mechanism) out.mechanism = value.mechanism;
+      // The mechanism, narrowed to the three fields that describe HOW it was
+      // caught. `mechanism.data` is a free-form bag some SDK paths fill from the
+      // error itself, and "how it was caught" needs none of it.
+      const mechanism = value.mechanism as Record<string, unknown> | undefined;
+      if (mechanism) {
+        out.mechanism = {
+          type: mechanism.type,
+          handled: mechanism.handled,
+          ...(mechanism.synthetic !== undefined
+            ? { synthetic: mechanism.synthetic }
+            : {}),
+        };
+      }
       const stacktrace = value.stacktrace as { frames?: unknown[] } | undefined;
       if (stacktrace) {
         out.stacktrace = {
@@ -441,6 +506,29 @@ function pick(
   return Object.fromEntries(
     Object.entries(source).filter(([key]) => keep(key)),
   );
+}
+
+/** Every string leaf of a small, already-allowlisted object, scrubbed. */
+function scrubStrings(
+  source: Record<string, unknown>,
+  secrets: readonly string[],
+  depth = 0,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === "string") out[key] = scrubText(value, secrets);
+    else if (value && typeof value === "object" && !Array.isArray(value)) {
+      // Bounded rather than recursive-until-it-stops: a cycle in an event is
+      // the reporter's problem to survive, not to discover.
+      out[key] =
+        depth < 3
+          ? scrubStrings(value as Record<string, unknown>, secrets, depth + 1)
+          : undefined;
+    } else if (!Array.isArray(value)) out[key] = value;
+    // An array is dropped: nothing in the allowlisted contexts has one, and a
+    // list is exactly where an unreviewed value would ride along.
+  }
+  return out;
 }
 
 /** The ingest host from a DSN, or a placeholder. Never the key it embeds. */

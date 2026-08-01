@@ -36,6 +36,15 @@ async function main(): Promise<void> {
     throw new Error("STRAD_MODE=bundle requires STRAD_BUNDLE");
   }
 
+  // Exception reporting, as early as there is anything to report WITH. A boot
+  // that throws is the likeliest crash strad has, and the two commonest shapes
+  // of it — a config that will not parse, a store that will not answer — happen
+  // in the next twenty lines. With no SENTRY_DSN in the environment this
+  // imports nothing, starts nothing and logs nothing; the deployment that has
+  // one only in the parameter store gets a second chance after hydration below.
+  const identity = { mode, component: bundleName ?? "core" };
+  errorReporter = await startErrorReporter({ env, identity });
+
   const config = await loadConfig(configPathFromEnv(env));
 
   // The runtime secret provider, built from what the config declares. With
@@ -71,20 +80,20 @@ async function main(): Promise<void> {
   // With no OTEL_EXPORTER_OTLP_ENDPOINT this starts no SDK, logs one line, and
   // returns a handle whose shutdown() is a no-op. It cannot fail the boot: every
   // error inside is caught (see src/telemetry/index.ts).
-  const identity = {
-    mode,
-    component: bundleName ?? "core",
-    environment: config.gateway.env,
-  };
+  const telemetryIdentity = { ...identity, environment: config.gateway.env };
 
-  // Exception reporting, before everything that can throw. With no SENTRY_DSN
-  // this imports nothing, starts nothing and logs nothing — see
-  // telemetry/errors.ts. It goes after hydration for the same reason telemetry
-  // does: a store-backed deployment keeps the DSN in the parameter store, and
-  // hydration is what puts it in the environment.
-  errorReporter = await startErrorReporter({ env, identity });
+  // The second chance for the exception reporter. A store-backed deployment
+  // keeps the DSN in the parameter store, and hydration is what puts it in the
+  // environment — so the early start above found nothing and this one finds it.
+  // A reporter already running is left alone rather than re-initialised.
+  if (!errorReporter.enabled) {
+    errorReporter = await startErrorReporter({
+      env,
+      identity: telemetryIdentity,
+    });
+  }
 
-  const telemetry = startTelemetry({ env, identity });
+  const telemetry = startTelemetry({ env, identity: telemetryIdentity });
 
   // Reported AFTER telemetry starts, not at the moment it happened. Hydration
   // has to run first — it is what SUPPLIES the OTLP headers — so an event
@@ -233,11 +242,17 @@ main().catch((err: unknown) => {
   // is a property of the SDK and the exit code is a property strad owns. A
   // crash-looping container that sits there not exiting is a worse outage than
   // the crash.
+  // Set first, so that every path out of here — the explicit exit, or an event
+  // loop that simply drains — is a FAILED boot as far as the platform is
+  // concerned. That is what makes the watchdog below safe to unref.
+  process.exitCode = 1;
   const exit = () => process.exit(1);
-  const reported = errorReporter?.captureFatal(err, "boot");
-  if (!reported) exit();
+  // No reporter, or one that is off: exit exactly as before, in this tick. The
+  // unconfigured path does not get a deferred exit or a stray timer.
+  if (!errorReporter?.enabled) exit();
   else {
-    setTimeout(exit, 3000);
-    void reported.finally(exit);
+    const watchdog = setTimeout(exit, 3000);
+    watchdog.unref();
+    void errorReporter.captureFatal(err, "boot").finally(exit);
   }
 });

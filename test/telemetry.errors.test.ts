@@ -205,9 +205,39 @@ describe("with a DSN: a real exception, really captured", () => {
   it("installs the uncaught-exception and unhandled-rejection handlers", async () => {
     process.removeAllListeners("uncaughtException");
     process.removeAllListeners("unhandledRejection");
-    await startRecording({ SENTRY_DSN: DSN });
+    const recorded = await startRecording({ SENTRY_DSN: DSN });
     expect(process.listenerCount("uncaughtException")).toBe(1);
+    // strad's own, not the SDK's — see below.
     expect(process.listenerCount("unhandledRejection")).toBe(1);
+
+    Sentry.captureException(new Error("x"));
+    await Sentry.flush(2000);
+    const integrations = recorded.events[0]?.sdk?.integrations ?? [];
+    expect(integrations).toContain("OnUncaughtException");
+    // The SDK's rejection integration is deliberately absent: its ignore list
+    // is unconditional and includes `AbortError`, which is the shape every
+    // timed-out store read in this repo takes. strad registers its own.
+    expect(integrations).not.toContain("OnUnhandledRejection");
+  });
+
+  it("reports an AbortError, which the SDK's own rejection handler ignores", async () => {
+    // `AbortSignal.timeout` rejects with this name, and this repo uses it on
+    // every store read. Under the SDK's handler such a rejection would be
+    // neither reported nor fatal — while Node's own crash stayed suppressed.
+    const recorded = await startRecording({ SENTRY_DSN: DSN });
+    const handle = await startErrorReporter({
+      env: { SENTRY_DSN: DSN },
+      log: () => {},
+      transport: recordingTransport(recorded),
+    });
+
+    const aborted = new Error("The operation was aborted");
+    aborted.name = "AbortError";
+    await handle.captureFatal(aborted, "unhandled_rejection");
+
+    const event = recorded.events.at(-1);
+    expect(event?.level).toBe("fatal");
+    expect(event?.tags).toMatchObject({ "strad.phase": "unhandled_rejection" });
   });
 
   it("reports a boot failure, which exits by a path no handler sees", async () => {
@@ -390,6 +420,68 @@ describe("redaction: the main way this change could do harm", () => {
     expect(serialized).toContain("callTool");
   });
 
+  it("keeps how an exception was caught, and drops the bag hanging off it", () => {
+    // `mechanism.data` is free-form and some SDK paths fill it from the error
+    // itself. "How it was caught" is type + handled, and needs none of it.
+    const event = {
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value: "boom",
+            mechanism: {
+              type: "auto.node.onuncaughtexception",
+              handled: false,
+              data: { message: "Bearer leaked-value-here", name: "Error" },
+            },
+          },
+        ],
+      },
+    } as unknown as ErrorEvent;
+
+    const out = redactErrorEvent(event, []);
+    expect(out?.exception?.values?.[0]?.mechanism).toEqual({
+      type: "auto.node.onuncaughtexception",
+      handled: false,
+    });
+    expect(JSON.stringify(out)).not.toContain("leaked-value-here");
+  });
+
+  it("scrubs the contexts it keeps, and drops the ones it does not", () => {
+    const event = {
+      contexts: {
+        runtime: { name: "node", version: "v22.0.0" },
+        trace: {
+          trace_id: "abc",
+          data: { "http.url": "https://u:hunter2-password@upstream/x" },
+        },
+        response: { headers: { "set-cookie": "session=leaked-value-here" } },
+      },
+    } as unknown as ErrorEvent;
+
+    const out = redactErrorEvent(event, []);
+    const serialized = JSON.stringify(out);
+    expect(out?.contexts).toHaveProperty("runtime");
+    expect(out?.contexts).not.toHaveProperty("response");
+    expect(serialized).not.toContain("leaked-value-here");
+    expect(serialized).not.toContain("hunter2-password");
+    expect(serialized).toContain("v22.0.0");
+  });
+
+  it("drops a message that is not a string rather than passing it through", () => {
+    // `Event.message` is typed as a string in the pinned SDK. If that ever
+    // stops being true, an unscrubbed shape must not ride out on the assumption.
+    const event = {
+      message: { message: "Bearer leaked-value-here", params: ["nope"] },
+      environment: "prod",
+    } as unknown as ErrorEvent;
+
+    const out = redactErrorEvent(event, []);
+    expect(out).not.toHaveProperty("message");
+    expect(JSON.stringify(out)).not.toContain("leaked-value-here");
+    expect(out?.environment).toBe("prod");
+  });
+
   it("drops the event entirely rather than shipping one it cannot rebuild", () => {
     const hostile = {
       get exception(): unknown {
@@ -459,6 +551,17 @@ describe("scrubText / credentialValues", () => {
   it("truncates a message long enough to be a payload", () => {
     const out = scrubText("x".repeat(10_000));
     expect(out.length).toBeLessThan(2200);
+    expect(out.endsWith("…[truncated]")).toBe(true);
+  });
+
+  it("truncates BEFORE the shape rules run, so a huge message cannot stall", () => {
+    // Two shape rules scan to end-of-string for every unmatched prefix. Running
+    // them over a multi-megabyte message is quadratic work on the crash path.
+    const hostile = `${"-----BEGIN ".repeat(200_000)}//a:${"b".repeat(200_000)}`;
+    const started = process.hrtime.bigint();
+    const out = scrubText(hostile);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsedMs).toBeLessThan(250);
     expect(out.endsWith("…[truncated]")).toBe(true);
   });
 

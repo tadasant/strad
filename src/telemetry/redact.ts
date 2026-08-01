@@ -179,7 +179,7 @@ const MAX_TEXT = 2048;
  * thrown while talking to it would otherwise quote it back.
  */
 const CREDENTIAL_ENV_NAME =
-  /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|API_KEY|_KEY|KEY_JSON|PRIVATE|DSN|HEADERS|COOKIE|SESSION|SIGNATURE)/i;
+  /(TOKEN|SECRET|PASSWORD|PASSWD|PASS|CREDENTIAL|APIKEY|API_KEY|_KEY|KEY_JSON|PRIVATE|AUTH|DSN|HEADERS|COOKIE|SESSION|SIGNATURE|WEBHOOK)/i;
 
 /**
  * Short enough to be a flag, a port or a boolean rather than a credential.
@@ -291,7 +291,12 @@ export function scrubText(
   text: string,
   secrets: readonly string[] = [],
 ): string {
-  let out = text;
+  // Truncate FIRST. Two of the shape rules scan to end-of-string for every
+  // unmatched prefix (`-----BEGIN `, `//`), so running them over a multi-megabyte
+  // message — an upstream's HTML body wrapped in an Error, a payload dumped into
+  // one — is quadratic work on the one path that must not stall: the crash path.
+  const truncated = text.length > MAX_TEXT;
+  let out = truncated ? text.slice(0, MAX_TEXT) : text;
   try {
     for (const secret of secrets) {
       if (secret.length < MIN_SECRET_LENGTH) continue;
@@ -301,11 +306,10 @@ export function scrubText(
       out = out.replace(pattern, replacement);
     }
   } catch {
-    // A pathological input (a string long enough to blow a regex engine's
-    // stack) loses its text rather than its report.
+    // Whatever went wrong in there, the text loses rather than the report.
     return REDACTED;
   }
-  return out.length > MAX_TEXT ? `${out.slice(0, MAX_TEXT)}…[truncated]` : out;
+  return truncated ? `${out}…[truncated]` : out;
 }
 
 /**

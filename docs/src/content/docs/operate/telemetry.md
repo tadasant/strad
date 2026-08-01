@@ -343,16 +343,38 @@ Unlike `OTEL_EXPORTER_OTLP_HEADERS`, it does **not** reach a supplementary image
 Only strad's own process reports exceptions; a third-party container runs code
 strad did not write, and a DSN is a write credential for the issue tracker.
 
+:::caution[On a store-backed deployment this is core-only]
+`SENTRY_DSN` is a name the **core** hydrates. It is deliberately not one of the
+two a bundle hydrates, because that same list is what gets **baked** onto a
+third-party supplementary image — adding it there would hand a DSN to every
+container strad does not run. So under `gcp-parameter-store` a strad-image bundle
+starts no reporter; under the `env` provider it gets the DSN as a broadcast
+SECRET and does. Core is the process that answers `/mcp`, and it reports either
+way.
+:::
+
 ### What it reports
 
 Uncaught exceptions, unhandled rejections, and boot failures — the last
 explicitly, because `main().catch()` exits by a path no process handler ever
-sees, and a boot that throws is the likeliest crash strad has.
+sees, and a boot that throws is the likeliest crash strad has. The reporter
+therefore starts **before** the config is loaded, so a config that will not parse
+is reported too; a deployment whose DSN is in the parameter store gets a second
+start after hydration.
 
-An unhandled rejection still **kills the process** (`mode: "strict"`), which is
-Node's own behaviour: report, print, exit non-zero. The SDK's default would
-install a handler that swallows it, and a telemetry feature does not get to
-change what a crash does.
+**A crash still behaves like a crash.** Both handlers preserve what Node does
+with no listener registered: print, then exit non-zero. That takes two
+deliberate departures from the SDK's defaults, because the mere presence of a
+listener disables Node's own behaviour:
+
+- The uncaught-exception integration runs with
+  `exitEvenIfOtherHandlersAreRegistered: true`. Its default is to decline to
+  exit if any _other_ `uncaughtException` listener exists — so one dependency
+  adding one handler would leave a reported, unprinted, still-running process.
+- strad registers its **own** `unhandledRejection` handler and does not install
+  the SDK's. That integration's ignore list is unconditional and includes
+  `AbortError` — the shape every timed-out store read in this codebase takes — so
+  such a rejection would have been neither reported nor fatal.
 
 Each event carries the identity OTLP already stamps — `environment` is
 `deployment.environment` (`prod`, `staging`, `dev`), `release` is
