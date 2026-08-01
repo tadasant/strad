@@ -149,7 +149,10 @@ export function mountPlayground(
             signedInAs,
             heading: decision.heading,
             sub: decision.detail,
-            tone: decision.status === 404 ? "warn" : "warn",
+            // Every refusal here is a scoping fact — a slug that names nothing,
+            // one this identity is not granted, one that is switched off. None
+            // of them is a fault, so none of them gets the error tone.
+            tone: "warn",
             breadcrumbToIndex: true,
           }),
         );
@@ -313,6 +316,10 @@ async function withSession(
     config: opts.config,
     registry: opts.registry,
     policies,
+    // Constant rather than threaded: the whole console is mounted inside
+    // `if (opts.mode === "core")` (src/http/app.ts), so a bundle has no
+    // playground to serve. A `mode` parameter here would be a knob whose only
+    // legal value is this one.
     mode: "core",
     surface: "playground",
     selected: [decision.server.slug],

@@ -604,6 +604,9 @@ component, and which admin identity each console page resolves to.
   carries two controls: a link to that server's playground, and a copy button for
   its `${publicUrl}/mcp?servers=<slug>` URL, which contains no credential. A
   disabled entry carries neither, because both lead somewhere the gateway refuses.
+  With `gateway.publicUrl` unset, that URL falls back to the origin the request
+  arrived on — the same fallback `/` takes, and the reason to set `publicUrl` on
+  any deployment where the `Host` header is not the gateway's own name.
   A Google login mints a signed 12-hour session cookie; the dev bypass's cookie is
   still the bootstrap token itself, which is a shim (see
   [Known limitations](/limitations/)).

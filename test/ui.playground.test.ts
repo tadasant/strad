@@ -44,7 +44,7 @@ auth:
   staticTokens: { enabled: true }
   consoleDevBypass: { enabled: true, roles: [admin] }
 roles:
-  admin: { servers: [echo, locked, walled] }
+  admin: { servers: [echo, locked, walled, dead] }
   other: { servers: [walled] }
 servers:
   - slug: echo
@@ -68,6 +68,12 @@ servers:
     kind: builtin
     module: "./servers/echo.js"
     enabled: false
+    entitlements: [admin]
+  # Entitled, mounted, and its upstream answers nothing: port 1 refuses every
+  # connection. The shape a dead slug makes.
+  - slug: dead
+    kind: remote-http
+    url: http://127.0.0.1:1/mcp
     entitlements: [admin]
 `);
 
@@ -332,6 +338,51 @@ describe("what the human sees is what the human may call", () => {
     const body = (await res.json()) as Payload;
     expect(body.ok).toBe(false);
     expect(body.error).toContain("capability policy");
+  });
+});
+
+describe("an upstream that cannot be listed is a failure, not an empty toolset", () => {
+  it("says so on the page's own session, rather than rendering zero tools", async () => {
+    const res = await post("/playground/dead/tools/list", {});
+    // 502: the hop failed. Nothing strad decided, so it is not a 4xx.
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as Payload;
+    expect(body.ok).toBe(false);
+    // The human gets the reason. An empty list would read as "this server has
+    // no tools", which is the exact confusion the /mcp rule exists to end.
+    expect(body.error).toBeTruthy();
+  });
+
+  it("closes the session either way — a failed listing leaks no client", async () => {
+    // Ten failures in a row. A Client or Server left open per failed request
+    // would surface here as a hang or a resource warning rather than ten
+    // prompt 502s.
+    const codes = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        post("/playground/dead/tools/list", {}).then((r) => r.status),
+      ),
+    );
+    expect(codes).toEqual(Array.from({ length: 10 }, () => 502));
+  });
+});
+
+describe("one session per request", () => {
+  it("keeps concurrent calls from reading each other's results", async () => {
+    // The session is built per request and torn down with it, so ten calls in
+    // flight at once are ten independent Client/Server pairs over one
+    // long-lived adapter. Each must get back exactly what it sent.
+    const sent = Array.from({ length: 10 }, (_, i) => `concurrent-${i}`);
+    const got = await Promise.all(
+      sent.map((text) =>
+        post("/playground/echo/tools/call", {
+          tool: "echo__echo",
+          arguments: { text },
+        })
+          .then((r) => r.json())
+          .then((b) => (b as Payload).result.content[0]!.text),
+      ),
+    );
+    expect(got).toEqual(sent);
   });
 });
 
