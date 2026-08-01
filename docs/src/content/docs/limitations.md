@@ -114,7 +114,6 @@ here. The channel that did catch it is also quieter now — a tools-only slug no
 longer reports a failed `resources/list`, because it is no longer asked — so
 `mcp.list_tools_failed` is the half of that pair still watching.
 
-
 It has also been narrower than a second, plainer failure: a slug can list its tools
 perfectly and fail every _call_. Fetch redesigned its login form to floating labels,
 the `fetchpet` mount's email selector went stale, and it spent weeks in both

@@ -1504,7 +1504,25 @@ export function createMCPServer(options: CreateMCPServerOptions) {
    * parked on the login form.
    */
   const attemptLogin = (): Promise<IFetchPetClient> => {
-    const client = createClient();
+    const remember = (error: unknown): Error => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      lastLoginError = failure;
+      return failure;
+    };
+
+    // createClient() THROWS on missing credentials rather than rejecting, and
+    // every failure has to leave through one door: remembered, reported, and
+    // retryable. A caller that fixes the environment and calls again gets a real
+    // attempt instead of a promise nobody reported.
+    let client: IFetchPetClient;
+    try {
+      client = createClient();
+    } catch (error) {
+      const failure = remember(error);
+      onLoginFailed?.(failure);
+      return Promise.reject(failure);
+    }
+
     const attempt = client
       .initialize()
       .then(() => {
@@ -1515,8 +1533,7 @@ export function createMCPServer(options: CreateMCPServerOptions) {
         return client;
       })
       .catch(async (error: unknown) => {
-        const failure = error instanceof Error ? error : new Error(String(error));
-        lastLoginError = failure;
+        const failure = remember(error);
         loginAttempt = null;
         if (activeClient === client) {
           activeClient = null;
@@ -1571,7 +1588,10 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       return await (loginAttempt ?? attemptLogin());
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error));
-      throw new Error(`Login failed: ${failure.message} (the next call retries)`);
+      // An instruction to the caller, not a promise about this process: a host
+      // that treats a failed login as fatal (the standalone image does) may be
+      // on its way down, and the retry then belongs to its replacement.
+      throw new Error(`Login failed: ${failure.message} (retry the call)`);
     }
   };
 

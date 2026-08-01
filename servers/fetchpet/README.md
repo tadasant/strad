@@ -33,6 +33,10 @@ servers/fetchpet/
   | `login.ts` + a retried login (`server.ts`)               | see below                                                                                                   |
   | `test/`                                                  | the two above, over a fake browser, with no Fetch account                                                   |
 
+- **`remote/`** is the only new logic: it swaps the upstream stdio transport for
+  an Express + `StreamableHTTPServerTransport` front door. Mirrors the upstream
+  `local/src/index.ts` step for step (and the merged `servers/good-eggs` remote).
+
 ## Login
 
 Fetch's sign-in page is a React app with floating labels: the email field is
@@ -46,14 +50,13 @@ A failed login is **retried on the next tool call**. It is not cached for the li
 of the process: the failed attempt closes its browser context, and the next caller
 starts a fresh one. Concurrent callers share one attempt. Inside the bundle, the
 host marks the mount `degraded` on a failure and clears the mark when an attempt
-succeeds.
+succeeds. The standalone container takes the other option the factory offers —
+one server per process has nothing to serve without a login, so `remote/` exits
+and lets App Platform restart it.
 
 The cost, stated: while the login is broken, a tool call pays a whole login
 attempt — up to `TIMEOUT` — before it fails, where it used to fail instantly on
 the remembered error. That is the trade for not needing a redeploy to recover.
-- **`remote/`** is the only new logic: it swaps the upstream stdio transport for
-  an Express + `StreamableHTTPServerTransport` front door. Mirrors the upstream
-  `local/src/index.ts` step for step (and the merged `servers/good-eggs` remote).
 
 ## Browser lifecycle (proven on App Platform gVisor)
 

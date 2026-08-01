@@ -1467,7 +1467,6 @@ there was no failure, but it does mean the event pair that paged is no longer
 watching those slugs. `mcp.list_tools_failed` still fires for a genuinely failing
 listing, which is the half that matters.
 
-
 **It happened a second way, and the same probe missed that too.** A `tools/list`
 can be perfect and every `tools/call` can fail: fetchpet's login selector went
 stale when Fetch redesigned its form, and the mount spent weeks in both staging

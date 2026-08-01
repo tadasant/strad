@@ -350,7 +350,7 @@ test('a boot-time login failure is retried on the next tool call', async () => {
     const failed = await getClaims(server);
     assert.equal(failed.isError, true);
     assert.match(failed.content[0].text, /Login failed/);
-    assert.match(failed.content[0].text, /the next call retries/);
+    assert.match(failed.content[0].text, /retry the call/);
     assert.equal(failures.length, 1);
     // The half-initialized client is not left holding a context on the login page.
     assert.equal(browser.contextsClosed, 1);
@@ -363,6 +363,34 @@ test('a boot-time login failure is retried on the next tool call', async () => {
     assert.equal(recoveries.length, 1, 'the host is told the mount is no longer degraded');
     assert.equal(browser.contextsOpened, 2, 'the retry logged in on a FRESH context');
   } finally {
+    await created.cleanup();
+    setSharedBrowserProvider(null);
+  }
+});
+
+test('a missing credential is reported and retried, not thrown at the host', async () => {
+  // createClient() throws rather than rejects when the env is incomplete. Every
+  // failure has to leave through the same door, or a host that starts the login
+  // before checking its own env gets an exception where it expected a callback.
+  const form = { elements: LIVE_LOGIN_FORM };
+  const { created, server, browser } = await bootFetchpet(form);
+  const failures = [];
+
+  try {
+    delete process.env.FETCHPET_PASSWORD;
+    created.startBackgroundLogin((error) => failures.push(error.message));
+
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /FETCHPET_USERNAME and FETCHPET_PASSWORD/);
+    assert.equal(browser.contextsOpened, 0, 'no browser is opened without credentials');
+
+    // The credential arrives (a restart with the secret plumbed, say).
+    process.env.FETCHPET_PASSWORD = 'hunter2';
+    const recovered = await getClaims(server);
+    assert.equal(recovered.isError, undefined);
+    assert.equal(browser.contextsOpened, 1);
+  } finally {
+    process.env.FETCHPET_PASSWORD = 'hunter2';
     await created.cleanup();
     setSharedBrowserProvider(null);
   }
