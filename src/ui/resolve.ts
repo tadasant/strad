@@ -106,8 +106,11 @@ const SECRETS_ENV = {
    *
    * Displaying a stored secret value is the one console action with no undo and
    * no audit trail a human would notice, and it is not something every
-   * deployment should offer. Staging wants it (nothing there is sensitive, and
-   * round-tripping a value is how the store gets tested); prod does not.
+   * deployment should offer. Staging wants it, because `strad-secrets-staging`
+   * is a separate project from the one holding strad's own `strad-<env>-*`
+   * secrets and round-tripping a value is how the store gets tested. What a
+   * reveal there returns is a real per-server credential; the bound is the
+   * project, not the contents. Prod does not.
    *
    * Default-off is the whole point of spelling it as an opt-in: a deployment
    * that forgets to think about this gets the safe answer, and a new environment

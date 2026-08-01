@@ -469,9 +469,9 @@ rather than only through the console.
 `strad-secrets-staging` is separate from the project holding strad's own
 `strad-<env>-*` secrets, so the blast radius stops at its boundary. Inside that
 boundary sit the per-server credentials staging's servers run on, so
-`get_secret_value` returns a real secret and the write tools can rewrite or delete
-a parameter a `params: true` server resolves at boot, breaking the next staging
-deploy. The bound is separation, not harmlessness.
+`get_secret_value` returns a real secret and the write tools can delete or rewrite
+a parameter a `params: true` server resolves at deploy time, breaking the next
+staging deploy. The bound is separation, not harmlessness.
 
 In **prod** the MCP credential stays the Parameter Manager viewer with neither
 `secretmanager.versions.access` **nor

@@ -32,9 +32,9 @@ only through the console.
 empty project: the namespace holds the per-server credentials staging's servers
 run on, including the `(secret)` GCS service-account private key listed below, so
 `get_secret_value` on staging returns a real secret. The write tools reach the
-same parameters — rewriting or deleting one that a `params: true` server resolves
-at boot breaks the next staging deploy. The fence is separation; it is not
-harmlessness. See [Namespaces, and where the blast radius actually comes
+same parameters, and a `params: true` server's are resolved at deploy time, so
+deleting or rewriting one breaks the next staging deploy. The fence is
+separation; it is not harmlessness. See [Namespaces, and where the blast radius actually comes
 from](#namespaces-and-where-the-blast-radius-actually-comes-from).
 
 **Fail closed.** A probe that cannot run — no credential, Cloud Resource Manager
