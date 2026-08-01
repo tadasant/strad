@@ -310,6 +310,100 @@ round trip on the failure path would add latency to exactly the requests already
 going badly. As with every other signal here, no `OTEL_EXPORTER_OTLP_ENDPOINT`
 means no exporter and no behaviour change.
 
+## Exception reporting — GlitchTip, over the Sentry protocol
+
+Everything above stops at the process boundary. If strad **crashes** — an
+uncaught `TypeError`, an unhandled rejection, a boot that throws — none of it
+goes through `event()`, so none of it is exported. The stack lands on stdout,
+which is never shipped, the component restarts, and the ingestor can tell you
+`service.instance.id` changed but not one word about why.
+
+strad closes that with a **Sentry-protocol** reporter pointed at a self-hosted
+**GlitchTip**. Like OTLP, it is **off by default** and one environment variable
+turns it on:
+
+| Variable     | Type   | Example                                 |
+| ------------ | ------ | --------------------------------------- |
+| `SENTRY_DSN` | SECRET | `https://<key>@glitchtip.example.com/1` |
+
+Unset — the default — and **nothing happens**: the SDK is behind a dynamic
+`import()`, so it is not even loaded. No client, no process handler, no network,
+and no log line. Set it and one `errors.started` line names the ingest host (never
+the key) at boot.
+
+It travels the same path as every other credential: seeded as
+`strad-<env>-SENTRY_DSN` in GCP Secret Manager, injected as a SECRET env var by
+`render-spec`, or — on a store-backed deployment — read from
+`/strad/{env}/gateway/static/SENTRY_DSN` at boot like the other
+[boot keys](/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
+Absent, the store roster reports it missing and the deploy is unaffected: it is
+optional, like every other telemetry name.
+
+Unlike `OTEL_EXPORTER_OTLP_HEADERS`, it does **not** reach a supplementary image.
+Only strad's own process reports exceptions; a third-party container runs code
+strad did not write, and a DSN is a write credential for the issue tracker.
+
+### What it reports
+
+Uncaught exceptions, unhandled rejections, and boot failures — the last
+explicitly, because `main().catch()` exits by a path no process handler ever
+sees, and a boot that throws is the likeliest crash strad has.
+
+An unhandled rejection still **kills the process** (`mode: "strict"`), which is
+Node's own behaviour: report, print, exit non-zero. The SDK's default would
+install a handler that swallows it, and a telemetry feature does not get to
+change what a crash does.
+
+Each event carries the identity OTLP already stamps — `environment` is
+`deployment.environment` (`prod`, `staging`, `dev`), `release` is
+`service.version` (the deployed image tag), and `strad.component` / `strad.mode`
+are tags — so a GlitchTip issue and a Grafana log record line up without anyone
+maintaining a mapping.
+
+### What it deliberately does not report
+
+**The `event()` fault path.** `mcp.list_tools_failed`, `strad.tool_surface_degraded`
+and the rest are _not_ captured, and that is a decision:
+
+- They already export as OTLP log records at ERROR severity, against a per-event
+  field allowlist. Sending them twice buys no signal.
+- They are the events an **upstream** can drive. `mcp.list_tools_failed` fires
+  once per failing slug per listing, and its `error` is text strad did not author
+  — the reason the allowlist ships `error.kind` instead. Feeding that into an
+  issue tracker would fill it with someone else's HTML error page, grouped as a
+  strad defect.
+
+A caught, classified error is a condition strad handled. A crash is not. GlitchTip
+holds the second kind.
+
+### Secrets
+
+This is the **one** channel in strad that ships free text, so it is also the one
+with a filter in front of it:
+
+- `sendDefaultPii: false`, and **no default integrations at all**. The SDK's
+  defaults would attach request data (headers, cookies, query strings), console
+  output as breadcrumbs — which is every upstream error message strad logs — and
+  source-context lines read off disk. The only integrations installed are the two
+  process handlers and `dedupe`.
+- `beforeSend` **rebuilds the event from a key allowlist**, the same discipline as
+  the log exporter's. `request`, `user`, `extra`, `breadcrumbs` and `modules` are
+  dropped; so are stack-frame `vars` and source context. A field a future SDK
+  version adds is dropped rather than shipped.
+- Every string that survives goes through `scrubText()`: every credential-shaped
+  env var this process holds is struck out **by value** (including the string
+  leaves of a JSON one like `STRAD_TOKENS`), then PEM blocks, JWTs, `Bearer`
+  lines, URL userinfo and `secret-ish-key = value` pairs are struck out by shape.
+  Then it is truncated — a message long enough to be a payload is a payload.
+- `tracesSampleRate: 0`, and `skipOpenTelemetrySetup: true` so the SDK never
+  registers a tracer provider. Traces go to Tempo, from the OTel SDK above.
+
+`test/telemetry.errors.test.ts` pins both ends: that an unset `SENTRY_DSN`
+initialises nothing and installs no handler, and that a secret-bearing exception
+does not survive `beforeSend` intact.
+
+See `src/telemetry/errors.ts` and `src/telemetry/redact.ts`.
+
 ## The supplementary images
 
 The gateway starts its own SDK in-process. A supplementary image can't — it isn't

@@ -10,7 +10,19 @@ import {
   buildSecretProvider,
   hydrateBootEnv,
 } from "./secrets/provider/index.ts";
-import { event, startTelemetry } from "./telemetry/index.ts";
+import {
+  event,
+  startErrorReporter,
+  startTelemetry,
+  type ErrorReporterHandle,
+} from "./telemetry/index.ts";
+
+/**
+ * Set as soon as the reporter is up, so the boot-failure handler at the bottom
+ * of this file can use it. Null until then — and a crash before that point is
+ * a crash before we know where to report it to.
+ */
+let errorReporter: ErrorReporterHandle | null = null;
 
 async function main(): Promise<void> {
   const env = process.env;
@@ -59,14 +71,20 @@ async function main(): Promise<void> {
   // With no OTEL_EXPORTER_OTLP_ENDPOINT this starts no SDK, logs one line, and
   // returns a handle whose shutdown() is a no-op. It cannot fail the boot: every
   // error inside is caught (see src/telemetry/index.ts).
-  const telemetry = startTelemetry({
-    env,
-    identity: {
-      mode,
-      component: bundleName ?? "core",
-      environment: config.gateway.env,
-    },
-  });
+  const identity = {
+    mode,
+    component: bundleName ?? "core",
+    environment: config.gateway.env,
+  };
+
+  // Exception reporting, before everything that can throw. With no SENTRY_DSN
+  // this imports nothing, starts nothing and logs nothing — see
+  // telemetry/errors.ts. It goes after hydration for the same reason telemetry
+  // does: a store-backed deployment keeps the DSN in the parameter store, and
+  // hydration is what puts it in the environment.
+  errorReporter = await startErrorReporter({ env, identity });
+
+  const telemetry = startTelemetry({ env, identity });
 
   // Reported AFTER telemetry starts, not at the moment it happened. Hydration
   // has to run first — it is what SUPPLIES the OTLP headers — so an event
@@ -189,6 +207,11 @@ async function main(): Promise<void> {
     // shutdown() swallows its own errors, so a dead collector cannot wedge the
     // SIGTERM path and get us SIGKILLed instead.
     await telemetry.shutdown();
+    // Same argument as the flush above, for the other channel: an orderly stop
+    // should not leave a crash report sitting in a queue that is about to be
+    // freed. Bounded and error-swallowing, so a dead ingestor cannot wedge
+    // SIGTERM and get us SIGKILLed instead.
+    await errorReporter?.shutdown();
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
@@ -204,5 +227,17 @@ function positiveMs(raw: string | undefined, fallback: number): number {
 
 main().catch((err: unknown) => {
   console.error("[strad] failed to start:", err);
-  process.exit(1);
+  // A boot failure exits by THIS path, not as an uncaughtException, so the
+  // reporter's process handler never sees it. Report it explicitly — and exit
+  // on a watchdog as well as on the report, because "the reporter is bounded"
+  // is a property of the SDK and the exit code is a property strad owns. A
+  // crash-looping container that sits there not exiting is a worse outage than
+  // the crash.
+  const exit = () => process.exit(1);
+  const reported = errorReporter?.captureFatal(err, "boot");
+  if (!reported) exit();
+  else {
+    setTimeout(exit, 3000);
+    void reported.finally(exit);
+  }
 });

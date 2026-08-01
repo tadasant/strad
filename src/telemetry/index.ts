@@ -19,10 +19,20 @@ import { startRuntimeMetrics, type RuntimeMetricsHandle } from "./runtime.ts";
 export {
   argShape,
   byteSize,
+  credentialValues,
   errorKind,
   resultShape,
+  scrubText,
+  REDACTED,
   type ErrorKind,
 } from "./redact.ts";
+export {
+  errorReporterOptions,
+  redactErrorEvent,
+  startErrorReporter,
+  type ErrorReporterHandle,
+  type StartErrorReporterOptions,
+} from "./errors.ts";
 export {
   errorAttrs,
   instruments,

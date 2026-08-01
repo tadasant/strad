@@ -1311,7 +1311,7 @@ reach for before a flip.
 
 **What.** strad ships its own structured events as OTLP logs, against the
 per-event field allowlist in `src/telemetry/events.ts`. It does not ship the
-stdout stream. Ten event types are on the list; everything else strad writes —
+stdout stream. Twelve event types are on the list; everything else strad writes —
 and every `console.log` in a vendored server — reaches the container console and
 stops there.
 
@@ -1399,6 +1399,41 @@ an empty string is the same hazard it always was.
 
 **Undo.** A supplementary server that needs live rotation reads the store itself,
 the way `servers/secrets` does. Short of that, the redeploy is the mechanism.
+
+## 39. A crash report carries free text, and the filter in front of it is heuristic
+
+**What.** `SENTRY_DSN` turns on an exception reporter (`src/telemetry/errors.ts`)
+that sends uncaught exceptions, unhandled rejections and boot failures to a
+GlitchTip instance. It is the ONE channel in strad that ships text strad did not
+fully author: an exception message and a stack trace. Everything else — spans,
+metrics, exported log records — ships shape and closed-set words only.
+
+The filter in front of it has two halves, and they are not equally strong. The
+first is exact and reliable: every credential-shaped env var this process holds
+(and the string leaves of a JSON one like `STRAD_TOKENS`) is struck out **by
+value**, so a stack that echoes a secret strad is actually holding cannot carry
+it out. The second is **by shape** — PEM blocks, JWTs, `Bearer` lines, URL
+userinfo, `secret-ish-key = value` pairs — and a shape rule only catches shapes
+somebody thought of.
+
+**Why it matters.** A credential strad does not hold in its own environment, in a
+form none of those rules match — an upstream's opaque session cookie, say, echoed
+into an error message by a library — could reach the ingestor inside an exception
+message. The event allowlist bounds the blast radius (`request`, `user`, `extra`,
+`breadcrumbs`, frame `vars` and source context are all dropped, so the only free
+text is the message, the exception type and frame paths), and the reporter never
+captures the `event()` fault path where upstream-authored text actually lives.
+That is a smaller surface than "a stack trace", and it is not zero.
+
+**Why it ships anyway.** The alternative is what came before: a crash produces no
+telemetry at all. stdout is never shipped, so an OOM, an uncaught `TypeError` or a
+boot that throws leaves nothing but a changed `service.instance.id`. A report
+stripped of its message and stack would say "something happened", which is what we
+already had. Off by default, and off means nothing is imported at all.
+
+**Undo.** Add a shape rule when a real leak names one, and keep the event
+allowlist deny-by-default. If a deployment cannot accept the residual risk, unset
+`SENTRY_DSN` — that path is tested, not assumed.
 
 ## What the human still needs to provision
 

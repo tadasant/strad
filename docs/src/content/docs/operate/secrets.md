@@ -355,14 +355,14 @@ secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-
 into is decided by _who reads it_, and that is a property of the name rather than
 of the store:
 
-| The name                                                                                                                           | Rotating it takes effect | Because                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                  |
-| A `params: true` server's managed parameters                                                                                       | on the next **deploy**   | Resolved at render time onto that server's own component.                                                                                                  |
-| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                  |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                               | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree. |
-| A supplementary image's `env:`                                                                                                     | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                   |
-| A `consoleEnv:` name                                                                                                               | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                      |
+| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                  |
+| A `params: true` server's managed parameters                                                                                                     | on the next **deploy**   | Resolved at render time onto that server's own component.                                                                                                  |
+| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                  |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree. |
+| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                   |
+| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                      |
 
 So `ttlSeconds` is the answer for **request-path references and nothing else**. A
 deployment whose config has no request-path `${NAME}` and no `params: true`
@@ -377,6 +377,12 @@ the strad image. A `supplementary-image` component is a **third-party container*
 It does not run strad, it deliberately holds no store credential (that key
 reaches the strad image and stops there), and handing it one would not help,
 because nothing inside it knows how to ask.
+
+`SENTRY_DSN` is deliberately **not** one of those names. Only strad's own process
+reports exceptions, so a third-party container has no use for one — and a DSN is a
+write credential for the issue tracker, which is not a thing to broadcast to every
+supplementary image. It reaches the core and any strad-image bundle and stops
+there, like the store credential.
 
 So the two names a bundle needs are read **from the store, by the renderer**, and
 baked onto those components. A human still manages them in exactly one place; the
