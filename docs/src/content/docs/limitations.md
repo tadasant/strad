@@ -114,10 +114,26 @@ here. The channel that did catch it is also quieter now — a tools-only slug no
 longer reports a failed `resources/list`, because it is no longer asked — so
 `mcp.list_tools_failed` is the half of that pair still watching.
 
-**Undo:** give the probe a mixed-method shape — a concurrent `tools/list` +
-`resources/list` per slug, with "answers one but not both" classified as
-`degraded`. The cost is a second round trip per slug per interval against
-containers that already share one CPU (#24).
+
+It has also been narrower than a second, plainer failure: a slug can list its tools
+perfectly and fail every _call_. Fetch redesigned its login form to floating labels,
+the `fetchpet` mount's email selector went stale, and it spent weeks in both
+environments listing four tools and returning `Login failed` for every one. Tool
+lists are static; a login is not. The bundle's `/healthz` does report a per-mount
+`degraded` string for exactly this, and nothing reads it — not the monitor, not the
+staging deploy's assertions, not a metric. Every deploy in that window passed, and
+the only symptom was a `WARN` line on stdout, a stream that
+[reaches nobody](/operate/telemetry/#logs--strads-own-events-and-only-those).
+
+**Undo:** two halves. Give the probe a mixed-method shape — a concurrent
+`tools/list` + `resources/list` per slug, with "answers one but not both"
+classified as `degraded`; the cost is a second round trip per slug per interval
+against containers that already share one CPU (#24). And export the bundle's
+per-mount `degraded` as a gauge alongside `strad.mcp.tool_surface`, asserted by the
+staging deploy the way the monitor is. The hard half of that second one: "degraded"
+means something different per server — a bad refresh token, a missing credential, a
+failed login the next call retries — and a signal a deploy can fail on has to say
+which.
 
 ## Auth and identity
 
@@ -742,13 +758,22 @@ of this runs. See
 
 ## Supply chain and build
 
-### 10 & 15. The `shared/` trees are vendored, not depended on
+### 10, 15 & 41. The `shared/` trees are vendored, not depended on
 
-`servers/good-eggs/shared/` and `servers/onepassword/shared/` are copied verbatim
-from [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers). Only the
-`remote/` streamable-HTTP entrypoints are new; the tool logic is reused unchanged.
-1Password drags one more thing along: its `@pulsemcp/mcp-elicitation` dependency
-isn't published to npm either, so that library is vendored as a third workspace.
+`servers/good-eggs/shared/`, `servers/fetchpet/shared/` and
+`servers/onepassword/shared/` are copied from
+[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers). Mostly the
+`remote/` streamable-HTTP entrypoints are the only new code and the tool logic is
+reused unchanged. 1Password drags one more thing along: its
+`@pulsemcp/mcp-elicitation` dependency isn't published to npm either, so that
+library is vendored as a third workspace.
+
+The copies have since taken strad-local edits, and every one of them is a thing
+the upstream stdio server cannot know about: the shared-browser seam
+(`setSharedBrowserProvider`) that gives three servers one Chromium, browser
+telemetry, and — in `fetchpet` — login selectors that match the form Fetch serves
+today plus a login that retries instead of caching its first failure. Each tree's
+README lists its deltas. The debt is real: a re-vendor is a merge, not a copy.
 
 **Why:** the upstream packages publish stdio servers, not libraries strad could
 depend on. strad's ESLint, Prettier, and TypeScript are scoped away from

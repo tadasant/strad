@@ -87,6 +87,28 @@ jobs:
         working-directory: servers/good-eggs
         run: npm test
 
+  # fetchpet drives a login form nobody in this repo controls, and when Fetch
+  # redesigned it the server timed out on a stale selector every boot in both
+  # environments — listing four tools and failing every call. Its tests pin the
+  # selectors against the form Fetch actually serves and prove a failed login is
+  # retried rather than cached, both over a fake browser. Same shape as good-eggs:
+  # no browser is launched, so the download is skipped.
+  fetchpet:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/fetchpet
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: Test (build + the login selector and retry suite)
+        working-directory: servers/fetchpet
+        run: npm test
+
   # secrets is the one server whose TESTS are the security review: they assert
   # that no tool can return a SECRET value, and that the viewer credential cannot
   # reach one. Run them on every PR, like good-eggs'.

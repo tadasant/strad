@@ -46,10 +46,11 @@ if (!process.env.FETCHPET_USERNAME && process.env.FETCHPET_EMAIL) {
 // A container has no display; the browser must be headless.
 if (!process.env.HEADLESS) process.env.HEADLESS = 'true';
 
-// The shared factory's background login rejects its internal loginPromise on a
-// bad credential; nothing awaits it until the first tool call, so without this
-// guard Node's default surfaces it as an unhandled rejection. Fail fast and let
-// App Platform restart us (which also retries a transient login failure).
+// A backstop for any promise nobody awaited. The background login is not one of
+// them — the shared factory reports a failed attempt through the callback below
+// and holds the error for the next tool call — but a browser server has plenty
+// of other unawaited work, and an invisible rejection in one is worse than a
+// restart.
 process.on('unhandledRejection', (reason) => {
   logError('unhandledRejection', reason);
   process.exit(1);
@@ -88,8 +89,14 @@ async function main(): Promise<void> {
   });
 
   // Launch Chromium and log in now, in the background, so the first real tool
-  // call doesn't also pay for a cold browser + a full sign-in flow. On failure,
-  // mirror the stdio server: log, clean up, and exit non-zero.
+  // call doesn't also pay for a cold browser + a full sign-in flow.
+  //
+  // On failure, mirror the stdio server: log, clean up, and exit non-zero. This
+  // container serves ONE server, so a process that cannot log in has nothing to
+  // offer, and a failed health check is louder than a server that lists four
+  // tools and errors on all of them. (Inside strad's bundle, where fourteen
+  // other servers are on board, the host takes the other option the shared
+  // factory offers: mark the mount degraded and let the next tool call retry.)
   startBackgroundLogin((error: Error) => {
     logError('login', `Background login to Fetch Pet failed: ${error.message}`);
     cleanup()
