@@ -27,7 +27,13 @@ import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
 import { readDeploymentSecretStatus } from "./secret-status.ts";
 import type { SecretProvider } from "../secrets/provider/index.ts";
-import { renderGcsBrowse, renderMessage, renderSecrets } from "./render.ts";
+import {
+  renderGcsBrowse,
+  renderMessage,
+  renderOffline,
+  renderSecrets,
+} from "./render.ts";
+import { mountPwa } from "./pwa.ts";
 
 /**
  * Mount the human, SSO-gated console.
@@ -135,6 +141,14 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // The parameter forms are urlencoded. Scoped to /ui so it cannot change how
   // /mcp parses a body.
   const form = express.urlencoded({ extended: false, limit: "64kb" });
+
+  // What makes the console installable: the manifest, the icons, the service
+  // worker and its one offline page. These are NOT behind `gate` — they are
+  // static brand assets with no slug, identity or config in them, and a browser
+  // fetches `<link rel="manifest">` without credentials, so a gated manifest is
+  // a 401 and an app nobody can install. See src/ui/pwa.ts for what the worker
+  // is allowed to cache, which is these paths and nothing else.
+  mountPwa(app, { offlineHtml: renderOffline() });
 
   // The front door. Behind the SAME gate as every other console surface: strad
   // requires Google identity before exposing anything, and the index of what

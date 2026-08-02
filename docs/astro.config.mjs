@@ -103,6 +103,10 @@ export default defineConfig({
             { label: "Operations & CI", slug: "operate/operations" },
             { label: "Telemetry", slug: "operate/telemetry" },
             { label: "DNS & domains", slug: "operate/dns" },
+            {
+              label: "The console as an installed app",
+              slug: "operate/console-pwa",
+            },
           ],
         },
         {

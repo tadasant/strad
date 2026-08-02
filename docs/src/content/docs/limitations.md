@@ -134,6 +134,57 @@ means something different per server — a bad refresh token, a missing credenti
 failed login the next call retries — and a signal a deploy can fail on has to say
 which.
 
+### 41. The installed console's cached shell is versioned by hand
+
+The console is [installable](/operate/console-pwa/), and its service worker
+precaches a fixed shell — the icons, the manifest, and one static offline page —
+into a cache named `strad-shell-v1`. Renaming that constant is what evicts the old
+cache. Nothing renames it for you, and nothing fails if you forget.
+
+The shell list is interpolated into the worker script, so adding or removing a
+path changes the script, re-installs, and re-fetches the whole list. Those edits
+are self-healing. The one that is not is a change to a cached _byte_ that leaves
+the script identical — the offline page's copy, or an icon: no install fires and
+installed browsers keep the old copy. A removed path leaves dead bytes against
+the origin's storage quota; it is never served again, because the fetch handler
+only reads for pathnames on the current list. `?v=2` does not help — the worker
+looks up `url.pathname`, so the search is dropped and a query-stringed URL is
+answered from the same entry.
+
+The blast radius is cosmetic by construction: everything in that cache is a brand
+asset or a page whose whole content is "the network is gone." Nothing
+authenticated is in there to go stale, because nothing authenticated is in there
+at all.
+
+**Undo:** derive the cache name from a content hash of the shell rather than a
+literal, so any changed byte renames the cache. It was left as a literal because
+the shell is four icons, a manifest and a page, and a hash that turns over on
+every theme tweak evicts more often than the problem warrants.
+
+### 42. The installed console's sign-in leaves the app window
+
+The console is [installable](/operate/console-pwa/) as a `display: standalone`
+app. Open it on an expired session and the gate answers `/ui` with a 302 to
+`/console/login`, which redirects on to `accounts.google.com` — outside the app's
+scope, so the browser takes the navigation out of the app window and into a tab.
+You return through `/console/oauth/callback` and land back on `/ui`.
+
+That is ordinary on Chrome and Android, and it depends on the standalone window
+and the browser sharing a cookie jar. **It has not been exercised on iOS**, where
+a standalone web app has historically had its own storage partition — which is
+exactly the assumption. A session minted in the tab that ran the OAuth trip might
+not be the session the app window reads, which would bounce you back to sign-in in
+a loop.
+
+None of this is live yet: Google OAuth is not provisioned, so the gate answers
+`401` with a sign-in wall rendered in place (#2) and nothing leaves the window.
+The two should be tested on the same day.
+
+**Undo:** test it on real iOS Safari when OAuth lands. If the partition does break
+it, the fix is to stop redirecting off-origin from a gated navigation — render an
+in-scope interstitial that starts the trip from a user gesture, so the return
+lands in the window that began it.
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth
