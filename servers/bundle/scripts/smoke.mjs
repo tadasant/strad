@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that fifteen servers, seven dependency trees and
+ * What it is really checking is that fifteen servers, eight dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  */
@@ -29,7 +29,9 @@ const EXPECT = {
   tailscale: 15,
   "monarch-money": 23,
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
-  "remote-filesystem-tmp-public": 5,
+  // upload_file, refresh_link, list_files, download_file, set_sensitivity,
+  // delete_file — the artifact store's whole surface.
+  "remote-filesystem-tmp-public": 6,
   "google-flights": 3,
   gmail: 8,
   "google-calendar": 7,

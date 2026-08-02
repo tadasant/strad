@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bundle-api — the strad `supplementary-image` face of SEVEN pure-API MCP
+ * bundle-api — the strad `supplementary-image` face of SIX pure-API MCP
  * servers, colocated in ONE internal HTTP component.
  *
  * Every server here is a plain HTTP/API wrapper (no browser, no subprocess), so
@@ -39,7 +39,6 @@ import {
   resolveSession,
 } from "monarch-money-mcp-server-shared";
 import { createMCPServer as createGcs } from "gcs-mcp-server-shared";
-import { createMCPServer as createRemoteFilesystem } from "remote-filesystem-mcp-server-shared";
 import { createMCPServer as createGoogleFlights } from "google-flights-mcp-server-shared";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -96,7 +95,7 @@ interface RegisteredServer {
   toggleEnvVar?: string;
 }
 
-/** `remote-filesystem` -> `REMOTE_FILESYSTEM`, matching strad's env convention. */
+/** `serpapi-hotels` -> `SERPAPI_HOTELS`, matching strad's env convention. */
 function slugEnv(slug: string): string {
   return slug.toUpperCase().replace(/-/g, "_");
 }
@@ -111,12 +110,12 @@ function setEnv(key: string, value: string | undefined): void {
  * Register a server's handlers onto a fresh `Server`, honoring its capability
  * toggle.
  *
- * The wrinkle this solves: `slack` and `remote-filesystem` BOTH read the
- * upstream env var `ENABLED_TOOLGROUPS`. In one process a single global value
- * can't configure them independently. So each toggled server ALSO accepts a
- * slug-namespaced override `<SLUG>_<VAR>` (e.g. `SLACK_ENABLED_TOOLGROUPS`,
- * `REMOTE_FILESYSTEM_ENABLED_TOOLGROUPS`); when present we apply it onto the
- * bare upstream name for the duration of THIS registration only.
+ * The wrinkle this solves: several upstreams read the SAME bare env var (e.g.
+ * `ENABLED_TOOLGROUPS`), and in one process a single global value can't
+ * configure them independently. So each toggled server ALSO accepts a
+ * slug-namespaced override `<SLUG>_<VAR>` (e.g. `SLACK_ENABLED_TOOLGROUPS`);
+ * when present we apply it onto the bare upstream name for the duration of THIS
+ * registration only.
  *
  * This is race-safe: every upstream reads its toggle synchronously inside the
  * `registerHandlers(server)` call, before the returned promise yields. We set
@@ -185,7 +184,7 @@ function makeHandler(s: RegisteredServer) {
 }
 
 /**
- * Build the seven servers. Factories are called ONCE here: tailscale memoizes
+ * Build the six servers. Factories are called ONCE here: tailscale memoizes
  * its OAuth client at module scope, and monarch needs a single session store
  * threaded through, so per-request factory calls would be wrong for them.
  */
@@ -251,15 +250,6 @@ async function buildServers(): Promise<RegisteredServer[]> {
     capabilities: { resources: {}, tools: {} },
     registerHandlers: createGcs({ version: VERSION }).registerHandlers,
     toggleEnvVar: "GCS_ENABLED_TOOLGROUPS",
-  });
-
-  servers.push({
-    slug: "remote-filesystem",
-    serverName: "remote-filesystem-mcp-server",
-    capabilities: { resources: {}, tools: {} },
-    registerHandlers: createRemoteFilesystem({ version: VERSION })
-      .registerHandlers,
-    toggleEnvVar: "ENABLED_TOOLGROUPS",
   });
 
   servers.push({

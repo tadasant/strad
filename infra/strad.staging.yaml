@@ -349,14 +349,20 @@ servers:
     path: /google-flights
     entitlements: [admin]
 
-  # GCS-backed screenshot store, pinned to its own bucket.
+  # strad's artifact store: an agent uploads a screenshot, a human opens the link.
   #
-  # ITS ENV IS SLUG-NAMESPACED, and that is load-bearing: `gcs` (below) and
-  # `remote-filesystem-tmp-public` both read `GCS_BUCKET` from the process environment,
-  # and they point at DIFFERENT buckets. That collision is why gcs used to need a
-  # component of its own. In one container it cannot be resolved by env at all,
-  # so the bundle host hands remote-filesystem-tmp-public an explicit client built from
-  # these REMOTE_FILESYSTEM_TMP_PUBLIC_* names and it stops reading the bare ones.
+  # ITS ENV IS SLUG-NAMESPACED, and that is load-bearing: `gcs` (below) reads the
+  # bare GCS_BUCKET and points at a DIFFERENT bucket. That collision is why gcs
+  # used to need a component of its own. In one container it cannot be resolved by
+  # env at all, so this server reads every key under a REMOTE_FILESYSTEM_TMP_PUBLIC_
+  # prefix (the bundle host constructs it with that envPrefix) and never touches
+  # the bare names.
+  #
+  # SENSITIVE_VIEWER_DOMAIN is the sensitivity half. `is_sensitive: true` grants
+  # `domain-<this>` READER on the object and returns a storage.cloud.google.com
+  # link, which Google gates behind a sign-in. Without it, a sensitive upload is
+  # REFUSED — storing an artifact nobody can open is worse than failing loudly.
+  # It is deployment config, not a credential, so it stays a literal here.
   #
   # ITS TWO CREDENTIALS COME FROM THE SECRETS SYSTEM, not from hand-written
   # `${REF}` secrets. `params: true` opts this server into parameter resolution:
@@ -376,9 +382,10 @@ servers:
     params: true
     env:
       REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "remote-filesystem-tadas"
+      REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN: "tadasant.com"
 
-  # Google Cloud Storage. Keeps the bare GCS_* names (remote-filesystem-tmp-public is the
-  # one that moved). GCS_BUCKET pins every operation to ONE bucket and is also
+  # Google Cloud Storage. Keeps the bare GCS_* names (the artifact store above is
+  # the one that moved). GCS_BUCKET pins every operation to ONE bucket and is also
   # what the human /ui/gcs view scopes to (src/ui/resolve.ts). pulse_public is the
   # deliberate choice: the service account can reach the transcript buckets too,
   # and an MCP endpoint pointed at "…secret-do-not-share…" by default is not a

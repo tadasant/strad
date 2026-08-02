@@ -198,7 +198,7 @@ it gives up — only in the case that would otherwise be a hard stop.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — nine entries: the seven trees
+`release-bundle-image.yml` has a `paths:` filter — ten entries: the eight trees
 the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
 commits cut no bundle image and stepping past them is the normal case, not an
 exception. `--kind bundle` reads that filter out of

@@ -307,6 +307,12 @@ servers:
   # — and injects them as SECRET env vars onto this bundle. A human sets both once in
   # /ui/secrets; the container holds no cloud credential. The bucket is deployment
   # config, not a credential, so it stays a literal here.
+  #
+  # SENSITIVE_VIEWER_DOMAIN is the sensitivity half of strad's artifact store:
+  # an `is_sensitive: true` upload grants `domain-<this>` READER on the object and
+  # returns a storage.cloud.google.com link, which Google gates behind a sign-in.
+  # Leave it unset and a sensitive upload is REFUSED rather than stored where
+  # nobody can open it. See docs: /servers/artifact-store/.
   - slug: remote-filesystem-tmp-public
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -316,6 +322,7 @@ servers:
     params: true
     env:
       REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "my-screenshots"
+      REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN: "example.com"
 
   # The 1Password CLI (`op`) is baked into the image; the image ships no
   # credential. The server refuses to serve without an elicitation posture, and

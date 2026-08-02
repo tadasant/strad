@@ -1,7 +1,7 @@
 {
   "name": "strad-bundle-api-remote",
   "version": "0.1.0",
-  "description": "Streamable-HTTP entrypoint hosting 7 pure-API MCP servers in one strad supplementary-image bundle.",
+  "description": "Streamable-HTTP entrypoint hosting 6 pure-API MCP servers in one strad supplementary-image bundle.",
   "type": "module",
   "main": "build/index.js",
   "scripts": {
@@ -20,7 +20,6 @@
     "gcs-mcp-server-shared": "*",
     "google-flights-mcp-server-shared": "*",
     "monarch-money-mcp-server-shared": "*",
-    "remote-filesystem-mcp-server-shared": "*",
     "serpapi-hotels-mcp-server-shared": "*",
     "slack-workspace-mcp-server-shared": "*",
     "tailscale-vpn-mcp-server-shared": "*"

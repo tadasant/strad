@@ -29,7 +29,6 @@ COPY upstream/serpapi-hotels/package.json ./upstream/serpapi-hotels/package.json
 COPY upstream/tailscale/package.json ./upstream/tailscale/package.json
 COPY upstream/monarch-money/package.json ./upstream/monarch-money/package.json
 COPY upstream/gcs/package.json ./upstream/gcs/package.json
-COPY upstream/remote-filesystem/package.json ./upstream/remote-filesystem/package.json
 COPY upstream/google-flights/package.json ./upstream/google-flights/package.json
 COPY remote/package.json ./remote/package.json
 RUN npm ci --no-audit --no-fund

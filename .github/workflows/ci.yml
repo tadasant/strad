@@ -126,7 +126,25 @@ jobs:
         working-directory: servers/secrets
         run: npm test
 
-  # THE bundle: fifteen MCP servers, seven dependency trees, one Chromium and the
+  # remote-filesystem is strad's artifact store, and its whole product is the LINK
+  # it hands a human. Its tests pin the two things that decide one: `is_sensitive`
+  # picks the kind of link, and the 7-day V4 ceiling is what forces V2 for the
+  # 14-day default. Run them on every PR, like secrets'.
+  remote_filesystem:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/remote-filesystem
+        run: npm ci
+      - name: Test (build + the link and sensitivity suite)
+        working-directory: servers/remote-filesystem
+        run: npm test
+
+  # THE bundle: fifteen MCP servers, eight dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.
@@ -168,6 +186,7 @@ jobs:
             -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
+            -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
             strad-bundle:ci
           for i in $(seq 1 60); do

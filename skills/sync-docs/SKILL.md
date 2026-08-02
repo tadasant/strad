@@ -36,12 +36,13 @@ The repo has simultaneously claimed 13, 14, 22, 23, 25, and 26 "servers" in
 different files, because those words count different things. Before you write a
 number, know which of these you mean and grep for the others:
 
-| The number | What it counts                                                                       | Where it's decided                                                                 |
-| ---------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| **2**      | App Platform components                                                              | `renderAppSpec` output; `test/staging-config.test.ts` asserts `["core", "bundle"]` |
-| **14**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts`                              |
-| **23**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                                                         |
-| **25**     | total server slugs in staging (23 + `echo` builtin + `deepwiki` remote-http)         | `infra/strad.staging.yaml`                                                         |
+| The number | What it counts                                                                       | Where it's decided                                    |
+| ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| **3**      | App Platform components                                                              | `renderAppSpec` output; `test/staging-config.test.ts` |
+| **8**      | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
+| **15**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
+| **25**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                            |
+| **27**     | total server slugs in staging (25 + `echo` builtin + `deepwiki` remote-http)         | `infra/strad.staging.yaml`                            |
 
 A slug is not a mount, and a mount is not a component. Say which one you mean.
 

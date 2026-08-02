@@ -50,6 +50,7 @@ not a confession.
 | `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts` | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md` |
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                   | `operate/secrets.md`, `limitations.md`                            |
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                      |
+| `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                     |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                 |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                   |
 | `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                            |
@@ -70,12 +71,13 @@ Diagrams are Mermaid fenced code blocks, rendered client-side. Keep them accurat
 to the code rather than illustrative. A diagram showing components that no longer
 exist is worse than no diagram.
 
-**Counts are load-bearing, and this repo has gotten them wrong.** Four different
+**Counts are load-bearing, and this repo has gotten them wrong.** Five different
 numbers describe "how many servers," and they count different things:
 
 | The number | What it counts                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------ |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                         |
+| **8**      | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
 | **15**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
 | **25**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
 | **27**     | total server slugs in staging (25 + the `echo` builtin + the `deepwiki` remote-http)       |
@@ -120,7 +122,11 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 15 mounted MCP servers, one shared Chromium.
+- `servers/bundle/` — one image, 15 mounted MCP servers, one shared Chromium,
+  assembled from EIGHT independently-built dependency trees.
+- `servers/remote-filesystem/` — strad's own artifact store, behind the
+  `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
+  GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
 
 The prose for all of the above is in `docs/`.
 

@@ -161,6 +161,7 @@ environment:
   params: true # resolve /strad/{env}/mcp/remote-filesystem-tmp-public/static/* into env
   env:
     REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "my-screenshots" # a literal is fine; not a secret
+    REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN: "example.com" # also config, not a credential
 ```
 
 The two credentials this server needs — a non-secret

@@ -128,7 +128,7 @@ function scrubCapabilityEnv(): void {
 async function buildMounts(): Promise<Mount[]> {
   const mounts: Mount[] = [];
 
-  // --- bundle-api: seven pure-API servers -----------------------------------
+  // --- bundle-api: six pure-API servers --------------------------------------
   // Factories are called ONCE (tailscale memoizes a client; monarch needs a
   // single session store threaded through), and their registerHandlers is reused
   // against a fresh Server per request.
@@ -172,25 +172,11 @@ async function buildMounts(): Promise<Mount[]> {
     serverName: "gcs-mcp-server",
     capabilities: { resources: {}, tools: {} },
     // gcs keeps the bare GCS_* names (GCS_PROJECT_ID, GCS_SERVICE_ACCOUNT_KEY_JSON,
-    // GCS_BUCKET) — see remote-filesystem below for why it is the one that moved.
+    // GCS_BUCKET) — see loadRemoteFilesystem for why the other one moved.
     register: (s) => api.gcs.registerHandlers(s),
   });
 
-  mounts.push({
-    // The strad slug is `remote-filesystem-tmp-public` (it stores screenshots on a GCS
-    // bucket); the vendored upstream is still pulsemcp's `remote-filesystem`.
-    slug: "remote-filesystem-tmp-public",
-    tree: "bundle-api",
-    serverName: "remote-filesystem-mcp-server",
-    capabilities: { resources: {}, tools: {} },
-    // THE collision this collapse had to solve. gcs and remote-filesystem-tmp-public
-    // both read `GCS_BUCKET` from the environment, and they point at DIFFERENT
-    // buckets — which is why gcs used to need a component of its own. One process
-    // cannot hold two values of one variable, so remote-filesystem-tmp-public stops
-    // reading the environment at all: we hand it an explicit client built from
-    // its own slug-namespaced vars (REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_*). No collision.
-    register: (s) => api.remoteFs.registerHandlers(s, remoteFsClientFactory()),
-  });
+  mounts.push(await loadRemoteFilesystem());
 
   mounts.push({
     slug: "google-flights",
@@ -274,7 +260,6 @@ interface ApiTree {
   tailscale: Created;
   monarch: Created;
   gcs: Created;
-  remoteFs: Created;
   flights: Created;
 }
 
@@ -288,7 +273,6 @@ async function loadApiTree(): Promise<ApiTree> {
   const serpapi = await mod("serpapi-hotels");
   const tailscale = await mod("tailscale");
   const gcs = await mod("gcs");
-  const remoteFs = await mod("remote-filesystem");
   const flights = await mod("google-flights");
 
   const monarchMod = (await loadFromTree(
@@ -318,35 +302,9 @@ async function loadApiTree(): Promise<ApiTree> {
     tailscale: tailscale.createMCPServer({ version: VERSION }),
     monarch: monarchMod.createMCPServer({ version: VERSION, sessionStore }),
     gcs: gcs.createMCPServer({ version: VERSION }),
-    remoteFs: remoteFs.createMCPServer({ version: VERSION }),
     flights: flights.createMCPServer({ version: VERSION }),
   };
 }
-
-/** remote-filesystem-tmp-public' GCS client, built from ITS OWN env names. See the mount. */
-function remoteFsClientFactory(): () => unknown {
-  return () => {
-    const bucket = process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET;
-    if (!bucket) {
-      throw new Error(
-        "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET must be configured. (In this bundle, " +
-          "remote-filesystem-tmp-public does NOT read GCS_BUCKET — that name belongs to " +
-          "the gcs server, which points at a different bucket.)",
-      );
-    }
-    return new remoteFsGcsClient({
-      bucket,
-      projectId: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PROJECT_ID,
-      clientEmail: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL,
-      privateKey: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY,
-      rootPath: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_ROOT_PATH,
-      makePublic: process.env.REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_MAKE_PUBLIC === "true",
-    });
-  };
-}
-
-// Resolved at boot in main() — the class, from remote-filesystem's own tree.
-let remoteFsGcsClient: new (config: Record<string, unknown>) => unknown;
 
 interface GoogleTree {
   gmail: Factory;
@@ -371,6 +329,53 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     gmail: gmail.createMCPServer,
     calendar: calendar.createMCPServer,
     docs: docs.createMCPServer,
+  };
+}
+
+/**
+ * remote-filesystem-tmp-public — strad's own artifact store.
+ *
+ * THE COLLISION THIS SOLVES. `gcs` and this server both want `GCS_BUCKET`, and
+ * they point at DIFFERENT buckets — which is why gcs used to need a component of
+ * its own. One process cannot hold two values of one variable, so this server
+ * never reads the bare names: it is constructed with an `envPrefix` and reads
+ * every key under `REMOTE_FILESYSTEM_TMP_PUBLIC_*`. Delete the prefix and the two
+ * servers silently share a bucket.
+ *
+ * Config is resolved LAZILY inside the server (on the first tool call), so a
+ * missing bucket is one server's error, not a boot failure for the other
+ * fourteen — the same posture as secrets and 1Password.
+ */
+const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
+
+async function loadRemoteFilesystem(): Promise<Mount> {
+  const mod = (await loadFromTree(
+    "remote-filesystem",
+    "shared/build/index.js",
+  )) as { createMCPServer: Factory };
+
+  const created = mod.createMCPServer({
+    version: VERSION,
+    envPrefix: REMOTE_FS_ENV_PREFIX,
+  });
+
+  const bucket = process.env[`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
+  const viewerDomain =
+    process.env[`${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN`];
+
+  return {
+    slug: "remote-filesystem-tmp-public",
+    tree: "remote-filesystem",
+    serverName: "strad-remote-filesystem",
+    capabilities: { tools: {} },
+    // Degraded, not unmounted: the tools must still LIST so an agent can see
+    // what this deployment would offer, and so the console shows the slug at all.
+    degraded: !bucket
+      ? `${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET is not set; every tool will fail`
+      : !viewerDomain
+        ? `${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN is not set; is_sensitive=true uploads will be refused`
+        : null,
+    register: (s) => created.registerHandlers(s),
   };
 }
 
@@ -783,13 +788,6 @@ function sessionfulHandler(mount: Mount) {
 
 async function main(): Promise<void> {
   scrubCapabilityEnv();
-
-  // remote-filesystem's GCS client class, from its own tree (see the mount).
-  const rfs = (await loadFromTree(
-    "bundle-api",
-    "upstream/remote-filesystem/build/index.js",
-  )) as { GCSClient: new (config: Record<string, unknown>) => unknown };
-  remoteFsGcsClient = rfs.GCSClient;
 
   const mounts = await buildMounts();
 

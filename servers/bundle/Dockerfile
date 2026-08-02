@@ -3,10 +3,11 @@
 # bundle — THE strad supplementary image. Fifteen MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from seven existing projects that live in different places:
+# assembled from eight existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
-#                           gcs, remote-filesystem, google-flights
+#                           gcs, google-flights
+#   servers/remote-filesystem  remote-filesystem-tmp-public (strad's artifact store)
 #   images/bundle-google    gmail, google-calendar, google-docs
 #   servers/onepassword     onepassword            (+ the `op` CLI, baked below)
 #   servers/secrets         secrets                (Parameter + Secret Manager viewer)
@@ -16,7 +17,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging seven dependency trees is how you
+# Nothing is merged. That is on purpose: merging eight dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -30,7 +31,7 @@
 
 ARG PW=mcr.microsoft.com/playwright:v1.61.1-noble
 
-# ---- bundle-api: seven pure-API servers -------------------------------------
+# ---- bundle-api: six pure-API servers ---------------------------------------
 FROM ${PW} AS build-api
 WORKDIR /src
 COPY servers/bundle-api/package.json servers/bundle-api/package-lock.json ./
@@ -39,7 +40,6 @@ COPY servers/bundle-api/upstream/serpapi-hotels/package.json ./upstream/serpapi-
 COPY servers/bundle-api/upstream/tailscale/package.json ./upstream/tailscale/
 COPY servers/bundle-api/upstream/monarch-money/package.json ./upstream/monarch-money/
 COPY servers/bundle-api/upstream/gcs/package.json ./upstream/gcs/
-COPY servers/bundle-api/upstream/remote-filesystem/package.json ./upstream/remote-filesystem/
 COPY servers/bundle-api/upstream/google-flights/package.json ./upstream/google-flights/
 COPY servers/bundle-api/remote/package.json ./remote/
 RUN npm ci --no-audit --no-fund
@@ -84,6 +84,17 @@ COPY servers/secrets/package.json servers/secrets/package-lock.json ./
 COPY servers/secrets/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/secrets/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- remote-filesystem --------------------------------------------------------
+# strad's own artifact store: uploads to ONE GCS bucket and hands back a link.
+# Its only dependencies are the MCP SDK, zod and @google-cloud/storage.
+FROM ${PW} AS build-remotefs
+WORKDIR /src
+COPY servers/remote-filesystem/package.json servers/remote-filesystem/package-lock.json ./
+COPY servers/remote-filesystem/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/remote-filesystem/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
@@ -162,11 +173,12 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The seven trees, each with the node_modules it was built against.
+# The eight trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
 COPY --from=build-secrets /src /app/trees/secrets
+COPY --from=build-remotefs /src /app/trees/remote-filesystem
 COPY --from=build-goodeggs /src /app/trees/good-eggs
 COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah

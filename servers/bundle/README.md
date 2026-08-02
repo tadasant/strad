@@ -33,24 +33,25 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How seven projects become one image
+## How eight projects become one image
 
-`Dockerfile`'s build context is the **repo root**, because the servers live in seven
+`Dockerfile`'s build context is the **repo root**, because the servers live in eight
 different places:
 
 | tree | source | servers |
 | --- | --- | --- |
-| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, remote-filesystem-tmp-public, google-flights |
+| `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, google-flights |
 | `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
+| `remote-filesystem` | `servers/remote-filesystem` | remote-filesystem-tmp-public (strad's artifact store) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
 | `pointsyeah` | `servers/pointsyeah` | pointsyeah |
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging seven dependency trees is how you
+`/app/trees/<name>`. Nothing is merged. Merging eight dependency trees is how you
 find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -79,14 +80,16 @@ instance in `infra/strad.staging.yaml`.
 
 ## The GCS_BUCKET collision
 
-`gcs` and `remote-filesystem-tmp-public` **both read `GCS_BUCKET`**, and they point at
+`gcs` and `remote-filesystem-tmp-public` both want `GCS_BUCKET`, and they point at
 different buckets. That is why `gcs` used to need a component to itself, and it is
 the one thing gateway-side capability does *not* solve — it is a credential, not a
 capability.
 
-One process cannot hold two values of one variable, so `remote-filesystem-tmp-public`
-stops reading the environment: the host hands it an explicit client built from
-`REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_*`. `gcs` keeps the bare names.
+One process cannot hold two values of one variable, so the artifact store never
+reads the bare names. The host constructs it with
+`envPrefix: "REMOTE_FILESYSTEM_TMP_PUBLIC"` and every key it needs — bucket,
+project, credentials, viewer domain — is read under that prefix. `gcs` keeps the
+bare names. See `servers/remote-filesystem/README.md`.
 
 ## The one server whose safety is not in this image
 

@@ -1,0 +1,22 @@
+{
+  "name": "remote-filesystem-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's artifact store: upload to GCS and return a link. Sensitivity decides WHICH kind of link; expiry decides how long a non-sensitive one lasts.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.21.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3"
+  },
+  "license": "MIT"
+}

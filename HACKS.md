@@ -1596,6 +1596,67 @@ the fix is not in the manifest — it is to stop redirecting off-origin from a
 gated navigation, i.e. render an in-scope interstitial that starts the OAuth trip
 from a user gesture, so the return lands in the window that began it.
 
+## 43. A link longer than seven days is signed with GCS's LEGACY V2 process
+
+**What.** `remote-filesystem-tmp-public` returns a 14-day signed URL by default.
+GCS's **V4** signing process caps expiry at seven days (604800s) — Google enforces
+it and `@google-cloud/storage` throws rather than clamps — so fourteen days is not
+reachable with V4 at all. It is reachable with **V2**, the older process, which has
+no cap. Verified against the real bucket: 14-day and 365-day V2 URLs both serve
+`200` anonymously.
+
+So `servers/remote-filesystem/shared/src/links.ts` picks by duration: V4 at seven
+days or less, V2 beyond it. The response says which, in `signing_version`.
+
+**Why it matters.** Google recommends V4 and describes V2 as the legacy process.
+If V2 is ever retired, every link longer than seven days stops being mintable —
+`upload_file` and `refresh_link` would start failing for anything over the V4 cap,
+loudly (the `StoreError` names the cap and tells the caller to ask for 7 days or
+fewer). Links already handed out are unaffected; V2 URLs already in the wild are
+validated by Google, not re-minted.
+
+**Why not just ship 7 days.** Because the default was chosen for the human, not
+the API: an artifact is usually looked at days after it is made, and a dead link
+is the failure this server exists to avoid. And the exposure is bounded by
+`refresh_link`, which was designed for exactly this: a dead link is one tool call
+away from being alive again.
+
+**What is deliberately NOT done.** No silent downgrade. A 14-day request never
+quietly becomes a 7-day link — handing back a link that expires in half the time
+the caller asked for is a worse failure than an error, because nothing surfaces it
+until the link is already stale in someone's inbox.
+
+**A related, separately-measured edge.** An object that was ever `allUsers`-public
+keeps being served from Google's edge cache for up to an hour after its ACL is
+tightened — verified: a cache-busting query string returns `403` while the bare URL
+still serves the pre-restriction bytes. This server never creates a public object,
+so it only bites on objects made public before it existed. `set_sensitivity`'s
+description and the docs both say "no new readers", not "no readers".
+
+**Undo.** If Google retires V2, drop `DEFAULT_LINK_DAYS` to 7 and delete
+`signingVersionFor` — every link becomes V4 and the seven-day ceiling becomes the
+product's ceiling. `refresh_link` absorbs the difference. If Google ever raises the
+V4 cap, delete the V2 branch instead.
+
+## 44. `upload_file` reads any local path outside a small denylist
+
+**What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and
+uploads whatever it reads. It runs in the bundle, whose environment holds fourteen
+other servers' credentials, so `file:///proc/self/environ` was a one-call way to
+publish all of them. `readSource` now refuses `/proc`, `/sys`, `/dev`, `/app`,
+`/root` and `/etc`.
+
+**Why it is a hack.** A denylist is not a sandbox. Anything else the process can
+read — a temp file another server wrote, a mounted config — is still reachable.
+The actual boundary is the gateway: reaching this tool requires a token entitled
+to the slug, and the entitlement is the control.
+
+**Undo.** Replace the denylist with a configured upload root
+(`_UPLOAD_ROOT`, default `/tmp`) and resolve every `file://` path inside it,
+refusing anything that escapes after `realpath`. That is a behaviour change for
+callers that pass absolute paths from elsewhere, which is why it is not the
+first move.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
