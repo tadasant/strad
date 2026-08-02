@@ -806,6 +806,43 @@ upstream-authored text actually lives. Unset `SENTRY_DSN` — the default — an
 of this runs. See
 [Telemetry](/operate/telemetry/#exception-reporting--glitchtip-over-the-sentry-protocol).
 
+## Links and artifacts
+
+### 43. A link longer than seven days is signed with GCS's legacy V2 process
+
+The [artifact store](/servers/artifact-store/) returns a **14-day** signed URL by
+default. GCS's **V4** signing process caps expiry at seven days (604800s) — Google
+enforces it and the Node SDK throws rather than clamps — so fourteen days is not
+reachable with V4 at all. It is reachable with **V2**, the older process, which has
+no cap: verified against a real bucket, 14-day and 365-day V2 URLs both serve `200`
+anonymously.
+
+So the server picks by duration: V4 at seven days or less, V2 beyond it, and the
+response says which in `signing_version`.
+
+**The exposure.** Google recommends V4 and calls V2 legacy. If V2 is retired, every
+link longer than seven days stops being mintable and `upload_file` / `refresh_link`
+start failing loudly for those durations — the error names the cap and tells the
+caller to ask for seven days or fewer. Links already issued are unaffected.
+
+**Why not just ship seven days.** The default was chosen for the human, not the
+API: an artifact is usually looked at days after it is made, and a dead link is the
+failure the server exists to avoid. The exposure is bounded by `refresh_link`,
+which exists for precisely this — a dead link is one tool call away from being
+alive again.
+
+**What is deliberately not done.** No silent downgrade. A 14-day request never
+quietly becomes a 7-day link; nothing would surface that until the link was already
+stale in someone's inbox.
+
+### `set_sensitivity` cannot recall a link that is already out there
+
+A signed URL is valid until it expires, independently of the object's ACL.
+Marking an artifact sensitive after the fact stops _new_ readers and stops new
+signed links being minted — it does not revoke one already pasted into a message.
+`delete_file` is the only true revoke, and the tool descriptions say so rather than
+implying otherwise.
+
 ## Supply chain and build
 
 ### 10, 15 & 41. The `shared/` trees are vendored, not depended on

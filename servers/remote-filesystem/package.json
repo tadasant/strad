@@ -1,0 +1,14 @@
+{
+  "name": "remote-filesystem",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's artifact store MCP server — uploads a file to a GCS bucket and hands back a link a human can open. Non-sensitive artifacts get a time-limited signed link; sensitive ones get a link that only a signed-in Workspace account can open. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

@@ -88,6 +88,7 @@ export default defineConfig({
           items: [
             { label: "The server-config interface", slug: "servers/interface" },
             { label: "Adding a server", slug: "servers/adding" },
+            { label: "The artifact store", slug: "servers/artifact-store" },
           ],
         },
         {

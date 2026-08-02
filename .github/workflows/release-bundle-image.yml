@@ -11,7 +11,8 @@ name: Release bundle image
 #
 # BUILD CONTEXT IS THE REPO ROOT. This image is assembled from six projects that
 # live in different directories (servers/bundle-api, images/bundle-google,
-# servers/onepassword, servers/{good-eggs,fetchpet,pointsyeah}), each built in its
+# servers/onepassword, servers/remote-filesystem, servers/{good-eggs,fetchpet,pointsyeah}),
+# each built in its
 # own stage with its own lockfile. So `paths:` below has to watch all of them: a
 # change to any one of those servers changes this image.
 #
@@ -37,6 +38,7 @@ on:
       - "servers/bundle-api/**"
       - "servers/onepassword/**"
       - "servers/secrets/**"
+      - "servers/remote-filesystem/**"
       - "servers/good-eggs/**"
       - "servers/fetchpet/**"
       - "servers/pointsyeah/**"
