@@ -137,6 +137,11 @@ spec: the server list decides how many containers exist and how they're wired.
   Only the SHA-256 is stored; the plaintext is shown once at mint. Constant-time
   compare, soft revocation.
 
+The console at `/ui` is an installable PWA. Its service worker caches a fixed list
+of brand assets and one offline page — never an authenticated response, never a
+revealed secret. See [the console as an installed
+app](https://docs.strad.tadasant.com/operate/console-pwa/).
+
 ```bash
 npm run token:mint -- --label "my agent" --roles admin --env staging
 ```

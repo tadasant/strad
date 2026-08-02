@@ -119,6 +119,29 @@ longer reports a failed `resources/list`, because it is no longer asked — so
 `degraded`. The cost is a second round trip per slug per interval against
 containers that already share one CPU (#24).
 
+### 41. The installed console's cached shell is versioned by hand
+
+The console is [installable](/operate/console-pwa/), and its service worker
+precaches a fixed shell — the icons, the manifest, and one static offline page —
+into a cache named `strad-shell-v1`. Renaming that constant is what evicts the old
+cache. Nothing renames it for you, and nothing fails if you forget.
+
+The shell list is interpolated into the worker script, so _adding_ a path changes
+the script and re-installs. Two edits slip through anyway. Changing the offline
+page's copy leaves the script byte-identical, so no install fires and installed
+browsers keep the old page. _Removing_ a path re-installs but does not evict — the
+withdrawn entry stays cached and keeps being served.
+
+The blast radius is cosmetic by construction: everything in that cache is a brand
+asset or a page whose whole content is "the network is gone." Nothing
+authenticated is in there to go stale, because nothing authenticated is in there
+at all.
+
+**Undo:** derive the cache name from a content hash of the shell rather than a
+literal, so any changed byte renames the cache. It was left as a literal because
+the shell is three icons and a page, and a hash that turns over on every theme
+tweak evicts more often than the problem warrants.
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth

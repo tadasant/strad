@@ -9,6 +9,7 @@ import {
   type Routing,
 } from "./param-routing.ts";
 import type { RevealPosture } from "./reveal.ts";
+import { PWA_HEAD } from "./pwa.ts";
 
 /**
  * Server-rendered HTML for the human console.
@@ -17,6 +18,10 @@ import type { RevealPosture } from "./reveal.ts";
  * client framework, no bundle. Navigation is plain `<a href>` with a `?prefix=`
  * query, so descending a folder and walking the breadcrumb back are ordinary GET
  * requests that the same SSO gate covers. Progressive enhancement, not an SPA.
+ *
+ * The console is also installable, and that changed none of the above: a PWA
+ * needs a manifest, icons and a service worker, which are three static files
+ * Express serves (src/ui/pwa.ts). `PWA_HEAD` below is the `<head>` half of it.
  *
  * The palette, type scale and card/table styling are lifted from the strad docs
  * site (docs/src/styles/custom.css): the Zimmer teal theme, IBM Plex Sans for
@@ -62,6 +67,7 @@ export function layout(opts: LayoutOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex, nofollow" />
 <title>${esc(opts.title)} · strad</title>
+${PWA_HEAD}
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;650&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -1239,6 +1245,35 @@ export function renderSignIn(reason: string): string {
   return layout({ title: "Sign in", body });
 }
 
+/**
+ * The offline fallback, shown when the installed app is opened with no network.
+ *
+ * It is the ONE page the service worker precaches, and everything about it
+ * follows from that. It takes no arguments, because a precached document is
+ * written once and served to whoever opens the app next — a version that varied
+ * by request, by signed-in identity or by config would freeze one visitor's
+ * answer on disk. So it names no server, no bucket and no person, and it does
+ * not claim the session is still good: it says the network is gone, and offers
+ * the retry that will find out.
+ */
+export function renderOffline(): string {
+  const body = `
+<div class="state state-warn">
+  <div class="state-icon">${OFFLINE_SVG}</div>
+  <p class="state-title">No connection</p>
+  <p class="state-sub">The console is a live view of a running gateway — the
+    server roster, the secret states and the parameter forms are all read from it
+    on request, so there is nothing useful to show while it is unreachable.</p>
+  <p class="state-detail">Reconnect and reload. You may need to sign in again.</p>
+  <p><a class="btn" href="/ui">Retry</a></p>
+</div>`;
+  return layout({
+    title: "Offline",
+    body,
+    footNote: "offline · nothing cached",
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1317,6 +1352,8 @@ const QUESTION_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none
 const CARET_SVG = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 const INFO_SVG = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/><path d="M12 11v5M12 8h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+
+const OFFLINE_SVG = `<svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4.5 9.5a10.5 10.5 0 0 1 5-2.6M14.5 7a10.5 10.5 0 0 1 5 2.5M7.5 13a6.5 6.5 0 0 1 2.2-1.3M14.5 11.8a6.5 6.5 0 0 1 2 1.2M10.4 16.3a2.5 2.5 0 0 1 3.2 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M12 19h.01" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><path d="M3.5 3.5l17 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
 
 // ---------------------------------------------------------------------------
 // Theme — the docs palette (docs/src/styles/custom.css), inlined and adapted
@@ -1539,7 +1576,7 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .chip-plain{color:var(--g3);border-color:var(--g5);text-transform:none;letter-spacing:0}
 form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .btn{font:inherit;font-size:.76rem;padding:.32rem .6rem;border-radius:.35rem;cursor:pointer;
-  border:1px solid var(--g5);background:var(--g6);color:var(--g1);white-space:nowrap}
+  display:inline-block;border:1px solid var(--g5);background:var(--g6);color:var(--g1);white-space:nowrap}
 .btn:hover:not(:disabled){border-color:var(--accent);color:var(--white)}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-size:.85rem;padding:.5rem 1rem;font-weight:600}

@@ -231,6 +231,28 @@ secret would dissolve both. The answer vocabulary is presence, source and
 freshness; contents are not in it. See
 [Secrets](/operate/secrets/#the-presence-route-a-component-answering-for-itself).
 
+### The PWA surface is in front of the gate, because it has to be
+
+The console is installable, and the three things that make it so —
+`/manifest.webmanifest`, `/sw.js`, and the icons under `/pwa/` — answer an
+anonymous request. That is not an oversight. A browser fetches
+`<link rel="manifest">` **without credentials** unless the tag carries
+`crossorigin="use-credentials"`, so a gated manifest is a `401` and an app nobody
+can install.
+
+Serving them ungated is acceptable for the same reason the service worker is
+allowed to cache them: each is a static brand asset, byte-identical for every
+visitor, naming no server, no bucket, no identity, no config value and no
+hostname. `/pwa/offline` — the one page the worker precaches — is in the same
+category, and it takes no arguments so it cannot accidentally leave that
+category. `test/pwa.test.ts` asserts each absence against what an anonymous
+caller can actually pull.
+
+Nothing else moved. `/`, `/ui`, `/ui/:server` and every console `POST` still sit
+behind `requireConsoleUi`, and the worker declines to cache or even observe any
+of them. See [The console as an installed
+app](/operate/console-pwa/#what-the-service-worker-caches).
+
 ### Console dev bypass (temporary)
 
 While Google OAuth credentials are being provisioned, a human can enter `/console`

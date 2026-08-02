@@ -1470,6 +1470,48 @@ listing, which is the half that matters.
 upstreams that are already CPU-starved (hack #24), which is why it is written
 down here rather than done.
 
+---
+
+## 41. The service worker's cache version is bumped by hand, and nothing checks it
+
+**What.** The console is installable, and its service worker precaches a fixed
+shell — the icons, the manifest and one static offline page — into a cache named
+by the `SHELL_CACHE` constant in `src/ui/pwa.ts`, currently `strad-shell-v1`. The
+worker's `activate` deletes every cache whose name is not the current one, so
+renaming the constant is also the eviction. Nothing renames it for you, and
+nothing fails if you forget.
+
+**Why it matters.** Edit the offline page's copy, or add a path to `SHELL_PATHS`,
+without touching `SHELL_CACHE`, and every browser that already installed the
+worker keeps serving the old shell from disk. The worker's `install` only runs
+when the worker SCRIPT changes — which it does here, since the shell list is
+interpolated into the script, so a changed list does re-install. A changed
+_offline page_ does not: that content lives behind `/pwa/offline`, the script is
+byte-identical, no `install` fires, and the stale copy is authoritative for as
+long as the installation lives. REMOVING a path has the mirror problem: the
+script does change, so `install` re-runs, but `addAll` only adds — the withdrawn
+entry stays in the cache and keeps being served until the cache is renamed.
+
+This is bounded. The shell is brand assets and a page whose entire content is
+"the network is gone" — a stale one is cosmetic, and it is stale precisely
+because it is the version that has no live data in it. It is not bounded by
+anything in CI: no test compares the rendered offline page against the cache
+name, because a test that did would have to be updated in exactly the same manual
+step it is meant to enforce.
+
+**Related, and deliberate:** an offline navigation to `/ui/gcs` renders the
+offline page while the address bar still reads `/ui/gcs`. That is how a
+navigation fallback works — the response is substituted, not redirected — and the
+alternative (a redirect to `/pwa/offline`) would lose the URL the human was
+trying to reach across the reconnect.
+
+**Undo.** Derive the cache name from a content hash of the shell instead of a
+literal: hash the offline HTML plus the icon bytes at module load and append it,
+so any change to a cached byte renames the cache and evicts the old one. It is
+five lines and was not done because the shell is three icons and a page, and a
+hash that changes on every unrelated theme tweak evicts more often than the
+problem justifies.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:
