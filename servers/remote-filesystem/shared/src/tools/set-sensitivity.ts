@@ -45,6 +45,11 @@ readers from reaching it and stops new signed links being minted, but it cannot 
 a URL already pasted into a message. If the artifact truly must not be readable, use
 delete_file and re-upload with \`is_sensitive: true\`.
 
+**⚠️ And if the artifact was ever \`public\`, Google's edge may serve the old copy for
+up to an hour** after you restrict it, from the plain \`storage.googleapis.com\` URL.
+Restricting is still the right first move, but treat it as "no new readers", not "no
+readers", and say so if a human is relying on it.
+
 **Example response:**
 \`\`\`json
 {

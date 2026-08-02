@@ -118,6 +118,17 @@ export async function readSource(source: string): Promise<Buffer> {
       );
     }
   }
+  // `Buffer.from(x, "base64")` never throws — it discards anything outside the
+  // alphabet and returns whatever is left. So a bare filesystem path, which is
+  // the most likely mistake here, would upload a few bytes of garbage and report
+  // success. Check the shape first and say what was probably meant.
+  if (!/^[A-Za-z0-9+/\s]*={0,2}$/.test(source)) {
+    throw new Error(
+      "`source` is neither a file:// URI nor base64. It looks like a plain path or " +
+        "raw text — prefix a local path with file:// (e.g. \"file:///tmp/shot.png\"), " +
+        "or base64-encode the contents first.",
+    );
+  }
   const buffer = Buffer.from(source, "base64");
   if (buffer.length === 0) {
     throw new Error(

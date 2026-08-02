@@ -133,3 +133,30 @@ test("only transient connection failures are retried", async () => {
   );
   assert.equal(attempts, 1, "a permanent error is not retried");
 });
+
+test("a bare filesystem path is refused rather than uploaded as garbage", async () => {
+  const { toolDefinitions } = await import("../build/index.js");
+  const store = {
+    bucket: () => "b",
+    viewerDomain: () => "example.com",
+    defaultLinkDays: () => 14,
+    put: async () => {
+      throw new Error("must not reach the store");
+    },
+  };
+  const upload = toolDefinitions(() => store).find((t) => t.name === "upload_file");
+
+  // `Buffer.from(x, "base64")` silently discards anything outside the alphabet,
+  // so without a shape check this would store four bytes and report success.
+  const res = await upload.handler({ source: "/tmp/screenshots/page.png" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /file:\/\//);
+
+  const text = await upload.handler({ source: "this is not base64!" });
+  assert.equal(text.isError, true);
+
+  // Well-formed base64 that carries nothing is a separate, quieter mistake.
+  const empty = await upload.handler({ source: "==" });
+  assert.equal(empty.isError, true);
+  assert.match(empty.content[0].text, /zero bytes/);
+});

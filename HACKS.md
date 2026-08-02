@@ -1626,6 +1626,13 @@ quietly becomes a 7-day link — handing back a link that expires in half the ti
 the caller asked for is a worse failure than an error, because nothing surfaces it
 until the link is already stale in someone's inbox.
 
+**A related, separately-measured edge.** An object that was ever `allUsers`-public
+keeps being served from Google's edge cache for up to an hour after its ACL is
+tightened — verified: a cache-busting query string returns `403` while the bare URL
+still serves the pre-restriction bytes. This server never creates a public object,
+so it only bites on objects made public before it existed. `set_sensitivity`'s
+description and the docs both say "no new readers", not "no readers".
+
 **Undo.** If Google retires V2, drop `DEFAULT_LINK_DAYS` to 7 and delete
 `signingVersionFor` — every link becomes V4 and the seven-day ceiling becomes the
 product's ceiling. `refresh_link` absorbs the difference. If Google ever raises the

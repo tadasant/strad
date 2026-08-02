@@ -843,6 +843,13 @@ signed links being minted — it does not revoke one already pasted into a messa
 `delete_file` is the only true revoke, and the tool descriptions say so rather than
 implying otherwise.
 
+There is a second layer to this, measured rather than assumed: **an object that was
+ever world-readable keeps being served from Google's edge cache for up to an hour
+after it is restricted.** A cache-busting query string returns the true `403`
+immediately; the bare URL keeps serving the cached bytes. The artifact store never
+creates a public object, so this is bounded to objects made public before it
+existed — but restricting one of those means "no new readers", not "no readers".
+
 ## Supply chain and build
 
 ### 10, 15 & 41. The `shared/` trees are vendored, not depended on

@@ -108,6 +108,13 @@ Restricting an artifact stops _new_ readers and stops new signed links being
 minted; it cannot recall one already handed out. `delete_file` is the only true
 revoke, and `set_sensitivity`'s description says so.
 
+One more wrinkle, measured rather than assumed: **an object that was ever
+`public` keeps being served from Google's edge cache for up to an hour after it is
+restricted.** A cache-busting query string gets the true `403` immediately; the
+bare URL does not. This server never creates a public object, so the exposure is
+bounded to pre-existing ones — but `set_sensitivity(true)` on one of those means
+"no new readers", not "no readers".
+
 ## Storage layout
 
 **No root prefix, on purpose.** `GCS_ROOT_PATH` is supported but unset in

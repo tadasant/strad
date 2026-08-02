@@ -186,7 +186,23 @@ export class GcsArtifactStore implements ArtifactStore {
         metadata: { contentType, metadata: options.metadata },
         resumable: false,
       });
+
+      // NORMALISE THE ACL, always — do not assume a fresh object.
+      //
+      // `save` overwrites the BYTES of an existing object and leaves its ACL
+      // alone. Writing over a path that already carried an `allUsers` grant
+      // would otherwise store a "sensitive" artifact that is world-readable, and
+      // report it as `restricted`. Writing a non-sensitive artifact over a
+      // restricted path would leave the domain grant in place while the response
+      // says `link`. Both are the response lying about access, which is the one
+      // thing this server must not do. A brand-new object has none of these
+      // entities, so the deletes are no-ops that cost a round trip.
+      await removeEntity(file, "allUsers");
+      await removeEntity(file, "allAuthenticatedUsers");
       if (options.sensitive) await this.grantViewerDomain(file);
+      else if (this.config.viewerDomain) {
+        await removeEntity(file, domainReaderEntity(this.config.viewerDomain));
+      }
     });
 
     const artifact: Artifact = {
@@ -236,7 +252,14 @@ export class GcsArtifactStore implements ArtifactStore {
         await removeEntity(file, "allAuthenticatedUsers");
         await this.grantViewerDomain(file);
       } else {
-        await removeEntity(file, domainReaderEntity(this.config.viewerDomain ?? ""));
+        // EVERY domain grant, not just this deployment's configured one. This is
+        // the correction path, and it is answering "make this not sensitive" — a
+        // leftover grant for some other domain would keep `accessOf` reporting
+        // `restricted` forever with no tool able to clear it. The extra ACL read
+        // is affordable here in a way it would not be on the upload path.
+        for (const entity of await this.domainEntities(file)) {
+          await removeEntity(file, entity);
+        }
       }
     });
 
@@ -327,12 +350,32 @@ export class GcsArtifactStore implements ArtifactStore {
       await file.acl.add({ entity: domainReaderEntity(domain), role: "READER" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // Two very different operator errors reach this catch, and naming the wrong
+      // one sends whoever reads it to the wrong console. Google is explicit about
+      // the first, so pass its own words through rather than guessing.
+      const cause = /could not find domain/i.test(message)
+        ? `"${domain}" is not a Google Workspace domain Google can resolve — check ` +
+          `this server's SENSITIVE_VIEWER_DOMAIN for a typo.`
+        : `The usual cause is uniform bucket-level access being enabled on ` +
+          `${this.config.bucket}, which disables per-object ACLs — this server needs it off.`;
       throw new StoreError(
         `Stored the object but could not grant ${domain} read access to it (${message}). ` +
-          `The artifact is private and only the service account can open it. ` +
-          `The usual cause is uniform bucket-level access being enabled on ` +
-          `${this.config.bucket}, which disables per-object ACLs — this server needs it off.`,
+          `The artifact is private, so nothing has leaked, but only the service account ` +
+          `can open it. ${cause}`,
       );
+    }
+  }
+
+  /** Every `domain-*` READER entity currently on the object. */
+  private async domainEntities(file: File): Promise<string[]> {
+    try {
+      const [acl] = await file.acl.get();
+      const entries = Array.isArray(acl) ? acl : [acl];
+      return entries
+        .map((e) => e.entity ?? "")
+        .filter((entity) => entity.startsWith("domain-"));
+    } catch {
+      return [];
     }
   }
 
