@@ -113,6 +113,36 @@ const ENV: NodeJS.ProcessEnv = {
 let server: Server;
 let html: string;
 
+/** Boot a gateway on this YAML and return the `/ui` it renders, signed in. */
+const boot = async (yaml: string): Promise<string> => {
+  const config = parseConfig(yaml);
+  const provider = new EnvSecretProvider(BAG);
+  const registry = await Registry.build({
+    config,
+    secrets: provider,
+    mode: "core",
+    env: ENV,
+  });
+  const app = createApp({
+    config,
+    registry,
+    tokenStore: tokenStoreFromConfig(config, ENV),
+    mode: "core",
+    env: ENV,
+    secrets: BAG,
+    secretProvider: provider,
+  });
+  const s = app.listen(0);
+  await new Promise<void>((r) => s.on("listening", () => r()));
+  const addr = s.address();
+  if (typeof addr === "string" || !addr) throw new Error("no port");
+  const body = await (
+    await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
+  ).text();
+  s.close();
+  return body;
+};
+
 beforeAll(async () => {
   const provider = new EnvSecretProvider(BAG);
   const registry = await Registry.build({
@@ -287,35 +317,6 @@ describe("GET /ui — badges", () => {
 });
 
 describe("GET /ui with nothing enabled", () => {
-  const boot = async (yaml: string) => {
-    const config = parseConfig(yaml);
-    const provider = new EnvSecretProvider(BAG);
-    const registry = await Registry.build({
-      config,
-      secrets: provider,
-      mode: "core",
-      env: ENV,
-    });
-    const app = createApp({
-      config,
-      registry,
-      tokenStore: tokenStoreFromConfig(config, ENV),
-      mode: "core",
-      env: ENV,
-      secrets: BAG,
-      secretProvider: provider,
-    });
-    const s = app.listen(0);
-    await new Promise<void>((r) => s.on("listening", () => r()));
-    const addr = s.address();
-    if (typeof addr === "string" || !addr) throw new Error("no port");
-    const body = await (
-      await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
-    ).text();
-    s.close();
-    return body;
-  };
-
   const EMPTY = `
 version: 1
 gateway: { name: strad, env: test }
@@ -421,5 +422,91 @@ describe("GET /ui — the ISSUE popout", () => {
       expect(html).not.toContain(value);
     }
     expect(html).not.toContain("NeverShown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The playground icon: offered only where the playground OPENS
+// ---------------------------------------------------------------------------
+
+/**
+ * `console` is granted every server; `theirs` grants only `agent`.
+ *
+ * That is the intersection in `entitledServers()` — role→servers AND
+ * server→`entitlements:`, both directions — and it is the case the index used to
+ * get wrong: `theirs` is enabled, so it drew an icon, and the page behind the
+ * icon answered 424.
+ */
+const ROLES_YAML = (consoleRoles: string) => `
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: ${consoleRoles} }
+roles:
+  console: { servers: ["*"] }
+  agent: { servers: ["*"] }
+servers:
+  - slug: mine
+    kind: remote-http
+    url: https://mine.example.com/mcp
+    entitlements: [console]
+  - slug: theirs
+    kind: remote-http
+    url: https://theirs.example.com/mcp
+    entitlements: [agent]
+  - slug: retired
+    kind: remote-http
+    url: https://retired.example.com/mcp
+    enabled: false
+    entitlements: [console]
+`;
+
+const playIcon = (slug: string) =>
+  `aria-label="Open the playground for ${slug}"`;
+const copyIcon = (slug: string) => `aria-label="Copy the MCP URL for ${slug}"`;
+
+describe("GET /ui — the playground icon", () => {
+  it("offers it only where THIS console identity may open the playground", async () => {
+    // The icon and the page are one decision (`playgroundAccess`). `theirs` is
+    // ENABLED and reached by `console: { servers: ["*"] }`, and its own
+    // `entitlements:` still exclude this session — so /playground/theirs answers
+    // 424 and the card must not offer it.
+    const body = await boot(ROLES_YAML("[console]"));
+
+    expect(body).toContain(playIcon("mine"));
+    expect(body).not.toContain(playIcon("theirs"));
+    // Still a disabled server, still no icon: the assertion that held before.
+    expect(body).not.toContain(playIcon("retired"));
+
+    // The CARD is there either way — roles are not a console ACL, and hiding an
+    // entry would be a different (and wrong) change. Only the control is gone.
+    expect(body).toContain('<span class="card-title">theirs</span>');
+  });
+
+  it("keeps the copy icon on a server this identity is not entitled to", async () => {
+    // Deliberate. The copied URL is addressed to a TOKEN principal — a different
+    // identity — so an operator copying the URL an agent's token will use is
+    // doing something legitimate that their own console roles say nothing about.
+    // `enabled` is the only property of the server the paste depends on.
+    const body = await boot(ROLES_YAML("[console]"));
+
+    expect(body).toContain(copyIcon("theirs"));
+    expect(body).toContain(copyIcon("mine"));
+    // A disabled server is mounted for nobody, so no token makes that URL work.
+    expect(body).not.toContain(copyIcon("retired"));
+  });
+
+  it("offers it nowhere when the console principal holds NO roles", async () => {
+    // The schema default for both console role arrays is `[]`
+    // (src/config/schema.ts), so a config that omits `roles:` gets a console
+    // entitled to nothing. The playground is fail-closed for it by design; every
+    // card drawing an icon into that 424 was the defect.
+    const body = await boot(ROLES_YAML("[]"));
+
+    expect(body).not.toContain('aria-label="Open the playground for');
+    // The page is otherwise unchanged: the cards, and the copy icons, remain.
+    expect(body).toContain('<span class="card-title">mine</span>');
+    expect(body).toContain(copyIcon("mine"));
   });
 });

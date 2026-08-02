@@ -116,6 +116,18 @@ export function signedInLabel(res: Response): string | undefined {
   return p?.label;
 }
 
+/**
+ * The console identity the gate resolved. A request that reached a handler has
+ * one — `requireConsoleUi` answers 401 or a redirect otherwise.
+ *
+ * One reading of `res.locals`, because two console surfaces consume the roles on
+ * it (the playground, and the index that links to it) and a second cast is a
+ * second place for them to drift apart.
+ */
+export function consolePrincipal(res: Response): Principal {
+  return res.locals.principal as Principal;
+}
+
 /** A verified Google session cookie, or null. */
 export function googlePrincipal(
   cookieHeader: string | undefined,
