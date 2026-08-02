@@ -49,10 +49,10 @@ import {
  */
 
 /** Where the worker lives. Root, so its scope is the whole origin. */
-export const SW_PATH = "/sw.js";
+const SW_PATH = "/sw.js";
 
 /** Where the manifest lives. */
-export const MANIFEST_PATH = "/manifest.webmanifest";
+const MANIFEST_PATH = "/manifest.webmanifest";
 
 /**
  * Everything the service worker is permitted to cache.
@@ -86,7 +86,7 @@ export const SHELL_CACHE = "strad-shell-v1";
  */
 export const THEME_COLOR = "#0f1116";
 
-export function manifest(): Record<string, unknown> {
+function manifest(): Record<string, unknown> {
   return {
     // `id` is what the browser keys the installed app on. Pinning it means the
     // app survives a change of `start_url` instead of installing a second time.
@@ -207,7 +207,17 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
-  /* The shell, and only the shell, is served from the cache. */
+  /*
+   * The shell, and only the shell, is served from the cache.
+   *
+   * The test is exact string equality on the PATHNAME, against the current
+   * list. Two consequences, both deliberate. A path that merely looks like a
+   * shell path — "/pwa/offline/", "/PWA/offline", anything Express would still
+   * route — does not match and goes to the network, which is the safe
+   * direction. And a query string is ignored, so "?v=2" is NOT a cache-bust
+   * escape hatch for a stale shell asset: renaming CACHE is the only remedy.
+   * See HACKS.md #41.
+   */
   if (SHELL.includes(url.pathname)) {
     event.respondWith(
       (async () => {
@@ -273,47 +283,61 @@ export interface PwaOptions {
  */
 export function mountPwa(app: Express, opts: PwaOptions): void {
   app.get(MANIFEST_PATH, (_req, res) => {
-    stat(res, "application/manifest+json; charset=utf-8").send(
+    asset(res, "application/manifest+json; charset=utf-8", REVALIDATE).send(
       JSON.stringify(manifest(), null, 2),
     );
   });
 
   app.get(SW_PATH, (_req, res) => {
-    // `no-cache` rather than `no-store`: the browser may keep it, but must
-    // revalidate, so a deploy that changes the worker takes effect on the next
-    // visit instead of whenever a heuristic freshness window happens to lapse.
-    res
-      .type("text/javascript; charset=utf-8")
-      .set("Cache-Control", "no-cache")
-      .set("X-Robots-Tag", "noindex")
-      .send(SERVICE_WORKER_JS);
+    asset(res, "text/javascript; charset=utf-8", REVALIDATE).send(
+      SERVICE_WORKER_JS,
+    );
   });
 
   app.get("/pwa/icon.svg", (_req, res) => {
-    stat(res, "image/svg+xml; charset=utf-8").send(ICON_SVG);
+    asset(res, "image/svg+xml; charset=utf-8", KEEP_AN_HOUR).send(ICON_SVG);
   });
 
   app.get("/pwa/icon-192.png", (_req, res) => {
-    stat(res, "image/png").send(ICON_192_PNG);
+    asset(res, "image/png", KEEP_AN_HOUR).send(ICON_192_PNG);
   });
 
   app.get("/pwa/icon-512.png", (_req, res) => {
-    stat(res, "image/png").send(ICON_512_PNG);
+    asset(res, "image/png", KEEP_AN_HOUR).send(ICON_512_PNG);
   });
 
   app.get("/pwa/icon-maskable-512.png", (_req, res) => {
-    stat(res, "image/png").send(ICON_MASKABLE_512_PNG);
+    asset(res, "image/png", KEEP_AN_HOUR).send(ICON_MASKABLE_512_PNG);
   });
 
   app.get("/pwa/offline", (_req, res) => {
-    stat(res, "text/html; charset=utf-8").send(opts.offlineHtml);
+    asset(res, "text/html; charset=utf-8", REVALIDATE).send(opts.offlineHtml);
   });
 }
 
+/**
+ * The two documents that CHANGE, and the worker script that carries them.
+ *
+ * `no-cache` rather than `no-store`: a browser may keep a copy, but must
+ * revalidate it. That matters more than it looks, because `cache.addAll()` is
+ * an ordinary fetch and will happily be answered from the HTTP cache — so a
+ * freshness window here is a window in which a re-installing worker precaches
+ * the OLD bytes, and an edit stays invisible even though the worker script
+ * already changed. That is the sharp edge HACKS.md #41 describes; there is no
+ * reason to widen it for two small documents and a 2 KB script.
+ */
+const REVALIDATE = "no-cache";
+
+/**
+ * The icons. Their bytes do not change without `pwa-icons.ts` changing, they
+ * are the largest thing served here, and a stale one is a stale logo.
+ */
+const KEEP_AN_HOUR = "public, max-age=3600";
+
 /** Headers shared by the static, ungated assets. */
-function stat(res: Response, type: string): Response {
+function asset(res: Response, type: string, cacheControl: string): Response {
   return res
     .type(type)
-    .set("Cache-Control", "public, max-age=3600")
+    .set("Cache-Control", cacheControl)
     .set("X-Robots-Tag", "noindex");
 }

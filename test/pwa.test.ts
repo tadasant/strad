@@ -177,6 +177,24 @@ describe("the service worker script", () => {
     expect(res.headers.get("cache-control")).toBe("no-cache");
   });
 
+  it("shares that with the two shell entries that actually change", async () => {
+    // `cache.addAll()` is an ordinary fetch and will be answered from the HTTP
+    // cache. A freshness window on these two is therefore a window in which a
+    // RE-INSTALLING worker precaches the old bytes — which is exactly the sharp
+    // edge HACKS.md #41 is about, so it is not widened here. The icons may sit
+    // in the HTTP cache; their bytes do not change without the module changing.
+    for (const path of ["/manifest.webmanifest", "/pwa/offline"]) {
+      const res = await fetch(`${baseUrl}${path}`);
+      expect(res.headers.get("cache-control"), path).toBe("no-cache");
+    }
+    for (const path of ["/pwa/icon-192.png", "/pwa/icon.svg"]) {
+      const res = await fetch(`${baseUrl}${path}`);
+      expect(res.headers.get("cache-control"), path).toBe(
+        "public, max-age=3600",
+      );
+    }
+  });
+
   it("names only shell paths — no console route appears in its source", async () => {
     const src = await (await fetch(`${baseUrl}/sw.js`)).text();
     // The worker's cache list is a literal in the file. Anything that could

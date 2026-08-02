@@ -2,7 +2,7 @@
 title: The console as an installed app
 description: The strad console is a Progressive Web App — installable from the browser, with a service worker that caches its brand shell and, deliberately, nothing else.
 sidebar:
-  order: 7
+  order: 5
 ---
 
 The strad console is installable. Open `/ui` in a browser that offers it, install,
@@ -12,7 +12,8 @@ with no address bar.
 Nothing about how the console is built changed to make that true. The pages are
 still whole server-rendered documents with the theme inlined — no build step, no
 client framework, no bundle. A Progressive Web App needs three things on top of
-that, and all three are static text Express hands out:
+that — a manifest, icons, a service worker — plus, in strad's case, one page of
+its own. All of it is static text Express hands out:
 
 | Path                               | What it is                                         |
 | ---------------------------------- | -------------------------------------------------- |
@@ -107,13 +108,21 @@ be worth caching are exactly the things that must not be.
 
 The cache is named `strad-shell-v1`, in `SHELL_CACHE`. The worker's `activate`
 deletes every cache whose name is not the current one, so **renaming the cache is
-also the eviction**. Bump it whenever the shell list or the offline page changes.
+also the eviction**. Bump it whenever a cached byte changes without the worker
+script changing — an edit to the offline page's copy is the case that matters.
 
-`/sw.js` is served `Cache-Control: no-cache`, so a browser may keep a copy but
-must revalidate it — a deploy that changes the worker takes effect on the next
-visit rather than whenever a heuristic freshness window happens to lapse.
+Three of the routes are served `Cache-Control: no-cache`: `/sw.js`, so a deploy
+that changes the worker takes effect on the next visit; and `/manifest.webmanifest`
+and `/pwa/offline`, because `cache.addAll()` is an ordinary fetch and would
+otherwise be answered from the HTTP cache — a freshness window there is a window
+in which a re-installing worker precaches the _old_ bytes. The icons keep an hour;
+their bytes do not change without `pwa-icons.ts` changing.
 
-## Signing out
+`?v=2` is not an escape hatch. The worker looks up `url.pathname`, which drops the
+search, so a query-stringed shell URL is answered from the same cached entry as
+the bare path. Renaming the cache is the remedy.
+
+## Signing in, and signing out
 
 Sign-out is unchanged: `GET /console/logout` drops both console cookies. The
 service worker is left registered, which is harmless — it holds no authenticated
@@ -122,6 +131,31 @@ the network, finds no session, and gets the sign-in wall like any other browser.
 
 The registration script runs on the sign-in wall too, so an install can be started
 before signing in. It lands on `/ui`, which is gated, and the gate does its job.
+
+Signing in is the one flow the install genuinely changes, and it is worth knowing
+about before you install.
+
+:::caution[Sign-in leaves the app window]
+With Google sign-in live, opening the installed app on an expired session does
+not show a sign-in page inside the app. `requireConsoleUi` answers `/ui` with a
+302 to `/console/login`, which redirects on to `accounts.google.com` — an
+**out-of-scope** navigation from a `display: standalone` window, so the browser
+hands it to a tab or an in-app browser and the app window is left behind. You come
+back through `/console/oauth/callback` and land on `/ui`.
+
+That round trip is ordinary on Chrome and Android. It has **not** been exercised
+on iOS, where a standalone window has historically had its own storage partition —
+which is exactly the thing this flow depends on. See
+[Known limitations](/limitations/#42-the-installed-consoles-sign-in-leaves-the-app-window).
+
+Under today's dev bypass the question does not arise: the gate answers `401` with
+a sign-in wall rendered in place, and nothing leaves the window.
+:::
+
+One smaller consequence of the same scope: an offline navigation to
+`/console/oauth/callback` renders the offline page rather than a browser error.
+That consumes the trip without spending the authorization code, so the code is
+still good — sign in again once the network is back.
 
 ## Theme
 

@@ -1481,16 +1481,23 @@ worker's `activate` deletes every cache whose name is not the current one, so
 renaming the constant is also the eviction. Nothing renames it for you, and
 nothing fails if you forget.
 
-**Why it matters.** Edit the offline page's copy, or add a path to `SHELL_PATHS`,
-without touching `SHELL_CACHE`, and every browser that already installed the
-worker keeps serving the old shell from disk. The worker's `install` only runs
-when the worker SCRIPT changes — which it does here, since the shell list is
-interpolated into the script, so a changed list does re-install. A changed
-_offline page_ does not: that content lives behind `/pwa/offline`, the script is
-byte-identical, no `install` fires, and the stale copy is authoritative for as
-long as the installation lives. REMOVING a path has the mirror problem: the
-script does change, so `install` re-runs, but `addAll` only adds — the withdrawn
-entry stays in the cache and keeps being served until the cache is renamed.
+**Why it matters.** The worker's `install` only runs when the worker SCRIPT
+changes. The shell LIST is interpolated into that script, so adding or removing a
+path does change it, does re-install, and `addAll` re-fetches the whole list —
+`Cache.put` replaces a matching entry, so every other shell entry is refreshed
+along with it. Those edits are self-healing.
+
+The edit that is not is a change to a cached BYTE that leaves the script
+identical: the offline page's copy, or an icon. That content lives behind
+`/pwa/offline` and `/pwa/icon-*`, the script is unchanged, no `install` fires,
+and the stale copy is authoritative for as long as the installation lives.
+Removing a path leaves a smaller mess: the withdrawn entry stays in the cache as
+dead bytes against the origin's storage quota. It is never SERVED — the fetch
+handler only reads for pathnames on the current list — it just sits there.
+
+`?v=2` does not help either. The worker looks up `url.pathname`, which drops the
+search, so a query-stringed shell URL is answered from the same cached entry as
+the bare path. Renaming the cache really is the only remedy.
 
 This is bounded. The shell is brand assets and a page whose entire content is
 "the network is gone" — a stale one is cosmetic, and it is stale precisely
@@ -1508,9 +1515,45 @@ trying to reach across the reconnect.
 **Undo.** Derive the cache name from a content hash of the shell instead of a
 literal: hash the offline HTML plus the icon bytes at module load and append it,
 so any change to a cached byte renames the cache and evicts the old one. It is
-five lines and was not done because the shell is three icons and a page, and a
-hash that changes on every unrelated theme tweak evicts more often than the
-problem justifies.
+five lines and was not done because the shell is four icons, a manifest and a
+page, and a hash that turns over on every unrelated theme tweak evicts more often
+than the problem justifies.
+
+---
+
+## 42. The installed console's sign-in leaves the app window, and iOS is untested
+
+**What.** The console is installable (`display: standalone`, scope `/`). Open the
+installed app on an expired session and `requireConsoleUi` answers `/ui` with a
+302 to `/console/login`, which redirects on to `accounts.google.com`. That host
+is outside the app's scope, so the browser takes the navigation out of the app
+window and into a tab or an in-app browser; the trip returns through
+`/console/oauth/callback` and lands back on `/ui`.
+
+**Why it matters.** It is the one user-visible flow installing actually changes,
+and it depends on the standalone window and the browser sharing a cookie jar.
+That is ordinary on Chrome and Android. On iOS a `standalone` web app has
+historically had its own storage partition, which is precisely the assumption
+here — a session minted in the Safari tab that ran the OAuth round trip may not be
+the session the app window reads, and the app would bounce back to sign-in in a
+loop. **Nothing here has been exercised on iOS.** It is written down as unknown
+rather than claimed as working.
+
+The question does not arise today: `auth.google` is not provisioned, so the gate
+answers `401` with a sign-in wall rendered in place (hack #2) and nothing leaves
+the window. It arrives the day Google OAuth lands — the same day hack #2 is
+undone, which is why the two should be tested together.
+
+A smaller consequence of the same scope: an offline navigation to
+`/console/oauth/callback` now renders the offline page rather than a browser
+error. That consumes the trip without spending the authorization code, so nothing
+is burned; sign in again once the network is back.
+
+**Undo.** Test the flow on iOS Safari the day OAuth is provisioned, against a
+real installed app rather than a simulator tab. If the partition does break it,
+the fix is not in the manifest — it is to stop redirecting off-origin from a
+gated navigation, i.e. render an in-scope interstitial that starts the OAuth trip
+from a user gesture, so the return lands in the window that began it.
 
 ## What the human still needs to provision
 
