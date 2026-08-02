@@ -58,7 +58,7 @@ export async function loadFromTree<T>(
  * Each tree's shared code registers handlers with Zod schemas from its own SDK
  * copy, so the `Server` those handlers are registered on — and the transport it
  * connects to — must come from that same copy. Resolving the SDK per tree keeps
- * every mount internally consistent, instead of relying on six copies of the SDK
+ * every mount internally consistent, instead of relying on eight copies of the SDK
  * being structurally interchangeable (they usually are; "usually" is not a
  * property you want under a credentials manager).
  */

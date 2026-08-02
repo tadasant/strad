@@ -1638,6 +1638,25 @@ description and the docs both say "no new readers", not "no readers".
 product's ceiling. `refresh_link` absorbs the difference. If Google ever raises the
 V4 cap, delete the V2 branch instead.
 
+## 44. `upload_file` reads any local path outside a small denylist
+
+**What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and
+uploads whatever it reads. It runs in the bundle, whose environment holds fourteen
+other servers' credentials, so `file:///proc/self/environ` was a one-call way to
+publish all of them. `readSource` now refuses `/proc`, `/sys`, `/dev`, `/app`,
+`/root` and `/etc`.
+
+**Why it is a hack.** A denylist is not a sandbox. Anything else the process can
+read — a temp file another server wrote, a mounted config — is still reachable.
+The actual boundary is the gateway: reaching this tool requires a token entitled
+to the slug, and the entitlement is the control.
+
+**Undo.** Replace the denylist with a configured upload root
+(`_UPLOAD_ROOT`, default `/tmp`) and resolve every `file://` path inside it,
+refusing anything that escapes after `realpath`. That is a behaviour change for
+callers that pass absolute paths from elsewhere, which is why it is not the
+first move.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

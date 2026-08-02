@@ -30,8 +30,7 @@ const EXPECT = {
   "monarch-money": 23,
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
   // upload_file, refresh_link, list_files, download_file, set_sensitivity,
-  // delete_file. Six, not the five the vendored upstream had: refresh_link and
-  // set_sensitivity are the sensitivity/durable-link half of this server.
+  // delete_file — the artifact store's whole surface.
   "remote-filesystem-tmp-public": 6,
   "google-flights": 3,
   gmail: 8,

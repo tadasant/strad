@@ -12,10 +12,6 @@ artifact in one Google Cloud Storage bucket and returns a URL. **Link ergonomics
 and sensitivity handling are the whole product**, so both are decided here rather
 than left to the caller.
 
-It replaced a vendored copy of pulsemcp's `remote-filesystem-mcp-server`, which
-had no notion of sensitivity, hard-coded a seven-day link, and offered no way to
-revive an expired one.
-
 ## Two kinds of link
 
 One boolean picks between them.
@@ -133,16 +129,42 @@ per-object ACL; a `sensitive/` prefix would imply an enforcement that does not
 exist, and an object with a mis-set ACL sitting under it would look safe while
 being readable.
 
-## `access` has a third value, and this deployment needs it
+## `access` has four values, and the last two are the interesting ones
 
 `upload_file` never creates a world-readable object, but the bucket already
-contains some — written before this server existed, by a tool that set
-`allUsers`. `refresh_link` reports those as `access: "public"` with no expiry
-rather than pretending they are private, because reporting `restricted` for a
-world-readable object would be the most dangerous thing this server could say.
+contains some — written before this server existed, by a tool that set `allUsers`.
 
-`set_sensitivity(true)` strips `allUsers` before granting the domain, since a
-public grant would otherwise win and make the tool a lie.
+- `public` — reachable by `allUsers` (anyone) or `allAuthenticatedUsers` (any
+  Google account). Reported with no expiry rather than dressed up as private,
+  because calling a world-readable object `restricted` would be the most dangerous
+  thing this server could say. `set_sensitivity(true)` strips the broad grant
+  before granting the domain, since a public grant would otherwise win.
+- `unknown` — the object's ACL could not be read. **No link is issued for one.**
+  Returning a signed URL here would be the fail-open answer: signing is what a
+  `link` gets, so a deployment that switched on uniform bucket-level access, or a
+  credential that lost ACL read, would silently turn every sign-in-gated artifact
+  into an anonymous URL mintable by a read-only tool. The call fails and names
+  UBLA instead.
+
+The same reasoning runs one level down. An ACL change that GCS *refuses* — a `403`
+on removing an `allUsers` grant, say — fails the call rather than being swallowed:
+the alternative is `upload_file` reporting `restricted` for an object it did not
+manage to make private.
+
+## Uploading over an existing path
+
+An explicit `path` overwrites. GCS's `save` replaces an object's bytes and leaves
+its ACL alone, so every upload re-reads the ACL and brings it in line with the
+`is_sensitive` being asked for — otherwise a sensitive artifact written over a
+world-public path would be stored world-readable and reported `restricted`, and a
+routine one written over a restricted path would keep a domain grant the response
+never mentions. The reported `access` is derived from what was found and changed,
+never from what was requested.
+
+One asymmetry, on purpose: restricting an artifact removes a broad grant, but
+uploading a **non**-sensitive artifact over a public path leaves it and reports
+`public`. Silently de-publishing an object would break a URL someone may already
+be relying on, and this server was not the one that published it.
 
 ## Configuration
 
@@ -172,7 +194,8 @@ The two credentials come from the parameters system, not from hand-written
 
 - **Uniform bucket-level access must be OFF.** The restricted path is a per-object
   ACL, and UBLA disables object ACLs. IAM Conditions are not an alternative: they
-  require UBLA _on_.
+  require UBLA _on_. With UBLA on, every artifact reads as `access: "unknown"` and
+  no link is issued — a loud failure rather than a quiet loss of the sign-in gate.
 - The service account needs object read/write, `storage.objects.update` to set
   ACLs, and a private key so URLs can be signed locally.
 
@@ -194,3 +217,14 @@ leave that role able to list artifacts it could never open.
 `list_files` deliberately returns neither links nor access levels. Both cost a
 round trip to Google per object, so a fifty-file listing would be fifty extra
 calls for data the caller usually does not want.
+
+`upload_file` takes a `file://` URI, which means it reads from the bundle
+container's filesystem — a container that also holds fourteen other servers'
+credentials in its environment. Paths under `/proc`, `/sys`, `/dev`, `/app`,
+`/root` and `/etc` are refused, so `file:///proc/self/environ` is not a one-call
+way to publish every secret in the bundle. An artifact lives in a working
+directory, not in process state.
+
+`download_file` refuses a base64 read over 5 MB rather than truncating it: half a
+PNG decodes to nothing, and a 50 MB recording would be a 67 MB tool result. Text
+truncates at 200 KB, on a codepoint boundary.

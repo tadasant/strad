@@ -33,8 +33,6 @@
  * the caller asked for is the failure mode this whole design is trying to avoid.
  */
 
-export type Sensitivity = "shared" | "restricted";
-
 /** Which GCS signing process minted a URL. */
 export type SigningVersion = "v2" | "v4";
 

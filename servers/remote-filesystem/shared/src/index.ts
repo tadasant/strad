@@ -36,7 +36,6 @@ export {
   domainReaderEntity,
   encodeObjectPath,
   signingVersionFor,
-  type Sensitivity,
   type SigningVersion,
 } from "./links.js";
 

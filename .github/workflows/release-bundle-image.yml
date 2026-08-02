@@ -9,7 +9,7 @@ name: Release bundle image
 # (`--wait-for-image`). See "which image a deploy ships" in
 # docs/operate/operations.md.
 #
-# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from six projects that
+# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from eight projects that
 # live in different directories (servers/bundle-api, images/bundle-google,
 # servers/onepassword, servers/remote-filesystem, servers/{good-eggs,fetchpet,pointsyeah}),
 # each built in its

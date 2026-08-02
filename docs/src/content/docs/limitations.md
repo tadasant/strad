@@ -850,6 +850,19 @@ immediately; the bare URL keeps serving the cached bytes. The artifact store nev
 creates a public object, so this is bounded to objects made public before it
 existed — but restricting one of those means "no new readers", not "no readers".
 
+### `upload_file` reads from the bundle container's filesystem
+
+The artifact store takes a `file://` URI, and it runs in the bundle — a container
+that also holds fourteen other servers' credentials in its environment. An agent
+that can call `upload_file` can therefore ask it to read a local path and publish
+a link to whatever came back.
+
+Paths under `/proc`, `/sys`, `/dev`, `/app`, `/root` and `/etc` are refused, which
+closes the obvious one (`file:///proc/self/environ` returns every secret in the
+bundle in a single call). That is a denylist, not a sandbox: the real boundary is
+that reaching this tool at all requires a token entitled to the slug. A confined
+upload directory would be the stronger answer and is not implemented.
+
 ## Supply chain and build
 
 ### 10, 15 & 41. The `shared/` trees are vendored, not depended on

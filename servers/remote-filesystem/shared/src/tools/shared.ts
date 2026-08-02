@@ -107,8 +107,25 @@ export async function readSource(source: string): Promise<Buffer> {
   if (source.startsWith("file://")) {
     const { readFile } = await import("node:fs/promises");
     const { fileURLToPath } = await import("node:url");
+    const path = fileURLToPath(source);
+
+    // This server shares a container with fourteen others, so its process
+    // environment holds their credentials — a Slack token, GCS private keys, the
+    // secrets resolver key. `upload_file` takes an arbitrary local path and
+    // returns a public link to whatever it read, which makes
+    // "file:///proc/self/environ" a one-call credential exfiltration. Refuse the
+    // directories that hold process state and the container's own code; an
+    // artifact never lives there.
+    if (/^\/(proc|sys|dev|app|root|etc)(\/|$)/.test(path)) {
+      throw new Error(
+        `Refusing to read ${path}: this server will not upload process state, ` +
+          `container internals or system configuration. Artifacts come from a ` +
+          `working directory (e.g. /tmp), not from /proc, /sys, /dev, /app, /root or /etc.`,
+      );
+    }
+
     try {
-      return await readFile(fileURLToPath(source));
+      return await readFile(path);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -122,19 +139,21 @@ export async function readSource(source: string): Promise<Buffer> {
   // alphabet and returns whatever is left. So a bare filesystem path, which is
   // the most likely mistake here, would upload a few bytes of garbage and report
   // success. Check the shape first and say what was probably meant.
-  if (!/^[A-Za-z0-9+/\s]*={0,2}$/.test(source)) {
+  //
+  // Whitespace is stripped BEFORE the check, not allowed within it: `base64
+  // file.png` emits a trailing newline and wraps at 76 columns, and both are
+  // exactly what an agent pastes.
+  const compact = source.replace(/\s+/g, "");
+  const wellFormed =
+    /^[A-Za-z0-9+/]+={0,2}$/.test(compact) && compact.length % 4 === 0;
+  if (!wellFormed || source.startsWith("/") || source.startsWith(".")) {
     throw new Error(
       "`source` is neither a file:// URI nor base64. It looks like a plain path or " +
-        "raw text — prefix a local path with file:// (e.g. \"file:///tmp/shot.png\"), " +
+        'raw text — prefix a local path with file:// (e.g. "file:///tmp/shot.png"), ' +
         "or base64-encode the contents first.",
     );
   }
-  const buffer = Buffer.from(source, "base64");
-  if (buffer.length === 0) {
-    throw new Error(
-      "`source` decoded to zero bytes. Pass either a file:// URI or base64-encoded " +
-        "file contents.",
-    );
-  }
-  return buffer;
+  // Well-formed and non-empty by the check above, so the decode cannot come back
+  // empty and there is nothing further to guard.
+  return Buffer.from(compact, "base64");
 }

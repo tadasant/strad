@@ -4,7 +4,7 @@ name: Release bundle-api image
 # servers/bundle-api. This is SEPARATE from the strad core image
 # (release-image.yml): bundle-api is a `supplementary-image` bundle — its own
 # container, published to its own package, run as an internal-only App Platform
-# component. It bundles seven pure-API MCP servers in one image.
+# component. It bundles six pure-API MCP servers in one image.
 #
 # Pushing needs no PAT: the built-in GITHUB_TOKEN can write packages owned by
 # this repo. PULLING (by App Platform) is the durable-credential half — the

@@ -8,6 +8,7 @@
  * the whole tool surface.
  */
 
+import { randomBytes } from "node:crypto";
 import { Storage, RETRYABLE_ERR_FN_DEFAULT } from "@google-cloud/storage";
 import type { File } from "@google-cloud/storage";
 import {
@@ -30,11 +31,14 @@ import { logWarning } from "./logging.js";
  *                only state with an expiry.
  * - `restricted` private object, opened by a signed-in member of the viewer
  *                domain. `is_sensitive: true` produces this.
- * - `public`     world-readable to anyone, forever. This server never CREATES
- *                one; it reports the state so a pre-existing object is not
- *                mistaken for a private one.
+ * - `public`     readable far beyond the viewer domain — `allUsers` (anyone) or
+ *                `allAuthenticatedUsers` (any Google account) — and forever. This
+ *                server never CREATES one; it reports the state so a pre-existing
+ *                object is not mistaken for a private one.
+ * - `unknown`    the ACL could not be read, so nothing can be said about who can
+ *                reach it. No link is issued for one; see `accessOf`.
  */
-export type Access = "link" | "restricted" | "public";
+export type Access = "link" | "restricted" | "public" | "unknown";
 
 export interface Artifact {
   /** Path within the bucket, relative to the configured root (if any). */
@@ -56,6 +60,7 @@ export interface Link {
 }
 
 export interface PutOptions {
+  /** Destination path. An existing artifact at this path is OVERWRITTEN. */
   path?: string;
   content_type?: string;
   metadata?: Record<string, string>;
@@ -180,29 +185,13 @@ export class GcsArtifactStore implements ArtifactStore {
 
     // Retryable as a whole: `save` is a full-object overwrite, so replaying it
     // re-uploads the same bytes rather than appending or duplicating.
-    await this.retry("upload", async () => {
+    const access = await this.retry("upload", async () => {
       const file = this.file(full);
       await file.save(data, {
         metadata: { contentType, metadata: options.metadata },
         resumable: false,
       });
-
-      // NORMALISE THE ACL, always — do not assume a fresh object.
-      //
-      // `save` overwrites the BYTES of an existing object and leaves its ACL
-      // alone. Writing over a path that already carried an `allUsers` grant
-      // would otherwise store a "sensitive" artifact that is world-readable, and
-      // report it as `restricted`. Writing a non-sensitive artifact over a
-      // restricted path would leave the domain grant in place while the response
-      // says `link`. Both are the response lying about access, which is the one
-      // thing this server must not do. A brand-new object has none of these
-      // entities, so the deletes are no-ops that cost a round trip.
-      await removeEntity(file, "allUsers");
-      await removeEntity(file, "allAuthenticatedUsers");
-      if (options.sensitive) await this.grantViewerDomain(file);
-      else if (this.config.viewerDomain) {
-        await removeEntity(file, domainReaderEntity(this.config.viewerDomain));
-      }
+      return this.normalizeAcl(file, options.sensitive);
     });
 
     const artifact: Artifact = {
@@ -210,9 +199,68 @@ export class GcsArtifactStore implements ArtifactStore {
       size_bytes: data.length,
       content_type: contentType,
       updated_at: new Date().toISOString(),
-      access: options.sensitive ? "restricted" : "link",
+      access,
     };
     return { artifact, link: await this.linkFor(full, artifact, options.expires_in_days) };
+  }
+
+  /**
+   * Bring an object's ACL in line with the sensitivity being asked for, and
+   * return what it ACTUALLY is afterwards.
+   *
+   * DO NOT ASSUME A FRESH OBJECT. `save` overwrites an object's BYTES and leaves
+   * its ACL alone, so writing over a path that already carried an `allUsers`
+   * grant would store a "sensitive" artifact that is world-readable; writing a
+   * non-sensitive one over a restricted path would leave the domain grant behind
+   * while the response says `link`. And a bucket whose DEFAULT object ACL grants
+   * `allUsers` makes even a genuinely new object public. All three end in the
+   * response lying about access, which is the one thing this server must not do.
+   *
+   * So: one ACL read, then only the writes that read implies. A clean new object
+   * costs one round trip and no writes; the expensive case is the one that
+   * needed the work anyway. And the returned access is derived from what was
+   * found and changed, never from what was requested.
+   */
+  private async normalizeAcl(file: File, sensitive: boolean): Promise<Access> {
+    let entities: string[];
+    try {
+      const [acl] = await file.acl.get();
+      entities = (Array.isArray(acl) ? acl : [acl]).map((e) => e.entity ?? "");
+    } catch {
+      // Cannot see the ACL, so cannot claim anything about it. `linkFor` refuses
+      // to issue a link for `unknown` rather than signing an anonymous URL for
+      // something that might be sign-in gated.
+      return "unknown";
+    }
+
+    const broad = ["allUsers", "allAuthenticatedUsers"].filter((e) =>
+      entities.includes(e),
+    );
+    const domains = entities.filter((e) => e.startsWith("domain-"));
+    const wanted = sensitive
+      ? domainReaderEntity(this.config.viewerDomain ?? "")
+      : undefined;
+
+    // Restricting REQUIRES dropping the broad grants — a world-readable object
+    // cannot also be sign-in gated, and leaving one would make `restricted` a lie.
+    if (sensitive) for (const entity of broad) await removeEntity(file, entity);
+
+    // Every domain grant this deployment did not ask for goes, in both
+    // directions. Otherwise an artifact can get stuck reporting `restricted` for
+    // a domain no tool here knows how to clear.
+    for (const domain of domains) {
+      if (domain !== wanted) await removeEntity(file, domain);
+    }
+    if (sensitive && wanted && !domains.includes(wanted)) {
+      await this.grantViewerDomain(file);
+    }
+
+    if (sensitive) return "restricted";
+    // NOT sensitive and still world-readable. The broad grant is deliberately
+    // left alone: it predates this server, and silently de-publishing an object
+    // would break a URL someone may already be relying on. Report it truthfully
+    // instead — the tool surfaces a warning and `delete_file` is the way out.
+    return broad.length > 0 ? "public" : "link";
   }
 
   async link(
@@ -240,30 +288,19 @@ export class GcsArtifactStore implements ArtifactStore {
       );
     }
 
-    await this.retry("set_sensitivity", async () => {
+    // The same normalisation the upload path uses, so "is this artifact
+    // sensitive" has exactly one answer and one implementation. Clearing EVERY
+    // domain grant rather than only this deployment's matters here: a leftover
+    // grant for some other domain would keep the artifact reporting `restricted`
+    // with no tool able to clear it.
+    const access = await this.retry("set_sensitivity", async () => {
       const file = this.file(full);
       const [exists] = await file.exists();
       if (!exists) throw notFound(path);
-
-      if (sensitive) {
-        // A world-readable object cannot also be restricted — the public grant
-        // wins, and leaving it in place would make the tool a lie.
-        await removeEntity(file, "allUsers");
-        await removeEntity(file, "allAuthenticatedUsers");
-        await this.grantViewerDomain(file);
-      } else {
-        // EVERY domain grant, not just this deployment's configured one. This is
-        // the correction path, and it is answering "make this not sensitive" — a
-        // leftover grant for some other domain would keep `accessOf` reporting
-        // `restricted` forever with no tool able to clear it. The extra ACL read
-        // is affordable here in a way it would not be on the upload path.
-        for (const entity of await this.domainEntities(file)) {
-          await removeEntity(file, entity);
-        }
-      }
+      return this.normalizeAcl(file, sensitive);
     });
 
-    const artifact = await this.stat(full, path);
+    const artifact = { ...(await this.stat(full, path)), access };
     return { artifact, link: await this.linkFor(full, artifact, expiresInDays) };
   }
 
@@ -271,6 +308,10 @@ export class GcsArtifactStore implements ArtifactStore {
     const prefix = options.prefix
       ? this.fullPath(options.prefix)
       : (this.config.rootPath ?? "");
+    // Bounded like every other entry point. A listing cannot escape a bucket the
+    // way a read can, but an entry point that skips the check reads as a hole and
+    // invites the next one to skip it too.
+    if (options.prefix) this.assertInRoot(prefix);
     const normalized = prefix && !prefix.endsWith("/") ? `${prefix}/` : prefix;
 
     return this.retry("list", async () => {
@@ -294,9 +335,12 @@ export class GcsArtifactStore implements ArtifactStore {
         access: "link" as const,
       }));
 
+      // GCS returns prefixes with a trailing slash ("screenshots/8379/"). Strip
+      // it: a caller passes one of these straight back as `prefix`, and the
+      // examples in the tool descriptions have no trailing slash.
       const directories = (
         (apiResponse as { prefixes?: string[] })?.prefixes ?? []
-      ).map((p) => this.relativePath(p));
+      ).map((p) => this.relativePath(p).replace(/\/$/, ""));
 
       return { files: artifacts, directories };
     });
@@ -366,19 +410,6 @@ export class GcsArtifactStore implements ArtifactStore {
     }
   }
 
-  /** Every `domain-*` READER entity currently on the object. */
-  private async domainEntities(file: File): Promise<string[]> {
-    try {
-      const [acl] = await file.acl.get();
-      const entries = Array.isArray(acl) ? acl : [acl];
-      return entries
-        .map((e) => e.entity ?? "")
-        .filter((entity) => entity.startsWith("domain-"));
-    } catch {
-      return [];
-    }
-  }
-
   private async stat(fullPath: string, relative: string): Promise<Artifact> {
     return this.retry("stat", async () => {
       const file = this.file(fullPath);
@@ -398,9 +429,16 @@ export class GcsArtifactStore implements ArtifactStore {
   /**
    * Read the object's ACL and say how it can be reached.
    *
-   * Order matters: a public grant beats a domain grant, because `allUsers` makes
+   * Order matters: a broad grant beats a domain grant, because `allUsers` makes
    * the domain grant irrelevant and reporting "restricted" for a world-readable
    * object would be the most dangerous thing this server could say.
+   *
+   * A FAILED ACL READ IS `unknown`, NOT `link`. Answering "link" would be the
+   * fail-OPEN version: `linkFor` signs a `link`, so a deployment that switched on
+   * uniform bucket-level access — or a credential that lost `storage.objects.get`
+   * on ACLs — would turn every restricted artifact into an anonymous signed URL,
+   * mintable by a read-only tool, with nothing reporting that the sign-in gate had
+   * disappeared.
    */
   private async accessOf(file: File): Promise<Access> {
     let entries: Array<{ entity?: string; role?: string }>;
@@ -408,13 +446,14 @@ export class GcsArtifactStore implements ArtifactStore {
       const [acl] = await file.acl.get();
       entries = Array.isArray(acl) ? acl : [acl];
     } catch {
-      // Uniform bucket-level access, or no ACL read permission. Either way the
-      // object is not world-readable through an ACL we can see.
-      return "link";
+      return "unknown";
     }
     const has = (entity: string): boolean =>
       entries.some((e) => e.entity === entity);
-    if (has("allUsers")) return "public";
+    // `allAuthenticatedUsers` is any Google account anywhere, not this
+    // deployment's viewer domain — as good as public for our purposes, and
+    // certainly not the "private object" that `link` promises.
+    if (has("allUsers") || has("allAuthenticatedUsers")) return "public";
     if (entries.some((e) => (e.entity ?? "").startsWith("domain-"))) {
       return "restricted";
     }
@@ -441,6 +480,16 @@ export class GcsArtifactStore implements ArtifactStore {
         signing_version: null,
         requires_sign_in: false,
       };
+    }
+    if (artifact.access === "unknown") {
+      throw new StoreError(
+        `Refusing to issue a link for ${fullPath}: this server cannot read the ` +
+          `object's ACL, so it cannot tell whether the artifact is sensitive, and ` +
+          `signing one would hand out an anonymous URL for something that may be ` +
+          `sign-in gated. The usual cause is uniform bucket-level access being ` +
+          `enabled on ${this.config.bucket} — this server needs it off — or a ` +
+          `credential that has lost permission to read object ACLs.`,
+      );
     }
     return this.sign(fullPath, expiresInDays);
   }
@@ -500,7 +549,10 @@ export class GcsArtifactStore implements ArtifactStore {
   }
 
   private assertInRoot(fullPath: string): void {
-    if (fullPath.includes("..")) {
+    // A `..` SEGMENT is traversal. A `..` inside a name is not: "report..txt" and
+    // "v1..2/shot.png" are legal object names and legal filenames, and refusing
+    // them was refusing real artifacts.
+    if (fullPath.split("/").includes("..")) {
       throw new StoreError("Path traversal is not allowed.");
     }
     const root = this.config.rootPath;
@@ -514,12 +566,26 @@ export class GcsArtifactStore implements ArtifactStore {
   }
 }
 
+/**
+ * Drop an ACL entry, treating "it was not there" as success and NOTHING ELSE as
+ * success.
+ *
+ * The distinction is the whole point. A 404 means the grant we wanted gone is
+ * already gone. A 403 means it is still there and we could not remove it — and a
+ * caller that swallows that goes on to report a world-readable object as
+ * `restricted`, which is precisely the lie this server must not tell.
+ */
 async function removeEntity(file: File, entity: string): Promise<void> {
   if (!entity || entity === "domain-") return;
   try {
     await file.acl.delete({ entity });
-  } catch {
-    // Not present, or ACLs are unavailable. Either way there is nothing to undo.
+  } catch (err) {
+    if ((err as { code?: number }).code === 404) return;
+    throw new StoreError(
+      `Could not remove the "${entity}" grant from ${file.name}: ` +
+        `${err instanceof Error ? err.message : String(err)}. The object may still ` +
+        `be readable by that entity, so no link has been issued for it.`,
+    );
   }
 }
 
@@ -550,7 +616,7 @@ export function generatePath(
 }
 
 function randomToken(): string {
-  return Math.random().toString(36).slice(2, 8);
+  return randomBytes(4).toString("hex");
 }
 
 const EXTENSIONS: Record<string, string> = {

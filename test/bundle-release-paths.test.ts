@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
  * Every tree baked into the bundle image must be a path that CUTS one.
  *
  * `release-bundle-image.yml` rebuilds `ghcr.io/tadasant/strad-bundle` on a push
- * to `main` that touches one of its `paths:`. The Dockerfile bakes seven trees.
+ * to `main` that touches one of its `paths:`. The Dockerfile bakes eight trees.
  * The two lists were not the same list: `servers/secrets/**` was baked and not
  * watched, so a change to the secrets MCP client landed on `main`, cut no image,
  * and the bundle carried on serving the old code.

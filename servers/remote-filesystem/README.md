@@ -4,9 +4,8 @@ The server behind the `remote-filesystem-tmp-public` slug. An agent uploads a
 screenshot, a recording or a report; it gets back a URL; it hands that URL to a
 human. **Link ergonomics and sensitivity handling are the whole product.**
 
-This is strad's own implementation. It replaces a vendored copy of pulsemcp's
-`remote-filesystem-mcp-server`, which had no notion of sensitivity, hard-coded a
-seven-day link, and offered no way to revive an expired one.
+strad's own implementation, not a vendored one. Sensitivity, link life, and the
+ability to revive an expired link are the three things it exists to own.
 
 ## Two kinds of link
 
@@ -105,7 +104,9 @@ outcome than a loud failure.
 
 - **Uniform bucket-level access must be OFF.** The restricted path is a per-object
   ACL, and UBLA disables object ACLs. IAM Conditions are not an alternative — they
-  require UBLA *on*, which would break signing-free per-object grants the other way.
+  require UBLA *on*. With UBLA on, every artifact reads as `access: "unknown"` and
+  no link is issued at all, which is the intended failure: losing the sign-in gate
+  quietly would be worse.
 - The service account needs object read/write on the bucket, plus
   `storage.objects.update` to set ACLs, and a private key so URLs can be signed
   locally.

@@ -134,7 +134,65 @@ test("only transient connection failures are retried", async () => {
   assert.equal(attempts, 1, "a permanent error is not retried");
 });
 
-test("a bare filesystem path is refused rather than uploaded as garbage", async () => {
+test("base64 is accepted the way tools actually emit it, and a path is not", async () => {
+  const { toolDefinitions } = await import("../build/index.js");
+  const stored = [];
+  const store = {
+    bucket: () => "b",
+    viewerDomain: () => "example.com",
+    defaultLinkDays: () => 14,
+    put: async (data, options) => {
+      stored.push(data);
+      return {
+        artifact: {
+          path: options.path ?? "generated",
+          size_bytes: data.length,
+          content_type: "text/plain",
+          updated_at: "",
+          access: "link",
+        },
+        link: {
+          url: "https://example.test/x",
+          expires_at: null,
+          signing_version: "v2",
+          requires_sign_in: false,
+        },
+      };
+    },
+  };
+  const upload = toolDefinitions(() => store).find((t) => t.name === "upload_file");
+
+  // `base64 file.png` emits a trailing newline and wraps at 76 columns. Both are
+  // what an agent pastes, and both must upload the same bytes.
+  const raw = Buffer.from("hello strad, this is a reasonably long artifact body");
+  const b64 = raw.toString("base64");
+  for (const [label, source] of [
+    ["plain", b64],
+    ["trailing newline", `${b64}\n`],
+    ["wrapped", b64.replace(/(.{20})/g, "$1\n")],
+    ["surrounded by spaces", ` ${b64} `],
+  ]) {
+    const res = await upload.handler({ source, path: "a.txt" });
+    assert.notEqual(res.isError, true, `${label} base64 must be accepted`);
+    assert.deepEqual(stored.at(-1), raw, `${label} base64 must round-trip`);
+  }
+
+  // `Buffer.from(x, "base64")` silently discards anything outside the alphabet,
+  // so without a shape check a bare path would store a few bytes and report success.
+  for (const source of [
+    "/tmp/screenshots/page.png",
+    "./shot.png",
+    "/tmp/shot",
+    "this is not base64!",
+  ]) {
+    const res = await upload.handler({ source });
+    assert.equal(res.isError, true, `${source} must be refused`);
+    assert.match(res.content[0].text, /file:\/\//);
+  }
+  assert.equal(stored.length, 4, "no rejected source reached the store");
+});
+
+test("a file:// source cannot reach process state or container internals", async () => {
   const { toolDefinitions } = await import("../build/index.js");
   const store = {
     bucket: () => "b",
@@ -146,17 +204,17 @@ test("a bare filesystem path is refused rather than uploaded as garbage", async 
   };
   const upload = toolDefinitions(() => store).find((t) => t.name === "upload_file");
 
-  // `Buffer.from(x, "base64")` silently discards anything outside the alphabet,
-  // so without a shape check this would store four bytes and report success.
-  const res = await upload.handler({ source: "/tmp/screenshots/page.png" });
-  assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /file:\/\//);
-
-  const text = await upload.handler({ source: "this is not base64!" });
-  assert.equal(text.isError, true);
-
-  // Well-formed base64 that carries nothing is a separate, quieter mistake.
-  const empty = await upload.handler({ source: "==" });
-  assert.equal(empty.isError, true);
-  assert.match(empty.content[0].text, /zero bytes/);
+  // This server shares a container with fourteen others, so /proc/self/environ is
+  // a one-call exfiltration of every credential in the bundle.
+  for (const path of [
+    "file:///proc/self/environ",
+    "file:///sys/class/net/eth0/address",
+    "file:///app/trees/secrets/shared/build/index.js",
+    "file:///root/.config/gcloud/credentials.db",
+    "file:///etc/passwd",
+  ]) {
+    const res = await upload.handler({ source: path });
+    assert.equal(res.isError, true, `${path} must be refused`);
+    assert.match(res.content[0].text, /Refusing to read/);
+  }
 });

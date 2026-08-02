@@ -462,7 +462,7 @@ export interface ResolvedTag {
  * The core never races its own release: `release-image.yml` pushes the image and
  * THEN calls the deploy, in that order, in one workflow. The bundle has no such
  * ordering — `release-bundle-image.yml` is a separate trigger on the same push,
- * and it bakes Chromium and seven npm trees while the core's release is already
+ * and it bakes Chromium and eight npm trees while the core's release is already
  * calling the deploy. So on a merge that touches a baked tree, `sha-<HEAD>`
  * reliably does not exist yet, and a bare hard stop would turn EVERY such deploy
  * red — nine of them in the three weeks before this was written.

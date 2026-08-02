@@ -323,7 +323,7 @@ function resolveGcsView(
 }
 
 /**
- * Two credential conventions, both used by the bundle-api fleet:
+ * Two credential conventions, both used by the GCS-backed servers:
  *   - gcs:               GCS_SERVICE_ACCOUNT_KEY_JSON  (a full key file, inline)
  *   - remote-filesystem-tmp-public: GCS_CLIENT_EMAIL + GCS_PRIVATE_KEY (two fields only)
  * Support both so the same view scopes to either server.
