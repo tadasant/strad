@@ -56,12 +56,32 @@ class StaleCredentialError extends Error {
 class Conn {
   private leases = 0;
   private retired = false;
+  private closed = false;
 
-  constructor(readonly client: Client) {}
+  /**
+   * `onClosed` fires exactly once, when the socket actually goes. The adapter
+   * uses it to forget this connection — a retired one detaches from the cache
+   * immediately but can outlive that by a whole request, and something has to
+   * still be able to reach it at shutdown.
+   */
+  constructor(
+    readonly client: Client,
+    private readonly onClosed: () => void,
+  ) {}
 
-  /** Mark this connection as in use by one more request. */
-  acquire(): void {
+  /**
+   * Take a lease, if this connection is still in service.
+   *
+   * Returns false once retired, and the caller must then get another
+   * connection: between `connect()` handing this one back and the caller
+   * resuming a microtask later, a peer's failure can have retired and closed it.
+   * Acquiring anyway would run the request on a closed socket — a small version
+   * of exactly the failure the lease exists to prevent.
+   */
+  acquire(): boolean {
+    if (this.retired) return false;
     this.leases += 1;
+    return true;
   }
 
   /** Release one lease, closing the socket if this was the last one out. */
@@ -83,14 +103,20 @@ class Conn {
   /**
    * Close now, in-flight leases or not. Only adapter shutdown does this — the
    * process is going away, so waiting for a lease that may be blocked on a
-   * 60-second timeout buys nothing.
+   * two-minute upstream timeout buys nothing.
    */
   async closeHard(): Promise<void> {
     this.retired = true;
+    if (this.closed) return;
+    this.closed = true;
+    this.onClosed();
     await this.client.close().catch(() => {});
   }
 
   private closeNow(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onClosed();
     void this.client.close().catch(() => {});
   }
 }
@@ -127,6 +153,14 @@ export class HttpServerAdapter implements ServerAdapter {
 
   private conn: Conn | null = null;
   private connecting: Promise<Conn> | null = null;
+  /**
+   * Every connection still holding a socket, cached or not.
+   *
+   * A retired connection detaches from `conn` while its last request finishes,
+   * which leaves it reachable by nobody — and `close()` has to be able to reach
+   * it, or a shutdown returns having closed a socket that is still open.
+   */
+  private readonly live = new Set<Conn>();
   /** Digest of the credential currently believed current. */
   private fingerprint: string | null = null;
   /**
@@ -286,7 +320,8 @@ export class HttpServerAdapter implements ServerAdapter {
         void client.close().catch(() => {});
         throw new StaleCredentialError(this.slug);
       }
-      const conn = new Conn(client);
+      const conn: Conn = new Conn(client, () => this.live.delete(conn));
+      this.live.add(conn);
       this.conn = conn;
       return conn;
     })();
@@ -404,7 +439,6 @@ export class HttpServerAdapter implements ServerAdapter {
     op: string,
     run: (client: Client) => Promise<T>,
   ): Promise<T> {
-    conn.acquire();
     try {
       return await this.hop(op, () => run(conn.client));
     } catch (err) {
@@ -415,8 +449,28 @@ export class HttpServerAdapter implements ServerAdapter {
     }
   }
 
-  async listTools(): Promise<Tool[]> {
+  /**
+   * A connection with a lease already taken on it. Every request path starts
+   * here, and `lease()` releases it.
+   *
+   * The retry covers the handoff: `connect()` can hand back a connection that a
+   * peer's failure retires before this caller resumes. That connection is
+   * already detached from the cache, so connecting again builds a fresh one.
+   * Bounded, because "the connection I was just given is gone" repeating without
+   * end is a bug, not a condition to spin on.
+   */
+  private async leased(attemptsLeft = 3): Promise<Conn> {
     const conn = await this.connect();
+    if (conn.acquire()) return conn;
+    if (attemptsLeft > 1) return this.leased(attemptsLeft - 1);
+    throw new UpstreamError(
+      this.slug,
+      new Error("every connection was retired before it could be used"),
+    );
+  }
+
+  async listTools(): Promise<Tool[]> {
+    const conn = await this.leased();
     const res = await this.lease(conn, "list_tools", (client) =>
       client.listTools({}, { timeout: this.opts.timeoutMs }),
     );
@@ -427,7 +481,7 @@ export class HttpServerAdapter implements ServerAdapter {
     name: string,
     args: Record<string, unknown>,
   ): Promise<CallToolResult> {
-    const conn = await this.connect();
+    const conn = await this.leased();
     const res = await this.lease(conn, "call_tool", (client) =>
       client.callTool(
         { name: this.restore(name), arguments: args },
@@ -450,14 +504,18 @@ export class HttpServerAdapter implements ServerAdapter {
    * per client listing and produces a failure for something that is not one.
    *
    * `-32601` is tolerated as well, for a server that advertises the capability
-   * and does not implement it. That is a protocol CODE, not a phrase — the
-   * previous regex over the SDK's local refusal text ("does not support
-   * resources") never fired at all, because the gateway does not set
-   * `enforceStrictCapabilities`, so nothing was ever checked locally.
+   * and does not implement it. That is a protocol CODE, not a phrase. The SDK's
+   * own client-side capability check is gated on `enforceStrictCapabilities`,
+   * which the gateway does not set, so no refusal is ever raised locally and the
+   * answer has to come from the handshake or from the code on the wire.
    */
   async listResources(): Promise<Resource[]> {
-    const conn = await this.connect();
-    if (!conn.client.getServerCapabilities()?.resources) return [];
+    const conn = await this.leased();
+    if (!conn.client.getServerCapabilities()?.resources) {
+      // Nothing was sent, so there is nothing to release but the lease itself.
+      conn.release();
+      return [];
+    }
     try {
       const res = await this.lease(conn, "list_resources", (client) =>
         client.listResources({}, { timeout: this.opts.timeoutMs }),
@@ -478,8 +536,9 @@ export class HttpServerAdapter implements ServerAdapter {
    * tools-only slug — most of them — to be told `-32601` every time.
    */
   async readResource(uri: string): Promise<ReadResourceResult> {
-    const conn = await this.connect();
+    const conn = await this.leased();
     if (!conn.client.getServerCapabilities()?.resources) {
+      conn.release();
       throw new UpstreamError(
         this.slug,
         new Error("this server does not serve resources"),
@@ -535,13 +594,17 @@ export class HttpServerAdapter implements ServerAdapter {
 
   async close(): Promise<void> {
     this.closed = true;
-    const conn = this.conn;
     this.conn = null;
     this.fingerprint = null;
     // Abandon any in-flight attempt too. Without this it completes after the
     // adapter is shut, and would open a fresh connection on a closed adapter.
     this.connecting = null;
-    await conn?.closeHard();
+    // Every live connection, not just the cached one: a retired connection
+    // waiting on its last request is exactly the socket a shutdown must not
+    // leave behind.
+    const live = [...this.live];
+    this.live.clear();
+    await Promise.all(live.map((conn) => conn.closeHard()));
   }
 }
 

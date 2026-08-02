@@ -1457,6 +1457,13 @@ The teardown bug itself is fixed and regression-tested
 failure that needs two methods in flight to appear will again be invisible to
 `/healthz`.
 
+And the channel that DID catch it is now quieter, deliberately. Gating
+`resources/list` on the upstream's advertised capabilities means a tools-only
+slug no longer produces `mcp.list_resources_failed` at all — correct, because
+there was no failure, but it does mean the event pair that paged is no longer
+watching those slugs. `mcp.list_tools_failed` still fires for a genuinely failing
+listing, which is the half that matters.
+
 **Undo.** Give the probe a mixed-method shape — a concurrent `tools/list` +
 `resources/list` per slug, classifying a slug that answers one but not both as
 `degraded`. The cost is a second round trip per slug per interval against

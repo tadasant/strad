@@ -110,7 +110,9 @@ that eventually caught it watched the failure _events_, not the monitor.
 
 That teardown bug is fixed and regression-tested. The blind spot is not: a future
 failure that only appears when two methods are in flight will again be invisible
-here.
+here. The channel that did catch it is also quieter now — a tools-only slug no
+longer reports a failed `resources/list`, because it is no longer asked — so
+`mcp.list_tools_failed` is the half of that pair still watching.
 
 **Undo:** give the probe a mixed-method shape — a concurrent `tools/list` +
 `resources/list` per slug, with "answers one but not both" classified as

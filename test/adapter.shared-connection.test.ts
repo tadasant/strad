@@ -51,6 +51,8 @@ interface Stub {
   resourcesAnswered: () => Promise<void>;
   /** Let a held `tools/list` answer. */
   releaseTools: () => void;
+  /** Drop every established MCP session, as a restarted upstream would. */
+  killSessions: () => void;
 }
 
 interface StubOptions {
@@ -184,6 +186,9 @@ function startStub(opts: StubOptions): Promise<Stub> {
         seen: (method) => counts.get(method) ?? 0,
         resourcesAnswered: () => resourcesAnswered,
         releaseTools: () => releaseTools(),
+        killSessions: () => {
+          for (const id of Object.keys(transports)) delete transports[id];
+        },
       });
     });
   });
@@ -280,17 +285,18 @@ describe("a shared upstream connection survives one method's failure", () => {
     await expect(adapter.listTools()).resolves.toHaveLength(1);
     expect(stub.seen("initialize")).toBe(1);
 
-    // Kill the upstream's side of the session. The next call fails at the
-    // transport, which is the case the reset exists for — the cached client is
-    // now useless and must not be handed to anyone else.
-    await stub.close();
+    // Drop the upstream's side of the session, as a restarted container does.
+    // This is the case retirement exists for: the cached client is now useless,
+    // and the narrowing must not have turned "an answer is not a fault" into
+    // "never reconnect".
+    stub.killSessions();
     await expect(adapter.listTools()).rejects.toThrow(/upstream MCP server/);
 
-    const revived = await startStub({ resources: false });
-    cleanup.push(() => revived.close());
-    const moved = adapterFor(revived.url);
-    cleanup.push(() => moved.close());
-    await expect(moved.listTools()).resolves.toHaveLength(1);
+    // The decisive assertion, on the SAME adapter: it handshakes again rather
+    // than reusing the dead client. Without retirement this call fails too, and
+    // `initialize` stays at 1 forever.
+    await expect(adapter.listTools()).resolves.toHaveLength(1);
+    expect(stub.seen("initialize")).toBe(2);
   });
 });
 
