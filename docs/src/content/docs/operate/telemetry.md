@@ -141,9 +141,16 @@ utilisation) is the OOM fingerprint.
 
 ```
 mcp.request                     (SERVER; mode, principal kind, requested vs selected servers)
-└── mcp.tools.call              (server slug, tool name, arg count, byte sizes, outcome)
+└── mcp.tools.call              (server slug, tool name, surface, arg count, byte sizes, outcome)
     └── mcp.upstream.call_tool  (CLIENT; server slug, upstream kind, timeout, outcome)
 ```
+
+`strad.surface` on the tool-call span and its metrics is `mcp` for a call that
+arrived at the endpoint and `playground` for one a signed-in human made from the
+[console playground](/auth/overview/#the-console-playground). Both run the same
+code, so without the attribute a latency graph would carry a human's thinking
+time in the same series as an agent's calls. A playground call has no
+`mcp.request` parent — it never crossed the HTTP endpoint.
 
 W3C trace context (`traceparent`) is injected into every upstream hop, so the
 bundle's spans join the core's trace. That is the difference between "the request
@@ -285,6 +292,13 @@ reason this exists at all rather than a `pino` transport:
    or `_degraded` now goes to **stderr** regardless of which call site emitted
    it, so `mcp.auth_failed` moved off stdout. The stream now agrees with what the
    event is rather than with how it was written.
+
+`ui.playground.tool_call` is on no list, and it is the rule working rather than an
+oversight. The console playground writes one per call, naming the slug and the
+tool — and the tool is a string a human typed into a text field, not a word from a
+set this repo wrote down. It reaches stdout in full and the ingestor not at all;
+`strad.mcp.tool_calls` with `strad.surface=playground` carries the same fact in a
+channel nobody can write free text into.
 
 Two things are deliberately absent. **`mcp.auth_failed`** is not exported at all:
 its fields are safe, but it fires before authentication succeeds, so anyone who

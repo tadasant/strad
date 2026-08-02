@@ -1,4 +1,5 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import { connectUrl, originFor, playgroundHref } from "./playground.ts";
 import { esc, layout } from "./render.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
 import {
@@ -73,6 +74,12 @@ export interface ConsoleIndexOptions {
   boot: { observation: SecretObservation; required: boolean }[];
   env: NodeJS.ProcessEnv;
   signedInAs?: string;
+  /**
+   * Origin the request arrived on, e.g. "https://staging.strad.example.com".
+   * Used only when `gateway.publicUrl` is unset — a relative `/mcp?servers=x` is
+   * pasteable into no MCP client, and the copy icon exists to be pasted.
+   */
+  requestOrigin?: string;
 }
 
 /** The two badges an entry can carry, and nothing in between. */
@@ -135,6 +142,9 @@ export function renderIndex(opts: ConsoleIndexOptions): string {
   const readyCount = sorted.filter((e) => e.badge === "READY").length;
   const issues = sorted.filter((e) => e.badge === "ISSUE");
   const { project, guessed } = storeProject(config, opts.env);
+  // Where this gateway lives, for the copy icon. Config first, then the origin
+  // the request arrived on — see ConsoleIndexOptions.requestOrigin.
+  const base = originFor(config, opts.requestOrigin);
 
   const body = `
 <section class="intro">
@@ -153,7 +163,7 @@ ${banner(issues, statuses.length)}
 <div class="card-grid">
 ${
   sorted.length
-    ? sorted.map((e) => serverCard(e)).join("\n")
+    ? sorted.map((e) => serverCard(e, base)).join("\n")
     : `<p class="empty">No servers are configured on this gateway.</p>`
 }
 </div>
@@ -186,6 +196,7 @@ ${sorted
   .map((e) => fixDialog(e, config, opts.env))
   .join("\n")}
 ${FIX_DIALOG_SCRIPT}
+${COPY_SCRIPT}
 ${INDEX_CSS}`;
 
   return layout({
@@ -285,7 +296,7 @@ function banner(issues: Entry[], enabled: number): string {
  * still renders beside the badge, because there it is information rather than an
  * echo.
  */
-function serverCard(entry: Entry): string {
+function serverCard(entry: Entry, base: string): string {
   const { server, status, hasView } = entry;
   const hasSecrets = serverLooksSecrets(server);
   const title = server.title ?? server.slug;
@@ -316,14 +327,81 @@ function serverCard(entry: Entry): string {
           ? ""
           : `<code class="card-slug">${esc(server.slug)}</code>`
       }</span>
-      ${
+      <span class="card-actions">${cardIcons(server, base)}${
         hasView
           ? `<a class="card-cta" href="${href}">${hasSecrets ? "Manage →" : "Browse →"}</a>`
           : `<span class="card-muted">No view</span>`
-      }
+      }</span>
     </div>
   </div>`;
 }
+
+/**
+ * The two icons every enabled entry carries: poke at it, or take its URL.
+ *
+ * They are on the ENABLED entries only. A disabled server is not mounted, so its
+ * playground would open on a 424 and its `?servers=` URL is one the gateway
+ * refuses — an icon whose entire job is "go do this" must not lead somewhere
+ * that cannot be done.
+ *
+ * The copy icon carries NO CREDENTIAL. What lands on the clipboard is
+ * `/mcp?servers=<slug>`, a public address; the bearer token is a separate header
+ * the client supplies, and a token in a URL would outlive the paste in shell
+ * history, proxy logs and screenshots. See connectUrl() in playground.ts.
+ *
+ * The copy icon needs an ORIGIN to be pasteable at all, so with neither
+ * `gateway.publicUrl` nor a Host header it is omitted rather than rendered over
+ * a relative path — `"/mcp?servers=gcs"` on the clipboard is a working link for
+ * nobody.
+ */
+function cardIcons(server: ServerConfig, base: string): string {
+  if (!server.enabled) return "";
+  const slug = server.slug;
+  const url = base ? connectUrl(base, slug) : "";
+
+  return `<a class="card-icon" href="${playgroundHref(slug)}"
+        title="Playground — list this server's tools and call them, by hand"
+        aria-label="Open the playground for ${esc(slug)}">${PLAY_SVG}</a>${
+          url
+            ? `<button class="card-icon" type="button" data-copy data-url="${esc(url)}"
+        title="Copy this server's MCP URL: ${esc(url)}"
+        aria-label="Copy the MCP URL for ${esc(slug)}">${COPY_SVG}</button>`
+            : ""
+        }`;
+}
+
+/** Terminal-ish glyph: this is a console you poke at, not a media player. */
+const PLAY_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+  focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/></svg>`;
+
+/** Two sheets. The universal copy glyph, and nothing cleverer. */
+const COPY_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+  focusable="false"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+
+/**
+ * One delegated listener for every copy icon on the page.
+ *
+ * Same behaviour as the landing page's, and deliberately the same shape: with no
+ * JS the icon is a dead control, so the URL is also in the `title` tooltip,
+ * where it can be read and selected by hand. The `<noscript>` block hides the
+ * button rather than leaving a control that does nothing.
+ */
+const COPY_SCRIPT = `<script>
+document.addEventListener("click", function (e) {
+  if (!(e.target instanceof Element)) return;
+  var btn = e.target.closest("[data-copy]");
+  if (!btn) return;
+  var text = btn.getAttribute("data-url");
+  if (!text || !navigator.clipboard) return;
+  navigator.clipboard.writeText(text).then(function () {
+    btn.classList.add("is-copied");
+    setTimeout(function () { btn.classList.remove("is-copied"); }, 1200);
+  }, function () {});
+});
+</script>
+<noscript><style>.card-icon[data-copy]{display:none}</style></noscript>`;
 
 /**
  * BOTH badges open, when there is something behind them.
@@ -688,6 +766,27 @@ const GUIDE = `
     </div>
   </details>
   <details class="acc">
+    <summary>The two icons on every enabled entry</summary>
+    <div class="acc-body">
+      <ul>
+        <li><b>Playground</b> — opens a human MCP client for that one server: the tools it
+          actually serves you, and a field to call them with. No model is involved; you pick
+          the tool and write the arguments. The session runs inside this process against the
+          same <code>Server</code> object <code>/mcp</code> builds, so entitlements and the
+          <code>tools:</code> capability policy apply exactly as they do to an agent. A call
+          from there is <b>real</b> — same upstream, same credentials, same side effects.</li>
+        <li><b>Copy</b> — puts <code>&lt;gateway&gt;/mcp?servers=&lt;slug&gt;</code> on the
+          clipboard: the address of that one server, for Claude Desktop, Cursor or any other
+          MCP client. It carries <b>no credential</b>. A token in a URL survives in shell
+          history, proxy logs, a <code>Referer</code> header and any screenshot of the address
+          bar, so the client sends its own <code>Authorization: Bearer …</code>, minted with
+          <code>npm run token:mint</code>.</li>
+      </ul>
+      <p>Neither appears on a DISABLED entry. strad does not mount one, so the playground would
+        open on a 424 and the copied URL is one <code>/mcp</code> refuses.</p>
+    </div>
+  </details>
+  <details class="acc">
     <summary>How the entries are ordered</summary>
     <div class="acc-body">
       <p>READY first, then ISSUE. Within each group, servers with a console view come before
@@ -801,8 +900,21 @@ const INDEX_CSS = `<style>
 .card-title-link{color:inherit;text-decoration:none}
 .card-title-link:hover{color:var(--text-accent)}
 .card-status{color:var(--g3);font-size:.78rem;margin:0;line-height:1.5}
+/* Two more controls landed in the foot, so it wraps rather than squeezing a
+   long slug into two lines beside them. */
+.server-card .card-foot{flex-wrap:wrap;gap:.5rem}
 .card-badges{display:flex;align-items:center;gap:.4rem}
-.card-slug{font-size:.72rem;color:var(--g4)}
+.card-slug{font-size:.72rem;color:var(--g4);white-space:nowrap}
+/* The two icons and the CTA share the foot's right-hand side. Quiet until
+   hovered: on a 27-card grid two loud glyphs per card is a wall of teal. */
+.card-actions{display:flex;align-items:center;gap:.5rem}
+.card-icon{display:inline-flex;align-items:center;justify-content:center;
+  width:1.7rem;height:1.7rem;padding:0;border:1px solid var(--g5);border-radius:.35rem;
+  background:none;color:var(--g3);cursor:pointer;text-decoration:none}
+.card-icon:hover{color:var(--text-accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--g5))}
+.card-icon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.card-icon.is-copied{color:var(--text-accent);
+  border-color:color-mix(in srgb,var(--accent) 70%,var(--g5))}
 .fixdlg{border:1px solid var(--g5);border-radius:.7rem;background:var(--g7);color:var(--g1);
   max-width:46rem;width:calc(100% - 2rem);padding:0}
 .fixdlg::backdrop{background:rgba(0,0,0,.6)}

@@ -69,12 +69,16 @@ import {
 const CANARY_ARG = "op://vault/SuperSecret/password-CANARY-9c1f4e2a";
 const CANARY_ARG_2 = "tadas@example.com-CANARY-b7d3";
 const CANARY_TOKEN = "strad_test_CANARY-token-must-never-be-exported-4f21";
+// The console's credential. A different door, and the same rule: the playground
+// runs tool calls too, so its surface goes under the same canary.
+const CANARY_CONSOLE_TOKEN = "console-CANARY-bootstrap-must-never-export-8b2d";
 
 const CONFIG = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
 auth:
   staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
 roles:
   admin:   { servers: ["*"] }
   limited: { servers: [alpha] }
@@ -99,6 +103,8 @@ const limitedToken = mintToken({
 
 const env: NodeJS.ProcessEnv = {
   STRAD_TOKENS: JSON.stringify([adminToken.record, limitedToken.record]),
+  ALLOW_DEV_AUTH: "true",
+  ADMIN_BOOTSTRAP_TOKEN: CANARY_CONSOLE_TOKEN,
 };
 
 const spanExporter = new InMemorySpanExporter();
@@ -194,6 +200,27 @@ beforeAll(async () => {
   // Sanity: the canary really did make the round trip. If the echo server
   // stopped echoing, the leak assertions below would pass for the wrong reason.
   expect(JSON.stringify(result)).toContain(CANARY_ARG);
+
+  // 1b. THE SAME CALL, through the console playground.
+  //
+  //     A human MCP client is a second path into `adapter.callTool`, carrying
+  //     the same arguments and returning the same result — so it is a second way
+  //     for a vault item to reach an exporter, and it goes under the same
+  //     canary rather than being trusted because it is "internal".
+  const playground = await fetch(`${baseUrl}/playground/alpha/tools/call`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      cookie: `strad_console=${CANARY_CONSOLE_TOKEN}`,
+    },
+    body: JSON.stringify({
+      tool: "alpha__echo",
+      arguments: { text: CANARY_ARG, email: CANARY_ARG_2 },
+    }),
+  });
+  // Sanity, for the same reason as above: if the playground stopped calling the
+  // tool, its half of the canary would pass by doing nothing.
+  expect(JSON.stringify(await playground.json())).toContain(CANARY_ARG);
 
   // 2. A 401, driven with a canary TOKEN. The token is the most dangerous string
   //    in the whole system and it is the one an eager "log the auth header"
@@ -299,6 +326,9 @@ describe("telemetry never exports secrets", () => {
     // Nor any real token, nor the `Bearer ` header that would carry one.
     expect(payload).not.toContain(adminToken.plaintext);
     expect(payload).not.toContain(limitedToken.plaintext);
+    // The console's credential rides on a cookie rather than a header, and the
+    // playground is the surface that reads it.
+    expect(payload).not.toContain(CANARY_CONSOLE_TOKEN);
     expect(payload).not.toContain("Bearer ");
   });
 
@@ -321,7 +351,11 @@ describe("telemetry exports the signals we actually need", () => {
   it("emits a tools/call span carrying the server slug, tool name and arg SHAPE", () => {
     const call = spanExporter
       .getFinishedSpans()
-      .find((s) => s.name === "mcp.tools.call");
+      .find(
+        (s) =>
+          s.name === "mcp.tools.call" &&
+          s.attributes["strad.surface"] === "mcp",
+      );
 
     expect(call, "no mcp.tools.call span was exported").toBeDefined();
     expect(call!.attributes["mcp.server"]).toBe("alpha");
@@ -337,7 +371,10 @@ describe("telemetry exports the signals we actually need", () => {
 
   it("nests the tool-call span under the /mcp request span", () => {
     const spans = spanExporter.getFinishedSpans();
-    const call = spans.find((s) => s.name === "mcp.tools.call");
+    const call = spans.find(
+      (s) =>
+        s.name === "mcp.tools.call" && s.attributes["strad.surface"] === "mcp",
+    );
     expect(call).toBeDefined();
 
     // The endpoint is session-less, so a single MCP client produces SEVERAL
@@ -422,6 +459,33 @@ describe("telemetry exports the signals we actually need", () => {
     expect(invented).toBeDefined();
     expect(invented?.attributes["unavailable"]).toEqual([]);
     expect(invented?.attributes).not.toHaveProperty("requested");
+  });
+
+  it("tells a human's tool call apart from an agent's, on the span and the metric", () => {
+    // Both run the same code, so without this attribute a console session's
+    // thinking time lands in the same latency series as an agent's calls.
+    const surfaces = spanExporter
+      .getFinishedSpans()
+      .filter((s) => s.name === "mcp.tools.call")
+      .map((s) => s.attributes["strad.surface"]);
+    expect(surfaces).toContain("mcp");
+    expect(surfaces).toContain("playground");
+
+    const metricSurfaces = findMetric("strad.mcp.tool_calls")!.dataPoints.map(
+      (d) => d.attributes["strad.surface"],
+    );
+    expect(metricSurfaces).toContain("mcp");
+    expect(metricSurfaces).toContain("playground");
+  });
+
+  it("keeps the playground's own log line out of the ingestor", () => {
+    // `ui.playground.tool_call` names a tool a human TYPED into a text field,
+    // which is not a word from a set this repo wrote down. It is on no
+    // allowlist, so it reaches stdout and stops there.
+    const records = logExporter.getFinishedLogRecords();
+    expect(records.some((r) => r.body === "ui.playground.tool_call")).toBe(
+      false,
+    );
   });
 
   it("mints no metric series from a slug the caller invented", () => {
