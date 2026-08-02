@@ -521,7 +521,10 @@ async function loadBrowserMounts(): Promise<Mount[]> {
     createMCPServer: (opts: Record<string, unknown>) => {
       registerHandlers: (server: unknown) => Promise<void>;
       cleanup: () => Promise<void>;
-      startBackgroundLogin: (onFail: (e: Error) => void) => void;
+      startBackgroundLogin: (
+        onFail: (e: Error) => void,
+        onRecovered?: () => void,
+      ) => void;
     };
     setSharedBrowserProvider: (p: (() => Promise<unknown>) | null) => void;
   };
@@ -541,10 +544,21 @@ async function loadBrowserMounts(): Promise<Mount[]> {
   };
 
   if (process.env.FETCHPET_USERNAME && process.env.FETCHPET_PASSWORD) {
-    fpCreated.startBackgroundLogin((error: Error) => {
-      fpMount.degraded = `login failed: ${error.message}`;
-      logWarn(`fetchpet: ${fpMount.degraded} (this mount is degraded; the container keeps serving)`);
-    });
+    // fetchpet retries its login on the next tool call, so `degraded` here is a
+    // report on the LAST attempt, not a verdict. It has to be cleared when an
+    // attempt succeeds — otherwise /healthz keeps naming a mount that is serving.
+    fpCreated.startBackgroundLogin(
+      (error: Error) => {
+        fpMount.degraded = `login failed: ${error.message}`;
+        logWarn(
+          `fetchpet: ${fpMount.degraded} (this mount is degraded; the container keeps serving, and the next tool call retries the login)`,
+        );
+      },
+      () => {
+        fpMount.degraded = null;
+        log("fetchpet: login recovered on retry (mount is no longer degraded)");
+      },
+    );
   } else {
     fpMount.degraded = "FETCHPET_USERNAME / FETCHPET_PASSWORD are not set";
     logWarn(`fetchpet: ${fpMount.degraded}`);

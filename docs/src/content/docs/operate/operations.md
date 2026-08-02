@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -19,6 +19,12 @@ Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted`:
   good-eggs image only builds on push, so a PR could otherwise break that server
   without CI noticing. This job builds it and runs its browser-free MCP-App gating
   tests.
+- **`fetchpet`** — the same shape as `good_eggs`, for the `fetchpet` server tree.
+  fetchpet drives a login form nobody here controls, and a redesign of it took the
+  mount down in both environments — it listed its four tools and failed every call
+  for weeks. Its tests run over a fake browser: they pin the login selectors against
+  the form Fetch actually serves, and prove a failed login is retried on the next
+  tool call rather than cached for the life of the container.
 - **`secrets`** — the same shape as `good_eggs`, for the `secrets` server tree. Its
   tests _are_ the security review: they drive the server through a real MCP client
   against a fake Parameter Manager that models the two-store split, and assert that

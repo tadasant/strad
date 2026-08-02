@@ -639,7 +639,10 @@ one-server outage.
 Mitigated where it could be:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`
-  instead of exiting the process (the standalone images exit — correct for them);
+  instead of exiting the process (the standalone images exit — correct for them).
+  For fetchpet the mark is a report on the last attempt, not a verdict: the next
+  tool call retries the login, and a success clears it. good-eggs still caches its
+  first failure until the container restarts;
 - **1Password** without an elicitation posture refuses to _mount_, not to boot;
 - an **unhandled rejection** is logged, not fatal;
 - a **dead Chromium** is relaunched on next use;
@@ -1464,11 +1467,49 @@ there was no failure, but it does mean the event pair that paged is no longer
 watching those slugs. `mcp.list_tools_failed` still fires for a genuinely failing
 listing, which is the half that matters.
 
-**Undo.** Give the probe a mixed-method shape — a concurrent `tools/list` +
-`resources/list` per slug, classifying a slug that answers one but not both as
-`degraded`. The cost is a second round trip per slug per interval against
-upstreams that are already CPU-starved (hack #24), which is why it is written
-down here rather than done.
+**It happened a second way, and the same probe missed that too.** A `tools/list`
+can be perfect and every `tools/call` can fail: fetchpet's login selector went
+stale when Fetch redesigned its form, and the mount spent weeks in both staging
+and prod listing four tools and returning `Login failed` for every call
+(strad#28). Tool lists are static; a login is not. The bundle's `/healthz` does
+report a per-mount `degraded` string for exactly this, and nothing reads it —
+not core's probe, not the staging deploy's assertions, not a metric. Every deploy
+in that window passed, and the only symptom was a `WARN` line on stdout, a stream
+that reaches nobody (#37).
+
+**Undo.** Two halves. Give the probe a mixed-method shape — a concurrent
+`tools/list` + `resources/list` per slug, classifying a slug that answers one but
+not both as `degraded`; the cost is a second round trip per slug per interval
+against upstreams that are already CPU-starved (hack #24), which is why it is
+written down here rather than done. And export the bundle's per-mount `degraded`
+as a gauge alongside `strad.mcp.tool_surface`, asserted by the staging deploy the
+way reachability is — the harder half of that is that "degraded" means something
+different per server (a bad refresh token, a missing credential, a failed login
+the next call retries), and a signal a deploy can fail on has to say which.
+
+## 41. fetchpet's vendored `shared/` has diverged from upstream
+
+**What.** `servers/fetchpet/shared/` was copied from
+[`pulsemcp/mcp-servers` `experimental/fetchpet/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/fetchpet)
+under the same terms as good-eggs (#10), and it no longer matches. The deltas, all
+of them driven by running inside the collapsed bundle rather than as a standalone
+stdio server:
+
+| Delta                                         | Why                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `setSharedBrowserProvider()` in `server.ts`   | one Chromium for three browser servers; this one opens a context on it                            |
+| `telemetry.ts`                                | a browser launch and a Chromium crash are things only this process sees                           |
+| `login.ts` and a retried login in `server.ts` | the login form Fetch serves today, and a failure the next tool call retries (#40, strad#28)       |
+| `test/`                                       | both of the above, over a fake browser, with no Fetch account — `ci.yml`'s `fetchpet` job runs it |
+
+**Why.** The selector fix could not wait on an upstream round trip: the mount was
+broken in prod. The shared-browser seam and the telemetry are strad-specific by
+construction — upstream has no bundle to share a browser with.
+
+**Undo.** Land the login fix upstream (it is not strad-specific — the form changed
+for everyone) and re-vendor, keeping the seam and telemetry as a documented patch
+set. `servers/fetchpet/README.md` carries the same table so the next re-vendor is a
+merge with a list, not a diff read cold.
 
 ## What the human still needs to provision
 

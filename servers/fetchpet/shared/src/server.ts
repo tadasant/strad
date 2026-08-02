@@ -1,6 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createRegisterTools } from './tools.js';
 import { withBrowserTelemetry } from './telemetry.js';
+import { EMAIL_FIELD_SELECTOR, PASSWORD_FIELD_SELECTOR, fillLoginField } from './login.js';
 import type {
   FetchPetConfig,
   Claim,
@@ -354,28 +355,16 @@ export class FetchPetClient implements IFetchPetClient {
     await this.page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await this.page.waitForTimeout(3000);
 
-    // Fill in login credentials - Fetch Pet uses a React app
-    // Try to find email input
-    const emailInput = await this.page.$('input[type="email"], input[name="email"], #email');
-    if (emailInput) {
-      await emailInput.fill(this.config.username);
-    } else {
-      // Try alternative selectors
-      await this.page.fill(
-        'input[placeholder*="email" i], input[autocomplete="email"]',
-        this.config.username
-      );
-    }
-
-    // Fill password
-    const passwordInput = await this.page.$(
-      'input[type="password"], input[name="password"], #password'
+    // Fill in login credentials. Fetch Pet is a React app, so the form may not
+    // be in the DOM yet — both fields are found with a WAITING locator over a
+    // union of every shape the field has carried. See login.ts.
+    await fillLoginField(this.page, EMAIL_FIELD_SELECTOR, this.config.username, this.config.timeout);
+    await fillLoginField(
+      this.page,
+      PASSWORD_FIELD_SELECTOR,
+      this.config.password,
+      this.config.timeout
     );
-    if (passwordInput) {
-      await passwordInput.fill(this.config.password);
-    } else {
-      await this.page.fill('input[placeholder*="password" i]', this.config.password);
-    }
 
     // Click sign in button, then wait for post-login indicators.
     // We avoid Promise.all([waitForURL, click]) because waitForURL with the default
@@ -1439,10 +1428,18 @@ The user MUST explicitly confirm they want to submit this claim before calling s
 export type ClientFactory = () => IFetchPetClient;
 
 /**
- * Callback invoked when background login fails
+ * Callback invoked when a login attempt fails.
+ *
+ * A failure is not final — the next tool call tries again (see
+ * `startBackgroundLogin`) — so a host that renders this as "degraded" should
+ * also take `LoginRecoveredCallback` to un-render it.
+ *
  * @param error The error that caused login to fail
  */
 export type LoginFailedCallback = (error: Error) => void;
+
+/** Callback invoked when a login attempt succeeds after an earlier one failed. */
+export type LoginRecoveredCallback = () => void;
 
 export interface CreateMCPServerOptions {
   version: string;
@@ -1464,11 +1461,13 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   // Track active client for cleanup
   let activeClient: IFetchPetClient | null = null;
 
-  // Track background login state
-  let loginPromise: Promise<void> | null = null;
-  let loginFailed = false;
-  let loginError: Error | null = null;
+  // The login attempt that is in flight, or the one that succeeded. Null means
+  // no attempt is running — including after a failed one, which is the whole
+  // point: a login failure is retried, not cached for the life of the process.
+  let loginAttempt: Promise<IFetchPetClient> | null = null;
+  let lastLoginError: Error | null = null;
   let onLoginFailed: LoginFailedCallback | null = null;
+  let onLoginRecovered: LoginRecoveredCallback | null = null;
 
   /**
    * Create the client instance (but don't initialize/login yet)
@@ -1497,69 +1496,103 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   };
 
   /**
-   * Start background login process
-   * This should be called after the server is connected to start authentication
-   * without blocking the stdio connection.
+   * One login attempt, from a fresh client.
    *
-   * @param onFailed Callback invoked if login fails - use this to close the server
+   * A failed attempt leaves nothing behind: the half-initialized client is
+   * closed and discarded and `loginAttempt` is cleared, so the next caller
+   * starts over from a clean browser context rather than inheriting a page
+   * parked on the login form.
    */
-  const startBackgroundLogin = (onFailed?: LoginFailedCallback): void => {
-    if (loginPromise) {
+  const attemptLogin = (): Promise<IFetchPetClient> => {
+    const remember = (error: unknown): Error => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      lastLoginError = failure;
+      return failure;
+    };
+
+    // createClient() THROWS on missing credentials rather than rejecting, and
+    // every failure has to leave through one door: remembered, reported, and
+    // retryable. A caller that fixes the environment and calls again gets a real
+    // attempt instead of a promise nobody reported.
+    let client: IFetchPetClient;
+    try {
+      client = createClient();
+    } catch (error) {
+      const failure = remember(error);
+      onLoginFailed?.(failure);
+      return Promise.reject(failure);
+    }
+
+    const attempt = client
+      .initialize()
+      .then(() => {
+        if (lastLoginError) {
+          lastLoginError = null;
+          onLoginRecovered?.();
+        }
+        return client;
+      })
+      .catch(async (error: unknown) => {
+        const failure = remember(error);
+        loginAttempt = null;
+        if (activeClient === client) {
+          activeClient = null;
+        }
+        await client.close().catch(() => {});
+        onLoginFailed?.(failure);
+        throw failure;
+      });
+
+    loginAttempt = attempt;
+    return attempt;
+  };
+
+  /**
+   * Start the login in the background, so the first real tool call does not also
+   * pay for a cold browser and a full sign-in.
+   *
+   * @param onFailed Callback invoked when an attempt fails. The server stays
+   *   usable: the next tool call retries. A host with other servers on board
+   *   should mark this one degraded rather than exit.
+   * @param onRecovered Callback invoked when an attempt succeeds after a failure
+   *   — the signal that clears the degraded mark the failure set.
+   */
+  const startBackgroundLogin = (
+    onFailed?: LoginFailedCallback,
+    onRecovered?: LoginRecoveredCallback
+  ): void => {
+    onLoginFailed = onFailed || null;
+    onLoginRecovered = onRecovered || null;
+
+    if (loginAttempt) {
       // Already started
       return;
     }
 
-    onLoginFailed = onFailed || null;
-
-    // Create client if not already created
-    if (!activeClient) {
-      createClient();
-    }
-
-    // Start login in background
-    loginPromise = activeClient!.initialize().catch((error) => {
-      loginFailed = true;
-      loginError = error instanceof Error ? error : new Error(String(error));
-
-      // Invoke callback to notify about login failure
-      if (onLoginFailed) {
-        onLoginFailed(loginError);
-      }
-
-      // Re-throw to make the promise rejected
-      throw loginError;
-    });
+    // Nothing awaits this until the first tool call, and a rejection nobody is
+    // listening to is an unhandled rejection. The failure is reported through
+    // onFailed and remembered by attemptLogin; swallow it here.
+    void attemptLogin().catch(() => {});
   };
 
   /**
-   * Get a client that is ready to use (login completed)
-   * If background login was started, this waits for it to complete.
-   * If not started, this will initialize synchronously (blocking).
+   * Get a client that is ready to use (login completed).
+   *
+   * Waits for the background login if one is running, and starts one if none is
+   * — including after an earlier attempt failed. That retry is what keeps a
+   * transient boot failure, or a login form that changed and was fixed upstream,
+   * from disabling this server until the container is redeployed.
    */
   const getReadyClient = async (): Promise<IFetchPetClient> => {
-    // If login already failed, throw immediately
-    if (loginFailed && loginError) {
-      throw new Error(`Login failed: ${loginError.message}`);
+    try {
+      return await (loginAttempt ?? attemptLogin());
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      // An instruction to the caller, not a promise about this process: a host
+      // that treats a failed login as fatal (the standalone image does) may be
+      // on its way down, and the retry then belongs to its replacement.
+      throw new Error(`Login failed: ${failure.message} (retry the call)`);
     }
-
-    // If background login is in progress, wait for it
-    if (loginPromise) {
-      await loginPromise;
-      if (!activeClient) {
-        throw new Error('Client was not created during login');
-      }
-      return activeClient;
-    }
-
-    // No background login started - create and initialize client now (fallback)
-    if (!activeClient) {
-      createClient();
-    }
-    if (!activeClient) {
-      throw new Error('Failed to create client');
-    }
-    await activeClient.initialize();
-    return activeClient;
   };
 
   const registerHandlers = async (server: Server, clientFactory?: ClientFactory) => {
@@ -1577,9 +1610,8 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       activeClient = null;
     }
     // Reset login state
-    loginPromise = null;
-    loginFailed = false;
-    loginError = null;
+    loginAttempt = null;
+    lastLoginError = null;
   };
 
   return { server, registerHandlers, cleanup, startBackgroundLogin };
