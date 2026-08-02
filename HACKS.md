@@ -1659,8 +1659,66 @@ first move.
 
 ## What the human still needs to provision
 
-A consolidated checklist, cross-referenced above:
+A consolidated checklist, cross-referenced above. A box is checked when `main`
+already carries it, with what proves it; every unchecked box names the issue
+tracking it, where one exists.
 
+### Still owed
+
+- [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
+      `strad-staging-*` (and `strad-prod-*`) secrets → removes hacks #2 and #20.
+      Tracked by issue #6.
+- [ ] **Delete the DOCR `strad` registry** (~$5/mo) → closes out hack #4. Staging
+      already runs the ghcr image, so the registry is unused and the deletion is
+      all that is left: `doctl registry delete strad`, or via the DO MCP. Tracked
+      by issue #8.
+- [ ] **Dedicated `GHCR_PULL_TOKEN_STRAD_TADASANT_INTERNAL`** for prod → resolves
+      hack #5. If any pull 403s, add strad's package to the PAT scope. No issue
+      tracks this one.
+- [ ] **Workload Identity Federation** pool + provider bound to both repos, then
+      delete `GCP_SA_KEY` → resolves hack #8. Tracked by issue #9.
+- [ ] **A datastore** for tokens (and a console mint/revoke UI) → resolves hack
+      #6. Hack #7 — the other half this item used to claim — is already resolved:
+      console login state travels in the signed `strad_oauth_tx` cookie, no
+      server-side map. Tracked by issue #10.
+
+### Already done
+
+- [x] **Every bootstrap `feat/*` branch trigger is gone** → removes hacks #1, #9,
+      #14, #17 and #19. Each supplementary image was bootstrapped by a push
+      trigger on its own feature branch; all of that work landed on `main` and
+      every workflow now builds from `main`, path-filtered.
+      `grep -rn 'feat/' .github/workflows/` returns nothing. That also settles the
+      hand-deploy half of #3 — `deploy-staging.yml` rebuilds staging from
+      `infra/strad.staging.yaml`, and nothing is deployed from a session. #3's
+      sibling #2b, `workflow_dispatch` being invocable only from the default
+      branch, is how GitHub works and stays. The onepassword
+      token (`OP_SERVICE_ACCOUNT_TOKEN`) and its `onepassword-ro` /
+      `onepassword-rw` server configs are still wired downstream in
+      tadasant-internal, not in this repo.
+- [x] **Staging runs the ghcr image** (hack #4) — `deploy-staging.yml` renders
+      core as `ghcr.io/tadasant/strad:<tag>` and every supplementary component
+      in `infra/strad.staging.yaml` names `ghcr.io/tadasant/strad-bundle`, both
+      pulled with `GHCR_PULL_TOKEN`. Deleting the now-unused DOCR registry is the
+      open half, above.
+- [x] **DNS**: `staging.strad.tadasant.com` resolves to the App Platform app and
+      App Platform holds its certificate. `deploy-staging.yml` passes `--domain`
+      explicitly and `render-spec` defaults `domains` from `gateway.publicUrl`,
+      so a deploy can no longer detach it — hack #18, which is how this was
+      found.
+- [x] **good-eggs, fetchpet and pointsyeah are seeded and enabled** (hack #19).
+      Their credentials — `strad-staging-GOODEGGS_EMAIL` / `_PASSWORD`,
+      `strad-staging-FETCHPET_USERNAME` / `_PASSWORD`,
+      `strad-staging-POINTSYEAH_REFRESH_TOKEN` — are in GCP, and a green deploy
+      is the proof: `resolveMap` in `src/deploy/appspec.ts` THROWS on an
+      unresolved `${…}`, so a missing value fails the render rather than shipping
+      a literal. None of the three carries `enabled: false`; the only
+      `enabled: false` left in `infra/strad.staging.yaml` is `auth.google`,
+      waiting on the OAuth client above.
+- [x] **The ghcr packages are pullable** — and the per-server visibility watch in
+      hack #12 is superseded with the component it watched. There is no
+      `bundle-goodeggs`; good-eggs, fetchpet and pointsyeah are mounts inside the
+      one `strad-bundle` image, which staging pulls on every deploy.
 - [x] **The secrets/parameters GCP project + three service accounts** (hack #26) —
       DONE for STAGING. All three exist; the resolver was the last one and the
       2026-07-31 rehearsal created it, seeded its key, and proved it renders. PROD
@@ -1694,41 +1752,3 @@ A consolidated checklist, cross-referenced above:
       Manager project (where SLACK_BOT_TOKEN lives), not the params project. Then set
       both `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
-
-- [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
-      `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2.
-- [ ] **Merge the PR**, then drop the bootstrap branch trigger → removes hacks
-      #1 and #3.
-- [ ] **Confirm staging on the ghcr image, then delete the DOCR `strad`
-      registry** → removes hack #4.
-- [ ] **Dedicated `GHCR_PULL_TOKEN_STRAD_TADASANT_INTERNAL`** for prod → resolves
-      hack #5. If any pull 403s, add strad's package to the PAT scope.
-- [ ] **Workload Identity Federation** pool + provider bound to both repos, then
-      delete `GCP_SA_KEY` → resolves hack #8.
-- [ ] **A datastore** for tokens (and a console mint/revoke UI) → resolves hacks
-      #6 and #7.
-- [ ] **DNS**: `staging.strad.tadasant.com` → the App Platform app (handled by a
-      parallel session via Cloudflare; grey-cloud/DNS-only, App Platform issues
-      the cert).
-- [ ] **Merge the PR**, then drop the good-eggs bootstrap branch trigger →
-      removes hacks #9 and #12.
-- [ ] **Confirm the `strad-server-good-eggs` ghcr package is pullable by
-      `GHCR_PULL_TOKEN`** (add it to the PAT scope, or set the package public)
-      → resolves the visibility watch in hack #12.
-- [ ] **Seed `strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD`
-      in GCP** (via `secrets-sync.yml`) so the CI deploy has the good-eggs
-      credentials, not just the session-driven deploy.
-- [ ] **Merge good-eggs (PR #4) to `main`, then this PR**, then drop the
-      `feat/onepassword-supplementary` bootstrap trigger → removes hack #14.
-      The onepassword token (`OP_SERVICE_ACCOUNT_TOKEN`) and its `onepassword-ro`
-      / `onepassword-rw` server configs are wired downstream in tadasant-internal,
-      not in this repo.
-- [ ] **Land the good-eggs stack + the fetchpet/pointsyeah PR on `main`**, then
-      drop the `feat/browser-servers-fetchpet-pointsyeah` bootstrap trigger →
-      removes hack #14.
-- [ ] **To activate fetchpet / pointsyeah**: seed
-      `strad-staging-FETCHPET_USERNAME` / `_PASSWORD` and
-      `strad-staging-POINTSYEAH_REFRESH_TOKEN` (real creds live in
-      tadasant-internal), confirm the two `strad-server-*` ghcr packages are
-      pullable by `GHCR_PULL_TOKEN`, then flip both to `enabled: true` in
-      `infra/strad.staging.yaml`.

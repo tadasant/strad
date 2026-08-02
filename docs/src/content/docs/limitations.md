@@ -923,11 +923,14 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 
 ## What the human still needs to provision
 
-The one-time steps that clear most of the list above:
+The one-time steps that clear most of the list above. Everything not listed here
+is already provisioned — the bootstrap branch triggers are gone, staging pulls the
+ghcr images over its own hostname, and the browser servers run on real credentials.
 
-- The secrets/parameters GCP project plus its three service accounts (viewer,
-  admin, resolver) and seeded keys, then the `remote-filesystem-tmp-public` values in
-  `/ui/secrets` — clears **#25**.
+- Set the `remote-filesystem-tmp-public` values in `/ui/secrets` — clears **#26**.
+  The secrets/parameters project and all three service accounts (viewer, admin,
+  resolver) already exist for staging with their keys seeded; the values are the
+  remaining half. Prod needs its own set of all of it.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Re-point prod at the collapsed bundle, then delete the per-server images and
