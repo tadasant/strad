@@ -127,6 +127,33 @@ intersected with `?servers=`. Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
 
+### One connection per slug, shared — so nothing closes it unilaterally
+
+`HttpServerAdapter` caches **one** MCP client per slug, and every concurrent
+request for that server runs on it. That is what keeps a full handshake off each
+tool call, and it is also why closing that client is not a decision one failing
+call gets to make: the close tears down the transport, and every request in
+flight on it dies at the same instant.
+
+So the adapter separates **retiring** a connection from **closing** it. Each
+request takes a lease for its duration; a failure retires the connection — no
+later caller is handed it — but the socket closes only when the last lease is
+released. A `resources/list` that fails can therefore never cost an in-flight
+`tools/list` its connection.
+
+Retirement is narrowed to failures that mean the _connection_ is unusable:
+timeouts, closed connections, DNS failures, aborted fetches. An upstream that
+**answers**, even with a JSON-RPC error, has a working transport, and dropping it
+would be pointless churn. Retirement is also scoped to the exact connection that
+failed, so a slow failure cannot evict a fresh one another caller has since
+installed.
+
+Resource proxying asks the handshake rather than the error text: if an upstream
+never advertised the `resources` capability — which is every tools-only server,
+i.e. most of them — `listResources()` answers `[]` without a round trip. A server
+that advertises it and answers `-32601` is treated the same way. Nothing keys off
+the wording of somebody else's error message.
+
 A failing upstream is handled differently depending on **who chose that server**:
 
 - **The request named it** (`?servers=secrets`) — `tools/list` **fails**. A slug
@@ -155,6 +182,11 @@ All three leave the container: the log line ships too, against the
 [event allowlist](/operate/telemetry/#logs--strads-own-events-and-only-those),
 because a stdout line on App Platform is a line nobody reads. The staging deploy
 fails when a slug we ship is `unreachable`.
+
+The monitor issues `tools/list` and nothing else, so it sees a slug the way a
+single-method client does. A failure that only appears when a client mixes
+methods is invisible to it by construction — see
+[known limitations #40](/limitations/#40-the-tool-surface-monitor-asks-one-question-so-it-can-only-catch-one-kind-of-failure).
 
 Selection is re-checked at `tools/call` time too: `tools/list` filters by the
 current `?servers=`, but a client could call any tool name it saw on a prior

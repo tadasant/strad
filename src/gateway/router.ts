@@ -598,11 +598,12 @@ async function listResourcesFor(
  *
  * Routing prefers the owner encoded in the URI: a `ui://<slug>/…` app template
  * names its server as the authority, so we try that selected server first and
- * fall back to the rest only if the hint misses. This matters because an
- * upstream adapter drops its cached connection on a failed read — trying the
- * wrong server first would needlessly churn healthy connections. Scoping to the
- * selected set means `?servers=` applies to resources exactly as to tools: you
- * cannot read a resource from a server you did not select.
+ * fall back to the rest only if the hint misses. That keeps the common case to
+ * one hop instead of a sweep across every selected server — a server that never
+ * advertised `resources` is skipped without a round trip, but one that did and
+ * simply does not hold this URI costs a real call. Scoping to the selected set
+ * means `?servers=` applies to resources exactly as to tools: you cannot read a
+ * resource from a server you did not select.
  */
 async function readResourceFor(
   selected: string[],

@@ -1435,6 +1435,41 @@ already had. Off by default, and off means nothing is imported at all.
 allowlist deny-by-default. If a deployment cannot accept the residual risk, unset
 `SENTRY_DSN` — that path is tested, not assumed.
 
+## 40. The tool-surface monitor asks one question, so it can only catch one kind of failure
+
+**What.** `src/gateway/reachability.ts` probes every mounted slug on an interval
+and calls `adapter.listTools()`. That is the whole probe. It never issues
+`resources/list`, never calls a tool, and never runs two methods against one slug
+at the same time.
+
+**Why it matters.** A slug can be broken in a way the monitor is structurally
+incapable of seeing. It happened: for seven days in prod, `secrets` answered a
+lone `tools/list` perfectly and failed `tools/list` for any client that asked for
+resources concurrently (issue #81 — one method's failure closed the shared
+upstream connection out from under the other). `strad_mcp_tool_surface` stayed at
+4, `/healthz` stayed green, `curl` loops stayed green, and clients kept getting
+`-32603`. The alert that eventually fired was on the `mcp.list_tools_failed` /
+`mcp.list_resources_failed` event pair, not on the monitor — the monitor was, and
+still is, blind to it.
+
+The teardown bug itself is fixed and regression-tested
+(`test/adapter.shared-connection.test.ts`). The blind spot is not: any future
+failure that needs two methods in flight to appear will again be invisible to
+`/healthz`.
+
+And the channel that DID catch it is now quieter, deliberately. Gating
+`resources/list` on the upstream's advertised capabilities means a tools-only
+slug no longer produces `mcp.list_resources_failed` at all — correct, because
+there was no failure, but it does mean the event pair that paged is no longer
+watching those slugs. `mcp.list_tools_failed` still fires for a genuinely failing
+listing, which is the half that matters.
+
+**Undo.** Give the probe a mixed-method shape — a concurrent `tools/list` +
+`resources/list` per slug, classifying a slug that answers one but not both as
+`degraded`. The cost is a second round trip per slug per interval against
+upstreams that are already CPU-starved (hack #24), which is why it is written
+down here rather than done.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above:

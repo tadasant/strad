@@ -565,3 +565,80 @@ test("the tool descriptions tell the agent it cannot have a secret value", () =>
   const list = defs.find((d) => d.name === "list_parameters");
   assert.match(list.description, /never a secret value/);
 });
+
+/**
+ * ONE probe per process, over MANY registerHandlers calls.
+ *
+ * The bundle host serves this mount statelessly: a fresh `Server` and a fresh
+ * `registerHandlers` call for EVERY HTTP request. A memo declared inside that
+ * function is therefore rebuilt per request, and this server's memo was — so
+ * every `tools/list` in production carried an OAuth token mint plus a
+ * `projects:testIamPermissions` round trip to Google, which is what made this
+ * mount's listing several times slower than its peers'. Slow enough that it was
+ * always the in-flight loser of the concurrent-listing race in
+ * tadasant/strad#81.
+ *
+ * The probe is deliberately NOT stubbed through the `capabilities` seam here —
+ * that seam bypasses the memo, so using it would assert nothing.
+ */
+test("the capability probe is memoised across registerHandlers calls", async () => {
+  const { Server: SdkServer } = await import(
+    "@modelcontextprotocol/sdk/server/index.js"
+  );
+
+  const json = (body) =>
+    new Response(JSON.stringify(body), {
+      headers: { "content-type": "application/json" },
+    });
+
+  const probes = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      return json({ access_token: "at", expires_in: 3600 });
+    }
+    if (href.includes(":testIamPermissions")) {
+      probes.push(href);
+      return json({ permissions: [] });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        projectId: "p",
+        namespaces: [NS],
+        account: VIEWER_ACCOUNT,
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+
+    for (let request = 0; request < 3; request += 1) {
+      const server = new SdkServer(
+        { name: "secrets-mcp-server", version: "0.0.0-test" },
+        { capabilities: { tools: {} } },
+      );
+      await created.registerHandlers(server);
+      const client = new Client({ name: "t", version: "0" }, { capabilities: {} });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      const { tools } = await client.listTools();
+      assert.ok(tools.length > 0, "the listing must survive a failed probe");
+      await client.close();
+      await server.close();
+    }
+
+    assert.equal(
+      probes.length,
+      1,
+      `Google was asked ${probes.length} times for one process's capabilities`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

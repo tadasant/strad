@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type {
-  Tool,
-  Resource,
-  ReadResourceResult,
-  ClientCapabilities as SdkClientCapabilities,
+import {
+  ErrorCode,
+  McpError,
+  type Tool,
+  type Resource,
+  type ReadResourceResult,
+  type ClientCapabilities as SdkClientCapabilities,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   context,
@@ -33,6 +35,89 @@ class StaleCredentialError extends Error {
   constructor(slug: string) {
     super(`upstream "${slug}": credential rotated during connect`);
     this.name = "StaleCredentialError";
+  }
+}
+
+/**
+ * One upstream connection, plus a count of the gateway requests using it.
+ *
+ * The connection is SHARED: one cached MCP `Client` per slug serves every
+ * concurrent request for that server. Sharing is what keeps a full handshake off
+ * every tool call, and it is also why closing one is not a decision a single
+ * failing call gets to make on its own — `client.close()` tears down the
+ * transport, and every request in flight on it dies at the same instant, whatever
+ * they were doing.
+ *
+ * So retirement and closure are separated. `retire()` says "no further caller
+ * should be handed this one"; the socket itself is closed only once the last
+ * lease is released. A call that fails can therefore always take its connection
+ * out of service, and can never take a peer's in-flight call down with it.
+ */
+class Conn {
+  private leases = 0;
+  private retired = false;
+  private closed = false;
+
+  /**
+   * `onClosed` fires exactly once, when the socket actually goes. The adapter
+   * uses it to forget this connection — a retired one detaches from the cache
+   * immediately but can outlive that by a whole request, and something has to
+   * still be able to reach it at shutdown.
+   */
+  constructor(
+    readonly client: Client,
+    private readonly onClosed: () => void,
+  ) {}
+
+  /**
+   * Take a lease, if this connection is still in service.
+   *
+   * Returns false once retired, and the caller must then get another
+   * connection: between `connect()` handing this one back and the caller
+   * resuming a microtask later, a peer's failure can have retired and closed it.
+   * Acquiring anyway would run the request on a closed socket — a small version
+   * of exactly the failure the lease exists to prevent.
+   */
+  acquire(): boolean {
+    if (this.retired) return false;
+    this.leases += 1;
+    return true;
+  }
+
+  /** Release one lease, closing the socket if this was the last one out. */
+  release(): void {
+    this.leases -= 1;
+    if (this.retired && this.leases === 0) this.closeNow();
+  }
+
+  /**
+   * Take this connection out of service. Idempotent: two callers failing on the
+   * same dead socket retire it once.
+   */
+  retire(): void {
+    if (this.retired) return;
+    this.retired = true;
+    if (this.leases === 0) this.closeNow();
+  }
+
+  /**
+   * Close now, in-flight leases or not. Only adapter shutdown does this — the
+   * process is going away, so waiting for a lease that may be blocked on a
+   * two-minute upstream timeout buys nothing.
+   */
+  async closeHard(): Promise<void> {
+    this.retired = true;
+    if (this.closed) return;
+    this.closed = true;
+    this.onClosed();
+    await this.client.close().catch(() => {});
+  }
+
+  private closeNow(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onClosed();
+    void this.client.close().catch(() => {});
   }
 }
 
@@ -66,16 +151,24 @@ export class HttpServerAdapter implements ServerAdapter {
   readonly slug: string;
   readonly kind: "remote-http" | "supplementary-image";
 
-  private client: Client | null = null;
-  private connecting: Promise<Client> | null = null;
+  private conn: Conn | null = null;
+  private connecting: Promise<Conn> | null = null;
+  /**
+   * Every connection still holding a socket, cached or not.
+   *
+   * A retired connection detaches from `conn` while its last request finishes,
+   * which leaves it reachable by nobody — and `close()` has to be able to reach
+   * it, or a shutdown returns having closed a socket that is still open.
+   */
+  private readonly live = new Set<Conn>();
   /** Digest of the credential currently believed current. */
   private fingerprint: string | null = null;
   /**
    * Bumped whenever the credential changes.
    *
    * The fingerprint alone cannot serve as the "is this attempt still valid"
-   * check, because `reset()` — which every request-path failure calls — would
-   * have to clear it, and a cleared fingerprint reads as a rotation to any
+   * check, because retiring a connection — which a transport failure does —
+   * would have to clear it, and a cleared fingerprint reads as a rotation to any
    * in-flight connect, making it discard a perfectly good connection. Separating
    * "what the credential is" from "how many times it has changed" lets a dropped
    * SOCKET and a rotated CREDENTIAL stop being the same event.
@@ -127,7 +220,7 @@ export class HttpServerAdapter implements ServerAdapter {
    * the connection and handshake again with the new credential. That comparison
    * is the whole runtime-rotation mechanism.
    */
-  private async connect(attemptsLeft = 3): Promise<Client> {
+  private async connect(attemptsLeft = 3): Promise<Conn> {
     // Snapshot the epoch BEFORE resolving. `endpoint()` can await (a cache miss
     // reaches the store), so two callers can resolve interleaved and a slow one
     // can return older values than a fast one that already landed. Comparing
@@ -143,17 +236,20 @@ export class HttpServerAdapter implements ServerAdapter {
       this.fingerprint !== fingerprint
     ) {
       // Rotated, and nothing newer has been observed since this resolution
-      // began. Abandon the cached client and any in-flight connect: both are
-      // bound to the superseded credential.
+      // began. Abandon the cached connection and any in-flight connect: both are
+      // bound to the superseded credential. Requests already running on the old
+      // connection keep it alive until they finish — they were authorized when
+      // they started, and killing them mid-flight would turn every rotation into
+      // a handful of failed client calls.
       this.epoch += 1;
       this.fingerprint = fingerprint;
-      this.dropClient();
+      this.retireCurrent();
       this.connecting = null;
     } else if (this.fingerprint === null) {
       this.fingerprint = fingerprint;
     }
 
-    if (this.client) return this.client;
+    if (this.conn) return this.conn;
 
     // Join an in-flight attempt — but through the same handler below, not by
     // returning its promise raw. A raw return skips the retry and the
@@ -224,8 +320,10 @@ export class HttpServerAdapter implements ServerAdapter {
         void client.close().catch(() => {});
         throw new StaleCredentialError(this.slug);
       }
-      this.client = client;
-      return client;
+      const conn: Conn = new Conn(client, () => this.live.delete(conn));
+      this.live.add(conn);
+      this.conn = conn;
+      return conn;
     })();
 
     const attempt = this.connecting;
@@ -251,9 +349,9 @@ export class HttpServerAdapter implements ServerAdapter {
    * the client asked about.
    */
   private async settle(
-    attempt: Promise<Client>,
+    attempt: Promise<Conn>,
     attemptsLeft: number,
-  ): Promise<Client> {
+  ): Promise<Conn> {
     try {
       return await attempt;
     } catch (err) {
@@ -326,79 +424,133 @@ export class HttpServerAdapter implements ServerAdapter {
     }
   }
 
-  async listTools(): Promise<Tool[]> {
-    const client = await this.connect();
+  /**
+   * Run one request on a leased connection.
+   *
+   * This is the only path that touches the shared client, and it is where the
+   * "a failure retires the connection" rule lives — narrowed to failures that
+   * actually mean the connection is unusable. An upstream that ANSWERS, even
+   * with a JSON-RPC error, has a working transport, so retiring it would be
+   * pointless churn; the lease is what keeps that churn from also being fatal to
+   * whatever else is running on the connection.
+   */
+  private async lease<T>(
+    conn: Conn,
+    op: string,
+    run: (client: Client) => Promise<T>,
+  ): Promise<T> {
     try {
-      const res = await this.hop("list_tools", () =>
-        client.listTools({}, { timeout: this.opts.timeoutMs }),
-      );
-      return res.tools.map((t) => ({ ...t, name: this.strip(t.name) }));
+      return await this.hop(op, () => run(conn.client));
     } catch (err) {
-      this.reset();
+      if (isConnectionFault(err)) this.retire(conn);
       throw new UpstreamError(this.slug, err);
+    } finally {
+      conn.release();
     }
+  }
+
+  /**
+   * A connection with a lease already taken on it. Every request path starts
+   * here, and `lease()` releases it.
+   *
+   * The retry covers the handoff: `connect()` can hand back a connection that a
+   * peer's failure retires before this caller resumes. That connection is
+   * already detached from the cache, so connecting again builds a fresh one.
+   * Bounded, because "the connection I was just given is gone" repeating without
+   * end is a bug, not a condition to spin on.
+   */
+  private async leased(attemptsLeft = 3): Promise<Conn> {
+    const conn = await this.connect();
+    if (conn.acquire()) return conn;
+    if (attemptsLeft > 1) return this.leased(attemptsLeft - 1);
+    throw new UpstreamError(
+      this.slug,
+      new Error("every connection was retired before it could be used"),
+    );
+  }
+
+  async listTools(): Promise<Tool[]> {
+    const conn = await this.leased();
+    const res = await this.lease(conn, "list_tools", (client) =>
+      client.listTools({}, { timeout: this.opts.timeoutMs }),
+    );
+    return res.tools.map((t) => ({ ...t, name: this.strip(t.name) }));
   }
 
   async callTool(
     name: string,
     args: Record<string, unknown>,
   ): Promise<CallToolResult> {
-    const client = await this.connect();
-    try {
-      const res = await this.hop("call_tool", () =>
-        client.callTool(
-          { name: this.restore(name), arguments: args },
-          undefined,
-          { timeout: this.opts.timeoutMs },
-        ),
-      );
-      return res as unknown as CallToolResult;
-    } catch (err) {
-      // Drop the cached client on failure, exactly as listTools does. A timeout
-      // or a dropped transport leaves the Client unusable; without this reset it
-      // stays cached and every subsequent call to this server keeps reusing the
-      // dead connection until the process restarts.
-      this.reset();
-      throw new UpstreamError(this.slug, err);
-    }
+    const conn = await this.leased();
+    const res = await this.lease(conn, "call_tool", (client) =>
+      client.callTool(
+        { name: this.restore(name), arguments: args },
+        undefined,
+        {
+          timeout: this.opts.timeoutMs,
+        },
+      ),
+    );
+    return res as unknown as CallToolResult;
   }
 
   /**
    * List this upstream's resources (e.g. an MCP App's `ui://` template).
    *
-   * A tools-only upstream never advertised the `resources` capability, so the
-   * SDK client rejects the call locally; we treat that as "no resources" rather
-   * than an error, so proxying resources never destabilises a plain server.
+   * Whether a server HAS resources is answered by its handshake, not by asking
+   * and reading the refusal. Most servers strad proxies are tools-only: they
+   * advertise `{ tools: {} }`, have no `resources/list` handler, and answer the
+   * call with `-32601 Method not found`. Sending it anyway costs a round trip
+   * per client listing and produces a failure for something that is not one.
+   *
+   * `-32601` is tolerated as well, for a server that advertises the capability
+   * and does not implement it. That is a protocol CODE, not a phrase. The SDK's
+   * own client-side capability check is gated on `enforceStrictCapabilities`,
+   * which the gateway does not set, so no refusal is ever raised locally and the
+   * answer has to come from the handshake or from the code on the wire.
    */
   async listResources(): Promise<Resource[]> {
-    const client = await this.connect();
+    const conn = await this.leased();
+    if (!conn.client.getServerCapabilities()?.resources) {
+      // Nothing was sent, so there is nothing to release but the lease itself.
+      conn.release();
+      return [];
+    }
     try {
-      const res = await this.hop("list_resources", () =>
+      const res = await this.lease(conn, "list_resources", (client) =>
         client.listResources({}, { timeout: this.opts.timeoutMs }),
       );
       return res.resources;
     } catch (err) {
-      if (isUnsupportedCapability(err)) return [];
-      this.reset();
-      throw new UpstreamError(this.slug, err);
+      if (isMethodNotFound(err)) return [];
+      throw err;
     }
   }
 
-  /** Read one resource by URI from this upstream. */
+  /**
+   * Read one resource by URI from this upstream.
+   *
+   * Gated on the same advertised capability as `listResources`, because the
+   * router SWEEPS: a read whose URI hint misses tries every other selected
+   * server in turn. Without the gate that sweep spends a round trip on each
+   * tools-only slug — most of them — to be told `-32601` every time.
+   */
   async readResource(uri: string): Promise<ReadResourceResult> {
-    const client = await this.connect();
-    try {
-      // The URI is NOT recorded as an attribute. A `ui://` app template is
-      // harmless, but readResource is a general-purpose read and a URI can name
-      // a file path or an object key. Identifier-shaped is not the same as
-      // safe-to-export, and this one is not worth the argument.
-      return await this.hop("read_resource", () =>
-        client.readResource({ uri }, { timeout: this.opts.timeoutMs }),
+    const conn = await this.leased();
+    if (!conn.client.getServerCapabilities()?.resources) {
+      conn.release();
+      throw new UpstreamError(
+        this.slug,
+        new Error("this server does not serve resources"),
       );
-    } catch (err) {
-      this.reset();
-      throw new UpstreamError(this.slug, err);
     }
+    // The URI is NOT recorded as an attribute. A `ui://` app template is
+    // harmless, but readResource is a general-purpose read and a URI can name
+    // a file path or an object key. Identifier-shaped is not the same as
+    // safe-to-export, and this one is not worth the argument.
+    return this.lease(conn, "read_resource", (client) =>
+      client.readResource({ uri }, { timeout: this.opts.timeoutMs }),
+    );
   }
 
   /** `bundled__whoami` -> `whoami`, for a strad-bundle upstream. */
@@ -416,32 +568,43 @@ export class HttpServerAdapter implements ServerAdapter {
   }
 
   /**
-   * Drop the cached connection after a transport failure.
+   * Take a specific connection out of service after a transport failure.
+   *
+   * Scoped to the connection the failing call actually used: by the time a slow
+   * request fails, another caller may already have installed a fresh, healthy
+   * connection, and evicting THAT one would make each failure cost the next
+   * request a handshake it did not need.
    *
    * Deliberately does NOT touch the fingerprint. A dead socket says nothing
    * about the credential, and clearing it would manufacture a phantom rotation:
    * an in-flight connect would see its epoch check fail, close a working
    * connection, and handshake again for no reason.
    */
-  private dropClient(): void {
-    const client = this.client;
-    this.client = null;
-    void client?.close().catch(() => {});
+  private retire(conn: Conn): void {
+    if (this.conn === conn) this.conn = null;
+    conn.retire();
   }
 
-  private reset(): void {
-    this.dropClient();
+  /** Retire whatever is cached, if anything. */
+  private retireCurrent(): void {
+    const conn = this.conn;
+    this.conn = null;
+    conn?.retire();
   }
 
   async close(): Promise<void> {
     this.closed = true;
-    const client = this.client;
-    this.client = null;
+    this.conn = null;
     this.fingerprint = null;
     // Abandon any in-flight attempt too. Without this it completes after the
     // adapter is shut, and would open a fresh connection on a closed adapter.
     this.connecting = null;
-    await client?.close().catch(() => {});
+    // Every live connection, not just the cached one: a retired connection
+    // waiting on its last request is exactly the socket a shutdown must not
+    // leave behind.
+    const live = [...this.live];
+    this.live.clear();
+    await Promise.all(live.map((conn) => conn.closeHard()));
   }
 }
 
@@ -469,14 +632,33 @@ function elapsedSeconds(startedAt: bigint): number {
 }
 
 /**
- * The SDK client rejects a call locally when the connected server never
- * advertised the required capability (e.g. calling resources/list on a
- * tools-only server). That is not a failure to surface — it just means "none".
+ * Does this failure mean the CONNECTION is unusable — as opposed to the request?
+ *
+ * The distinction is the whole reason one server's bad answer can no longer cost
+ * another request its connection. An `McpError` carrying any code other than the
+ * two the SDK raises locally ARRIVED, in a JSON-RPC error response, over a
+ * transport that is by definition still working. A timeout, a closed connection,
+ * a DNS failure or an aborted fetch is the opposite: the cached client is
+ * suspect, and the next caller should get a fresh one.
+ *
+ * Unrecognised failures are treated as connection faults. Retiring a good
+ * connection costs one handshake; keeping a dead one costs every subsequent
+ * request until the process restarts.
  */
-function isUnsupportedCapability(err: unknown): boolean {
-  return (
-    err instanceof Error && /does not support resources/i.test(err.message)
-  );
+function isConnectionFault(err: unknown): boolean {
+  if (err instanceof McpError) {
+    return (
+      err.code === ErrorCode.ConnectionClosed ||
+      err.code === ErrorCode.RequestTimeout
+    );
+  }
+  return true;
+}
+
+/** A JSON-RPC `-32601`, through the `UpstreamError` wrapper or raw. */
+function isMethodNotFound(err: unknown): boolean {
+  const cause = err instanceof UpstreamError ? err.cause : err;
+  return cause instanceof McpError && cause.code === ErrorCode.MethodNotFound;
 }
 
 export class UpstreamError extends Error {
