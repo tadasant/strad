@@ -165,6 +165,50 @@ function withNamespacedFallback(
   return out;
 }
 
+/**
+ * The env a view is DETECTED and resolved against: the server's own config
+ * (`env:` plus `consoleEnv:` for a supplementary image), with slug-namespaced
+ * variables also visible under their bare names.
+ *
+ * One function, because the index and the page have to agree. `/ui` decides
+ * whether to offer a `Manage →` link and `/ui/<slug>` decides what to render,
+ * and a link narrower than the page it points at is an unreachable feature — the
+ * page renders and nothing offers it. `remote-filesystem-tmp-public` is the shape
+ * that catches it: its bucket is `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET` (see
+ * the bundle host's collision note) and its credentials can be `consoleEnv:`-only,
+ * neither of which a bare-name, `env:`-only reading of the config finds.
+ */
+function declaredEnv(server: ServerConfig): Record<string, string> {
+  return withNamespacedFallback(server.slug, serverEnv(server));
+}
+
+/**
+ * The `secrets` detector: the server declares a secrets/parameters project.
+ *
+ * Exported because the console INDEX asks the same question — and asks it
+ * through this function, so it cannot answer differently from the resolver.
+ */
+export function serverLooksSecrets(server: ServerConfig): boolean {
+  return declaresSecrets(declaredEnv(server));
+}
+
+/** The GCS detector: the server declares a bucket or GCS credentials. */
+export function serverLooksGcs(server: ServerConfig): boolean {
+  return declaresGcs(declaredEnv(server));
+}
+
+function declaresSecrets(declared: Record<string, string>): boolean {
+  return Boolean(declared[SECRETS_ENV.projectId]);
+}
+
+function declaresGcs(declared: Record<string, string>): boolean {
+  return Boolean(
+    declared[GCS_ENV.bucket] ||
+    declared[GCS_ENV.keyJson] ||
+    declared[GCS_ENV.clientEmail],
+  );
+}
+
 export function resolveServerView(
   config: StradConfig,
   slug: string,
@@ -173,7 +217,7 @@ export function resolveServerView(
   const server = config.servers.find((s) => s.slug === slug);
   if (!server) return { kind: "not_found" };
 
-  const declared = withNamespacedFallback(server.slug, serverEnv(server));
+  const declared = declaredEnv(server);
   const value = withNamespacedFallback(
     server.slug,
     resolveEnv(serverEnv(server), consoleEnvKeys(server), secrets),
@@ -182,16 +226,12 @@ export function resolveServerView(
   // Secrets view: the server declares a secrets project. Checked FIRST — a
   // `secrets` server declares no bucket, so the two detectors cannot collide,
   // but the ordering says which concept owns the slug if one ever did.
-  if (declared[SECRETS_ENV.projectId]) {
+  if (declaresSecrets(declared)) {
     return resolveSecretsView(server, declared, value);
   }
 
   // GCS view: the server declares a bucket. That's the whole detector.
-  if (
-    declared[GCS_ENV.bucket] ||
-    declared[GCS_ENV.keyJson] ||
-    declared[GCS_ENV.clientEmail]
-  ) {
+  if (declaresGcs(declared)) {
     return resolveGcsView(server, declared, value);
   }
 

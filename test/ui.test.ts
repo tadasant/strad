@@ -5,9 +5,13 @@ import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import type { GcsLister } from "../src/ui/gcs-client.ts";
-import { resolveServerView, normalisePrefix } from "../src/ui/resolve.ts";
+import {
+  resolveServerView,
+  normalisePrefix,
+  serverLooksGcs,
+} from "../src/ui/resolve.ts";
 import { sanitizePrefix } from "../src/ui/index.ts";
-import { humanSize, serverLooksGcs } from "../src/ui/render.ts";
+import { humanSize } from "../src/ui/render.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**

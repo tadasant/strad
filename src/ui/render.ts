@@ -1,4 +1,4 @@
-import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
 import type { ServerView } from "./resolve.ts";
 import type { ParameterMeta } from "../secrets/parameters/index.ts";
@@ -1242,32 +1242,6 @@ export function renderSignIn(reason: string): string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** The `secrets` detector: it declares a secrets/parameters project. */
-export function serverLooksSecrets(server: ServerConfig): boolean {
-  const env =
-    server.kind === "supplementary-image"
-      ? { ...server.env, ...server.consoleEnv }
-      : server.kind === "builtin"
-        ? server.options
-        : {};
-  return Object.keys(env).includes("SECRETS_PROJECT_ID");
-}
-
-export function serverLooksGcs(server: ServerConfig): boolean {
-  const env =
-    server.kind === "supplementary-image"
-      ? server.env
-      : server.kind === "builtin"
-        ? server.options
-        : {};
-  const keys = Object.keys(env);
-  return (
-    keys.includes("GCS_BUCKET") ||
-    keys.includes("GCS_SERVICE_ACCOUNT_KEY_JSON") ||
-    keys.includes("GCS_CLIENT_EMAIL")
-  );
-}
 
 function stripRoot(full: string, root: string): string {
   return full.startsWith(root) ? full.slice(root.length) : full;

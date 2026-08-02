@@ -583,6 +583,43 @@ before servers without one, and config order breaks the remaining ties. Disabled
 servers sort last and carry no badge at all — strad does not mount them, so they
 need no secrets, and a green would be a claim about a server that answers nothing.
 
+### Which servers have a console view
+
+A server has a console view because its **config declares one**, not because of
+its slug. Two shapes light up, and an entry that matches neither is listed without
+a link:
+
+| The server declares                                                | `/ui/<slug>` is                      |
+| ------------------------------------------------------------------ | ------------------------------------ |
+| `SECRETS_PROJECT_ID`                                               | the parameter store for that project |
+| `GCS_BUCKET`, `GCS_SERVICE_ACCOUNT_KEY_JSON` or `GCS_CLIENT_EMAIL` | the object browser for that bucket   |
+
+A server that somehow declared both gets the parameter store: the secrets check
+runs first.
+
+"Declares" means the same thing here as everywhere else the console reads config —
+a `supplementary-image`'s `env:` and `consoleEnv:` together, a `builtin`'s
+string-valued `options:`, and nothing at all for a `remote-http` server, which
+holds no env for the console to read. A slug-namespaced name counts as its bare
+form: `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET` is a `GCS_BUCKET` for
+`remote-filesystem-tmp-public`, so a server that has to move off a bare name to
+stop colliding with a sibling is still recognised.
+
+**A link is not a promise that the browser can list.** The declaration is what
+lights the link; whether the page can do anything depends on the credential being
+reachable from **core**, which a bundle-scoped `env:` or a `params: true`
+injection is not — `remote-filesystem-tmp-public` on staging is exactly that, and
+its page names the bucket and says the credentials are not available to the
+console. That is the honest state, and it is the one that tells you to repeat the
+key under `consoleEnv:`; hiding the entry instead only makes the page harder to
+find.
+
+The index link and the page are **one decision**: `serverLooksGcs` and
+`serverLooksSecrets` in `src/ui/resolve.ts` are the same predicates
+`resolveServerView` branches on. A detector that could read the config more
+narrowly than its resolver is how you get a working page nothing links to, so
+there is only the one reading.
+
 ### The seven states behind the badges
 
 The popout names which of these it is, because "not seeded", "cannot render" and
