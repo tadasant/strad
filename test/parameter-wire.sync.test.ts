@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — a plain .mjs script, deliberately not part of the TS program.
-import { drifted, TARGETS } from "../scripts/sync-parameter-wire.mjs";
+import { drifted, SOURCE, TARGETS } from "../scripts/sync-parameter-wire.mjs";
 
 /**
  * Vendored copies rot. This is the thing that notices.
@@ -45,8 +45,15 @@ describe("the secrets tree has no second implementation", () => {
   const dir = "servers/secrets/shared/src";
   const vendored = "parameter-wire.ts";
 
-  /** Every hand-written source file in the tree — the vendored copy excluded. */
-  const sources = readdirSync(dir)
+  /**
+   * Every hand-written source file in the tree — the vendored copy excluded.
+   *
+   * Recursive, though the tree is flat today: a scan that only reads the top
+   * level would pass over a second implementation parked one directory down,
+   * which is the same fail-open this whole describe exists to close.
+   */
+  const sources = readdirSync(dir, { recursive: true })
+    .map(String)
     .filter((name) => name.endsWith(".ts") && name !== vendored)
     .map((name) => [name, readFileSync(join(dir, name), "utf8")] as const);
 
@@ -77,6 +84,20 @@ describe("the secrets tree has no second implementation", () => {
     "parameterId",
     "variableOf",
   ];
+
+  it("owns every name the wire declares", () => {
+    // The list above is a list, and a list goes stale. Adding a symbol to
+    // `wire.ts` without adding it here would leave that symbol unguarded — the
+    // copy would still be byte-identical, and the secrets tree could declare its
+    // own beside it. So the list is pinned AND derived: column-0 anchored, so a
+    // `const` inside a function body is not a declaration of anything.
+    const declared = [
+      ...readFileSync(SOURCE, "utf8").matchAll(
+        /^(?:export )?(?:declare )?(?:async )?(?:function|const|let|var|class|interface|type|enum) (\w+)/gm,
+      ),
+    ].map((m) => m[1]);
+    expect([...declared].sort()).toEqual([...OWNED].sort());
+  });
 
   it.each(OWNED)("declares %s nowhere but the vendored copy", (name) => {
     const declaration = new RegExp(
