@@ -1242,7 +1242,7 @@ instead of ending the loop at the first failure. So a namespace-wide refusal
 costs a FULL pass where it used to cost one call — strictly more work in the
 failure case, not merely more results. The loop is bounded at a fan-out of ten,
 matching `list()`, so the cost is N/10 round trips rather than N; `resolve()`
-still throws, now after the pass rather than during it, naming the first hard
+still throws, now after the pass rather than during it, naming every hard
 failure. That is the right trade for a diagnostic, and it is a real change in
 cost that a namespace of hundreds would feel on the deploy path.
 
@@ -1268,12 +1268,11 @@ reverts to the `unverified` shrug, which is what it said before.
 ## 36. One un-renderable parameter makes the WHOLE gateway namespace resolve to nothing
 
 **What.** `resolve()` in `src/secrets/parameters/gcp.ts` lists a namespace and
-then calls `:render` on every parameter in it, in sequence, and does not catch
-per parameter. The first `:render` that throws aborts the whole call. Above it,
-`SnapshotCache` treats that as a failed refresh — which is the right posture for
-an outage (serve the last known good map, warn) but means that with NO snapshot
-yet held, the error propagates and `${NAME}` resolves for nothing in that
-namespace, not merely for the parameter at fault.
+then calls `:render` on every parameter in it. Any hard render failure makes the
+whole call fail. Above it, `SnapshotCache` treats that as a failed refresh —
+which is the right posture for an outage (serve the last known good map, warn)
+but means that with NO snapshot yet held, the error propagates and `${NAME}`
+resolves for nothing in that namespace, not merely for the parameter at fault.
 
 **Why it matters, concretely.** A store-backed gateway reads
 `/strad/{env}/gateway/static/` for every `${NAME}` and for its boot keys. So a
@@ -1314,12 +1313,12 @@ failing request against one server — the exact "worse place to find out" that
 snapshot cache already makes it survivable for a gateway that has read the
 namespace once.
 
-**Undo.** If the all-or-nothing behaviour is judged worse than the alternative,
-collect per-parameter failures in `resolve()` and throw ONE error naming every
-name that could not render, rather than the first — that keeps the failure whole
-while making the diagnosis a single line instead of a bisection.
-`scripts/check-store.ts --resolve` already reports it this way and is the tool to
-reach for before a flip.
+**Undo taken, for diagnosis only.** `resolve()` still fails the namespace when any
+hard render fails, but it throws ONE error naming every name that could not
+render, with value-free reasons. That keeps the failure whole while making the
+diagnosis a single line instead of a bisection. `scripts/check-store.ts
+--resolve` reports the same class of failures and is the tool to reach for before
+a flip.
 
 ## 37. Exported logs are an allowlist, so most of stdout reaches no ingestor
 

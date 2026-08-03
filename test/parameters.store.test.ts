@@ -26,12 +26,15 @@ const ENV = "staging";
 const SLUG = "remote-filesystem-tmp-public";
 const EMAIL_VAR = "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL";
 const KEY_VAR = "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY";
+const TOKEN_VAR = "REMOTE_FILESYSTEM_TMP_PUBLIC_STRAD_INTERNAL_TOKEN";
 const emailPath = parameterPath(ENV, SLUG, EMAIL_VAR);
 const keyPath = parameterPath(ENV, SLUG, KEY_VAR);
+const tokenPath = parameterPath(ENV, SLUG, TOKEN_VAR);
 
 const EMAIL_VALUE = "svc@proj.iam.gserviceaccount.com";
 const KEY_VALUE =
   "-----BEGIN PRIVATE KEY-----\\nSUPER-SECRET-CANARY\\n-----END-----";
+const TOKEN_VALUE = "SECOND-SUPER-SECRET-CANARY";
 
 describe("gcp parameter store — two-store model", () => {
   it("stores a non-secret parameter's value in Parameter Manager", async () => {
@@ -350,8 +353,8 @@ describe("secret parameters grant their own principal secretAccessor", () => {
 describe("resolveDetailed keeps the failures apart from the values", () => {
   /**
    * `resolve()` is fail-fast because a child process started with half its
-   * environment is worse than one that does not start. That is also why it can
-   * never say WHICH parameter broke: the first `:render` to throw ends the loop.
+   * environment is worse than one that does not start. It still renders the full
+   * namespace before throwing so the diagnostic can name every hard failure.
    *
    * The console needs the other half of that fact — "rotate this ONE value"
    * versus "the secret backend is down" are the same symptom and opposite
@@ -405,6 +408,33 @@ describe("resolveDetailed keeps the failures apart from the values", () => {
     expect(await gcp.store.resolve(staticNamespace(ENV, SLUG))).toEqual({
       [KEY_VAR]: KEY_VALUE,
     });
+  });
+
+  it("names every hard resolve() failure without printing values", async () => {
+    const gcp = createFakeGcp();
+    await gcp.store.create({ path: keyPath, secret: true, value: KEY_VALUE });
+    await gcp.store.create({
+      path: tokenPath,
+      secret: true,
+      value: TOKEN_VALUE,
+    });
+
+    gcp.secretPolicies.set(parameterId(keyPath), []);
+    gcp.secretPolicies.set(parameterId(tokenPath), []);
+
+    let message = "";
+    try {
+      await gcp.store.resolve(staticNamespace(ENV, SLUG));
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+
+    expect(message).toContain("2 parameter(s)");
+    expect(message).toContain(KEY_VAR);
+    expect(message).toContain(TOKEN_VAR);
+    expect(message).toContain("400");
+    expect(message).not.toContain("SUPER-SECRET-CANARY");
+    expect(message).not.toContain("SECOND-SUPER-SECRET-CANARY");
   });
 
   it("reports an empty namespace as neither values nor failures", async () => {

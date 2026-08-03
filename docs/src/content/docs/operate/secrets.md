@@ -680,7 +680,7 @@ anything, and `resolveDetailed()` renders each parameter under its own
 `try`/`catch` so one refusal does not end the loop and cost the other names their
 answer. `resolve()` keeps its fail-fast contract for the injection path, where a
 child process started with half its environment is worse than one that does not
-start.
+start, but its error names every hard render failure in that namespace.
 
 This diagnosis runs wherever core holds a resolver credential, **including on a
 `provider: env` deployment** — those still resolve `params: true` servers from

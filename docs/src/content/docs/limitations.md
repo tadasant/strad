@@ -484,10 +484,10 @@ the way `servers/secrets` does. Nothing else removes the redeploy.
 
 ### 36. One un-renderable parameter makes the whole gateway namespace resolve to nothing
 
-`resolve()` lists a namespace and calls `:render` on every parameter in it,
-without catching per parameter. The first failure aborts the whole read, so with
-no snapshot yet cached a single malformed parameter is not a degraded name — it
-is a gateway that boots with no token store and `/mcp` rejecting everything.
+`resolve()` lists a namespace and calls `:render` on every parameter in it. Any
+hard render failure fails the whole read, so with no snapshot yet cached a
+single malformed parameter is not a degraded name — it is a gateway that boots
+with no token store and `/mcp` rejecting everything.
 
 That is deliberate. A resolver that dropped the failing name would hand the
 gateway a bag that looks complete, and the absence would surface later as one
@@ -514,9 +514,10 @@ resolves the whole namespace. It is a way to work around this entry, not a fix f
 it — neither way of getting an un-renderable parameter is caused by seeding too
 much.
 
-**Undo:** collect per-parameter failures in `resolve()` and throw one error naming
-every name that could not render, rather than the first. That keeps the failure
-whole while making the diagnosis a single line.
+**Diagnostic behavior:** `resolve()` still fails the namespace when any hard
+render fails, but the error names every name that could not render, with
+value-free reasons. That keeps the failure whole while making the diagnosis a
+single line.
 
 ### 29. The console's secret badges prove presence, not that a credential works
 
