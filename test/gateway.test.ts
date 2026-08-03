@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { mintToken } from "../src/auth/tokens.ts";
@@ -210,5 +210,85 @@ describe("/healthz", () => {
       mode: "core",
       servers: ["alpha", "beta"],
     });
+  });
+});
+
+describe("/mcp-upload", () => {
+  it("proxies raw POST bodies to a supplementary image mount", async () => {
+    const seen: { url?: string; auth?: string; body?: string } = {};
+    const upstream = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        seen.url = req.url;
+        seen.auth = req.headers.authorization;
+        seen.body = Buffer.concat(chunks).toString("utf8");
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ ok: true, bytes: seen.body.length }));
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, resolve));
+    const addr = upstream.address();
+    if (typeof addr === "string" || !addr) throw new Error("no upstream port");
+
+    const cfg = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-rfs
+servers:
+  - slug: remote-filesystem-tmp-public
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-rfs
+    path: /remote-filesystem-tmp-public
+    entitlements: [admin]
+`);
+    const localEnv = {
+      STRAD_TOKENS: "[]",
+      STRAD_BUNDLE_URL_BUNDLE_RFS: `http://127.0.0.1:${addr.port}`,
+    };
+    const registry = await Registry.build({
+      config: cfg,
+      secrets: new EnvSecretProvider({}),
+      mode: "core",
+      env: localEnv,
+    });
+    const app = createApp({
+      config: cfg,
+      registry,
+      tokenStore: tokenStoreFromConfig(cfg, localEnv),
+      mode: "core",
+      env: localEnv,
+    });
+    const gateway = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    const gatewayAddr = gateway.address();
+    if (typeof gatewayAddr === "string" || !gatewayAddr) {
+      throw new Error("no gateway port");
+    }
+
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${gatewayAddr.port}/mcp-upload/remote-filesystem-tmp-public/token123`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: '{"hello":true}',
+        },
+      );
+      await expect(res.json()).resolves.toEqual({ ok: true, bytes: 14 });
+      expect(seen).toEqual({
+        url: "/remote-filesystem-tmp-public/upload/token123",
+        auth: undefined,
+        body: '{"hello":true}',
+      });
+    } finally {
+      gateway.close();
+      upstream.close();
+    }
   });
 });

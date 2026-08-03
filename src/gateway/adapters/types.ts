@@ -3,6 +3,7 @@ import type {
   Resource,
   ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
+import type { Request, Response } from "express";
 import type { ClientCapabilities } from "../clientCapabilities.ts";
 
 /**
@@ -38,6 +39,12 @@ export interface ServerAdapter {
 
   /** Read one resource by URI. Present exactly when `listResources` is. */
   readResource?(uri: string): Promise<ReadResourceResult>;
+
+  /**
+   * Proxy a non-MCP POST to this upstream. Present only for supplementary
+   * images that expose a signed data-plane route beside MCP.
+   */
+  postRaw?(path: string, req: Request, res: Response): Promise<void>;
 
   /** Release upstream connections. */
   close(): Promise<void>;

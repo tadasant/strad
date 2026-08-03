@@ -374,8 +374,9 @@ function identityEnvs(
   component: string,
   environment: string,
   imageTag: string,
+  publicUrl?: string,
 ): EnvVar[] {
-  return [
+  const envs: EnvVar[] = [
     {
       key: "STRAD_COMPONENT",
       value: component,
@@ -395,6 +396,15 @@ function identityEnvs(
       type: "GENERAL",
     },
   ];
+  if (publicUrl) {
+    envs.push({
+      key: "STRAD_PUBLIC_URL",
+      value: publicUrl.replace(/\/$/, ""),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    });
+  }
+  return envs;
 }
 
 /**
@@ -607,7 +617,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
           scope: "RUN_TIME",
           type: "GENERAL",
         },
-        ...identityEnvs("core", config.gateway.env, opts.image.tag),
+        ...identityEnvs(
+          "core",
+          config.gateway.env,
+          opts.image.tag,
+          config.gateway.publicUrl,
+        ),
         ...bundleUrlEnvs,
         ...opts.env,
         // Core-only credentials. Deliberately NOT part of opts.env, which is
@@ -649,7 +664,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         scope: "RUN_TIME",
         type: "SECRET",
       })),
-      ...identityEnvs(name, config.gateway.env, componentImage.tag),
+      ...identityEnvs(
+        name,
+        config.gateway.env,
+        componentImage.tag,
+        config.gateway.publicUrl,
+      ),
       ...paramKeysEnv(supplementary.paramKeys),
       ...opts.env.filter(
         (e) =>
@@ -713,7 +733,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               scope: "RUN_TIME",
               type: "GENERAL",
             },
-            ...identityEnvs(name, config.gateway.env, componentImage.tag),
+            ...identityEnvs(
+              name,
+              config.gateway.env,
+              componentImage.tag,
+              config.gateway.publicUrl,
+            ),
             ...opts.env,
           ],
     });

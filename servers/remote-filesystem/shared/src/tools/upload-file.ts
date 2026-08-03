@@ -51,6 +51,11 @@ artifact it produced. The artifact is stored in a Google Cloud Storage bucket an
 tool returns a URL — put that URL in your reply, or embed it in a PR description with
 markdown image syntax.
 
+For nontrivial payloads, prefer get_upload_url: it returns a temporary POST target
+and a curl command, so the bytes travel from the shell to the server instead of being
+base64/text-encoded into the MCP tool call. Use this direct upload_file tool for tiny
+in-memory payloads or files already visible to this server through file://.
+
 **Two kinds of link, chosen by \`is_sensitive\`:**
 - \`false\` (default) — a signed URL. Unguessable, opens instantly for anyone holding
   it with no sign-in, and expires after \`expires_in_days\` (default ${DEFAULT_LINK_DAYS}). This is

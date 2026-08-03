@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { createMCPServer, toolDefinitions } from "../build/index.js";
+import { createMCPServer, toolDefinitions, UploadLeaseStore } from "../build/index.js";
 import { FakeStore } from "./fake-store.mjs";
 
 /**
@@ -49,7 +49,7 @@ function safeJson(text) {
 
 const b64 = (s) => Buffer.from(s).toString("base64");
 
-test("tools/list exposes the six tools with their annotations", async () => {
+test("tools/list exposes the seven tools with their annotations", async () => {
   const { client, close } = await connect(new FakeStore());
   const { tools } = await client.listTools();
   assert.deepEqual(
@@ -57,6 +57,7 @@ test("tools/list exposes the six tools with their annotations", async () => {
     [
       "delete_file",
       "download_file",
+      "get_upload_url",
       "list_files",
       "refresh_link",
       "set_sensitivity",
@@ -65,6 +66,7 @@ test("tools/list exposes the six tools with their annotations", async () => {
   );
   assert.equal(tools.find((t) => t.name === "delete_file").annotations.destructiveHint, true);
   assert.equal(tools.find((t) => t.name === "refresh_link").annotations.readOnlyHint, true);
+  assert.equal(tools.find((t) => t.name === "get_upload_url").annotations.openWorldHint, true);
   await close();
 });
 
@@ -133,6 +135,65 @@ test("a sensitive upload fails loudly when no viewer domain is configured", asyn
   assert.equal(isError, true);
   assert.match(text, /viewer domain/i);
   await close();
+});
+
+test("get_upload_url returns a short-lived curlable POST target", async () => {
+  const store = new FakeStore();
+  const leases = new UploadLeaseStore({
+    slug: "remote-filesystem-tmp-public",
+    uploadBaseUrl: "https://strad.example",
+    now: () => store.now,
+  });
+  const { client, close } = await connect(store, { uploadLeases: leases });
+  const { json, isError } = await call(client, "get_upload_url", {
+    path: "shots/big.png",
+    content_type: "image/png",
+    expires_in_days: 3,
+    upload_url_expires_in_minutes: 5,
+  });
+  assert.equal(isError, false);
+  assert.match(
+    json.upload_url,
+    /^https:\/\/strad\.example\/mcp-upload\/remote-filesystem-tmp-public\//,
+  );
+  assert.equal(json.method, "POST");
+  assert.equal(json.headers["content-type"], "image/png");
+  assert.match(json.curl, /--data-binary @\/path\/to\/file/);
+  assert.equal((Date.parse(json.expires_at) - store.now) / 60_000, 5);
+  await close();
+});
+
+test("a temporary upload URL stores bytes once and returns the artifact link", async () => {
+  const store = new FakeStore();
+  const created = createMCPServer({
+    version: "test",
+    storeFactory: () => store,
+    uploadLeases: new UploadLeaseStore({
+      slug: "remote-filesystem-tmp-public",
+      now: () => store.now,
+    }),
+  });
+
+  const lease = created.uploadLeases.create(
+    {
+      path: "shots/from-post.txt",
+      content_type: "text/plain",
+      expires_in_days: 7,
+    },
+    store.defaultLinkDays(),
+  );
+  const token = lease.upload_url.split("/").pop();
+  const uploaded = await created.handleUpload(token, Buffer.from("hello from curl"));
+  const body = JSON.parse(uploaded.content[0].text);
+  assert.equal(uploaded.isError, undefined);
+  assert.equal(body.path, "shots/from-post.txt");
+  assert.equal(body.size_bytes, 15);
+  assert.equal(body.content_type, "text/plain");
+  assert.equal(store.objects.get("shots/from-post.txt").buffer.toString(), "hello from curl");
+
+  const replay = await created.handleUpload(token, Buffer.from("again"));
+  assert.equal(replay.isError, true);
+  assert.match(replay.content[0].text, /missing or expired/);
 });
 
 test("refresh_link revives an expired link without touching the artifact", async () => {
@@ -265,7 +326,10 @@ test("the readonly group withholds every mutating tool", async () => {
 
 test("the is_sensitive copy steers away from itself, identically in both tools", async () => {
   const store = new FakeStore();
-  const definitions = toolDefinitions(() => store);
+  const definitions = toolDefinitions(
+    () => store,
+    new UploadLeaseStore({ slug: "remote-filesystem-tmp-public" }),
+  );
   const upload = definitions.find((t) => t.name === "upload_file");
   const set = definitions.find((t) => t.name === "set_sensitivity");
 
@@ -281,7 +345,10 @@ test("the is_sensitive copy steers away from itself, identically in both tools",
 });
 
 test("every tool description carries the sections the house style requires", () => {
-  const definitions = toolDefinitions(() => new FakeStore());
+  const definitions = toolDefinitions(
+    () => new FakeStore(),
+    new UploadLeaseStore({ slug: "remote-filesystem-tmp-public" }),
+  );
   for (const tool of definitions) {
     assert.ok(tool.name.length <= 25, `${tool.name} is too long`);
     assert.match(tool.name, /^[a-z][a-z0-9_]*$/, `${tool.name} is not snake_case`);

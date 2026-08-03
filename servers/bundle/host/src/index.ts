@@ -86,6 +86,10 @@ function constantTimeEquals(a: string, b: string): boolean {
 interface Created {
   server: unknown;
   registerHandlers: (server: unknown, ...rest: unknown[]) => Promise<void>;
+  handleUpload?: (token: string, body: Buffer) => Promise<{
+    content: Array<{ type: "text"; text: string }>;
+    isError?: boolean;
+  }>;
 }
 
 interface Mount {
@@ -104,6 +108,11 @@ interface Mount {
   sessionful?: boolean;
   /** Non-null when this server is up but cannot serve (e.g. login failed). */
   degraded?: string | null;
+  /** Optional non-MCP upload endpoint exposed beside this mount. */
+  upload?: (token: string, body: Buffer) => Promise<{
+    content: Array<{ type: "text"; text: string }>;
+    isError?: boolean;
+  }>;
 }
 
 /**
@@ -376,6 +385,7 @@ async function loadRemoteFilesystem(): Promise<Mount> {
         ? `${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN is not set; is_sensitive=true uploads will be refused`
         : null,
     register: (s) => created.registerHandlers(s),
+    upload: created.handleUpload,
   };
 }
 
@@ -793,9 +803,6 @@ async function main(): Promise<void> {
 
   const app = express();
   app.disable("x-powered-by");
-  // Gmail attachments, GCS uploads and document bodies are big; the 100kb default
-  // would truncate them into confusing protocol errors.
-  app.use(express.json({ limit: "20mb" }));
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
   // with 15 servers behind one health check, "ok: true" alone is not information.
@@ -812,6 +819,37 @@ async function main(): Promise<void> {
       })),
     });
   });
+
+  for (const mount of mounts) {
+    if (!mount.upload) continue;
+    app.post(
+      `/${mount.slug}/upload/:token`,
+      express.raw({ type: "*/*", limit: "100mb" }),
+      (req, res) => {
+        void mount
+          .upload!(
+            req.params.token,
+            Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0),
+          )
+          .then((result) => {
+            const text = result.content.map((c) => c.text).join("\n");
+            res
+              .status(result.isError ? 400 : 200)
+              .type("application/json")
+              .send(text);
+          })
+          .catch((err) => {
+            logError(mount.slug, err);
+            if (!res.headersSent) res.status(500).json(jsonRpcError(err));
+          });
+      },
+    );
+  }
+
+  // Gmail attachments, GCS uploads and document bodies are big; the 100kb default
+  // would truncate them into confusing protocol errors. Keep this AFTER the raw
+  // upload routes so JSON artifacts are stored as bytes rather than parsed away.
+  app.use(express.json({ limit: "20mb" }));
 
   // Presence, for the console that cannot see this process.
   //

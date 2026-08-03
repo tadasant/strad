@@ -7,7 +7,10 @@ export {
 export {
   ENV_SUFFIXES,
   DEFAULT_LINK_DAYS,
+  DEFAULT_UPLOAD_URL_MINUTES,
   MAX_LINK_DAYS,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_URL_MINUTES,
   ConfigError,
   envName,
   loadConfig,
@@ -54,3 +57,12 @@ export {
 } from "./tools.js";
 
 export { SENSITIVE_DESCRIPTION, type ToolDefinition } from "./tools/shared.js";
+
+export {
+  UploadLeaseSchema,
+  UploadLeaseStore,
+  createUploadLeaseStore,
+  handleUploadPost,
+  type UploadLease,
+  type UploadTarget,
+} from "./upload-targets.js";

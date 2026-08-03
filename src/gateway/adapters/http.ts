@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Request, Response } from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
@@ -553,6 +554,42 @@ export class HttpServerAdapter implements ServerAdapter {
     );
   }
 
+  async postRaw(path: string, req: Request, res: Response): Promise<void> {
+    const endpoint = await this.opts.endpoint();
+    const url = new URL(endpoint.url);
+    url.pathname = joinPath(url.pathname, path);
+    url.search = "";
+
+    const headers = new Headers(endpoint.headers);
+    const contentType = req.get("content-type");
+    if (contentType) headers.set("content-type", contentType);
+    const contentLength = req.get("content-length");
+    if (contentLength) headers.set("content-length", contentLength);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.opts.timeoutMs);
+    try {
+      const upstream = await this.hop("post_raw", () =>
+        fetch(url, {
+          method: "POST",
+          headers,
+          body: req,
+          duplex: "half",
+          signal: controller.signal,
+        } as RequestInit & { duplex: "half" }),
+      );
+      res.status(upstream.status);
+      upstream.headers.forEach((value, key) => {
+        if (key.toLowerCase() === "transfer-encoding") return;
+        res.setHeader(key, value);
+      });
+      const buffer = Buffer.from(await upstream.arrayBuffer());
+      res.send(buffer);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   /** `bundled__whoami` -> `whoami`, for a strad-bundle upstream. */
   private strip(name: string): string {
     const prefix = this.opts.innerPrefix;
@@ -606,6 +643,10 @@ export class HttpServerAdapter implements ServerAdapter {
     this.live.clear();
     await Promise.all(live.map((conn) => conn.closeHard()));
   }
+}
+
+function joinPath(base: string, path: string): string {
+  return `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 }
 
 /**

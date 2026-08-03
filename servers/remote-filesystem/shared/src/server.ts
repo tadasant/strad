@@ -2,6 +2,11 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { loadConfig, type StoreConfig } from "./config.js";
 import { GcsArtifactStore, type ArtifactStore } from "./store.js";
 import { parseToolGroups, registerTools, type ToolGroup } from "./tools.js";
+import {
+  createUploadLeaseStore,
+  handleUploadPost,
+  type UploadLeaseStore,
+} from "./upload-targets.js";
 
 export type StoreFactory = () => ArtifactStore;
 
@@ -17,6 +22,9 @@ export interface CreateMCPServerOptions {
   config?: StoreConfig;
   storeFactory?: StoreFactory;
   toolGroups?: ToolGroup[];
+  uploadLeases?: UploadLeaseStore;
+  /** Slug used in the public upload route. */
+  uploadSlug?: string;
 }
 
 /**
@@ -38,27 +46,47 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   // built inside that function would rebuild the GCS client, and re-mint an
   // OAuth token, on every single call.
   let store: ArtifactStore | undefined;
+  const uploadLeases =
+    options.uploadLeases ??
+    createUploadLeaseStore({
+      slug: options.uploadSlug ?? "remote-filesystem-tmp-public",
+      config: options.config,
+      envPrefix: options.envPrefix,
+    });
+
+  const resolveStoreFactory = (storeFactory?: StoreFactory): StoreFactory =>
+    storeFactory ??
+    options.storeFactory ??
+    ((): ArtifactStore => {
+      store ??= new GcsArtifactStore(
+        options.config ?? loadConfig(options.envPrefix ?? ""),
+      );
+      return store;
+    });
 
   const registerHandlers = async (
     target: Server,
     storeFactory?: StoreFactory,
   ): Promise<void> => {
-    const factory =
-      storeFactory ??
-      options.storeFactory ??
-      ((): ArtifactStore => {
-        store ??= new GcsArtifactStore(
-          options.config ?? loadConfig(options.envPrefix ?? ""),
-        );
-        return store;
-      });
-
     registerTools(
       target,
-      factory,
+      resolveStoreFactory(storeFactory),
+      uploadLeases,
       options.toolGroups ?? parseToolGroups(process.env.ENABLED_TOOLGROUPS),
     );
   };
 
-  return { server, registerHandlers };
+  const handleUpload = async (
+    token: string,
+    body: Buffer,
+    storeFactory?: StoreFactory,
+  ) =>
+    handleUploadPost(
+      token,
+      body,
+      uploadLeases,
+      resolveStoreFactory(storeFactory),
+    );
+
+  return { server, registerHandlers, handleUpload, uploadLeases };
 }
