@@ -1,9 +1,10 @@
 # bundle — THE strad supplementary image
 
-Fifteen MCP servers. One container. One Chromium. One `op` binary.
+Sixteen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
+/x-twitter
 /google-flights /gmail /google-calendar /google-docs /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
@@ -106,7 +107,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Fifteen servers share a process. A crash is a fifteen-server outage. Everything
+Sixteen servers share a process. A crash is a sixteen-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the

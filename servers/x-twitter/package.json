@@ -1,0 +1,34 @@
+{
+  "name": "pulsemcp-x-twitter-mcp-server-workspace",
+  "version": "0.0.1",
+  "description": "strad's vendored PulseMCP X server: timeline, search, lookups, and private bookmarks. A tree in the strad bundle image.",
+  "author": "PulseMCP",
+  "license": "MIT",
+  "workspaces": [
+    "local",
+    "shared"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "build:test": "npm run build --workspace local",
+    "clean": "rm -rf shared/build local/build",
+    "dev": "cd local && npm run dev",
+    "test": "npm run build && vitest run",
+    "test:run": "npm test",
+    "test:integration": "npm run build:test && vitest run -c vitest.config.integration.ts && npm run clean",
+    "test:integration:watch": "vitest -c vitest.config.integration.ts",
+    "test:e2e": "npm run build --workspace local && vitest run -c vitest.config.e2e.ts",
+    "test:all": "npm run test:run && npm run test:integration",
+    "lint": "echo 'x-twitter is outside the core ESLint program'",
+    "lint:fix": "echo 'x-twitter is outside the core ESLint program'",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vitest/ui": "^3.2.3",
+    "dotenv": "^16.4.5",
+    "vitest": "^3.2.3"
+  }
+}

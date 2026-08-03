@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that fifteen servers, eight dependency trees and
+ * What it is really checking is that sixteen servers, nine dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  */
@@ -46,7 +46,13 @@ const EXPECT = {
   "good-eggs": null, // browser servers vary with their app surface; just list
   fetchpet: null,
   pointsyeah: null,
+  "x-twitter": 9,
 };
+
+const X_TWITTER_TOOLS = new Set([
+  "get_my_account", "get_user", "get_home_timeline", "get_user_tweets",
+  "get_bookmarks", "search_recent_tweets", "get_tweets", "create_bookmark", "remove_bookmark",
+]);
 
 async function rpc(path, body, sessionId) {
   const res = await fetch(`${BASE}${path}`, {
@@ -97,7 +103,9 @@ let failed = 0;
 for (const [slug, expected] of Object.entries(EXPECT)) {
   try {
     const tools = await listTools(`/${slug}`);
-    const ok = expected === null || tools.length === expected;
+    const isExactXSurface = slug !== "x-twitter" ||
+      tools.length === X_TWITTER_TOOLS.size && tools.every((tool) => X_TWITTER_TOOLS.has(tool));
+    const ok = (expected === null || tools.length === expected) && isExactXSurface;
     if (!ok) failed += 1;
     console.log(
       `${ok ? "ok  " : "FAIL"} /${slug}: ${tools.length} tools${expected === null ? "" : ` (expected ${expected})`}`,
