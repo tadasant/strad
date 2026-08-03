@@ -139,7 +139,7 @@ bundles:
   # upstream MCP servers — the bundle-api fleet, the Google trio, 1Password (with
   # the `op` CLI baked in) and the three browser servers, which share ONE Chromium
   # (never one per server: see servers/bundle/host/src/browser.ts). The sixteenth
-  # mount, `/x-twitter`, is in the image and has no slug here yet; the PROCESS
+  # mount, `/x-twitter`, is in the image and has no slug here; the PROCESS
   # registers all sixteen either way, which is what the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
