@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>15 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>16 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -55,11 +55,11 @@ in-VPC hop (~4ms) with no public-edge hairpin.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts fifteen MCP servers in one
-Node process, assembled from eight independently-built dependency trees. The
-staging config maps twenty-four of its twenty-five `supplementary-image` entries
-onto those fifteen mounts, because capability variants of one upstream are two
-entries pointing at the same path. The twenty-fifth runs on the second bundle,
+`ghcr.io/tadasant/strad-bundle` container that mounts sixteen MCP servers in one
+Node process, assembled from nine independently-built dependency trees. The
+staging config maps twenty-six of its twenty-seven `supplementary-image` entries
+onto those sixteen mounts, because capability variants of one upstream are two
+entries pointing at the same path. The twenty-seventh runs on the second bundle,
 below.
 
 It has a **second** bundle, `bundle-zimmer-secrets`, and the reason is worth
@@ -73,8 +73,8 @@ Three numbers, three different things:
 | Number | What it counts                                                                      |
 | ------ | ----------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                 |
-| **15** | MCP servers mounted inside the bundle image                                         |
-| **27** | server slugs in `infra/strad.staging.yaml` (25 supplementary + `echo` + `deepwiki`) |
+| **16** | MCP servers mounted inside the bundle image                                         |
+| **29** | server slugs in `infra/strad.staging.yaml` (27 supplementary + `echo` + `deepwiki`) |
 
 ### The two modes
 
@@ -268,7 +268,7 @@ The server list drives how containers are grouped:
   distinct paths, and capability variants may even share a path.
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (15 mounted servers,
+  serialises rendering. strad's own deployment puts everything (16 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -276,8 +276,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, fifteen servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all fifteen down together, and the
+**One process, one core, sixteen servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all sixteen down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

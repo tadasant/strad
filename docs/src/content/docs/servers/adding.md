@@ -213,16 +213,16 @@ does not surface them.
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
-once. It declares twenty-seven server slugs: a core builtin (`echo`), a
+once. It declares twenty-nine server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
-and twenty-five `supplementary-image` entries — twenty-four sharing ONE bundle
-over the private network, which resolve onto the bundle image's fifteen mounts
+and twenty-seven `supplementary-image` entries — twenty-six sharing ONE bundle
+over the private network, which resolve onto the bundle image's sixteen mounts
 because every read-only / read-write pair is two entries on one path. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
 credentials from step 4b, and `remote-filesystem-tmp-public` is the deploy-time
 `params: true` example from step 4c — `echo` is the runtime one.
 
-The twenty-fifth, `zimmer-secrets`, is the worked example for the one case where a
+The twenty-seventh, `zimmer-secrets`, is the worked example for the one case where a
 second **bundle** is the answer rather than a second `path`: it is the same image
 and the same `path: /secrets` as `secrets`, differing only in `bundle:` and in
 which store it points at. [Two stores, one

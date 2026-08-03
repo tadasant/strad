@@ -630,10 +630,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Fifteen servers now share one process, and one Chromium
+## 24. Sixteen servers now share one process, and one Chromium
 
-The collapsed bundle is one container running fifteen MCP servers and one
-headless Chromium. An OOM there is a fifteen-server outage; it used to be a
+The collapsed bundle is one container running sixteen MCP servers and one
+headless Chromium. An OOM there is a sixteen-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -898,7 +898,7 @@ fine, lists fine and 401s in isolation — and it will miss a plausible-looking 
 `supplementary-image` server's `env:` is resolved at render time and baked onto its
 own bundle; `appspec.ts` never broadcasts it, and the console renders in `core`. So
 core cannot READ those values, and reporting `missing` would paint a healthy
-27-server fleet entirely red. The console therefore does not read them: it ASKS the
+29-server fleet entirely red. The console therefore does not read them: it ASKS the
 component that holds them, over `POST /_strad/presence`
 (`src/gateway/bundle-presence.ts`), and the component answers in presence and never
 in values. `unverified` survives only where nothing could answer — the component is
@@ -1024,7 +1024,7 @@ owns that repository.
 `sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
 refuses `latest` for it outright. The **bundle** gets none of that. Its image is
 written into `infra/strad.staging.yaml` as
-`ghcr.io/tadasant/strad-bundle:latest`, on all 25 `supplementary-image` entries,
+`ghcr.io/tadasant/strad-bundle:latest`, on all 27 `supplementary-image` entries,
 and the only thing that overrides it is `--bundle-image` for a branch build.
 
 **Why it matters, and it has now bitten.** This is the same failure that took
@@ -1050,7 +1050,7 @@ secret, which is the entire point of it.
 **Why it ships anyway.** The core had an immutable tag to reach for:
 `release-image.yml` publishes `:<version>` and `:sha-<sha>` per commit, and the
 core image is already a render-time argument. The bundle has `:sha-<sha>` too,
-but it is a config value, not an argument — pinning it means either editing 24
+but it is a config value, not an argument — pinning it means either editing 27
 `image:` lines per bundle release or adding the `bundle_version` input that hack
 #25 declines to add. Fixing it properly is a change to how the bundle is
 released, not a line in the deploy workflow, and it does not belong in an outage

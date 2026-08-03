@@ -110,7 +110,7 @@ export function createApp(opts: AppOptions): Express {
   // unhealthy and get it restarted, which helps nobody.
   //
   // But listing the slugs and stopping there was its own problem: this route
-  // answered 200 with all 27 names while three of them served no tools at all,
+  // answered 200 with all 29 names while three of them served no tools at all,
   // so nothing short of holding a token and polling `tools/list` could tell the
   // two apart. `toolSurfaces` is the last observation from the background
   // monitor (gateway/reachability.ts) — read, never taken, so this stays

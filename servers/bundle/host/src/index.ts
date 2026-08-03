@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 15 upstream MCP servers (15
+ * bundle — THE strad supplementary image. All 16 upstream MCP servers (16
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 25 supplementary-image entries
+ * gateway's config names more SLUGS than that — 27 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
- * TWENTY-FOUR of those are on one component. The twenty-fifth, `zimmer-secrets`,
+ * TWENTY-SIX of those are on one component. The twenty-seventh, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
  * parameter store and `loadSecrets()` below reads `process.env` — one container,
  * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
@@ -32,8 +32,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Fifteen servers now share a process. A crash is a
- * 15-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Sixteen servers now share a process. A crash is a
+ * 16-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -221,6 +221,9 @@ async function buildMounts(): Promise<Mount[]> {
     },
   });
 
+  // --- x-twitter -----------------------------------------------------------
+  mounts.push(await loadXTwitter());
+
   // --- secrets --------------------------------------------------------------
   // The odd one out, and deliberately so: this server's CREDENTIAL is what makes
   // it safe, not its code. It runs against Google Cloud Parameter Manager (the
@@ -285,7 +288,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other fourteen servers' readiness.
+  // login, and a slow login must not delay the other fifteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -379,9 +382,41 @@ async function loadRemoteFilesystem(): Promise<Mount> {
   };
 }
 
+async function loadXTwitter(): Promise<Mount> {
+  const mod = (await loadFromTree("x-twitter", "shared/build/index.js")) as {
+    createMCPServer: (opts: { version: string; toolGroups: string[] }) => Created;
+  };
+
+  const created = mod.createMCPServer({
+    version: VERSION,
+    // Run full capability inside the bundle. Public mutations do not exist in
+    // this implementation; gateway policy splits read-only from private
+    // bookmark writes for the public slugs.
+    toolGroups: ["readonly", "readwrite"],
+  });
+
+  const hasRefresh =
+    Boolean(process.env.X_OAUTH_CLIENT_ID) &&
+    Boolean(process.env.X_OAUTH_CLIENT_SECRET) &&
+    Boolean(process.env.X_OAUTH_REFRESH_TOKEN);
+  const hasStatic = Boolean(process.env.X_OAUTH_ACCESS_TOKEN);
+
+  return {
+    slug: "x-twitter",
+    tree: "x-twitter",
+    serverName: "strad-x-twitter",
+    capabilities: { tools: {} },
+    degraded:
+      hasRefresh || hasStatic
+        ? null
+        : "X OAuth credentials are not set; tools will list but calls will fail",
+    register: (s) => created.registerHandlers(s),
+  };
+}
+
 /**
  * secrets. Not mounted when it is not configured — the same posture as
- * 1Password: one server's missing config must not take the other fifteen down.
+ * 1Password: one server's missing config must not take the other sixteen down.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
@@ -429,7 +464,7 @@ async function loadOnePassword(): Promise<Mount | null> {
   const safety = mod.checkElicitationSafety();
   if (!safety.safe) {
     // Fail closed — but only for 1Password. The upstream exits the process here;
-    // in a 14-server container that would be an outage caused by one server's
+    // in a 16-server container that would be an outage caused by one server's
     // config. Refuse to MOUNT it instead: strad's gateway then reports it as
     // unavailable, and every other server keeps serving.
     logWarn(
@@ -798,7 +833,7 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: "20mb" }));
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 15 servers behind one health check, "ok: true" alone is not information.
+  // with 16 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -862,8 +897,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of fifteen servers must not kill the other
-  // fourteen. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of sixteen servers must not kill the other
+  // fifteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

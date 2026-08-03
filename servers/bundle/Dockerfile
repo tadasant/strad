@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Fifteen MCP servers, one container.
+# bundle — THE strad supplementary image. Sixteen MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from eight existing projects that live in different places:
+# assembled from nine existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
+#   servers/x-twitter       x-twitter
 #   servers/remote-filesystem  remote-filesystem-tmp-public (strad's artifact store)
 #   images/bundle-google    gmail, google-calendar, google-docs
 #   servers/onepassword     onepassword            (+ the `op` CLI, baked below)
@@ -17,7 +18,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging eight dependency trees is how you
+# Nothing is merged. That is on purpose: merging nine dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -97,6 +98,17 @@ RUN npm ci --no-audit --no-fund
 COPY servers/remote-filesystem/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- x-twitter ---------------------------------------------------------------
+# strad's local fork of PulseMCP's X/Twitter MCP server. It uses fetch against
+# X API v2 and exposes reads plus private bookmark writes only.
+FROM ${PW} AS build-x-twitter
+WORKDIR /src
+COPY servers/x-twitter/package.json servers/x-twitter/package-lock.json ./
+COPY servers/x-twitter/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/x-twitter/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
 FROM ${PW} AS build-goodeggs
 WORKDIR /src
@@ -141,7 +153,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 15 MCP servers (API, Google, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 16 MCP servers (API, Google, X/Twitter, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -173,12 +185,13 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The eight trees, each with the node_modules it was built against.
+# The nine trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
 COPY --from=build-secrets /src /app/trees/secrets
 COPY --from=build-remotefs /src /app/trees/remote-filesystem
+COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-goodeggs /src /app/trees/good-eggs
 COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah

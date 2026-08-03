@@ -8,7 +8,7 @@ import { renderAppSpec } from "../src/deploy/appspec.ts";
  *
  * Two things are checked here, and they are the two things that would rot:
  *
- *   1. COMPONENT COUNT. 27 servers must render as exactly THREE components —
+ *   1. COMPONENT COUNT. 29 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
  *      the config is a $5-$25/month regression that nobody would otherwise
  *      notice, so the number is pinned rather than merely bounded. The third one
@@ -56,6 +56,9 @@ describe("staging config", () => {
           "TAILSCALE_API_KEY",
           "MONARCH_SESSION_TOKEN",
           "SERPAPI_API_KEY",
+          "X_OAUTH_CLIENT_ID",
+          "X_OAUTH_CLIENT_SECRET",
+          "X_OAUTH_REFRESH_TOKEN",
           "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL",
           "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY",
           "GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON",
@@ -94,7 +97,7 @@ describe("staging config", () => {
     // Internal-only: internal_ports and NO http_port (both is an API rejection).
     expect(bundle.internal_ports).toEqual([8080]);
     expect(bundle.http_port).toBeUndefined();
-    // The credentials of all fifteen upstream servers, unioned onto the one box
+    // The credentials of all sixteen upstream servers, unioned onto the one box
     // — and every one of them SECRET-typed, so App Platform encrypts it at rest.
     const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
@@ -104,7 +107,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and fifteen servers now share a
+    // exists for — it is where Chromium, `op` and sixteen servers now share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -176,7 +179,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(25);
+    expect(supplementary.length).toBe(27);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is
@@ -215,6 +218,7 @@ describe("staging config", () => {
     "google-docs-rw": 10,
     "google-calendar-ro": 4,
     "onepassword-ro": 5,
+    "x-twitter-readonly": 7,
   };
 
   it.each(Object.entries(ALLOW_COUNTS))(
@@ -228,7 +232,8 @@ describe("staging config", () => {
   it.each([
     // These tiers ARE the full tool set, so they carry no policy at all. Their
     // counts (gmail 8, docs 11, calendar 7, 1Password 9, slack 9, tailscale 15,
-    // monarch 23) are asserted against the running image by the bundle's smoke test.
+    // monarch 23, x-twitter 9) are asserted against the running image by the
+    // bundle's smoke test.
     "slack",
     "tailscale-readwrite",
     "monarch-money-readwrite",
@@ -236,6 +241,7 @@ describe("staging config", () => {
     "google-docs-rw-external",
     "google-calendar-rw",
     "onepassword-rw",
+    "x-twitter-readwrite",
   ])("%s is the full-capability tier (no policy)", (slug) => {
     const server = CONFIG.servers.find((s) => s.slug === slug);
     expect(server).toBeDefined();
@@ -262,6 +268,7 @@ describe("staging config", () => {
       ["slack-readonly", "slack"],
       ["gmail-ro", "gmail-rw-external"],
       ["onepassword-ro", "onepassword-rw"],
+      ["x-twitter-readonly", "x-twitter-readwrite"],
     ] as const) {
       const a = CONFIG.servers.find((s) => s.slug === ro);
       const b = CONFIG.servers.find((s) => s.slug === rw);

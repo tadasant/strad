@@ -145,7 +145,7 @@ export function eventExportEnabled(): boolean {
  *
  * EVERY exportable event a client can drive is here, and that is the rule rather
  * than a list of the noisy ones. `mcp.list_tools_failed` is emitted once per
- * failing slug per listing, so a client polling a 27-slug gateway can produce 27
+ * failing slug per listing, so a client polling a 29-slug gateway can produce 29
  * records a second; `mcp.policy_unmatched_tools` fires on every `tools/list` for
  * a slug with one typo in its `tools.allow`; `mcp.unavailable` fires on every
  * 424. The batch processor's queue is shared, and a flood of one fact evicts the

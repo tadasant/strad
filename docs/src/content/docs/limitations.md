@@ -239,11 +239,11 @@ shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. See
 
 ## The deployment
 
-### 24. Fifteen servers share one process and one CPU
+### 24. Sixteen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts fifteen MCP servers and
+The `bundle` component runs one Node process that mounts sixteen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-fifteen down together, and Chromium contends with every other server for the single
+sixteen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -322,7 +322,7 @@ What the mutable tag did on staging, kept as the record:
 The core image had been pinned to an immutable tag on every deploy since #60 —
 `sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
 refused `latest` for it outright. The **bundle** got none of that: its image was
-`ghcr.io/tadasant/strad-bundle:latest` on all 25 `supplementary-image` entries in
+`ghcr.io/tadasant/strad-bundle:latest` on all 27 `supplementary-image` entries in
 `infra/strad.staging.yaml`, overridden only by `--bundle-image` on a branch build.
 
 That was the same failure that took staging down — App Platform may serve a
@@ -334,13 +334,13 @@ that predated the `/secrets` mount by a week, while a fresh `:latest` sat in the
 registry and the containers had restarted after it was pushed. Three slugs —
 `secrets`, `zimmer-secrets` and `remote-filesystem-tmp-public` — were routed to
 paths that image does not mount. The gateway POSTed to `/secrets`, got a 404, and
-answered the client `200 {"tools":[]}`; `/healthz` said 200 with all 27 slugs
+answered the client `200 {"tools":[]}`; `/healthz` said 200 with all 29 slugs
 listed. A secrets server that registers no tools cannot place a secret, and
 nothing in the deployment said so.
 
 The core had an immutable tag to reach for and was already a render-time argument.
 The bundle's tag is a config value, which is why it took a `--bundle-image` the
-deploy always passes rather than editing 25 `image:` lines per release.
+deploy always passes rather than editing 27 `image:` lines per release.
 
 **What also detects it:** not the tag, the consequence. Core probes each slug's
 `tools/list` on an interval and publishes the slugs serving nothing on
@@ -875,8 +875,8 @@ upload directory would be the stronger answer and is not implemented.
 
 ### 10, 15 & 41. The `shared/` trees are vendored, not depended on
 
-`servers/good-eggs/shared/`, `servers/fetchpet/shared/` and
-`servers/onepassword/shared/` are copied from
+`servers/good-eggs/shared/`, `servers/fetchpet/shared/`,
+`servers/onepassword/shared/` and `servers/x-twitter/shared/` are copied from
 [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers). Mostly the
 `remote/` streamable-HTTP entrypoints are the only new code and the tool logic is
 reused unchanged. 1Password drags one more thing along: its
@@ -887,8 +887,11 @@ The copies have since taken strad-local edits, and every one of them is a thing
 the upstream stdio server cannot know about: the shared-browser seam
 (`setSharedBrowserProvider`) that gives three servers one Chromium, browser
 telemetry, and — in `fetchpet` — login selectors that match the form Fetch serves
-today plus a login that retries instead of caching its first failure. Each tree's
-README lists its deltas. The debt is real: a re-vendor is a merge, not a copy.
+today plus a login that retries instead of caching its first failure. `x-twitter`
+is local because the PulseMCP package was never published and strad needs the
+safe internal implementation, not the third-party package squatting the generic
+npm name. Each tree's README lists its deltas. The debt is real: a re-vendor is a
+merge, not a copy.
 
 **Why:** the upstream packages publish stdio servers, not libraries strad could
 depend on. strad's ESLint, Prettier, and TypeScript are scoped away from

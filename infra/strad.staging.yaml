@@ -12,10 +12,10 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares twenty-seven server SLUGS: twenty-five supplementary-image
+# This file declares twenty-nine server SLUGS: twenty-seven supplementary-image
 # entries, the `echo` builtin in core, and the `deepwiki` remote-http canary.
-# Twenty-four of the twenty-five land on fifteen upstream mounts inside the one
-# bundle image, because capability variants share a mount; the twenty-fifth
+# Twenty-six of the twenty-seven land on sixteen upstream mounts inside the one
+# bundle image, because capability variants share a mount; the twenty-seventh
 # (`zimmer-secrets`) runs that same image on a component of its own.
 #
 # THREE components, not two, and the third is not a capability variant: it is
@@ -58,7 +58,7 @@
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 4/9 · tailscale 7/15 ·
 # monarch 10/23 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
-# 1Password 5/9. test/staging-config.test.ts asserts every one of those numbers.
+# 1Password 5/9 · x-twitter 7/9. test/staging-config.test.ts asserts every one of those numbers.
 
 version: 1
 
@@ -135,7 +135,7 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, fifteen upstream MCP servers — the
+  # THE bundle. One image, one component, sixteen upstream MCP servers — the
   # bundle-api fleet, the Google trio, 1Password (with the `op` CLI baked in) and
   # the three browser servers, which share ONE Chromium (never one per server:
   # see servers/bundle/host/src/browser.ts).
@@ -143,8 +143,8 @@ bundles:
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with fifteen servers registered adds ~200MB. 0.5GB is absurd here;
-  # 1GB would be one bad page render from an OOM that takes all 24 slugs down
+  # and Node with sixteen servers registered adds ~200MB. 0.5GB is absurd here;
+  # 1GB would be one bad page render from an OOM that takes all 26 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
   # the OpenTelemetry data shows event-loop lag or CPU saturation, the next move
@@ -348,6 +348,44 @@ servers:
     bundle: bundle
     path: /google-flights
     entitlements: [admin]
+
+  # ---------------------------------------------------------------------------
+  # X/Twitter — 9 tools full, 7 read-only. Reads plus private bookmark writes.
+  # ---------------------------------------------------------------------------
+  - slug: x-twitter-readwrite
+    kind: supplementary-image
+    title: X/Twitter
+    description: Read X timelines, users, tweets and bookmarks, and add/remove private bookmarks. It cannot post, reply, like, retweet, follow or DM.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /x-twitter
+    entitlements: [admin]
+    env:
+      X_OAUTH_CLIENT_ID: "${X_OAUTH_CLIENT_ID}"
+      X_OAUTH_CLIENT_SECRET: "${X_OAUTH_CLIENT_SECRET}"
+      X_OAUTH_REFRESH_TOKEN: "${X_OAUTH_REFRESH_TOKEN}"
+
+  - slug: x-twitter-readonly
+    kind: supplementary-image
+    title: X/Twitter readonly
+    description: Read X timelines, users, tweets and bookmarks. It cannot change bookmarks or perform public actions.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /x-twitter
+    entitlements: [admin]
+    env:
+      X_OAUTH_CLIENT_ID: "${X_OAUTH_CLIENT_ID}"
+      X_OAUTH_CLIENT_SECRET: "${X_OAUTH_CLIENT_SECRET}"
+      X_OAUTH_REFRESH_TOKEN: "${X_OAUTH_REFRESH_TOKEN}"
+    tools:
+      allow:
+        - get_my_account
+        - get_user
+        - get_home_timeline
+        - get_user_tweets
+        - get_bookmarks
+        - search_recent_tweets
+        - get_tweets
 
   # strad's artifact store: an agent uploads a screenshot, a human opens the link.
   #

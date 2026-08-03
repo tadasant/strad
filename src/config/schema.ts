@@ -228,17 +228,18 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * their `tools:` policy, which the GATEWAY enforces. (Before capability moved to
  * the gateway, they could not even share a container — each needed its own
  * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
- * servers' env maps. That constraint is what made the fleet cost 12 bundles for
- * its 26 slugs. That same fleet is 24 slugs in ONE bundle today; the two other
- * staging slugs are the `echo` builtin and the `deepwiki` remote-http, which need
- * no container of their own. A 25th supplementary slug, `zimmer-secrets`, does
+ * servers' env maps. That constraint is what made each capability variant cost
+ * its own billed component. That same fleet is 26 slugs in ONE bundle today; the
+ * two other staging slugs are the `echo` builtin and the `deepwiki` remote-http,
+ * which need no container of their own. A 27th supplementary slug,
+ * `zimmer-secrets`, does
  * have its own bundle — for a reason capability cannot cause: it fronts a second
  * parameter store, and a store is `process.env`.)
  *
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
  * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and 15 upstream servers (which the config names as 24 slugs), so
+ * also runs `op` and 16 upstream servers (which the config names as 26 slugs), so
  * size it up, not down.
  */
 const BundleConfig = z.object({
