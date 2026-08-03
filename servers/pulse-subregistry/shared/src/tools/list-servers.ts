@@ -114,7 +114,7 @@ export function listServersTool(_server: Server, clientFactory: ClientFactory) {
     },
     handler: async (args: unknown) => {
       try {
-        const validatedArgs = listServersArgsSchema.parse(args);
+        const validatedArgs = listServersArgsSchema.parse(args ?? {});
         const client = clientFactory();
 
         const listOptions: {

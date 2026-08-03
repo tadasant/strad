@@ -37,7 +37,7 @@ describe("list_servers", () => {
     });
 
     const tool = listServersTool({} as Server, clientFactory({ listServers }));
-    const result = await tool.handler({});
+    const result = await tool.handler(undefined);
 
     expect(listServers).toHaveBeenCalledWith({
       limit: 30,
