@@ -11,8 +11,8 @@ import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   gatewayNamespace,
   gatewayParameterPath,
-  secretRef,
 } from "../src/secrets/parameters/namespace.ts";
+import { secretRef } from "../src/secrets/parameters/wire.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { ParameterStoreError } from "../src/secrets/parameters/types.ts";
 import { serveFake } from "./helpers/serve-fake.ts";

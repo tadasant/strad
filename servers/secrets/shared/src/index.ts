@@ -1,17 +1,23 @@
 export {
   ParameterManagerReadClient,
   ParameterManagerError,
-  parameterId,
-  variableOf,
   MANAGED_BY_LABEL,
   MANAGED_BY_VALUE,
   type ParametersReader,
   type ParameterMeta,
-  type ParameterEnvelope,
   type ParameterRecord,
   type ParametersClientConfig,
   type ServiceAccount,
 } from "./parameter-manager.js";
+
+// Vendored from src/secrets/parameters/wire.ts — see `npm run wire:sync`. Only
+// what a consumer of this package already had; the rest of the wire is imported
+// from the module directly, by the files in this tree that need it.
+export {
+  parameterId,
+  variableOf,
+  type ParameterEnvelope,
+} from "./parameter-wire.js";
 
 export {
   ENV,

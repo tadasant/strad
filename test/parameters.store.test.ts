@@ -11,7 +11,7 @@ import {
   resolveServerParams,
   staticNamespace,
 } from "../src/secrets/parameters/index.ts";
-import { encodeSecretValue } from "../src/secrets/parameters/namespace.ts";
+import { encodeSecretValue } from "../src/secrets/parameters/wire.ts";
 
 /**
  * The two-store model, exercised end to end against the in-memory GCP fake.

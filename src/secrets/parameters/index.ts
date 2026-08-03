@@ -35,15 +35,14 @@ export {
   gatewayNamespace,
   gatewayParameterPath,
   parameterPath,
-  parameterId,
-  variableOf,
   validateVariableName,
   validatePathPrefix,
   normalisePathPrefix,
   validateNamespace,
   normaliseNamespace,
-  type ParameterEnvelope,
 } from "./namespace.ts";
+
+export { parameterId, variableOf, type ParameterEnvelope } from "./wire.ts";
 
 export { parseServiceAccount, type ServiceAccount } from "./service-account.ts";
 

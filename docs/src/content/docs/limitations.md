@@ -707,6 +707,14 @@ parameter written after this change before rolling back past it. Boot is deliber
 lenient so a rollback cannot become an outage, which makes rollback a path people
 actually take.
 
+The same silence would apply across **trees** rather than across time — the
+`secrets` MCP server is a separate npm project that writes to the same store, so its
+copy of the encoding could lose the field or fold a path into a different resource id
+and both halves would keep answering. That copy is vendored and checked: it is
+generated from one source by `npm run wire:sync`, and CI fails if it drifts or if
+that tree grows a second implementation beside it. Rollback is not covered by any of
+that, because an old image carries an old copy of both halves.
+
 **A live `:render` has been run against this change.** The staging
 runtime-secrets rehearsal seeded `STRAD_TOKENS` — the array of token records that
 motivated the encoding, carrying `"`, `[`, `]`, `{` and `}` — as a secret parameter

@@ -509,8 +509,9 @@ test("parameterId is deterministic, legal, and hash-truncates long paths", () =>
   assert.ok(legal(idEmail), `illegal id: ${idEmail}`);
   assert.ok(legal(idKey), `illegal id: ${idKey}`);
   // The 54-char head is trimmed of trailing dashes before the hash tail joins,
-  // so the id never carries a double dash — and stays byte-identical to the
-  // src/ half, which addresses the same GCP resource.
+  // so the id never carries a double dash. The fold itself is vendored from the
+  // src/ half (parameter-wire.ts), which addresses the same GCP resource; this
+  // asserts the properties that fold has to have, from inside this tree.
   assert.ok(!idEmail.includes("--"), `double dash in ${idEmail}`);
   assert.ok(!idKey.includes("--"), `double dash in ${idKey}`);
   // Deterministic: same input, same output; and the two distinct paths, which

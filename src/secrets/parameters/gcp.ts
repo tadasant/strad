@@ -9,15 +9,17 @@ import {
 import {
   decodeEnvelope,
   decodeEnvelopeValue,
-  decodeStoredValue,
   encodeEnvelope,
+} from "./namespace.ts";
+import {
+  decodeStoredValue,
   encodeSecretValue,
   parameterId,
   secretRef,
   SECRET_VALUE_ENCODING,
   variableOf,
   type ParameterEnvelope,
-} from "./namespace.ts";
+} from "./wire.ts";
 import {
   ParameterStoreError,
   type CreateParameterInput,

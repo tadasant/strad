@@ -5,7 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { SecretsConfig } from "./config.js";
 import { inManagedNamespace } from "./config.js";
-import { variableOf } from "./parameter-manager.js";
+import { variableOf } from "./parameter-wire.js";
 import type { ParametersReader } from "./parameter-manager.js";
 import { NO_CAPABILITIES, type Capabilities } from "./capabilities.js";
 import type { ParametersWriter } from "./write-client.js";

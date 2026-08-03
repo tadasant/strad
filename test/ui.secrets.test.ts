@@ -6,7 +6,7 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { resolveServerView, serverLooksSecrets } from "../src/ui/resolve.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
-import { encodeSecretValue } from "../src/secrets/parameters/namespace.ts";
+import { encodeSecretValue } from "../src/secrets/parameters/wire.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 
 /**
