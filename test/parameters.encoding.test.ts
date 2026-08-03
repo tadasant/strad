@@ -47,7 +47,7 @@ import {
  * ## Scope
  *
  * The trigger is any structural character, not the quote specifically, so the
- * matrix below is the three shapes the 23 supplementary names actually take —
+ * matrix below is the three shapes supplementary names actually take —
  * a quote-bearing JSON array, a multi-line PEM, and a service-account blob
  * (quotes, braces AND escaped newlines inside string values). If one of these
  * fails, the migration is still blocked.

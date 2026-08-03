@@ -325,8 +325,8 @@ describe("render-spec, store-backed", () => {
    *
    * A supplementary image is a container the gateway does not run, so its `env:`
    * cannot be resolved at runtime — `render-spec` reads it from the store and
-   * BAKES it onto that component. That is the path all 23 supplementary names
-   * take, and the values are the ones that broke: PEM keys and service-account
+   * BAKES it onto that component. That is the path supplementary names take,
+   * and the values are the ones that broke: PEM keys and service-account
    * blobs, both full of the characters `:render` refuses.
    *
    * Everything else proving the encoding runs in-process against the double.

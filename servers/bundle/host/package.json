@@ -2,7 +2,7 @@
   "name": "strad-bundle-host",
   "version": "0.1.0",
   "private": true,
-  "description": "The streamable-HTTP host for strad's single collapsed bundle: 14 MCP servers, one process, one Chromium.",
+  "description": "The streamable-HTTP host for strad's single collapsed bundle: 16 MCP servers, one process, one Chromium.",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -12,7 +12,7 @@
     "start": "node dist/index.js"
   },
   "comments": {
-    "deps": "Deliberately tiny. The 14 servers are NOT dependencies of this package \u2014 each lives in its own tree under /app/trees with its own node_modules, and this host imports the built files by path (see src/trees.ts). The only heavy dep here is Playwright, because the host owns the ONE Chromium that good-eggs, fetchpet and pointsyeah share.",
+    "deps": "Deliberately tiny. The 16 servers are NOT dependencies of this package \u2014 each lives in its own tree under /app/trees with its own node_modules, and this host imports the built files by path (see src/trees.ts). The only heavy dep here is Playwright, because the host owns the ONE Chromium that good-eggs, fetchpet and pointsyeah share.",
     "playwright": "Pinned to 1.61.1: the exact version whose Chromium (rev 1228) ships in the mcr.microsoft.com/playwright:v1.61.1-noble base image, so nothing downloads a browser at build time. The three browser servers pin the same version \u2014 a shared Browser object across trees requires it.",
     "telemetry": "otel/instrument.mjs (vendored from telemetry/bundle by `npm run telemetry:sync`) is loaded with `node --import` and resolves these from THIS package's node_modules \u2014 it sits at /app/host/otel/, inside the host tree, so resolution walks up to /app/host/node_modules."
   },

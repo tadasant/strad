@@ -9,10 +9,9 @@ import type { StradConfig } from "../config/schema.ts";
  * terrible deployment property — a component's env is the union of its servers'
  * env maps, so `gmail-ro` (=readonly) and `gmail-rw` (=readwrite) wanted two
  * values of one variable and therefore could not share a container. Every
- * capability variant cost its own billed component: 12 bundles for the 26 server
- * slugs the config declared. Those same servers are 25 slugs on ONE bundle now —
- * 23 supplementary-image entries collapsing onto 14 upstream mounts, plus the
- * echo builtin and one remote-http.
+ * capability variant cost its own billed component. Those same servers are 29
+ * slugs now: 27 supplementary-image entries, 26 of them collapsing onto 16
+ * upstream mounts in ONE bundle, plus the echo builtin and one remote-http.
  *
  * Moving the decision here collapses that: ONE container runs each upstream at
  * FULL capability, and the gateway decides which tools a given SLUG may expose

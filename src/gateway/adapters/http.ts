@@ -374,7 +374,7 @@ export class HttpServerAdapter implements ServerAdapter {
    *
    * Every network round-trip strad makes on a client's behalf goes through here,
    * which is what gives us a per-server latency histogram — the thing that
-   * answers "which server is starving the others" when 14 of them share a box.
+   * answers "which server is starving the others" when 16 of them share a box.
    *
    * Timeouts get their own counter, deliberately. The MCP SDK's request timeout
    * defaults to 60s and applies at EVERY hop, so a slow tool behind the gateway

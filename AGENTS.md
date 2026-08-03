@@ -87,10 +87,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------ |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                         |
-| **8**      | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
-| **15**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
-| **25**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
-| **27**     | total server slugs in staging (25 + the `echo` builtin + the `deepwiki` remote-http)       |
+| **9**      | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
+| **16**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
+| **27**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
+| **29**     | total server slugs in staging (27 + the `echo` builtin + the `deepwiki` remote-http)       |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -132,8 +132,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 15 mounted MCP servers, one shared Chromium,
-  assembled from EIGHT independently-built dependency trees.
+- `servers/bundle/` — one image, 16 mounted MCP servers, one shared Chromium,
+  assembled from NINE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.

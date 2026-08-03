@@ -10,3 +10,5 @@ servers
 # Supplementary-image sources (bundle-google, …) are self-contained projects
 # with their own formatting; they are not part of the core format check.
 images
+.agents
+.codex

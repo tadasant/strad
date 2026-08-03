@@ -189,7 +189,7 @@ const DEFAULT_RETRY_PROBES = 12;
  * Keeps a current answer to "which slugs serve nothing", and says so out loud.
  *
  * Polled rather than computed on request, because `/healthz` is App Platform's
- * liveness probe and must not wait on 27 upstreams — it reads the last snapshot
+ * liveness probe and must not wait on 29 upstreams — it reads the last snapshot
  * and returns immediately.
  *
  * Everything it logs is on CHANGE, not on every tick — a per-slug line when a
@@ -345,7 +345,7 @@ export class ToolSurfaceMonitor {
    *
    * Falling back rather than staying fast is the whole point of `retryProbes`:
    * a fault that has survived two minutes of retries is not going to be fixed by
-   * a third, and 27 upstreams do not need asking every ten seconds about it.
+   * a third, and 29 upstreams do not need asking every ten seconds about it.
    */
   private nextDelay(): number {
     const degraded = (this.current?.degraded.length ?? 0) > 0;

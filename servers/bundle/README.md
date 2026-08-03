@@ -1,10 +1,10 @@
 # bundle — THE strad supplementary image
 
-Fifteen MCP servers. One container. One Chromium. One `op` binary.
+Sixteen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/google-flights /gmail /google-calendar /google-docs /onepassword /secrets
+/google-flights /x-twitter /gmail /google-calendar /google-docs /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
@@ -33,14 +33,15 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How eight projects become one image
+## How nine projects become one image
 
-`Dockerfile`'s build context is the **repo root**, because the servers live in eight
+`Dockerfile`'s build context is the **repo root**, because the servers live in nine
 different places:
 
 | tree | source | servers |
 | --- | --- | --- |
 | `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, google-flights |
+| `x-twitter` | `servers/x-twitter` | x-twitter |
 | `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
@@ -51,7 +52,7 @@ different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging eight dependency trees is how you
+`/app/trees/<name>`. Nothing is merged. Merging nine dependency trees is how you
 find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -106,12 +107,12 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Fifteen servers share a process. A crash is a fifteen-server outage. Everything
+Sixteen servers share a process. A crash is a sixteen-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
   container keeps serving. (The standalone images `process.exit(1)` here — correct
-  when the process *is* the server, catastrophic when it is fourteen others too.)
+  when the process *is* the server, catastrophic when it is fifteen others too.)
   For fetchpet the mark is a report on the last attempt: the next tool call retries
   the login and a success clears it, so a form that changed and was fixed does not
   cost a redeploy. good-eggs still holds its first failure until the container

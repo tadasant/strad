@@ -35,7 +35,7 @@ Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted`:
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 9, tailscale 15, monarch-money 23,
-  gmail 8, google-docs 11, google-calendar 7, 1Password 9, secrets 4, …). Those
+  x-twitter 9, gmail 8, google-docs 11, google-calendar 7, 1Password 9, secrets 4, …). Those
   counts are the numbers the gateway's read-only allow-lists are carved out of, so
   if an upstream grows or renames a tool, this is where it surfaces. For `secrets`
   the count of 4 is a security assertion: a fifth tool on a server whose contract is
@@ -198,7 +198,7 @@ it gives up — only in the case that would otherwise be a hard stop.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — ten entries: the eight trees
+`release-bundle-image.yml` has a `paths:` filter — eleven entries: the nine trees
 the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
 commits cut no bundle image and stepping past them is the normal case, not an
 exception. `--kind bundle` reads that filter out of
@@ -225,7 +225,7 @@ slug PR #33 had renamed it away from a week earlier. Core POSTed `initialize` to
 `/secrets`, Express answered 404, and the gateway turned a dead upstream into an
 empty tool list.
 
-`strad-bundle:latest` is written into all 25 `supplementary-image` entries, so
+`strad-bundle:latest` is written into all 27 `supplementary-image` entries, so
 those components' image block was byte-identical on every deploy and App Platform
 kept serving the digest it had resolved for that tag once —
 `sha256:6bb4e861…` on every `main` deploy for days, including one that had
@@ -496,16 +496,16 @@ See [Known limitations](/limitations/).
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all three server kinds so the deploy path is proven end-to-end. It
-declares twenty-seven server slugs:
+declares twenty-nine server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
-- twenty-four `supplementary-image` entries on the one `bundle` component running
-  `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's fifteen mounts,
+- twenty-six `supplementary-image` entries on the one `bundle` component running
+  `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's sixteen mounts,
   because a read-only and a read-write variant of one upstream are two entries
   sharing one `path`.
-- `zimmer-secrets` — a twenty-fifth `supplementary-image` entry, running that same
+- `zimmer-secrets` — a twenty-seventh `supplementary-image` entry, running that same
   image on its **own** component, `bundle-zimmer-secrets`. It is the only server
   that leaves the one bundle, and the only reason to leave it: a parameter store is
   `process.env`. See [Two stores, one
