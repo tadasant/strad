@@ -261,6 +261,23 @@ jobs:
         working-directory: servers/pointsyeah
         run: npm run build
 
+  # pulse-subregistry is also strad-owned, forked from the unpublished PulseMCP
+  # reference implementation. The bundle smoke test only proves the tool list;
+  # this suite pins defaults, query construction, truncation and error handling.
+  pulse_subregistry:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/pulse-subregistry
+        run: npm ci
+      - name: Test (build + mocked PulseMCP registry suite)
+        working-directory: servers/pulse-subregistry
+        run: npm test
+
   # THE bundle: seventeen MCP servers, ten dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
