@@ -146,6 +146,15 @@ interface Jwk {
 
 let jwksCache: { keys: Jwk[]; expiresAt: number } | null = null;
 
+/**
+ * Drop the cached JWKS, forcing the next verification to re-fetch. The cache is
+ * process-wide, so a test that stubs `fetch` for one case would otherwise be
+ * answered by the key a previous case installed.
+ */
+export function resetJwksCache(): void {
+  jwksCache = null;
+}
+
 async function getJwks(): Promise<Jwk[]> {
   if (jwksCache && jwksCache.expiresAt > Date.now()) return jwksCache.keys;
 
