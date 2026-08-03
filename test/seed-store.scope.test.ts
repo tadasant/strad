@@ -11,8 +11,8 @@ import {
   encodeEnvelope,
   gatewayNamespace,
   gatewayParameterPath,
-  parameterId,
 } from "../src/secrets/parameters/namespace.ts";
+import { parameterId } from "../src/secrets/parameters/wire.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { serveFake, type ServedFake } from "./helpers/serve-fake.ts";
 

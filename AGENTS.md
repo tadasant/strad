@@ -20,10 +20,19 @@ a GHCR image.
   would, with no secrets. An unknown key is a hard error there — the schema is
   Zod-default, so `consoleEnvs:` for `consoleEnv:` is otherwise stripped in
   silence. CI runs it over every config in this repo; edit one, run it.
-- `npm run presence:sync` re-vendors `src/secrets/presence.ts` into the bundle
-  host tree. Edit the source, never the copy; `test/presence.sync.test.ts` fails
-  CI on drift, and a drifted copy means one component calls `change-me` filler
-  and the other calls it a credential, on the same console row.
+- Two modules are VENDORED across an npm-tree boundary, and each has a sync
+  script and a drift test. Edit the source, never the copy; run the sync and
+  commit both halves.
+  - `npm run presence:sync` re-vendors `src/secrets/presence.ts` into the bundle
+    host tree. `test/presence.sync.test.ts` fails CI on drift, and a drifted copy
+    means one component calls `change-me` filler and the other calls it a
+    credential, on the same console row.
+  - `npm run wire:sync` re-vendors `src/secrets/parameters/wire.ts` — the id
+    fold, the value encoding, the envelope shape — into `servers/secrets`.
+    `test/parameter-wire.sync.test.ts` fails CI on drift, and also fails if that
+    tree grows a second implementation of a name the wire owns. Both halves
+    address the SAME GCP parameter, and a drift here is the one failure in this
+    subsystem that is silent (`HACKS.md` #33).
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml`.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
@@ -48,6 +57,7 @@ not a confession.
 | `src/auth/**`                                                                       | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                                   | `operate/deploy-model.md`                                         |
 | `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts` | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md` |
+| `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope    | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`   |
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                   | `operate/secrets.md`, `limitations.md`                            |
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                      |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                     |

@@ -222,6 +222,10 @@ identity only (`src/telemetry/redact.ts`).
 ```
 servers/secrets/
   shared/src/parameter-manager.ts  # read-only Parameter Manager client (GET only; no :render)
+  shared/src/parameter-wire.ts     # GENERATED. The id fold, the value encoding, the
+                                   # envelope shape — vendored from
+                                   # src/secrets/parameters/wire.ts by `npm run wire:sync`.
+                                   # Edit the source; CI fails on drift.
   shared/src/config.ts             # env -> config; fails closed with no namespace
   shared/src/tools.ts              # the four tools
   shared/src/server.ts             # createMCPServer({ server, registerHandlers })

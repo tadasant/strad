@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { createGcpParameterStore } from "./gcp.ts";
-import { isRenderSafe } from "./namespace.ts";
+import { isRenderSafe } from "./wire.ts";
 import type { FetchLike, ServiceAccount } from "./service-account.ts";
 import type { ParameterStore } from "./types.ts";
 

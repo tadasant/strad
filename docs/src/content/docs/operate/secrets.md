@@ -247,6 +247,19 @@ substitutes nothing into them and there is nothing to survive; encoding them wou
 only make the console and the `secrets` MCP viewer show base64 to a human who asked
 for a value.
 
+**Three roles write and read these parameters, from two npm trees.** The console
+admin and the runtime resolver live in `src/`; the `secrets` MCP server is its own
+project with its own lockfile and cannot import from there. So the rules they must
+agree on — the path-to-resource-id fold, the value encoding, the envelope shape,
+and the predicate that recognises an un-dereferenced `__REF__` — live in one file,
+`src/secrets/parameters/wire.ts`, which is vendored into
+`servers/secrets/shared/src/parameter-wire.ts` by `npm run wire:sync`.
+`test/parameter-wire.sync.test.ts` fails CI when the copy drifts, and when that
+tree grows a second implementation of a name the shared file owns. It is checked
+rather than asked-for-politely because a disagreement here is the one failure in
+this subsystem that is silent: both halves keep answering, and one of them hands a
+process bytes that are not the value. See [Known limitations](/limitations/) #33.
+
 ## Fail-loud, without reading a value
 
 Baking every `${NAME}` into the spec has one genuinely good property: a reference

@@ -5,7 +5,7 @@ import {
   encodeSecretValue,
   isRenderSafe,
   parameterId,
-} from "../build/parameter-manager.js";
+} from "../build/parameter-wire.js";
 // A REAL RSA key: the client signs a JWT before any fetch, so a placeholder
 // string fails in node:crypto long before the stub is reached.
 import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";

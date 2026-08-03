@@ -4,10 +4,8 @@ import {
   requiredSecretNames,
   supplementaryEnvNames,
 } from "./preflight.ts";
-import {
-  gatewayNamespace,
-  isSecretRef,
-} from "../secrets/parameters/namespace.ts";
+import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
+import { isSecretRef } from "../secrets/parameters/wire.ts";
 import { errorSummary } from "../secrets/provider/snapshot.ts";
 import type {
   ParameterAdmin,

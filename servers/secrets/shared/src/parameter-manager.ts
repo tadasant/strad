@@ -1,4 +1,9 @@
-import { createHash, createSign } from "node:crypto";
+import { createSign } from "node:crypto";
+import {
+  parameterId,
+  variableOf,
+  type ParameterEnvelope,
+} from "./parameter-wire.js";
 
 /**
  * A read-only Google Cloud **Parameter Manager** client — the VIEWER half of the
@@ -41,6 +46,13 @@ import { createHash, createSign } from "node:crypto";
  *
  * No SDK: this is fetch + node:crypto, so the bundle image gains no dependency
  * tree for it. Same signing path as the rest of strad.
+ *
+ * The id fold, the value encoding and the envelope shape are not declared in this
+ * tree. They are vendored from `src/secrets/parameters/wire.ts` into
+ * `parameter-wire.js` by `npm run wire:sync`, and `test/parameter-wire.sync.test.ts`
+ * in the root suite fails CI when the copy drifts — both halves address the SAME
+ * GCP resource, so a one-character disagreement splits them without either half
+ * noticing.
  */
 
 export interface ServiceAccount {
@@ -48,127 +60,11 @@ export interface ServiceAccount {
   private_key: string;
 }
 
-/**
- * The JSON envelope stored (base64) in a parameter's latest version.
- *
- * IDENTICAL shape on the admin (writer) and viewer halves — it is the wire
- * contract between them. For a non-secret parameter, `value` is the literal
- * value. For a secret parameter, `value` is a Parameter Manager Secret Manager
- * reference string (`__REF__("//secretmanager.googleapis.com/...")`), never the
- * secret's bytes — those live in Secret Manager and this viewer cannot deref them.
- */
-export interface ParameterEnvelope {
-  /** The canonical path, e.g. `/strad/staging/mcp/<slug>/static/<VAR>`. */
-  path: string;
-  secret: boolean;
-  note?: string;
-  /** Literal value (non-secret) or a `__REF__(...)` string (secret). */
-  value: string;
-  /**
-   * How the value behind this envelope is encoded. Absent means the literal
-   * bytes; `base64url` means the value must be decoded after `:render`. See
-   * `SECRET_VALUE_ENCODING` below. The viewer never decodes anything — it never
-   * holds a value — but the field is part of the wire contract and dropping it
-   * from this shape would let a writer in this tree omit it.
-   */
-  encoding?: ValueEncoding;
-}
-
-/**
- * MIRROR OF `src/secrets/parameters/namespace.ts`. The two trees have separate
- * lockfiles and cannot import each other, and they write to the SAME GCP store,
- * so a drift here is a value one half writes and the other half cannot read.
- * `test/parameters.encoding.test.ts` in the root suite compares the two copies.
- *
- * A strad parameter is created with `parameter-format=JSON`. `:render` splices a
- * secret's raw bytes into the payload TEXT where the `__REF__(…)` token sits and
- * then checks the result for structural damage — so a value carrying a quote, a
- * backslash, a brace, a bracket or a newline is rejected with
- * `400 INVALID_ARGUMENT … injection detected`. Every secret value is therefore
- * stored base64url-encoded, and the envelope says so.
- */
-export type ValueEncoding = "base64url";
-
-/** The encoding every secret value is written with. */
-export const SECRET_VALUE_ENCODING: ValueEncoding = "base64url";
-
-/** Characters a rendered secret must not contain. See `SECRET_VALUE_ENCODING`. */
-const RENDER_UNSAFE = /["\\{}[\]]/;
-
-/** Would substituting this value into a JSON parameter payload survive `:render`? */
-export function isRenderSafe(value: string): boolean {
-  if (RENDER_UNSAFE.test(value)) return false;
-  // Control characters, by code point rather than by a regex literal holding raw
-  // control characters — the latter is both unreadable and lint-flagged. A raw
-  // byte below 0x20 is illegal INSIDE a JSON string, so a newline or a tab in a
-  // secret breaks the payload just as surely as a quote does.
-  for (const ch of value) {
-    const cp = ch.codePointAt(0)!;
-    if (cp < 0x20 || cp === 0x7f) return false;
-  }
-  return true;
-}
-
-/** Encode a secret's bytes for Secret Manager: `[A-Za-z0-9_-]` only, so inert. */
-export function encodeSecretValue(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64url");
-}
-
-/**
- * Is this value still a POINTER rather than a value?
- *
- * A `:render` that could not dereference hands the pointer back rather than
- * failing, and a reader that decodes it produces mojibake instead of a
- * diagnosable state. Anchored and exact, matching the src/ half — a `startsWith`
- * would also claim a literal value that merely begins `__REF__(`.
- */
-export function isSecretRef(value: string): boolean {
-  return /^__REF__\("\/\/secretmanager\.googleapis\.com\/[^"]+"\)$/.test(value);
-}
-
-/**
- * Invert `encodeSecretValue` for one raw value, given the encoding its envelope
- * declares. `label` names the parameter in an error; it is never the value.
- */
-export function decodeStoredValue(
-  value: string,
-  // `string | undefined`, deliberately. This tree has no `decodeEnvelope` — both
-  // parse sites cast a bare `JSON.parse` — so the unknown-encoding refusal that
-  // src/ makes when it decodes the envelope has to live here instead, or an
-  // encoding this build has never heard of would be decoded as base64url.
-  encoding: string | undefined,
-  label: string,
-): string {
-  if (encoding === undefined) return value;
-  if (encoding !== SECRET_VALUE_ENCODING) {
-    throw new ParameterManagerError(
-      `parameter "${label}" declares an unknown value encoding: ${JSON.stringify(encoding)}`,
-      502,
-    );
-  }
-  const decoded = Buffer.from(value, "base64url").toString("utf8");
-  // Node's base64 decoders are LENIENT — garbage in, garbage out, no error.
-  // Re-encode and compare so a value that is not what its envelope claims fails
-  // loudly, canonicalising alphabet and padding first so a hand-seeded standard
-  // base64 value is accepted rather than rejected for its spelling.
-  const canonical = value
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-  if (Buffer.from(decoded, "utf8").toString("base64url") !== canonical) {
-    throw new ParameterManagerError(
-      `parameter "${label}" is labelled ${encoding} but its stored value is not`,
-      502,
-    );
-  }
-  return decoded;
-}
-
 /** Metadata about one managed parameter. Note the absence of a value field. */
 export interface ParameterMeta {
   /** The canonical path (from the envelope), e.g. `/strad/staging/mcp/.../VAR`. */
   name: string;
-  /** The variable name — the last path segment, e.g. `..._GCS_CLIENT_EMAIL`. */
+  /** The variable name — the text after the final `/`, e.g. `..._GCS_CLIENT_EMAIL`. */
   variable: string;
   secret: boolean;
   /** The free-form note from the envelope. */
@@ -227,51 +123,6 @@ export class ParameterManagerError extends Error {
     super(message);
     this.name = "ParameterManagerError";
   }
-}
-
-/**
- * The deterministic path -> Parameter Manager parameterId encoding.
- *
- * IDENTICAL in both halves (admin writes with this id, viewer reads with it), so
- * it must never change silently. Parameter ids are constrained to
- * `[a-z]([a-z0-9-]){0,62}` — lowercase, letter-initial, <= 63 chars — which a
- * canonical path (mixed case, `/` and `_`, often long) does not satisfy, so we
- * fold it down:
- *
- *   1. drop the leading `/`;
- *   2. lowercase;
- *   3. replace every run of chars outside `[a-z0-9]` with a single `-`;
- *   4. trim leading/trailing `-`;
- *   5. if it does not start with a letter, prefix `p-`;
- *   6. if longer than 63, keep the first 54 chars and append `-` + the first 8
- *      hex of sha256(path) — a stable disambiguator, since the fold above is
- *      lossy and two long paths can collapse to the same 54-char head.
- *
- * The EXACT path is also stored in the envelope, so a listing never has to decode
- * an id back into a path — and a get can verify the round-trip.
- */
-export function parameterId(path: string): string {
-  let id = path
-    .replace(/^\/+/, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  if (!/^[a-z]/.test(id)) id = `p-${id}`;
-  if (id.length > 63) {
-    const h = createHash("sha256").update(path).digest("hex").slice(0, 8);
-    // Trim any trailing `-` off the 54-char head BEFORE joining the hash, so the
-    // id never carries a double dash. This must stay byte-identical to the src/
-    // half (src/secrets/parameters/namespace.ts) — both halves address the SAME
-    // GCP resource, so a one-character drift would split them.
-    id = `${id.slice(0, 54).replace(/-+$/, "")}-${h}`;
-  }
-  return id;
-}
-
-/** The variable name is the last segment of a canonical path. */
-export function variableOf(path: string): string {
-  const segs = path.split("/").filter(Boolean);
-  return segs[segs.length - 1] ?? path;
 }
 
 export class ParameterManagerReadClient implements ParametersReader {

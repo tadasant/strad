@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import { createGcpParameterStore } from "../src/secrets/parameters/gcp.ts";
@@ -7,15 +6,18 @@ import {
   decodeEnvelope,
   decodeEnvelopeValue,
   encodeEnvelope,
-  encodeSecretValue,
   gatewayParameterPath,
+  staticNamespace,
+  gatewayNamespace,
+} from "../src/secrets/parameters/namespace.ts";
+import {
+  encodeSecretValue,
   isRenderSafe,
   parameterId,
   secretRef,
   SECRET_VALUE_ENCODING,
-  staticNamespace,
-  gatewayNamespace,
-} from "../src/secrets/parameters/namespace.ts";
+  variableOf,
+} from "../src/secrets/parameters/wire.ts";
 
 /**
  * A secret value that carries a STRUCTURAL character, end to end.
@@ -135,6 +137,33 @@ const MATRIX: [name: string, value: string][] = [
   ["a multi-byte value", "clé—secrète 🔐"],
   ["an empty value", ""],
 ];
+
+describe("the rule: which segment of a path is the variable", () => {
+  /**
+   * The two trees disagreed here, and nothing noticed: one took the text after
+   * the final `/`, the other the last NON-EMPTY segment. They agree on every
+   * well-formed path and part company on a trailing slash. This pins the
+   * surviving answer, so the reconciliation is a decision rather than a
+   * coincidence — the vendored copy is byte-identical, so it answers the same.
+   */
+  it("is the text after the final slash", () => {
+    expect(variableOf(gatewayParameterPath(ENV, "STRAD_TOKENS"))).toBe(
+      "STRAD_TOKENS",
+    );
+    expect(variableOf(`${staticNamespace(ENV, SLUG)}GCS_PRIVATE_KEY`)).toBe(
+      "GCS_PRIVATE_KEY",
+    );
+  });
+
+  it("answers nothing for a NAMESPACE, which has no variable", () => {
+    // A path ending in `/` names a namespace. Reporting the last non-empty
+    // segment would answer "static" here, and that name would travel into a
+    // tool response and onto a console row as if a variable by that name
+    // existed. Empty is visibly wrong where "static" is invisibly wrong.
+    expect(variableOf(staticNamespace(ENV, SLUG))).toBe("");
+    expect(variableOf(gatewayNamespace(ENV))).toBe("");
+  });
+});
 
 describe("the rule: what a rendered secret may contain", () => {
   it("refuses every character that breaks a JSON payload", () => {
@@ -475,87 +504,12 @@ describe("decoding refuses to guess", () => {
   });
 });
 
-describe("the two trees agree on the rule", () => {
-  /**
-   * `servers/secrets` has its own lockfile and cannot import `src/`, so the
-   * encoding is reimplemented there. Both halves write to the SAME GCP store: a
-   * drift is a value one writes and the other cannot read. Compare the source
-   * text, the way `parameterId` has always been kept in lockstep — by hand, and
-   * now by a test that fails when the hands disagree.
-   */
-  const src = readFileSync("src/secrets/parameters/namespace.ts", "utf8");
-  const mirror = readFileSync(
-    "servers/secrets/shared/src/parameter-manager.ts",
-    "utf8",
-  );
-
-  /**
-   * One top-level declaration's full source text: from its header to the `}` in
-   * column 0 that closes it, or to end of line for a single-line `const`.
-   *
-   * The two assertions are the point. A source-text comparison fails OPEN — two
-   * empty slices, or two not-founds, compare equal and the test passes having
-   * proved nothing at all. So a missing header and an empty slice are both hard
-   * failures here rather than a silently agreeable "".
-   */
-  function declaration(source: string, header: RegExp, where: string): string {
-    const m = header.exec(source);
-    expect(m, `${header} not found in ${where}`).not.toBeNull();
-    // A header may anchor on the preceding newline to pin itself to column 0.
-    // That newline is not part of the declaration, and slicing from it would
-    // make `indexOf("\n", from)` return `from` and the slice come back empty.
-    const from = m!.index + (m![0].startsWith("\n") ? 1 : 0);
-    const isBlock = m![0].trimEnd().endsWith("{");
-    const close = isBlock ? source.indexOf("\n}\n", from) : -1;
-    if (isBlock)
-      expect(close, `unterminated ${header} in ${where}`).not.toBe(-1);
-    const end = isBlock ? close + 2 : source.indexOf("\n", from);
-    const text = source.slice(from, end).trim();
-    expect(text, `empty slice for ${header} in ${where}`).not.toBe("");
-    return text;
-  }
-
-  const identical = (header: RegExp) =>
-    expect(declaration(mirror, header, "the mirror")).toBe(
-      declaration(src, header, "src"),
-    );
-
-  // The `\n` anchors matter: without them these match from `const`, so adding
-  // `export` to one tree's copy and not the other's would be invisible.
-  it("declares the same unsafe-character set", () => {
-    identical(/\n(?:export )?const RENDER_UNSAFE = .+;/);
-  });
-
-  it("declares the same encoding tag", () => {
-    identical(/\n(?:export )?const SECRET_VALUE_ENCODING: ValueEncoding = .+;/);
-  });
-
-  it("decides render-safety with the same code", () => {
-    identical(/export function isRenderSafe\(value: string\): boolean \{/);
-  });
-
-  it("encodes identically", () => {
-    identical(/export function encodeSecretValue\(value: string\): string \{/);
-  });
-
-  it("recognises an unrendered pointer identically", () => {
-    identical(/export function isSecretRef\(value: string\): boolean \{/);
-  });
-
-  it("canonicalises a decoded value identically", () => {
-    // `decodeStoredValue` cannot be compared whole — the two trees throw
-    // different error types — but the round-trip guard is the part that decides
-    // which values are ACCEPTED, and that must not drift.
-    const re =
-      /const canonical = value\n(?:.+\n)+?\s+\.replace\(\/=\+\$\/, ""\);/;
-    expect(re.exec(mirror)?.[0]).toBe(re.exec(src)?.[0]);
-    expect(re.exec(src)?.[0]).toBeTruthy();
-  });
-
-  it("is exercised where the resolver actually reads", async () => {
-    // Not a source comparison: the server namespace is the one the RESOLVER
-    // reads for a baked server's env, and the gateway namespace above is a
-    // different prefix. Both go through the same encode/decode.
+describe("the encoding, where the resolver actually reads", () => {
+  it("round-trips a PEM under a SERVER namespace", async () => {
+    // The server namespace is the one the RESOLVER reads for a baked server's
+    // env, and the gateway namespace above is a different prefix. Both go
+    // through the same encode/decode, and only this one exercises the path a
+    // mounted server's credential travels.
     const gcp = createFakeGcp();
     const path = `${staticNamespace(ENV, SLUG)}GCS_PRIVATE_KEY`;
     await gcp.store.create({ path, secret: true, value: PEM_VALUE });

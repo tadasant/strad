@@ -1,5 +1,5 @@
 import type { ParameterStore } from "./parameters/index.ts";
-import { variableOf } from "./parameters/namespace.ts";
+import { variableOf } from "./parameters/wire.ts";
 import { errorSummary } from "./provider/snapshot.ts";
 import { event } from "../telemetry/index.ts";
 

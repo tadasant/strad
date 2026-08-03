@@ -1,15 +1,17 @@
 import {
+  MANAGED_BY_LABEL,
+  MANAGED_BY_VALUE,
+  ParameterManagerError,
+} from "./parameter-manager.js";
+import {
   decodeStoredValue,
   encodeSecretValue,
   isSecretRef,
-  MANAGED_BY_LABEL,
-  MANAGED_BY_VALUE,
   parameterId,
-  ParameterManagerError,
+  secretRef,
   SECRET_VALUE_ENCODING,
-  variableOf,
   type ParameterEnvelope,
-} from "./parameter-manager.js";
+} from "./parameter-wire.js";
 import { tokenMinter, type ServiceAccount } from "./google-auth.js";
 
 /**
@@ -121,10 +123,6 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
 
   const pm = (m: string, p: string, b?: unknown) => call(pmBase, m, p, b);
   const sm = (m: string, p: string, b?: unknown) => call(smBase, m, p, b);
-
-  function secretRef(secretId: string): string {
-    return `__REF__("//secretmanager.googleapis.com/projects/${cfg.projectId}/secrets/${secretId}/versions/latest")`;
-  }
 
   /**
    * The greatest `v{n}` among a parameter's ENABLED versions.
@@ -335,7 +333,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
           await sm("DELETE", `${smParent}/secrets/${id}`).catch(() => {});
           throw err;
         }
-        envelopeValue = secretRef(id);
+        envelopeValue = secretRef(cfg.projectId, id);
       }
 
       try {
@@ -474,5 +472,3 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     },
   };
 }
-
-export { variableOf };

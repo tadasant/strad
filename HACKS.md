@@ -1131,6 +1131,17 @@ stays lenient on purpose so a rollback cannot become an outage). Before rolling 
 back past this commit, re-seed every secret parameter written after it, or accept that
 those names resolve to gibberish.
 
+**The other half of that hazard is checked; the rollback half is not.** The same
+silence applies ACROSS TREES, not just across time: `servers/secrets` is its own
+npm project and writes to the same store, so a copy of the encoding that lost the
+`encoding` field — or folded a path into a different resource id — would fail in
+exactly this way, with both halves still answering. That copy is a vendored file
+(`src/secrets/parameters/wire.ts` → `servers/secrets/shared/src/parameter-wire.ts`,
+`npm run wire:sync`), and `test/parameter-wire.sync.test.ts` fails CI both when it
+drifts and when that tree grows a second implementation beside it. Nothing about
+that helps a ROLLBACK: an old image carries an old copy of both halves, in sync
+with each other and wrong about the store. The paragraph above stands unchanged.
+
 ## 34. A second parameter store costs a second billed component
 
 **What.** `infra/strad.staging.yaml` renders THREE App Platform components, not

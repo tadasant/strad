@@ -10,7 +10,7 @@ import { createSign } from "node:crypto";
  * take a dependency that could smuggle one in.
  *
  * This is a separate npm tree from `src/` and cannot import it. That is the same
- * reason `parameterId` is reimplemented here.
+ * reason `parameter-wire.ts` is vendored rather than imported.
  */
 
 export interface ServiceAccount {
