@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Thirteen jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -32,6 +32,18 @@ Runs on PRs and pushes to `main`. Ten jobs, all `runs-on: self-hosted`:
   They also pin the capability probe's permission strings, because the whole tool
   surface is derived from them and a name Google does not recognise reads as "not
   granted" rather than as an error — see [Secrets IAM](/operate/secrets-iam/).
+- **`remote_filesystem`** — the same shape as `good_eggs`, for the
+  `remote-filesystem` server tree. Its whole product is the link it hands a human,
+  and its tests pin the two things that decide one: `is_sensitive` picks the kind of
+  link, and GCS's 7-day V4 ceiling is what forces V2 for the 14-day default.
+- **`onepassword`** and **`pointsyeah`** — build-only jobs, one per tree: `npm ci`
+  then `npm run build`, which is `tsc` over every workspace in the ordering the
+  image's Dockerfile uses. There is no test step, and that is deliberate: the
+  `shared/` half of each tree is a verbatim vendor copy of `pulsemcp/mcp-servers`,
+  so a test written here would become a merge conflict on every re-vendor. A test
+  for that logic belongs upstream. What the build catches is a type error —
+  including one in 1Password's `shared/src/tools/sanitize.ts`, which is credential
+  redaction — at PR time rather than at bundle-image build time.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 9, tailscale 15, monarch-money 23,

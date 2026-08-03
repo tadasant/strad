@@ -144,6 +144,51 @@ jobs:
         working-directory: servers/remote-filesystem
         run: npm test
 
+  # onepassword and pointsyeah are the last two server trees with a build of their
+  # own, and without these jobs a type error in either — `shared/src/tools/sanitize.ts`
+  # is credential redaction — surfaces first as a failed bundle image build, which
+  # builds both trees (`build-op`, `build-pointsyeah`). Both are BUILD-only jobs: the
+  # shared/ halves are verbatim vendor copies of pulsemcp/mcp-servers (HACKS.md #15
+  # and #19), and a test written here becomes a merge conflict on every re-vendor.
+  # A test for that logic belongs upstream — HACKS.md #41 says the same about the
+  # fetchpet divergence.
+  #
+  # The root `build` script is what carries the workspace ordering the Dockerfile
+  # depends on: elicitation -> shared -> remote, where shared/ resolves the
+  # unpublished @pulsemcp/mcp-elicitation through a workspace `*`.
+  onepassword:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/onepassword
+        run: npm ci
+      - name: Build (typecheck elicitation + shared + remote)
+        working-directory: servers/onepassword
+        run: npm run build
+
+  # Same shape, for the pointsyeah tree: build shared -> remote, no test step, same
+  # vendor-copy reason. The browser download is skipped — the image gets its
+  # Chromium from the Playwright base layer, and typechecking launches nothing.
+  pointsyeah:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/pointsyeah
+        run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: Build (typecheck shared + remote)
+        working-directory: servers/pointsyeah
+        run: npm run build
+
   # THE bundle: fifteen MCP servers, eight dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
