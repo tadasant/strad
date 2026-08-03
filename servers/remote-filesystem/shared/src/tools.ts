@@ -4,12 +4,14 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { uploadFileTool } from "./tools/upload-file.js";
+import { getUploadUrlTool } from "./tools/get-upload-url.js";
 import { refreshLinkTool } from "./tools/refresh-link.js";
 import { setSensitivityTool } from "./tools/set-sensitivity.js";
 import { listFilesTool } from "./tools/list-files.js";
 import { downloadFileTool } from "./tools/download-file.js";
 import { deleteFileTool } from "./tools/delete-file.js";
 import type { StoreFactory, ToolDefinition } from "./tools/shared.js";
+import { UploadLeaseStore } from "./upload-targets.js";
 
 /**
  * Tool groups, so a deployment can hand out a least-privileged surface.
@@ -35,12 +37,16 @@ export function parseToolGroups(raw?: string): ToolGroup[] {
 }
 
 interface Entry {
-  factory: (storeFactory: StoreFactory) => ToolDefinition;
+  factory: (
+    storeFactory: StoreFactory,
+    leases: UploadLeaseStore,
+  ) => ToolDefinition;
   groups: ToolGroup[];
 }
 
 const ENTRIES: Entry[] = [
   { factory: uploadFileTool, groups: ["readwrite"] },
+  { factory: getUploadUrlTool, groups: ["readwrite"] },
   { factory: refreshLinkTool, groups: ["readonly", "readwrite"] },
   { factory: listFilesTool, groups: ["readonly", "readwrite"] },
   { factory: downloadFileTool, groups: ["readonly", "readwrite"] },
@@ -50,19 +56,23 @@ const ENTRIES: Entry[] = [
 
 export function toolDefinitions(
   storeFactory: StoreFactory,
+  leases: UploadLeaseStore = new UploadLeaseStore({
+    slug: "remote-filesystem-tmp-public",
+  }),
   groups: ToolGroup[] = ALL_GROUPS,
 ): ToolDefinition[] {
   return ENTRIES.filter((e) => e.groups.some((g) => groups.includes(g))).map(
-    (e) => e.factory(storeFactory),
+    (e) => e.factory(storeFactory, leases),
   );
 }
 
 export function registerTools(
   server: Server,
   storeFactory: StoreFactory,
+  leases: UploadLeaseStore,
   groups: ToolGroup[] = ALL_GROUPS,
 ): void {
-  const tools = toolDefinitions(storeFactory, groups);
+  const tools = toolDefinitions(storeFactory, leases, groups);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((t) => ({

@@ -50,7 +50,8 @@ to avoid.
 
 | tool | group | what it does |
 | --- | --- | --- |
-| `upload_file` | readwrite | store bytes, return a link |
+| `upload_file` | readwrite | store bytes from the MCP call, return a link |
+| `get_upload_url` | readwrite | mint a temporary curl-friendly POST URL |
 | `refresh_link` | readonly | mint a fresh link for an existing artifact |
 | `list_files` | readonly | browse one directory level, to find a path |
 | `download_file` | readonly | read an artifact's bytes back |
@@ -60,6 +61,20 @@ to avoid.
 `refresh_link` is `readonly` even though it mints a credential-bearing URL: it
 changes nothing about the object, and withholding it from a read-only role would
 leave that role able to LIST artifacts it could never open.
+
+`get_upload_url` is the preferred path for any nontrivial payload. It returns an
+unguessable `/mcp-upload/<slug>/<token>` POST URL, a short expiry, and a `curl
+--data-binary` command. The POST body is stored through the same code path as
+`upload_file`, so sensitivity, overwrite handling, content type and returned
+browser links behave the same way. One successful POST consumes the URL; an
+expired URL stores nothing. The route exists so agents can upload screenshots,
+recordings, PDFs and logs from a shell without base64-encoding artifact bytes
+through MCP.
+
+Upload leases live in this server process. A restart invalidates them, and a
+multi-replica deployment needs sticky routing or one upload-capable replica.
+Use the returned curl command promptly and keep the artifact `path` from the POST
+response; that path is the durable handle.
 
 ## Storage layout
 
@@ -95,6 +110,7 @@ different bucket, and one process cannot hold two values of `GCS_BUCKET`.
 | `_GCS_ROOT_PATH` | no | prefix confinement. Unset in production |
 | `_SENSITIVE_VIEWER_DOMAIN` | for sensitive uploads | Workspace domain that may open a restricted artifact, e.g. `tadasant.com` |
 | `_LINK_DEFAULT_DAYS` | no | default link life. Defaults to 14 |
+| `_UPLOAD_BASE_URL` | no | public origin for absolute upload URLs. Falls back to `STRAD_PUBLIC_URL`; if neither is set, `get_upload_url` returns a root-relative path |
 
 Without `_SENSITIVE_VIEWER_DOMAIN`, an `is_sensitive: true` upload is **refused**
 rather than stored. Storing a sensitive artifact that nobody can open is a worse

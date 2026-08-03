@@ -37,7 +37,7 @@ are not.
 
 ```mermaid
 flowchart TD
-  U["upload_file(source, is_sensitive)"] --> S{is_sensitive}
+  U["upload_file(source, is_sensitive)<br/>or POST upload URL"] --> S{is_sensitive}
   S -- "false (default)" --> P[private object] --> SIG["sign for expires_in_days"]
   SIG --> V4{"7 days or less?"}
   V4 -- yes --> A["V4 signature<br/>storage.googleapis.com"]
@@ -90,6 +90,33 @@ rather than re-decided: a restricted artifact gets its sign-in URL back and
 
 **The `path` is the durable handle. The URL is not.** An agent that keeps the path
 can always produce a working link; one that keeps only the URL cannot.
+
+## Large uploads use a temporary POST URL
+
+`upload_file` still accepts bytes inside the MCP tool call, but that is the wrong
+shape for anything that would become a meaningful amount of base64 or text in the
+transcript. `get_upload_url` creates a short-lived, unguessable POST target and
+returns a `curl --data-binary` command. The caller uploads from the shell, and
+the POST response is the same artifact JSON `upload_file` returns.
+
+The upload URL is not a GCS credential. It is a strad route:
+`/mcp-upload/<slug>/<token>`. Core proxies that route to the private bundle, and
+the remote-filesystem server consumes the lease there. That keeps bucket
+credentials, ACL cleanup and sensitivity normalization behind the same boundary
+as the existing upload path while keeping large bytes out of MCP.
+
+Upload leases expire after 15 minutes by default, may be shortened or extended
+up to 60 minutes, and accept one successful POST. A failed POST can be retried
+until the lease expires; a successful one consumes the token. The POST body limit
+is 100 MB.
+
+The lease store is process-local memory. That is deliberate for now: upload URLs
+are short-lived bearer capabilities, not durable credentials. A restart
+invalidates outstanding upload URLs, and a bundle scaled beyond one instance
+needs sticky routing or a single upload-capable replica. The default staging
+bundle is one instance, so the common flow is: call `get_upload_url`, run the
+returned curl command immediately, keep the artifact `path` from the POST
+response.
 
 ## What can and cannot be revoked
 
@@ -203,12 +230,15 @@ The two credentials come from the parameters system, not from hand-written
 
 | tool              | group     | what it does                               |
 | ----------------- | --------- | ------------------------------------------ |
-| `upload_file`     | readwrite | store bytes, return a link                 |
-| `refresh_link`    | readonly  | mint a fresh link for an existing artifact |
-| `list_files`      | readonly  | browse one directory level, to find a path |
-| `download_file`   | readonly  | read an artifact's bytes back              |
-| `set_sensitivity` | readwrite | re-classify an artifact and re-link it     |
-| `delete_file`     | readwrite | permanently delete (the only true revoke)  |
+| tool             | group     | what it does                                      |
+| ---------------- | --------- | ------------------------------------------------- |
+| `upload_file`    | readwrite | store bytes from the MCP call, return a link      |
+| `get_upload_url` | readwrite | mint a temporary curl-friendly POST upload target |
+| `refresh_link`   | readonly  | mint a fresh link for an existing artifact        |
+| `list_files`     | readonly  | browse one directory level, to find a path        |
+| `download_file`  | readonly  | read an artifact's bytes back                     |
+| `set_sensitivity` | readwrite | re-classify an artifact and re-link it            |
+| `delete_file`    | readwrite | permanently delete (the only true revoke)         |
 
 `refresh_link` is `readonly` even though it mints a credential-bearing URL: it
 changes nothing about the object, and withholding it from a read-only role would
@@ -224,6 +254,10 @@ credentials in its environment. Paths under `/proc`, `/sys`, `/dev`, `/app`,
 `/root` and `/etc` are refused, so `file:///proc/self/environ` is not a one-call
 way to publish every secret in the bundle. An artifact lives in a working
 directory, not in process state.
+
+`get_upload_url` avoids that filesystem read entirely. The agent uploads from
+its own shell with `curl`, so this is the path tool descriptions steer agents
+toward for screenshots, recordings, PDFs, archives, logs and reports.
 
 `download_file` refuses a base64 read over 5 MB rather than truncating it: half a
 PNG decodes to nothing, and a 50 MB recording would be a 67 MB tool result. Text

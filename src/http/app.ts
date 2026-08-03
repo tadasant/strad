@@ -102,6 +102,22 @@ export function createApp(opts: AppOptions): Express {
 
   app.disable("x-powered-by");
   app.set("trust proxy", true);
+  app.post("/mcp-upload/:slug/:token", (req, res) => {
+    const slug = req.params.slug;
+    const token = req.params.token;
+    const adapter = slug ? opts.registry.get(slug) : undefined;
+    if (adapter?.kind !== "supplementary-image" || !adapter.postRaw || !token) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    void adapter
+      .postRaw(`/upload/${encodeURIComponent(token)}`, req, res)
+      .catch((err) => {
+        if (res.headersSent) return;
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(502).json({ error: "upload_proxy_failed", message });
+      });
+  });
   app.use(express.json({ limit: "4mb" }));
 
   // --- health -------------------------------------------------------------

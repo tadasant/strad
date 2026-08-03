@@ -225,10 +225,13 @@ learn:
   `STRAD_BUNDLE=<name>`. A bundle of `supplementary-image` servers runs _their_
   image and gets only its own resolved `env:` map (SECRET-typed), any
   `params: true`-resolved parameters (also SECRET-typed), the identity vars
-  (`STRAD_COMPONENT`, `STRAD_ENV`, `STRAD_VERSION`), and the telemetry vars — never
-  `STRAD_MODE`, never the config, never the token secrets it has no use for. A
-  server's `consoleEnv:` is pointedly **not** here — it lands on core alone. The
-  blast radius of a compromised upstream image is bounded by what it was handed.
+  (`STRAD_COMPONENT`, `STRAD_ENV`, `STRAD_VERSION`, and `STRAD_PUBLIC_URL` when
+  `gateway.publicUrl` is set), and the telemetry vars — never `STRAD_MODE`, never
+  the config, never the token secrets it has no use for. `STRAD_PUBLIC_URL` is
+  non-secret and lets strad-owned bundle code mint absolute URLs for routes that
+  core publicly proxies, such as remote-filesystem upload leases. A server's
+  `consoleEnv:` is pointedly **not** here — it lands on core alone. The blast
+  radius of a compromised upstream image is bounded by what it was handed.
   (`parseImage` handles GHCR / DOCR / Docker Hub refs.)
 
 ## What strad's own config renders to

@@ -31,7 +31,7 @@ const EXPECT = {
   gcs: 9, // 13 minus the 4 bucket-level tools, which GCS_BUCKET hides
   // upload_file, refresh_link, list_files, download_file, set_sensitivity,
   // delete_file — the artifact store's whole surface.
-  "remote-filesystem-tmp-public": 6,
+  "remote-filesystem-tmp-public": 7,
   "google-flights": 3,
   gmail: 8,
   "google-calendar": 7,

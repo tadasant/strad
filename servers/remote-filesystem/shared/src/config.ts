@@ -19,6 +19,7 @@ export const ENV_SUFFIXES = {
   rootPath: "GCS_ROOT_PATH",
   viewerDomain: "SENSITIVE_VIEWER_DOMAIN",
   defaultLinkDays: "LINK_DEFAULT_DAYS",
+  uploadBaseUrl: "UPLOAD_BASE_URL",
 } as const;
 
 /**
@@ -34,6 +35,15 @@ export const DEFAULT_LINK_DAYS = 14;
 
 /** The longest link this server will mint. A year is already generous. */
 export const MAX_LINK_DAYS = 365;
+
+/** Default life of an upload lease returned by get_upload_url, in minutes. */
+export const DEFAULT_UPLOAD_URL_MINUTES = 15;
+
+/** Longest upload lease this server will mint. */
+export const MAX_UPLOAD_URL_MINUTES = 60;
+
+/** Largest body accepted by the temporary POST endpoint. */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 export interface StoreConfig {
   /** The one bucket every operation is scoped to. */
@@ -52,6 +62,11 @@ export interface StoreConfig {
   viewerDomain?: string;
   /** Default link life in days. Falls back to DEFAULT_LINK_DAYS. */
   defaultLinkDays: number;
+  /**
+   * Optional public origin used to make upload URLs absolute. When absent the
+   * tool returns a root-relative URL; the core gateway serves the same path.
+   */
+  uploadBaseUrl?: string;
 }
 
 export class ConfigError extends Error {
@@ -99,6 +114,20 @@ export function loadConfig(
     defaultLinkDays = parsed;
   }
 
+  const uploadBaseUrl = read("uploadBaseUrl");
+  if (uploadBaseUrl !== undefined) {
+    try {
+      // URL parsing is intentionally stricter than "string that looks URL-ish":
+      // callers paste this into curl, and a malformed base would create a lease
+      // that cannot be used.
+      new URL(uploadBaseUrl);
+    } catch {
+      throw new ConfigError(
+        `${envName(prefix, "uploadBaseUrl")} must be a valid absolute URL when set.`,
+      );
+    }
+  }
+
   return {
     bucket,
     projectId: read("projectId"),
@@ -107,5 +136,6 @@ export function loadConfig(
     rootPath: read("rootPath"),
     viewerDomain: read("viewerDomain"),
     defaultLinkDays,
+    uploadBaseUrl: uploadBaseUrl?.replace(/\/$/, ""),
   };
 }
