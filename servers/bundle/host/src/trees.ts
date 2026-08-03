@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * The collapsed bundle is ONE image assembled from EIGHT existing npm projects —
+ * The collapsed bundle is ONE image assembled from NINE existing npm projects —
  * bundle-api, bundle-google, onepassword, secrets, remote-filesystem, good-eggs,
- * fetchpet, pointsyeah — each of which is copied in, installed and built exactly
+ * fetchpet, pointsyeah, x-twitter — each of which is copied in, installed and built exactly
  * as its own image builds it, keeping its own `node_modules` and its own lockfile.
  *
  * WHY NOT ONE FLAT npm PROJECT. Because merging eight dependency trees into one
@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
  * is deliberate: three browsers on one vCPU is the thing we are trying not to do.
  */
 
-/** Where the Dockerfile lays the eight trees down. */
+/** Where the Dockerfile lays the nine trees down. */
 export const TREES_DIR = process.env.STRAD_TREES_DIR ?? "/app/trees";
 
 export type TreeName =
@@ -31,7 +31,8 @@ export type TreeName =
   | "remote-filesystem"
   | "good-eggs"
   | "fetchpet"
-  | "pointsyeah";
+  | "pointsyeah"
+  | "x-twitter";
 
 export function treeDir(tree: TreeName): string {
   return join(TREES_DIR, tree);

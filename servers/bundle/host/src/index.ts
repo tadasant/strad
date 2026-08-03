@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 15 upstream MCP servers (15
+ * bundle — THE strad supplementary image. All 16 upstream MCP servers (16
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
  * gateway's config names more SLUGS than that — 25 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
@@ -32,8 +32,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Fifteen servers now share a process. A crash is a
- * 15-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Sixteen servers now share a process. A crash is a
+ * 16-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -193,6 +193,21 @@ async function buildMounts(): Promise<Mount[]> {
     serverName: "google-flights-mcp-server",
     capabilities: { resources: {}, tools: {} },
     register: (s) => api.flights.registerHandlers(s),
+  });
+
+  // --- X -------------------------------------------------------------------
+  // The client caches its OAuth provider for the host process, so create its
+  // factory once and register it against each fresh request server.
+  const x = (await loadFromTree("x-twitter", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+  };
+  const xCreated = x.createMCPServer({ version: "0.0.1" });
+  mounts.push({
+    slug: "x-twitter",
+    tree: "x-twitter",
+    serverName: "pulsemcp-x-twitter-mcp-server",
+    capabilities: { tools: {} },
+    register: (s) => xCreated.registerHandlers(s),
   });
 
   // --- bundle-google: gmail / calendar / docs --------------------------------
@@ -805,7 +820,7 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 15 servers behind one health check, "ok: true" alone is not information.
+  // with 16 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -900,7 +915,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of fifteen servers must not kill the other
+  // One stray rejection from one of sixteen servers must not kill the other
   // fourteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {

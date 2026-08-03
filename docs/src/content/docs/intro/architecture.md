@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>15 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>16 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -55,10 +55,10 @@ in-VPC hop (~4ms) with no public-edge hairpin.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts fifteen MCP servers in one
-Node process, assembled from eight independently-built dependency trees. The
+`ghcr.io/tadasant/strad-bundle` container that mounts sixteen MCP servers in one
+Node process, assembled from nine independently-built dependency trees. The
 staging config maps twenty-four of its twenty-five `supplementary-image` entries
-onto those fifteen mounts, because capability variants of one upstream are two
+onto those sixteen mounts, because capability variants of one upstream are two
 entries pointing at the same path. The twenty-fifth runs on the second bundle,
 below.
 
@@ -73,7 +73,7 @@ Three numbers, three different things:
 | Number | What it counts                                                                      |
 | ------ | ----------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                 |
-| **15** | MCP servers mounted inside the bundle image                                         |
+| **16** | MCP servers mounted inside the bundle image                                         |
 | **27** | server slugs in `infra/strad.staging.yaml` (25 supplementary + `echo` + `deepwiki`) |
 
 ### The two modes

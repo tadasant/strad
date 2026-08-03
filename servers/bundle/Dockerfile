@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Fifteen MCP servers, one container.
+# bundle — THE strad supplementary image. Sixteen MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from eight existing projects that live in different places:
+# assembled from nine existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -14,6 +14,7 @@
 #   servers/good-eggs       good-eggs              ┐
 #   servers/fetchpet        fetchpet               ├ one shared Chromium
 #   servers/pointsyeah      pointsyeah             ┘
+#   servers/x-twitter       X
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
@@ -98,6 +99,14 @@ COPY servers/remote-filesystem/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
+FROM ${PW} AS build-x-twitter
+WORKDIR /src
+COPY servers/x-twitter/package.json servers/x-twitter/package-lock.json ./
+COPY servers/x-twitter/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/x-twitter/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 FROM ${PW} AS build-goodeggs
 WORKDIR /src
 COPY servers/good-eggs/package.json servers/good-eggs/package-lock.json ./
@@ -141,7 +150,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 15 MCP servers (API, Google, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 16 MCP servers (API, Google, X.com, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -173,7 +182,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The eight trees, each with the node_modules it was built against.
+# The nine trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -182,6 +191,7 @@ COPY --from=build-remotefs /src /app/trees/remote-filesystem
 COPY --from=build-goodeggs /src /app/trees/good-eggs
 COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah
+COPY --from=build-x-twitter /src /app/trees/x-twitter
 
 # The host: the only new code in this image.
 COPY --from=build-host /src/node_modules /app/host/node_modules

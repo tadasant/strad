@@ -142,7 +142,7 @@ servers:
   # ONE image backs MANY servers: give each entry the SAME `image` and `bundle`
   # but a distinct `path`, and they all run in that one component (a component
   # still runs exactly one image). That is `ghcr.io/tadasant/strad-bundle:latest`
-  # — 15 MCP servers in one Node process, one shared Chromium, served at /slack,
+  # — 16 MCP servers in one Node process, one shared Chromium, served at /slack,
   # /gmail, /onepassword, /secrets and so on. Every entry below points at it.
   #
   # `env:` maps a container env var to a `${NAME}` ref, and those values resolve
@@ -188,6 +188,27 @@ servers:
     entitlements: [admin]
     env:
       SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+
+  # X is deliberately read-only by default. Add create_bookmark and
+  # remove_bookmark to this allow-list only when private bookmark changes are
+  # intended. OAuth credentials come from an X Developer Console app.
+  - slug: x-twitter
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /x-twitter
+    entitlements: [admin]
+    env:
+      X_OAUTH_ACCESS_TOKEN: "${X_OAUTH_ACCESS_TOKEN}"
+    tools:
+      allow:
+        - get_my_account
+        - get_user
+        - get_home_timeline
+        - get_user_tweets
+        - get_bookmarks
+        - search_recent_tweets
+        - get_tweets
 
   # The read-only twin of the server above: same image, same bundle, same path,
   # same container, same credential. The ONLY difference is the policy the gateway

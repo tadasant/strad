@@ -239,11 +239,11 @@ shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. See
 
 ## The deployment
 
-### 24. Fifteen servers share one process and one CPU
+### 24. Sixteen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts fifteen MCP servers and
+The `bundle` component runs one Node process that mounts sixteen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-fifteen down together, and Chromium contends with every other server for the single
+sixteen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
