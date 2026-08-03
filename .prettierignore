@@ -5,6 +5,7 @@ package-lock.json
 # exists after a local `cd docs && npm run build`, so format:check would pass in
 # CI and fail on the machine that just built the docs.
 docs/.astro
+.agents
 # Vendored supplementary MCP servers keep their upstream formatting.
 servers
 # Supplementary-image sources (bundle-google, …) are self-contained projects

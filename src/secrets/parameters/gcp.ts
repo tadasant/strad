@@ -632,9 +632,9 @@ export function createGcpParameterStore(
    * values.
    *
    * `resolve()` is fail-fast on purpose — a child process must not be started
-   * with half its environment — and that is exactly why it cannot tell anyone
-   * WHICH parameter broke: the first `:render` to throw ends the loop and the
-   * error names one resource out of a namespace the caller then has to guess at.
+   * with half its environment — but it still needs the full failure set for a
+   * useful diagnostic. One bad parameter fails the namespace; the error names
+   * every hard failure so the caller does not have to bisect the store.
    *
    * The console needs the other half of that fact. A parameter that exists and
    * cannot be dereferenced is neither seeded-and-healthy nor absent, and naming
@@ -751,16 +751,16 @@ export function createGcpParameterStore(
   async function resolve(namespace: string): Promise<Record<string, string>> {
     const { values, unrenderable } = await renderAll(namespace);
     // FAIL FAST on exactly what used to throw, and no more. A `:render` that
-    // errored, a payload that came back empty and an envelope that would not
-    // decode all propagated out of the old loop on the first occurrence; a
-    // versionless parameter was skipped and the call succeeded. Widening the set
-    // here would break deploys that work today, which is why `hard` exists.
+    // errored or an envelope that would not decode propagated out of the old loop
+    // on the first occurrence; a versionless parameter or empty payload was
+    // skipped and the call succeeded. Widening the set here would break deploys
+    // that work today, which is why `hard` exists.
     const hard = unrenderable.filter((u) => u.hard);
-    const first = hard[0];
-    if (first) {
+    if (hard.length > 0) {
+      const details = hard.map((u) => `${u.variable}: ${u.reason}`).join("; ");
       throw new ParameterStoreError(
         `${hard.length} parameter(s) under ${namespace} could not be rendered ` +
-          `(first: ${first.variable} — ${first.reason})`,
+          `(${details})`,
         500,
       );
     }
