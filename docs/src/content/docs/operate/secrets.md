@@ -620,6 +620,12 @@ The index link and the page are **one decision**: `serverLooksGcs` and
 narrowly than its resolver is how you get a working page nothing links to, so
 there is only the one reading.
 
+The card's playground icon is the second instance of that shape, failing the
+other way round: it is offered through `playgroundAccess()` in
+`src/ui/playground.ts`, the same function the playground page decides on. A
+detector WIDER than its resolver is how you get an icon that lands on a `424`.
+See [the console playground](/auth/overview/#the-console-playground).
+
 ### The seven states behind the badges
 
 The popout names which of these it is, because "not seeded", "cannot render" and

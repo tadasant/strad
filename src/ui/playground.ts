@@ -6,7 +6,6 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Express, RequestHandler, Request, Response } from "express";
-import type { Principal } from "../auth/index.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { entitledServers, resolveSelection } from "../gateway/entitlements.ts";
 import { buildGatewayServer } from "../gateway/mcpServer.ts";
@@ -14,7 +13,7 @@ import type { Registry } from "../gateway/registry.ts";
 import { compileToolPolicies } from "../gateway/toolPolicy.ts";
 import { denamespace } from "../gateway/adapters/types.ts";
 import { event } from "../telemetry/index.ts";
-import { signedInLabel } from "./console-auth.ts";
+import { consolePrincipal, signedInLabel } from "./console-auth.ts";
 import { esc, layout, renderMessage } from "./render.ts";
 
 /**
@@ -137,7 +136,7 @@ export function mountPlayground(
   app.get("/playground/:server", gate, (req, res) => {
     const slug = req.params.server ?? "";
     const signedInAs = signedInLabel(res);
-    const decision = decide(req, res, opts.config, slug);
+    const decision = decide(res, opts.config, slug);
 
     if (!decision.ok) {
       res
@@ -239,7 +238,7 @@ export function mountPlayground(
         // `strad.surface=playground` — see gateway/mcpServer.ts.
         event({
           evt: "ui.playground.tool_call",
-          principal: principalOf(res).id,
+          principal: consolePrincipal(res).id,
           server: slug,
           tool: name,
         });
@@ -299,7 +298,7 @@ async function withSession(
   run: (client: Client, slug: string) => Promise<void>,
 ): Promise<void> {
   const slug = req.params.server ?? "";
-  const decision = decide(req, res, opts.config, slug);
+  const decision = decide(res, opts.config, slug);
   if (!decision.ok) {
     res.status(decision.status).json({
       ok: false,
@@ -323,7 +322,7 @@ async function withSession(
     mode: "core",
     surface: "playground",
     selected: [decision.server.slug],
-    principalId: principalOf(res).id,
+    principalId: consolePrincipal(res).id,
     log: event,
     // The console named this server, so an upstream that cannot be listed is an
     // ERROR rather than an empty tool list. That is the whole point of being
@@ -358,27 +357,79 @@ async function withSession(
   }
 }
 
+/**
+ * Whether a slug's playground opens, and when it does not, why.
+ *
+ * The three refusals are the endpoint's own vocabulary
+ * (`src/gateway/entitlements.ts`), kept rather than flattened to a boolean: the
+ * page turns them into three different sentences, and a caller that only wants
+ * "is there anything here" reads `.ok`.
+ */
+export type PlaygroundAccess =
+  | { ok: true; server: ServerConfig }
+  | { ok: false; status: "not_configured" }
+  | { ok: false; status: "disabled" | "not_entitled"; server: ServerConfig };
+
+/**
+ * May this console identity inspect this slug?
+ *
+ * `resolveSelection` against the set `entitledServers` returned for the console
+ * principal — the two functions `/mcp` calls, in the same order. A slug can be
+ * configured, ENABLED, and still not this session's to open: `entitledServers`
+ * intersects role→servers with server→`entitlements:`, so either direction
+ * omitting the console's role is a refusal.
+ *
+ * Exported because the console INDEX asks the same question — and asks it
+ * through this function, so the icon offering the playground cannot answer
+ * differently from the playground. `enabled` alone is the narrower half of the
+ * rule, and an icon gated on the narrow half leads to a 424.
+ *
+ * `entitled` is passed in rather than derived: the index computes it ONCE for
+ * the whole grid, and every card is a question about the same principal.
+ */
+export function playgroundAccess(
+  config: StradConfig,
+  entitled: Set<string>,
+  slug: string,
+): PlaygroundAccess {
+  const server = config.servers.find((s) => s.slug === slug);
+  if (!server) return { ok: false, status: "not_configured" };
+
+  const selection = resolveSelection([slug], entitled, config);
+  if (selection.ok) return { ok: true, server };
+
+  return {
+    ok: false,
+    status:
+      selection.unavailable[0]?.status === "disabled"
+        ? "disabled"
+        : "not_entitled",
+    server,
+  };
+}
+
 type Decision =
   | { ok: true; server: ServerConfig }
   | { ok: false; status: number; heading: string; detail: string };
 
 /**
- * May this console identity inspect this slug?
+ * `playgroundAccess`, rendered as an HTTP answer.
  *
- * `entitledServers` then `resolveSelection`, in that order — the two functions
- * `/mcp` calls, on the principal the console gate resolved. The status codes
- * mirror the endpoint's as well: 404 for a slug that names nothing, 424 for one
- * that exists and is not yours, because "you are fine, a thing you depend on is
- * not available to you" is the same answer here as there.
+ * The status codes mirror the endpoint's: 404 for a slug that names nothing, 424
+ * for one that exists and is not yours, because "you are fine, a thing you
+ * depend on is not available to you" is the same answer here as there.
  */
-function decide(
-  _req: Request,
-  res: Response,
-  config: StradConfig,
-  slug: string,
-): Decision {
-  const server = config.servers.find((s) => s.slug === slug);
-  if (!server) {
+function decide(res: Response, config: StradConfig, slug: string): Decision {
+  const principal = consolePrincipal(res);
+  const access = playgroundAccess(
+    config,
+    entitledServers(principal, config),
+    slug,
+  );
+
+  if (access.ok) return { ok: true, server: access.server };
+
+  if (access.status === "not_configured") {
     return {
       ok: false,
       status: 404,
@@ -387,32 +438,23 @@ function decide(
     };
   }
 
-  const principal = principalOf(res);
-  const entitled = entitledServers(principal, config);
-  const selection = resolveSelection([slug], entitled, config);
-
-  if (!selection.ok) {
-    const status = selection.unavailable[0]?.status ?? "not_entitled";
-    return {
-      ok: false,
-      status: 424,
-      heading:
-        status === "disabled"
-          ? "This server is disabled"
-          : "Not available to this console identity",
-      detail:
-        status === "disabled"
-          ? `"${slug}" is configured with enabled: false, so the gateway does not mount it and ` +
-            `/mcp would refuse it too. Enable it in the config to inspect it here.`
-          : `Your console session holds the roles [${principal.roles.join(", ") || "none"}], and ` +
-            `"${slug}" grants [${server.entitlements.join(", ") || "none"}]. The playground applies the ` +
-            `same entitlement rule /mcp does — it is your own identity, not a privileged view — so ` +
-            `there is nothing here to show you. Grant the role under roles: and the server's ` +
-            `entitlements:, or use a token that holds it.`,
-    };
-  }
-
-  return { ok: true, server };
+  return {
+    ok: false,
+    status: 424,
+    heading:
+      access.status === "disabled"
+        ? "This server is disabled"
+        : "Not available to this console identity",
+    detail:
+      access.status === "disabled"
+        ? `"${slug}" is configured with enabled: false, so the gateway does not mount it and ` +
+          `/mcp would refuse it too. Enable it in the config to inspect it here.`
+        : `Your console session holds the roles [${principal.roles.join(", ") || "none"}], and ` +
+          `"${slug}" grants [${access.server.entitlements.join(", ") || "none"}]. The playground applies the ` +
+          `same entitlement rule /mcp does — it is your own identity, not a privileged view — so ` +
+          `there is nothing here to show you. Grant the role under roles: and the server's ` +
+          `entitlements:, or use a token that holds it.`,
+  };
 }
 
 /**
@@ -442,11 +484,6 @@ export function statusFor(err: unknown): number {
 export function readable(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   return raw.replace(/^(MCP error -?\d+: )(?=\1)/, "");
-}
-
-function principalOf(res: Response): Principal {
-  // The gate ran before any of this; a request that got here has a principal.
-  return res.locals.principal as Principal;
 }
 
 /** One tool, as the page needs it: bare name, namespaced name, schema. */

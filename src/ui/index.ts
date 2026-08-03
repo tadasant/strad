@@ -2,7 +2,11 @@ import express, { type Express, type Request, type Response } from "express";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
-import { requireConsoleUi, signedInLabel } from "./console-auth.ts";
+import {
+  consolePrincipal,
+  requireConsoleUi,
+  signedInLabel,
+} from "./console-auth.ts";
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
 import {
   cachedProbe,
@@ -277,6 +281,9 @@ async function handleIndex(
       statuses,
       boot,
       env: opts.env,
+      // The console identity, for the one control on the page that is not a
+      // rendering of config: the playground icon. See cardIcons().
+      principal: consolePrincipal(res),
       signedInAs: signedInLabel(res),
       requestOrigin: host ? `${req.protocol}://${host}` : undefined,
     }),

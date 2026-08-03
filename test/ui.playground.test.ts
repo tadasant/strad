@@ -440,8 +440,8 @@ describe("the playground page", () => {
 
 // --- the icons on the console index ----------------------------------------
 
-describe("the two icons on /ui", () => {
-  it("gives every ENABLED entry a playground link and a copy control", async () => {
+describe("the icons on /ui", () => {
+  it("gives an entry this identity may OPEN a playground link and a copy control", async () => {
     const html = await (
       await fetch(`${baseUrl}/ui`, { headers: { cookie } })
     ).text();
@@ -450,6 +450,21 @@ describe("the two icons on /ui", () => {
     expect(html).toContain(`href="/playground/locked"`);
     expect(html).toContain(
       `data-url="https://staging.strad.example.com/mcp?servers=echo"`,
+    );
+  });
+
+  it("gives an ENABLED entry this identity is not entitled to the copy control only", async () => {
+    // The same `walled` this file already asserts answers 424 above: enabled,
+    // mounted, and not this console session's to open. The icon and the page are
+    // one decision, so the offer disappears with the page — while the copy
+    // control stays, because what it copies is for an agent's TOKEN to present.
+    const html = await (
+      await fetch(`${baseUrl}/ui`, { headers: { cookie } })
+    ).text();
+
+    expect(html).not.toContain(`href="/playground/walled"`);
+    expect(html).toContain(
+      `data-url="https://staging.strad.example.com/mcp?servers=walled"`,
     );
   });
 

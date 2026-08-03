@@ -183,10 +183,11 @@ dev bypass's `consoleDevBypass.roles` works the same way. Treat `hostedDomain` a
 the console's authorization boundary, and keep the Workspace membership that
 clears it tight.
 
-One surface reads those roles, and it is the one that issues MCP calls rather
+One decision reads those roles, and it is the one that issues MCP calls rather
 than rendering config: [the playground](#the-console-playground) resolves what it
 may reach through `entitledServers()`, so `roles: []` reaches every console page
-and no server's tools.
+and no server's tools. The icon on `/ui` that opens it is the same decision, so a
+card whose playground would refuse does not offer one.
 
 ### The console playground
 
@@ -223,6 +224,21 @@ server the identity is not entitled to answers `424` here as it does there, and 
 deployment whose `auth.google.roles` is empty gets a console whose playground
 opens on nothing. That is fail-closed and intended — the playground is the console
 session's own entitlement rendered, not a privileged view of the registry.
+
+**The icon that offers it runs the same decision.** `/ui` draws a playground icon
+on a card only where `playgroundAccess()` — the function the page itself decides
+on — says this session may open it. Two things put that beyond "is the server
+enabled": `entitledServers()` intersects role→servers with the server's own
+`entitlements:`, so a server can be mounted and still be one the console's role
+does not reach, and both console role arrays default to `[]`. On either, the card
+renders and the icon does not. The card stays because roles are not a console ACL.
+The control that would land on a `424` is what is withheld.
+
+The **copy** icon beside it is deliberately not gated this way. What it copies is
+`/mcp?servers=<slug>`, addressed to a token principal — a different identity — so
+an operator copying the URL an agent's token will use is doing something their own
+console roles say nothing about. It is withheld only for a `disabled` server,
+which is mounted for nobody and refused whatever token presents it.
 
 **CSRF** rests on the same `SameSite=Lax` cookie as the `/ui` writes: a cross-site
 `POST` arrives without it and the gate `401`s. Both routes additionally require

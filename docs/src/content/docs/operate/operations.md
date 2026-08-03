@@ -600,10 +600,13 @@ component, and which admin identity each console page resolves to.
   [Auth](/auth/overview/#the-sign-in-round-trip).
 - **`/ui`** and `/ui/:server`, also core-only, are the human-facing server console,
   behind the same gate as `/`. `/ui` carries the secret roster — a `READY` or
-  `ISSUE` badge per entry — and `/secrets` 302s to it. Each **enabled** entry also
-  carries two controls: a link to that server's playground, and a copy button for
-  its `${publicUrl}/mcp?servers=<slug>` URL, which contains no credential. A
-  disabled entry carries neither, because both lead somewhere the gateway refuses.
+  `ISSUE` badge per entry — and `/secrets` 302s to it. An entry carries up to two
+  controls, on two different rules: a link to that server's playground, on the
+  entries this console identity may actually open (see
+  [the console playground](/auth/overview/#the-console-playground)), and a copy
+  button for its `${publicUrl}/mcp?servers=<slug>` URL, which contains no
+  credential, on every **enabled** entry whatever the reader's roles. A disabled
+  entry carries neither, because both lead somewhere the gateway refuses.
   With `gateway.publicUrl` unset, that URL falls back to the origin the request
   arrived on — the same fallback `/` takes, and the reason to set `publicUrl` on
   any deployment where the `Host` header is not the gateway's own name.

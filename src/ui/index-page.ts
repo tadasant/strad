@@ -1,5 +1,12 @@
+import type { Principal } from "../auth/index.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
-import { connectUrl, originFor, playgroundHref } from "./playground.ts";
+import { entitledServers } from "../gateway/entitlements.ts";
+import {
+  connectUrl,
+  originFor,
+  playgroundAccess,
+  playgroundHref,
+} from "./playground.ts";
 import { esc, layout } from "./render.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
 import {
@@ -73,6 +80,15 @@ export interface ConsoleIndexOptions {
    */
   boot: { observation: SecretObservation; required: boolean }[];
   env: NodeJS.ProcessEnv;
+  /**
+   * The console identity this page is being rendered for.
+   *
+   * Roles are not a console ACL — every signed-in principal sees every card. It
+   * is here for the ONE control that issues MCP calls rather than rendering
+   * config: the playground icon, which is offered only where the playground
+   * opens. See cardIcons().
+   */
+  principal: Principal;
   signedInAs?: string;
   /**
    * Origin the request arrived on, e.g. "https://staging.strad.example.com".
@@ -145,6 +161,9 @@ export function renderIndex(opts: ConsoleIndexOptions): string {
   // Where this gateway lives, for the copy icon. Config first, then the origin
   // the request arrived on — see ConsoleIndexOptions.requestOrigin.
   const base = originFor(config, opts.requestOrigin);
+  // Once for the whole grid, not once per card: every icon is a question about
+  // the same principal, and `entitledServers` walks every server for each call.
+  const entitled = entitledServers(opts.principal, config);
 
   const body = `
 <section class="intro">
@@ -163,7 +182,15 @@ ${banner(issues, statuses.length)}
 <div class="card-grid">
 ${
   sorted.length
-    ? sorted.map((e) => serverCard(e, base)).join("\n")
+    ? sorted
+        .map((e) =>
+          serverCard(
+            e,
+            base,
+            playgroundAccess(config, entitled, e.server.slug).ok,
+          ),
+        )
+        .join("\n")
     : `<p class="empty">No servers are configured on this gateway.</p>`
 }
 </div>
@@ -296,7 +323,7 @@ function banner(issues: Entry[], enabled: number): string {
  * still renders beside the badge, because there it is information rather than an
  * echo.
  */
-function serverCard(entry: Entry, base: string): string {
+function serverCard(entry: Entry, base: string, playable: boolean): string {
   const { server, status, hasView } = entry;
   const hasSecrets = serverLooksSecrets(server);
   const title = server.title ?? server.slug;
@@ -327,7 +354,7 @@ function serverCard(entry: Entry, base: string): string {
           ? ""
           : `<code class="card-slug">${esc(server.slug)}</code>`
       }</span>
-      <span class="card-actions">${cardIcons(server, base)}${
+      <span class="card-actions">${cardIcons(server, base, playable)}${
         hasView
           ? `<a class="card-cta" href="${href}">${hasSecrets ? "Manage →" : "Browse →"}</a>`
           : `<span class="card-muted">No view</span>`
@@ -337,12 +364,27 @@ function serverCard(entry: Entry, base: string): string {
 }
 
 /**
- * The two icons every enabled entry carries: poke at it, or take its URL.
+ * The two icons an entry can carry: poke at it, or take its URL. Each one is
+ * offered only where the thing it offers can actually be done — an icon whose
+ * entire job is "go do this" must not lead somewhere that refuses.
  *
- * They are on the ENABLED entries only. A disabled server is not mounted, so its
- * playground would open on a 424 and its `?servers=` URL is one the gateway
- * refuses — an icon whose entire job is "go do this" must not lead somewhere
- * that cannot be done.
+ * THE TWO GATES ARE DIFFERENT, because the two icons address different
+ * identities.
+ *
+ * The playground icon is gated on `playgroundAccess` — the same
+ * `entitledServers` / `resolveSelection` pair the page itself decides on, on
+ * this console session's principal. `enabled` alone is the narrower half of that
+ * rule and offering on it leads to a 424: a mounted server whose `entitlements:`
+ * omits the console's role, or a console whose `roles:` is the schema default
+ * `[]`, is enabled and still not this identity's to open.
+ *
+ * The copy icon is gated on `enabled` alone, and deliberately NOT on console
+ * entitlement. What it hands over is addressed to a TOKEN principal — a
+ * different identity — so an admin copying the URL an agent's token will use is
+ * doing something legitimate that their own roles say nothing about. `enabled`
+ * is a property of the server rather than of the reader: a disabled server is
+ * mounted for nobody, so its `?servers=` URL is one the gateway refuses whatever
+ * token presents it.
  *
  * The copy icon carries NO CREDENTIAL. What lands on the clipboard is
  * `/mcp?servers=<slug>`, a public address; the bearer token is a separate header
@@ -354,20 +396,27 @@ function serverCard(entry: Entry, base: string): string {
  * a relative path — `"/mcp?servers=gcs"` on the clipboard is a working link for
  * nobody.
  */
-function cardIcons(server: ServerConfig, base: string): string {
-  if (!server.enabled) return "";
+function cardIcons(
+  server: ServerConfig,
+  base: string,
+  playable: boolean,
+): string {
   const slug = server.slug;
-  const url = base ? connectUrl(base, slug) : "";
+  const url = server.enabled && base ? connectUrl(base, slug) : "";
 
-  return `<a class="card-icon" href="${playgroundHref(slug)}"
+  return `${
+    playable
+      ? `<a class="card-icon" href="${playgroundHref(slug)}"
         title="Playground — list this server's tools and call them, by hand"
-        aria-label="Open the playground for ${esc(slug)}">${PLAY_SVG}</a>${
-          url
-            ? `<button class="card-icon" type="button" data-copy data-url="${esc(url)}"
+        aria-label="Open the playground for ${esc(slug)}">${PLAY_SVG}</a>`
+      : ""
+  }${
+    url
+      ? `<button class="card-icon" type="button" data-copy data-url="${esc(url)}"
         title="Copy this server's MCP URL: ${esc(url)}"
         aria-label="Copy the MCP URL for ${esc(slug)}">${COPY_SVG}</button>`
-            : ""
-        }`;
+      : ""
+  }`;
 }
 
 /** Terminal-ish glyph: this is a console you poke at, not a media player. */
@@ -766,7 +815,7 @@ const GUIDE = `
     </div>
   </details>
   <details class="acc">
-    <summary>The two icons on every enabled entry</summary>
+    <summary>The icons an entry can carry</summary>
     <div class="acc-body">
       <ul>
         <li><b>Playground</b> — opens a human MCP client for that one server: the tools it
@@ -782,8 +831,13 @@ const GUIDE = `
           bar, so the client sends its own <code>Authorization: Bearer …</code>, minted with
           <code>npm run token:mint</code>.</li>
       </ul>
-      <p>Neither appears on a DISABLED entry. strad does not mount one, so the playground would
-        open on a 424 and the copied URL is one <code>/mcp</code> refuses.</p>
+      <p>They are offered on different rules, because they address different identities. The
+        playground icon is on the entries <b>your console session</b> may open — the same
+        entitlement check the page itself makes — so an entry your roles do not reach keeps its
+        card and loses the icon rather than sending you to a 424. The copy icon is on every
+        ENABLED entry, whatever your roles: what it copies is for an agent's token to present,
+        and that is not your identity. A DISABLED entry has neither, because strad mounts it for
+        nobody.</p>
     </div>
   </details>
   <details class="acc">
