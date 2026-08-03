@@ -100,6 +100,24 @@ console.log(
 );
 
 let failed = 0;
+
+// The mount COUNT is an assertion, not a printout. Without this, a mount added to
+// buildMounts() and left out of EXPECT ships with no tool-count coverage and no
+// complaint — the loop below only walks what EXPECT already names. Both sides are
+// listed because "15 != 16" alone does not say which mount moved.
+const mounted = new Set(health.servers.map((s) => s.slug));
+const expectedSlugs = new Set(Object.keys(EXPECT));
+const unchecked = [...mounted].filter((s) => !expectedSlugs.has(s));
+const absent = [...expectedSlugs].filter((s) => !mounted.has(s));
+if (unchecked.length || absent.length) {
+  failed += 1;
+  console.log(
+    `FAIL mount count: ${mounted.size} mounted, ${expectedSlugs.size} in EXPECT` +
+      (unchecked.length ? ` — mounted but unchecked: ${unchecked.join(", ")}` : "") +
+      (absent.length ? ` — in EXPECT but not mounted: ${absent.join(", ")}` : ""),
+  );
+}
+
 for (const [slug, expected] of Object.entries(EXPECT)) {
   try {
     const tools = await listTools(`/${slug}`);

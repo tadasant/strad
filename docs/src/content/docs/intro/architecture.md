@@ -268,7 +268,7 @@ The server list drives how containers are grouped:
   distinct paths, and capability variants may even share a path.
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (15 mounted servers,
+  serialises rendering. strad's own deployment puts everything (16 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -276,8 +276,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, fifteen servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all fifteen down together, and the
+**One process, one core, sixteen servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all sixteen down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

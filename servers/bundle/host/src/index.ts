@@ -309,7 +309,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other fourteen servers' readiness.
+  // login, and a slow login must not delay the other fifteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -454,7 +454,7 @@ async function loadOnePassword(): Promise<Mount | null> {
   const safety = mod.checkElicitationSafety();
   if (!safety.safe) {
     // Fail closed — but only for 1Password. The upstream exits the process here;
-    // in a 14-server container that would be an outage caused by one server's
+    // in a 16-server container that would be an outage caused by one server's
     // config. Refuse to MOUNT it instead: strad's gateway then reports it as
     // unavailable, and every other server keeps serving.
     logWarn(
@@ -496,7 +496,7 @@ async function loadOnePassword(): Promise<Mount | null> {
  * Each keeps its own login, its own context and its own cookies; only the
  * browser PROCESS is shared (browser.ts). And unlike their standalone images,
  * a login failure here degrades the one mount instead of exiting the process:
- * with fourteen other servers on board, `process.exit(1)` is no longer a
+ * with fifteen other servers on board, `process.exit(1)` is no longer a
  * proportionate response to Good Eggs changing a form field.
  */
 async function loadBrowserMounts(): Promise<Mount[]> {

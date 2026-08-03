@@ -238,8 +238,8 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
  * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and 15 upstream servers (which the config names as 24 slugs), so
- * size it up, not down.
+ * also runs `op` and all 16 servers the bundle image mounts (the 24 slugs this
+ * config names land on 15 of them), so size it up, not down.
  */
 const BundleConfig = z.object({
   name: SLUG,
