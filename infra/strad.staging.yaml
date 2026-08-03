@@ -136,20 +136,20 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and sixteen of the image's seventeen
+  # THE bundle. One image, one component, and seventeen of the image's eighteen
   # upstream MCP servers — the bundle-api fleet, the Google trio, 1Password (with
   # the `op` CLI baked in), telegram and the three browser servers, which share ONE
   # Chromium (never one per server: see servers/bundle/host/src/browser.ts). The
-  # seventeenth mount, `/x-twitter`, is in the image and has no slug here; the
-  # PROCESS registers all seventeen either way — including `/telegram`, whose two
+  # eighteenth mount, `/x-twitter`, is in the image and has no slug here; the
+  # PROCESS registers all eighteen either way — including `/telegram`, whose two
   # slugs are disabled until their secrets are seeded — which is what the sizing
   # below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with seventeen servers registered adds ~200MB. 0.5GB is absurd here;
-  # 1GB would be one bad page render from an OOM that takes all 26 slugs down
+  # and Node with eighteen servers registered adds ~200MB. 0.5GB is absurd here;
+  # 1GB would be one bad page render from an OOM that takes all 27 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
   # the OpenTelemetry data shows event-loop lag or CPU saturation, the next move
@@ -353,6 +353,16 @@ servers:
     bundle: bundle
     path: /google-flights
     entitlements: [admin]
+
+  # PulseMCP registry API. Tenant is env-configured rather than mutable over MCP.
+  - slug: pulse-subregistry
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /pulse-subregistry
+    entitlements: [admin]
+    env:
+      PULSEMCP_SUBREGISTRY_API_KEY: "${PULSEMCP_SUBREGISTRY_API_KEY}"
 
   # strad's artifact store: an agent uploads a screenshot, a human opens the link.
   #

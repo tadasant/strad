@@ -94,7 +94,7 @@ describe("staging config", () => {
     // Internal-only: internal_ports and NO http_port (both is an API rejection).
     expect(bundle.internal_ports).toEqual([8080]);
     expect(bundle.http_port).toBeUndefined();
-    // The credentials of all fifteen upstream servers, unioned onto the one box
+    // The credentials of all sixteen upstream servers, unioned onto the one box
     // — and every one of them SECRET-typed, so App Platform encrypts it at rest.
     const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);

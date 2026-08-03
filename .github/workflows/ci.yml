@@ -261,7 +261,7 @@ jobs:
         working-directory: servers/pointsyeah
         run: npm run build
 
-  # THE bundle: sixteen MCP servers, nine dependency trees, one Chromium and the
+  # THE bundle: seventeen MCP servers, ten dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

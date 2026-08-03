@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 17 upstream MCP servers (17
+ * bundle — THE strad supplementary image. All 18 upstream MCP servers (18
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 27 supplementary-image entries
+ * gateway's config names more SLUGS than that — 28 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
- * SEVENTEEN IS THE FLOOR, not a constant. Two trees (telegram, remote-filesystem)
+ * EIGHTEEN IS THE FLOOR, not a constant. Two trees (telegram, remote-filesystem)
  * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
  * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
  * separately serves /telegram, /telegram-ro and /telegram-rw. No deployment does
  * that today, and the conventional path is always mounted, so a config that does
- * not ask for it sees exactly the seventeen it saw before.
+ * not ask for it sees exactly the eighteen it saw before.
  *
- * TWENTY-SIX of those are on one component. The other one, `zimmer-secrets`,
+ * TWENTY-SEVEN of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
  * parameter store and `loadSecrets()` below reads `process.env` — one container,
  * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
@@ -265,6 +265,8 @@ async function buildMounts(): Promise<Mount[]> {
     register: (s) => xCreated.registerHandlers(s),
   });
 
+  mounts.push(await loadPulseSubregistry());
+
   mounts.push(await loadTelegram("telegram"));
   for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
     deferred.push({ slug, load: () => loadTelegram(slug) });
@@ -416,6 +418,33 @@ async function loadApiTree(): Promise<ApiTree> {
     monarch: monarchMod.createMCPServer({ version: VERSION, sessionStore }),
     gcs: gcs.createMCPServer({ version: VERSION }),
     flights: flights.createMCPServer({ version: VERSION }),
+  };
+}
+
+/**
+ * pulse-subregistry — PulseMCP's MCP server registry API.
+ *
+ * Tenant selection is environment-configured rather than mutable over MCP,
+ * because this host is shared across requests.
+ */
+async function loadPulseSubregistry(): Promise<Mount> {
+  const mod = (await loadFromTree(
+    "pulse-subregistry",
+    "shared/build/index.js",
+  )) as { createMCPServer: Factory };
+
+  const created = mod.createMCPServer({ version: VERSION });
+  const hasApiKey = Boolean(process.env.PULSEMCP_SUBREGISTRY_API_KEY);
+
+  return {
+    slug: "pulse-subregistry",
+    tree: "pulse-subregistry",
+    serverName: "strad-pulse-subregistry",
+    capabilities: { tools: {} },
+    degraded: hasApiKey
+      ? null
+      : "PULSEMCP_SUBREGISTRY_API_KEY is not set; tools will list but calls will fail",
+    register: (s) => created.registerHandlers(s),
   };
 }
 
