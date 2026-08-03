@@ -6,7 +6,6 @@ import {
   originFor,
   playgroundAccess,
   playgroundHref,
-  type PlaygroundAccess,
 } from "./playground.ts";
 import { esc, layout } from "./render.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
@@ -188,7 +187,7 @@ ${
           serverCard(
             e,
             base,
-            playgroundAccess(config, entitled, e.server.slug),
+            playgroundAccess(config, entitled, e.server.slug).ok,
           ),
         )
         .join("\n")
@@ -324,11 +323,7 @@ function banner(issues: Entry[], enabled: number): string {
  * still renders beside the badge, because there it is information rather than an
  * echo.
  */
-function serverCard(
-  entry: Entry,
-  base: string,
-  access: PlaygroundAccess,
-): string {
+function serverCard(entry: Entry, base: string, playable: boolean): string {
   const { server, status, hasView } = entry;
   const hasSecrets = serverLooksSecrets(server);
   const title = server.title ?? server.slug;
@@ -359,7 +354,7 @@ function serverCard(
           ? ""
           : `<code class="card-slug">${esc(server.slug)}</code>`
       }</span>
-      <span class="card-actions">${cardIcons(server, base, access)}${
+      <span class="card-actions">${cardIcons(server, base, playable)}${
         hasView
           ? `<a class="card-cta" href="${href}">${hasSecrets ? "Manage →" : "Browse →"}</a>`
           : `<span class="card-muted">No view</span>`
@@ -404,13 +399,13 @@ function serverCard(
 function cardIcons(
   server: ServerConfig,
   base: string,
-  access: PlaygroundAccess,
+  playable: boolean,
 ): string {
   const slug = server.slug;
   const url = server.enabled && base ? connectUrl(base, slug) : "";
 
   return `${
-    access.ok
+    playable
       ? `<a class="card-icon" href="${playgroundHref(slug)}"
         title="Playground — list this server's tools and call them, by hand"
         aria-label="Open the playground for ${esc(slug)}">${PLAY_SVG}</a>`
@@ -820,7 +815,7 @@ const GUIDE = `
     </div>
   </details>
   <details class="acc">
-    <summary>The two icons on every enabled entry</summary>
+    <summary>The icons an entry can carry</summary>
     <div class="acc-body">
       <ul>
         <li><b>Playground</b> — opens a human MCP client for that one server: the tools it
@@ -836,8 +831,13 @@ const GUIDE = `
           bar, so the client sends its own <code>Authorization: Bearer …</code>, minted with
           <code>npm run token:mint</code>.</li>
       </ul>
-      <p>Neither appears on a DISABLED entry. strad does not mount one, so the playground would
-        open on a 424 and the copied URL is one <code>/mcp</code> refuses.</p>
+      <p>They are offered on different rules, because they address different identities. The
+        playground icon is on the entries <b>your console session</b> may open — the same
+        entitlement check the page itself makes — so an entry your roles do not reach keeps its
+        card and loses the icon rather than sending you to a 424. The copy icon is on every
+        ENABLED entry, whatever your roles: what it copies is for an agent's token to present,
+        and that is not your identity. A DISABLED entry has neither, because strad mounts it for
+        nobody.</p>
     </div>
   </details>
   <details class="acc">
