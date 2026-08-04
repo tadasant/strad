@@ -150,7 +150,7 @@ jobs:
   # builds both trees (`build-op`, `build-pointsyeah`). Both are BUILD-only jobs: the
   # shared/ halves are verbatim vendor copies of pulsemcp/mcp-servers (HACKS.md #15
   # and #19), and a test written here becomes a merge conflict on every re-vendor.
-  # A test for that logic belongs upstream — HACKS.md #41 says the same about the
+  # A test for that logic belongs upstream — HACKS.md #45 says the same about the
   # fetchpet divergence.
   #
   # The root `build` script is what carries the workspace ordering the Dockerfile

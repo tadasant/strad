@@ -874,7 +874,7 @@ upload directory would be the stronger answer and is not implemented.
 
 ## Supply chain and build
 
-### 10, 15 & 41. The `shared/` trees are vendored, not depended on
+### 10, 15 & 45. The `shared/` trees are vendored, not depended on
 
 `servers/good-eggs/shared/`, `servers/fetchpet/shared/` and
 `servers/onepassword/shared/` are copied from
@@ -934,9 +934,11 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 
 The one-time steps that clear most of the list above:
 
-- The secrets/parameters GCP project plus its three service accounts (viewer,
-  admin, resolver) and seeded keys, then the `remote-filesystem-tmp-public` values in
-  `/ui/secrets` — clears **#25**.
+- The per-server parameter values. Staging's secrets/parameters GCP project, its
+  three service accounts (viewer, admin, resolver) and their seeded keys are
+  provisioned; `/strad/staging/mcp/` holds nothing, so set the
+  `remote-filesystem-tmp-public` values in `/ui/secrets` — clears **#26**. Prod
+  needs the whole set of its own.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
 - Re-point prod at the collapsed bundle, then delete the per-server images and
