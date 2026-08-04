@@ -10,7 +10,7 @@ import type { StradConfig } from "../config/schema.ts";
  * env maps, so `gmail-ro` (=readonly) and `gmail-rw` (=readwrite) wanted two
  * values of one variable and therefore could not share a container. Every
  * capability variant cost its own billed component: 12 bundles for the 26 server
- * slugs the config declared. Those same servers are 27 slugs now — 25
+ * slugs the config declared. Those same servers are 27 slugs — 25
  * supplementary-image entries landing on 15 of the bundle image's 16 upstream
  * mounts, plus the echo builtin and one remote-http.
  *

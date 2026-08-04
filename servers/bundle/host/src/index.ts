@@ -368,7 +368,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  *
  * Config is resolved LAZILY inside the server (on the first tool call), so a
  * missing bucket is one server's error, not a boot failure for the other
- * fourteen — the same posture as secrets and 1Password.
+ * fifteen — the same posture as secrets and 1Password.
  */
 const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
 
@@ -916,7 +916,7 @@ async function main(): Promise<void> {
   }
 
   // One stray rejection from one of sixteen servers must not kill the other
-  // fourteen. The standalone images exit here (correct, when the process IS the
+  // fifteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
