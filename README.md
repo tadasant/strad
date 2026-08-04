@@ -122,8 +122,9 @@ at `${bundle.PRIVATE_URL}`.
 - Browser/Chromium servers share one browser, with a context per call. Don't run
   several Chromiums in one component; 1 vCPU serialises rendering.
 
-strad's own deployment is **two** components: `core`, and one `bundle` whose image
-mounts fourteen MCP servers and a single shared Chromium on `apps-s-1vcpu-2gb`.
+strad's own deployment is **three** components: `core`; one `bundle` whose image
+mounts sixteen MCP servers and a single shared Chromium on `apps-s-1vcpu-2gb`; and
+`bundle-zimmer-secrets`, that same image fronting a second parameter store.
 
 `src/deploy/appspec.ts` turns the same config into a DigitalOcean App Platform
 spec: the server list decides how many containers exist and how they're wired.

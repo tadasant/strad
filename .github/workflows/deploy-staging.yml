@@ -369,7 +369,7 @@ jobs:
         # `--wait-for-image` is what the core does not need. release-image.yml
         # pushes the core and THEN calls this workflow, in that order, in one
         # file. release-bundle-image.yml is a SEPARATE trigger on the same push
-        # and it bakes Chromium and eight npm trees — so on a merge that touches
+        # and it bakes Chromium and nine npm trees — so on a merge that touches
         # a baked tree, sha-<HEAD> reliably does not exist yet when this runs,
         # and a bare hard stop would turn every such deploy red. 900s is roughly
         # three times the slowest bundle build on record (6m10s).

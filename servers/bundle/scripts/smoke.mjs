@@ -100,6 +100,36 @@ console.log(
 );
 
 let failed = 0;
+
+// The mount SET is an assertion, not a printout. Without this, a mount added to
+// buildMounts() and left out of EXPECT ships with no tool-count coverage and no
+// complaint — the loop below only walks what EXPECT already names. Each side is
+// named rather than counted, because a rename moves a mount without moving the
+// count, and "16 mounted, 16 in EXPECT" would otherwise read like a pass.
+const mounted = new Set(health.servers.map((s) => s.slug));
+const expectedSlugs = new Set(Object.keys(EXPECT));
+const unchecked = [...mounted].filter((s) => !expectedSlugs.has(s));
+const absent = [...expectedSlugs].filter((s) => !mounted.has(s));
+if (unchecked.length || absent.length) {
+  failed += 1;
+  console.log(
+    "FAIL mount set:" +
+      (unchecked.length ? ` mounted but unchecked: ${unchecked.join(", ")};` : "") +
+      (absent.length ? ` in EXPECT but not mounted: ${absent.join(", ")};` : "") +
+      ` (${mounted.size} mounted, ${expectedSlugs.size} in EXPECT)`,
+  );
+}
+
+// Two trees registering the SAME slug is the collision a nine-tree single process
+// invites, and it collapses to one route — the set above cannot see it, because a
+// Set of 17 mounts' slugs is 16 entries wide and matches EXPECT exactly.
+if (health.servers.length !== mounted.size) {
+  failed += 1;
+  console.log(
+    `FAIL duplicate mount slug: ${health.servers.length} mounts report only ${mounted.size} distinct slugs`,
+  );
+}
+
 for (const [slug, expected] of Object.entries(EXPECT)) {
   try {
     const tools = await listTools(`/${slug}`);

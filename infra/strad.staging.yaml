@@ -135,15 +135,17 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, fifteen upstream MCP servers — the
-  # bundle-api fleet, the Google trio, 1Password (with the `op` CLI baked in) and
-  # the three browser servers, which share ONE Chromium (never one per server:
-  # see servers/bundle/host/src/browser.ts).
+  # THE bundle. One image, one component, and fifteen of the image's sixteen
+  # upstream MCP servers — the bundle-api fleet, the Google trio, 1Password (with
+  # the `op` CLI baked in) and the three browser servers, which share ONE Chromium
+  # (never one per server: see servers/bundle/host/src/browser.ts). The sixteenth
+  # mount, `/x-twitter`, is in the image and has no slug here; the PROCESS
+  # registers all sixteen either way, which is what the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with fifteen servers registered adds ~200MB. 0.5GB is absurd here;
+  # and Node with sixteen servers registered adds ~200MB. 0.5GB is absurd here;
   # 1GB would be one bad page render from an OOM that takes all 24 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if

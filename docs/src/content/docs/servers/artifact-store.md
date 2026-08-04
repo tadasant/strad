@@ -249,7 +249,7 @@ round trip to Google per object, so a fifty-file listing would be fifty extra
 calls for data the caller usually does not want.
 
 `upload_file` takes a `file://` URI, which means it reads from the bundle
-container's filesystem — a container that also holds fourteen other servers'
+container's filesystem — a container that also holds fifteen other servers'
 credentials in its environment. Paths under `/proc`, `/sys`, `/dev`, `/app`,
 `/root` and `/etc` are refused, so `file:///proc/self/environ` is not a one-call
 way to publish every secret in the bundle. An artifact lives in a working

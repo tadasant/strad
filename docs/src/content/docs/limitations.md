@@ -862,7 +862,7 @@ existed — but restricting one of those means "no new readers", not "no readers
 ### `upload_file` reads from the bundle container's filesystem
 
 The artifact store takes a `file://` URI, and it runs in the bundle — a container
-that also holds fourteen other servers' credentials in its environment. An agent
+that also holds fifteen other servers' credentials in its environment. An agent
 that can call `upload_file` can therefore ask it to read a local path and publish
 a link to whatever came back.
 

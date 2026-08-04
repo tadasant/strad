@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
  * fetchpet, pointsyeah, x-twitter — each of which is copied in, installed and built exactly
  * as its own image builds it, keeping its own `node_modules` and its own lockfile.
  *
- * WHY NOT ONE FLAT npm PROJECT. Because merging eight dependency trees into one
+ * WHY NOT ONE FLAT npm PROJECT. Because merging nine dependency trees into one
  * is how you find out, in production, that fetchpet pinned playwright-extra and
  * bundle-google pinned express 4 and someone's transitive zod moved. Each tree
  * stays byte-for-byte the tree its own CI already proves; this host just imports
@@ -42,7 +42,7 @@ export function treeDir(tree: TreeName): string {
  * Import a built module out of one of the trees, by path.
  *
  * A path import (not a bare specifier) is what lets one process host packages
- * from eight unrelated `node_modules`: resolution of the module's OWN imports then
+ * from nine unrelated `node_modules`: resolution of the module's OWN imports then
  * happens relative to where the file lives, which is inside its tree.
  */
 export async function loadFromTree<T>(
@@ -59,7 +59,7 @@ export async function loadFromTree<T>(
  * Each tree's shared code registers handlers with Zod schemas from its own SDK
  * copy, so the `Server` those handlers are registered on — and the transport it
  * connects to — must come from that same copy. Resolving the SDK per tree keeps
- * every mount internally consistent, instead of relying on eight copies of the SDK
+ * every mount internally consistent, instead of relying on nine copies of the SDK
  * being structurally interchangeable (they usually are; "usually" is not a
  * property you want under a credentials manager).
  */

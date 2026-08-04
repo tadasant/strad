@@ -2,7 +2,7 @@
   "name": "strad-bundle-host",
   "version": "0.1.0",
   "private": true,
-  "description": "The streamable-HTTP host for strad's single collapsed bundle: 14 MCP servers, one process, one Chromium.",
+  "description": "The streamable-HTTP host for strad's single collapsed bundle: 16 MCP servers, one process, one Chromium.",
   "type": "module",
   "engines": {
     "node": ">=22"

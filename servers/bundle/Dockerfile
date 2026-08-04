@@ -18,7 +18,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging eight dependency trees is how you
+# Nothing is merged. That is on purpose: merging nine dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
