@@ -283,6 +283,28 @@ the store reaches a running gateway without a deploy. Setting it to
 `gcp-parameter-store` without a store credential is a hard boot failure, not a
 silent downgrade to env vars. Full model: [Secrets](/operate/secrets/).
 
+## `auth.staticTokens`
+
+The credential agents present to `/mcp`.
+
+```yaml
+auth:
+  staticTokens:
+    enabled: true # default
+    store: env # default, and the only value
+```
+
+`enabled: false` builds an empty token store rather than turning the check off:
+`/mcp` still demands a token, and no token can satisfy one. Fail closed.
+
+`store` is a reserved field that **nothing reads**. `env` — a JSON array of token
+records in `STRAD_TOKENS` — is the only implementation, and the gateway builds it
+from `enabled` alone. The field is declared so that a database-backed token store
+lands as a second enum value instead of as a new key in the config contract, and
+it is a single-value enum so a config cannot name a store strad does not have.
+The datastore is [Known limitation #6](/limitations/#6-token-records-live-in-an-env-var-not-a-database);
+the token model itself is [Auth](/auth/overview/#mcp--static-system-tokens-agents).
+
 ## Where the config comes from
 
 Config is loaded from two sources, in priority order (`src/config/load.ts`):

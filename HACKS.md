@@ -160,9 +160,13 @@ SHA-256 of each secret; plaintext shown once at mint). `EnvTokenStore` reads it.
 **Why.** No datastore is provisioned, and env-var storage is enough to prove the
 auth model. Minting/revoking means editing the secret and redeploying.
 
+`auth.staticTokens.store` reserves the config seat: a single-value enum (`env`)
+that no code reads, since `tokenStoreFromConfig` branches on `enabled` alone.
+
 **Undo.** Implement a `TokenStore` backed by a real database (the interface in
 `src/auth/tokens.ts` is already the right shape — records mirror a table row) and
-build a `/console` UI for mint/revoke. Then `STRAD_TOKENS` goes away.
+build a `/console` UI for mint/revoke. Then `STRAD_TOKENS` goes away and `store`
+grows its second value.
 
 ---
 

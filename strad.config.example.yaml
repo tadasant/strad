@@ -61,6 +61,9 @@ auth:
   # Mint with: npm run token:mint -- --label "my agent" --roles admin
   staticTokens:
     enabled: true
+    # Reserved: no code reads it. `env` (a JSON array in STRAD_TOKENS) is the
+    # only implementation, and the gateway builds it unconditionally. It is here
+    # so a DB-backed store arrives as a new value, not a new key. See HACKS.md #6.
     store: env
 
   # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while

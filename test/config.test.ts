@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec, parseImage } from "../src/deploy/appspec.ts";
 import { resolveRefs } from "../src/secrets/index.ts";
@@ -133,6 +134,41 @@ servers:
   - { slug: bad_slug, kind: remote-http, url: "https://e.com/mcp", entitlements: [admin] }
 `),
     ).toThrow();
+  });
+});
+
+describe("auth.staticTokens.store", () => {
+  // The field is reserved for a DB-backed TokenStore (HACKS.md #6, issue #10)
+  // and read by nothing. These two assertions are the whole of its contract:
+  // `env` is the only value a config may name, and naming it changes nothing.
+  const withStore = `
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+`;
+
+  it("defaults to env and accepts no other value", () => {
+    expect(parseConfig(BASE).auth.staticTokens.store).toBe("env");
+    expect(parseConfig(withStore).auth.staticTokens.store).toBe("env");
+    expect(() =>
+      parseConfig(withStore.replace("store: env", "store: postgres")),
+    ).toThrow(/auth\.staticTokens\.store: Invalid enum value/);
+  });
+
+  it("does not change the store the gateway builds", async () => {
+    const env = {
+      STRAD_TOKENS: JSON.stringify([{ pubid: "a1", hash: "x", roles: [] }]),
+    };
+    const omitted = await tokenStoreFromConfig(parseConfig(BASE), env).list();
+    const named = await tokenStoreFromConfig(
+      parseConfig(withStore),
+      env,
+    ).list();
+    expect(named).toEqual(omitted);
+    expect(named.map((r) => r.pubid)).toEqual(["a1"]);
   });
 });
 
