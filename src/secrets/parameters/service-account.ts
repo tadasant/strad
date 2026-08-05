@@ -24,9 +24,6 @@ export type FetchLike = typeof fetch;
 
 export const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
-/** Read-only object listing. */
-export const SCOPE_STORAGE_RO =
-  "https://www.googleapis.com/auth/devstorage.read_only";
 /** The scope Parameter Manager and Secret Manager are reached with. */
 export const SCOPE_CLOUD_PLATFORM =
   "https://www.googleapis.com/auth/cloud-platform";

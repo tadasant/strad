@@ -51,12 +51,6 @@ export type BundleProbeOutcome =
   /** It could not be reached, or refused. */
   | { kind: "unreachable"; detail: string };
 
-export interface BundleProbe {
-  /** Component name, e.g. `bundle`. */
-  bundle: string;
-  outcome: BundleProbeOutcome;
-}
-
 export interface BundlePresence {
   probes: Map<string, BundleProbeOutcome>;
 }

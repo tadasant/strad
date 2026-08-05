@@ -53,14 +53,6 @@ export interface StoreDiagnostics {
   renderRead: boolean;
 }
 
-export const EMPTY_DIAGNOSTICS: StoreDiagnostics = {
-  indexed: new Set(),
-  unrenderable: new Map(),
-  rendered: new Set(),
-  indexRead: false,
-  renderRead: false,
-};
-
 export interface ReadDiagnosticsOptions {
   store: Pick<ParameterStore, "list" | "resolveDetailed">;
   namespace: string;
