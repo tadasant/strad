@@ -73,6 +73,14 @@ though strad is a confidential client. `hd` is _also_ passed as an account-choos
 hint on the auth URL, but that hint is **not** the security control; the verified
 claim is. Any verified member gets the roles from `auth.google.roles`.
 
+`test/auth.google.test.ts` is the canary on all of it, and it needs no credential:
+it generates an RSA keypair, publishes the public half as the JWKS, and signs its
+own tokens. A token that is correctly signed, unexpired and carries
+`email_verified: true` for an `@tadasant.com` address is still refused when `hd`
+is absent or wrong — that case is the email-suffix impersonation the check exists
+for. `alg: none` and an HS256 token signed with the verifying public key as the
+HMAC secret are both refused at the algorithm check.
+
 The provider is constructed from `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`. When
 those are absent it returns `null` and strad falls back to the console dev bypass
 (below).
