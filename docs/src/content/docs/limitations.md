@@ -751,17 +751,24 @@ MCP surface, no second container, no cost — and for a store a human manages an
 agent should enumerate that is arguably the right shape rather than merely the
 cheaper one. It is not built, and nothing blocks on it.
 
-### 3 & 2b. Staging's first deploy came from an agent session, and CI deploys are merge-gated
+### 2b. A deploy without its prerequisites skips and stays green
 
-`strad-staging` was originally created with a hand-rendered spec from a build session
-rather than by `deploy-staging.yml`. Separately, `workflow_dispatch` workflows are
-only invocable from the default branch, and Secret Manager isn't seeded until
-`secrets-sync.yml` has run — so `deploy-staging.yml`
+`workflow_dispatch` workflows are only invocable from the default branch, and
+`deploy-staging.yml` has nothing to inject until `secrets-sync.yml` has seeded
+Secret Manager. An automatic deploy missing either
 [skips and stays green](/operate/operations/#deploy-stagingyml--put-it-on-app-platform)
-on an automatic release without prerequisites, while a manual dispatch fails loudly.
+— zimmer's "safe no-op without the secret" idiom — while a manual dispatch fails
+loudly.
 
-**Undo:** let `release-image.yml` → `deploy-staging.yml` rebuild staging from
-`infra/strad.staging.yaml`, and never hand-deploy again.
+**Undo:** run `secrets-sync.yml` for the deployment. The skip is the guard for one
+that has not been seeded, not a defect in one that has.
+
+:::note[HACKS #3 is resolved]
+`HACKS.md` #3 records that `strad-staging` was first created with a hand-rendered
+spec from a build session rather than by `deploy-staging.yml`. That workflow
+rebuilds staging from `infra/strad.staging.yaml` on a ghcr image, and nothing
+hand-deploys it. The entry is kept in `HACKS.md` for history.
+:::
 
 :::note[HACKS #12 is superseded]
 `HACKS.md` #12 describes the `bundle-goodeggs` component being hand-deployed off
@@ -874,7 +881,7 @@ upload directory would be the stronger answer and is not implemented.
 
 ## Supply chain and build
 
-### 10, 15 & 41. The `shared/` trees are vendored, not depended on
+### 10, 15 & 45. The `shared/` trees are vendored, not depended on
 
 `servers/good-eggs/shared/`, `servers/fetchpet/shared/` and
 `servers/onepassword/shared/` are copied from
@@ -934,11 +941,16 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 
 The one-time steps that clear most of the list above:
 
-- The secrets/parameters GCP project plus its three service accounts (viewer,
-  admin, resolver) and seeded keys, then the `remote-filesystem-tmp-public` values in
-  `/ui/secrets` — clears **#25**.
+- The per-server parameter values. Staging's secrets/parameters GCP project, its
+  three service accounts (viewer, admin, resolver) and their seeded keys are
+  provisioned; `/strad/staging/mcp/` holds nothing, so set the
+  `remote-filesystem-tmp-public` values in `/ui/secrets` — clears **#26**. Prod
+  needs the whole set of its own.
 - An OAuth client for `https://strad.tadasant.com/console/oauth/callback`, and its
   `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — clears **#2** and **#20**.
+- Delete the DigitalOcean Container Registry named `strad`. Staging and prod pull
+  ghcr images; the registry the first deploy used is left over, and bills while it
+  sits there.
 - Re-point prod at the collapsed bundle, then delete the per-server images and
   workflows — clears **#23**.
 - Mint a dedicated strad GHCR pull token — clears **#5**.

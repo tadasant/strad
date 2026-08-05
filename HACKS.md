@@ -90,6 +90,11 @@ to seed GCP, and the next release deploys via CI end to end.
 
 ## 3. Tonight's staging was deployed from the agent session, not CI
 
+**✅ RESOLVED (Phase 2).** `deploy-staging.yml` rebuilds staging from
+`infra/strad.staging.yaml` on a **ghcr** image, with secrets from GCP Secret
+Manager. Nothing hand-deploys it. The DOCR registry the first deploy used is
+still provisioned and still bills — deleting it is hack #4 and issue #8.
+
 **What.** The `strad-staging` App Platform app was first created directly through
 the DigitalOcean MCP from the build session, using a hand-rendered spec and
 locally-minted tokens. The **image it currently runs is
@@ -269,7 +274,7 @@ carries only Chromium. When bumping Playwright, bump the base image tag and the
 
 **⊘ SUPERSEDED.** The component this describes no longer exists. The collapse
 (hack #24) renders `core` and `bundle` — plus `bundle-zimmer-secrets`, which is
-there for a second parameter store rather than for a capability (hack #33) — and
+there for a second parameter store rather than for a capability (hack #34) — and
 `bundle-goodeggs` is not one of them; good-eggs is now a mount inside
 `ghcr.io/tadasant/strad-bundle`. Kept for history. Retained below as written.
 
@@ -372,6 +377,94 @@ all — it is a pinned binary baked into the image (see `servers/onepassword/Doc
 Longer term, have upstream publish `@pulsemcp/mcp-elicitation` and `shared` as
 real packages and depend on them.
 
+---
+
+## 16. MCP Apps: gating is authoritative at the app-server, additive at the gateway
+
+The `io.modelcontextprotocol/ui` inline-UI feature spans two layers, and they
+gate differently because they are stateful in different ways.
+
+1. **good-eggs `remote/` became session-ful.** Capability gating needs the
+   client's `initialize` capabilities to govern the whole session (tools/list,
+   resources/read, and tools/call all arrive on separate POSTs). The original
+   per-POST-stateless endpoint saw the capabilities once and never again, so it
+   could not gate. `remote/src/index.ts` now keys a Server per `Mcp-Session-Id`.
+   The browser/login model is unchanged — one logged-in page in the factory
+   closure, shared across sessions. This is the AUTHORITATIVE gate: a client that
+   did not advertise the extension gets a byte-identical plain result.
+
+2. **The core gateway advertises `resources` unconditionally.** strad's `/mcp` is
+   deliberately session-LESS (it derives the toolset per request, never from a
+   session — see router.ts). So it cannot gate the initialize response by client
+   capabilities and still answer the follow-up resources/list POST, which carries
+   none — and the SDK refuses to register a resources handler for a server that
+   didn't declare the capability. The pragmatic resolution: the gateway always
+   advertises `resources` and proxies them (union on list, route on read), and
+   always advertises the UI extension to its upstreams so an app-server offers
+   its `ui://` template. A non-App client simply never renders the `ui://`
+   resource or the tool `_meta` it ignores. **Net:** through the gateway, the App
+   surface is exposed to everyone but only rendered by clients that asked for it;
+   the strict "byte-identical for non-App clients" guarantee is upheld at the
+   app-owning server (good-eggs), which is session-ful.
+
+**Undo.** If the gateway is ever made session-ful (an explicit reversal of the
+router.ts design), it could gate `resources` and tool `_meta` on the end
+client's capabilities, making the through-gateway surface byte-identical too.
+Until then, the two-layer split above is the intended design, not a stopgap.
+
+---
+
+## 17. MCP-App PR stacks on the good-eggs branch; CI trigger is bootstrapped
+
+**✅ RESOLVED.** Merged to `main`; the bootstrap CI branch trigger was removed.
+
+The MCP-App work extends good-eggs, which only exists on
+`feat/good-eggs-supplementary`, so its PR is STACKED on that branch (not `main`).
+For a `pull_request`, GitHub reads the `on` filter from the BASE branch's
+`ci.yml`, which only fires for base `main` — so a PR into the good-eggs branch
+gets no `pull_request` CI. Same bootstrap as hacks #1/#9 and the
+fetchpet+pointsyeah PR: `feat/good-eggs-mcp-app-ui` is added to
+`on.push.branches` so a push runs THIS branch's `ci.yml`. That file also carries
+a new `good_eggs` job that builds + runs the server's browser-free MCP-App tests,
+since `servers/**` is otherwise out of the core toolchain and only image-built on
+push.
+
+**Undo.** Once good-eggs is on `main` and this stack retargets, drop
+`feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
+it is the standing check for `servers/good-eggs`.
+
+---
+
+## 18. An App Platform spec update DELETES any field it omits — including `domains`
+
+Not a hack so much as a loaded gun, and it went off once.
+
+`doctl apps update --spec` is a full **replace**, not a merge. A rendered spec
+that omits `domains` does not "leave the domain alone" — App Platform **detaches**
+the custom domain and stops serving and renewing its certificate. The failure is
+nasty because the app stays perfectly healthy: `strad-staging-wy9v5.ondigitalocean.app`
+kept answering 200 while `https://staging.strad.tadasant.com` started failing the
+**TLS handshake** (curl 35). Nothing is unhealthy; the hostname is simply gone.
+
+`render-spec.ts` only emitted `domains` when `--domain` was passed, and
+`deploy-staging.yml` never passed it (the prod job did). So the first real
+staging deploy silently dropped the domain.
+
+Fixed in two layers, because one is not enough:
+
+- `deploy-staging.yml` now passes `--domain staging.strad.tadasant.com`
+  explicitly, so the deploy states which hostname it is claiming.
+- `render-spec.ts` **defaults** `domains` from the config's own
+  `gateway.publicUrl` when `--domain` is absent, so a future deploy that forgets
+  the flag still cannot delete the domain. `--domain` still overrides, and a
+  `*.ondigitalocean.app` publicUrl is ignored (that is the default ingress, not a
+  custom domain). `test/render-spec.domains.test.ts` pins all of this.
+
+The general rule for anything else added to the spec later (alerts, ingress
+rules, env): **if it is not in the render, it is being deleted.**
+
+---
+
 ## 19. fetchpet + pointsyeah were stacked on the good-eggs branch
 
 **✅ RESOLVED (Phase 2).** The branch stacking was linearized onto `main`, and
@@ -416,58 +509,6 @@ seed `strad-staging-FETCHPET_USERNAME` / `_PASSWORD` and
 then flip the two servers to `enabled: true`.
 
 ---
-
-## 16. MCP Apps: gating is authoritative at the app-server, additive at the gateway
-
-The `io.modelcontextprotocol/ui` inline-UI feature spans two layers, and they
-gate differently because they are stateful in different ways.
-
-1. **good-eggs `remote/` became session-ful.** Capability gating needs the
-   client's `initialize` capabilities to govern the whole session (tools/list,
-   resources/read, and tools/call all arrive on separate POSTs). The original
-   per-POST-stateless endpoint saw the capabilities once and never again, so it
-   could not gate. `remote/src/index.ts` now keys a Server per `Mcp-Session-Id`.
-   The browser/login model is unchanged — one logged-in page in the factory
-   closure, shared across sessions. This is the AUTHORITATIVE gate: a client that
-   did not advertise the extension gets a byte-identical plain result.
-
-2. **The core gateway advertises `resources` unconditionally.** strad's `/mcp` is
-   deliberately session-LESS (it derives the toolset per request, never from a
-   session — see router.ts). So it cannot gate the initialize response by client
-   capabilities and still answer the follow-up resources/list POST, which carries
-   none — and the SDK refuses to register a resources handler for a server that
-   didn't declare the capability. The pragmatic resolution: the gateway always
-   advertises `resources` and proxies them (union on list, route on read), and
-   always advertises the UI extension to its upstreams so an app-server offers
-   its `ui://` template. A non-App client simply never renders the `ui://`
-   resource or the tool `_meta` it ignores. **Net:** through the gateway, the App
-   surface is exposed to everyone but only rendered by clients that asked for it;
-   the strict "byte-identical for non-App clients" guarantee is upheld at the
-   app-owning server (good-eggs), which is session-ful.
-
-**Undo.** If the gateway is ever made session-ful (an explicit reversal of the
-router.ts design), it could gate `resources` and tool `_meta` on the end
-client's capabilities, making the through-gateway surface byte-identical too.
-Until then, the two-layer split above is the intended design, not a stopgap.
-
-## 17. MCP-App PR stacks on the good-eggs branch; CI trigger is bootstrapped
-
-**✅ RESOLVED.** Merged to `main`; the bootstrap CI branch trigger was removed.
-
-The MCP-App work extends good-eggs, which only exists on
-`feat/good-eggs-supplementary`, so its PR is STACKED on that branch (not `main`).
-For a `pull_request`, GitHub reads the `on` filter from the BASE branch's
-`ci.yml`, which only fires for base `main` — so a PR into the good-eggs branch
-gets no `pull_request` CI. Same bootstrap as hacks #1/#9 and the
-fetchpet+pointsyeah PR: `feat/good-eggs-mcp-app-ui` is added to
-`on.push.branches` so a push runs THIS branch's `ci.yml`. That file also carries
-a new `good_eggs` job that builds + runs the server's browser-free MCP-App tests,
-since `servers/**` is otherwise out of the core toolchain and only image-built on
-push.
-
-**Undo.** Once good-eggs is on `main` and this stack retargets, drop
-`feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
-it is the standing check for `servers/good-eggs`.
 
 ## 20. The dev-bypass /ui "session" is the bootstrap token in a cookie
 
@@ -520,7 +561,7 @@ renders its shell behind the SSO gate and reports "credentials not yet
 configured" — it does not browse a real bucket yet.
 
 **Why.** This OSS staging holds no per-server GCS credentials (same posture as
-fetchpet/pointsyeah, hack #14). A disabled supplementary image emits no App
+fetchpet/pointsyeah, hack #19). A disabled supplementary image emits no App
 Platform component and demands no secret at render, so staging stays deployable
 with zero new secrets. The browse code path is proven end-to-end against a real
 bucket from the build session (a dependency-free GCS JSON-API client:
@@ -532,34 +573,6 @@ flip the `gcs` server to `enabled: true`, and confirm the `strad-bundle-api` ghc
 package is pullable by `GHCR_PULL_TOKEN`. Then `/ui/gcs` browses the live bucket.
 
 ---
-
-## 18. An App Platform spec update DELETES any field it omits — including `domains`
-
-Not a hack so much as a loaded gun, and it went off once.
-
-`doctl apps update --spec` is a full **replace**, not a merge. A rendered spec
-that omits `domains` does not "leave the domain alone" — App Platform **detaches**
-the custom domain and stops serving and renewing its certificate. The failure is
-nasty because the app stays perfectly healthy: `strad-staging-wy9v5.ondigitalocean.app`
-kept answering 200 while `https://staging.strad.tadasant.com` started failing the
-**TLS handshake** (curl 35). Nothing is unhealthy; the hostname is simply gone.
-
-`render-spec.ts` only emitted `domains` when `--domain` was passed, and
-`deploy-staging.yml` never passed it (the prod job did). So the first real
-staging deploy silently dropped the domain.
-
-Fixed in two layers, because one is not enough:
-
-- `deploy-staging.yml` now passes `--domain staging.strad.tadasant.com`
-  explicitly, so the deploy states which hostname it is claiming.
-- `render-spec.ts` **defaults** `domains` from the config's own
-  `gateway.publicUrl` when `--domain` is absent, so a future deploy that forgets
-  the flag still cannot delete the domain. `--domain` still overrides, and a
-  `*.ondigitalocean.app` publicUrl is ignored (that is the default ingress, not a
-  custom domain). `test/render-spec.domains.test.ts` pins all of this.
-
-The general rule for anything else added to the spec later (alerts, ingress
-rules, env): **if it is not in the render, it is being deleted.**
 
 ## 22. Read-only is now POLICY, not PHYSICS
 
@@ -1497,32 +1510,6 @@ way reachability is — the harder half of that is that "degraded" means somethi
 different per server (a bad refresh token, a missing credential, a failed login
 the next call retries), and a signal a deploy can fail on has to say which.
 
-## 41. fetchpet's vendored `shared/` has diverged from upstream
-
-**What.** `servers/fetchpet/shared/` was copied from
-[`pulsemcp/mcp-servers` `experimental/fetchpet/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/fetchpet)
-under the same terms as good-eggs (#10), and it no longer matches. The deltas, all
-of them driven by running inside the collapsed bundle rather than as a standalone
-stdio server:
-
-| Delta                                         | Why                                                                                               |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `setSharedBrowserProvider()` in `server.ts`   | one Chromium for three browser servers; this one opens a context on it                            |
-| `telemetry.ts`                                | a browser launch and a Chromium crash are things only this process sees                           |
-| `login.ts` and a retried login in `server.ts` | the login form Fetch serves today, and a failure the next tool call retries (#40, strad#28)       |
-| `test/`                                       | both of the above, over a fake browser, with no Fetch account — `ci.yml`'s `fetchpet` job runs it |
-
-**Why.** The selector fix could not wait on an upstream round trip: the mount was
-broken in prod. The shared-browser seam and the telemetry are strad-specific by
-construction — upstream has no bundle to share a browser with.
-
-**Undo.** Land the login fix upstream (it is not strad-specific — the form changed
-for everyone) and re-vendor, keeping the seam and telemetry as a documented patch
-set. `servers/fetchpet/README.md` carries the same table so the next re-vendor is a
-merge with a list, not a diff read cold.
-
----
-
 ## 41. The service worker's cache version is bumped by hand, and nothing checks it
 
 **What.** The console is installable, and its service worker precaches a fixed
@@ -1667,9 +1654,39 @@ refusing anything that escapes after `realpath`. That is a behaviour change for
 callers that pass absolute paths from elsewhere, which is why it is not the
 first move.
 
+---
+
+## 45. fetchpet's vendored `shared/` has diverged from upstream
+
+**What.** `servers/fetchpet/shared/` was copied from
+[`pulsemcp/mcp-servers` `experimental/fetchpet/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/fetchpet)
+under the same terms as good-eggs (#10), and it no longer matches. The deltas, all
+of them driven by running inside the collapsed bundle rather than as a standalone
+stdio server:
+
+| Delta                                         | Why                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `setSharedBrowserProvider()` in `server.ts`   | one Chromium for three browser servers; this one opens a context on it                            |
+| `telemetry.ts`                                | a browser launch and a Chromium crash are things only this process sees                           |
+| `login.ts` and a retried login in `server.ts` | the login form Fetch serves today, and a failure the next tool call retries (#40, strad#28)       |
+| `test/`                                       | both of the above, over a fake browser, with no Fetch account — `ci.yml`'s `fetchpet` job runs it |
+
+**Why.** The selector fix could not wait on an upstream round trip: the mount was
+broken in prod. The shared-browser seam and the telemetry are strad-specific by
+construction — upstream has no bundle to share a browser with.
+
+**Undo.** Land the login fix upstream (it is not strad-specific — the form changed
+for everyone) and re-vendor, keeping the seam and telemetry as a documented patch
+set. `servers/fetchpet/README.md` carries the same table so the next re-vendor is a
+merge with a list, not a diff read cold.
+
+---
+
 ## What the human still needs to provision
 
-A consolidated checklist, cross-referenced above:
+A consolidated checklist, cross-referenced above. A checked box is kept rather
+than deleted, because prod has to repeat most of what staging already did, and
+because each one names the evidence that closed it.
 
 - [x] **The secrets/parameters GCP project + three service accounts** (hack #26) —
       DONE for STAGING. All three exist; the resolver was the last one and the
@@ -1706,39 +1723,45 @@ A consolidated checklist, cross-referenced above:
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
-      `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2.
-- [ ] **Merge the PR**, then drop the bootstrap branch trigger → removes hacks
-      #1 and #3.
-- [ ] **Confirm staging on the ghcr image, then delete the DOCR `strad`
-      registry** → removes hack #4.
+      `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2. Tracked in
+      issue #6.
+- [ ] **Delete the DOCR `strad` registry** — staging is confirmed on the ghcr
+      image (hack #4), and the registry it left behind still bills ~$5/mo.
+      Tracked in issue #8.
 - [ ] **Dedicated `GHCR_PULL_TOKEN_STRAD_TADASANT_INTERNAL`** for prod → resolves
       hack #5. If any pull 403s, add strad's package to the PAT scope.
 - [ ] **Workload Identity Federation** pool + provider bound to both repos, then
-      delete `GCP_SA_KEY` → resolves hack #8.
-- [ ] **A datastore** for tokens (and a console mint/revoke UI) → resolves hacks
-      #6 and #7.
-- [ ] **DNS**: `staging.strad.tadasant.com` → the App Platform app (handled by a
-      parallel session via Cloudflare; grey-cloud/DNS-only, App Platform issues
-      the cert).
-- [ ] **Merge the PR**, then drop the good-eggs bootstrap branch trigger →
-      removes hacks #9 and #12.
-- [ ] **Confirm the `strad-server-good-eggs` ghcr package is pullable by
-      `GHCR_PULL_TOKEN`** (add it to the PAT scope, or set the package public)
-      → resolves the visibility watch in hack #12.
-- [ ] **Seed `strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD`
-      in GCP** (via `secrets-sync.yml`) so the CI deploy has the good-eggs
-      credentials, not just the session-driven deploy.
-- [ ] **Merge good-eggs (PR #4) to `main`, then this PR**, then drop the
-      `feat/onepassword-supplementary` bootstrap trigger → removes hack #14.
+      delete `GCP_SA_KEY` → resolves hack #8. Tracked in issue #9.
+- [ ] **A datastore** for tokens (and a console mint/revoke UI) → resolves hack
+      #6. Tracked in issue #10. Hack #7, the other half of the original item, is
+      resolved: no login state lives on the server.
+- [x] **The core bootstrap branch trigger is gone** — no workflow under
+      `.github/workflows/` carries a `feat/*` push trigger, the images are cut
+      from `main`, and `deploy-staging.yml` is what deploys staging. Cleared
+      hacks #1 and #3.
+- [x] **DNS**: `staging.strad.tadasant.com` resolves DNS-only in Cloudflare to the
+      App Platform app, which issues the cert. It is `gateway.publicUrl` in
+      `infra/strad.staging.yaml`; see `docs/operate/dns.md` for the wiring.
+      Verify it still serves after any deploy — hack #18 is why.
+- [x] **The good-eggs bootstrap branch trigger is gone** — cleared hack #9.
+      Hack #12 is superseded rather than cleared: the `bundle-goodeggs` component
+      it describes does not exist, because good-eggs is a mount in the collapsed
+      bundle.
+- [x] **The `strad-server-good-eggs` pull check is moot** — staging pulls only
+      `ghcr.io/tadasant/strad-bundle`, so `GHCR_PULL_TOKEN` never reaches for that
+      package. Prod re-pulls `…-good-eggs:latest` on every restart (hack #23) with
+      zimmer's token, which is where its visibility is proven — and that shared
+      token is its own debt, hack #5.
+- [x] **`strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD` are
+      seeded** — `secrets-sync.yml` takes both, `infra/strad.staging.yaml` names
+      them as `${…}` refs on an enabled server, and `renderAppSpec` throws on an
+      unresolved ref, so a green CI deploy is the proof.
+- [x] **The onepassword bootstrap branch trigger is gone** — cleared hack #14.
       The onepassword token (`OP_SERVICE_ACCOUNT_TOKEN`) and its `onepassword-ro`
       / `onepassword-rw` server configs are wired downstream in tadasant-internal,
       not in this repo.
-- [ ] **Land the good-eggs stack + the fetchpet/pointsyeah PR on `main`**, then
-      drop the `feat/browser-servers-fetchpet-pointsyeah` bootstrap trigger →
-      removes hack #14.
-- [ ] **To activate fetchpet / pointsyeah**: seed
-      `strad-staging-FETCHPET_USERNAME` / `_PASSWORD` and
-      `strad-staging-POINTSYEAH_REFRESH_TOKEN` (real creds live in
-      tadasant-internal), confirm the two `strad-server-*` ghcr packages are
-      pullable by `GHCR_PULL_TOKEN`, then flip both to `enabled: true` in
-      `infra/strad.staging.yaml`.
+- [x] **The fetchpet/pointsyeah bootstrap branch trigger is gone** — cleared the
+      bootstrap half of hack #19.
+- [x] **fetchpet / pointsyeah are activated** — both carry real credentials and
+      neither is `enabled: false` in `infra/strad.staging.yaml`, proven with live
+      tool calls (hack #19).
