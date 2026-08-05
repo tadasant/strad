@@ -90,6 +90,11 @@ to seed GCP, and the next release deploys via CI end to end.
 
 ## 3. Tonight's staging was deployed from the agent session, not CI
 
+**✅ RESOLVED (Phase 2).** `deploy-staging.yml` rebuilds staging from
+`infra/strad.staging.yaml` on a **ghcr** image, with secrets from GCP Secret
+Manager. Nothing hand-deploys it. The DOCR registry the first deploy used is
+still provisioned and still bills — deleting it is hack #4 and issue #8.
+
 **What.** The `strad-staging` App Platform app was first created directly through
 the DigitalOcean MCP from the build session, using a hand-rendered spec and
 locally-minted tokens. The **image it currently runs is
@@ -1731,20 +1736,22 @@ because each one names the evidence that closed it.
       #6. Tracked in issue #10. Hack #7, the other half of the original item, is
       resolved: no login state lives on the server.
 - [x] **The core bootstrap branch trigger is gone** — no workflow under
-      `.github/workflows/` carries a `feat/*` push trigger, and the images are cut
-      from `main`. Cleared hack #1; hack #3's CI deploy path is what staging runs.
+      `.github/workflows/` carries a `feat/*` push trigger, the images are cut
+      from `main`, and `deploy-staging.yml` is what deploys staging. Cleared
+      hacks #1 and #3.
 - [x] **DNS**: `staging.strad.tadasant.com` resolves DNS-only in Cloudflare to the
       App Platform app, which issues the cert. It is `gateway.publicUrl` in
-      `infra/strad.staging.yaml`; `docs/.../operate/dns.md` is the current wiring.
+      `infra/strad.staging.yaml`; see `docs/operate/dns.md` for the wiring.
       Verify it still serves after any deploy — hack #18 is why.
 - [x] **The good-eggs bootstrap branch trigger is gone** — cleared hack #9.
       Hack #12 is superseded rather than cleared: the `bundle-goodeggs` component
       it describes does not exist, because good-eggs is a mount in the collapsed
       bundle.
-- [x] **The `strad-server-good-eggs` ghcr package is pullable** — staging pulls
-      only `ghcr.io/tadasant/strad-bundle`, and prod re-pulls
-      `ghcr.io/tadasant/strad-server-good-eggs:latest` on every restart (hack #23).
-      The standing token debt is the dedicated pull token above, hack #5.
+- [x] **The `strad-server-good-eggs` pull check is moot** — staging pulls only
+      `ghcr.io/tadasant/strad-bundle`, so `GHCR_PULL_TOKEN` never reaches for that
+      package. Prod re-pulls `…-good-eggs:latest` on every restart (hack #23) with
+      zimmer's token, which is where its visibility is proven — and that shared
+      token is its own debt, hack #5.
 - [x] **`strad-staging-GOODEGGS_EMAIL` / `strad-staging-GOODEGGS_PASSWORD` are
       seeded** — `secrets-sync.yml` takes both, `infra/strad.staging.yaml` names
       them as `${…}` refs on an enabled server, and `renderAppSpec` throws on an
