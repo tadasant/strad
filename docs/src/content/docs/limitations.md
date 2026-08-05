@@ -233,8 +233,14 @@ Same scope as #2: it is console-class only and cannot reach `/mcp`.
 is shown once at mint and never stored). Minting or revoking a token means editing
 the secret and redeploying.
 
+The config reserves the seat: `auth.staticTokens.store` is a single-value enum
+(`env`) that no code reads — the gateway builds the env-backed store from
+`auth.staticTokens.enabled` alone. See
+[The server-config interface](/servers/interface/#authstatictokens).
+
 **Undo:** implement a DB-backed `TokenStore` — the interface is already the right
-shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. See
+shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. The `store`
+enum grows its second value there. See
 [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
 ## The deployment

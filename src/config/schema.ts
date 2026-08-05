@@ -279,8 +279,15 @@ const AuthConfig = z.object({
     .object({
       enabled: z.boolean().default(true),
       /**
-       * Where token records live. `env` reads a JSON array from STRAD_TOKENS.
-       * A real datastore is the obvious next step — see HACKS.md.
+       * Where token records live. Reserved, and read by no code path:
+       * `tokenStoreFromConfig` (src/auth/index.ts) branches on `enabled` alone
+       * and always builds an `EnvTokenStore`, which reads a JSON array from
+       * STRAD_TOKENS.
+       *
+       * It is declared so that a DB-backed `TokenStore` lands as a second enum
+       * value rather than as a new key in the config contract, and it is a
+       * single-value enum so no config can claim a store strad does not have.
+       * See HACKS.md #6 and issue #10.
        */
       store: z.enum(["env"]).default("env"),
     })
