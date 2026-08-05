@@ -18,7 +18,7 @@ gateway:
 auth:
   staticTokens:
     enabled: true
-    store: env
+    store: env # reserved; no code reads it, and `env` is the only value
 
 roles: {}
 

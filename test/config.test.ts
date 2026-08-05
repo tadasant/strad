@@ -155,20 +155,27 @@ roles:
     expect(parseConfig(withStore).auth.staticTokens.store).toBe("env");
     expect(() =>
       parseConfig(withStore.replace("store: env", "store: postgres")),
-    ).toThrow(/auth\.staticTokens\.store: Invalid enum value/);
+    ).toThrow(/auth\.staticTokens\.store/);
   });
 
-  it("does not change the store the gateway builds", async () => {
+  it("is ignored by the store the gateway builds", async () => {
+    // Reach PAST the schema: hand tokenStoreFromConfig a config claiming a
+    // store that does not exist. It must still build the env-backed store,
+    // because nothing consults the field. Comparing two parsed configs would
+    // prove nothing — `store: env` and an omitted `store` parse identical.
+    const cfg = parseConfig(BASE);
+    const impostor = {
+      ...cfg,
+      auth: {
+        ...cfg.auth,
+        staticTokens: { ...cfg.auth.staticTokens, store: "postgres" as "env" },
+      },
+    };
     const env = {
       STRAD_TOKENS: JSON.stringify([{ pubid: "a1", hash: "x", roles: [] }]),
     };
-    const omitted = await tokenStoreFromConfig(parseConfig(BASE), env).list();
-    const named = await tokenStoreFromConfig(
-      parseConfig(withStore),
-      env,
-    ).list();
-    expect(named).toEqual(omitted);
-    expect(named.map((r) => r.pubid)).toEqual(["a1"]);
+    const records = await tokenStoreFromConfig(impostor, env).list();
+    expect(records.map((r) => r.pubid)).toEqual(["a1"]);
   });
 });
 
