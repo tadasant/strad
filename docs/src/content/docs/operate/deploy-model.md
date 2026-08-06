@@ -336,6 +336,55 @@ would turn a rollback into an outage — the older image would reject the config
 newer one wrote. A false failure at boot costs an outage; a false pass at deploy
 costs a silent misconfiguration. So the strictness lives at the gate.
 
+## Checking a `tools:` policy against the tools that exist
+
+`check-config` reads the config and nothing else, so it cannot see the one thing a
+`tools: allow` list is about: whether those names are tools. An `allow` list is
+exhaustive and fail-closed, which is what makes it a capability boundary and what
+makes a stale entry invisible — a rename upstream, or one missing `s`, matches
+nothing and that slug serves one tool fewer. Nothing errors. The gateway does
+[say so](/intro/architecture/#capability-read-only-vs-read-write), on every
+`tools/list`, once it is deployed.
+
+`scripts/check-tool-policy.ts` moves that verdict before the deploy by joining the
+config to a booted image's real tool names:
+
+```bash
+# with the bundle container up (this is what CI runs)
+docker exec bundle-ci node /app/scripts/smoke.mjs --json > bundle-tools.json
+
+npm run policy:check -- --tools bundle-tools.json \
+  --config infra/strad.staging.yaml
+```
+
+| Flag              | Meaning                                                                       |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `--tools <path>`  | **required** — the observer's document (`smoke.mjs --json`)                   |
+| `--config <path>` | **required**, repeatable — the configs to check                               |
+| `--image <ref>`   | which image the mounts came from; matched by repository, so `:ci` ≡ `:latest` |
+
+| Exit | Meaning                                                                             |
+| ---- | ----------------------------------------------------------------------------------- |
+| `0`  | every entry that could be checked names a served tool                               |
+| `1`  | an entry names a tool its mount does not serve; the slug and entry are named        |
+| `2`  | called wrong, or a dump with no mounts in it — which would pass by checking nothing |
+
+**It skips more than it fails, on purpose.** Only the bundle's own mounts have
+their real names available in CI: a `remote-http` server, a server on another
+image, a mount that would not list, and a mount whose surface here is a floor
+rather than the whole (`secrets` derives its tools from a credential probe;
+`GCS_BUCKET` hides four tools from `gcs`; a browser server's surface follows the
+app it drives) are all **skipped with a reason**, and the reasons print on a
+passing run too. A gate that reddens a good PR is a gate somebody disables, and
+"not covered" must never read like "covered and clean".
+
+`deny` entries are checked the same way. A deny naming nothing subtracts nothing,
+so unlike a stale `allow` it changes no request — but a deny list exists to
+withhold one tool from a full tier, so an entry that matches nothing means the
+tool was renamed and is being served. A `deny` is not the place to pre-refuse a
+tool that does not exist yet; `allow` is already exhaustive and fail-closed
+against an upstream growing one.
+
 ## Checking the STORE before a config that reads from it deploys
 
 `check-config` answers "is this config well-formed". It cannot answer "does the

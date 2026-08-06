@@ -104,6 +104,13 @@ the upstream. The capability is baked into the slug (`onepassword-ro` vs
 `onepassword-rw`), so `?servers=` selects it. Two capability variants are the same
 container.
 
+An `allow` list is exhaustive, so an entry naming a tool the upstream does not
+serve costs that slug the tool it meant to grant, silently. CI matches every entry
+against the booted bundle's real tool names
+([`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist));
+the gateway reports what CI could not enumerate, at runtime, as
+`mcp.policy_unmatched_tools`.
+
 Capability is therefore **policy** — a gateway that declines — and not **physics** —
 a process that lacks the tool. It is a real boundary and a weaker one than the
 container-level tool-group env vars it replaced, and strad says so rather than

@@ -1686,6 +1686,33 @@ merge with a list, not a diff read cold.
 
 ---
 
+## 46. The pre-deploy allow-list check knows by hand which mounts it cannot enumerate
+
+**What.** `check-tool-policy` matches every `tools: allow` / `tools: deny` entry
+against the tool names the booted bundle image really serves. A few mounts show
+CI a FLOOR rather than the whole surface — `secrets` derives its tools from a
+capability probe that fails closed without a credential, `GCS_BUCKET` hides four
+tools from `gcs`, and a browser server's surface follows the app it drives — so
+those are skipped rather than checked. Which mounts those are is a hand-maintained
+map, `PARTIAL_SURFACES` in `servers/bundle/scripts/smoke.mjs`.
+
+**Why.** The alternative is a check that fails a correct config because CI holds
+no credential, and a gate that reddens good PRs is a gate somebody disables. The
+list is short, it sits beside the tool counts it belongs with, and every skip is
+printed with its reason on a passing run — so under-coverage is visible in the log
+rather than silent.
+
+**The edge.** A mount that BECOMES credential-dependent and is not added to the
+map turns a correct allow-list into a red PR. The failure is loud, names the slug
+and the entry, and the fix is one line — but the first person to hit it will
+reasonably think the config is wrong.
+
+**Undo.** Have the mount declare its own surface stability, so the observer reads
+it from the bundle host rather than from a list beside it. That is a change to
+every tree's factory contract, which is why it is a list today.
+
+---
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

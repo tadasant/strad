@@ -227,6 +227,13 @@ on a previous request.
 names a tool the upstream doesn't offer. That is the drift alarm: an upstream that
 renames a tool would otherwise quietly shrink a read-only tier to nothing.
 
+The same predicate runs in CI, before a deploy: the job that boots the bundle
+image dumps every mount's real tool names and
+[`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist)
+matches each config's `tools:` entries against them. Anything it cannot enumerate
+— a remote server, a mount whose surface here is a floor — it skips and names
+rather than failing.
+
 This is why the deployment is small. Capability used to be a container env var
 (`GMAIL_ENABLED_TOOLGROUPS=readonly`), and a component's env is the union of its
 servers' env maps — so a read-only and a read-write variant of one upstream could

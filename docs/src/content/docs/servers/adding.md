@@ -101,6 +101,14 @@ Keep the tiers nested — a read-only allow-list should be a subset of the tier 
 it. `test/staging-config.test.ts` asserts that for staging, and it is the property
 that makes "read-only" mean something predictable.
 
+Spell the tool names exactly. An `allow` list is exhaustive, so an entry that
+matches no tool matches nothing and quietly costs that slug one tool. CI checks
+every entry against the names the mount really serves —
+[`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist),
+in the job that boots the bundle image — so a typo or a stale name fails the PR.
+For a server CI cannot enumerate (a `remote-http` upstream, an image it does not
+boot) that check skips and says so, and the runtime alarm is what is left.
+
 ## 4. Seed any secrets
 
 Any `${NAME}` reference in the config (in `headers`, `env`, or builtin `options`)
