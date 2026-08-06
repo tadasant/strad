@@ -62,10 +62,11 @@ export interface ObservedSurface {
    *
    * The observer does not know its own image ref (it runs INSIDE the container),
    * so the caller asserts this identity. Compared with `sameRepository()` — the
-   * registry, the owner and the repository, and not the TAG, because CI boots
-   * a per-run `strad-bundle:ci-…` and every config names `strad-bundle:latest`.
-   * The owner is half of it: `ghcr.io/someone-else/strad-bundle` shares a
-   * repository name with this image and is not it.
+   * registry, the owner and the repository, and not the TAG, because a booted
+   * image's tag is not the config's tag: CI builds a per-run
+   * `strad-bundle:ci-<run>` and every config names `strad-bundle:latest`. The
+   * owner is half of it: `ghcr.io/someone-else/strad-bundle` shares a repository
+   * name with this image and is not it.
    */
   image: string;
   mounts: Readonly<Record<string, ObservedMount>>;

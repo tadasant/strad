@@ -214,6 +214,11 @@ jobs:
     # rebuilding it between our build and our run is a wrong-artifact green with no
     # error anywhere. Per-run identifiers make both impossible, and let the
     # `if: always()` teardown name only this job's container.
+    #
+    # The one thing they cost is the fixed names' accidental garbage collection:
+    # a leaked `bundle-ci` was reaped by the next run that wanted that name, and
+    # nothing else wants `bundle-ci-<run>`. Hence the sweep step, and the
+    # `strad-ci` label everything below carries so the sweep can find it.
     env:
       BUNDLE_IMAGE: strad-bundle:ci-${{ github.run_id }}-${{ github.run_attempt }}
       BUNDLE_CONTAINER: bundle-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -228,6 +233,11 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: Sweep what earlier runs leaked
+        run: |
+          docker container prune -f --filter label=strad-ci --filter until=24h || true
+          docker image prune -af --filter label=strad-ci --filter until=24h || true
+
       - name: Build the bundle image
         uses: docker/build-push-action@v6
         with:
@@ -236,6 +246,7 @@ jobs:
           push: false
           load: true
           tags: ${{ env.BUNDLE_IMAGE }}
+          labels: strad-ci=1
           cache-from: type=gha,scope=bundle
           cache-to: type=gha,mode=max,scope=bundle
 
@@ -249,7 +260,7 @@ jobs:
           # unscoped secrets server would see every parameter in the project — so CI
           # names both. Still credential-free: listing tools calls no API.
           echo "image=$BUNDLE_IMAGE container=$BUNDLE_CONTAINER"
-          docker run -d --name "$BUNDLE_CONTAINER" \
+          docker run -d --name "$BUNDLE_CONTAINER" --label strad-ci=1 \
             -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
@@ -283,10 +294,10 @@ jobs:
       - name: The `op` CLI is really in the image
         run: docker exec "$BUNDLE_CONTAINER" op --version
 
-      # Names only this run's container and tag, so it cannot reap a concurrent
-      # job's. Untagging matters too: per-run tags would otherwise pile up one per
-      # CI run on a runner box that never goes away. The layers stay in the builder
-      # cache; only the name goes.
+      # Names only this run's container and image, so it cannot reap a concurrent
+      # job's. Deleting the image matters too: per-run tags would otherwise pile up
+      # one per CI run on a runner box that never goes away. buildx's cache is not
+      # the daemon's image store, so nothing rebuilds slower for this.
       - name: Tear down
         if: always()
         run: |
@@ -341,6 +352,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+
+      - name: Sweep what earlier runs leaked
+        run: |
+          docker container prune -f --filter label=strad-ci --filter until=24h || true
+          docker image prune -af --filter label=strad-ci --filter until=24h || true
+
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -348,6 +365,7 @@ jobs:
           push: false
           load: true
           tags: ${{ env.STRAD_IMAGE }}
+          labels: strad-ci=1
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -358,13 +376,19 @@ jobs:
         run: |
           set -euo pipefail
           echo "image=$STRAD_IMAGE container=$STRAD_CONTAINER"
-          # -P, not -p 8080:8080: a fixed host port is a shared resource on a
-          # shared box, and the second concurrent job simply fails to start.
-          docker run -d --name "$STRAD_CONTAINER" -P \
+          # `127.0.0.1::8080`, not `-p 8080:8080`: a fixed host port is a shared
+          # resource on a shared box, and the second concurrent job simply fails to
+          # start. The empty middle field asks the daemon for a free one. Bare `-P`
+          # would also do that, but on EVERY interface — which puts a booted
+          # gateway on the runner box's public address for the life of the job, and
+          # makes `docker port` answer with an v4 and a v6 line whose ports are
+          # only conventionally the same one. Loopback keeps it to a single answer.
+          docker run -d --name "$STRAD_CONTAINER" --label strad-ci=1 \
+            -p 127.0.0.1::8080 \
             -e STRAD_TOKENS='[]' \
             "$STRAD_IMAGE"
 
-          # Only the daemon knows which port -P picked, so read it back. This is
+          # Only the daemon knows which port it picked, so read it back. This is
           # the one step that can fail quietly: an empty or unparsed answer makes
           # every URL below malformed, and curl reports that as a refused
           # connection — which reads as "the gateway is broken" rather than "we
@@ -398,6 +422,7 @@ jobs:
           fi
           echo "OK: unauthenticated /mcp is 401"
 
+      # This run's container and image only, for the reason on `bundle_image`.
       - name: Tear down
         if: always()
         run: |

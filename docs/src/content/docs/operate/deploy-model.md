@@ -350,9 +350,9 @@ nothing and that slug serves one tool fewer. Nothing errors. The gateway does
 config to a booted image's real tool names:
 
 ```bash
-# with the bundle container up (this is what CI runs; CI names its container
+# with the bundle container up (this is what CI runs; it names its container
 # per run, so substitute yours)
-docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools.json
+docker exec <container> node /app/scripts/smoke.mjs --json > bundle-tools.json
 
 npm run policy:check -- --tools bundle-tools.json \
   --config infra/strad.staging.yaml

@@ -80,12 +80,13 @@ Runs on PRs and pushes to `main`. Thirteen jobs, all `runs-on: self-hosted`:
 
 <aside class="starlight-aside starlight-aside--note">
 
-**Why the two docker jobs name everything per run.** `bundle_image` and
+**Why `ci.yml`'s two docker jobs name everything per run.** `bundle_image` and
 `build_image` both build an image and boot it, on a self-hosted box whose docker
 daemon every concurrent job shares. So the container name, the image tag and the
 host port are all suffixed or assigned per run: the tag is
 `ci-<run id>-<run attempt>`, the container carries the same suffix, and the port
-comes from `-P` plus a `docker port` readback rather than a fixed `-p 8080:8080`.
+is published as `-p 127.0.0.1::8080` and read back with `docker port`, rather than
+bound to a fixed `-p 8080:8080`.
 
 Two of the three failures that prevents are loud — a duplicate `--name`, a bound
 host port — and the third is not. Given a shared `strad:ci`, a concurrent job can
@@ -93,12 +94,26 @@ rebuild that tag between our build and our `docker run`, and then the `/mcp`
 returns-`401` assertion, which is _the_ test in this repo, runs against someone
 else's image and passes. Nothing errors. The same shared name also means the
 `if: always()` teardown reaps a container another job is still testing.
+`test/ci-workflow.isolation.test.ts` reads the workflow as text and fails the PR
+that puts any of those identifiers back.
 
 The port readback is the one part that could fail quietly, so it doesn't: an empty
 or non-numeric answer from `docker port` fails the step by name instead of
-degrading into a `curl` connection-refused against a malformed URL. Teardown
-deletes this run's container and untags this run's image; per-run tags on a box
-that never goes away would otherwise accumulate one per CI run.
+degrading into a `curl` connection-refused against a malformed URL. Binding to
+`127.0.0.1` rather than every interface is what keeps that answer to one line, and
+keeps a booted gateway off the runner box's public address.
+
+What per-run names cost is the fixed names' one accidental virtue: a leaked
+`bundle-ci` was reaped by the next run that wanted that name, and nothing wants
+`bundle-ci-<run>`. So teardown deletes this run's container and this run's image
+(buildx's cache is not the daemon's image store, so nothing rebuilds slower for
+it), and each job opens by pruning anything labelled `strad-ci` that a run over a
+day old left behind — far longer than any job here runs, so the sweep can never
+reach a concurrent one.
+
+`bundle-google-ci.yml`, the [second CI workflow](#the-image-workflows), still
+builds and boots under a fixed name and tag. It publishes no host port, so only
+the wrong-artifact half applies there.
 
 </aside>
 
