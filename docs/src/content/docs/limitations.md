@@ -612,8 +612,19 @@ actually answers until `ghcr.io/tadasant/strad-bundle` is rebuilt with
 per-parameter render pass is bounded at a fan-out of ten. A large namespace can
 exceed the deadline, and then the diagnosis returns null and the state is not
 drawn — the console degrades to the states it had without it, never to a wrong
-one. There is no result cache yet, so every `/ui` render and every
-`/api/secrets/readiness` call performs the reads afresh.
+one.
+
+**The diagnosis is up to a minute old, and says so.** The result is cached for
+`gateway.secrets.ttlSeconds`, capped at 60s, so a `/ui` reload and a hard poller
+on `/api/secrets/readiness` cost one store pass per minute rather than one per
+request. The cost of that is freshness: a parameter seeded through the console can
+take up to a minute to change a row, and a store that breaks can look healthy for
+up to a minute. So the age is printed rather than hidden — the console says when
+it read the store, and the readiness JSON carries `store.diagnosis.ageSeconds`. A
+pass whose index or render half did not answer is held for five seconds only,
+because a shrug cached for a minute would extend an outage; a namespace-wide
+render **refusal** is not that case — it is a complete answer produced by the
+expensive full pass, and it is cached for the whole TTL.
 
 **Live verification is outstanding.** Every state is constructed in tests,
 including over a real socket, and none of it has been exercised against a live

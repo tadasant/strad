@@ -272,7 +272,7 @@ gateway:
   env: prod
   secrets:
     provider: gcp-parameter-store # default: env
-    ttlSeconds: 60 # bounds how long a ROTATION can go unnoticed
+    ttlSeconds: 60 # bounds how long a ROTATION — and the console's store diagnosis — can go unnoticed
     negativeTtlSeconds: 10 # bounds how long an ADDITION can go unnoticed
     envFallback: true # keep process.env behind the store, for migration
 ```

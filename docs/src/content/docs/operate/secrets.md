@@ -377,7 +377,11 @@ of the store:
 | A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                   |
 | A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                      |
 
-So `ttlSeconds` is the answer for **request-path references and nothing else**. A
+So `ttlSeconds` is the answer for **request-path references and nothing else** —
+plus one thing that is not a rotation at all: it also bounds how stale the
+console's and the readiness endpoint's
+[store diagnosis](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read)
+may be, capped at 60s there. A
 deployment whose config has no request-path `${NAME}` and no `params: true`
 server has no name that rotates live, however the TTL is set. That is a real
 deployment shape, not a hypothetical: check your own config before promising
@@ -687,6 +691,40 @@ This diagnosis runs wherever core holds a resolver credential, **including on a
 the store at deploy time, and a parameter that cannot render fails that deploy.
 It turns "you find out during the deploy" into a row on a page.
 
+### The diagnosis is cached for up to a minute, and says when it was read
+
+Those two questions are not free. `resolveDetailed()` renders every parameter
+rather than stopping at the first failure, so a namespace-wide refusal costs a
+full pass — bounded at a fan-out of ten, so N/10 round trips. Performed per
+request, that makes a caller polling `/api/secrets/readiness` hard an amplifier
+against Parameter Manager, and a reloaded console a smaller one.
+
+So the result is held for `gateway.secrets.ttlSeconds`, **capped at 60s**. The
+config knob is the one this deployment already uses to mean "how stale may a
+store read be", and the cap is there because that knob accepts up to an hour:
+an hour-old "the store answers and everything renders" is not a health signal.
+Concurrent callers share one pass rather than each starting their own, and the
+pass keeps the six-second deadline it always had — the cache can never make a slow
+store hang a page that would otherwise have degraded.
+
+What that costs is freshness, so the age is printed rather than hidden:
+
+- the console footnote says when the store was read, and how long the pass is
+  cached for;
+- `/api/secrets/readiness` carries `store.diagnosis.ageSeconds` alongside
+  `indexRead` and `renderRead`.
+
+A **value** seeded through the console can therefore take up to a minute to change
+a row — the same bound the running gateway's own `${NAME}` reads already carry —
+and a store that breaks can look healthy for up to a minute.
+
+A pass whose index or render half did **not** answer is held for five seconds
+only. Caching a shrug for a full minute would extend an outage past its end;
+re-reading it per request would leave a broken store getting hammered by exactly
+the poller this cache exists to bound. A namespace-wide render **refusal** is not
+that case — the store answered, completely, from the expensive pass — and it is
+cached for the whole TTL.
+
 **Seeded is not working, and the page does not pretend otherwise.** strad never
 calls an upstream to prove a credential is accepted, so the good state is `ready`
 — "everything it needs is present" — and never "healthy". This is not a
@@ -918,7 +956,8 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
     "projectGuessed": false,
     "gatewayNamespace": "/strad/staging/gateway/static/",
     "resolverCredential": false,
-    "detail": "gateway.secrets.provider is \"env\": …"
+    "detail": "gateway.secrets.provider is \"env\": …",
+    "diagnosis": { "ageSeconds": 12, "indexRead": true, "renderRead": true }
   },
   "servers": {
     "total": 12,
@@ -988,7 +1027,11 @@ entitled to every enabled server and answers `403` to anything less. See
 failure and can rewrite it, so the body a caller sees would be the ingress's — and
 "not ready" is a correct, complete, successfully computed answer. Only auth
 failures (`401`) and an unhandled crash (`500`) are non-200. `cache-control:
-no-store`, because the answer changes the moment someone seeds a value.
+no-store`, because the answer changes the moment someone seeds a value — every
+`${NAME}` in the body is read per request. The one input that is not is the
+store's own account of itself, which is
+[cached for up to a minute](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read)
+and reports its own age in `store.diagnosis`.
 
 **`ready` means observed.** It is `true` only when the store is wired, every
 enabled server's secrets resolved, _and_ every required boot key is present. A

@@ -258,7 +258,7 @@ async function handleIndex(
   res: Response,
   opts: ConsoleUiOptions,
 ): Promise<void> {
-  const { statuses, boot } = await readDeploymentSecretStatus({
+  const { statuses, boot, storeDiagnosis } = await readDeploymentSecretStatus({
     config: opts.config,
     bag: opts.secrets,
     env: opts.env,
@@ -280,6 +280,7 @@ async function handleIndex(
       config: opts.config,
       statuses,
       boot,
+      storeDiagnosis,
       env: opts.env,
       // The console identity, for the one control on the page that is not a
       // rendering of config: the playground icon. See cardIcons().

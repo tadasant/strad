@@ -7,6 +7,10 @@ import {
   playgroundAccess,
   playgroundHref,
 } from "./playground.ts";
+import {
+  MAX_DIAGNOSIS_TTL_MS,
+  type StoreDiagnostics,
+} from "../secrets/store-diagnostics.ts";
 import { esc, layout } from "./render.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
 import {
@@ -96,6 +100,15 @@ export interface ConsoleIndexOptions {
    * pasteable into no MCP client, and the copy icon exists to be pasted.
    */
   requestOrigin?: string;
+  /**
+   * The store diagnosis behind the rows, so the page can say when it was read.
+   *
+   * The pair of store reads is TTL-cached, which means a row can be derived from
+   * an answer that is up to a minute old. Absent (or null) when there was no
+   * diagnosis at all — no resolver credential — and then the page says nothing,
+   * because there is nothing whose age it would be describing.
+   */
+  storeDiagnosis?: StoreDiagnostics | null;
 }
 
 /** The two badges an entry can carry, and nothing in between. */
@@ -216,7 +229,7 @@ ${opts.boot.map((o) => bootRow(o)).join("\n")}
   Values are never displayed here; use
   <a href="/ui/secrets">the parameters console</a> to set one. A machine wanting the same
   derivation as JSON calls <code>GET /api/secrets/readiness</code> with a static bearer
-  token.</p>
+  token.${diagnosisNote(opts.storeDiagnosis, config)}</p>
 
 ${sorted
   .filter((e) => e.status && e.status.requirements.length > 0)
@@ -236,6 +249,46 @@ ${INDEX_CSS}`;
     helpTitle: "Console guide",
     help: GUIDE,
   });
+}
+
+/**
+ * WHEN the store was asked, appended to the page's own footnote.
+ *
+ * The rows above can be derived from a store diagnosis that is up to a minute
+ * old, because the index + render pass is cached (see
+ * `secrets/store-diagnostics.ts`). Printing the verdict without its age would
+ * make this page claim something fresher than it holds, which is the one thing
+ * a cache in front of a health signal must not be allowed to do — the console's
+ * whole posture is that it says what it established, and when.
+ */
+function diagnosisNote(
+  diagnosis: StoreDiagnostics | null | undefined,
+  config: StradConfig,
+): string {
+  if (!diagnosis) return "";
+
+  const windowSeconds = Math.min(
+    config.gateway.secrets.ttlSeconds,
+    MAX_DIAGNOSIS_TTL_MS / 1000,
+  );
+  const age =
+    diagnosis.ageMs < 1000
+      ? "just now"
+      : `${Math.round(diagnosis.ageMs / 1000)}s ago`;
+
+  if (!diagnosis.indexRead && !diagnosis.renderRead) {
+    return ` The store's own account of itself — which parameters exist, and which
+    exist and refuse to render — did not answer when it was last asked, ${age}, so those
+    distinctions are not drawn on the rows above.`;
+  }
+
+  return ` The store's own account of itself — which parameters exist, and which exist and
+    refuse to render — was read ${age}${
+      diagnosis.indexRead && diagnosis.renderRead
+        ? ""
+        : ", and its per-parameter render did not answer"
+    }; that pass is cached for up to ${windowSeconds}s, so a value seeded since is not
+    necessarily reflected above yet.`;
 }
 
 // ---------------------------------------------------------------------------

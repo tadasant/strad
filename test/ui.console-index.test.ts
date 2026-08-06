@@ -316,6 +316,89 @@ describe("GET /ui — badges", () => {
   });
 });
 
+describe("GET /ui — the store diagnosis is cached, and the page says so", () => {
+  /** Boot with a counting store and render `/ui` twice on the one process. */
+  const render = async (): Promise<{
+    first: string;
+    second: string;
+    lists: number;
+    renders: number;
+  }> => {
+    let lists = 0;
+    let renders = 0;
+    const counting = {
+      list: async (namespace: string) => {
+        lists += 1;
+        return [
+          {
+            path: `${namespace}ALPHA_TOKEN`,
+            variable: "ALPHA_TOKEN",
+            secret: true,
+            hasValue: true,
+            latestVersion: "v1",
+          },
+        ];
+      },
+      resolveDetailed: async () => {
+        renders += 1;
+        return { values: { ALPHA_TOKEN: "value" }, unrenderable: [] };
+      },
+    };
+
+    const provider = new EnvSecretProvider(BAG);
+    const registry = await Registry.build({
+      config: CONFIG,
+      secrets: provider,
+      mode: "core",
+      env: ENV,
+    });
+    const app = createApp({
+      config: CONFIG,
+      registry,
+      tokenStore: tokenStoreFromConfig(CONFIG, ENV),
+      mode: "core",
+      env: ENV,
+      secrets: BAG,
+      secretProvider: provider,
+      diagnosticStore: counting,
+    });
+    const s = app.listen(0);
+    await new Promise<void>((r) => s.on("listening", () => r()));
+    const addr = s.address();
+    if (typeof addr === "string" || !addr) throw new Error("no port");
+    const get = async (): Promise<string> =>
+      (
+        await fetch(`http://127.0.0.1:${addr.port}/ui`, { headers: AUTH })
+      ).text();
+    const first = await get();
+    const second = await get();
+    s.close();
+    return { first, second, lists, renders };
+  };
+
+  it("reads the store once for two renders, and prints when it read it", async () => {
+    // A page load costs a full index read plus a per-parameter render pass. The
+    // TTL is what keeps a reloaded console — and the readiness endpoint next to
+    // it — from paying that per request.
+    const { first, second, lists, renders } = await render();
+    expect(lists).toBe(1);
+    expect(renders).toBe(1);
+
+    // And the cached verdict is not presented as a fresh one. The console's
+    // posture is that it says what it established and WHEN.
+    for (const html of [first, second]) {
+      expect(html).toContain("was read just now");
+      expect(html).toContain("cached for up to 60s");
+    }
+  });
+
+  it("says nothing about a diagnosis when there is no store to diagnose", async () => {
+    // No resolver credential means the distinction was never drawn, and an age
+    // sentence about an absent reading would be noise.
+    expect(html).not.toContain("cached for up to");
+  });
+});
+
 describe("GET /ui with nothing enabled", () => {
   const EMPTY = `
 version: 1

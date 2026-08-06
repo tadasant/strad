@@ -28,7 +28,7 @@ import {
   type BundlePresence,
 } from "../gateway/bundle-presence.ts";
 import {
-  readStoreDiagnostics,
+  readStoreDiagnosticsCached,
   type StoreDiagnostics,
 } from "../secrets/store-diagnostics.ts";
 
@@ -1031,6 +1031,17 @@ export interface SecretReading {
   statuses: ServerSecretStatus[];
   /** The gateway's own boot keys, and whether each is required. */
   boot: { observation: SecretObservation; required: boolean }[];
+  /**
+   * The store diagnosis these statuses were derived from, echoed back so a
+   * surface can say WHEN it was read.
+   *
+   * Null when there was none — no resolver credential, so the four-state
+   * distinction was simply not drawn. It is echoed rather than re-read because
+   * the diagnosis is cached: "how old is this claim" is not answerable from the
+   * statuses, and a surface that printed a cached verdict without its age would
+   * be making a fresher claim than it holds.
+   */
+  storeDiagnosis: StoreDiagnostics | null;
 }
 
 /**
@@ -1086,6 +1097,7 @@ export async function readSecretStatus(opts: {
       observation,
       required: bootKeys[i]?.required ?? false,
     })),
+    storeDiagnosis: store ?? null,
   };
 }
 
@@ -1157,9 +1169,13 @@ export async function readDeploymentSecretStatus(opts: {
       const store =
         opts.store === undefined ? cachedResolver(opts.env) : opts.store;
       if (!store) return null;
-      return readStoreDiagnostics({
+      return readStoreDiagnosticsCached({
         store,
         namespace: gatewayNamespace(opts.config.gateway.env),
+        // The same number the request path already uses to mean "how stale may
+        // a store read be" (`gateway.secrets.ttlSeconds`), capped inside the
+        // cache so a long rotation TTL cannot make a HEALTH signal an hour old.
+        ttlMs: opts.config.gateway.secrets.ttlSeconds * 1000,
       });
     })(),
   ]);
