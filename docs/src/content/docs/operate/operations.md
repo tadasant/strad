@@ -111,9 +111,9 @@ it), and each job opens by pruning anything labelled `strad-ci` that a run over 
 day old left behind — far longer than any job here runs, so the sweep can never
 reach a concurrent one.
 
-`bundle-google-ci.yml`, the [second CI workflow](#the-image-workflows), still
-builds and boots under a fixed name and tag. It publishes no host port, so only
-the wrong-artifact half applies there.
+`bundle-google-ci.yml`, the [second CI workflow](#the-image-workflows), names its
+container and its image the same way, for the same reasons. It publishes no host
+port, so only the other two failures apply there.
 
 </aside>
 
