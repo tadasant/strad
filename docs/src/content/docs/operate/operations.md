@@ -78,6 +78,30 @@ Runs on PRs and pushes to `main`. Thirteen jobs, all `runs-on: self-hosted`:
   meant to stay true commit-by-commit, so a broken link, bad frontmatter, or a page
   missing from the `sidebar` array fails the PR rather than the deploy.
 
+<aside class="starlight-aside starlight-aside--note">
+
+**Why the two docker jobs name everything per run.** `bundle_image` and
+`build_image` both build an image and boot it, on a self-hosted box whose docker
+daemon every concurrent job shares. So the container name, the image tag and the
+host port are all suffixed or assigned per run: the tag is
+`ci-<run id>-<run attempt>`, the container carries the same suffix, and the port
+comes from `-P` plus a `docker port` readback rather than a fixed `-p 8080:8080`.
+
+Two of the three failures that prevents are loud — a duplicate `--name`, a bound
+host port — and the third is not. Given a shared `strad:ci`, a concurrent job can
+rebuild that tag between our build and our `docker run`, and then the `/mcp`
+returns-`401` assertion, which is _the_ test in this repo, runs against someone
+else's image and passes. Nothing errors. The same shared name also means the
+`if: always()` teardown reaps a container another job is still testing.
+
+The port readback is the one part that could fail quietly, so it doesn't: an empty
+or non-numeric answer from `docker port` fails the step by name instead of
+degrading into a `curl` connection-refused against a malformed URL. Teardown
+deletes this run's container and untags this run's image; per-run tags on a box
+that never goes away would otherwise accumulate one per CI run.
+
+</aside>
+
 ## `release-image.yml` — mint and ship
 
 Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`.

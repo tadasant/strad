@@ -209,6 +209,14 @@ jobs:
   # so it dumps them and checks every config in the repo against them.
   bundle_image:
     runs-on: self-hosted
+    # One runner box means one docker daemon, and every concurrent job shares it.
+    # A fixed name collides loudly; a fixed TAG is worse, because a concurrent job
+    # rebuilding it between our build and our run is a wrong-artifact green with no
+    # error anywhere. Per-run identifiers make both impossible, and let the
+    # `if: always()` teardown name only this job's container.
+    env:
+      BUNDLE_IMAGE: strad-bundle:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      BUNDLE_CONTAINER: bundle-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -227,7 +235,7 @@ jobs:
           file: servers/bundle/Dockerfile
           push: false
           load: true
-          tags: strad-bundle:ci
+          tags: ${{ env.BUNDLE_IMAGE }}
           cache-from: type=gha,scope=bundle
           cache-to: type=gha,mode=max,scope=bundle
 
@@ -240,18 +248,19 @@ jobs:
           # secrets refuses to mount without a project and a namespace — an
           # unscoped secrets server would see every parameter in the project — so CI
           # names both. Still credential-free: listing tools calls no API.
-          docker run -d --name bundle-ci \
+          echo "image=$BUNDLE_IMAGE container=$BUNDLE_CONTAINER"
+          docker run -d --name "$BUNDLE_CONTAINER" \
             -e DANGEROUSLY_SKIP_ELICITATIONS=true \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
             -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
-            strad-bundle:ci
+            "$BUNDLE_IMAGE"
           for i in $(seq 1 60); do
-            if docker exec bundle-ci node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
+            if docker exec "$BUNDLE_CONTAINER" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
           done
-          docker exec bundle-ci node /app/scripts/smoke.mjs
+          docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs
 
       # The join the two jobs never made. `--json` dumps every mount's real tool
       # NAMES; check-tool-policy matches each config's `tools:` entries against
@@ -265,18 +274,24 @@ jobs:
       - name: Every `tools:` entry names a tool the mount really serves
         run: |
           set -euo pipefail
-          docker exec bundle-ci node /app/scripts/smoke.mjs --json > bundle-tools.json
+          docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools.json
           npm run --silent policy:check -- \
             --tools bundle-tools.json \
             --image ghcr.io/tadasant/strad-bundle:latest \
             $(for cfg in strad.config*.yaml infra/*.yaml; do printf -- '--config %s ' "$cfg"; done)
 
       - name: The `op` CLI is really in the image
-        run: docker exec bundle-ci op --version
+        run: docker exec "$BUNDLE_CONTAINER" op --version
 
+      # Names only this run's container and tag, so it cannot reap a concurrent
+      # job's. Untagging matters too: per-run tags would otherwise pile up one per
+      # CI run on a runner box that never goes away. The layers stay in the builder
+      # cache; only the name goes.
       - name: Tear down
         if: always()
-        run: docker rm -f bundle-ci 2>/dev/null || true
+        run: |
+          docker rm -f "$BUNDLE_CONTAINER" 2>/dev/null || true
+          docker rmi -f "$BUNDLE_IMAGE" 2>/dev/null || true
 
   verify_lockfile:
     runs-on: self-hosted
@@ -316,6 +331,13 @@ jobs:
   # PR — not something we find out about at release time.
   build_image:
     runs-on: self-hosted
+    # Per-run, for the reason spelled out on `bundle_image`. This job carries the
+    # sharpest version of it: a concurrent job rebuilding a shared `strad:ci`
+    # between our build and our run would move the 401 assertion below onto
+    # someone else's image, and it would pass.
+    env:
+      STRAD_IMAGE: strad:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      STRAD_CONTAINER: strad-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -325,7 +347,7 @@ jobs:
           context: .
           push: false
           load: true
-          tags: strad:ci
+          tags: ${{ env.STRAD_IMAGE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -335,26 +357,49 @@ jobs:
         # Assert it against the real built artifact, not a unit-test stub.
         run: |
           set -euo pipefail
-          docker run -d --name strad-ci -p 8080:8080 \
+          echo "image=$STRAD_IMAGE container=$STRAD_CONTAINER"
+          # -P, not -p 8080:8080: a fixed host port is a shared resource on a
+          # shared box, and the second concurrent job simply fails to start.
+          docker run -d --name "$STRAD_CONTAINER" -P \
             -e STRAD_TOKENS='[]' \
-            strad:ci
+            "$STRAD_IMAGE"
+
+          # Only the daemon knows which port -P picked, so read it back. This is
+          # the one step that can fail quietly: an empty or unparsed answer makes
+          # every URL below malformed, and curl reports that as a refused
+          # connection — which reads as "the gateway is broken" rather than "we
+          # asked the wrong port". So assert it here, and print what docker said.
+          mapping=$(docker port "$STRAD_CONTAINER" 8080/tcp 2>/dev/null | head -n 1 || true)
+          port=${mapping##*:}
+          case "$port" in
+            "" | *[!0-9]*)
+              echo "::error::could not read the host port for $STRAD_CONTAINER 8080/tcp; \`docker port\` said: ${mapping:-<no output>}"
+              docker logs "$STRAD_CONTAINER" || true
+              exit 1
+              ;;
+          esac
+          echo "docker port -> ${mapping}; host port ${port}"
+          base="http://127.0.0.1:${port}"
+
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then break; fi
+            if curl -fsS "$base/healthz" >/dev/null 2>&1; then break; fi
             sleep 1
           done
 
           echo "--- /healthz"
-          curl -fsS http://127.0.0.1:8080/healthz
+          curl -fsS "$base/healthz"
 
           echo "--- /mcp with no token must be 401"
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base/mcp")
           if [ "$code" != "401" ]; then
             echo "::error::/mcp returned $code for an unauthenticated request; expected 401"
-            docker logs strad-ci
+            docker logs "$STRAD_CONTAINER"
             exit 1
           fi
           echo "OK: unauthenticated /mcp is 401"
 
       - name: Tear down
         if: always()
-        run: docker rm -f strad-ci 2>/dev/null || true
+        run: |
+          docker rm -f "$STRAD_CONTAINER" 2>/dev/null || true
+          docker rmi -f "$STRAD_IMAGE" 2>/dev/null || true

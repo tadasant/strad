@@ -13,7 +13,7 @@
  * the config check parses every config in the repo. This is the join.
  *
  * Usage (from CI, with the bundle container up):
- *   docker exec bundle-ci node /app/scripts/smoke.mjs --json > bundle-tools.json
+ *   docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools.json
  *   npm run policy:check -- --tools bundle-tools.json --config infra/strad.staging.yaml
  *
  *   --tools    the observer's document (smoke.mjs --json). Required.

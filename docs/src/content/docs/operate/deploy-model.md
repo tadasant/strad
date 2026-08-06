@@ -350,18 +350,19 @@ nothing and that slug serves one tool fewer. Nothing errors. The gateway does
 config to a booted image's real tool names:
 
 ```bash
-# with the bundle container up (this is what CI runs)
-docker exec bundle-ci node /app/scripts/smoke.mjs --json > bundle-tools.json
+# with the bundle container up (this is what CI runs; CI names its container
+# per run, so substitute yours)
+docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools.json
 
 npm run policy:check -- --tools bundle-tools.json \
   --config infra/strad.staging.yaml
 ```
 
-| Flag              | Meaning                                                                                   |
-| ----------------- | ----------------------------------------------------------------------------------------- |
-| `--tools <path>`  | **required** — the observer's document (`smoke.mjs --json`)                               |
-| `--config <path>` | **required**, repeatable — the configs to check                                           |
-| `--image <ref>`   | which image the mounts came from; everything but the tag is matched, so `:ci` ≡ `:latest` |
+| Flag              | Meaning                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------- |
+| `--tools <path>`  | **required** — the observer's document (`smoke.mjs --json`)                                              |
+| `--config <path>` | **required**, repeatable — the configs to check                                                          |
+| `--image <ref>`   | which image the mounts came from; everything but the tag is matched, so CI's per-run `:ci-…` ≡ `:latest` |
 
 | Exit | Meaning                                                                             |
 | ---- | ----------------------------------------------------------------------------------- |
