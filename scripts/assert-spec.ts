@@ -12,7 +12,11 @@
  *
  * Usage (from CI):
  *   node --experimental-transform-types scripts/assert-spec.ts \
- *     "$SPEC_FILE" --expect-name strad-staging
+ *     "$RUNNER_TEMP/spec.json" --expect-name strad-staging
+ *
+ * `--expect-name` is the argument that matters. Without it this degrades to "is
+ * this a spec at all", and the expensive case — a VALID spec belonging to
+ * another deployment — passes.
  *
  * Prints the app name, the component names and the byte count to STDERR — the
  * spec itself holds secret values and is never echoed. Exits 1 with a

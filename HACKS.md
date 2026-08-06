@@ -1723,6 +1723,7 @@ reasonably think the config is wrong.
 **Undo.** Have the mount declare its own surface stability, so the observer reads
 it from the bundle host rather than from a list beside it. That is a change to
 every tree's factory contract, which is why it is a list today.
+
 ## 47. Two repos' deploys share one machine, and coordinate only by not colliding
 
 **✅ RESOLVED for this repo's staging deploy** — the rendered spec moved to

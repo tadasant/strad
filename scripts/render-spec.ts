@@ -26,7 +26,12 @@
  *   node --experimental-transform-types scripts/render-spec.ts \
  *     --config infra/strad.staging.yaml \
  *     --image registry.digitalocean.com/strad/strad:0.1.0 \
- *     --app strad-staging > /tmp/spec.json
+ *     --app strad-staging > "$RUNNER_TEMP/spec.json"
+ *
+ * The deploy writes it into the job's own temp directory, never a shared /tmp:
+ * several runner processes share one self-hosted machine, and a second job
+ * rendering to the same path truncates this one mid-deploy. See
+ * src/deploy/spec-file.ts.
  *
  * `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` overrides the image on
  * every supplementary component that shares that repository, which is how a
@@ -322,8 +327,8 @@ const consoleOnly = new Set(consoleEnvNames(config));
 
 if (wanted.length > 0) {
   // One namespace read, shared with the boot keys below. The values go straight
-  // into the spec and are never logged, printed, or written anywhere but
-  // /tmp/spec.json.
+  // into the spec and are never logged, printed, or written anywhere but the
+  // rendered spec on stdout.
   const available = await storeValues();
 
   for (const name of wanted) {
