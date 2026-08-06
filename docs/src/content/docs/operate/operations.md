@@ -584,25 +584,32 @@ run it at the same time, on one box, against one docker daemon. So the container
 name and the image tag both carry `ci-<run id>-<run attempt>`:
 `strad-server-bundle-google:ci-…` and `bundle-google-ci-…`.
 
-Of the two failures that prevents, one is loud — a duplicate `--name`, or an
-`if: always()` teardown deleting the container a concurrent job is still testing.
-The other is not. Given a shared `strad-server-bundle-google:ci`, a concurrent job
-can rebuild that tag between this job's build and its `docker run`, and the smoke
-test then enumerates three mounts of an image this PR never built, and passes.
-Nothing errors. `test/bundle-google-workflow.isolation.test.ts` reads the workflow
-as text and fails the PR that puts either identifier back.
+Two failures follow from a shared name, and one of them is loud: a duplicate
+`--name`, or an `if: always()` teardown deleting the container a concurrent job is
+still testing. The other is not. Given a shared `strad-server-bundle-google:ci`, a
+concurrent job can rebuild that tag between this job's build and its `docker run`,
+and the smoke test then enumerates three mounts of an image this PR never built,
+and passes. Nothing errors.
+`test/bundle-google-workflow.isolation.test.ts` reads the workflow as text and
+fails the PR that puts either identifier back.
 
-This job publishes no host port at all — the health probe is node's `fetch` and
-the smoke client both run inside the container — so the third failure mode, two
-jobs competing for a fixed `-p 8080:8080`, does not arise here.
+A third failure in the same class does not arise here: two jobs competing for one
+fixed `-p 8080:8080`. This job publishes no host port at all, because the health
+probe is node's `fetch` and the smoke client both run inside the container.
 
 What per-run names cost is the fixed names' one accidental virtue: a leaked
 `bundle-google-ci` was reaped by the next run that wanted that name, and nothing
 will ever want `bundle-google-ci-<run>`. So teardown deletes this run's container
 and this run's image (buildx's cache is not the daemon's image store, so nothing
-rebuilds slower for it), and the job opens by pruning anything labelled `strad-ci`
-that a run over a day old left behind — far longer than any job here runs, so the
-sweep can never reach a concurrent one.
+rebuilds slower for it), and the job opens by sweeping anything labelled
+`strad-ci` that a run over a day old left behind — far longer than any job here
+runs, so the sweep can never reach a concurrent one. The sweep is in two halves,
+because `docker container prune` reaps only STOPPED containers and the leak worth
+reclaiming is the opposite: a teardown that never ran because the runner was
+killed leaves its container UP, and a running container pins its image against the
+image prune as well. So the workflow lists running containers by label and checks
+their age itself — `docker ps` has no `until` filter — and then prunes the stopped
+ones and the images.
 
 </aside>
 
