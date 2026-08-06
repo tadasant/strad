@@ -576,6 +576,36 @@ See [Known limitations](/limitations/).
 `bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the
 `bundle-google` image on any PR touching `images/bundle-google/`.
 
+<aside class="starlight-aside starlight-aside--note">
+
+**Why it names its container and its image per run.** Like every other job here
+it is `runs-on: self-hosted`, and its concurrency group is per-ref — so two PRs
+run it at the same time, on one box, against one docker daemon. So the container
+name and the image tag both carry `ci-<run id>-<run attempt>`:
+`strad-server-bundle-google:ci-…` and `bundle-google-ci-…`.
+
+Of the two failures that prevents, one is loud — a duplicate `--name`, or an
+`if: always()` teardown deleting the container a concurrent job is still testing.
+The other is not. Given a shared `strad-server-bundle-google:ci`, a concurrent job
+can rebuild that tag between this job's build and its `docker run`, and the smoke
+test then enumerates three mounts of an image this PR never built, and passes.
+Nothing errors. `test/bundle-google-workflow.isolation.test.ts` reads the workflow
+as text and fails the PR that puts either identifier back.
+
+This job publishes no host port at all — the health probe is node's `fetch` and
+the smoke client both run inside the container — so the third failure mode, two
+jobs competing for a fixed `-p 8080:8080`, does not arise here.
+
+What per-run names cost is the fixed names' one accidental virtue: a leaked
+`bundle-google-ci` was reaped by the next run that wanted that name, and nothing
+will ever want `bundle-google-ci-<run>`. So teardown deletes this run's container
+and this run's image (buildx's cache is not the daemon's image store, so nothing
+rebuilds slower for it), and the job opens by pruning anything labelled `strad-ci`
+that a run over a day old left behind — far longer than any job here runs, so the
+sweep can never reach a concurrent one.
+
+</aside>
+
 ## The staging config
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
