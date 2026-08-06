@@ -63,6 +63,7 @@ not a confession.
 | `src/config/schema.ts` — any field, default, or `superRefine` rule                  | `servers/interface.md` **and** `strad.config.example.yaml`        |
 | `src/auth/**`                                                                       | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                                   | `operate/deploy-model.md`                                         |
+| `src/deploy/spec-file.ts`, `scripts/assert-spec.ts` — the pre-`doctl` spec check    | `operate/operations.md`, `limitations.md`                         |
 | `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts` | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md` |
 | `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope    | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`   |
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                   | `operate/secrets.md`, `limitations.md`                            |

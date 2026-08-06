@@ -130,6 +130,30 @@ The telemetry one exists because a component with an endpoint and no auth header
 boots perfectly and is refused on every batch, about a minute later, with nothing
 else in the job noticing — see [Known limitations](/limitations/) #38.
 
+### The rendered spec is job-private, and checked before the PUT
+
+The deploy renders a spec to a file and hands that file to `doctl` several steps
+later. Two things make that handoff safe, and both were added after it failed.
+
+**The file lives in `$RUNNER_TEMP`, not `/tmp`.** `runs-on: self-hosted` means
+several runner _processes_ share one machine, and they share `/tmp` with each
+other. This repo's staging deploy and tadasant-internal's prod deploy both wrote
+`/tmp/spec.json`, and on 2026-08-06 they overlapped on the same box: prod's
+render opened that path for writing and truncated staging's finished spec, and
+staging's `doctl apps update` read the empty file 1.3 seconds later. `runner.temp`
+is per runner installation and emptied between jobs, so no other job can name it.
+
+**The spec is asserted immediately before `doctl` reads it**, by
+`scripts/assert-spec.ts` (`src/deploy/spec-file.ts`) — once after the render, for
+attribution, and once in the deploy step. It checks the file parses, carries a
+non-empty top-level `name`, has components, and **names the app this job set out
+to deploy**. That last check is the important one: an empty spec is merely a
+failed deploy, but a _valid_ spec belonging to another deployment would have
+pushed prod's images and prod's secrets onto staging and gone green.
+
+Neither guard is visible in a healthy run. See
+[Known limitations](/limitations/) #47 for what the failure looked like.
+
 ### Which image a deploy ships
 
 A deploy never hands App Platform a mutable tag — for **either** image. There are
@@ -264,8 +288,9 @@ prerequisites are present it: authenticates to GCP
 (`google-github-actions/auth@v2`, preferring Workload Identity Federation, falling
 back to `GCP_SA_KEY`), installs `gcloud`, reads `strad-staging-*` from Secret
 Manager (masked, into `$GITHUB_ENV` — same skip-vs-error split if none are found),
-renders the spec to `/tmp/spec.json` (never echoed), attaches a durable GHCR pull
-credential, installs `doctl`, runs `doctl apps create/update --spec … --wait` for
+renders the spec to `$RUNNER_TEMP/spec.json` (never echoed), attaches a durable
+GHCR pull credential, installs `doctl`, asserts the spec is still the one this job
+rendered, runs `doctl apps create/update --spec … --wait` for
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
 `401`, and **every slug we deploy actually serving tools**). The last of those
 reads `/healthz`'s `toolSurfaces` and polls for up to three minutes, because core
