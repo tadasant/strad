@@ -18,9 +18,24 @@
  * What it is really checking is that sixteen servers, nine dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
+ *
+ * `--json` prints ONE JSON document and asserts nothing:
+ *
+ *   { "version": "…", "mounts": { "/gmail": { "tools": [...] }, … } }
+ *
+ * That is the observed half of the pre-deploy tool-policy check — every
+ * `tools: allow` entry in a config is matched against the names a mount really
+ * serves, before a deploy rather than after it (scripts/check-tool-policy.ts).
+ * The mount set comes from /healthz, not from EXPECT: the check should see what
+ * the container actually mounts, including a mount nobody added here.
+ *
+ * A mount whose surface this container cannot show in full says so, in
+ * `partial`, and the checker skips it rather than reading a tool it could never
+ * have listed as a typo. See PARTIAL_SURFACES.
  */
 const BASE = process.env.SMOKE_BASE ?? `http://127.0.0.1:${process.env.PORT ?? 8080}`;
 const SHOW_TOOLS = process.argv.includes("--tools");
+const AS_JSON = process.argv.includes("--json");
 
 /** The mounts, and the tool count each should list at FULL capability. */
 const EXPECT = {
@@ -47,6 +62,28 @@ const EXPECT = {
   fetchpet: null,
   pointsyeah: null,
   "x-twitter": 9,
+};
+
+/**
+ * Mounts whose surface HERE is a floor, not the whole — and why.
+ *
+ * This container is credential-free and its environment is not staging's, so a
+ * few mounts list less than a real deployment does. That is fine for a count
+ * (EXPECT pins the credential-free number) and fatal for a NAME check: an allow
+ * entry naming a tool this container cannot show is not evidence of a typo. The
+ * checker skips these and prints the reason, because a gate that cries wolf gets
+ * turned off.
+ *
+ * Every mount NOT named here serves a fixed surface, and its names are the
+ * whole truth.
+ */
+const PARTIAL_SURFACES = {
+  secrets:
+    "surface comes from a capability PROBE; with no credential here it is the read-only floor",
+  gcs: "GCS_BUCKET is set in CI, which hides the 4 bucket-level tools",
+  "good-eggs": "browser server; its surface follows the app it drives",
+  fetchpet: "browser server; its surface follows the app it drives",
+  pointsyeah: "browser server; its surface follows the app it drives",
 };
 
 const X_TWITTER_TOOLS = new Set([
@@ -95,6 +132,30 @@ async function listTools(path) {
 }
 
 const health = await (await fetch(`${BASE}/healthz`)).json();
+
+// --- the machine-readable half ----------------------------------------------
+//
+// One document on stdout and nothing else, so `docker exec … --json > file` is
+// the whole plumbing. It asserts NOTHING: a mount that will not list is recorded
+// as an error for the checker to skip, not a failure here. The assertions are
+// the other invocation's job, and CI runs both.
+if (AS_JSON) {
+  const mounts = {};
+  for (const server of health.servers) {
+    const path = server.path ?? `/${server.slug}`;
+    const partial = PARTIAL_SURFACES[server.slug];
+    const entry = partial ? { partial } : {};
+    try {
+      entry.tools = await listTools(path);
+    } catch (err) {
+      entry.error = err.message;
+    }
+    mounts[path] = entry;
+  }
+  console.log(JSON.stringify({ version: health.version, mounts }, null, 2));
+  process.exit(0);
+}
+
 console.log(
   `bundle v${health.version}: ${health.servers.length} mounts, chromium up=${health.chromium.up} launches=${health.chromium.launches}`,
 );

@@ -31,9 +31,11 @@ The consequence is concrete: a bug in `toolPolicy.ts`, or a config entry that
 forgets its `tools:` block, silently promotes a read-only slug to read-write. The
 container's own credential is no longer a backstop. `unmatchedAllowEntries()` logs
 `mcp.policy_unmatched_tools` when an allow-list names a tool the upstream doesn't
-offer, which catches upstream renames, and `test/staging-config.test.ts` asserts
-each tier is a subset of the one above it. Neither of those makes the boundary
-physical.
+offer, which catches upstream renames; CI runs the same predicate against the
+booted bundle image before a deploy
+([`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist)),
+and `test/staging-config.test.ts` asserts each tier is a subset of the one above
+it. None of those makes the boundary physical.
 
 **Why anyway:** it is what collapsed thirteen billed App Platform components into
 two. **Undo:** there is no clean one. Restoring physics means one container per
@@ -133,6 +135,32 @@ staging deploy the way the monitor is. The hard half of that second one: "degrad
 means something different per server — a bad refresh token, a missing credential, a
 failed login the next call retries — and a signal a deploy can fail on has to say
 which.
+
+### 46. The pre-deploy allow-list check knows by hand which mounts it cannot enumerate
+
+[`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist)
+matches every `tools: allow` and `tools: deny` entry against the names the booted
+bundle image really serves, so a typo or an upstream rename fails the PR instead
+of quietly narrowing a slug's surface in production. It cannot do that for every
+slug. A `remote-http` server is not in the image; a mount that shows CI a floor
+rather than its whole surface — `secrets` derives its tools from a capability
+probe that fails closed with no credential, `GCS_BUCKET` hides four tools from
+`gcs`, a browser server's surface follows the app it drives — would look like a
+typo if it were checked.
+
+Those mounts are skipped, and which ones they are is a hand-maintained list
+(`PARTIAL_SURFACES` in `servers/bundle/scripts/smoke.mjs`). Every skip prints with
+its reason on a passing run, so under-coverage is in the log rather than implied
+by a green tick — but a mount that becomes credential-dependent and is not added
+to the list turns a correct allow-list into a red PR, and the person who hits it
+will reasonably think the config is wrong.
+
+The runtime alarm is what covers everything this cannot: `unmatchedAllowEntries()`
+emits `mcp.policy_unmatched_tools` on every `tools/list`, after the deploy.
+
+**Undo:** have each mount declare its own surface stability, so the observer reads
+it from the bundle host rather than from a list beside it. That is a change to
+every tree's factory contract, which is why it is a list.
 
 ### 41. The installed console's cached shell is versioned by hand
 

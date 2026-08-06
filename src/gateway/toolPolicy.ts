@@ -83,3 +83,25 @@ export function unmatchedAllowEntries(
   const have = new Set(offered);
   return [...policy.allow].filter((name) => !have.has(name));
 }
+
+/**
+ * Deny entries that no upstream tool matches.
+ *
+ * The gateway does not emit this at runtime, and the asymmetry is deliberate: a
+ * stale ALLOW entry silently narrows a live surface, while a stale DENY entry
+ * subtracts nothing and changes no request. It is still drift — a deny list is
+ * how a full-capability tier withholds one tool, so a name that matches nothing
+ * means the tool was renamed and is being served — which is why the caller is
+ * the pre-deploy check (src/deploy/tool-surface.ts) rather than the request path.
+ *
+ * A deny entry is not the place to pre-refuse a tool that does not exist yet:
+ * `allow` is exhaustive and already fail-closed against an upstream growing one.
+ */
+export function unmatchedDenyEntries(
+  policy: ToolPolicy | undefined,
+  offered: readonly string[],
+): string[] {
+  if (!policy?.deny) return [];
+  const have = new Set(offered);
+  return [...policy.deny].filter((name) => !have.has(name));
+}

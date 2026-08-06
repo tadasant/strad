@@ -20,6 +20,12 @@ a GHCR image.
   would, with no secrets. An unknown key is a hard error there — the schema is
   Zod-default, so `consoleEnvs:` for `consoleEnv:` is otherwise stripped in
   silence. CI runs it over every config in this repo; edit one, run it.
+- `npm run policy:check -- --tools <dump> --config <path>` is the other config
+  gate: every `tools: allow` / `tools: deny` entry must name a tool the mount
+  really serves. The dump is `smoke.mjs --json` from the booted bundle image, so
+  the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
+  typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
+  Anything CI cannot enumerate is skipped WITH A REASON, never failed.
 - Two modules are VENDORED across an npm-tree boundary, and each has a sync
   script and a drift test. Edit the source, never the copy; run the sync and
   commit both halves.
@@ -53,6 +59,7 @@ not a confession.
 | `src/gateway/router.ts`, `registry.ts`, `adapters/**`, `reachability.ts`            | `intro/architecture.md`                                           |
 | `src/gateway/entitlements.ts` (roles, `?servers=`, the 424)                         | `intro/concepts.md`, `auth/overview.md`                           |
 | `src/gateway/toolPolicy.ts` (the `tools:` allow/deny policy)                        | `intro/architecture.md`, `intro/concepts.md`, `servers/adding.md` |
+| `src/deploy/tool-surface.ts`, `scripts/check-tool-policy.ts` (the pre-deploy gate)  | `operate/deploy-model.md`, `operate/operations.md`                |
 | `src/config/schema.ts` — any field, default, or `superRefine` rule                  | `servers/interface.md` **and** `strad.config.example.yaml`        |
 | `src/auth/**`                                                                       | `auth/overview.md`                                                |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                                   | `operate/deploy-model.md`                                         |

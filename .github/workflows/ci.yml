@@ -201,11 +201,24 @@ jobs:
   # if an upstream grows a tool, this is where we find out — not in production. For
   # secrets the count is a security assertion: a FIFTH tool on a server whose
   # entire contract is "no tool returns a SECRET value" is exactly what CI should catch.
+  #
+  # It is also where the configs meet the tools. A `tools: allow` entry naming a
+  # tool the upstream no longer offers narrows that slug's surface by one, fail-
+  # closed and silent; the gateway only says so once it is deployed. This job has
+  # the one thing that can answer it early — the real names, from the real image —
+  # so it dumps them and checks every config in the repo against them.
   bundle_image:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      # For the allow-list check below: it parses configs with the gateway's own
+      # schema, so it needs the repo's dependency tree. Nothing else here does.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
 
       - name: Build the bundle image
         uses: docker/build-push-action@v6
@@ -239,6 +252,24 @@ jobs:
             sleep 2
           done
           docker exec bundle-ci node /app/scripts/smoke.mjs
+
+      # The join the two jobs never made. `--json` dumps every mount's real tool
+      # NAMES; check-tool-policy matches each config's `tools:` entries against
+      # them and fails on one that matches nothing. Globbed like the config job,
+      # for the same reason: a config added to the repo must not be silently
+      # unchecked.
+      #
+      # A slug it cannot enumerate — remote-http, another image, a mount whose
+      # surface here is a credential-free floor — is SKIPPED and named, never
+      # failed. The step prints what it covered and what it did not.
+      - name: Every `tools:` entry names a tool the mount really serves
+        run: |
+          set -euo pipefail
+          docker exec bundle-ci node /app/scripts/smoke.mjs --json > bundle-tools.json
+          npm run --silent policy:check -- \
+            --tools bundle-tools.json \
+            --image ghcr.io/tadasant/strad-bundle:latest \
+            $(for cfg in strad.config*.yaml infra/*.yaml; do printf -- '--config %s ' "$cfg"; done)
 
       - name: The `op` CLI is really in the image
         run: docker exec bundle-ci op --version

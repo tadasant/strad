@@ -53,6 +53,14 @@ Runs on PRs and pushes to `main`. Thirteen jobs, all `runs-on: self-hosted`:
   the count of 4 is a security assertion: a fifth tool on a server whose contract is
   "no tool returns a secret value" is what CI should catch. It also asserts the `op`
   CLI is really in the image.
+
+  This job is also where the configs meet the tools. It dumps every mount's real
+  tool **names** (`smoke.mjs --json`) and runs
+  [`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist)
+  over every config in the repo, so a `tools: allow` entry naming a tool no mount
+  serves fails the PR instead of silently narrowing that slug's surface in
+  production. A slug it cannot enumerate is skipped and named, never failed.
+
 - **`verify_lockfile`** — `npm install --package-lock-only` then
   `git diff --exit-code`, so `package-lock.json` can't drift.
 - **`build_image`** — builds the core Docker image, boots it with
