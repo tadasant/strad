@@ -17,6 +17,7 @@ import {
   compileToolPolicies,
   toolAllowed,
   unmatchedAllowEntries,
+  unmatchedDenyEntries,
 } from "../src/gateway/toolPolicy.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
@@ -280,6 +281,23 @@ servers:
   it("flags allow entries the upstream does not offer (a typo narrows silently)", () => {
     expect(unmatchedAllowEntries(policies.get("a"), ["x"])).toEqual(["y"]);
     expect(unmatchedAllowEntries(policies.get("a"), ["x", "y"])).toEqual([]);
+  });
+
+  it("flags deny entries the upstream does not offer (a rename stops subtracting)", () => {
+    // Changes nothing at runtime — a deny that matches no tool refuses no call —
+    // which is exactly why it needs saying out loud somewhere. The caller is the
+    // pre-deploy check, not the request path.
+    expect(unmatchedDenyEntries(policies.get("a"), ["x"])).toEqual(["y"]);
+    expect(unmatchedDenyEntries(policies.get("a"), ["x", "y"])).toEqual([]);
+    expect(unmatchedDenyEntries(policies.get("a"), [])).toEqual(["y"]);
+  });
+
+  it("says nothing about a policy with no deny list, or no policy at all", () => {
+    // `b` has no `tools:` block; `allow`-only policies must not report their
+    // allow entries as unmatched DENY entries.
+    expect(unmatchedDenyEntries(policies.get("b"), [])).toEqual([]);
+    expect(unmatchedDenyEntries(undefined, ["x"])).toEqual([]);
+    expect(unmatchedDenyEntries({ allow: new Set(["x"]) }, [])).toEqual([]);
   });
 });
 

@@ -30,8 +30,8 @@
  * the container actually mounts, including a mount nobody added here.
  *
  * A mount whose surface this container cannot show in full says so, in
- * `partial`, and the checker skips it rather than calling a tool it could not
- * have seen a typo. See PARTIAL_SURFACES.
+ * `partial`, and the checker skips it rather than reading a tool it could never
+ * have listed as a typo. See PARTIAL_SURFACES.
  */
 const BASE = process.env.SMOKE_BASE ?? `http://127.0.0.1:${process.env.PORT ?? 8080}`;
 const SHOW_TOOLS = process.argv.includes("--tools");

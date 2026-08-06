@@ -449,7 +449,7 @@ export function collectSecretRefs(config: StradConfig): string[] {
 }
 
 /** Same registry and repository, ignoring the tag. */
-function sameRepository(a: ImageRef, b: ImageRef): boolean {
+export function sameRepository(a: ImageRef, b: ImageRef): boolean {
   return (
     a.registry_type === b.registry_type &&
     (a.registry ?? "") === (b.registry ?? "") &&

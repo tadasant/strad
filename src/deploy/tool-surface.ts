@@ -4,7 +4,7 @@ import {
   unmatchedAllowEntries,
   unmatchedDenyEntries,
 } from "../gateway/toolPolicy.ts";
-import { parseImage } from "./appspec.ts";
+import { parseImage, sameRepository } from "./appspec.ts";
 
 /**
  * Does every `tools:` entry in a config name a tool the mount really serves?
@@ -61,8 +61,11 @@ export interface ObservedSurface {
    * skipped — a `path: /gcs` on someone else's image is not this `/gcs`.
    *
    * The observer does not know its own image ref (it runs INSIDE the container),
-   * so the caller asserts this identity. It is compared by repository, not by
-   * tag: CI boots `strad-bundle:ci` and configs name `strad-bundle:latest`.
+   * so the caller asserts this identity. Compared with `sameRepository()` — the
+   * registry, the owner and the repository, and not the TAG, because CI boots
+   * `strad-bundle:ci` and every config names `strad-bundle:latest`. The owner
+   * is half of it: `ghcr.io/someone-else/strad-bundle` shares a repository name
+   * with this image and is not it.
    */
   image: string;
   mounts: Readonly<Record<string, ObservedMount>>;
@@ -111,7 +114,7 @@ export function checkToolSurface(
   surface: ObservedSurface,
 ): ToolSurfaceCheckResult {
   const policies = compileToolPolicies(config);
-  const repository = parseImage(surface.image).repository;
+  const observedImage = parseImage(surface.image);
 
   const checked: CheckedPolicy[] = [];
   const skipped: SkippedPolicy[] = [];
@@ -129,7 +132,7 @@ export function checkToolSurface(
       continue;
     }
 
-    if (parseImage(server.image).repository !== repository) {
+    if (!sameRepository(parseImage(server.image), observedImage)) {
       skipped.push({
         slug: server.slug,
         reason: `runs ${server.image}, not ${surface.image} — a different image's ${server.path} is not this one`,
@@ -209,7 +212,10 @@ export function parseObservedMounts(
     throw new Error("expected a JSON object");
   }
   const mounts = (document as { mounts?: unknown }).mounts;
-  if (typeof mounts !== "object" || mounts === null) {
+  // `Array.isArray` explicitly: an array is a `typeof "object"`, and one would
+  // survive as mounts keyed "0", "1", … — inert, because no config `path:` is
+  // ever a bare index, and therefore a document that looks checked and is not.
+  if (typeof mounts !== "object" || mounts === null || Array.isArray(mounts)) {
     throw new Error("expected a `mounts` object keyed by mount path");
   }
 
@@ -272,13 +278,14 @@ export function formatFinding(finding: PolicyFinding): string {
  * A rename or a typo lands within a few edits; anything further is noise, and a
  * confidently wrong suggestion is worse than none. The threshold scales with the
  * name's length so `get_key` and `get_keys` count as near while two unrelated
- * short names do not.
+ * short names do not — hence the floor of ONE rather than two: two edits on a
+ * three-character name reaches most other three-character names.
  */
 function nearestName(
   entry: string,
   offered: readonly string[],
 ): string | undefined {
-  const limit = Math.max(2, Math.floor(entry.length / 3));
+  const limit = Math.max(1, Math.floor(entry.length / 3));
   let best: string | undefined;
   let bestDistance = Infinity;
   for (const name of offered) {

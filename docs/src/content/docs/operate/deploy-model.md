@@ -357,11 +357,11 @@ npm run policy:check -- --tools bundle-tools.json \
   --config infra/strad.staging.yaml
 ```
 
-| Flag              | Meaning                                                                       |
-| ----------------- | ----------------------------------------------------------------------------- |
-| `--tools <path>`  | **required** — the observer's document (`smoke.mjs --json`)                   |
-| `--config <path>` | **required**, repeatable — the configs to check                               |
-| `--image <ref>`   | which image the mounts came from; matched by repository, so `:ci` ≡ `:latest` |
+| Flag              | Meaning                                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `--tools <path>`  | **required** — the observer's document (`smoke.mjs --json`)                               |
+| `--config <path>` | **required**, repeatable — the configs to check                                           |
+| `--image <ref>`   | which image the mounts came from; everything but the tag is matched, so `:ci` ≡ `:latest` |
 
 | Exit | Meaning                                                                             |
 | ---- | ----------------------------------------------------------------------------------- |

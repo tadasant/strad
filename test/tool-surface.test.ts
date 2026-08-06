@@ -196,7 +196,7 @@ describe("checkToolSurface", () => {
     expect(result).toEqual({ checked: [], skipped: [], findings: [] });
   });
 
-  it("matches by image REPOSITORY, so a :ci tag checks a :latest config", () => {
+  it("ignores the TAG, so CI's :ci checks a config's :latest", () => {
     const result = checkToolSurface(
       config(GMAIL_RO),
       surface(
@@ -252,6 +252,27 @@ describe("checkToolSurface skips, loudly, what it cannot enumerate", () => {
 
     expect(result.findings).toEqual([]);
     expect(result.skipped[0]?.reason).toContain("some-other-server");
+  });
+
+  it("skips another ORG's image of the same name — a repository is not an identity", () => {
+    // `ghcr.io/someone-else/strad-bundle` shares a repository name with the image
+    // CI booted and is not it. Matching on the name alone would hand a stranger's
+    // config this bundle's tool names and call the difference a typo.
+    const result = checkToolSurface(
+      config(`  - slug: impostor
+    kind: supplementary-image
+    image: ghcr.io/someone-else/strad-bundle:latest
+    bundle: bundle
+    path: /gmail
+    entitlements: [admin]
+    tools:
+      allow: [not_a_gmail_tool]
+`),
+      surface({ "/gmail": { tools: GMAIL_TOOLS } }),
+    );
+
+    expect(result.findings).toEqual([]);
+    expect(result.skipped[0]?.reason).toContain("someone-else");
   });
 
   it("skips a slug whose mount this run did not boot, and says which it did", () => {

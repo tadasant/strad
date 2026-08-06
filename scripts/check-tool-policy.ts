@@ -13,13 +13,14 @@
  * the config check parses every config in the repo. This is the join.
  *
  * Usage (from CI, with the bundle container up):
- *   docker exec bundle-ci node /app/scripts/smoke.mjs --json > tools.json
- *   npm run policy:check -- --tools tools.json --config infra/strad.staging.yaml
+ *   docker exec bundle-ci node /app/scripts/smoke.mjs --json > bundle-tools.json
+ *   npm run policy:check -- --tools bundle-tools.json --config infra/strad.staging.yaml
  *
  *   --tools    the observer's document (smoke.mjs --json). Required.
  *   --config   a config to check. Repeatable; at least one.
  *   --image    which image the mounts came from. Defaults to the bundle image.
- *              Compared by REPOSITORY, so a `:ci` tag matches a `:latest` config.
+ *              Matched on registry, owner and repository — everything but the
+ *              TAG, so CI's `:ci` matches a config's `:latest`.
  *
  * ## What it will not do
  *
