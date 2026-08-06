@@ -8,6 +8,7 @@ import {
   playgroundHref,
 } from "./playground.ts";
 import {
+  FAILURE_BACKOFF_MS,
   MAX_DIAGNOSIS_TTL_MS,
   type StoreDiagnostics,
 } from "../secrets/store-diagnostics.ts";
@@ -267,28 +268,44 @@ function diagnosisNote(
 ): string {
   if (!diagnosis) return "";
 
-  const windowSeconds = Math.min(
-    config.gateway.secrets.ttlSeconds,
-    MAX_DIAGNOSIS_TTL_MS / 1000,
-  );
+  const complete = diagnosis.indexRead && diagnosis.renderRead;
+  // The same two numbers the cache holds the answer for, so the page states the
+  // bound that actually applies rather than the one for the healthy case: an
+  // incomplete pass is held for the failure backoff, which is far shorter.
+  const windowSeconds = complete
+    ? Math.min(config.gateway.secrets.ttlSeconds, MAX_DIAGNOSIS_TTL_MS / 1000)
+    : Math.min(config.gateway.secrets.ttlSeconds, FAILURE_BACKOFF_MS / 1000);
   const age =
     diagnosis.ageMs < 1000
       ? "just now"
       : `${Math.round(diagnosis.ageMs / 1000)}s ago`;
 
+  // Assembled by concatenation rather than as one wrapped template literal: a
+  // newline inside "cached for up to 60s" is invisible in the rendered HTML and
+  // makes the sentence unfindable to anything that reads the markup.
+  const subject =
+    " The store's own account of itself — which parameters exist," +
+    " and which exist and refuse to render —";
+
   if (!diagnosis.indexRead && !diagnosis.renderRead) {
-    return ` The store's own account of itself — which parameters exist, and which
-    exist and refuse to render — did not answer when it was last asked, ${age}, so those
-    distinctions are not drawn on the rows above.`;
+    return (
+      `${subject} did not answer when it was last asked, ${age},` +
+      ` so those distinctions are not drawn on the rows above.` +
+      ` It is asked again after ${windowSeconds}s.`
+    );
   }
 
-  return ` The store's own account of itself — which parameters exist, and which exist and
-    refuse to render — was read ${age}${
-      diagnosis.indexRead && diagnosis.renderRead
-        ? ""
-        : ", and its per-parameter render did not answer"
-    }; that pass is cached for up to ${windowSeconds}s, so a value seeded since is not
-    necessarily reflected above yet.`;
+  // Which half failed is read from the flags rather than assumed: the two reads
+  // share one deadline and fail independently, so either can be the missing one.
+  const halfDown = diagnosis.indexRead
+    ? ", and its per-parameter render did not answer"
+    : ", and its index read did not answer";
+
+  return (
+    `${subject} was read ${age}${complete ? "" : halfDown};` +
+    ` that pass is cached for up to ${windowSeconds}s,` +
+    ` so a value seeded since is not necessarily reflected above yet.`
+  );
 }
 
 // ---------------------------------------------------------------------------

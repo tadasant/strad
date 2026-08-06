@@ -714,16 +714,19 @@ What that costs is freshness, so the age is printed rather than hidden:
 - `/api/secrets/readiness` carries `store.diagnosis.ageSeconds` alongside
   `indexRead` and `renderRead`.
 
-A **value** seeded through the console can therefore take up to a minute to change
-a row — the same bound the running gateway's own `${NAME}` reads already carry —
-and a store that breaks can look healthy for up to a minute.
+A value written by something other than this console can therefore take up to a
+minute to change a row — the same bound the running gateway's own `${NAME}` reads
+already carry — and a store that breaks can look healthy for up to a minute. A
+write **through the console** is not in that window: `create`, `rotate` and
+`delete` drop the diagnosis outright, so the row a rotation was performed from is
+correct on the next page load rather than a minute later.
 
 A pass whose index or render half did **not** answer is held for five seconds
-only. Caching a shrug for a full minute would extend an outage past its end;
-re-reading it per request would leave a broken store getting hammered by exactly
-the poller this cache exists to bound. A namespace-wide render **refusal** is not
-that case — the store answered, completely, from the expensive pass — and it is
-cached for the whole TTL.
+only (or the TTL, if that is shorter). Caching a shrug for a full minute would
+extend an outage past its end; re-reading it per request would leave a broken
+store getting hammered by exactly the poller this cache exists to bound. A
+namespace-wide render **refusal** is not that case — the store answered,
+completely, from the expensive pass — and it is cached for the whole TTL.
 
 **Seeded is not working, and the page does not pretend otherwise.** strad never
 calls an upstream to prove a credential is accepted, so the good state is `ready`
@@ -1027,10 +1030,12 @@ entitled to every enabled server and answers `403` to anything less. See
 failure and can rewrite it, so the body a caller sees would be the ingress's — and
 "not ready" is a correct, complete, successfully computed answer. Only auth
 failures (`401`) and an unhandled crash (`500`) are non-200. `cache-control:
-no-store`, because the answer changes the moment someone seeds a value — every
-`${NAME}` in the body is read per request. The one input that is not is the
-store's own account of itself, which is
-[cached for up to a minute](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read)
+no-store`, because the answer changes the moment someone seeds a value. What is
+bounded rather than instant is the store reading behind it, and by one number:
+`ttlSeconds`. Each `${NAME}` lookup happens per request and is answered from the
+runtime provider's namespace snapshot, which that TTL governs; the store's own
+account of itself is held for the same TTL,
+[capped at a minute](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read),
 and reports its own age in `store.diagnosis`.
 
 **`ready` means observed.** It is `true` only when the store is wired, every

@@ -318,7 +318,9 @@ describe("GET /ui — badges", () => {
 
 describe("GET /ui — the store diagnosis is cached, and the page says so", () => {
   /** Boot with a counting store and render `/ui` twice on the one process. */
-  const render = async (): Promise<{
+  const render = async (
+    opts: { renderThrows?: boolean } = {},
+  ): Promise<{
     first: string;
     second: string;
     lists: number;
@@ -341,6 +343,7 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
       },
       resolveDetailed: async () => {
         renders += 1;
+        if (opts.renderThrows) throw new Error("render refused");
         return { values: { ALPHA_TOKEN: "value" }, unrenderable: [] };
       },
     };
@@ -385,11 +388,26 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
     expect(renders).toBe(1);
 
     // And the cached verdict is not presented as a fresh one. The console's
-    // posture is that it says what it established and WHEN.
+    // posture is that it says what it established and WHEN. Matched as a shape
+    // rather than as "just now": the exact age depends on a real clock over two
+    // real renders, and what is under test is that an age is printed at all.
     for (const html of [first, second]) {
-      expect(html).toContain("was read just now");
+      expect(html).toMatch(/was read (just now|\d+s ago)/);
       expect(html).toContain("cached for up to 60s");
     }
+  });
+
+  it("names the half that failed, and the SHORTER window a half-read pass gets", async () => {
+    // The index answered and the render did not, so `unrenderable` is not a
+    // complete list. That pass is held for the failure backoff, not the TTL —
+    // and the sentence whose whole job is to state the staleness bound has to
+    // state the one that applies, not the healthy-case one.
+    const { first, lists, renders } = await render({ renderThrows: true });
+    expect(lists).toBe(1);
+    expect(renders).toBe(1);
+    expect(first).toContain("its per-parameter render did not answer");
+    expect(first).toContain("cached for up to 5s");
+    expect(first).not.toContain("cached for up to 60s");
   });
 
   it("says nothing about a diagnosis when there is no store to diagnose", async () => {

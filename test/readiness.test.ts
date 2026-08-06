@@ -475,11 +475,13 @@ describe("readiness does not amplify store reads", () => {
 
     expect(lists).toBe(1);
     expect(renders).toBe(1);
-    expect(last?.store.diagnosis).toEqual({
-      ageSeconds: 0,
-      indexRead: true,
-      renderRead: true,
-    });
+    expect(last?.store.diagnosis?.indexRead).toBe(true);
+    expect(last?.store.diagnosis?.renderRead).toBe(true);
+    // Bounded rather than pinned to 0: this is a real clock over four real HTTP
+    // round trips, and the claim under test is that the age is REPORTED and
+    // inside the window, not that a loaded runner finishes in under a second.
+    expect(last?.store.diagnosis?.ageSeconds).toBeGreaterThanOrEqual(0);
+    expect(last?.store.diagnosis?.ageSeconds).toBeLessThan(60);
     // The RESPONSE is still uncacheable: the rest of the body is read per call.
     shut();
   });

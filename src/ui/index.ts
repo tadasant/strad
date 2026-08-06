@@ -31,7 +31,10 @@ import { resolveServerView, type ServerView } from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
-import { readDeploymentSecretStatus } from "./secret-status.ts";
+import {
+  forgetDeploymentDiagnosis,
+  readDeploymentSecretStatus,
+} from "./secret-status.ts";
 import type { SecretProvider } from "../secrets/provider/index.ts";
 import {
   renderGcsBrowse,
@@ -412,6 +415,23 @@ async function handleServerView(
 
 type SecretAction = "create" | "rotate" | "note" | "reveal" | "delete";
 
+/**
+ * A write just changed what the store holds, so drop what it told us.
+ *
+ * The index's store diagnosis is cached for `ttlSeconds` (see
+ * secrets/store-diagnostics.ts), and the state it establishes — "the parameter
+ * EXISTS and its value cannot be produced, rotate it" — is checked BEFORE the
+ * live read. Without this, a human who does exactly what the row told them to do
+ * lands back on `/ui` and is told to do it again, for up to a minute, one click
+ * after the console flashed that it worked.
+ *
+ * Called for the three actions that change the store's answer. `note` does not:
+ * it writes metadata the diagnosis never reads. `reveal` writes nothing at all.
+ */
+function forgetDiagnosis(opts: ConsoleUiOptions): void {
+  forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
+}
+
 async function handleSecretAction(
   action: SecretAction,
   req: Request,
@@ -523,6 +543,7 @@ async function handleSecretAction(
           value,
           note: note || undefined,
         });
+        forgetDiagnosis(opts);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           namespace,
@@ -541,6 +562,7 @@ async function handleSecretAction(
         }
         assertWellFormed(path);
         await store.rotate(path, value);
+        forgetDiagnosis(opts);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           namespace,
@@ -612,6 +634,7 @@ async function handleSecretAction(
       case "delete": {
         assertWellFormed(path);
         await store.destroy(path);
+        forgetDiagnosis(opts);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           namespace,

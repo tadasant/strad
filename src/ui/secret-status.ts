@@ -28,6 +28,7 @@ import {
   type BundlePresence,
 } from "../gateway/bundle-presence.ts";
 import {
+  forgetStoreDiagnosis,
   readStoreDiagnosticsCached,
   type StoreDiagnostics,
 } from "../secrets/store-diagnostics.ts";
@@ -1124,6 +1125,30 @@ function cachedResolver(env: NodeJS.ProcessEnv): ParameterStore | null {
 }
 
 /**
+ * Forget what the store told us, because we just changed what it holds.
+ *
+ * The console writes through the ADMIN client and reads through the RESOLVER
+ * one, so the write path cannot drop the diagnosis by identity — this is the
+ * join. Without it, `/ui` keeps a row saying "the parameter EXISTS and its value
+ * cannot be produced — rotate it" for the rest of the TTL, one click after the
+ * console flashed "Rotated ALPHA: a new value is now current". The store-derived
+ * state is checked BEFORE the live read in `gatewayHalf`, so a cached refusal
+ * outranks a value that now resolves: the page would contradict itself.
+ *
+ * Deliberately does NOT construct a resolver: a deployment with no resolver
+ * credential has nothing cached, and building a client on the write path to
+ * invalidate an empty cache would be pure cost.
+ */
+export function forgetDeploymentDiagnosis(opts: {
+  env: NodeJS.ProcessEnv;
+  /** Test seam: the same one `readDeploymentSecretStatus` takes. */
+  store?: Pick<ParameterStore, "list" | "resolveDetailed"> | null;
+}): void {
+  const store = opts.store === undefined ? RESOLVERS.get(opts.env) : opts.store;
+  if (store) forgetStoreDiagnosis(store);
+}
+
+/**
  * The whole reading, plus the evidence-gathering that makes it a claim.
  *
  * `/ui` and `/api/secrets/readiness` both call THIS rather than assembling the
@@ -1137,9 +1162,12 @@ function cachedResolver(env: NodeJS.ProcessEnv): ParameterStore | null {
  *   1. Every bundle is asked what it actually holds (`probeBundles`). This is
  *      what turns "not visible here" into "plumbed via env, on `bundle`".
  *   2. The parameter store is asked what it holds and what it will not render
- *      (`readStoreDiagnostics`), whenever core has a resolver credential — which
- *      is true on a `provider: env` deployment that also uses `params: true`, so
- *      this is not gated on the flip.
+ *      (`readStoreDiagnosticsCached`), whenever core has a resolver credential —
+ *      which is true on a `provider: env` deployment that also uses
+ *      `params: true`, so this is not gated on the flip. That pair of reads is
+ *      the expensive half of this call and is held for `ttlSeconds` (capped at a
+ *      minute), so a reload does not re-run it; the reading carries the age of
+ *      what it served, and a console write drops it outright.
  *
  * Neither is required. With neither, this degrades exactly to the older, weaker
  * reading, which is what makes it safe to deploy core ahead of the bundle image.

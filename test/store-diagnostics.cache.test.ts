@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   FAILURE_BACKOFF_MS,
+  forgetStoreDiagnosis,
   MAX_DIAGNOSIS_TTL_MS,
   readStoreDiagnosticsCached,
 } from "../src/secrets/store-diagnostics.ts";
@@ -10,24 +11,25 @@ import type { ParameterStore } from "../src/secrets/parameters/index.ts";
  * The TTL in front of the store diagnosis.
  *
  * `/ui` and `/api/secrets/readiness` both derive their verdict from one pair of
- * store reads — an index `list()` plus a per-parameter render pass — and both
- * used to perform it afresh per request. The pass is not nominal: it renders
- * every parameter under its own try/catch rather than ending at the first
- * failure, so a namespace-wide refusal costs a FULL pass at a fan-out of ten.
- * A caller polling readiness hard was therefore an amplifier.
+ * store reads — an index `list()` plus a per-parameter render pass — and neither
+ * performs it per request. The pass is not nominal: it renders every parameter
+ * under its own try/catch rather than ending at the first failure, so a
+ * namespace-wide refusal costs a FULL pass at a fan-out of ten, which is what
+ * makes a hard poller on readiness an amplifier without this.
  *
  * The four properties this file holds, because each one is a way the cache
  * could be wrong rather than merely absent:
  *
  *   1. IT ACTUALLY CACHES, per namespace and per store client, and it expires.
- *   2. IT STAYS HONEST. Every hit carries `ageMs`, and no answer is served past
- *      a minute however long `gateway.secrets.ttlSeconds` is.
+ *   2. IT STAYS HONEST. Every hit carries `ageMs`, counted from when the reads
+ *      STARTED, and no answer is served past a minute however long
+ *      `gateway.secrets.ttlSeconds` is.
  *   3. A FAILED PASS IS NOT AN ANSWER. It is held for a short backoff, so a
  *      broken store is neither hammered nor reported broken for a full TTL
  *      after it recovers. A store that ANSWERS with a namespace-wide render
  *      refusal is the opposite — a complete, expensive answer — and is cached.
- *   4. IT NEVER SLOWS A CALLER DOWN. Concurrent callers share one pass, and the
- *      pass keeps the deadline it always had.
+ *   4. CONCURRENT CALLERS SHARE ONE PASS, and the pass keeps the deadline it
+ *      always had, so joining one never costs more than making one.
  */
 
 interface Fake {
@@ -289,6 +291,25 @@ describe("a pass that did not read is cached as a shrug, briefly", () => {
     expect(lists).toBe(2);
   });
 
+  it("never holds a failure LONGER than it would hold an answer", async () => {
+    // `ttlSeconds` accepts 1. A deployment asking for that much freshness must
+    // not get a five-second hold on the worst state and a one-second hold on the
+    // good one — the backoff is capped by the TTL for exactly that inversion.
+    const fake = fakeStore({ listThrows: true, renderThrows: true });
+    const time = clock();
+    const opts = {
+      store: fake.store,
+      namespace: NS,
+      ttlMs: 1_000,
+      now: time.now,
+    };
+
+    await readStoreDiagnosticsCached(opts);
+    time.advance(1_000);
+    await readStoreDiagnosticsCached(opts);
+    expect(fake.lists).toBe(2);
+  });
+
   it("holds a HALF-read pass for the backoff too", async () => {
     // The index answered and the render did not. `unrenderable` is then not a
     // complete list, and treating an incomplete diagnosis as a full answer for a
@@ -342,7 +363,7 @@ describe("a pass that did not read is cached as a shrug, briefly", () => {
   });
 });
 
-describe("the cache never costs a caller time", () => {
+describe("concurrent callers share one pass, and pay one pass's latency", () => {
   it("shares ONE pass between concurrent callers", async () => {
     // Without this the TTL does nothing for the case it exists for: ten
     // simultaneous polls on a cold entry would open ten full passes and only
@@ -377,6 +398,46 @@ describe("the cache never costs a caller time", () => {
     for (const r of results) expect(r.indexRead).toBe(true);
   });
 
+  it("ages a joined pass from when the reads STARTED, not from when they landed", async () => {
+    // A caller who waited four seconds on someone else's pass holds a
+    // four-second-old answer. Reporting `ageMs: 0` for it would make the cap the
+    // page prints — "no older than a minute" — quietly false by the pass's own
+    // duration, on exactly the store slow enough for it to matter.
+    const time = clock();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const store = {
+      list: async () => {
+        await gate;
+        return [];
+      },
+      resolveDetailed: async () => {
+        await gate;
+        return { values: {}, unrenderable: [] };
+      },
+    };
+
+    const first = readStoreDiagnosticsCached({
+      store,
+      namespace: NS,
+      ttlMs: 60_000,
+      now: time.now,
+    });
+    const joiner = readStoreDiagnosticsCached({
+      store,
+      namespace: NS,
+      ttlMs: 60_000,
+      now: time.now,
+    });
+    time.advance(4_000); // the store takes its time
+    release!();
+
+    expect((await first).ageMs).toBe(4_000);
+    expect((await joiner).ageMs).toBe(4_000);
+  });
+
   it("keeps the deadline: a hanging store degrades the page, it does not hang it", async () => {
     const fake = fakeStore({ hangs: true });
     const started = Date.now();
@@ -390,5 +451,82 @@ describe("the cache never costs a caller time", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(diagnosis.indexRead).toBe(false);
     expect(diagnosis.renderRead).toBe(false);
+  });
+
+  it("does not park a rejected pass, which would poison the entry for the process", async () => {
+    // `readStoreDiagnostics` is documented not to throw and this is the belt. A
+    // rejected promise left in the entry would be handed to every later caller
+    // for the life of the process — one bad read becoming a permanent outage of
+    // the page rather than one degraded render.
+    let attempts = 0;
+    const store = {
+      list: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("cannot happen, but");
+        return [];
+      },
+      resolveDetailed: async () => ({ values: {}, unrenderable: [] }),
+    };
+    // Make the FIRST pass reject outright, past readStoreDiagnostics' own
+    // guard, by having the mapping of the listing blow up.
+    const exploding = {
+      ...store,
+      list: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return [{ notAParameter: true }] as unknown as never[];
+        }
+        return [];
+      },
+    };
+
+    await expect(
+      readStoreDiagnosticsCached({
+        store: exploding,
+        namespace: NS,
+        ttlMs: 60_000,
+      }),
+    ).rejects.toThrow();
+
+    // The entry is gone rather than holding the rejection, so the next call
+    // reads again and succeeds.
+    const recovered = await readStoreDiagnosticsCached({
+      store: exploding,
+      namespace: NS,
+      ttlMs: 60_000,
+    });
+    expect(recovered.indexRead).toBe(true);
+    expect(attempts).toBe(2);
+  });
+});
+
+describe("a write through the console drops what the store told us", () => {
+  it("forgets every namespace held for that client", async () => {
+    // The console has just told a human their rotation succeeded. A cached
+    // diagnosis would keep the row saying "the parameter EXISTS and its value
+    // cannot be produced — rotate it", one click later, for the rest of the TTL.
+    const fake = fakeStore();
+    const time = clock();
+    const opts = {
+      store: fake.store,
+      namespace: NS,
+      ttlMs: 60_000,
+      now: time.now,
+    };
+
+    await readStoreDiagnosticsCached(opts);
+    await readStoreDiagnosticsCached({ ...opts, namespace: "/strad/other/" });
+    expect(fake.lists).toBe(2);
+
+    forgetStoreDiagnosis(fake.store);
+
+    // No clock movement at all: the write did it, not the TTL.
+    await readStoreDiagnosticsCached(opts);
+    await readStoreDiagnosticsCached({ ...opts, namespace: "/strad/other/" });
+    expect(fake.lists).toBe(4);
+  });
+
+  it("is a no-op for a client that has nothing cached", () => {
+    expect(() => forgetStoreDiagnosis(fakeStore().store)).not.toThrow();
   });
 });

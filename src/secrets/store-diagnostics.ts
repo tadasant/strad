@@ -144,22 +144,37 @@ export const MAX_DIAGNOSIS_TTL_MS = 60_000;
  * How long a pass that did NOT fully read suppresses the next one.
  *
  * Matches `snapshot.ts`'s `FAILURE_BACKOFF_MS`, and for the same reason: a store
- * that is down must not cost one full pass per request. It is deliberately far
- * shorter than the success TTL — a failed pass is cached as a SHRUG (`indexRead`
- * false, the states the console had before this feature existed), never as an
- * answer, so the only thing extending it would buy is a longer wait to notice
- * the store came back.
+ * that is down must not cost one full pass per request. It is capped by the
+ * success TTL as well (see `holdFor`), so it is never the LONGEST thing held: a
+ * failed pass is cached as a SHRUG — `indexRead` false, which every consumer
+ * reads as "draws no distinction" — never as an answer, and a deployment asking
+ * for tighter freshness must not get a looser hold on the worse state.
  */
 export const FAILURE_BACKOFF_MS = 5_000;
 
-interface CacheEntry {
-  value: StoreDiagnostics;
-  fetchedAt: number;
-  /** How long this entry may be served: the TTL, or the failure backoff. */
-  goodFor: number;
-  /** Set while a pass is running, so concurrent callers share one read. */
-  inflight?: Promise<StoreDiagnostics>;
+/** How long a pass may be served, given whether it read both halves. */
+function holdFor(complete: boolean, ttlMs: number): number {
+  return complete ? ttlMs : Math.min(FAILURE_BACKOFF_MS, ttlMs);
 }
+
+/**
+ * An entry is EITHER a pass in flight or a completed one, never both.
+ *
+ * Modelling it as one shape with optional fields left a placeholder value that
+ * nothing could ever read — every path checks for the pass first and returns.
+ */
+type CacheEntry =
+  | { pass: Promise<StoreDiagnostics>; done?: undefined }
+  | {
+      pass?: undefined;
+      done: {
+        value: StoreDiagnostics;
+        /** When the reads STARTED, so `ageMs` counts from the fact, not its arrival. */
+        readAt: number;
+        /** How long this entry may be served: the TTL, or the failure backoff. */
+        goodFor: number;
+      };
+    };
 
 /**
  * One cache per store CLIENT, keyed by namespace inside it.
@@ -191,23 +206,32 @@ export interface CachedDiagnosticsOptions extends ReadDiagnosticsOptions {
  * a namespace-wide refusal costs a full pass at a fan-out of ten. Performed per
  * request, that makes readiness an amplifier for a caller that polls it hard.
  *
- * Three properties, and each one is load-bearing:
+ * Four properties, and each one is load-bearing:
  *
  *   - **The deadline is preserved.** This calls `readStoreDiagnostics`, which
  *     still gives the pair one deadline and still never throws. A caller that
  *     joins a pass in flight waits at most what that pass had left, so the cache
  *     can never make a slow store hang a page that would otherwise have degraded.
+ *     The deadline belongs to the pass, not to the joiner: `timeoutMs` is not
+ *     part of the key, so a caller asking for a tighter one gets the running
+ *     pass's instead. Both call sites take the default.
  *   - **Concurrent callers share one pass.** Ten simultaneous polls on a cold
  *     entry open one read, not ten. Without this the TTL would do nothing at all
- *     for the case it is meant for.
+ *     for the case it is meant for. A caller arriving the millisecond AFTER an
+ *     entry expires waits for the fresh pass rather than being handed the stale
+ *     value: this is a health signal, and serving a known-expired one to save
+ *     latency is the trade that makes it dishonest.
+ *   - **The age counts from the read, not from its arrival.** `readAt` is taken
+ *     before the pass starts, so a six-second pass hands back a six-second-old
+ *     answer that says so, and the cap is a cap on the FACT's age.
  *   - **A failure is cached briefly and as a shrug.** A pass whose index or
- *     render half did not read is held for `FAILURE_BACKOFF_MS`, not for the
- *     TTL. Caching it for the full TTL would extend an outage's visible life; not
- *     caching it at all would leave a broken store getting hammered by exactly
- *     the poller this exists to bound. Note that a namespace-wide RENDER REFUSAL
- *     is not a failure by this definition: the reads succeeded and returned bad
- *     news, which is a complete answer and is cached for the full TTL — and that
- *     is the expensive case.
+ *     render half did not read is held for `FAILURE_BACKOFF_MS` (or the TTL,
+ *     whichever is shorter), not for the full TTL. Caching it for the full TTL
+ *     would extend an outage's visible life; not caching it at all would leave a
+ *     broken store getting hammered by exactly the poller this exists to bound.
+ *     Note that a namespace-wide RENDER REFUSAL is not a failure by this
+ *     definition: the reads succeeded and returned bad news, which is a complete
+ *     answer and is cached for the full TTL — and that is the expensive case.
  */
 export async function readStoreDiagnosticsCached(
   opts: CachedDiagnosticsOptions,
@@ -222,49 +246,49 @@ export async function readStoreDiagnosticsCached(
   }
 
   const held = entries.get(opts.namespace);
-  if (held?.inflight) return held.inflight;
+  if (held?.pass) return held.pass;
   if (held) {
-    const ageMs = now() - held.fetchedAt;
-    if (ageMs < held.goodFor) return { ...held.value, ageMs };
+    const ageMs = now() - held.done.readAt;
+    if (ageMs < held.done.goodFor) return { ...held.done.value, ageMs };
   }
 
+  const readAt = now();
   const pass = (async () => {
     try {
       const value = await readStoreDiagnostics(opts);
       const complete = value.indexRead && value.renderRead;
       entries.set(opts.namespace, {
-        value,
-        fetchedAt: now(),
-        goodFor: complete ? ttlMs : FAILURE_BACKOFF_MS,
+        done: { value, readAt, goodFor: holdFor(complete, ttlMs) },
       });
-      return value;
+      return { ...value, ageMs: now() - readAt };
     } catch (err) {
       // `readStoreDiagnostics` is documented not to throw, and this is the
-      // belt: leaving a rejected promise parked as `inflight` would serve the
+      // belt: leaving a rejected promise parked as the entry would serve the
       // same rejection to every later caller for the life of the process.
       entries.delete(opts.namespace);
       throw err;
     }
   })();
 
-  entries.set(opts.namespace, {
-    value: held?.value ?? EMPTY_DIAGNOSIS,
-    fetchedAt: held?.fetchedAt ?? -Infinity,
-    goodFor: held?.goodFor ?? 0,
-    inflight: pass,
-  });
+  entries.set(opts.namespace, { pass });
 
   return pass;
 }
 
-const EMPTY_DIAGNOSIS: StoreDiagnostics = {
-  indexed: new Set(),
-  unrenderable: new Map(),
-  rendered: new Set(),
-  indexRead: false,
-  renderRead: false,
-  ageMs: 0,
-};
+/**
+ * Drop everything cached for this store client.
+ *
+ * Called after a write through strad's own console, for the reason
+ * `StoreSecretProvider.invalidate()` gives: the console has just told a human
+ * their rotation succeeded, and a cached diagnosis would keep the row telling
+ * them to rotate it for the rest of the TTL — the page contradicting its own
+ * flash message. Whole-client rather than per-namespace because a write may
+ * touch more than it names, and because a stale diagnosis costs one pass to
+ * replace.
+ */
+export function forgetStoreDiagnosis(store: object): void {
+  CACHES.delete(store);
+}
 
 /** Resolve to the value, or to null on a throw or a timeout. Never rejects. */
 async function withDeadline<T>(

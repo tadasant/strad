@@ -401,12 +401,14 @@ export function createReadinessHandler(
       // seeds a value, and a stale `ready: false` held by an intermediary is
       // exactly the thing that would keep a fixed connector looking broken.
       //
-      // One input to it is: the store's own account of itself is read behind a
-      // TTL (`gateway.secrets.ttlSeconds`, capped at a minute) so a hard poller
-      // cannot turn this endpoint into a full render pass per request. That
-      // staleness is declared rather than hidden — `store.diagnosis.ageSeconds`
-      // says how old those reads are. Everything else in this body, including
-      // every `${NAME}` lookup, is read per request as before.
+      // What is bounded rather than instant is the store READING behind it, and
+      // by one number: `gateway.secrets.ttlSeconds`. Each `${NAME}` lookup is
+      // performed per request but answered from the runtime provider's
+      // namespace snapshot, which that TTL governs; the store's own account of
+      // itself (the index + render pass) is held for the same TTL, capped at a
+      // minute, so a hard poller cannot turn this endpoint into a full render
+      // pass per request. The second one declares its staleness rather than
+      // hiding it: `store.diagnosis.ageSeconds` says how old those reads are.
       res.set("cache-control", "no-store");
       res.json(buildReadiness({ config: opts.config, env: opts.env, reading }));
     } catch (err) {
