@@ -196,12 +196,14 @@ describe("checkToolSurface", () => {
     expect(result).toEqual({ checked: [], skipped: [], findings: [] });
   });
 
-  it("ignores the TAG, so CI's :ci checks a config's :latest", () => {
+  // The tag CI really builds is per-run, so it carries dashes — which also
+  // proves the last-colon split that finds the tag is not confused by them.
+  it("ignores the TAG, so CI's :ci-<run> checks a config's :latest", () => {
     const result = checkToolSurface(
       config(GMAIL_RO),
       surface(
         { "/gmail": { tools: GMAIL_TOOLS } },
-        "ghcr.io/tadasant/strad-bundle:ci",
+        "ghcr.io/tadasant/strad-bundle:ci-17235891044-1",
       ),
     );
     expect(result.checked).toHaveLength(1);
