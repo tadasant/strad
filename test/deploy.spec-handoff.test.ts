@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -48,16 +49,37 @@ describe("deploy-staging spec handoff", () => {
   // a directory every job on the box shares — the bug this file exists for,
   // reintroduced by the fix for it. So the path comes from the RUNNER_TEMP
   // environment variable, in a step's shell, where the runner does set it.
-  it("never reads the runner context from a job-level env, where it is empty", () => {
-    const doc = parse(readFileSync(WORKFLOW, "utf8")) as {
-      jobs: Record<string, { env?: Record<string, unknown> }>;
-    };
-    for (const [job, def] of Object.entries(doc.jobs)) {
-      for (const [key, value] of Object.entries(def.env ?? {})) {
-        expect(
-          `${job}.env.${key} = ${String(value)}`,
-          "job-level env cannot see the runner context",
-        ).not.toMatch(/\$\{\{\s*runner\./);
+  it("never reads the runner context from a workflow- or job-level env, where it is empty", () => {
+    // Every workflow, not just this one: the trap is a property of the context
+    // table, so the next workflow to reach for `${{ runner.temp }}` outside a
+    // step will hit it too.
+    for (const file of readdirSync(".github/workflows").filter((f) =>
+      /\.ya?ml$/.test(f),
+    )) {
+      const doc = parse(
+        readFileSync(join(".github/workflows", file), "utf8"),
+      ) as
+        | {
+            env?: Record<string, unknown>;
+            jobs?: Record<string, { env?: Record<string, unknown> }>;
+          }
+        | undefined;
+      const scopes: Array<[string, Record<string, unknown> | undefined]> = [
+        ["<workflow>", doc?.env],
+        ...Object.entries(doc?.jobs ?? {}).map(
+          ([job, def]) =>
+            [job, def?.env] as [string, Record<string, unknown> | undefined],
+        ),
+      ];
+      for (const [scope, env] of scopes) {
+        // JSON.stringify rather than String(): a nested map would render as
+        // "[object Object]" and hide an expression one level down.
+        for (const [key, value] of Object.entries(env ?? {})) {
+          expect(
+            `${file} ${scope}.env.${key} = ${JSON.stringify(value)}`,
+            "workflow- and job-level env cannot see the runner context",
+          ).not.toMatch(/\$\{\{\s*runner\./);
+        }
       }
     }
   });

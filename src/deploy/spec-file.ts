@@ -13,8 +13,8 @@
  * and both run on the same self-hosted machine (`ci-runner-2`) under different
  * runner processes — which share `/tmp`. Prod's render step opened that path for
  * writing at 11:29:38.75, truncating staging's spec to zero bytes; staging's
- * `doctl apps update` read it at 11:29:40.05, one and a half seconds inside the
- * two-second window before prod finished writing at 11:29:40.78.
+ * `doctl apps update` read it at 11:29:40.05, 1.3 seconds inside the two-second
+ * window before prod finished writing at 11:29:40.78.
  *
  * doctl did not complain. An empty document parses as YAML `null`, decodes into
  * a zero-valued `godo.AppSpec` without error, and is PUT as `{"spec":{}}`. The
@@ -72,6 +72,32 @@ function fail(detail: string): never {
 }
 
 /**
+ * Where a JSON parse gave up, and nothing else.
+ *
+ * `SyntaxError.message` is the one diagnostic here that is built from the INPUT
+ * rather than about it, so it is mined for the position and otherwise discarded.
+ */
+function jsonFaultPosition(err: unknown): string {
+  const at =
+    err instanceof Error ? /\bat position (\d+)/.exec(err.message)?.[1] : null;
+  return at ? ` — the parse gave up at byte ${at}` : "";
+}
+
+/**
+ * A value's SHAPE, for an error message, without quoting the value.
+ *
+ * Anything in a rendered spec may be a secret, so a failure describes what it
+ * found by type and never by content. Only `null` and the primitive types are
+ * safe to name, and none of them can carry a value from the file.
+ */
+function shapeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  const type = typeof value;
+  return `${/^[aeiou]/.test(type) ? "an" : "a"} ${type}`;
+}
+
+/**
  * Assert `text` is a deployable App Platform spec, and summarise it.
  *
  * Throws `SpecFileError` with a message naming the specific defect. Returns the
@@ -100,17 +126,19 @@ export function assertDeployableSpec(
   } catch (err) {
     // A partially-written file: the render was interrupted, or another writer
     // is mid-flight on the same path.
+    //
+    // The parser's own message is NOT passed through. V8 quotes the first ten
+    // bytes of the input back at you when the fault is near the start
+    // (`Unexpected token 's', "s3cret-tok"... is not valid JSON`), and this
+    // file holds secret values — so the branch that exists for "the bytes are
+    // not what we wrote" would print the bytes. Position only.
     fail(
-      `the spec file is not valid JSON (${bytes} bytes): ` +
-        `${err instanceof Error ? err.message : String(err)}`,
+      `the spec file is not valid JSON (${bytes} bytes)${jsonFaultPosition(err)}.`,
     );
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    fail(
-      `the spec file does not hold a JSON object (got ` +
-        `${Array.isArray(parsed) ? "an array" : String(parsed === null ? "null" : typeof parsed)}).`,
-    );
+    fail(`the spec file does not hold a JSON object (got ${shapeOf(parsed)}).`);
   }
 
   const spec = parsed as Record<string, unknown>;
@@ -127,8 +155,11 @@ export function assertDeployableSpec(
 
   const name = spec.name;
   if (typeof name !== "string" || name.trim() === "") {
+    // Described by shape, never quoted: a foreign file could park anything at
+    // `.name`, including an object holding a credential.
     fail(
-      `the spec has no top-level "name" (got ${JSON.stringify(name)}). ` +
+      `the spec has no top-level "name" (got ` +
+        `${name === undefined ? "nothing" : typeof name === "string" ? "a blank string" : shapeOf(name)}). ` +
         `DigitalOcean rejects this as ".name in body is required".`,
     );
   }
@@ -141,11 +172,16 @@ export function assertDeployableSpec(
     );
   }
 
+  // `services`, and only `services`, because that is the only component list
+  // `renderAppSpec` emits — every strad component is a service today. An App
+  // Platform spec may also carry `static_sites`, `workers`, `jobs` and
+  // `functions`, so this check follows the renderer rather than the platform,
+  // and the first spec that ships one of those has to widen it.
   const services = spec.services;
   if (!Array.isArray(services) || services.length === 0) {
     fail(
       `the spec has no components ("services" is ` +
-        `${Array.isArray(services) ? "empty" : JSON.stringify(services)}). ` +
+        `${Array.isArray(services) ? "empty" : shapeOf(services)}). ` +
         `An App Platform update is a full replace, so deploying it would ` +
         `delete every component on the app.`,
     );

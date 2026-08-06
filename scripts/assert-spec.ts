@@ -14,9 +14,11 @@
  *   node --experimental-transform-types scripts/assert-spec.ts \
  *     "$RUNNER_TEMP/spec.json" --expect-name strad-staging
  *
- * `--expect-name` is the argument that matters. Without it this degrades to "is
- * this a spec at all", and the expensive case — a VALID spec belonging to
- * another deployment — passes.
+ * `--expect-name` is REQUIRED, and that is the argument that matters. Without
+ * it the check degrades to "is this a spec at all", and the expensive case — a
+ * VALID spec belonging to another deployment, which would deploy green — passes.
+ * The library keeps it optional because a caller may genuinely not know the
+ * name; a deploy always does, so the deploy CLI insists.
  *
  * Prints the app name, the component names and the byte count to STDERR — the
  * spec itself holds secret values and is never echoed. Exits 1 with a
@@ -37,8 +39,9 @@ const { values, positionals } = parseArgs({
 });
 
 const path = positionals[0];
-if (!path) {
-  console.error("usage: assert-spec <spec.json> [--expect-name <app>]");
+const expectedName = values["expect-name"];
+if (!path || !expectedName) {
+  console.error("usage: assert-spec <spec.json> --expect-name <app>");
   process.exit(1);
 }
 
@@ -55,7 +58,7 @@ try {
 
 try {
   const { name, components, bytes } = assertDeployableSpec(text, {
-    expectedName: values["expect-name"],
+    expectedName,
   });
   console.error(
     `[assert-spec] ${path}: "${name}", ${bytes} bytes, ` +

@@ -1765,11 +1765,23 @@ carrying prod's images, prod's domains and prod's secrets. `doctl apps update
 the deploy would have gone green. That is why the guard checks the app NAME and
 not merely that a name exists.
 
-**Undo.** Nothing to undo on this side. The collision needs both writers to agree
-on a path, so moving one ends it — but tadasant-internal's prod deploy still
-writes `/tmp/spec.json` and is still exposed to any _other_ job on those runners
-that picks the same name. The durable fix is ephemeral runners, or
-`$RUNNER_TEMP` on that side too. Filed as tadasant/strad#115.
+**The same shape, elsewhere, unfixed.** A shared path is one instance of "two
+jobs agree on a name nobody coordinates", and this box has others:
+
+- tadasant-internal's prod deploy still writes `/tmp/spec.json`, and is still
+  exposed to any _other_ job on those runners that picks the same name.
+  tadasant/strad#115.
+- `ci.yml` runs its containers as the fixed names `strad-ci` / `bundle-ci`, on a
+  fixed host port, from the fixed image tags `strad:ci` / `strad-bundle:ci`, on a
+  shared docker daemon. The name and port collisions are loud. The TAG one is
+  not: a concurrent job rebuilding `strad:ci` means this job's
+  "`/mcp` with no token returns 401" assertion — the load-bearing one — can pass
+  against an image the PR did not build. tadasant/strad#117.
+
+**Undo.** Nothing to undo on this side; the collision needs both writers to agree
+on a path, so moving one ends it. The durable fix for the CLASS is ephemeral
+runners, so no two jobs ever share a filesystem or a daemon. Short of that, every
+fixed name a job writes on a shared box wants a `${{ github.run_id }}` in it.
 
 ---
 

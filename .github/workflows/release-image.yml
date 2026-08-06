@@ -178,7 +178,7 @@ jobs:
             echo "GH_STRAD_SYNC_TOKEN_TADASANT_INTERNAL not set; skipping cross-repo dispatch."
             exit 0
           fi
-          code=$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' -X POST \
+          code=$(curl -sS -o "$RUNNER_TEMP/dispatch.out" -w '%{http_code}' -X POST \
             -H "Authorization: Bearer ${DISPATCH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -188,7 +188,7 @@ jobs:
             echo "Dispatched strad-image-published (version ${VERSION})."
           else
             echo "::warning::repository_dispatch returned HTTP ${code}; prod catches up on its own schedule."
-            cat /tmp/dispatch.out 2>/dev/null || true
+            cat "$RUNNER_TEMP/dispatch.out" 2>/dev/null || true
           fi
 
   deploy-staging:
