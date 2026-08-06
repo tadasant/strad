@@ -1723,6 +1723,52 @@ reasonably think the config is wrong.
 **Undo.** Have the mount declare its own surface stability, so the observer reads
 it from the bundle host rather than from a list beside it. That is a change to
 every tree's factory contract, which is why it is a list today.
+## 47. Two repos' deploys share one machine, and coordinate only by not colliding
+
+**✅ RESOLVED for this repo's staging deploy** — the rendered spec moved to
+`$RUNNER_TEMP`, which no other job can name, and it is asserted immediately
+before `doctl` reads it. The underlying condition — several runner processes on
+one box, sharing `/tmp` — is unchanged.
+
+**What.** `runs-on: self-hosted` means several runner _processes_ share one
+machine and therefore share `/tmp`. `deploy-staging.yml` rendered its App
+Platform spec to `/tmp/spec.json`; so does tadasant-internal's prod deploy, on
+the same boxes. Nothing coordinated the two.
+
+**How it failed.** On 2026-08-06, `Release image` run 31097159965 (commit #113)
+and tadasant-internal's `Deploy strad production` run 31097336627 both landed on
+`ci-runner-2`, as `tadasant-strad-ci-2` and `tadasant-internal-ci-2`:
+
+| Time (UTC)    | What                                                                       |
+| ------------- | -------------------------------------------------------------------------- |
+| `11:29:37.57` | staging renders its spec — 82713 bytes, complete                           |
+| `11:29:37.63` | staging attaches GHCR pull credentials to 3 components                     |
+| `11:29:38.75` | **prod's render opens `/tmp/spec.json` for writing — 0 bytes**             |
+| `11:29:40.05` | staging's `doctl apps update` reads it                                     |
+| `11:29:40.75` | `400 … error validating app spec field ".name": .name in body is required` |
+| `11:29:40.78` | prod's render finishes — 91302 bytes, naming `strad-prod`                  |
+
+The staging render was byte-identical (82713 bytes, same preflight, same baked
+boot keys) to the deploy that had gone green the day before, so the error named a
+field the renderer has always set and pointed at a renderer that was innocent.
+
+**Why doctl said nothing.** An empty document is valid YAML `null`. It decodes
+into a zero-valued `godo.AppSpec` without error, and doctl PUTs it. The first
+component that objects is DigitalOcean's request validator, and it objects about
+the first required field of an empty object.
+
+**The worse outcome that did not happen.** One second later on the clock and
+staging's doctl would have read prod's _complete_ spec: valid, well-formed, and
+carrying prod's images, prod's domains and prod's secrets. `doctl apps update
+<staging-id> --spec <prod-spec>` would have replaced the staging app with it, and
+the deploy would have gone green. That is why the guard checks the app NAME and
+not merely that a name exists.
+
+**Undo.** Nothing to undo on this side. The collision needs both writers to agree
+on a path, so moving one ends it — but tadasant-internal's prod deploy still
+writes `/tmp/spec.json` and is still exposed to any _other_ job on those runners
+that picks the same name. The durable fix is ephemeral runners, or
+`$RUNNER_TEMP` on that side too. Filed as tadasant/strad#115.
 
 ---
 

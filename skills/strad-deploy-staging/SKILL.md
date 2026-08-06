@@ -182,9 +182,12 @@ from Secret Manager (masked, into
 from `infra/strad.staging.yaml` (`--image ghcr.io/tadasant/strad:<version>`, plus
 `--bundle-image` when a branch was built, `--app strad-staging`, `--region nyc`,
 `--domain staging.strad.tadasant.com`) to
-`/tmp/spec.json`, which is **never echoed** because it inlines secret values →
-attach the durable GHCR pull credential → install `doctl` → `doctl apps
-create/update --spec /tmp/spec.json --wait` for `strad-staging` → **smoke-test**
+`$RUNNER_TEMP/spec.json`, which is **never echoed** because it inlines secret
+values, and lives in the job's own temp directory because `/tmp` is shared with
+every other job on a self-hosted box → attach the durable GHCR pull credential →
+install `doctl` → **assert the spec is still the one this job rendered**
+(`scripts/assert-spec.ts … --expect-name strad-staging`) → `doctl apps
+create/update --spec "$SPEC_FILE" --wait` for `strad-staging` → **smoke-test**
 the live host.
 
 ## Verifying the deployed app

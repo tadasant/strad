@@ -824,6 +824,46 @@ plus `bundle-zimmer-secrets`, which is there for a second parameter store rather
 than for a capability. The entry is kept in `HACKS.md` for history.
 :::
 
+### 47. Deploys from two repos share one machine, and coordinate only by not colliding
+
+strad's CI runs on **self-hosted** runners, which means several runner
+_processes_ share one machine — and therefore share `/tmp`. This repo's staging
+deploy rendered its App Platform spec to `/tmp/spec.json`; so does the prod
+deploy that lives in a separate private repo. Nothing coordinated the two.
+
+On 2026-08-06 they overlapped on the same box. Prod's render opened
+`/tmp/spec.json` for writing at `11:29:38.75`, truncating the staging spec that
+had been complete since `11:29:37.57`. Staging's `doctl apps update` read the
+empty file at `11:29:40.05`; prod finished writing at `11:29:40.78`. The staging
+deploy failed with
+
+```
+400 error validating app spec field ".name": .name in body is required
+```
+
+which reads as a renderer bug and was not one — that render was byte-identical to
+the deploy that had gone green the day before. `doctl` is silent about this
+because an empty document is valid YAML `null`, decodes into a spec with no
+fields, and gets sent.
+
+**Fixed on strad's side, twice over.** The spec is rendered into `$RUNNER_TEMP`,
+which is per runner installation and emptied between jobs, so no other job can
+name it; and it is asserted before every `doctl` call that reads it — it must
+parse, carry a non-empty top-level `name`, have components, and **name the app
+this job set out to deploy**. The collision needs both writers to agree on a path,
+so moving one side ends it.
+
+**Still true.** The condition that made it possible is unchanged: these are
+long-lived shared runners, and any job on them can still write any fixed path in
+`/tmp`. The prod deploy has not moved off `/tmp/spec.json` — tracked in issue
+[#115](https://github.com/tadasant/strad/issues/115). The durable fix for the
+class is ephemeral runners.
+
+**Why the name check, and not just "has a name."** One second later on the clock
+and staging's `doctl` would have read prod's _complete_ 91302-byte spec — valid,
+naming `strad-prod`, carrying prod's images and prod's secrets — and replaced the
+staging app with it. That deploy would have gone green.
+
 ### 37. Exported logs are an allowlist, so most of stdout reaches no ingestor
 
 strad ships its own structured events as OTLP logs, against a per-event field
