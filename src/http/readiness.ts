@@ -15,6 +15,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import type { BundlePresence } from "../gateway/bundle-presence.ts";
+import type { StoreDiagnostics } from "../secrets/store-diagnostics.ts";
 import {
   readDeploymentSecretStatus,
   storeProject,
@@ -126,6 +127,25 @@ export interface StoreReadiness {
   resolverCredential: boolean;
   /** One sentence naming what is wired and what is not. */
   detail: string;
+  /**
+   * How the store's own account of itself was obtained, and when.
+   *
+   * Null when there was none: no resolver credential, so `unrenderable` was not
+   * a distinction this report could draw. Otherwise the pair of reads behind it
+   * is TTL-cached, and `ageSeconds` is how old the answer is — 0 on a pass that
+   * just ran. A poller is entitled to know it is being served a cached verdict,
+   * and how stale it may be before it is refreshed.
+   */
+  diagnosis: StoreDiagnosis | null;
+}
+
+export interface StoreDiagnosis {
+  /** Age of the underlying index + render reads, in seconds. */
+  ageSeconds: number;
+  /** True when the index read succeeded. False means "not read", not "empty". */
+  indexRead: boolean;
+  /** True when the per-parameter render pass ran. */
+  renderRead: boolean;
 }
 
 export interface ServerIssue {
@@ -186,7 +206,7 @@ export interface BuildReadinessOptions {
 
 export function buildReadiness(opts: BuildReadinessOptions): ReadinessReport {
   const { config, env, reading } = opts;
-  const store = storeReadiness(config, env);
+  const store = storeReadiness(config, env, reading.storeDiagnosis);
   const states = tally(reading.statuses);
 
   const issues: ServerIssue[] = reading.statuses
@@ -255,6 +275,7 @@ export function buildReadiness(opts: BuildReadinessOptions): ReadinessReport {
 function storeReadiness(
   config: StradConfig,
   env: NodeJS.ProcessEnv,
+  diagnosis: StoreDiagnostics | null,
 ): StoreReadiness {
   const provider = config.gateway.secrets.provider;
   const storeBacked = provider !== "env";
@@ -270,6 +291,13 @@ function storeReadiness(
     projectGuessed: guessed,
     gatewayNamespace: gatewayNamespace(config.gateway.env),
     resolverCredential,
+    diagnosis: diagnosis
+      ? {
+          ageSeconds: Math.round(diagnosis.ageMs / 1000),
+          indexRead: diagnosis.indexRead,
+          renderRead: diagnosis.renderRead,
+        }
+      : null,
     detail: storeBacked
       ? resolverCredential
         ? `gateway.secrets.provider is "${provider}" and this process holds the resolver ` +
@@ -369,9 +397,18 @@ export function createReadinessHandler(
         store: opts.diagnosticStore,
       });
 
-      // Never cached. The answer changes the moment someone seeds a value, and a
-      // stale `ready: false` is exactly the thing that would keep a fixed
-      // connector looking broken.
+      // The RESPONSE is never cached: the answer changes the moment someone
+      // seeds a value, and a stale `ready: false` held by an intermediary is
+      // exactly the thing that would keep a fixed connector looking broken.
+      //
+      // What is bounded rather than instant is the store READING behind it, and
+      // by one number: `gateway.secrets.ttlSeconds`. Each `${NAME}` lookup is
+      // performed per request but answered from the runtime provider's
+      // namespace snapshot, which that TTL governs; the store's own account of
+      // itself (the index + render pass) is held for the same TTL, capped at a
+      // minute, so a hard poller cannot turn this endpoint into a full render
+      // pass per request. The second one declares its staleness rather than
+      // hiding it: `store.diagnosis.ageSeconds` says how old those reads are.
       res.set("cache-control", "no-store");
       res.json(buildReadiness({ config: opts.config, env: opts.env, reading }));
     } catch (err) {

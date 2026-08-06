@@ -10,6 +10,7 @@ import {
   type SecretProvider,
 } from "../src/secrets/provider/index.ts";
 import type { ReadinessReport } from "../src/http/readiness.ts";
+import type { ParameterStore } from "../src/secrets/parameters/index.ts";
 
 /**
  * `GET /api/secrets/readiness` — the machine's read of the secret roster.
@@ -117,6 +118,7 @@ async function boot(
   bag: Record<string, string>,
   env: NodeJS.ProcessEnv = ENV,
   mode: "core" | "bundle" = "core",
+  diagnosticStore?: Pick<ParameterStore, "list" | "resolveDetailed"> | null,
 ): Promise<{ url: string; close: () => void }> {
   const registry = await Registry.build({
     config,
@@ -133,6 +135,7 @@ async function boot(
     env,
     secrets: bag,
     secretProvider: provider,
+    diagnosticStore,
   });
   const s: Server = app.listen(0);
   await new Promise<void>((r) => s.on("listening", () => r()));
@@ -421,6 +424,83 @@ describe("readiness when the backend is down", () => {
       expect(issue.secrets[0]?.state).toBe("error");
       expect(issue.secrets[0]?.source).toBe(null);
     }
+    shut();
+  });
+});
+
+describe("readiness does not amplify store reads", () => {
+  it("polls it four times and reads the store ONCE, saying how old the answer is", async () => {
+    // Answering this endpoint costs a full index read plus a per-parameter
+    // render pass. Performed per call, that makes a hard poller an amplifier
+    // against Parameter Manager — so the pass is TTL'd, and the body declares
+    // the staleness rather than presenting a cached verdict as a fresh one.
+    let lists = 0;
+    let renders = 0;
+    const counting = {
+      list: async (namespace: string) => {
+        lists += 1;
+        return [
+          {
+            path: `${namespace}ALPHA_TOKEN`,
+            variable: "ALPHA_TOKEN",
+            secret: true,
+            hasValue: true,
+            latestVersion: "v1",
+          },
+        ];
+      },
+      resolveDetailed: async () => {
+        renders += 1;
+        return { values: { ALPHA_TOKEN: "value" }, unrenderable: [] };
+      },
+    };
+
+    const { url, close: shut } = await boot(
+      STORE_CONFIG,
+      new EnvSecretProvider(BAG),
+      BAG,
+      ENV,
+      "core",
+      counting,
+    );
+
+    let last: ReadinessReport | undefined;
+    for (let i = 0; i < 4; i++) {
+      last = (await (
+        await fetch(`${url}/api/secrets/readiness`, {
+          headers: { authorization: `Bearer ${TOKEN.plaintext}` },
+        })
+      ).json()) as ReadinessReport;
+    }
+
+    expect(lists).toBe(1);
+    expect(renders).toBe(1);
+    expect(last?.store.diagnosis?.indexRead).toBe(true);
+    expect(last?.store.diagnosis?.renderRead).toBe(true);
+    // Bounded rather than pinned to 0: this is a real clock over four real HTTP
+    // round trips, and the claim under test is that the age is REPORTED and
+    // inside the window, not that a loaded runner finishes in under a second.
+    expect(last?.store.diagnosis?.ageSeconds).toBeGreaterThanOrEqual(0);
+    expect(last?.store.diagnosis?.ageSeconds).toBeLessThan(60);
+    // The RESPONSE is still uncacheable: the rest of the body is read per call.
+    shut();
+  });
+
+  it("reports no diagnosis at all when there is no store to diagnose", async () => {
+    const { url, close: shut } = await boot(
+      CONFIG,
+      new EnvSecretProvider(BAG),
+      BAG,
+      ENV,
+      "core",
+      null,
+    );
+    const body = (await (
+      await fetch(`${url}/api/secrets/readiness`, {
+        headers: { authorization: `Bearer ${TOKEN.plaintext}` },
+      })
+    ).json()) as ReadinessReport;
+    expect(body.store.diagnosis).toBe(null);
     shut();
   });
 });

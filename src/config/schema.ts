@@ -341,7 +341,13 @@ const AuthConfig = z.object({
 const SecretsConfig = z
   .object({
     provider: z.enum(["env", "gcp-parameter-store"]).default("env"),
-    /** Snapshot freshness. Bounds how long a ROTATION can go unnoticed. */
+    /**
+     * Snapshot freshness. Bounds how long a ROTATION can go unnoticed.
+     *
+     * The console's and `/api/secrets/readiness`'s store DIAGNOSIS is held for
+     * the same number — capped at 60s, because that answer is a health signal
+     * and this knob accepts an hour. See src/secrets/store-diagnostics.ts.
+     */
     ttlSeconds: z.number().int().positive().max(3600).default(60),
     /**
      * Minimum interval between refreshes triggered by a MISS. Bounds how long a

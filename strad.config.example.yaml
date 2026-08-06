@@ -36,7 +36,10 @@ gateway:
     provider: env
 
     # Bounds how long a ROTATION can go unnoticed. The snapshot of the namespace
-    # is refreshed on the first read after it goes stale.
+    # is refreshed on the first read after it goes stale. It also bounds how
+    # stale the console's and /api/secrets/readiness's store diagnosis may be,
+    # capped at 60s there — that answer is a health signal, and this accepts an
+    # hour. Both surfaces print how old the reading they served is.
     ttlSeconds: 60
 
     # Bounds how long an ADDITION can go unnoticed. A miss forces one

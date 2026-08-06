@@ -1267,11 +1267,24 @@ cost that a namespace of hundreds would feel on the deploy path.
 `readStoreDiagnostics` gives the pair of reads six seconds together. On a large
 namespace the render pass can exceed that, and then the whole diagnosis returns
 null and `cannot render` is simply not drawn — the console degrades to the states
-it had without it rather than to a wrong one. The resolver client is cached per
-process so the pass does not also re-mint an OAuth token per page load, but no
-result cache exists yet: every `/ui` render and every `/api/secrets/readiness`
-call performs the reads afresh, which makes the readiness endpoint an amplifier
-for a caller that polls it hard.
+it had without it rather than to a wrong one.
+
+**And it is bounded by a TTL, which is the trade that stops the amplification.**
+The resolver client is cached per process so the pass does not re-mint an OAuth
+token per page load, and `readStoreDiagnosticsCached` holds the RESULT for
+`gateway.secrets.ttlSeconds`, capped at one minute — so a `/ui` reload and a hard
+poller on `/api/secrets/readiness` cost one pass per minute rather than one per
+request. What that buys in cost it pays for in freshness: a parameter seeded by
+anything other than this console can take up to a minute to change a row, and the
+store can be broken for up to a minute before the diagnosis says so. The
+staleness is therefore printed rather than hidden — `StoreDiagnostics.ageMs`, the
+console's "was read 12s ago", and `store.diagnosis.ageSeconds` in the readiness
+JSON — and a write THROUGH the console drops the cache, so a rotation is not
+contradicted by the row it was performed from. A pass whose index or render half
+did NOT read is held for five seconds instead of the full TTL, because a shrug
+cached for a minute would extend an outage; a namespace-wide render REFUSAL is
+not that case — it is a complete answer, from the expensive full pass, and is
+cached for the whole TTL.
 
 **Undo.** Delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
 `src/gateway/bundle-presence.ts`, `src/http/presence.ts`,
