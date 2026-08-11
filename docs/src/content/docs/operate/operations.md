@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Thirteen jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Fourteen jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -135,8 +135,9 @@ every build step passes `builder: ${{ steps.buildx.outputs.name }}` — never
 reading it. `.github/actions/build-push` takes the builder as an input and fails
 before its first attempt if a call site omits it, because an omitted input
 interpolates to the empty string and reads as "no `--builder`".
-`test/workflow-buildx-builder.test.ts` parses every workflow and fails the PR
-that drops either half. See [limitations #53](/limitations/).
+`test/workflow-buildx-builder.test.ts` parses every workflow and every local
+action, and fails the PR that drops either half. See
+[limitations #53](/limitations/#53-the-buildx-builder-is-a-box-wide-name-and-nothing-in-a-workflow-says-so).
 
 </aside>
 

@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
@@ -28,7 +29,8 @@ import { parse } from "yaml";
  */
 
 const WORKFLOW_DIR = ".github/workflows";
-const COMPOSITE = ".github/actions/build-push/action.yml";
+const ACTION_DIR = ".github/actions";
+const COMPOSITE = `${ACTION_DIR}/build-push/action.yml`;
 
 /** A step that builds an image, by either route this repo uses. */
 const BUILD_ACTIONS = [
@@ -38,9 +40,10 @@ const BUILD_ACTIONS = [
 
 /** How many builder-owning jobs and build steps we expect to find at all. */
 const MIN_SETUP_STEPS = 10;
-const MIN_BUILD_STEPS = 12;
+const MIN_BUILD_STEPS = 15;
 
 interface Step {
+  "continue-on-error"?: boolean;
   uses?: string;
   id?: string;
   with?: Record<string, unknown>;
@@ -49,22 +52,55 @@ interface Step {
   name?: string;
 }
 
-function workflows(): { file: string; doc: unknown }[] {
-  return readdirSync(WORKFLOW_DIR)
-    .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
-    .map((f) => ({
-      file: `${WORKFLOW_DIR}/${f}`,
-      doc: parse(readFileSync(`${WORKFLOW_DIR}/${f}`, "utf8")),
-    }));
+/** Every local composite action's `action.yml`, globbed rather than listed. */
+function actionFiles(): string[] {
+  if (!existsSync(ACTION_DIR)) return [];
+  return readdirSync(ACTION_DIR)
+    .map((d) => `${ACTION_DIR}/${d}/action.yml`)
+    .filter((f) => existsSync(f));
 }
 
-/** Every `jobs.<id>` that runs steps, across every workflow. */
-function* jobs(): Generator<{ file: string; job: string; steps: Step[] }> {
-  for (const { file, doc } of workflows()) {
-    const all = (doc as { jobs?: Record<string, { steps?: Step[] }> }).jobs;
-    for (const [job, body] of Object.entries(all ?? {}))
-      if (Array.isArray(body?.steps)) yield { file, job, steps: body.steps };
+/**
+ * Every step-running unit in `.github/`: each workflow job, and each local
+ * composite action's step list. The actions belong here too — a second one that
+ * builds an image would otherwise be invisible to every assertion below.
+ */
+function* jobs(): Generator<{
+  file: string;
+  job: string;
+  steps: Step[];
+  action: boolean;
+}> {
+  for (const f of readdirSync(WORKFLOW_DIR).filter((f) => /\.ya?ml$/.test(f))) {
+    const file = `${WORKFLOW_DIR}/${f}`;
+    const doc = parse(readFileSync(file, "utf8")) as {
+      jobs?: Record<string, { steps?: Step[] }>;
+    };
+    for (const [job, body] of Object.entries(doc?.jobs ?? {}))
+      if (Array.isArray(body?.steps))
+        yield { file, job, steps: body.steps, action: false };
   }
+
+  for (const file of actionFiles()) {
+    const doc = parse(readFileSync(file, "utf8")) as {
+      runs?: { steps?: Step[] };
+    };
+    if (Array.isArray(doc?.runs?.steps))
+      yield { file, job: "runs", steps: doc.runs.steps, action: true };
+  }
+}
+
+/**
+ * A step's shell script with line continuations folded away. Scanning raw lines
+ * would call a correctly-written
+ *
+ *     docker buildx build \
+ *       --builder "$BUILDER" .
+ *
+ * a violation, because the flag is not on the line the command is on.
+ */
+function script(step: Step): string[] {
+  return (step.run ?? "").replace(/\\\r?\n/g, " ").split("\n");
 }
 
 const isSetup = (s: Step) => s.uses?.startsWith("docker/setup-buildx-action@");
@@ -99,10 +135,26 @@ describe("no build runs on a builder its own job does not own", () => {
   it("points every build step at its own job's builder", () => {
     let found = 0;
 
-    for (const { file, job, steps } of jobs()) {
+    for (const { file, job, steps, action } of jobs()) {
       const setup = steps.find(isSetup);
       const builds = steps.filter(isBuild);
       if (builds.length === 0) continue;
+
+      // A composite action has no job of its own to create a builder in — it
+      // runs inside its caller's. So it takes one as an input, and the caller
+      // is what the workflow half of this test checks.
+      if (action) {
+        for (const step of builds) {
+          found++;
+          expect(
+            step.with?.builder,
+            `${file}: \`${step.name ?? step.uses}\` does not pass the ` +
+              `action's \`builder\` input through, so it runs on the shared ` +
+              `pointer no matter what the caller passed.`,
+          ).toBe("${{ inputs.builder }}");
+        }
+        continue;
+      }
 
       expect(
         setup,
@@ -118,25 +170,56 @@ describe("no build runs on a builder its own job does not own", () => {
             `\`builder:\`, so buildx resolves the shared pointer and the build ` +
             `dies when whichever job owns it tears down.`,
         ).toBe(`\${{ steps.${setup!.id}.outputs.name }}`);
+
+        // …and the builder must already EXIST when that expression is read. A
+        // setup step ordered after the build interpolates to the empty string,
+        // which is the same silent fallback as writing no `builder:` at all.
+        expect(
+          steps.indexOf(setup!),
+          `${file} (${job}) sets up its builder AFTER \`${step.name ?? step.uses}\`, ` +
+            `so that step's \`builder:\` resolves to the empty string.`,
+        ).toBeLessThan(steps.indexOf(step));
       }
     }
 
     expect(found).toBeGreaterThanOrEqual(MIN_BUILD_STEPS);
   });
 
-  it("never hand-rolls a `docker buildx build` without one either", () => {
-    // The actions above are not the only way to reach buildkit: a `run:` block
-    // is one `docker buildx build .` away from the same bug, and no action
-    // input would be missing to notice it.
+  it("never hand-rolls a build command without one either", () => {
+    // The actions above are not the only way to reach buildkit, and `docker
+    // buildx build` is not the only spelling of it: since Docker 23 a plain
+    // `docker build` IS buildx, and `bake` and `compose build` read the same
+    // pointer. A `run:` block is one of those away from the same bug, and no
+    // action input would be missing to notice it.
+    const BUILDS =
+      /\bdocker\s+(?:buildx\s+(?:build|bake)|compose\s+build|build)\b/;
+
     for (const { file, job, steps } of jobs())
       for (const step of steps)
-        for (const line of (step.run ?? "").split("\n"))
-          if (/\bdocker\s+buildx\s+build\b/.test(line))
+        for (const line of script(step))
+          if (BUILDS.test(line))
             expect(
               line,
-              `${file} (${job}) shells out to \`docker buildx build\` without ` +
+              `${file} (${job}) shells out to a build command without ` +
                 `\`--builder\`, which resolves the shared pointer.`,
             ).toMatch(/--builder\b/);
+  });
+
+  it("never writes the expression delimiter as an escape", () => {
+    // `\${{` is not an escape — the runner has none — so it parses as an
+    // expression and takes the whole file to a startup_failure. That matters
+    // most in a local action: actionlint does NOT read a composite's `run:`
+    // blocks even when it follows the `uses:` to them, so `ci.yml`'s workflow
+    // lint cannot see this, and the steps that load `build-push` only run on
+    // `main` (#51). Nothing else in a PR build would say a word.
+    for (const { file, job, steps } of jobs())
+      for (const step of steps)
+        expect(
+          step.run ?? "",
+          `${file} (${job}) writes \`\\\${{\` in a shell step. There is no ` +
+            `backslash escape for the delimiter; name the expression in prose ` +
+            `instead.`,
+        ).not.toMatch(/\\\$\{\{/);
   });
 });
 
@@ -184,8 +267,41 @@ describe("the shared build-push action cannot be called without a builder", () =
       guard,
       `${COMPOSITE} checks \`inputs.builder\` only after a build has already run.`,
     ).toBeLessThan(steps.findIndex(isBuild));
-    // It must FAIL on empty, not warn: a warning still builds on the shared
-    // pointer, which is the whole failure mode.
-    expect(steps[guard]!.run).toMatch(/exit 1/);
+
+    // A `continue-on-error: true` here would leave the guard reporting the
+    // problem and building anyway — which is the unguarded behaviour, with a
+    // red X nobody reads. Composite steps do support it; two attempts below use
+    // it deliberately.
+    expect(
+      steps[guard]!["continue-on-error"],
+      `${COMPOSITE}: the guard runs with \`continue-on-error\`, so failing it ` +
+        `does not stop the build.`,
+    ).toBeUndefined();
+
+    // Then RUN it, rather than grepping it for `exit 1`. A guard whose test is
+    // inverted (`-n` for `-z`) still contains the string, still reads fine, and
+    // fails exactly when the builder IS set.
+    const run = (builder: string): number => {
+      try {
+        execFileSync("bash", ["-c", steps[guard]!.run!], {
+          env: { ...process.env, BUILDER: builder },
+          stdio: "pipe",
+        });
+        return 0;
+      } catch (e) {
+        return (e as { status?: number }).status ?? -1;
+      }
+    };
+
+    expect(
+      run(""),
+      `${COMPOSITE}: an empty builder does not fail the guard, so a call site ` +
+        `that omits \`builder:\` builds on the shared pointer anyway.`,
+    ).toBe(1);
+    expect(
+      run("builder-0000"),
+      `${COMPOSITE}: the guard rejects a builder that IS set — it is inverted, ` +
+        `and every correct call site would fail.`,
+    ).toBe(0);
   });
 });

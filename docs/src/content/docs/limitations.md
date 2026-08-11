@@ -1168,6 +1168,16 @@ takes it as an input and refuses to build without one, because an omitted input
 interpolates to the empty string and reads as "no `--builder`".
 `test/workflow-buildx-builder.test.ts` fails the PR that drops either half.
 
+**One thing that fix exposed.** The guard lives in a `run:` block of a local
+composite action, and the `actionlint` step that gates every PR does not read
+those — it validates an action's interface, not the shell inside it. Nothing else
+in a PR build loads that action either, since the steps using it run only on
+`main` (#51). So its shell is unlinted, and `\${{` in it would be fatal: there is
+no backslash escape for the expression delimiter, so the runner parses it as an
+expression and fails the action to a `startup_failure` on the release path. The
+test now asserts that sequence appears in no shell step, in any workflow or local
+action.
+
 **No retry was added.** With an explicit builder nothing on the box can reach
 this job's, so there is no transport failure left to retry — and a retry would
 cost what #51 costs, three full bundle builds for a genuinely broken

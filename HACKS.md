@@ -2010,7 +2010,7 @@ ls`, says two jobs are sharing anything. The shared thing is the pointer, not th
 builder.
 
 **How it failed.** On 2026-08-11, [CI run 31482543537](https://github.com/tadasant/strad/actions/runs/31482543537)
-on `main` went red in `bundle_image` alone; the other twelve jobs passed and no
+on `main` went red in `bundle_image` alone; the other thirteen jobs passed and no
 assertion of ours ran. Three jobs on one box:
 
 | Time (UTC)    | What                                                                                     |
@@ -2044,8 +2044,24 @@ daemon, which is shared, so even that looks right.
 READS it (`builder: ${{ steps.buildx.outputs.name }}` on all fourteen build
 steps, plus a `builder` input on `.github/actions/build-push` that its guard step
 refuses to run without). `test/workflow-buildx-builder.test.ts` parses every
-workflow and fails the PR that drops either half, or that hand-rolls a `docker
-buildx build` in a `run:` block without `--builder`.
+workflow AND every local action, and fails the PR that drops either half, orders
+a setup step after the build that reads it — which interpolates to the empty
+string, the same silent fallback — or hand-rolls a build command in a `run:`
+block without `--builder`. `docker build` counts: since Docker 23 it IS buildx,
+and `bake` and `compose build` read the same pointer.
+
+The guard step runs the thing it guards, rather than grepping it for `exit 1`: a
+guard whose test is inverted still contains that string and still reads fine.
+
+**The blind spot next door.** That guard lives in a `run:` block of a LOCAL
+action, and `ci.yml`'s `actionlint` step does not read those — it follows a
+`uses:` to the action and validates the interface, not the shell inside it.
+Nothing else in a PR build loads `build-push` either, because the steps that use
+it only run on `main` (#51). So a `run:` block there is unlinted, and one
+specific typo in it is fatal: `\${{` is NOT an escape — the runner has none —
+so it parses as an expression, and a malformed one fails the whole action to a
+`startup_failure` on the release path. The test asserts that sequence appears in
+no shell step.
 
 **What is deliberately NOT here.** No retry around the build. A retry would have
 turned this red run green, but it treats the symptom: with an explicit
