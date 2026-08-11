@@ -176,7 +176,7 @@ if (result.perServer.length > 0) {
   // Not missing: every server that references these resolves them from its OWN
   // /strad/{env}/mcp/{slug}/static/ namespace, which wins over this one anyway.
   console.log(
-    `  served per-server (not needed here):\n    ` +
+    `  served per-server (not needed here${values.resolve ? ", and NOT render-checked" : ""}):\n    ` +
       result.perServer.join("\n    "),
   );
 }

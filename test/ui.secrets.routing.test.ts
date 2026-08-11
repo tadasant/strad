@@ -225,8 +225,15 @@ describe("routing is computed from the config, not asserted", () => {
     expect(r.detail).toContain("env");
   });
 
-  it("paramsConsumers lists exactly the opted-in servers", () => {
-    expect(paramsConsumers(CONFIG).map((c) => c.slug)).toEqual(["wired"]);
+  it("paramsConsumers lists every server that reads its own namespace", () => {
+    // Two ways in, and the page has to count both: `params: true` takes the
+    // namespace wholesale, and a supplementary server's `env:` `${NAME}` is
+    // substituted from it with no flag at all. Counting only the flag would put
+    // "nothing here is delivered" above a row that says `delivered`.
+    expect(paramsConsumers(CONFIG).map((c) => [c.slug, c.via])).toEqual([
+      ["secrets", "env-ref"],
+      ["wired", "params"],
+    ]);
   });
 
   it("`params: true` with NO resolver credential is not delivery", () => {
@@ -718,14 +725,14 @@ describe("the page says where a value actually goes", () => {
     const html = await res.text();
     expect(html).toContain("delivered · deploy");
     expect(html).toContain("not wired");
-    expect(html).toContain("<strong>1 of 3</strong>");
+    expect(html).toContain("<strong>2 of 3</strong>");
   });
 
   it("a gateway with no params: true server is described as a registry", async () => {
     const res = await fetch(`${bareUrl}/ui/secrets`, { headers: auth });
     const html = await res.text();
     expect(html).toContain(
-      "No server on this gateway sets <code>params: true</code>",
+      "No server on this gateway reads a managed parameter",
     );
     expect(html).toContain("this is a registry");
     // The word "delivered" appears in negations ("stored, delivered nowhere").

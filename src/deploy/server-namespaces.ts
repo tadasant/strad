@@ -2,6 +2,7 @@ import type { StradConfig } from "../config/schema.ts";
 import type { ParameterMeta } from "../secrets/parameters/types.ts";
 import { staticNamespace } from "../secrets/parameters/namespace.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
+import { isSecretRef } from "../secrets/parameters/wire.ts";
 
 /**
  * PER-SERVER SUBSTITUTION: where a supplementary server's `${NAME}` comes from.
@@ -51,7 +52,10 @@ import { refsIn } from "../secrets/provider/resolve.ts";
  * runtime, out of the gateway namespace, and are untouched here — their
  * per-server path is `params: true`, which is resolved by the registry. Nor does
  * it cover `consoleEnv:`, which is read from the deploy environment only and
- * lands on core.
+ * lands on core, or a supplementary server's `headers:` — those are the headers
+ * CORE sends when it proxies, resolved in core's own process from the gateway
+ * namespace, and moving one into a container's environment would not even be the
+ * same thing.
  */
 
 /** The prefix every per-server namespace sits under: `/strad/{env}/mcp/`. */
@@ -75,23 +79,49 @@ export function seededByServer(
   env: string,
   metas: readonly ParameterMeta[],
 ): Map<string, string[]> {
+  return groupByServer(env, metas).seeded;
+}
+
+/**
+ * The same fold, keeping what it DROPPED.
+ *
+ * A path under `mcp/` that is not `{slug}/static/…` is read by no resolver at
+ * all — a typo'd kind (`{slug}/statik/VAR`), a bare `{slug}/VAR`, a future
+ * `oauth` kind nothing implements yet. Dropping it silently would be the same
+ * silent no-op this module exists to end, one shape further out, so the caller
+ * gets it back and warns.
+ */
+export function groupByServer(
+  env: string,
+  metas: readonly ParameterMeta[],
+): { seeded: Map<string, string[]>; unroutable: string[] } {
   const prefix = mcpNamespace(env);
   const out = new Map<string, string[]>();
+  const unroutable: string[] = [];
   for (const meta of metas) {
     if (!meta.hasValue) continue;
     if (!meta.path.startsWith(prefix)) continue;
-    // {slug}/{kind}/{VARIABLE} — exactly three segments. A deeper or shallower
-    // path is not a static server parameter and must not be read as one.
+    // {slug}/static/{…}/{VARIABLE}. The variable is the LAST segment, not the
+    // third one: `resolve()` lists everything under `{slug}/static/` and keys
+    // the result by the last segment (gcp.ts `variableOf`), so
+    // `{slug}/static/extra/TOKEN` really does arrive as `TOKEN`. Reading only
+    // three segments here would call a path unread that the resolver reads —
+    // the more dangerous direction, and the one the console's SLUG_STATIC
+    // already refuses to take.
     const segments = meta.path.slice(prefix.length).split("/");
-    if (segments.length !== 3) continue;
-    const [slug, kind, variable] = segments;
-    if (!slug || kind !== "static" || !variable) continue;
+    const [slug, kind] = segments;
+    const variable = segments[segments.length - 1];
+    if (segments.length < 3 || !slug || kind !== "static" || !variable) {
+      unroutable.push(meta.path);
+      continue;
+    }
     const held = out.get(slug) ?? [];
     if (!held.includes(variable)) held.push(variable);
     out.set(slug, held);
   }
   for (const held of out.values()) held.sort();
-  return out;
+  unroutable.sort();
+  return { seeded: out, unroutable };
 }
 
 /**
@@ -227,13 +257,31 @@ export function unreadParameters(
 export function substitutionBag(
   resolved: Readonly<Record<string, string>>,
   refs: ReadonlySet<string>,
-): Record<string, string> {
+): { bag: Record<string, string>; unusable: string[] } {
   const bag: Record<string, string> = {};
+  const unusable: string[] = [];
   for (const name of refs) {
     const value = resolved[name];
-    if (value !== undefined) bag[name] = value;
+    if (value === undefined) continue;
+    // A PARAMETER THAT EXISTS AND HAS NO USABLE VALUE MUST NOT SHADOW THE
+    // SHARED ONE.
+    //
+    // `resolve()` does not promise a value. A `:render` that could not
+    // dereference hands the `__REF__` pointer back rather than failing (that is
+    // deliberate — `checkStore` recognises it to report "present but
+    // unrenderable"), and an empty payload resolves to "". Taking either would
+    // do the worst possible thing twice over: bake a non-credential onto the
+    // container, AND suppress the fallback to a shared value that works. So
+    // they are dropped here, which makes `coveredPerServer` false and puts the
+    // gateway namespace back in charge — exactly what this server did before it
+    // was seeded.
+    if (value === "" || isSecretRef(value)) {
+      unusable.push(name);
+      continue;
+    }
+    bag[name] = value;
   }
-  return bag;
+  return { bag, unusable };
 }
 
 /**

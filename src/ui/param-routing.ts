@@ -64,12 +64,21 @@ export interface Routing {
   detail: string;
 }
 
-/** A server that opts into parameter resolution, and when its values land. */
+/** A server that reads its namespace, and when its values land. */
 export interface ParamsConsumer {
   slug: string;
   /** The namespace prefix its parameters live under, relative to a namespace. */
   prefix: string;
   when: "deploy" | "runtime";
+  /**
+   * HOW it reads the namespace, which is not the same question as whether.
+   *
+   * `params` takes the namespace wholesale. `env-ref` substitutes only the names
+   * the server's `env:` map already references — no flag, and invisible in the
+   * config's `params:` column. A banner counting only the first would tell a
+   * human nothing here is delivered while a row below says `delivered`.
+   */
+  via: "params" | "env-ref";
 }
 
 /**
@@ -98,17 +107,26 @@ export function resolverConfigured(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env[RESOLVER_ENV.projectId] && env[RESOLVER_ENV.keyJson]);
 }
 
-/** Every enabled server with `params: true`, in config order. */
+/**
+ * Every enabled server that reads its own namespace, in config order.
+ *
+ * Two ways in, and both count: `params: true`, and a supplementary server whose
+ * `env:` references a `${NAME}` that per-server substitution would supply.
+ */
 export function paramsConsumers(config: StradConfig): ParamsConsumer[] {
   const out: ParamsConsumer[] = [];
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind === "remote-http") continue;
-    if (!server.params) continue;
+    const substitutes =
+      server.kind === "supplementary-image" &&
+      Object.values(server.env).some((raw) => refsIn(raw).length > 0);
+    if (!server.params && !substitutes) continue;
     out.push({
       slug: server.slug,
       prefix: `${server.slug}/static/`,
       when: server.kind === "supplementary-image" ? "deploy" : "runtime",
+      via: server.params ? "params" : "env-ref",
     });
   }
   return out;
@@ -121,16 +139,20 @@ export function paramsConsumers(config: StradConfig): ParamsConsumer[] {
  * credential for `gcs` should get `gcs/static/` from a list rather than typing
  * it, and should see in the same list that `gcs` is not wired yet.
  */
-export function prefixSuggestions(
-  config: StradConfig,
-): { prefix: string; wired: boolean; slug: string }[] {
-  const wired = new Set(paramsConsumers(config).map((c) => c.slug));
+export function prefixSuggestions(config: StradConfig): {
+  prefix: string;
+  wired: boolean;
+  via?: "params" | "env-ref";
+  slug: string;
+}[] {
+  const wired = new Map(paramsConsumers(config).map((c) => [c.slug, c.via]));
   return config.servers
     .filter((s) => s.enabled && s.kind !== "remote-http")
     .map((s) => ({
       slug: s.slug,
       prefix: `${s.slug}/static/`,
       wired: wired.has(s.slug),
+      ...(wired.has(s.slug) ? { via: wired.get(s.slug)! } : {}),
     }));
 }
 

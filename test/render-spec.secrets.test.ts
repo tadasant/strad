@@ -711,3 +711,51 @@ describe("render-spec, per-server namespaces", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("render-spec, a per-server parameter that yields no value", () => {
+  it("falls back to the gateway namespace, and says which parameter it could not use", async () => {
+    // `resolve()` does not promise a VALUE. A parameter can exist, be listed,
+    // and resolve to nothing (or to an un-dereferenced __REF__ pointer, the
+    // issue-#49 shape). Taking either would do the worst thing twice — inject a
+    // non-credential AND suppress the shared value that works.
+    await fake.store.create({
+      path: gatewayParameterPath("test", "FALLBACK_PASSWORD"),
+      secret: true,
+      value: "fake-shared-fallback-value",
+    });
+    // A parameter that EXISTS and resolves to nothing. `resolve()` is soft on
+    // this shape — it skips it and returns the rest — so the renderer is what
+    // has to decide, and taking it would inject an empty credential AND
+    // suppress the shared value that works.
+    await fake.store.create({
+      path: parameterPath("test", "fallback-shop", "FALLBACK_PASSWORD"),
+      secret: false,
+      value: "",
+    });
+
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: fallback-shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle-fallback
+    entitlements: [admin]
+    env:
+      FALLBACK_PASSWORD: "\${FALLBACK_PASSWORD}"
+`,
+        "  - name: bundle-fallback\n",
+      ),
+    );
+
+    expect(result.ok).toBe(true);
+    const value = result
+      .spec!.services.find((s) => s.name === "bundle-fallback")
+      ?.envs.find((e) => e.key === "FALLBACK_PASSWORD")?.value;
+    expect(value).toBe("fake-shared-fallback-value");
+    // Never the pointer, and never the per-server value it points at.
+    expect(JSON.stringify(result.spec)).not.toContain("__REF__");
+    // And the render says which parameter it could not use.
+    expect(result.stderr).toContain("::warning::");
+    expect(result.stderr).toContain("FALLBACK_PASSWORD");
+  });
+});

@@ -171,14 +171,27 @@ Three things happen here as a result:
 
 - **One listing, then targeted reads.** `render-spec` lists `/strad/{env}/mcp/`
   once — metadata, no values — and only calls `resolve()` on the namespaces whose
-  slugs actually reference one of their names. A store with no per-server
-  parameters costs one extra `list()` and nothing else.
+  slugs actually reference one of their names, concurrently. A store with no
+  per-server parameters costs one extra `list()` and nothing else; a store with K
+  such slugs costs K more namespace reads, in parallel, and `list()` enumerates
+  the project each time (see [Known limitations](/limitations/) #52).
 - **The shared namespace is a fallback, not a requirement.** A name every
   referencing server holds for itself no longer has to exist in the gateway
   namespace; a name even one referencing server still needs from there is a hard
   error that names the servers.
 - **A seeded namespace nothing reads is a `::warning::`** with the paths and
-  variable names in it. It used to be a bare `continue`.
+  variable names in it. It used to be a bare `continue`. So is a parameter that
+  exists and yields no usable value — an un-dereferenced `__REF__`, an empty
+  payload: it is dropped rather than injected, and the shared namespace gets its
+  turn, because baking the pointer would ship a non-credential _and_ suppress a
+  value that works. A namespace that fails to render outright still fails the
+  deploy, as the gateway namespace always has.
+
+The read is gated on the **resolver credential**, not on the provider, which is
+where `params: true` already draws its line. An `env`-provider deployment whose
+deploy job carries `STRAD_PARAMS_*` therefore consults the store for a
+supplementary `env:` ref, ahead of the deploy environment; a deployment with no
+resolver credential resolves exactly as it did.
 
 ### Deploy-time parameter resolution
 
@@ -186,7 +199,7 @@ A `supplementary-image` server with `params: true` gets its managed parameters �
 everything under `/strad/{env}/mcp/{slug}/static/*` in the [parameters
 system](/intro/architecture/#the-secrets-and-parameters-system) — resolved **here,
 at render time**, by the **resolver** credential (`STRAD_PARAMS_*`, read from the
-deploy environment). `render-spec` calls `resolveServerParams()` for each such
+deploy environment). `render-spec` resolves that namespace for each such
 server, pulling non-secret values from Parameter Manager and secret values from
 Secret Manager, and hands the resulting map to `renderAppSpec` as `resolvedParams`.
 Those values land as SECRET env vars **scoped onto that server's bundle** — the same

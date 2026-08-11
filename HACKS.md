@@ -1979,6 +1979,11 @@ renderer bug, so the renderer states it instead of guessing.
 - Seeding a per-server namespace for a server that neither sets `params: true`
   nor references the name is a `::warning::`, not a failure — a store is also
   allowed to be a registry of values a human manages by hand. It ships green.
+- A render pays for the layer in STORE ENUMERATIONS. `list()` walks every
+  managed parameter in the project and filters by prefix, and `resolve()` calls
+  it again — so a render costs one extra enumeration for the `/strad/{env}/mcp/`
+  listing, plus one per slug that turns out to need a value (those run
+  concurrently). A store with nothing seeded per-server pays only the first.
 - Substitution only covers a `supplementary-image`'s `env:`. A `builtin`'s
   `options:` and a `remote-http`'s `url`/`headers` resolve IN-PROCESS at runtime,
   from the gateway namespace; their per-server path is `params: true`.

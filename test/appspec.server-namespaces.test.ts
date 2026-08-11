@@ -3,6 +3,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
 import {
   coveredPerServer,
+  groupByServer,
   seededByServer,
   substitutionBag,
   unreadParameters,
@@ -270,6 +271,31 @@ describe("seededByServer", () => {
     ]);
     expect([...seeded.keys()]).toEqual([]);
   });
+
+  it("keys a DEEP path on its last segment, because the resolver does", () => {
+    // `resolve()` filters on the namespace prefix and keys on the last segment,
+    // so `{slug}/static/extra/TOKEN` really is injected — as `TOKEN`. Dropping
+    // it here would call a path unread that the resolver reads.
+    const seeded = seededByServer("test", [
+      meta("/strad/test/mcp/gcs/static/extra/TOKEN"),
+    ]);
+    expect(seeded.get("gcs")).toEqual(["TOKEN"]);
+  });
+
+  it("hands back the paths no resolver reads, rather than dropping them", () => {
+    const { seeded, unroutable } = groupByServer("test", [
+      meta("/strad/test/mcp/gcs/statik/TYPO"),
+      meta("/strad/test/mcp/gcs/oauth/TOKEN"),
+      meta("/strad/test/mcp/BARE"),
+      meta("/strad/test/mcp/gcs/static/GOOD"),
+    ]);
+    expect(seeded.get("gcs")).toEqual(["GOOD"]);
+    expect(unroutable).toEqual([
+      "/strad/test/mcp/BARE",
+      "/strad/test/mcp/gcs/oauth/TOKEN",
+      "/strad/test/mcp/gcs/statik/TYPO",
+    ]);
+  });
 });
 
 describe("unreadParameters", () => {
@@ -332,11 +358,36 @@ describe("unreadParameters", () => {
 
 describe("substitutionBag / coveredPerServer", () => {
   it("takes only the names the server's env: references", () => {
-    const bag = substitutionBag(
+    const { bag } = substitutionBag(
       { TELEGRAM_API_HASH: "fake-hash", SOMETHING_ELSE: "fake-else" },
       new Set(["TELEGRAM_API_HASH", "NOT_RESOLVED"]),
     );
     expect(bag).toEqual({ TELEGRAM_API_HASH: "fake-hash" });
+  });
+
+  it("refuses a value that is an un-dereferenced __REF__ or empty", () => {
+    // `resolve()` does not promise a VALUE: a `:render` that could not
+    // dereference hands the pointer back, and an empty payload resolves to "".
+    // Taking either would bake a non-credential onto the container AND suppress
+    // the gateway namespace, which still holds a value that works. Both are
+    // reported and dropped, so `coveredPerServer` says false and the fallback
+    // stands.
+    const { bag, unusable } = substitutionBag(
+      {
+        POINTER:
+          '__REF__("//secretmanager.googleapis.com/projects/p/secrets/s/versions/latest")',
+        EMPTY: "",
+        GOOD: "fake-usable-value",
+      },
+      new Set(["POINTER", "EMPTY", "GOOD"]),
+    );
+    expect(bag).toEqual({ GOOD: "fake-usable-value" });
+    expect(unusable.sort()).toEqual(["EMPTY", "POINTER"]);
+    expect(
+      coveredPerServer("POINTER", new Map([["s", new Set(["POINTER"])]]), {
+        s: bag,
+      }),
+    ).toBe(false);
   });
 
   it("says a name is covered only when EVERY referencing server holds it", () => {

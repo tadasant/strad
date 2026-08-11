@@ -8,9 +8,9 @@ import {
   createGcpParameterStore,
   parameterId,
   parameterPath,
-  resolveServerParams,
   staticNamespace,
 } from "../src/secrets/parameters/index.ts";
+import type { ParameterResolver } from "../src/secrets/parameters/types.ts";
 import { encodeSecretValue } from "../src/secrets/parameters/wire.ts";
 
 /**
@@ -21,6 +21,21 @@ import { encodeSecretValue } from "../src/secrets/parameters/wire.ts";
  * and that the resolver still recovers it via `:render`. That is the whole point
  * of splitting the stores.
  */
+
+/**
+ * One server's static parameters as a `VARIABLE -> value` map.
+ *
+ * The shape every caller of `resolve()` uses for a server namespace, spelled out
+ * here rather than in `src/`: the two production callers (the renderer and the
+ * registry) each hold a namespace already, and a wrapper that only builds the
+ * path was one indirection nobody used.
+ */
+const resolveServerParams = (
+  resolver: ParameterResolver,
+  env: string,
+  slug: string,
+): Promise<Record<string, string>> =>
+  resolver.resolve(staticNamespace(env, slug));
 
 const ENV = "staging";
 const SLUG = "remote-filesystem-tmp-public";

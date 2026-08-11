@@ -190,11 +190,17 @@ export async function checkStore(
   // only from this namespace. A name the CORE resolves is never covered this
   // way: `requiredSecretNames()` is read in-process, out of the gateway
   // namespace, whatever any server was seeded.
-  const seeded = seededByServer(
-    config.gateway.env,
-    await store.list(mcpNamespace(config.gateway.env)),
-  );
   const refsBySlug = envRefsBySlug(config);
+  // Only when the config has a supplementary `env:` ref at all. `list()`
+  // enumerates the whole project, so a config that cannot use the second layer
+  // must not pay for a scan of it.
+  const seeded =
+    refsBySlug.size > 0
+      ? seededByServer(
+          config.gateway.env,
+          await store.list(mcpNamespace(config.gateway.env)),
+        )
+      : new Map<string, string[]>();
   const core = new Set(requiredSecretNames(config));
   const servedPerServer = (name: string): boolean => {
     if (core.has(name)) return false;

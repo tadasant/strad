@@ -77,8 +77,8 @@ import {
 import {
   coveredPerServer,
   envRefsBySlug,
+  groupByServer,
   mcpNamespace,
-  seededByServer,
   substitutionBag,
   unreadParameters,
 } from "../src/deploy/server-namespaces.ts";
@@ -368,18 +368,54 @@ if (store) {
   // ONE listing of /strad/{env}/mcp/ for the whole render. It is metadata — a
   // secret parameter's payload is a `__REF__` pointer — so this reads no value,
   // and it is what tells us which of the 27 servers is worth a `resolve()`.
-  const seeded = seededByServer(
+  const { seeded, unroutable } = groupByServer(
     config.gateway.env,
     await store.list(mcpNamespace(config.gateway.env)),
   );
+  // A path under mcp/ that is not {slug}/static/{VAR} is read by nothing at all.
+  if (unroutable.length > 0) {
+    console.error(
+      `::warning::${unroutable.length} parameter(s) under ` +
+        `${mcpNamespace(config.gateway.env)} are not ` +
+        `{slug}/static/{VARIABLE} paths, so no resolver reads them: ` +
+        `${unroutable.join(", ")}.`,
+    );
+  }
 
-  for (const [slug, refs] of refsBySlug) {
+  // The slugs worth a value read: seeded, AND seeded with a name this server
+  // actually references. Resolved CONCURRENTLY — each `resolve()` renders a
+  // whole namespace, and doing them one after another puts the sum of them on
+  // the deploy's critical path for no reason.
+  const candidates = [...refsBySlug].filter(([slug, refs]) => {
     const held = seeded.get(slug);
-    if (!held?.length) continue; // nobody seeded this one: shared bag, as before
-    if (![...refs].some((name) => held.includes(name))) continue;
+    return Boolean(held?.length) && [...refs].some((n) => held!.includes(n));
+  });
+  const bags = await Promise.all(
+    candidates.map(async ([slug, refs]) =>
+      substitutionBag(
+        await resolveNamespace(staticNamespace(config.gateway.env, slug)),
+        refs,
+      ),
+    ),
+  );
 
+  for (const [i, [slug]] of candidates.entries()) {
     const namespace = staticNamespace(config.gateway.env, slug);
-    const bag = substitutionBag(await resolveNamespace(namespace), refs);
+    const { bag, unusable } = bags[i]!;
+
+    // A parameter that EXISTS and yields no usable value — an un-dereferenced
+    // `__REF__`, an empty payload — is reported and then ignored, so the shared
+    // namespace still gets its turn. Baking the pointer would ship a
+    // non-credential AND suppress a value that works.
+    if (unusable.length > 0) {
+      console.error(
+        `::warning::${namespace} holds ${unusable.join(", ")}, and the ` +
+          `resolver got no usable value back (an un-dereferenced __REF__, or an ` +
+          `empty payload). "${slug}" falls back to ` +
+          `${gatewayNamespace(config.gateway.env)} for ${unusable.length === 1 ? "it" : "them"}. ` +
+          `store:check --resolve says which parameter cannot be rendered.`,
+      );
+    }
     if (Object.keys(bag).length === 0) continue;
     serverSecrets[slug] = bag;
     // Names only. Which server draws which name from where is exactly what an
@@ -443,6 +479,30 @@ if (wanted.length > 0) {
       process.exit(1);
     }
     scopedSecrets[name] = value;
+  }
+}
+
+// A PER-SERVER VALUE THAT SHADOWS A SHARED ONE IS A CREDENTIAL SWAP, AND SAYS SO.
+//
+// Both namespaces holding the name is the one case where this render changes
+// what a working deployment ships: the server used to get the shared value and
+// now gets its own. That is the point of the feature and it is still worth an
+// annotation, because the two are different credentials by construction — a
+// stale per-server copy seeded months ago outranks the one being rotated.
+// Names and paths only.
+if (namespaceValues) {
+  for (const [slug, bag] of Object.entries(serverSecrets)) {
+    const shadowed = Object.keys(bag)
+      .filter((name) => namespaceValues?.[name] !== undefined)
+      .sort();
+    if (shadowed.length === 0) continue;
+    console.error(
+      `::warning::server "${slug}" takes ${shadowed.join(", ")} from ` +
+        `${staticNamespace(config.gateway.env, slug)}, and ` +
+        `${gatewayNamespace(config.gateway.env)} holds ${shadowed.length === 1 ? "that name" : "those names"} ` +
+        `too. The per-server value wins. Delete whichever copy is not the one ` +
+        `you rotate.`,
+    );
   }
 }
 

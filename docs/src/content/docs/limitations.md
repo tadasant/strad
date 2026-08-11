@@ -815,6 +815,12 @@ a container _because_ they share a credential. Two values means two components,
 which is a second billed App Platform service for a process that is otherwise
 identical.
 
+It also costs store round trips. `list()` enumerates every managed parameter in
+the project and filters by prefix, and `resolve()` calls it again — so a render
+pays one extra enumeration for the `/strad/{env}/mcp/` listing, plus one per slug
+that turns out to need a value (those run concurrently). A store with nothing
+seeded per-server pays only the first.
+
 Two smaller edges travel with it. The failure lands at **render** time, not at
 `check-config` time: that gate holds no store credential, so it cannot know that
 two identical `${NAME}` strings resolve differently. And substitution covers a
