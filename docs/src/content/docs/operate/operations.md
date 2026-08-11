@@ -576,6 +576,35 @@ See [Known limitations](/limitations/).
 `bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the
 `bundle-google` image on any PR touching `images/bundle-google/`.
 
+### Every push to ghcr is retried
+
+No step in this repo pushes to ghcr with `docker/build-push-action` directly.
+Each one goes through `.github/actions/build-push`, a composite action that runs
+the identical build up to three times, 15s and 45s apart, and lets the third
+decide the run.
+
+ghcr answers a blob `HEAD` with `403 Forbidden` from time to time, in the middle
+of a push whose credentials worked seconds earlier — the build is done, the layers
+are exported, and one blob is refused. Neither buildkit nor the action retries a
+403, so a single refused blob turns a good release red and waits for a human to
+click re-run. On the retry the layers are in the runner's buildkit cache, so it
+re-pushes rather than rebuilds.
+
+It cannot tell a refused blob from a broken `Dockerfile`; both are just a failed
+step. A failed BUILD is therefore rebuilt on every attempt — buildkit does not
+cache a failed layer — so a broken bundle costs minutes before it goes red. And
+three `build/push attempt N failed` warnings carrying the same 403 mean the
+registry is refusing rather than flaking: the next place to look is the package's
+visibility and linked repository, not the re-run button. See
+[Known limitations](/limitations/).
+
+The four `docker/build-push-action` steps that remain direct
+(`release-onepassword-image.yml`'s verification build, `bundle-google-ci.yml`,
+and two in `ci.yml`) build with `push: false`. They never touch a registry, so
+there is nothing there to flake — and because nothing on the PR path loads the
+wrapper, `ci.yml`'s `lint` job runs `actionlint` over every workflow so a
+malformed `action.yml` fails the PR rather than the next release.
+
 ## The staging config
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately

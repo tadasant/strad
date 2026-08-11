@@ -43,10 +43,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           context: servers/good-eggs
-          push: true
           tags: |
             ghcr.io/tadasant/strad-server-good-eggs:latest
             ghcr.io/tadasant/strad-server-good-eggs:sha-${{ github.sha }}

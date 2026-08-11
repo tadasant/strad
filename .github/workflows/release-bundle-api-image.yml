@@ -44,10 +44,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           context: servers/bundle-api
-          push: true
           tags: |
             ghcr.io/tadasant/strad-bundle-api:latest
             ghcr.io/tadasant/strad-bundle-api:sha-${{ github.sha }}
