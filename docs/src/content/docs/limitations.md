@@ -1121,13 +1121,67 @@ build runs three times, minutes of it, before the run goes red — and a real
 permission change (visibility flipped, linked repo dropped, `packages: write`
 removed) is retried twice before it goes red.
 
-The wrapper declares only the six inputs its call sites pass, and a `with:` key
-it does not declare is dropped with a warning rather than an error.
+The wrapper declares only the seven inputs its call sites pass, and a `with:` key
+it does not declare is dropped with a warning rather than an error. `builder:` is
+the one it refuses to run without — see #53.
 
 **Undo:** point the call sites back at `docker/build-push-action@v6` and delete
 the wrapper. **Watch:** three `build/push attempt N failed` warnings carrying the
 same 403 mean the registry is refusing, not flaking — check the package's settings
 rather than re-running.
+
+### 53. The buildx builder is a box-wide name, and nothing in a workflow says so
+
+**Resolved.** The condition that made it possible — one docker daemon, one
+`$HOME`, several concurrent runner processes — is unchanged, so it is written
+down here.
+
+`docker/setup-buildx-action` defaults to `use: true`, which means `docker buildx
+create --use`, which writes `~/.docker/buildx/current`. Every job on a
+self-hosted box runs as the same user, so there is exactly one of those files for
+the whole machine, and a `docker buildx build` with no `--builder` reads it. The
+builder each job creates has a uuid name and never collides — which is what made
+this invisible. The shared thing was the pointer, not the builder.
+
+On 2026-08-11 it took `main` red in the `bundle_image` job alone, with every
+other job green and no assertion of ours having run:
+
+| Time (UTC) | What                                                                  |
+| ---------- | --------------------------------------------------------------------- |
+| `10:36:11` | `Release image` creates its builder `--use` — it now owns the pointer |
+| `10:36:23` | `bundle_image` starts its build with no `--builder`, so on that one   |
+| `10:36:44` | `Release image` finishes and removes the builder                      |
+| `10:36:54` | `bundle_image` dies: `received prior goaway … "graceful_stop"`        |
+
+The removal took 10.6 seconds; `bundle_image`'s own unused builder came off in
+0.26. One buildkit was busy, and it was not the one that job created.
+
+The failure lands on a random job at a random step, names buildkit's transport
+rather than anything in this repo, and passes on re-run — the exact shape of an
+infrastructure flake. The quieter half never even goes red: a build that lands on
+another job's builder and is not killed simply succeeds there, against a
+different cache, and nothing reports it.
+
+**Fixed on both sides.** No job writes the pointer (`use: false`), and every one
+of the fourteen build steps names its own job's builder. `.github/actions/build-push`
+takes it as an input and refuses to build without one, because an omitted input
+interpolates to the empty string and reads as "no `--builder`".
+`test/workflow-buildx-builder.test.ts` fails the PR that drops either half.
+
+**One thing that fix exposed.** The guard lives in a `run:` block of a local
+composite action, and the `actionlint` step that gates every PR does not read
+those — it validates an action's interface, not the shell inside it. Nothing else
+in a PR build loads that action either, since the steps using it run only on
+`main` (#51). So its shell is unlinted, and `\${{` in it would be fatal: there is
+no backslash escape for the expression delimiter, so the runner parses it as an
+expression and fails the action to a `startup_failure` on the release path. The
+test now asserts that sequence appears in no shell step, in any workflow or local
+action.
+
+**No retry was added.** With an explicit builder nothing on the box can reach
+this job's, so there is no transport failure left to retry — and a retry would
+cost what #51 costs, three full bundle builds for a genuinely broken
+`Dockerfile`.
 
 ### 49. The Telegram MTProto library is archived upstream
 

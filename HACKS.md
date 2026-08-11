@@ -1937,10 +1937,11 @@ same way, as a failed step. So:
   three times, and then goes red anyway. The tell is the log: three
   `::warning::build/push attempt N failed` lines with the same 403 mean the
   registry is not flaking, it is refusing. Read them before re-running.
-- The wrapper declares only the six inputs its call sites pass. A `with:` key it
-  does not declare is DROPPED with a runner warning, not an error — so adding,
+- The wrapper declares only the seven inputs its call sites pass. A `with:` key
+  it does not declare is DROPPED with a runner warning, not an error — so adding,
   say, `platforms:` or `secrets:` to a call site means declaring it on the
-  wrapper first, or the build quietly runs without it.
+  wrapper first, or the build quietly runs without it. `builder:` is the one
+  input it refuses to build without; see #53.
 
 Nothing here retries the ghcr login, the tag-digest check in `release-image.yml`,
 or the deploy's image pull; each is a separate 403 with a separate fix.
@@ -1990,6 +1991,87 @@ renderer bug, so the renderer states it instead of guessing.
 
 **Undo.** Drop `serverSecrets` from `renderAppSpec` and the per-server read from
 `render-spec`; every `${NAME}` goes back to the one flat gateway namespace.
+
+## 53. The buildx builder is a box-wide name, and nothing in a workflow says so
+
+**✅ RESOLVED** — every job creates its builder with `use: false` and every build
+names it explicitly. The underlying condition — one docker daemon, one
+`$HOME`, several concurrent runner processes — is unchanged.
+
+**What.** `docker/setup-buildx-action` defaults to `use: true`, which runs
+`docker buildx create --name builder-<uuid> --use`. The `--use` writes
+`~/.docker/buildx/current`. `runs-on: self-hosted` means every job on the box
+runs as the same user, so there is exactly ONE of that file for the whole
+machine — and a `docker buildx build` with no `--builder` reads it.
+
+The per-job builder NAME is a uuid and never collides, which is precisely what
+makes this invisible: nothing in a workflow file, and nothing in `docker buildx
+ls`, says two jobs are sharing anything. The shared thing is the pointer, not the
+builder.
+
+**How it failed.** On 2026-08-11, [CI run 31482543537](https://github.com/tadasant/strad/actions/runs/31482543537)
+on `main` went red in `bundle_image` alone; the other thirteen jobs passed and no
+assertion of ours ran. Three jobs on one box:
+
+| Time (UTC)    | What                                                                                     |
+| ------------- | ---------------------------------------------------------------------------------------- |
+| `10:35:25.19` | `bundle_image` creates `builder-6813d177…` `--use`                                       |
+| `10:36:11.29` | `Release image` creates `builder-7cb9f269…` `--use` — **the pointer is now its**         |
+| `10:36:16.07` | `Release image` builds, on `builder-7cb9f269…`                                           |
+| `10:36:23.45` | **`bundle_image` builds — no `--builder`, so also on `builder-7cb9f269…`**               |
+| `10:36:43.93` | `Release image` finishes; post-cleanup begins                                            |
+| `10:36:44.23` | `docker buildx rm builder-7cb9f269…`                                                     |
+| `10:36:54.31` | `bundle_image` dies: `rpc error … received prior goaway … debug data: "graceful_stop"`   |
+| `10:36:54.85` | `builder-7cb9f269… removed` — the `rm` took **10.6s**, draining the build it was killing |
+| `10:36:55.51` | `bundle_image` removes its own builder, in **0.26s**. It had never used it.              |
+
+The 10.6s against 0.26s is the whole proof: one buildkit was busy, and it was not
+the one `bundle_image` created.
+
+**Why nothing caught it.** The victim is whichever build is in flight when a
+concurrent job's post-cleanup fires, so it lands on a random job, at a random
+step, with an error naming buildkit's transport rather than anything in this
+repo — the shape everyone reads as "infrastructure flake, hit re-run". The
+re-run passes, because the collision needs two jobs to overlap in a ~30-second
+window.
+
+**The quieter half.** A build that lands on another job's builder and is NOT
+killed simply succeeds there, against a different local image store and a
+different inline cache. Nothing reports it. `--load` puts the image in the
+daemon, which is shared, so even that looks right.
+
+**The fix, both halves.** No job WRITES the pointer (`use: false`) and no build
+READS it (`builder: ${{ steps.buildx.outputs.name }}` on all fourteen build
+steps, plus a `builder` input on `.github/actions/build-push` that its guard step
+refuses to run without). `test/workflow-buildx-builder.test.ts` parses every
+workflow AND every local action, and fails the PR that drops either half, orders
+a setup step after the build that reads it — which interpolates to the empty
+string, the same silent fallback — or hand-rolls a build command in a `run:`
+block without `--builder`. `docker build` counts: since Docker 23 it IS buildx,
+and `bake` and `compose build` read the same pointer.
+
+The guard step runs the thing it guards, rather than grepping it for `exit 1`: a
+guard whose test is inverted still contains that string and still reads fine.
+
+**The blind spot next door.** That guard lives in a `run:` block of a LOCAL
+action, and `ci.yml`'s `actionlint` step does not read those — it follows a
+`uses:` to the action and validates the interface, not the shell inside it.
+Nothing else in a PR build loads `build-push` either, because the steps that use
+it only run on `main` (#51). So a `run:` block there is unlinted, and one
+specific typo in it is fatal: `\${{` is NOT an escape — the runner has none —
+so it parses as an expression, and a malformed one fails the whole action to a
+`startup_failure` on the release path. The test asserts that sequence appears in
+no shell step.
+
+**What is deliberately NOT here.** No retry around the build. A retry would have
+turned this red run green, but it treats the symptom: with an explicit
+`--builder` nothing on the box can reach this job's builder, so there is no
+transport failure left to retry. It would also cost what #51 costs — buildkit
+does not cache a failed layer, so a genuinely broken bundle `Dockerfile` would be
+built three times, ten dependency trees each.
+
+**Undo.** Drop `use: false` and the `builder:` inputs and delete the test. Every
+build then resolves the shared pointer again.
 
 ## What the human still needs to provision
 

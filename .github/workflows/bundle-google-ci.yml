@@ -45,7 +45,17 @@ jobs:
       BUNDLE_GOOGLE_CONTAINER: bundle-google-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
+      # The builder is a shared name too. Every job on this box runs as the same
+      # user, so `docker buildx create --use` writes ONE
+      # `~/.docker/buildx/current`, and a build with no `--builder` resolves
+      # whichever job created a builder most recently — then dies with
+      # `graceful_stop` when that job's teardown removes it. `use: false` never
+      # writes the pointer; the explicit `builder:` below never reads it.
+      # HACKS.md #53.
       - uses: docker/setup-buildx-action@v3
+        id: buildx
+        with:
+          use: false
 
       # Per-run names never collide, so nothing else will ever clean one up. A day
       # is far longer than any run here, so nothing below can reach a concurrent
@@ -74,6 +84,7 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: images/bundle-google
           push: false
           load: true

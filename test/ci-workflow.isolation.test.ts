@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 /**
  * `ci.yml`'s docker jobs must not name a resource the whole runner box shares.
  *
- * Thirteen jobs run `runs-on: self-hosted` against ONE docker daemon, and two of
+ * Fourteen jobs run `runs-on: self-hosted` against ONE docker daemon, and two of
  * them build an image and boot it. A fixed container name or host port collides
  * loudly there. A fixed image TAG does not: a concurrent job can rebuild it
  * between our build and our `docker run`, and the `/mcp`-returns-401 assertion —
