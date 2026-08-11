@@ -861,11 +861,12 @@ function deliveryBanner(config: StradConfig, resolver: boolean): string {
   // strength of one. `params: true` with no resolver credential behind it is a
   // no-op: render-spec warns and ships the component without those values.
   const status = !consumers.length
-    ? `<strong>No server on this gateway sets <code>params: true</code></strong>, so
-       nothing stored here is delivered to a running MCP server — this is a registry.
-       Wiring a server up is a config change plus a deploy.`
+    ? `<strong>No server on this gateway reads a managed parameter</strong> — none sets
+       <code>params: true</code>, and none references a <code>\${NAME}</code> under
+       <code>env:</code> — so nothing stored here is delivered to a running MCP server:
+       this is a registry. Wiring a server up is a config change plus a deploy.`
     : !resolver
-      ? `${consumers.length} of ${total} servers set <code>params: true</code> (${consumers
+      ? `${consumers.length} of ${total} servers read a managed parameter (${consumers
           .map((c) => `<code>${esc(c.slug)}</code>`)
           .join(
             ", ",
@@ -932,13 +933,24 @@ function secretsGuide(
 ): string {
   const env = config.gateway.env;
   const consumers = paramsConsumers(config);
-  const wired = resolver ? consumers[0] : undefined;
+  // Prefer a `params: true` consumer for the worked example: it is the shape
+  // the guide is explaining, and an `env-ref` consumer's namespace only answers
+  // for names its config already writes — a poor "store anything here" example.
+  // Prefer a `params: true` consumer for the worked example: it is the shape the
+  // guide explains, and an `env-ref` consumer's namespace only answers for names
+  // its config already writes — a poor "store anything here" example.
+  const candidate = consumers.find((c) => c.via === "params") ?? consumers[0];
+  const wired = resolver ? candidate : undefined;
   // Prefer a supplementary image for the counter-example: it is the shape a
   // human is most likely to be storing a credential for, and its alternative to
   // `params: true` (a hand-written `env:` entry) is the one worth naming.
+  const reading = new Set(consumers.map((c) => c.slug));
   const unwiredCandidates = config.servers.filter(
     (s) =>
-      s.enabled && s.kind !== "remote-http" && !s.params && s.slug !== slug,
+      s.enabled &&
+      s.kind !== "remote-http" &&
+      !reading.has(s.slug) &&
+      s.slug !== slug,
   );
   const unwired =
     unwiredCandidates.find((s) => s.kind === "supplementary-image") ??
@@ -948,20 +960,28 @@ function secretsGuide(
     ? `<li>
          <code>/strad/${esc(env)}/mcp/${esc(wired.slug)}/static/EXAMPLE_TOKEN</code>
          <span class="ex-ok">reaches the <code>${esc(wired.slug)}</code> server</span>
-         <span class="ex-why">It sets <code>params: true</code>, so ${
+         <span class="ex-why">It ${
+           wired.via === "params"
+             ? "sets <code>params: true</code>"
+             : "references that name under <code>env:</code>"
+         }, so ${
            wired.when === "deploy"
              ? "<code>render-spec</code> resolves this path at deploy time and injects it onto that container — a new value lands on the next deploy"
              : `it is resolved in-process at runtime and refreshed within ${config.gateway.secrets.ttlSeconds}s`
          }.</span>
        </li>`
     : `<li>
-         <code>/strad/${esc(env)}/mcp/${esc(consumers[0]?.slug ?? "&lt;server&gt;")}/static/EXAMPLE_TOKEN</code>
+         <code>/strad/${esc(env)}/mcp/${esc(candidate?.slug ?? "&lt;server&gt;")}/static/EXAMPLE_TOKEN</code>
          <span class="ex-no">reaches nothing on this gateway</span>
          <span class="ex-why">${
-           consumers.length
-             ? `<code>${esc(consumers[0]!.slug)}</code> sets <code>params: true</code>, but this deployment
+           candidate
+             ? `<code>${esc(candidate.slug)}</code> ${
+                 candidate.via === "params"
+                   ? "sets <code>params: true</code>"
+                   : "references a <code>${NAME}</code> under <code>env:</code>"
+               }, but this deployment
                 carries no resolver credential, so the value is never fetched and never injected.`
-             : `No server here sets <code>params: true</code>, so there is no
+             : `No server here reads a managed parameter, so there is no
                 <code>&lt;server&gt;</code> for which this example would be delivered.`
          }</span>
        </li>`;
@@ -1144,21 +1164,25 @@ function namespaceList(namespaces: string[], selected: string): string {
 function prefixOptions(config: StradConfig): ComboOption[] {
   return prefixSuggestions(config).map((s) => ({
     value: s.prefix,
-    label: s.wired ? `${s.slug} — params: true` : `${s.slug} — not wired`,
+    label: s.wired
+      ? `${s.slug} — ${s.via === "params" ? "params: true" : "env: ${NAME}"}`
+      : `${s.slug} — not wired`,
   }));
 }
 
 /** A prefix worth showing as a placeholder: a wired server if one exists. */
 function examplePrefix(config: StradConfig): string {
   const consumers = paramsConsumers(config);
-  if (consumers[0]) return consumers[0].prefix;
+  const first = consumers.find((c) => c.via === "params") ?? consumers[0];
+  if (first) return first.prefix;
   const any = prefixSuggestions(config)[0];
   return any ? any.prefix : "";
 }
 
 function exampleVariable(config: StradConfig): string {
   const consumers = paramsConsumers(config);
-  const slug = consumers[0]?.slug;
+  const slug = (consumers.find((c) => c.via === "params") ?? consumers[0])
+    ?.slug;
   if (!slug) return "EXAMPLE_API_TOKEN";
   return `${slug.toUpperCase().replace(/-/g, "_")}_API_TOKEN`;
 }

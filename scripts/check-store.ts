@@ -172,6 +172,14 @@ console.log(
 );
 if (present.length > 0)
   console.log(`  present:\n    ${present.join("\n    ")}`);
+if (result.perServer.length > 0) {
+  // Not missing: every server that references these resolves them from its OWN
+  // /strad/{env}/mcp/{slug}/static/ namespace, which wins over this one anyway.
+  console.log(
+    `  served per-server (not needed here${values.resolve ? ", and NOT render-checked" : ""}):\n    ` +
+      result.perServer.join("\n    "),
+  );
+}
 if (missing.length > 0)
   console.log(`  missing:\n    ${missing.join("\n    ")}`);
 

@@ -24,11 +24,7 @@ export {
   type GcpParameterStoreConfig,
 } from "./gcp.ts";
 
-export {
-  resolveServerParams,
-  resolverFromEnv,
-  RESOLVER_ENV,
-} from "./resolver.ts";
+export { resolverFromEnv, RESOLVER_ENV } from "./resolver.ts";
 
 export {
   staticNamespace,

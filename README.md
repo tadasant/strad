@@ -200,6 +200,15 @@ server's `consoleEnv:`. All of them are read _from the store_, so they are still
 managed in one place. [Which name is
 which](https://strad.tadasant.com/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
+A `${NAME}` in a `supplementary-image` server's `env:` is resolved from **that
+server's own** `/strad/{env}/mcp/{slug}/static/` namespace before the shared
+`/strad/{env}/gateway/static/` one, so two servers can write the same `${NAME}`
+and be handed different values. Nothing opts in: an unseeded per-server namespace
+resolves exactly as it always did. Two servers sharing a bundle share one
+container's environment, so there the render fails rather than picking a winner.
+[Two servers, one variable
+name](https://strad.tadasant.com/operate/secrets/#two-servers-one-variable-name).
+
 Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`
 against the store and fails the deploy on a missing one — reading metadata only,
 never a value. That is a deploy gate, and it forgives the boot keys a correct

@@ -1,7 +1,6 @@
 import { createGcpParameterStore } from "./gcp.ts";
 import { parseServiceAccount } from "./service-account.ts";
-import { staticNamespace } from "./namespace.ts";
-import type { ParameterResolver, ParameterStore } from "./types.ts";
+import type { ParameterStore } from "./types.ts";
 
 /**
  * The runtime resolver: turn a server's managed parameters into the environment
@@ -20,15 +19,6 @@ import type { ParameterResolver, ParameterStore } from "./types.ts";
  * cannot read secret values) and the console admin (which can read AND write).
  * This one reads both stores' values and writes neither.
  */
-
-/** Resolve one server's static parameters into a `VARIABLE -> value` map. */
-export async function resolveServerParams(
-  resolver: ParameterResolver,
-  gatewayEnv: string,
-  slug: string,
-): Promise<Record<string, string>> {
-  return resolver.resolve(staticNamespace(gatewayEnv, slug));
-}
 
 export const RESOLVER_ENV = {
   projectId: "STRAD_PARAMS_PROJECT_ID",

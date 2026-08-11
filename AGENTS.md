@@ -54,32 +54,33 @@ same PR.** If it introduces a limitation, a hack, or a known-broken edge, add it
 `HACKS.md` and to `docs/src/content/docs/limitations.md` — that page is a feature,
 not a confession.
 
-| You changed…                                                                        | Update…                                                           |
-| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `src/gateway/router.ts`, `registry.ts`, `adapters/**`, `reachability.ts`            | `intro/architecture.md`                                           |
-| `src/gateway/entitlements.ts` (roles, `?servers=`, the 424)                         | `intro/concepts.md`, `auth/overview.md`                           |
-| `src/gateway/toolPolicy.ts` (the `tools:` allow/deny policy)                        | `intro/architecture.md`, `intro/concepts.md`, `servers/adding.md` |
-| `src/deploy/tool-surface.ts`, `scripts/check-tool-policy.ts` (the pre-deploy gate)  | `operate/deploy-model.md`, `operate/operations.md`                |
-| `src/config/schema.ts` — any field, default, or `superRefine` rule                  | `servers/interface.md` **and** `strad.config.example.yaml`        |
-| `src/auth/**`                                                                       | `auth/overview.md`                                                |
-| `src/deploy/appspec.ts`, `scripts/render-spec.ts`                                   | `operate/deploy-model.md`                                         |
-| `src/deploy/spec-file.ts`, `scripts/assert-spec.ts` — the pre-`doctl` spec check    | `operate/operations.md`, `limitations.md`                         |
-| `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts` | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md` |
-| `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope    | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`   |
-| `src/ui/secret-status.ts` — a state, a label, or the source badge                   | `operate/secrets.md`, `limitations.md`                            |
-| `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                      |
-| `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                     |
-| `servers/telegram/**` — a tool, the credential model, the read/write split          | `servers/telegram.md`, `limitations.md`                           |
-| `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                 |
-| `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                   |
-| `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                            |
-| `scripts/resolve-image-tag.ts`, `src/deploy/imageTag.ts`                            | `operate/operations.md`                                           |
-| `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                               | `operate/telemetry.md`                                            |
-| `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI          | `intro/architecture.md`, `operate/telemetry.md`, and every count  |
-| `infra/strad.staging.yaml`                                                          | `operate/operations.md`, `servers/adding.md`                      |
-| `.github/workflows/**`                                                              | `operate/operations.md`                                           |
-| custom domains, `gateway.publicUrl`                                                 | `operate/dns.md`                                                  |
-| a `HACKS.md` entry added or resolved                                                | `limitations.md`                                                  |
+| You changed…                                                                        | Update…                                                                 |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `src/gateway/router.ts`, `registry.ts`, `adapters/**`, `reachability.ts`            | `intro/architecture.md`                                                 |
+| `src/gateway/entitlements.ts` (roles, `?servers=`, the 424)                         | `intro/concepts.md`, `auth/overview.md`                                 |
+| `src/gateway/toolPolicy.ts` (the `tools:` allow/deny policy)                        | `intro/architecture.md`, `intro/concepts.md`, `servers/adding.md`       |
+| `src/deploy/tool-surface.ts`, `scripts/check-tool-policy.ts` (the pre-deploy gate)  | `operate/deploy-model.md`, `operate/operations.md`                      |
+| `src/config/schema.ts` — any field, default, or `superRefine` rule                  | `servers/interface.md` **and** `strad.config.example.yaml`              |
+| `src/auth/**`                                                                       | `auth/overview.md`                                                      |
+| `src/deploy/appspec.ts`, `scripts/render-spec.ts`                                   | `operate/deploy-model.md`                                               |
+| `src/deploy/spec-file.ts`, `scripts/assert-spec.ts` — the pre-`doctl` spec check    | `operate/operations.md`, `limitations.md`                               |
+| `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts` | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md`       |
+| `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope    | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`         |
+| `src/ui/secret-status.ts` — a state, a label, or the source badge                   | `operate/secrets.md`, `limitations.md`                                  |
+| `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                            |
+| `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                           |
+| `servers/telegram/**` — a tool, the credential model, the read/write split          | `servers/telegram.md`, `limitations.md`                                 |
+| `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                       |
+| `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                         |
+| `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                                  |
+| `src/deploy/server-namespaces.ts` — the per-server/gateway resolution order         | `operate/secrets.md`, `operate/deploy-model.md`, `servers/interface.md` |
+| `scripts/resolve-image-tag.ts`, `src/deploy/imageTag.ts`                            | `operate/operations.md`                                                 |
+| `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                               | `operate/telemetry.md`                                                  |
+| `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI          | `intro/architecture.md`, `operate/telemetry.md`, and every count        |
+| `infra/strad.staging.yaml`                                                          | `operate/operations.md`, `servers/adding.md`                            |
+| `.github/workflows/**`                                                              | `operate/operations.md`                                                 |
+| custom domains, `gateway.publicUrl`                                                 | `operate/dns.md`                                                        |
+| a `HACKS.md` entry added or resolved                                                | `limitations.md`                                                        |
 
 Pages are `docs/src/content/docs/**`. A new page must also be added to the
 `sidebar` array in `docs/astro.config.mjs` — Starlight does not auto-discover it.

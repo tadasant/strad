@@ -260,6 +260,85 @@ rather than asked-for-politely because a disagreement here is the one failure in
 this subsystem that is silent: both halves keep answering, and one of them hands a
 process bytes that are not the value. See [Known limitations](/limitations/) #33.
 
+## Two servers, one variable name
+
+A supplementary server's `env:` map may reference `${NAME}`, and the value comes
+from **two** namespaces, in this order:
+
+| Order | Namespace                               | Holds                                    |
+| ----- | --------------------------------------- | ---------------------------------------- |
+| 1     | `/strad/{env}/mcp/{slug}/static/{NAME}` | That one server's value. **Wins.**       |
+| 2     | `/strad/{env}/gateway/static/{NAME}`    | The deployment-wide value. The fallback. |
+
+Before this, only the second existed for `env:`, so a name was a
+deployment-wide singleton: `telegram-ro` and `telegram-rw` both write
+`${TELEGRAM_API_HASH}` and could not be given different credentials, whatever was
+seeded where.
+
+**Nothing opts in.** A server nobody seeded has an empty first layer, falls back
+to the shared namespace, and renders exactly what it rendered before — that is
+the whole compatibility story, and it is why there is no flag. A flag would only
+have rebuilt the trap: seed the values, forget the flag, get a green deploy that
+injected nothing.
+
+**It is not `params: true`, and does not change it.** That flag injects a
+namespace _wholesale_ — every variable in it becomes an env var, named by the
+store. This substitutes into `${NAME}` references the config already makes, and
+injects nothing the config does not name. One server may use both, out of one
+namespace.
+
+```yaml
+# Different values for one name — different bundles, because…
+- slug: telegram-ro
+  kind: supplementary-image
+  bundle: bundle-telegram-ro
+  env:
+    TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}" # ← /strad/prod/mcp/telegram-ro/static/
+- slug: telegram-rw
+  kind: supplementary-image
+  bundle: bundle-telegram-rw
+  env:
+    TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}" # ← /strad/prod/mcp/telegram-rw/static/
+```
+
+:::caution[One bundle is one container is one environment]
+Two servers that **share a bundle** share a `process.env`, so they cannot hold two
+values for one key. `render-spec` **fails the deploy** when their namespaces
+disagree, rather than picking one:
+
+```
+bundle "bundle": servers "telegram-ro" and "telegram-rw" both set
+TELEGRAM_API_HASH under env:, and the two resolve to DIFFERENT values…
+Give the two servers separate bundles, or seed them the same value.
+```
+
+Capability variants (`telegram-ro` / `telegram-rw`, `gmail-ro` / `gmail-rw`) share
+a container **because** they share a credential — they differ in the gateway's
+`tools:` policy, never in their environment. Seeding both with the same value is
+correct and supported. Wanting two different values means wanting two components,
+and that is a billed choice you make in the config.
+:::
+
+### A parameter nothing reads now says so
+
+Seeding `/strad/{env}/mcp/{slug}/static/` for a server without `params: true` used
+to be a **silent no-op**: no injected variable, no warning, a green deploy. The
+render now warns, by name:
+
+```
+::warning::/strad/prod/mcp/telegram-rw/static/ holds 3 parameter(s) nothing reads
+(TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_STRING_SESSION): "telegram-rw" does
+not set params: true, and its env: map references no ${NAME} by that name.
+```
+
+It warns rather than fails, because a store is also allowed to be a registry of
+values a human manages by hand. The same judgement drives the chip on each row of
+the console's parameters page, so the answer is the same in both places.
+
+`scripts/check-store.ts` knows about the layer too: a name every referencing
+server holds under its own namespace is reported as **served per-server** rather
+than missing from the gateway namespace.
+
 ## Fail-loud, without reading a value
 
 Baking every `${NAME}` into the spec has one genuinely good property: a reference

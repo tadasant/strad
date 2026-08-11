@@ -13,6 +13,7 @@ import {
   gatewayParameterPath,
 } from "../src/secrets/parameters/namespace.ts";
 import { secretRef } from "../src/secrets/parameters/wire.ts";
+import { parameterPath } from "../src/secrets/parameters/namespace.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { ParameterStoreError } from "../src/secrets/parameters/types.ts";
 import { serveFake } from "./helpers/serve-fake.ts";
@@ -193,6 +194,51 @@ describe("expectedStoreNames", () => {
     const check = await checkStore(fake.store, shared);
     expect(check.missing).toContain("SHOP_PASSWORD");
     expect(check.environmentOnly).toStrictEqual(["SECRETS_ADMIN_KEY_JSON"]);
+  });
+});
+
+describe("the second layer: a name served per-server", () => {
+  it("is neither present nor missing when the server holds its own", async () => {
+    // `shop` declares `SHOP_PASSWORD: "${SHOP_PASSWORD}"`, so its own
+    // /strad/test/mcp/shop/static/ namespace answers first and the gateway
+    // namespace never has to. Calling that missing would fail a pre-flip gate
+    // for a deployment that resolves every name it needs.
+    const fake = await seededFake();
+    await fake.store.destroy(gatewayParameterPath("test", "SHOP_PASSWORD"));
+    await fake.store.create({
+      path: parameterPath("test", "shop", "SHOP_PASSWORD"),
+      secret: true,
+      value: "leak-canary-shop-per-server-9f2a",
+    });
+
+    const check = await checkStore(fake.store, config);
+    expect(check.perServer).toStrictEqual(["SHOP_PASSWORD"]);
+    expect(check.missing).not.toContain("SHOP_PASSWORD");
+    expect(check.present).not.toContain("SHOP_PASSWORD");
+  });
+
+  it("still counts it missing when the gateway namespace lacks it too", async () => {
+    const fake = await seededFake();
+    await fake.store.destroy(gatewayParameterPath("test", "SHOP_PASSWORD"));
+    const check = await checkStore(fake.store, config);
+    expect(check.perServer).toStrictEqual([]);
+    expect(check.missing).toContain("SHOP_PASSWORD");
+  });
+
+  it("never covers a name the CORE resolves, whatever a server was seeded", async () => {
+    // GRANOLA_TOKEN is a remote-http header, resolved in-process out of the
+    // gateway namespace. A same-named parameter under some server's namespace
+    // does not answer for it.
+    const fake = await seededFake();
+    await fake.store.destroy(gatewayParameterPath("test", "GRANOLA_TOKEN"));
+    await fake.store.create({
+      path: parameterPath("test", "shop", "GRANOLA_TOKEN"),
+      secret: true,
+      value: "leak-canary-granola-per-server-9f2a",
+    });
+    const check = await checkStore(fake.store, config);
+    expect(check.missing).toContain("GRANOLA_TOKEN");
+    expect(check.perServer).not.toContain("GRANOLA_TOKEN");
   });
 });
 

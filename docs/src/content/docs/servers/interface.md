@@ -89,7 +89,10 @@ seventeen `path`s on one container.
 Two servers may also share a `path` in one bundle — that is the capability-variant
 pattern (`gmail-ro` and `gmail-rw`, told apart by their `tools:` policy). What they
 cannot share is a value: a bundle is one `process.env`, so two servers in one
-bundle declaring the same `env:` key with **different** values is a schema error.
+bundle declaring the same `env:` key with **different** values is a schema error —
+and two whose `${NAME}` is spelled the same but resolves differently, out of
+[their own namespaces](/operate/secrets/#two-servers-one-variable-name), is a
+render error. Two values for one name means two bundles.
 
 Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
 start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets),
@@ -131,8 +134,16 @@ plus two that shape how this server gets its values:
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
   system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and
   injected as this server's env — for a supplementary image at deploy time, scoped
-  onto its bundle. It is the modern alternative to hand-writing `${REF}` entries in
-  `env:`.
+  onto its bundle. It injects the namespace **wholesale**: the variable names come
+  from the store, not from the config.
+
+  It is not the only thing that reads that namespace. A `${NAME}` under `env:`
+  resolves from `/strad/{env}/mcp/{slug}/static/` **before** the shared
+  `/strad/{env}/gateway/static/`, with no flag and for every server — which is what
+  lets two servers write the same `${NAME}` and be given different values. See
+  [two servers, one variable name](/operate/secrets/#two-servers-one-variable-name).
+  The two paths differ in what they inject: `params:` injects everything it finds,
+  substitution injects only names the config already references.
 
 ```yaml
 servers:

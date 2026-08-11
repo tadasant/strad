@@ -5,6 +5,11 @@ import {
   supplementaryEnvNames,
 } from "./preflight.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
+import {
+  envRefsBySlug,
+  mcpNamespace,
+  seededByServer,
+} from "./server-namespaces.ts";
 import { isSecretRef } from "../secrets/parameters/wire.ts";
 import { errorSummary } from "../secrets/provider/snapshot.ts";
 import type {
@@ -62,6 +67,16 @@ import type {
  * `consoleEnv:` is NOT excluded: the `env:` declaration means some component
  * genuinely reads it from the store.
  *
+ * ## Two namespaces, one verdict
+ *
+ * A supplementary `env:` ref does not resolve from the gateway namespace alone:
+ * the server's own `/strad/{env}/mcp/{slug}/static/` is consulted first, and
+ * wins (see src/deploy/server-namespaces.ts). So this lists that prefix too, and
+ * a name every referencing server holds for itself is reported as `perServer`
+ * rather than as missing — the deployment resolves it, this namespace simply is
+ * not where. A name the CORE resolves is never covered that way: those are read
+ * in-process, out of the gateway namespace, whatever a server was seeded.
+ *
  * ## It reads metadata, not values
  *
  * The default check is `list()` — paths, variables, a has-value flag. For a
@@ -78,7 +93,19 @@ export interface StoreCheckResult {
   expected: string[];
   /** Expected names the store holds a value for. */
   present: string[];
-  /** Expected names the store does not hold. The finding. */
+  /**
+   * Expected names this namespace does NOT hold and does not have to, because
+   * every server that references them is served by its own
+   * `/strad/{env}/mcp/{slug}/static/` namespace instead.
+   *
+   * Neither present nor missing: the gateway namespace is a FALLBACK for a
+   * supplementary `env:` ref, so reporting these as missing would fail a
+   * deployment that resolves every name it needs. They are named rather than
+   * silently dropped, because "seeded somewhere else" and "seeded" are different
+   * facts about a store.
+   */
+  perServer: string[];
+  /** Expected names no namespace holds. The finding. */
   missing: string[];
   /** `consoleEnv:` names — deploy-environment only, never expected here. */
   environmentOnly: string[];
@@ -157,9 +184,41 @@ export async function checkStore(
   const metas = await store.list(namespace);
   const held = new Set(metas.filter((m) => m.hasValue).map((m) => m.variable));
 
+  // The second layer. A supplementary `env:` ref resolves from the server's own
+  // namespace first (see src/deploy/server-namespaces.ts), so a name every
+  // referencing server holds for itself is not missing from the deployment —
+  // only from this namespace. A name the CORE resolves is never covered this
+  // way: `requiredSecretNames()` is read in-process, out of the gateway
+  // namespace, whatever any server was seeded.
+  const refsBySlug = envRefsBySlug(config);
+  // Only when the config has a supplementary `env:` ref at all. `list()`
+  // enumerates the whole project, so a config that cannot use the second layer
+  // must not pay for a scan of it.
+  const seeded =
+    refsBySlug.size > 0
+      ? seededByServer(
+          config.gateway.env,
+          await store.list(mcpNamespace(config.gateway.env)),
+        )
+      : new Map<string, string[]>();
+  const core = new Set(requiredSecretNames(config));
+  const servedPerServer = (name: string): boolean => {
+    if (core.has(name)) return false;
+    const slugs = [...refsBySlug].filter(([, refs]) => refs.has(name));
+    return (
+      slugs.length > 0 &&
+      slugs.every(([slug]) => (seeded.get(slug) ?? []).includes(name))
+    );
+  };
+
   const expected = expectedStoreNames(config);
   const present = expected.filter((name) => held.has(name));
-  const missing = expected.filter((name) => !held.has(name));
+  const perServer = expected.filter(
+    (name) => !held.has(name) && servedPerServer(name),
+  );
+  const missing = expected.filter(
+    (name) => !held.has(name) && !servedPerServer(name),
+  );
 
   const environmentOnly = environmentOnlyNames(config);
   const adminCredentialsInStore = environmentOnly.filter((name) =>
@@ -170,6 +229,7 @@ export async function checkStore(
     namespace,
     expected,
     present,
+    perServer,
     missing,
     environmentOnly,
     adminCredentialsInStore,

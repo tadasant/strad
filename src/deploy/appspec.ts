@@ -43,6 +43,22 @@ export interface RenderOptions {
    */
   secrets?: Readonly<Record<string, string>>;
   /**
+   * Per-server substitution values, keyed by server slug -> NAME -> value.
+   *
+   * The SAME job as `secrets`, one scope in: these come from that server's own
+   * `/strad/{env}/mcp/{slug}/static/` namespace, and they WIN over the shared bag
+   * for that server's `env:` refs. It is what lets two servers write
+   * `${TELEGRAM_API_HASH}` and mean different credentials — see
+   * src/deploy/server-namespaces.ts for the layering, and the collision check
+   * below for the limit (two servers on ONE bundle share one environment, so
+   * "different values" there is a hard error, not a resolution).
+   *
+   * Absent or empty for a server nobody seeded, which is every server in every
+   * deployment that predates this: resolution then reads exactly as it did, out
+   * of `secrets` alone.
+   */
+  serverSecrets?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /**
    * Resolved managed parameters, keyed by server slug -> VARIABLE -> value.
    *
    * A supplementary server with `params: true` has its `/strad/{env}/mcp/{slug}/
@@ -480,7 +496,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     string,
     {
       image: string;
-      /** `env:` maps, whose `${REF}` values are resolved against opts.secrets. */
+      /**
+       * `env:` maps, ALREADY resolved — per server, against that server's own
+       * bag layered over the shared one. Resolution happens before the merge
+       * rather than after it, because after the merge there is no server left to
+       * ask which namespace a value should come from.
+       */
       env: Record<string, string>;
       /** Resolved managed parameters — ALREADY literal, so NOT ref-resolved. */
       params: Record<string, string>;
@@ -493,6 +514,11 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   const paramOwners = new Map<string, Map<string, Set<string>>>();
   /** bundle -> every variable on it that came from a PARAMETER. */
   const paramKeys = new Map<string, Set<string>>();
+  /** bundle -> key -> the first server that resolved it, and to what. */
+  const envValueOwners = new Map<
+    string,
+    Map<string, { slug: string; value: string }>
+  >();
 
   for (const server of config.servers) {
     if (!server.enabled) continue;
@@ -511,6 +537,47 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // unresolved ref and either fail the render or be silently corrupted.
       const params = opts.resolvedParams?.[server.slug] ?? {};
       const prev = imageBundles.get(server.bundle);
+
+      // Resolve THIS SERVER'S `${NAME}` refs, against its own namespace layered
+      // over the shared one. resolveMap throws on an unresolved ref — a
+      // supplementary image that silently shipped the literal
+      // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
+      const own = opts.serverSecrets?.[server.slug];
+      const resolvedEnv = resolveMap(
+        server.env,
+        own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
+      );
+
+      // TWO SERVERS ON ONE BUNDLE CANNOT HOLD TWO VALUES FOR ONE NAME.
+      //
+      // A bundle is a component is a container is one `process.env`. The config
+      // schema already refuses two servers declaring the same key with different
+      // REF STRINGS on one bundle; per-server namespaces add the case it cannot
+      // see, because the strings are identical and the VALUES differ — the exact
+      // shape of `telegram-ro` and `telegram-rw` both writing
+      // `${TELEGRAM_API_HASH}` and each being seeded its own.
+      //
+      // Merging would pick one at random and inject it under both slugs, so this
+      // throws instead. The answer is separate bundles: capability variants share
+      // a container BECAUSE they share a credential, and two credentials is two
+      // containers.
+      const valueOwners = envValueOwners.get(server.bundle) ?? new Map();
+      for (const [key, value] of Object.entries(resolvedEnv)) {
+        const first = valueOwners.get(key);
+        if (first && first.value !== value) {
+          throw new Error(
+            `bundle "${server.bundle}": servers "${first.slug}" and ` +
+              `"${server.slug}" both set ${key} under env:, and the two ` +
+              `resolve to DIFFERENT values — one of them comes from a ` +
+              `per-server namespace (/strad/${config.gateway.env}/mcp/{slug}/static/). ` +
+              `One bundle is one container with one environment, so one value ` +
+              `would silently overwrite the other. Give the two servers ` +
+              `separate bundles, or seed them the same value.`,
+          );
+        }
+        if (!first) valueOwners.set(key, { slug: server.slug, value });
+      }
+      envValueOwners.set(server.bundle, valueOwners);
 
       // Who contributed which variable, so the collision check below can tell a
       // server overriding ITSELF from one server clobbering another. Order-free
@@ -536,7 +603,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
 
       imageBundles.set(server.bundle, {
         image: server.image,
-        env: { ...(prev?.env ?? {}), ...server.env },
+        env: { ...(prev?.env ?? {}), ...resolvedEnv },
         params: { ...(prev?.params ?? {}), ...params },
         // Which VARIABLES each `params: true` server contributed, by slug. Names
         // only — see paramKeysEnv() for why the component needs to be told.
@@ -643,18 +710,15 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     componentImage: ImageRef,
   ): EnvVar[] => {
     const envs: EnvVar[] = [
-      // Resolve `${NAME}` refs against the secret bag so the credential
-      // lands ONLY on this bundle. resolveMap throws on an unresolved
-      // ref — a supplementary image that silently shipped the literal
-      // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
-      ...Object.entries(resolveMap(supplementary.env, opts.secrets ?? {})).map(
-        ([key, value]): EnvVar => ({
-          key,
-          value,
-          scope: "RUN_TIME",
-          type: "SECRET",
-        }),
-      ),
+      // Already resolved, per server, above — the credential lands ONLY on this
+      // bundle either way, and resolving there is what lets each server draw on
+      // its own namespace first.
+      ...Object.entries(supplementary.env).map(([key, value]): EnvVar => ({
+        key,
+        value,
+        scope: "RUN_TIME",
+        type: "SECRET",
+      })),
       // Resolved managed parameters are already literal — emit them as
       // SECRET env vars directly, WITHOUT resolveMap, so a value containing
       // `${…}` cannot be mistaken for an unresolved ref.

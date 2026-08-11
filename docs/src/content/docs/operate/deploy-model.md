@@ -158,13 +158,48 @@ refusing batches — and the staging deploy's [telemetry
 report](/operate/operations/#deploy-stagingyml--put-it-on-app-platform) is what
 catches it after the fact.
 
+### Per-server `${NAME}` resolution
+
+A supplementary server's `env:` refs resolve from **two** namespaces:
+`/strad/{env}/mcp/{slug}/static/` first, `/strad/{env}/gateway/static/` as the
+fallback. That is what lets two servers write the same `${NAME}` and mean
+different values — see [two servers, one variable
+name](/operate/secrets/#two-servers-one-variable-name) for the semantics, the
+compatibility argument and the one-bundle-one-environment limit.
+
+Three things happen here as a result:
+
+- **One listing, then targeted reads.** `render-spec` lists `/strad/{env}/mcp/`
+  once — metadata, no values — and only calls `resolve()` on the namespaces whose
+  slugs actually reference one of their names, concurrently. A store with no
+  per-server parameters costs one extra `list()` and nothing else; a store with K
+  such slugs costs K more namespace reads, in parallel, and `list()` enumerates
+  the project each time (see [Known limitations](/limitations/) #52).
+- **The shared namespace is a fallback, not a requirement.** A name every
+  referencing server holds for itself no longer has to exist in the gateway
+  namespace; a name even one referencing server still needs from there is a hard
+  error that names the servers.
+- **A seeded namespace nothing reads is a `::warning::`** with the paths and
+  variable names in it. It used to be a bare `continue`. So is a parameter that
+  exists and yields no usable value — an un-dereferenced `__REF__`, an empty
+  payload: it is dropped rather than injected, and the shared namespace gets its
+  turn, because baking the pointer would ship a non-credential _and_ suppress a
+  value that works. A namespace that fails to render outright still fails the
+  deploy, as the gateway namespace always has.
+
+The read is gated on the **resolver credential**, not on the provider, which is
+where `params: true` already draws its line. An `env`-provider deployment whose
+deploy job carries `STRAD_PARAMS_*` therefore consults the store for a
+supplementary `env:` ref, ahead of the deploy environment; a deployment with no
+resolver credential resolves exactly as it did.
+
 ### Deploy-time parameter resolution
 
 A `supplementary-image` server with `params: true` gets its managed parameters —
 everything under `/strad/{env}/mcp/{slug}/static/*` in the [parameters
 system](/intro/architecture/#the-secrets-and-parameters-system) — resolved **here,
 at render time**, by the **resolver** credential (`STRAD_PARAMS_*`, read from the
-deploy environment). `render-spec` calls `resolveServerParams()` for each such
+deploy environment). `render-spec` resolves that namespace for each such
 server, pulling non-secret values from Parameter Manager and secret values from
 Secret Manager, and hands the resulting map to `renderAppSpec` as `resolvedParams`.
 Those values land as SECRET env vars **scoped onto that server's bundle** — the same
@@ -311,9 +346,12 @@ Four checks, in order:
    last declaration silently wins and the other server's console runs as the wrong
    identity.
 
-A collision between two servers' `env:` maps in one bundle is **not** a check
-here — it is rejected earlier, by the schema itself, along with the
-`consoleEnv:`-against-`core` half. That is the better place for it: a schema rule
+A collision between two servers' `env:` maps in one bundle — two different
+`${REF}` _strings_ under one key — is **not** a check here: it is rejected
+earlier, by the schema itself, along with the `consoleEnv:`-against-`core` half.
+(The case the schema cannot see is two servers whose ref strings are identical
+and whose per-server namespaces resolve them differently; `renderAppSpec` throws
+on that, at render time, when the values exist.) That is the better place for it: a schema rule
 fires at boot as well as at this gate. See [`env:` may be bare; `consoleEnv:` must
 be
 slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).

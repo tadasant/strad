@@ -157,6 +157,14 @@ servers:
   # bare string is used literally (see `GCS_BUCKET`); only `${NAME}` is a secret
   # lookup.
   #
+  # A `${NAME}` is resolved from THIS SERVER'S OWN namespace first —
+  # /strad/{env}/mcp/{slug}/static/{NAME} — and from the shared
+  # /strad/{env}/gateway/static/{NAME} only as a fallback. That is what lets two
+  # servers write the same `${NAME}` and be given different values; seed nothing
+  # per-server and it resolves exactly as it always has. Two servers on ONE bundle
+  # cannot differ, though: a bundle is one container with one environment, and the
+  # render fails rather than picking a winner. See docs/operate/secrets.md.
+  #
   # Two other ways a server gets its values, both shown further down:
   #   - `consoleEnv:` — env that lands on the CORE gateway ONLY (the human /ui),
   #     never on the bundle. The `secrets` server uses it to keep an admin key off

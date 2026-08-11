@@ -14,6 +14,7 @@ import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   gatewayNamespace,
   gatewayParameterPath,
+  parameterPath,
 } from "../src/secrets/parameters/namespace.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { serveFake } from "./helpers/serve-fake.ts";
@@ -566,5 +567,195 @@ describe("render-spec, env-backed (the default)", () => {
     );
     expect(secretKeys).toContain("GRANOLA_TOKEN");
     expect(secretKeys).toContain("STRAD_TOKENS");
+  });
+});
+
+// =============================================================================
+// PER-SERVER NAMESPACES, through the real render against the real store client
+// =============================================================================
+//
+// The flaw: every `${NAME}` in every supplementary server's `env:` resolved out
+// of ONE namespace, keyed on the name — so two servers could not be given
+// different values for one name, however they were seeded. These run the actual
+// `render-spec` subprocess against the fake store over HTTP, which is the same
+// path a deploy takes.
+//
+// Every value below is an obviously-fake placeholder.
+
+describe("render-spec, per-server namespaces", () => {
+  const TWO_SERVERS = (bundleRo: string, bundleRw: string) =>
+    CONFIG_YAML(
+      `  - slug: telegram-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: ${bundleRo}
+    path: /telegram
+    entitlements: [admin]
+    env:
+      TELEGRAM_API_HASH: "\${TELEGRAM_API_HASH}"
+  - slug: telegram-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: ${bundleRw}
+    path: /telegram
+    entitlements: [admin]
+    env:
+      TELEGRAM_API_HASH: "\${TELEGRAM_API_HASH}"
+`,
+      `  - name: ${bundleRo}\n${bundleRo === bundleRw ? "" : `  - name: ${bundleRw}\n`}`,
+    );
+
+  it("resolves the SAME name to DIFFERENT values for two servers", async () => {
+    // Seeded per slug, under /strad/test/mcp/{slug}/static/ — the path an
+    // operator reaches for, and the one that used to be read by nothing.
+    await fake.store.create({
+      path: parameterPath("test", "telegram-ro", "TELEGRAM_API_HASH"),
+      secret: true,
+      value: "fake-readonly-hash",
+    });
+    await fake.store.create({
+      path: parameterPath("test", "telegram-rw", "TELEGRAM_API_HASH"),
+      secret: true,
+      value: "fake-readwrite-hash",
+    });
+
+    const result = await render(TWO_SERVERS("bundle-ro", "bundle-rw"));
+    expect(result.ok).toBe(true);
+
+    const on = (component: string) =>
+      result
+        .spec!.services.find((s) => s.name === component)
+        ?.envs.find((e) => e.key === "TELEGRAM_API_HASH")?.value;
+
+    expect(on("bundle-ro")).toBe("fake-readonly-hash");
+    expect(on("bundle-rw")).toBe("fake-readwrite-hash");
+    // The deploy log says which namespace served which server, by name only.
+    expect(result.stderr).toContain("/strad/test/mcp/telegram-ro/static/");
+    expect(result.stderr).not.toContain("fake-readonly-hash");
+    expect(result.stderr).not.toContain("fake-readwrite-hash");
+  });
+
+  it("refuses to render two values onto ONE bundle", async () => {
+    // Same two servers, one container. There is no environment that holds both.
+    const result = await render(TWO_SERVERS("bundle", "bundle"));
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toContain("separate bundles");
+    expect(result.stderr).not.toContain("fake-readonly-hash");
+  });
+
+  it("falls back to the gateway namespace for a server nobody seeded", async () => {
+    // BACKWARD COMPATIBILITY, on the live path: this server has no per-server
+    // namespace at all, and resolves exactly as every server did before.
+    await fake.store.create({
+      path: gatewayParameterPath("test", "SHOP_PASSWORD"),
+      secret: true,
+      value: "fake-shared-password",
+    });
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle-shop
+    entitlements: [admin]
+    env:
+      SHOP_PASSWORD: "\${SHOP_PASSWORD}"
+`,
+        "  - name: bundle-shop\n",
+      ),
+    );
+    expect(result.ok).toBe(true);
+    expect(
+      result
+        .spec!.services.find((s) => s.name === "bundle-shop")
+        ?.envs.find((e) => e.key === "SHOP_PASSWORD")?.value,
+    ).toBe("fake-shared-password");
+  });
+
+  it("WARNS about a parameter seeded where nothing reads it", async () => {
+    // The silent no-op this replaces: a value seeded under a server that sets
+    // neither `params: true` nor a matching `${NAME}` was injected nowhere and
+    // reported nowhere.
+    await fake.store.create({
+      path: parameterPath("test", "shop", "UNREAD_BY_ANYTHING"),
+      secret: true,
+      value: "fake-unread-value",
+    });
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle-shop
+    entitlements: [admin]
+    env:
+      SHOP_PASSWORD: "\${SHOP_PASSWORD}"
+`,
+        "  - name: bundle-shop\n",
+      ),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.stderr).toContain("::warning::");
+    expect(result.stderr).toContain("UNREAD_BY_ANYTHING");
+    expect(result.stderr).toContain("/strad/test/mcp/shop/static/");
+    // A warning about a value is not a place to print one.
+    expect(result.stderr).not.toContain("fake-unread-value");
+  });
+
+  it("does not demand the gateway namespace hold a per-server name", async () => {
+    // TELEGRAM_API_HASH is in neither the gateway namespace nor the deploy
+    // environment — only under each server's own namespace. Before, that was a
+    // hard render error; the shared bag is a FALLBACK now, and a name nothing
+    // falls back for is not missing.
+    const result = await render(TWO_SERVERS("bundle-ro", "bundle-rw"));
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("render-spec, a per-server parameter that yields no value", () => {
+  it("falls back to the gateway namespace, and says which parameter it could not use", async () => {
+    // `resolve()` does not promise a VALUE. A parameter can exist, be listed,
+    // and resolve to nothing (or to an un-dereferenced __REF__ pointer, the
+    // issue-#49 shape). Taking either would do the worst thing twice — inject a
+    // non-credential AND suppress the shared value that works.
+    await fake.store.create({
+      path: gatewayParameterPath("test", "FALLBACK_PASSWORD"),
+      secret: true,
+      value: "fake-shared-fallback-value",
+    });
+    // A parameter that EXISTS and resolves to nothing. `resolve()` is soft on
+    // this shape — it skips it and returns the rest — so the renderer is what
+    // has to decide, and taking it would inject an empty credential AND
+    // suppress the shared value that works.
+    await fake.store.create({
+      path: parameterPath("test", "fallback-shop", "FALLBACK_PASSWORD"),
+      secret: false,
+      value: "",
+    });
+
+    const result = await render(
+      CONFIG_YAML(
+        `  - slug: fallback-shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle-fallback
+    entitlements: [admin]
+    env:
+      FALLBACK_PASSWORD: "\${FALLBACK_PASSWORD}"
+`,
+        "  - name: bundle-fallback\n",
+      ),
+    );
+
+    expect(result.ok).toBe(true);
+    const value = result
+      .spec!.services.find((s) => s.name === "bundle-fallback")
+      ?.envs.find((e) => e.key === "FALLBACK_PASSWORD")?.value;
+    expect(value).toBe("fake-shared-fallback-value");
+    // Never the pointer, and never the per-server value it points at.
+    expect(JSON.stringify(result.spec)).not.toContain("__REF__");
+    // And the render says which parameter it could not use.
+    expect(result.stderr).toContain("::warning::");
+    expect(result.stderr).toContain("FALLBACK_PASSWORD");
   });
 });

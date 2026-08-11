@@ -1,5 +1,6 @@
 import type { StradConfig } from "../config/schema.ts";
 import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
+import { refsIn } from "../secrets/provider/resolve.ts";
 
 /**
  * Where a stored parameter actually GOES — computed from the running config,
@@ -16,11 +17,14 @@ import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
  * The two destinations, and what reads each:
  *
  *   /strad/{env}/mcp/{slug}/static/{VAR}
- *       Read for a server that sets `params: true`. A supplementary image's
- *       parameters are resolved at DEPLOY time by scripts/render-spec.ts and
- *       injected onto its component; a builtin's are resolved at RUNTIME by the
- *       registry, on the secrets TTL. A server without `params: true` reads none
- *       of it — it takes its environment from `env:` / `options:` instead.
+ *       Read TWO ways, and the difference matters to what this page says.
+ *       `params: true` takes the namespace WHOLESALE — a supplementary image's
+ *       at DEPLOY time via scripts/render-spec.ts, a builtin's at RUNTIME via
+ *       the registry, on the secrets TTL. Separately, and with no flag at all, a
+ *       supplementary server's `env:` `${NAME}` references are substituted from
+ *       this namespace before the gateway's (src/deploy/server-namespaces.ts) —
+ *       so a parameter whose variable matches one of those names is delivered
+ *       too. A path matching neither is stored and read by nothing.
  *
  *   /strad/{env}/gateway/static/{NAME}
  *       The gateway's own `${NAME}` references. Read at runtime only when
@@ -60,12 +64,21 @@ export interface Routing {
   detail: string;
 }
 
-/** A server that opts into parameter resolution, and when its values land. */
+/** A server that reads its namespace, and when its values land. */
 export interface ParamsConsumer {
   slug: string;
   /** The namespace prefix its parameters live under, relative to a namespace. */
   prefix: string;
   when: "deploy" | "runtime";
+  /**
+   * HOW it reads the namespace, which is not the same question as whether.
+   *
+   * `params` takes the namespace wholesale. `env-ref` substitutes only the names
+   * the server's `env:` map already references — no flag, and invisible in the
+   * config's `params:` column. A banner counting only the first would tell a
+   * human nothing here is delivered while a row below says `delivered`.
+   */
+  via: "params" | "env-ref";
 }
 
 /**
@@ -94,17 +107,26 @@ export function resolverConfigured(env: NodeJS.ProcessEnv): boolean {
   return Boolean(env[RESOLVER_ENV.projectId] && env[RESOLVER_ENV.keyJson]);
 }
 
-/** Every enabled server with `params: true`, in config order. */
+/**
+ * Every enabled server that reads its own namespace, in config order.
+ *
+ * Two ways in, and both count: `params: true`, and a supplementary server whose
+ * `env:` references a `${NAME}` that per-server substitution would supply.
+ */
 export function paramsConsumers(config: StradConfig): ParamsConsumer[] {
   const out: ParamsConsumer[] = [];
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind === "remote-http") continue;
-    if (!server.params) continue;
+    const substitutes =
+      server.kind === "supplementary-image" &&
+      Object.values(server.env).some((raw) => refsIn(raw).length > 0);
+    if (!server.params && !substitutes) continue;
     out.push({
       slug: server.slug,
       prefix: `${server.slug}/static/`,
       when: server.kind === "supplementary-image" ? "deploy" : "runtime",
+      via: server.params ? "params" : "env-ref",
     });
   }
   return out;
@@ -117,16 +139,20 @@ export function paramsConsumers(config: StradConfig): ParamsConsumer[] {
  * credential for `gcs` should get `gcs/static/` from a list rather than typing
  * it, and should see in the same list that `gcs` is not wired yet.
  */
-export function prefixSuggestions(
-  config: StradConfig,
-): { prefix: string; wired: boolean; slug: string }[] {
-  const wired = new Set(paramsConsumers(config).map((c) => c.slug));
+export function prefixSuggestions(config: StradConfig): {
+  prefix: string;
+  wired: boolean;
+  via?: "params" | "env-ref";
+  slug: string;
+}[] {
+  const wired = new Map(paramsConsumers(config).map((c) => [c.slug, c.via]));
   return config.servers
     .filter((s) => s.enabled && s.kind !== "remote-http")
     .map((s) => ({
       slug: s.slug,
       prefix: `${s.slug}/static/`,
       wired: wired.has(s.slug),
+      ...(wired.has(s.slug) ? { via: wired.get(s.slug)! } : {}),
     }));
 }
 
@@ -217,7 +243,21 @@ export function classifyPath(
     };
   }
 
-  if (!server.params) {
+  // PER-SERVER SUBSTITUTION — the second way a value under `{slug}/static/`
+  // reaches a server, and the one that needs no flag.
+  //
+  // A supplementary server's `env:` `${NAME}` refs resolve from its OWN
+  // namespace before the gateway's (src/deploy/server-namespaces.ts), so a
+  // parameter whose variable matches one of those names is delivered at deploy
+  // time even with `params: false`. Reporting it `not wired` would be the same
+  // false claim in the other direction: a human seeds a credential the renderer
+  // does read, and this page tells them nothing does.
+  const variable = tail.slice(tail.lastIndexOf("/") + 1);
+  const substituted =
+    server.kind === "supplementary-image" &&
+    Object.values(server.env).some((raw) => refsIn(raw).includes(variable));
+
+  if (!server.params && !substituted) {
     return {
       state: "not-wired",
       slug,
@@ -225,12 +265,18 @@ export function classifyPath(
       detail:
         `Stored, but not delivered: the "${slug}" server does not set \`params: true\` in ` +
         `strad's config, so nothing resolves this path into its environment — it reads its ` +
-        `${server.kind === "builtin" ? "options:" : "env:"} map instead. Wiring that is a ` +
-        "config change plus a deploy.",
+        `${server.kind === "builtin" ? "options:" : "env:"} map instead. Wire it by setting ` +
+        (server.kind === "supplementary-image"
+          ? `\`params: true\`, or by referencing this name from that map — \`${variable}: "\${${variable}}"\`. ` +
+            "Either is a config change plus a deploy."
+          : "`params: true`. That is a config change plus a deploy."),
     };
   }
 
-  const when = server.kind === "supplementary-image" ? "deploy" : "runtime";
+  const when =
+    server.kind === "supplementary-image" && (server.params || substituted)
+      ? "deploy"
+      : "runtime";
 
   if (!resolver) {
     return {
@@ -238,7 +284,14 @@ export function classifyPath(
       slug,
       when,
       label: "no resolver",
-      detail: `"${slug}" sets \`params: true\`, but that is only half of it. ${NO_RESOLVER}`,
+      detail: server.params
+        ? `"${slug}" sets \`params: true\`, but that is only half of it. ${NO_RESOLVER}`
+        : `"${slug}" references \`\${${variable}}\` in its env:, but that is only half of it. ` +
+          NO_RESOLVER.replace(
+            "so `params: true` resolves to nothing",
+            "so this namespace is never consulted and the reference falls back to " +
+              gatewayRoot,
+          ),
     };
   }
 
@@ -258,9 +311,14 @@ export function classifyPath(
     label: when === "deploy" ? "delivered · deploy" : "delivered · runtime",
     detail:
       (when === "deploy"
-        ? `Delivered: "${slug}" sets \`params: true\`, so render-spec resolves this path at ` +
-          "DEPLOY time and injects it onto that container. A new or rotated value reaches the " +
-          "server on the next deploy, not immediately."
+        ? server.params
+          ? `Delivered: "${slug}" sets \`params: true\`, so render-spec resolves this path at ` +
+            "DEPLOY time and injects it onto that container. A new or rotated value reaches the " +
+            "server on the next deploy, not immediately."
+          : `Delivered: "${slug}" references \`\${${variable}}\` in its env:, and a server's own ` +
+            "namespace is resolved before the gateway's — so render-spec substitutes THIS value at " +
+            "DEPLOY time, ahead of any same-named value in " +
+            `${gatewayRoot}. A rotation reaches the server on the next deploy, not immediately.`
         : `Delivered: "${slug}" sets \`params: true\` and runs a strad image, so this path is ` +
           `resolved at RUNTIME and refreshed within gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s).`) +
       deep,
