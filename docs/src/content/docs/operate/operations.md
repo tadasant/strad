@@ -668,9 +668,19 @@ visibility and linked repository, not the re-run button. See
 The four `docker/build-push-action` steps that remain direct
 (`release-onepassword-image.yml`'s verification build, `bundle-google-ci.yml`,
 and two in `ci.yml`) build with `push: false`. They never touch a registry, so
-there is nothing there to flake — and because nothing on the PR path loads the
-wrapper, `ci.yml`'s `lint` job runs `actionlint` over every workflow so a
-malformed `action.yml` fails the PR rather than the next release.
+there is nothing there to flake.
+
+Nothing on the PR path loads the wrapper, so `ci.yml`'s `lint` job runs
+`actionlint` over every workflow to catch a malformed `action.yml` before the
+next release. Know what that does and does not buy: actionlint validates an
+action's INTERFACE, and does not evaluate the prose in it. The runner
+template-parses the entire manifest when it loads it, so a `${{ … }}` written as
+an EXAMPLE in an input `description:` is evaluated against a scope that has no
+`steps` — the action then fails to LOAD, and every step calling it fails
+instantly. That reddened all eight release workflows at once on 2026-08-11, green
+actionlint and all. `test/workflow-buildx-builder.test.ts` is what covers it: no
+`${{` in the `name:` or `description:` of any local action manifest. See
+[Known limitations](/limitations/).
 
 ## The staging config
 

@@ -2053,15 +2053,33 @@ and `bake` and `compose build` read the same pointer.
 The guard step runs the thing it guards, rather than grepping it for `exit 1`: a
 guard whose test is inverted still contains that string and still reads fine.
 
-**The blind spot next door.** That guard lives in a `run:` block of a LOCAL
-action, and `ci.yml`'s `actionlint` step does not read those — it follows a
-`uses:` to the action and validates the interface, not the shell inside it.
-Nothing else in a PR build loads `build-push` either, because the steps that use
-it only run on `main` (#51). So a `run:` block there is unlinted, and one
-specific typo in it is fatal: `\${{` is NOT an escape — the runner has none —
-so it parses as an expression, and a malformed one fails the whole action to a
-`startup_failure` on the release path. The test asserts that sequence appears in
-no shell step.
+**The blind spot next door, and what it then cost.** `ci.yml`'s `actionlint` step
+follows a `uses:` to a local action and validates its INTERFACE — not the shell
+inside it, and not its prose. Nothing else in a PR build loads `build-push`
+either, because the steps that use it only run on `main` (#51). So the whole file
+is effectively unlinted on the PR path, and an expression written anywhere in it
+as an EXAMPLE is fatal: there is no backslash escape, and the runner
+template-parses the entire manifest when it LOADS it.
+
+The first version of this fix knew that about `run:` blocks and wrote the guard's
+message in prose to avoid it — then put `${{ steps.<id>.outputs.name }}` in the
+`builder` input's `description:`, one screen above, as documentation. A
+description is prose to a human and an expression context to the parser, and the
+only contexts it has there are the ones that exist before any step runs:
+
+    ./.github/actions/build-push/action.yml (Line: 46, Col: 18):
+    Unrecognized named-value: 'steps'.
+
+That is not a step failing. The manifest fails validation, the action fails to
+load, and the step calling it fails instantly — all eight release workflows on
+`main`, on one commit, seconds in, before any build ran. actionlint was green on
+it. `test/workflow-buildx-builder.test.ts` asserts all three spellings of the
+rule: `\${{` appears in no shell step, `${{` appears in no `name:` or
+`description:` of any local action manifest, and no `inputs.*.default` reaches
+for `steps`, `needs` or `job`. `outputs.*.value` is excluded — that one is a
+real, deferred expression context, which is why `digest` works, and a plain
+`inputs.*.default` is too. It reads `action.yaml` as well as `action.yml`, at any
+depth, because a manifest it does not find is a manifest it cannot fail.
 
 **What is deliberately NOT here.** No retry around the build. A retry would have
 turned this red run green, but it treats the symptom: with an explicit
