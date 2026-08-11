@@ -341,6 +341,15 @@ servers:
   # returns a storage.cloud.google.com link, which Google gates behind a sign-in.
   # Leave it unset and a sensitive upload is REFUSED rather than stored where
   # nobody can open it. See docs: /servers/artifact-store/.
+  #
+  # SENSITIVE_VIEWER_ACCOUNT (optional) is the account that link should OPEN AS.
+  # storage.cloud.google.com authenticates the reader's DEFAULT Google account,
+  # so someone signed in to a personal address plus a work one gets a 403 from
+  # the personal one even though the domain grant is correct. Set this to a full
+  # address inside SENSITIVE_VIEWER_DOMAIN and links carry `?authuser=<it>`.
+  # It is a hint, not a grant — the whole domain can still open the artifact.
+  # Only set it if you know the address: pointing readers at an account nobody
+  # is signed in to is worse than leaving it unset.
   - slug: remote-filesystem-tmp-public
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest

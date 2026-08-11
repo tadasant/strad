@@ -97,6 +97,11 @@ export interface ArtifactStore {
   bucket(): string;
   /** The Workspace domain a restricted artifact is readable by, if configured. */
   viewerDomain(): string | undefined;
+  /**
+   * The account a restricted link names, if an operator chose one. A hint about
+   * which signed-in account opens the link, never a grant — see `links.ts`.
+   */
+  viewerAccount(): string | undefined;
   /** Link life, in days, when the caller does not ask for one. */
   defaultLinkDays(): number;
 }
@@ -157,6 +162,10 @@ export class GcsArtifactStore implements ArtifactStore {
 
   viewerDomain(): string | undefined {
     return this.config.viewerDomain;
+  }
+
+  viewerAccount(): string | undefined {
+    return this.config.viewerAccount;
   }
 
   defaultLinkDays(): number {
@@ -467,7 +476,11 @@ export class GcsArtifactStore implements ArtifactStore {
   ): Promise<Link> {
     if (artifact.access === "restricted") {
       return {
-        url: authenticatedBrowserUrl(this.config.bucket, fullPath),
+        url: authenticatedBrowserUrl(
+          this.config.bucket,
+          fullPath,
+          this.config.viewerAccount,
+        ),
         expires_at: null,
         signing_version: null,
         requires_sign_in: true,

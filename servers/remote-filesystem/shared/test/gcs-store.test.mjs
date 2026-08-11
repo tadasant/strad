@@ -121,6 +121,22 @@ test("a sensitive upload over a world-public object strips allUsers", async () =
   assert.deepEqual(entities(fake, "a.png"), ["user-owner", "domain-example.com"]);
 });
 
+test("the restricted link names the viewer account, and the grant stays the domain", async () => {
+  const fake = fakeStorage();
+  const s = store({ viewerAccount: "dana@example.com" }, fake).store;
+  const { link } = await s.put(bytes(), { path: "a.png", sensitive: true, expires_in_days: 14 });
+
+  assert.equal(
+    link.url,
+    "https://storage.cloud.google.com/test-bucket/a.png?authuser=dana%40example.com",
+  );
+  assert.equal(link.requires_sign_in, true);
+  // The account is a hint about WHICH signed-in account opens the link. Granting
+  // it would narrow a whole-domain artifact to one person without saying so.
+  assert.deepEqual(entities(fake, "a.png"), ["user-owner", "domain-example.com"]);
+  assert.equal(s.viewerAccount(), "dana@example.com");
+});
+
 test("a non-sensitive upload over a restricted object drops the domain grant", async () => {
   const fake = fakeStorage();
   const s = store({}, fake).store;

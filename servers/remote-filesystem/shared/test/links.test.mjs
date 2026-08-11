@@ -47,6 +47,69 @@ test("the restricted link is the cookie-authenticated host, not the API host", (
   );
 });
 
+/**
+ * The 403 this parameter exists to stop.
+ *
+ * A restricted object's ACL grants `domain-<viewer>`, but the browser front door
+ * authenticates the profile's DEFAULT signed-in account — usually a personal
+ * one, which is not on that ACL. `?authuser=<address>` picks the account that
+ * is. Google decodes the percent-encoded form, which is the one verified against
+ * the live endpoint, so that is the one emitted.
+ */
+test("a restricted link names the viewer account so multi-account readers are not 403ed", () => {
+  const url = authenticatedBrowserUrl("bucket", "a/b c.png", "dana@example.com");
+  assert.equal(
+    url,
+    "https://storage.cloud.google.com/bucket/a/b%20c.png?authuser=dana%40example.com",
+  );
+});
+
+test("no configured account means no authuser, rather than a guessed one", () => {
+  // A wrong `authuser` bounces the reader to a sign-in page, which is worse than
+  // the bare URL for anyone whose default account is already the right one.
+  assert.ok(!authenticatedBrowserUrl("bucket", "a.png").includes("authuser"));
+  assert.ok(!authenticatedBrowserUrl("bucket", "a.png", "").includes("authuser"));
+});
+
+test("a viewer account is validated at boot, where it can still be fixed", () => {
+  const base = { RF_GCS_BUCKET: "b", RF_SENSITIVE_VIEWER_DOMAIN: "example.com" };
+  assert.equal(
+    loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "dana@example.com" }).viewerAccount,
+    "dana@example.com",
+  );
+  assert.equal(loadConfig("RF", base).viewerAccount, undefined);
+
+  // A bare username or domain is the shape Google's selector will not take.
+  assert.throws(
+    () => loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "dana" }),
+    /must be a full email address/,
+  );
+  assert.throws(
+    () => loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "example.com" }),
+    /must be a full email address/,
+  );
+  // An account outside the granted domain would point every reader at an
+  // account that is not on the ACL — the exact failure this feature fixes.
+  assert.throws(
+    () => loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "dana@elsewhere.com" }),
+    /is not in RF_SENSITIVE_VIEWER_DOMAIN/,
+  );
+  // The domain is what grants; an account without one has nothing to point at.
+  assert.throws(
+    () =>
+      loadConfig("RF", { RF_GCS_BUCKET: "b", RF_SENSITIVE_VIEWER_ACCOUNT: "dana@example.com" }),
+    /RF_SENSITIVE_VIEWER_ACCOUNT is set but RF_SENSITIVE_VIEWER_DOMAIN/,
+  );
+  // Case is not a mismatch: email domains are case-insensitive.
+  assert.equal(
+    loadConfig("RF", {
+      ...base,
+      RF_SENSITIVE_VIEWER_ACCOUNT: "Dana@Example.COM",
+    }).viewerAccount,
+    "Dana@Example.COM",
+  );
+});
+
 test("object paths encode per segment, so slashes survive", () => {
   assert.equal(encodeObjectPath("a/b/c d.png"), "a/b/c%20d.png");
   assert.equal(encodeObjectPath("a/b+c.png"), "a/b%2Bc.png");

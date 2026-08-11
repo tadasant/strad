@@ -126,6 +126,51 @@ test("is_sensitive: true returns a sign-in link that does not expire", async () 
   await close();
 });
 
+/**
+ * The reported bug: a correct grant, a correct URL, and a 403 anyway, because
+ * the reader's browser opened it as their default Google account. Nothing about
+ * that is visible server-side, so the response has to carry the explanation.
+ */
+test("a restricted response carries the account hint that explains a 403", async () => {
+  const store = new FakeStore({
+    viewerDomain: "tadasant.com",
+    viewerAccount: "dana@tadasant.com",
+  });
+  const { client, close } = await connect(store);
+  const { json } = await call(client, "upload_file", {
+    source: b64("secret"),
+    path: "net-worth.png",
+    is_sensitive: true,
+  });
+  assert.equal(json.viewer_account, "dana@tadasant.com");
+  assert.match(json.url, /\?authuser=dana%40tadasant\.com$/);
+  assert.match(json.sign_in_hint, /dana@tadasant\.com/);
+  await close();
+});
+
+test("with no configured account the hint tells the reader how to pick one", async () => {
+  const { client, close } = await connect(new FakeStore({ viewerDomain: "tadasant.com" }));
+  const { json } = await call(client, "upload_file", {
+    source: b64("secret"),
+    path: "net-worth.png",
+    is_sensitive: true,
+  });
+  assert.equal(json.viewer_account, undefined);
+  assert.ok(!json.url.includes("authuser"), "no account configured means no guess");
+  assert.match(json.sign_in_hint, /authuser/);
+  assert.match(json.sign_in_hint, /DEFAULT Google account/);
+  await close();
+});
+
+test("a shared artifact carries no sign-in hint, because it needs no sign-in", async () => {
+  const { client, close } = await connect(new FakeStore({ viewerDomain: "tadasant.com" }));
+  const { json } = await call(client, "upload_file", { source: b64("shot"), path: "a.png" });
+  assert.equal(json.access, "link");
+  assert.equal(json.sign_in_hint, undefined);
+  assert.equal(json.viewer_account, undefined);
+  await close();
+});
+
 test("a sensitive upload fails loudly when no viewer domain is configured", async () => {
   const { client, close } = await connect(new FakeStore({ viewerDomain: undefined }));
   const { isError, text } = await call(client, "upload_file", {

@@ -943,6 +943,37 @@ alive again.
 quietly becomes a 7-day link; nothing would surface that until the link was already
 stale in someone's inbox.
 
+### 48. A restricted link opens as the reader's default Google account
+
+`is_sensitive: true` grants `domain-<viewer>` READER on the object and returns a
+`storage.cloud.google.com` URL. That host is cookie-authenticated, and a bare URL
+resolves against **one** of the reader's signed-in Google accounts — the browser
+profile's default, usually a personal address that is not in the granted domain.
+Google answers `403`.
+
+Nothing distinguishes that from a real permission failure. The ACL is correct, the
+URL is correct, and the reader is signed in to an account that would open it; the
+`403` is byte-identical to "you were never granted access", so it reads as a broken
+grant.
+
+Setting `_SENSITIVE_VIEWER_ACCOUNT` makes restricted links carry Google's account
+selector, `?authuser=<address>`, and they then open against that account whichever
+one is default. The account is a **hint, not a grant** — the `domain-` ACL still
+authorises the whole domain — so the two can drift, and naming a departed employee
+sends every reader to an account nobody is signed in to. Boot-time validation
+catches an address that is malformed or outside the viewer domain; it cannot catch
+one that is merely wrong.
+
+**Why it is not derived.** The server never learns who the reader is: an MCP call
+carries the agent's identity, not the human's, and the link is minted before anyone
+opens it.
+
+**Why it is not always emitted.** With no configured account the bare URL is
+returned rather than a guess — an `authuser` naming an account the reader is not
+signed in to bounces them to a sign-in page, which is worse than the `403` for
+anyone whose default account was already right. Every restricted response carries
+a `sign_in_hint` field instead, saying what to tell a human whose link `403`s.
+
 ### `set_sensitivity` cannot recall a link that is already out there
 
 A signed URL is valid until it expires, independently of the object's ACL.

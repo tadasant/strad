@@ -1652,6 +1652,47 @@ description and the docs both say "no new readers", not "no readers".
 product's ceiling. `refresh_link` absorbs the difference. If Google ever raises the
 V4 cap, delete the V2 branch instead.
 
+## 48. A restricted link opens as the reader's DEFAULT Google account
+
+**What.** `is_sensitive: true` grants `domain-<viewer>` READER on the object and
+hands back `https://storage.cloud.google.com/<bucket>/<path>`. That host is
+cookie-authenticated, and a bare URL resolves against **one** of the reader's
+signed-in Google accounts — the browser profile's default, account 0, which for
+most people is a personal `gmail.com` address. That account is not in the granted
+Workspace domain, so Google answers `403`.
+
+The reader IS signed in to an account that would open it. Google never asked that
+account, and the `403` is byte-identical to "you were never granted access", so it
+reads as a broken grant and sends whoever debugs it to the wrong console.
+
+`servers/remote-filesystem/shared/src/links.ts` therefore appends Google's account
+selector, `?authuser=<address>`, when `_SENSITIVE_VIEWER_ACCOUNT` names one.
+
+**Why it is a hack.** The account is configuration, and it is a **hint, not a
+grant** — the `domain-` ACL still authorises the whole domain, so the two can
+drift: an operator who names a departed employee sends every reader to an account
+nobody is signed in to. `loadConfig` catches the two mechanical versions of that
+(not an address, not inside the viewer domain) and cannot catch the semantic one.
+
+**Why not derive it.** The server never learns who the reader is. An MCP tool call
+carries the agent's identity, not the human's, and the link is minted before
+anyone opens it. Configuration is the only place the address can come from.
+
+**Why not always emit one.** With no configured account we emit the bare URL
+rather than guessing. `authuser` naming an account the reader is NOT signed in to
+bounces them to a sign-in page — worse than the `403` for anyone whose default
+account was already correct. The `sign_in_hint` on every restricted response
+covers that case in words instead.
+
+**What this does NOT fix.** A reader signed in to no Google account, or to no
+account in the viewer domain, still cannot open the artifact — correctly. And an
+object whose domain grant was dropped (an `is_sensitive: false` re-upload over the
+same path silently re-writes the ACL) `403`s for everyone regardless of
+`authuser`; `refresh_link` reporting `access: "link"` for something you believe is
+sensitive is the tell.
+
+**Undo.** Unset `_SENSITIVE_VIEWER_ACCOUNT` and links go back to the bare form.
+
 ## 44. `upload_file` reads any local path outside a small denylist
 
 **What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and

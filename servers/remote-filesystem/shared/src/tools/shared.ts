@@ -81,10 +81,46 @@ export function artifactPayload(
     content_type: artifact.content_type,
     bucket: store.bucket(),
     ...(artifact.access === "restricted"
-      ? { viewer_domain: store.viewerDomain() }
+      ? {
+          viewer_domain: store.viewerDomain(),
+          ...(store.viewerAccount() ? { viewer_account: store.viewerAccount() } : {}),
+          sign_in_hint: signInHint(store.viewerDomain(), store.viewerAccount()),
+        }
       : {}),
     ...extra,
   };
+}
+
+/**
+ * What to tell the human when a restricted link does not open.
+ *
+ * It rides on the response because the failure is invisible from here: the ACL
+ * is correct, the URL is correct, and the reader still gets a 403 because their
+ * browser authenticated the wrong one of their signed-in Google accounts. An
+ * agent that has this text can answer "why is it broken" in the same breath as
+ * it hands over the link, instead of the human filing a bug against the grant.
+ */
+export function signInHint(
+  viewerDomain: string | undefined,
+  viewerAccount: string | undefined,
+): string {
+  const domain = viewerDomain ?? "the viewer domain";
+  if (viewerAccount) {
+    return (
+      `Opens only for a signed-in ${domain} account. The link already names ` +
+      `${viewerAccount} via ?authuser=, so it picks that account even when the reader is ` +
+      `signed in to several. A 403 now means that browser profile is not signed in to ` +
+      `${viewerAccount} at all.`
+    );
+  }
+  return (
+    `Opens only for a signed-in ${domain} account. storage.cloud.google.com uses the ` +
+    `browser's DEFAULT Google account, so a reader signed in to several accounts gets a ` +
+    `403 even when one of them is a ${domain} account — the grant is fine, Google just ` +
+    `asked the wrong account. Tell them to append ?authuser=<their-${domain}-address> to ` +
+    `the URL. To stop having to say that, an operator can set the server's ` +
+    `SENSITIVE_VIEWER_ACCOUNT and the link will carry it.`
+  );
 }
 
 export function ok(payload: unknown): ToolResult {

@@ -19,7 +19,7 @@ One boolean picks between them.
 | `is_sensitive` | object state                             | link                                       | expires                                 |
 | -------------- | ---------------------------------------- | ------------------------------------------ | --------------------------------------- |
 | `false`        | private                                  | signed URL on `storage.googleapis.com`     | after `expires_in_days`, default **14** |
-| `true`         | private + `domain-<viewer>` `READER` ACL | `storage.cloud.google.com/<bucket>/<path>` | never                                   |
+| `true`         | private + `domain-<viewer>` `READER` ACL | `storage.cloud.google.com/<bucket>/<path>`, plus `?authuser=` when an account is configured | never |
 
 A **signed** link opens instantly for whoever holds it, with no Google account.
 That is the good experience and it is what a screenshot should get.
@@ -34,6 +34,37 @@ nothing about it is time-limited — the grant is.
 authenticates bearer tokens and signatures only, so it answers an unauthenticated
 browser with a bare `403` and no way forward. The two hosts look like aliases and
 are not.
+
+### A restricted link names an account
+
+Cookie authentication resolves against **one** of the reader's signed-in Google
+accounts, and a bare URL gets the browser profile's default — account 0, usually
+a personal `gmail.com` address. That account is not in the granted Workspace
+domain, so Google answers `403`.
+
+This is the failure mode that looks exactly like a broken grant and is not: the
+ACL is correct, the URL is correct, and the reader is signed in to an account
+that would open it. Google simply never asked that account. There is no error
+text separating the two cases.
+
+So when `_SENSITIVE_VIEWER_ACCOUNT` is set, a restricted link carries
+`?authuser=<address>` — Google's account selector — and opens against that
+account regardless of which one is default:
+
+```
+https://storage.cloud.google.com/<bucket>/<path>?authuser=dana%40example.com
+```
+
+The account is a **hint, never a grant**. The `domain-<viewer>` ACL is what
+authorises, so every member of the domain can still open the artifact whatever
+the hint says. Without the setting no `authuser` is emitted — naming an account
+the reader is not signed in to bounces them to a sign-in page, which is worse
+than the bare URL for anyone whose default account is already right.
+
+Either way, a restricted response carries a `sign_in_hint` field saying which
+account opens the link and what to do about a `403`. That text is the answer to
+"your link is broken", and it exists because nothing about this failure is
+visible from the server.
 
 ```mermaid
 flowchart TD
@@ -208,11 +239,17 @@ at a different bucket, and one process cannot hold two values of `GCS_BUCKET`.
 | `_GCS_PRIVATE_KEY`          | no                    | service-account PEM; escaped newlines handled        |
 | `_GCS_ROOT_PATH`            | no                    | prefix confinement. Unset in production              |
 | `_SENSITIVE_VIEWER_DOMAIN`  | for sensitive uploads | Workspace domain that may open a restricted artifact |
+| `_SENSITIVE_VIEWER_ACCOUNT` | no                    | address a restricted link names via `?authuser=`     |
 | `_LINK_DEFAULT_DAYS`        | no                    | default link life. Defaults to 14                    |
 
 Without `_SENSITIVE_VIEWER_DOMAIN`, an `is_sensitive: true` upload is **refused**
 rather than stored, and the mount reports itself `degraded` on `/healthz`. Storing
 a sensitive artifact nobody can open is a worse outcome than a loud failure.
+
+`_SENSITIVE_VIEWER_ACCOUNT` is validated at boot: it must be a full address, and
+it must be inside `_SENSITIVE_VIEWER_DOMAIN`. Both mistakes fail only in a
+reader's browser, days later, as a `403` with no server-side trace — so they are
+caught where they can still be fixed.
 
 The two credentials come from the parameters system, not from hand-written
 `${REF}` entries — see [`params: true`](/servers/adding/).

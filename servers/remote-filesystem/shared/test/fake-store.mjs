@@ -18,6 +18,7 @@ export class FakeStore {
     // `in`, not a default parameter: a test that passes `viewerDomain: undefined`
     // is asking for a deployment with NO viewer domain, not for the default.
     this._viewerDomain = "viewerDomain" in options ? options.viewerDomain : "example.com";
+    this._viewerAccount = options.viewerAccount;
     this._defaultDays = defaultDays;
     this.now = now;
     this.calls = [];
@@ -29,6 +30,10 @@ export class FakeStore {
 
   viewerDomain() {
     return this._viewerDomain;
+  }
+
+  viewerAccount() {
+    return this._viewerAccount;
   }
 
   defaultLinkDays() {
@@ -120,7 +125,11 @@ export class FakeStore {
     const object = this.objects.get(path);
     if (object.access === "restricted") {
       return {
-        url: `https://storage.cloud.google.com/test-bucket/${path}`,
+        url:
+          `https://storage.cloud.google.com/test-bucket/${path}` +
+          (this._viewerAccount
+            ? `?authuser=${encodeURIComponent(this._viewerAccount)}`
+            : ""),
         expires_at: null,
         signing_version: null,
         requires_sign_in: true,
