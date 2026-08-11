@@ -23,9 +23,53 @@ concurrency:
 jobs:
   build_and_smoke:
     runs-on: self-hosted
+    # The concurrency group above is per-REF, so two PRs run this job at the same
+    # time, on one box, against one docker daemon. A fixed container name collides
+    # loudly there; a fixed image TAG does not, and that is the failure worth
+    # naming: a concurrent job rebuilding `strad-server-bundle-google:ci` between
+    # this job's build and its `docker run` leaves the smoke test asserting three
+    # mounts of an image this PR never built, green. Per-run identifiers make both
+    # impossible, and let the `if: always()` teardown name only this job's
+    # container instead of whichever one currently holds the shared name.
+    #
+    # Their one cost is the fixed names' accidental garbage collection: a leaked
+    # `bundle-google-ci` was reaped by the next run that wanted that name, and
+    # nothing will ever want `bundle-google-ci-<run>`. Hence the sweep step, and
+    # the `strad-ci` label everything below carries so the sweep can find it.
+    #
+    # The class has a third failure this job does not have: two jobs competing
+    # for one fixed `-p 8080:8080`. Nothing here publishes a host port, because
+    # everything it asserts runs inside the container.
+    env:
+      BUNDLE_GOOGLE_IMAGE: strad-server-bundle-google:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      BUNDLE_GOOGLE_CONTAINER: bundle-google-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+
+      # Per-run names never collide, so nothing else will ever clean one up. A day
+      # is far longer than any run here, so nothing below can reach a concurrent
+      # job's container — only what a run from yesterday left behind.
+      #
+      # `docker container prune` reaps STOPPED containers only, and the leak this
+      # step exists for — a teardown that never ran because the runner was killed
+      # mid-job — leaves one RUNNING. That container also holds a reference to its
+      # image, so the image prune cannot reclaim that either. So the running ones
+      # are swept first, by hand: `docker ps` has no `until` filter, hence the
+      # explicit age check.
+      - name: Sweep what earlier runs leaked
+        run: |
+          cutoff=$(( $(date +%s) - 86400 ))
+          for id in $(docker ps -q --filter label=strad-ci || true); do
+            created=$(docker inspect -f '{{.Created}}' "$id" 2>/dev/null) || continue
+            started=$(date -d "$created" +%s 2>/dev/null) || continue
+            if [ "$started" -lt "$cutoff" ]; then
+              echo "sweeping leaked container $id (started $created)"
+              docker rm -f "$id" || true
+            fi
+          done
+          docker container prune -f --filter label=strad-ci --filter until=24h || true
+          docker image prune -af --filter label=strad-ci --filter until=24h || true
 
       - name: Build image
         uses: docker/build-push-action@v6
@@ -33,7 +77,8 @@ jobs:
           context: images/bundle-google
           push: false
           load: true
-          tags: strad-server-bundle-google:ci
+          tags: ${{ env.BUNDLE_GOOGLE_IMAGE }}
+          labels: strad-ci=1
           cache-from: type=gha,scope=bundle-google
           cache-to: type=gha,mode=max,scope=bundle-google
 
@@ -45,17 +90,24 @@ jobs:
         # the baked-in smoke test connects a real MCP client to all three paths.
         run: |
           set -euo pipefail
-          docker run -d --name bundle-google-ci strad-server-bundle-google:ci
+          echo "image=$BUNDLE_GOOGLE_IMAGE container=$BUNDLE_GOOGLE_CONTAINER"
+          docker run -d --name "$BUNDLE_GOOGLE_CONTAINER" --label strad-ci=1 "$BUNDLE_GOOGLE_IMAGE"
 
           probe='fetch("http://127.0.0.1:8080/healthz").then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>{console.log(t)}).catch(()=>process.exit(1))'
           for i in $(seq 1 30); do
-            if docker exec bundle-google-ci node -e "$probe"; then break; fi
+            if docker exec "$BUNDLE_GOOGLE_CONTAINER" node -e "$probe"; then break; fi
             sleep 1
           done
 
           echo "--- smoke: list tools on /gmail, /google-calendar, /google-docs"
-          docker exec bundle-google-ci node scripts/smoke.mjs
+          docker exec "$BUNDLE_GOOGLE_CONTAINER" node scripts/smoke.mjs
 
+      # Names only this run's container and image, so it cannot reap a concurrent
+      # job's. Deleting the image matters too: per-run tags would otherwise pile up
+      # one per CI run on a runner box that never goes away. buildx's cache is not
+      # the daemon's image store, so nothing rebuilds slower for this.
       - name: Tear down
         if: always()
-        run: docker rm -f bundle-google-ci 2>/dev/null || true
+        run: |
+          docker rm -f "$BUNDLE_GOOGLE_CONTAINER" 2>/dev/null || true
+          docker rmi -f "$BUNDLE_GOOGLE_IMAGE" 2>/dev/null || true
