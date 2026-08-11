@@ -80,11 +80,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Job-scoped: on this self-hosted box every job runs as the same user, so
+      # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
+      # build with no `--builder` resolves whichever job created a builder most
+      # recently — then dies when that job removes it. HACKS.md #53.
       - uses: docker/setup-buildx-action@v3
+        id: buildx
+        with:
+          use: false
 
       - name: Build and push
         uses: ./.github/actions/build-push
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: servers/bundle/Dockerfile
           tags: |

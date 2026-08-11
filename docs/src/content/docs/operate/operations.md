@@ -117,6 +117,29 @@ port, so only the other two failures apply there.
 
 </aside>
 
+<aside class="starlight-aside starlight-aside--note">
+
+**Why every job names the buildx builder it builds on.** The container, the tag
+and the port are the shared names a workflow can see. `~/.docker/buildx/current`
+is the one it cannot. `docker/setup-buildx-action` defaults to `use: true`, which
+means `docker buildx create --use`, which writes that file — and there is one of
+it per machine, because every job runs as the same user. A `docker buildx build`
+with no `--builder` reads it, so a build lands in whichever job on the box
+created a builder most recently, and dies with `graceful_stop` when that job's
+post-cleanup removes it mid-stream. That took `main` red on 2026-08-11.
+
+The builder each job creates is a uuid and never collides, which is exactly what
+hid this: nothing collides, nothing errors until the unrelated job finishes. So
+every job here sets up buildx with `use: false` — never writing the pointer — and
+every build step passes `builder: ${{ steps.buildx.outputs.name }}` — never
+reading it. `.github/actions/build-push` takes the builder as an input and fails
+before its first attempt if a call site omits it, because an omitted input
+interpolates to the empty string and reads as "no `--builder`".
+`test/workflow-buildx-builder.test.ts` parses every workflow and fails the PR
+that drops either half. See [limitations #53](/limitations/).
+
+</aside>
+
 ## `release-image.yml` — mint and ship
 
 Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`.

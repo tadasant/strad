@@ -258,7 +258,20 @@ jobs:
       BUNDLE_CONTAINER: bundle-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
+      # The builder is a shared resource too, and the sharpest one: every job on
+      # this box runs as the same user, so `docker buildx create --use` writes
+      # ONE `~/.docker/buildx/current`, and a `docker buildx build` with no
+      # `--builder` resolves whichever job created a builder most recently. This
+      # job's build then runs inside a CONCURRENT job's buildkit, and dies with
+      # `graceful_stop` the moment that job's teardown removes it. It killed a
+      # 791MB layer pull on `main` on 2026-08-11 (HACKS.md #53).
+      #
+      # So: `use: false` never writes the shared pointer, and every build below
+      # names `steps.buildx.outputs.name` so it never reads it.
       - uses: docker/setup-buildx-action@v3
+        id: buildx
+        with:
+          use: false
       # For the allow-list check below: it parses configs with the gateway's own
       # schema, so it needs the repo's dependency tree. Nothing else here does.
       - uses: actions/setup-node@v4
@@ -275,6 +288,7 @@ jobs:
       - name: Build the bundle image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: servers/bundle/Dockerfile
           push: false
@@ -385,7 +399,12 @@ jobs:
       STRAD_CONTAINER: strad-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
+      # Job-scoped, for the reason spelled out on `bundle_image`: the box-wide
+      # `~/.docker/buildx/current` is a shared name like any other.
       - uses: docker/setup-buildx-action@v3
+        id: buildx
+        with:
+          use: false
 
       - name: Sweep what earlier runs leaked
         run: |
@@ -395,6 +414,7 @@ jobs:
       - name: Build image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           push: false
           load: true
