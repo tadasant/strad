@@ -54,7 +54,7 @@ readers", and say so if a human is relying on it.
 \`\`\`json
 {
   "path": "screenshots/net-worth-2026.png",
-  "url": "https://storage.cloud.google.com/artifacts/screenshots/net-worth-2026.png",
+  "url": "https://storage.cloud.google.com/artifacts/screenshots/net-worth-2026.png?authuser=dana%40example.com",
   "access": "restricted",
   "requires_sign_in": true,
   "expires_at": null,
@@ -62,9 +62,19 @@ readers", and say so if a human is relying on it.
   "size_bytes": 88213,
   "content_type": "image/png",
   "bucket": "artifacts",
-  "viewer_domain": "example.com"
+  "viewer_domain": "example.com",
+  "viewer_account": "dana@example.com",
+  "sign_in_hint": "Opens only for a signed-in example.com account. ..."
 }
 \`\`\`
+
+The \`?authuser=\` suffix and \`viewer_account\` appear only when an operator has
+configured an account for this deployment; \`sign_in_hint\` is always there.
+
+**Pass \`sign_in_hint\` on when a restricted link does not open.** A reader signed in
+to several Google accounts gets a 403 from the default one even though the grant is
+correct, and the hint says how to pick the right account. It is the answer to "your
+link is broken" — do not let that get filed as a permissions bug.
 
 **Use cases:**
 - You realise after uploading that a screenshot shows account balances

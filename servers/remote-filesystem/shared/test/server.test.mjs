@@ -126,6 +126,97 @@ test("is_sensitive: true returns a sign-in link that does not expire", async () 
   await close();
 });
 
+/**
+ * The reported bug: a correct grant, a correct URL, and a 403 anyway, because
+ * the reader's browser opened it as their default Google account. Nothing about
+ * that is visible server-side, so the response has to carry the explanation.
+ */
+test("a restricted response carries the account hint that explains a 403", async () => {
+  const store = new FakeStore({
+    viewerDomain: "tadasant.com",
+    viewerAccount: "dana@tadasant.com",
+  });
+  const { client, close } = await connect(store);
+  const { json } = await call(client, "upload_file", {
+    source: b64("secret"),
+    path: "net-worth.png",
+    is_sensitive: true,
+  });
+  assert.equal(json.viewer_account, "dana@tadasant.com");
+  assert.match(json.url, /\?authuser=dana%40tadasant\.com$/);
+  assert.match(json.sign_in_hint, /dana@tadasant\.com/);
+  await close();
+});
+
+test("with no configured account the hint tells the reader how to pick one", async () => {
+  const { client, close } = await connect(new FakeStore({ viewerDomain: "tadasant.com" }));
+  const { json } = await call(client, "upload_file", {
+    source: b64("secret"),
+    path: "net-worth.png",
+    is_sensitive: true,
+  });
+  assert.equal(json.viewer_account, undefined);
+  assert.ok(!json.url.includes("authuser"), "no account configured means no guess");
+  assert.match(json.sign_in_hint, /authuser/);
+  assert.match(json.sign_in_hint, /DEFAULT Google account/);
+  await close();
+});
+
+/**
+ * `access` is read off the object's ACL, not off this deployment's config, so a
+ * pre-existing object with someone else's domain grant reads `restricted` on a
+ * server that has no viewer domain set. The hint used to splice the missing
+ * domain into a placeholder and tell the reader to paste "the viewer domain".
+ */
+test("the hint stays coherent for a restricted object with no viewer domain set", async () => {
+  const store = new FakeStore({ viewerDomain: undefined });
+  store.seed("legacy/leftover.png", { access: "restricted" });
+  const { client, close } = await connect(store);
+  const { json } = await call(client, "refresh_link", { path: "legacy/leftover.png" });
+
+  assert.equal(json.access, "restricted");
+  assert.ok(
+    !json.sign_in_hint.includes("undefined"),
+    "an unset viewer domain must not reach the reader as the string 'undefined'",
+  );
+  assert.ok(
+    !/their-the viewer domain-address/.test(json.sign_in_hint),
+    "the placeholder must not be built out of a domain that does not exist",
+  );
+  assert.match(json.sign_in_hint, /authuser/);
+  await close();
+});
+
+test("restricted responses from every tool carry the same hint fields", async () => {
+  const store = new FakeStore({
+    viewerDomain: "tadasant.com",
+    viewerAccount: "dana@tadasant.com",
+  });
+  store.seed("secrets/exposure.png", { access: "restricted" });
+  const { client, close } = await connect(store);
+
+  const refreshed = await call(client, "refresh_link", { path: "secrets/exposure.png" });
+  const set = await call(client, "set_sensitivity", {
+    path: "secrets/exposure.png",
+    is_sensitive: true,
+  });
+  for (const { json } of [refreshed, set]) {
+    assert.equal(json.viewer_account, "dana@tadasant.com");
+    assert.match(json.url, /\?authuser=dana%40tadasant\.com$/);
+    assert.match(json.sign_in_hint, /dana@tadasant\.com/);
+  }
+  await close();
+});
+
+test("a shared artifact carries no sign-in hint, because it needs no sign-in", async () => {
+  const { client, close } = await connect(new FakeStore({ viewerDomain: "tadasant.com" }));
+  const { json } = await call(client, "upload_file", { source: b64("shot"), path: "a.png" });
+  assert.equal(json.access, "link");
+  assert.equal(json.sign_in_hint, undefined);
+  assert.equal(json.viewer_account, undefined);
+  await close();
+});
+
 test("a sensitive upload fails loudly when no viewer domain is configured", async () => {
   const { client, close } = await connect(new FakeStore({ viewerDomain: undefined }));
   const { isError, text } = await call(client, "upload_file", {
@@ -194,6 +285,43 @@ test("a temporary upload URL stores bytes once and returns the artifact link", a
   const replay = await created.handleUpload(token, Buffer.from("again"));
   assert.equal(replay.isError, true);
   assert.match(replay.content[0].text, /missing or expired/);
+});
+
+/**
+ * The POST path is the one agents are steered towards for anything nontrivial,
+ * so a sensitive artifact uploaded that way must come back with the same
+ * account hint as `upload_file` — it goes through the same `store.put`, and
+ * this pins that it keeps going through the same response shape.
+ */
+test("a sensitive POST upload returns the account hint too", async () => {
+  const store = new FakeStore({
+    viewerDomain: "tadasant.com",
+    viewerAccount: "dana@tadasant.com",
+  });
+  const created = createMCPServer({
+    version: "test",
+    storeFactory: () => store,
+    uploadLeases: new UploadLeaseStore({
+      slug: "remote-filesystem-tmp-public",
+      now: () => store.now,
+    }),
+  });
+
+  const lease = created.uploadLeases.create(
+    { path: "finances/statement.html", content_type: "text/html", is_sensitive: true },
+    store.defaultLinkDays(),
+  );
+  const uploaded = await created.handleUpload(
+    lease.upload_url.split("/").pop(),
+    Buffer.from("<p>balances</p>"),
+  );
+  const body = JSON.parse(uploaded.content[0].text);
+
+  assert.equal(body.access, "restricted");
+  assert.equal(body.viewer_domain, "tadasant.com");
+  assert.equal(body.viewer_account, "dana@tadasant.com");
+  assert.match(body.url, /\?authuser=dana%40tadasant\.com$/);
+  assert.match(body.sign_in_hint, /authuser/);
 });
 
 test("refresh_link revives an expired link without touching the artifact", async () => {

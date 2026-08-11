@@ -59,9 +59,40 @@ export function signingVersionFor(days: number): SigningVersion {
  * sign-in the object's ACL decides. `storage.googleapis.com` — the API host — is
  * NOT interchangeable here: it authenticates bearer tokens and signatures only,
  * so it answers an unauthenticated browser with a 403 and no way forward.
+ *
+ * ── Why the link names an account ──────────────────────────────────────────
+ *
+ * Cookie authentication resolves against ONE of the reader's signed-in Google
+ * accounts, and a bare URL gets the browser profile's DEFAULT — account 0, the
+ * one signed in first, which for most people is a personal gmail.com address.
+ * The object's ACL grants `domain-<viewer>`, so account 0 is not on it, and
+ * Google answers 403. The reader IS signed in to a Workspace account that would
+ * open it; Google simply never asked that account.
+ *
+ * There is no error text distinguishing this from a real permission failure —
+ * it is the same 403 as "you were never granted access" — so it reads as a
+ * broken grant and sends whoever debugs it to the wrong console.
+ *
+ * `?authuser=<email>` is Google's account selector: it pins the request to a
+ * named signed-in account instead of the default. It accepts an index or a full
+ * address, and the address form is the one that survives the reader adding or
+ * removing accounts (an index silently re-points). So when an operator names the
+ * viewer account, restricted links carry it.
+ *
+ * Without one we emit the bare URL rather than guessing: `authuser` naming an
+ * account the reader is NOT signed in to bounces them to a sign-in page, which
+ * is a worse failure than the 403 for anyone whose default account is already
+ * right. The hint on the tool response covers that case in words instead.
  */
-export function authenticatedBrowserUrl(bucket: string, object: string): string {
-  return `https://storage.cloud.google.com/${bucket}/${encodeObjectPath(object)}`;
+export function authenticatedBrowserUrl(
+  bucket: string,
+  object: string,
+  viewerAccount?: string,
+): string {
+  const url = `https://storage.cloud.google.com/${bucket}/${encodeObjectPath(object)}`;
+  return viewerAccount
+    ? `${url}?authuser=${encodeURIComponent(viewerAccount)}`
+    : url;
 }
 
 /** Percent-encode an object path for a URL while leaving its slashes as slashes. */

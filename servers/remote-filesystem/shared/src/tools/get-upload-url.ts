@@ -36,7 +36,7 @@ const DESCRIPTION = `Create a temporary URL for uploading an artifact with curl,
 
 Use this instead of upload_file whenever the payload is large enough that base64 or text would be a nontrivial number of tokens. If the file exists on disk and a shell is available, this is normally the right upload path for screenshots, recordings, PDFs, archives, logs, reports and any other artifact larger than a tiny snippet.
 
-The returned URL is unguessable, expires quickly, accepts exactly one successful POST, and stores the posted bytes through the same artifact store as upload_file. The POST response is the same JSON shape upload_file returns: path, url, access, size_bytes, content_type, bucket and expiry fields.
+The returned URL is unguessable, expires quickly, accepts exactly one successful POST, and stores the posted bytes through the same artifact store as upload_file. The POST response is the same JSON shape upload_file returns: path, url, access, size_bytes, content_type, bucket and expiry fields, plus viewer_domain and sign_in_hint when the artifact is restricted.
 
 **How to use it:**
 1. Call get_upload_url with path/content_type/is_sensitive/expires_in_days.

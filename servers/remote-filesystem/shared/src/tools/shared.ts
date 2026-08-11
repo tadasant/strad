@@ -81,10 +81,61 @@ export function artifactPayload(
     content_type: artifact.content_type,
     bucket: store.bucket(),
     ...(artifact.access === "restricted"
-      ? { viewer_domain: store.viewerDomain() }
+      ? restrictedFields(store)
       : {}),
     ...extra,
   };
+}
+
+function restrictedFields(store: ArtifactStore): Record<string, unknown> {
+  const viewerDomain = store.viewerDomain();
+  const viewerAccount = store.viewerAccount();
+  return {
+    viewer_domain: viewerDomain,
+    ...(viewerAccount ? { viewer_account: viewerAccount } : {}),
+    sign_in_hint: signInHint(viewerDomain, viewerAccount),
+  };
+}
+
+/**
+ * What to tell the human when a restricted link does not open.
+ *
+ * It rides on the response because the failure is invisible from here: the ACL
+ * is correct, the URL is correct, and the reader still gets a 403 because their
+ * browser authenticated the wrong one of their signed-in Google accounts. An
+ * agent that has this text can answer "why is it broken" in the same breath as
+ * it hands over the link, instead of the human filing a bug against the grant.
+ */
+export function signInHint(
+  viewerDomain: string | undefined,
+  viewerAccount: string | undefined,
+): string {
+  // `access` comes from the object's ACL, not from this deployment's config, so a
+  // pre-existing object can read `restricted` on a server with no viewer domain
+  // set. Never splice the domain into a placeholder — with none configured that
+  // produced literal text telling the reader to paste "the viewer domain".
+  const audience = viewerDomain
+    ? `signed-in ${viewerDomain} account`
+    : `signed-in account in the domain granted on the object`;
+  if (viewerAccount) {
+    return (
+      `Opens only for a ${audience}. The link already names ${viewerAccount} via ` +
+      `?authuser=, so it picks that account even when the reader is signed in to ` +
+      `several. A 403 then usually means that browser profile is not signed in to ` +
+      `${viewerAccount} at all — a DIFFERENT member of the domain opens it by ` +
+      `replacing the ?authuser= value in the URL with their own address. The other ` +
+      `cause is the object's domain grant having been dropped, which refresh_link ` +
+      `reports as access: "link".`
+    );
+  }
+  return (
+    `Opens only for a ${audience}. storage.cloud.google.com uses the browser's ` +
+    `DEFAULT Google account, so a reader signed in to several accounts gets a 403 ` +
+    `even when one of them would work — the grant is fine, Google just asked the ` +
+    `wrong account. Tell them to append ?authuser=<their-address-in-that-domain> to ` +
+    `the URL. To stop having to say that, an operator can set this server's ` +
+    `slug-prefixed _SENSITIVE_VIEWER_ACCOUNT and the link will carry it.`
+  );
 }
 
 export function ok(payload: unknown): ToolResult {

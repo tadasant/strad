@@ -12,7 +12,7 @@ ability to revive an expired link are the three things it exists to own.
 | `is_sensitive` | object state | link | expires |
 | --- | --- | --- | --- |
 | `false` (default) | private | signed URL on `storage.googleapis.com` | after `expires_in_days`, default **14** |
-| `true` | private + `domain-<viewer>` READER ACL | `storage.cloud.google.com/<bucket>/<path>` | never |
+| `true` | private + `domain-<viewer>` READER ACL | `storage.cloud.google.com/<bucket>/<path>`, plus `?authuser=` when an account is configured | never |
 
 A **signed** link opens instantly for anyone holding it, with no Google account.
 That is the good UX and it is what a screenshot should get.
@@ -26,6 +26,23 @@ it is time-limited — the grant is.
 `storage.googleapis.com` is **not** interchangeable for the restricted case. It
 authenticates bearer tokens and signatures only, so it answers an unauthenticated
 browser with a bare 403 and no way forward.
+
+### The restricted link names an account
+
+Cookie authentication resolves against **one** of the reader's signed-in Google
+accounts, and a bare URL gets the profile's default — usually a personal address
+that is not in the granted domain, so Google answers 403. The ACL is correct and
+the reader is signed in to an account that would open it; Google never asked that
+account, and nothing in the error says so.
+
+With `_SENSITIVE_VIEWER_ACCOUNT` set, restricted links carry
+`?authuser=<address>`, Google's account selector, and open against that account
+whichever one is default. It is a **hint, not a grant** — the `domain-<viewer>`
+ACL still authorises the whole domain. Unset, no `authuser` is emitted, because
+naming an account the reader is not signed in to is worse than the bare URL.
+
+Every restricted response also carries `sign_in_hint`: what to tell a human whose
+link 403s.
 
 ## The seven-day problem
 
@@ -109,6 +126,7 @@ different bucket, and one process cannot hold two values of `GCS_BUCKET`.
 | `_GCS_PRIVATE_KEY` | no | service-account PEM; escaped newlines are handled |
 | `_GCS_ROOT_PATH` | no | prefix confinement. Unset in production |
 | `_SENSITIVE_VIEWER_DOMAIN` | for sensitive uploads | Workspace domain that may open a restricted artifact, e.g. `tadasant.com` |
+| `_SENSITIVE_VIEWER_ACCOUNT` | no | address a restricted link names via `?authuser=`, e.g. `dana@tadasant.com`. Must be a full address inside `_SENSITIVE_VIEWER_DOMAIN`; a bad one is rejected when the store is first built, which is the first tool call after a deploy |
 | `_LINK_DEFAULT_DAYS` | no | default link life. Defaults to 14 |
 | `_UPLOAD_BASE_URL` | no | public origin for absolute upload URLs. Falls back to `STRAD_PUBLIC_URL`; if neither is set, `get_upload_url` returns a root-relative path |
 

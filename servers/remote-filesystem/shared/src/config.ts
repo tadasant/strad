@@ -18,6 +18,7 @@ export const ENV_SUFFIXES = {
   privateKey: "GCS_PRIVATE_KEY",
   rootPath: "GCS_ROOT_PATH",
   viewerDomain: "SENSITIVE_VIEWER_DOMAIN",
+  viewerAccount: "SENSITIVE_VIEWER_ACCOUNT",
   defaultLinkDays: "LINK_DEFAULT_DAYS",
   uploadBaseUrl: "UPLOAD_BASE_URL",
 } as const;
@@ -60,6 +61,15 @@ export interface StoreConfig {
    * storing an artifact nobody can open is a worse outcome than a loud failure.
    */
   viewerDomain?: string;
+  /**
+   * The one account within {@link viewerDomain} that restricted links should
+   * name, e.g. "dana@tadasant.com". Optional, and only ever a HINT: it selects
+   * which of the reader's signed-in Google accounts the browser front door
+   * authenticates as. It grants nothing — the `domain-` ACL is what grants — so
+   * every member of the domain can still open the artifact, whatever this says.
+   * See `authenticatedBrowserUrl` for why a link without it 403s.
+   */
+  viewerAccount?: string;
   /** Default link life in days. Falls back to DEFAULT_LINK_DAYS. */
   defaultLinkDays: number;
   /**
@@ -128,13 +138,61 @@ export function loadConfig(
     }
   }
 
+  const viewerDomain = read("viewerDomain")?.trim();
+  const viewerAccount = read("viewerAccount")?.trim();
+  if (viewerAccount !== undefined) {
+    // Checked here rather than at link time. This value's only job is to be
+    // pasted into a URL a human clicks, and every way of getting it wrong fails
+    // in the reader's browser — days later, as a 403 with no server-side trace.
+    // `loadConfig` runs when the store is first built, on the first tool call
+    // after a deploy, so a rejection here fails every tool loudly. That is the
+    // intended trade: a cosmetic setting that is wrong is still a setting whose
+    // only symptom would otherwise be someone else's broken link.
+    const at = viewerAccount.indexOf("@");
+    if (
+      at <= 0 ||
+      at !== viewerAccount.lastIndexOf("@") ||
+      at === viewerAccount.length - 1 ||
+      // Whitespace and control characters survive `encodeURIComponent` as
+      // escapes and reach the reader inside a URL and inside `sign_in_hint`,
+      // which an agent is told to relay verbatim. An address contains neither.
+      // A hyphen is deliberately not in this class: "dana@my-company.com".
+      // eslint-disable-next-line no-control-regex
+      /[\s\u0000-\u001f\u007f]/.test(viewerAccount)
+    ) {
+      throw new ConfigError(
+        `${envName(prefix, "viewerAccount")}="${viewerAccount}" must be a full email ` +
+          `address (e.g. "dana@example.com"). Google's account selector takes an ` +
+          `address, not a bare username or domain.`,
+      );
+    }
+    if (!viewerDomain) {
+      throw new ConfigError(
+        `${envName(prefix, "viewerAccount")} is set but ${envName(prefix, "viewerDomain")} ` +
+          `is not. The account is only a hint about WHICH signed-in account opens a ` +
+          `restricted link; the domain is what actually grants access, so without it ` +
+          `sensitive uploads are refused and the hint has nothing to point at.`,
+      );
+    }
+    const accountDomain = viewerAccount.slice(at + 1);
+    if (accountDomain.toLowerCase() !== viewerDomain.toLowerCase()) {
+      throw new ConfigError(
+        `${envName(prefix, "viewerAccount")}="${viewerAccount}" is not in ` +
+          `${envName(prefix, "viewerDomain")}="${viewerDomain}". A restricted artifact is ` +
+          `granted to the DOMAIN, so naming an account outside it would send every reader ` +
+          `to an account that is not on the ACL.`,
+      );
+    }
+  }
+
   return {
     bucket,
     projectId: read("projectId"),
     clientEmail: read("clientEmail"),
     privateKey: read("privateKey"),
     rootPath: read("rootPath"),
-    viewerDomain: read("viewerDomain"),
+    viewerDomain,
+    viewerAccount,
     defaultLinkDays,
     uploadBaseUrl: uploadBaseUrl?.replace(/\/$/, ""),
   };
