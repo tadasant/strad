@@ -576,6 +576,31 @@ See [Known limitations](/limitations/).
 `bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the
 `bundle-google` image on any PR touching `images/bundle-google/`.
 
+### Every push to ghcr is retried
+
+None of those workflows calls `docker/build-push-action` directly. Each pushing
+step goes through `.github/actions/build-push`, a composite action that runs the
+identical build up to three times, 15s and 45s apart, and lets the third decide
+the run.
+
+ghcr answers a blob `HEAD` with `403 Forbidden` from time to time, in the middle
+of a push whose credentials worked seconds earlier — the build is done, the layers
+are exported, and one blob is refused. Neither buildkit nor the action retries a
+403, so before this wrapper a single refused blob turned a good release red and
+waited for a human to click re-run. By the second attempt the layers are in the
+runner's buildkit cache, so a retry re-pushes rather than rebuilds.
+
+It cannot tell a refused blob from a broken `Dockerfile`; both are just a failed
+step. Three `build/push attempt N failed` warnings carrying the same 403 mean the
+registry is refusing rather than flaking, and the next place to look is the
+package's visibility and linked repository — not the re-run button. See
+[Known limitations](/limitations/).
+
+The four remaining direct `docker/build-push-action` steps
+(`release-onepassword-image.yml`'s verification build, `bundle-google-ci.yml`,
+and two in `ci.yml`) build with `push: false`. They never touch a registry, so
+there is nothing there to flake.
+
 ## The staging config
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately

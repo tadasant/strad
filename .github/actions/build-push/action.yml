@@ -1,0 +1,125 @@
+name: Build and push an image
+description: >-
+  docker/build-push-action, retried when the registry refuses the push. Wraps
+  every step in this repo that pushes to ghcr.
+
+# WHY THIS EXISTS
+#
+# ghcr answers a blob HEAD with `403 Forbidden` from time to time, in the middle
+# of an otherwise healthy push, on credentials that worked seconds earlier. It
+# took `main` red on 2026-08-11 (run 31475413673): the whole bundle built, the
+# layers exported, `[auth] tadasant/strad-bundle:pull,push` succeeded, and then
+# nine seconds into `pushing layers`:
+#
+#   ERROR: failed to push ghcr.io/tadasant/strad-bundle:latest: unexpected
+#   status from HEAD request to https://ghcr.io/v2/tadasant/strad-bundle/blobs/
+#   sha256:0e5f8475…: 403 Forbidden
+#
+# The same commit, re-run unchanged, pushed fine. `docker/build-push-action` has
+# no retry of its own and buildkit does not retry a 403, so a single refused
+# blob reddens a release that has nothing wrong with it — and the recovery is a
+# human noticing the alert and clicking re-run.
+#
+# So: run the same build up to three times, and let the third decide the job.
+# Every attempt is the identical `docker/build-push-action` call. The layers are
+# already in the runner's buildkit cache by then, so a retry re-pushes rather
+# than rebuilds, and costs seconds.
+#
+# WHAT THIS COSTS. The retry cannot tell a refused blob from a broken
+# `Dockerfile` — `docker/build-push-action` reports both as a failed step and
+# nothing else. A build that is genuinely broken is therefore attempted three
+# times, and its run takes a minute of backoff longer to go red. See HACKS.md
+# #51: this hides a persistent ghcr permission change behind three identical
+# 403s, so read the attempt warnings in the log before believing "flake".
+
+inputs:
+  context:
+    description: Build context, as docker/build-push-action takes it.
+    required: false
+    default: "."
+  file:
+    description: Dockerfile path, relative to the workspace. Defaults to `<context>/Dockerfile`.
+    required: false
+    default: ""
+  tags:
+    description: Newline-separated list of tags to push.
+    required: true
+  build-args:
+    description: Newline-separated `KEY=value` build arguments.
+    required: false
+    default: ""
+  cache-from:
+    description: buildx `--cache-from`. Empty reads no cache.
+    required: false
+    default: ""
+  cache-to:
+    description: buildx `--cache-to`. Empty writes no cache — which is how a branch build avoids poisoning the release cache.
+    required: false
+    default: ""
+
+outputs:
+  digest:
+    description: The digest of the pushed image, from whichever attempt pushed it.
+    # Last attempt that ran wins: a failed attempt leaves this empty, and a
+    # skipped one leaves it empty too, so the first non-empty value walking
+    # backwards is the attempt that succeeded.
+    value: ${{ steps.attempt-3.outputs.digest || steps.attempt-2.outputs.digest || steps.attempt-1.outputs.digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build and push
+      id: attempt-1
+      uses: docker/build-push-action@v6
+      continue-on-error: true
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        push: true
+        tags: ${{ inputs.tags }}
+        build-args: ${{ inputs.build-args }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+
+    - name: Wait, then try again
+      if: steps.attempt-1.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning::build/push attempt 1 failed. Retrying in 15s — see HACKS.md #51."
+        sleep 15
+
+    - name: Build and push (attempt 2)
+      id: attempt-2
+      if: steps.attempt-1.outcome == 'failure'
+      uses: docker/build-push-action@v6
+      continue-on-error: true
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        push: true
+        tags: ${{ inputs.tags }}
+        build-args: ${{ inputs.build-args }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}
+
+    - name: Wait, then try once more
+      if: steps.attempt-2.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning::build/push attempt 2 failed. Retrying in 45s — the next attempt decides the job."
+        sleep 45
+
+    # No `continue-on-error` here on purpose: this attempt is the one that makes
+    # the run red. If a third identical build cannot push, it is not a flake.
+    - name: Build and push (attempt 3)
+      id: attempt-3
+      if: steps.attempt-2.outcome == 'failure'
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.file }}
+        push: true
+        tags: ${{ inputs.tags }}
+        build-args: ${{ inputs.build-args }}
+        cache-from: ${{ inputs.cache-from }}
+        cache-to: ${{ inputs.cache-to }}

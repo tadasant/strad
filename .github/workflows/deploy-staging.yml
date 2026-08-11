@@ -181,10 +181,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push the core image
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           context: .
-          push: true
           tags: ${{ steps.tags.outputs.core_image }}
           cache-from: type=gha
           # Read the release path's cache, never write it: a branch build must
@@ -192,11 +191,10 @@ jobs:
           cache-to: ""
 
       - name: Build and push the bundle image
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           context: .
           file: servers/bundle/Dockerfile
-          push: true
           tags: ${{ steps.tags.outputs.bundle_image }}
           cache-from: type=gha,scope=bundle
           cache-to: ""

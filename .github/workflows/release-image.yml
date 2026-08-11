@@ -79,10 +79,9 @@ jobs:
 
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           context: .
-          push: true
           tags: |
             ghcr.io/tadasant/strad:${{ steps.version.outputs.version }}
             ghcr.io/tadasant/strad:latest

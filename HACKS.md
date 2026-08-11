@@ -1907,6 +1907,40 @@ the mount is there at all.
 lines. The allow-lists are already checked against the real image by
 `policy:check`, so nothing else needs proving first.
 
+## 51. Every image push is tried three times, and cannot tell a flake from a regression
+
+**What.** `.github/actions/build-push` wraps `docker/build-push-action@v6` and runs
+the identical build up to three times, 15s and 45s apart, whenever the step fails.
+Every workflow step in this repo that pushes to ghcr goes through it.
+
+**Why.** ghcr answers a blob `HEAD` with `403 Forbidden` in the middle of an
+otherwise healthy push, on credentials that worked seconds earlier. On 2026-08-11
+it took `main` red ([run 31475413673](https://github.com/tadasant/strad/actions/runs/31475413673)):
+the bundle built, the layers exported, `[auth] tadasant/strad-bundle:pull,push`
+succeeded, and nine seconds into `pushing layers` one blob came back 403. The same
+commit, re-run with nothing changed, pushed fine. Neither buildkit nor
+`docker/build-push-action` retries a 403, so one refused blob costs a release and
+a human's attention.
+
+**The edge.** The retry cannot see WHY the step failed —
+`docker/build-push-action` reports a broken `Dockerfile` and a refused blob the
+same way, as a failed step. So:
+
+- A genuinely broken build is attempted three times and takes a minute of backoff
+  longer to go red. The layers are in the runner's buildkit cache by then, so the
+  retries are cheap, but the run is slower to tell you.
+- A REAL ghcr permission change — the package's visibility flipped, the linked
+  repository dropped, `packages: write` removed — looks exactly like the flake,
+  three times, and then goes red anyway. The tell is the log: three
+  `::warning::build/push attempt N failed` lines with the same 403 mean the
+  registry is not flaking, it is refusing. Read them before re-running.
+
+Nothing here retries the ghcr login, the tag-digest check in `release-image.yml`,
+or the deploy's image pull; each is a separate 403 with a separate fix.
+
+**Undo.** Point the ten call sites back at `docker/build-push-action@v6` (add
+`push: true`, which the wrapper supplies) and delete `.github/actions/build-push`.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

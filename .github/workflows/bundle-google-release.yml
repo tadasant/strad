@@ -61,10 +61,9 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           context: images/bundle-google
-          push: true
           build-args: |
             BUNDLE_GOOGLE_VERSION=${{ steps.version.outputs.version }}
           tags: |
