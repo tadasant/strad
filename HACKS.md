@@ -2129,7 +2129,8 @@ state was one API call away the whole time.
 
 The remedy the error offered was wrong for this case. "Re-run it" checks out the
 same commit, and that commit's tree is the bug — every re-run of that build fails
-identically, forever.
+identically, forever. #130 fixed that sentence, and it is the one printed on
+every path where the run's state cannot be read.
 
 **The fix.** The resolver takes an optional `releaseRun` lookup
 (`releaseRunLookup` in `src/deploy/imageTag.ts`, the job's own `GITHUB_TOKEN` and
@@ -2139,11 +2140,14 @@ one still queued or in flight is exactly what the wait is for. A lookup that
 throws is swallowed into a note on the error the walk was going to produce
 anyway — the diagnosis is not allowed to become the failure.
 
-`ImageSource.republish` is the remedy for a dead run, separate from `remedy`
-because they are different situations: dispatch `release-bundle-image.yml` on
-`main`, which builds HEAD and publishes `sha-<HEAD>`, ending the walk at distance
-0 before it can reach the stuck commit. That is what cleared this one, in 40
-seconds.
+`ImageSource.republish` is the same advice for a run already known to be dead,
+kept separate from `remedy` because the two are printed in different situations.
+`remedy` still has to hedge — the image may yet arrive, so it offers the wait
+first. `republish` is reached only where there is nothing to wait for, so it
+drops the wait and says the one thing that works: dispatch
+`release-bundle-image.yml` on `main`, which builds HEAD and publishes
+`sha-<HEAD>`, ending the walk at distance 0 before it can reach the stuck commit.
+That is what cleared this one, in 40 seconds.
 
 **What is deliberately NOT here.** No fallback to an older bundle when the owed
 image is missing — that is the outage in #33's clothing. No ordering change

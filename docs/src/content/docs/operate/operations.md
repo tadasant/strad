@@ -316,32 +316,9 @@ budget on a build that ended before the deploy began. A run still queued or in
 flight is exactly what the wait is for, and is left alone. The lookup needs
 `actions: read`, which `deploy-staging.yml` requests and every caller of it has
 to grant as well; without it the step falls back to waiting out the budget, which
-is what it did before.
-
-##### When a required bundle build fails
-
-A commit inside the `paths:` filter that never published is a hard stop **for
-every later deploy too**, until something publishes a bundle image again. The
-walk starts at HEAD and steps past commits that owe nothing, so it keeps arriving
-at the same broken ancestor.
-
-Re-running the failed build is the first thing to try and does not always work:
-a re-run checks out that same commit, so when the failure is **in** that commit's
-tree it fails identically every time. The move that always works is to dispatch
-`release-bundle-image.yml` on `main`. It builds `main`'s HEAD and publishes
-`sha-<HEAD>`, which the walk finds at distance 0 — before it can reach the
-commit that is stuck.
-
-**Why.** #127 put a `${{ … }}` expression inside the `description:` of an input
-in `.github/actions/build-push/action.yml`. GitHub evaluates expressions in an
-action manifest, so every workflow using that action died loading it — including
-the bundle release for that same commit, which had edited
-`release-bundle-image.yml` and was therefore required to publish. #129 fixed the
-manifest, but it touched no baked tree, so it published no bundle image either.
-`Release image` on `main` then failed at this step, 16m51s in, having waited 900
-seconds for an image whose build had failed fourteen minutes before the deploy
-started — and would have kept failing on every subsequent merge. A dispatch of
-`release-bundle-image.yml` on `main` cleared it in 40 seconds.
+is what it did before. Either way the deploy stays stopped until an image exists —
+see [when the bundle build failed](#when-the-bundle-build-failed-dispatch-it-rather-than-re-run-it)
+below for the move that publishes one.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
