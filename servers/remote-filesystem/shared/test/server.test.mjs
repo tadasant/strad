@@ -162,6 +162,52 @@ test("with no configured account the hint tells the reader how to pick one", asy
   await close();
 });
 
+/**
+ * `access` is read off the object's ACL, not off this deployment's config, so a
+ * pre-existing object with someone else's domain grant reads `restricted` on a
+ * server that has no viewer domain set. The hint used to splice the missing
+ * domain into a placeholder and tell the reader to paste "the viewer domain".
+ */
+test("the hint stays coherent for a restricted object with no viewer domain set", async () => {
+  const store = new FakeStore({ viewerDomain: undefined });
+  store.seed("legacy/leftover.png", { access: "restricted" });
+  const { client, close } = await connect(store);
+  const { json } = await call(client, "refresh_link", { path: "legacy/leftover.png" });
+
+  assert.equal(json.access, "restricted");
+  assert.ok(
+    !json.sign_in_hint.includes("undefined"),
+    "an unset viewer domain must not reach the reader as the string 'undefined'",
+  );
+  assert.ok(
+    !/their-the viewer domain-address/.test(json.sign_in_hint),
+    "the placeholder must not be built out of a domain that does not exist",
+  );
+  assert.match(json.sign_in_hint, /authuser/);
+  await close();
+});
+
+test("restricted responses from every tool carry the same hint fields", async () => {
+  const store = new FakeStore({
+    viewerDomain: "tadasant.com",
+    viewerAccount: "dana@tadasant.com",
+  });
+  store.seed("secrets/exposure.png", { access: "restricted" });
+  const { client, close } = await connect(store);
+
+  const refreshed = await call(client, "refresh_link", { path: "secrets/exposure.png" });
+  const set = await call(client, "set_sensitivity", {
+    path: "secrets/exposure.png",
+    is_sensitive: true,
+  });
+  for (const { json } of [refreshed, set]) {
+    assert.equal(json.viewer_account, "dana@tadasant.com");
+    assert.match(json.url, /\?authuser=dana%40tadasant\.com$/);
+    assert.match(json.sign_in_hint, /dana@tadasant\.com/);
+  }
+  await close();
+});
+
 test("a shared artifact carries no sign-in hint, because it needs no sign-in", async () => {
   const { client, close } = await connect(new FakeStore({ viewerDomain: "tadasant.com" }));
   const { json } = await call(client, "upload_file", { source: b64("shot"), path: "a.png" });

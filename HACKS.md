@@ -1673,6 +1673,10 @@ grant** — the `domain-` ACL still authorises the whole domain, so the two can
 drift: an operator who names a departed employee sends every reader to an account
 nobody is signed in to. `loadConfig` catches the two mechanical versions of that
 (not an address, not inside the viewer domain) and cannot catch the semantic one.
+That check runs where `loadConfig` does — when the store is first built, on the
+first tool call after a deploy — so a bad value fails EVERY tool, not just a
+sensitive upload. Deliberate: a cosmetic setting whose only other symptom is
+someone else's broken link is worth failing loudly for.
 
 **Why not derive it.** The server never learns who the reader is. An MCP tool call
 carries the agent's identity, not the human's, and the link is minted before

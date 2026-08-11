@@ -960,9 +960,10 @@ Setting `_SENSITIVE_VIEWER_ACCOUNT` makes restricted links carry Google's accoun
 selector, `?authuser=<address>`, and they then open against that account whichever
 one is default. The account is a **hint, not a grant** — the `domain-` ACL still
 authorises the whole domain — so the two can drift, and naming a departed employee
-sends every reader to an account nobody is signed in to. Boot-time validation
-catches an address that is malformed or outside the viewer domain; it cannot catch
-one that is merely wrong.
+sends every reader to an account nobody is signed in to. Validation catches an
+address that is malformed or outside the viewer domain — when the store is first
+built, since config is read lazily, so a bad value fails every tool rather than
+one link. It cannot catch an address that is merely wrong.
 
 **Why it is not derived.** The server never learns who the reader is: an MCP call
 carries the agent's identity, not the human's, and the link is minted before anyone
@@ -971,8 +972,9 @@ opens it.
 **Why it is not always emitted.** With no configured account the bare URL is
 returned rather than a guess — an `authuser` naming an account the reader is not
 signed in to bounces them to a sign-in page, which is worse than the `403` for
-anyone whose default account was already right. Every restricted response carries
-a `sign_in_hint` field instead, saying what to tell a human whose link `403`s.
+anyone whose default account was already right. Either way, every restricted
+response carries a `sign_in_hint` field saying what to tell a human whose link
+`403`s.
 
 ### `set_sensitivity` cannot recall a link that is already out there
 

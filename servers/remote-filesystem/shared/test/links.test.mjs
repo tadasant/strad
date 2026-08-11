@@ -100,6 +100,16 @@ test("a viewer account is validated at boot, where it can still be fixed", () =>
       loadConfig("RF", { RF_GCS_BUCKET: "b", RF_SENSITIVE_VIEWER_ACCOUNT: "dana@example.com" }),
     /RF_SENSITIVE_VIEWER_ACCOUNT is set but RF_SENSITIVE_VIEWER_DOMAIN/,
   );
+  // Surrounding whitespace is a paste artifact, not a different address — and an
+  // untrimmed domain would reject a correct account with a baffling message.
+  assert.equal(
+    loadConfig("RF", {
+      RF_GCS_BUCKET: "b",
+      RF_SENSITIVE_VIEWER_DOMAIN: " example.com ",
+      RF_SENSITIVE_VIEWER_ACCOUNT: " dana@example.com ",
+    }).viewerAccount,
+    "dana@example.com",
+  );
   // Case is not a mismatch: email domains are case-insensitive.
   assert.equal(
     loadConfig("RF", {

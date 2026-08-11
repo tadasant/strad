@@ -138,12 +138,16 @@ export function loadConfig(
     }
   }
 
-  const viewerDomain = read("viewerDomain");
+  const viewerDomain = read("viewerDomain")?.trim();
   const viewerAccount = read("viewerAccount")?.trim();
   if (viewerAccount !== undefined) {
-    // Checked at boot rather than at link time. This value's only job is to be
+    // Checked here rather than at link time. This value's only job is to be
     // pasted into a URL a human clicks, and every way of getting it wrong fails
     // in the reader's browser — days later, as a 403 with no server-side trace.
+    // `loadConfig` runs when the store is first built, on the first tool call
+    // after a deploy, so a rejection here fails every tool loudly. That is the
+    // intended trade: a cosmetic setting that is wrong is still a setting whose
+    // only symptom would otherwise be someone else's broken link.
     const at = viewerAccount.indexOf("@");
     if (at <= 0 || at !== viewerAccount.lastIndexOf("@") || at === viewerAccount.length - 1) {
       throw new ConfigError(

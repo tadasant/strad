@@ -74,7 +74,7 @@ flowchart TD
   V4 -- yes --> A["V4 signature<br/>storage.googleapis.com"]
   V4 -- no --> B["V2 signature<br/>storage.googleapis.com"]
   S -- true --> R["private object<br/>+ domain-viewer READER ACL"]
-  R --> C["storage.cloud.google.com<br/>Google sign-in, then ACL"]
+  R --> C["storage.cloud.google.com<br/>+ ?authuser= when configured<br/>Google sign-in, then ACL"]
 ```
 
 ## Steering agents away from `is_sensitive`
@@ -246,10 +246,12 @@ Without `_SENSITIVE_VIEWER_DOMAIN`, an `is_sensitive: true` upload is **refused*
 rather than stored, and the mount reports itself `degraded` on `/healthz`. Storing
 a sensitive artifact nobody can open is a worse outcome than a loud failure.
 
-`_SENSITIVE_VIEWER_ACCOUNT` is validated at boot: it must be a full address, and
-it must be inside `_SENSITIVE_VIEWER_DOMAIN`. Both mistakes fail only in a
-reader's browser, days later, as a `403` with no server-side trace — so they are
-caught where they can still be fixed.
+`_SENSITIVE_VIEWER_ACCOUNT` is validated when the store is first built — the
+first tool call after a deploy, since config is read lazily. It must be a full
+address, and it must be inside `_SENSITIVE_VIEWER_DOMAIN`. Both mistakes would
+otherwise fail only in a reader's browser, days later, as a `403` with no
+server-side trace, so a bad value fails every tool instead of silently degrading
+one link.
 
 The two credentials come from the parameters system, not from hand-written
 `${REF}` entries — see [`params: true`](/servers/adding/).

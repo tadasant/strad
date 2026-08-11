@@ -126,7 +126,7 @@ different bucket, and one process cannot hold two values of `GCS_BUCKET`.
 | `_GCS_PRIVATE_KEY` | no | service-account PEM; escaped newlines are handled |
 | `_GCS_ROOT_PATH` | no | prefix confinement. Unset in production |
 | `_SENSITIVE_VIEWER_DOMAIN` | for sensitive uploads | Workspace domain that may open a restricted artifact, e.g. `tadasant.com` |
-| `_SENSITIVE_VIEWER_ACCOUNT` | no | address a restricted link names via `?authuser=`, e.g. `dana@tadasant.com`. Must be inside `_SENSITIVE_VIEWER_DOMAIN`; both are checked at boot |
+| `_SENSITIVE_VIEWER_ACCOUNT` | no | address a restricted link names via `?authuser=`, e.g. `dana@tadasant.com`. Must be a full address inside `_SENSITIVE_VIEWER_DOMAIN`; a bad one is rejected when the store is first built, which is the first tool call after a deploy |
 | `_LINK_DEFAULT_DAYS` | no | default link life. Defaults to 14 |
 | `_UPLOAD_BASE_URL` | no | public origin for absolute upload URLs. Falls back to `STRAD_PUBLIC_URL`; if neither is set, `get_upload_url` returns a root-relative path |
 

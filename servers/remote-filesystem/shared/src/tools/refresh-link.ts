@@ -58,6 +58,13 @@ and its results carry the exact paths.
 its sign-in URL back and \`expires_in_days\` is ignored — that link never went stale in
 the first place. To CHANGE whether an artifact is sensitive, use set_sensitivity.
 
+A \`restricted\` response also carries \`viewer_domain\` and \`sign_in_hint\` (and
+\`viewer_account\` where one is configured). Hand \`sign_in_hint\` to any human whose
+link 403s — the usual cause is their browser opening it as the wrong one of several
+signed-in Google accounts, not a missing grant. And note the inverse: \`access: "link"\`
+on something you believe is sensitive means the domain grant is gone, so it 403s for
+everyone; set_sensitivity puts it back.
+
 **Use cases:**
 - A link in an old PR comment or Slack message has expired
 - A human asks to see an artifact from a previous session

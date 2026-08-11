@@ -68,6 +68,9 @@ readers", and say so if a human is relying on it.
 }
 \`\`\`
 
+The \`?authuser=\` suffix and \`viewer_account\` appear only when an operator has
+configured an account for this deployment; \`sign_in_hint\` is always there.
+
 **Pass \`sign_in_hint\` on when a restricted link does not open.** A reader signed in
 to several Google accounts gets a 403 from the default one even though the grant is
 correct, and the hint says how to pick the right account. It is the answer to "your

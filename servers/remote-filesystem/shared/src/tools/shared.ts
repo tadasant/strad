@@ -81,13 +81,20 @@ export function artifactPayload(
     content_type: artifact.content_type,
     bucket: store.bucket(),
     ...(artifact.access === "restricted"
-      ? {
-          viewer_domain: store.viewerDomain(),
-          ...(store.viewerAccount() ? { viewer_account: store.viewerAccount() } : {}),
-          sign_in_hint: signInHint(store.viewerDomain(), store.viewerAccount()),
-        }
+      ? restrictedFields(store.viewerDomain(), store.viewerAccount())
       : {}),
     ...extra,
+  };
+}
+
+function restrictedFields(
+  viewerDomain: string | undefined,
+  viewerAccount: string | undefined,
+): Record<string, unknown> {
+  return {
+    viewer_domain: viewerDomain,
+    ...(viewerAccount ? { viewer_account: viewerAccount } : {}),
+    sign_in_hint: signInHint(viewerDomain, viewerAccount),
   };
 }
 
@@ -104,20 +111,27 @@ export function signInHint(
   viewerDomain: string | undefined,
   viewerAccount: string | undefined,
 ): string {
-  const domain = viewerDomain ?? "the viewer domain";
+  // `access` comes from the object's ACL, not from this deployment's config, so a
+  // pre-existing object can read `restricted` on a server with no viewer domain
+  // set. Never splice the domain into a placeholder — with none configured that
+  // produced literal text telling the reader to paste "the viewer domain".
+  const audience = viewerDomain
+    ? `signed-in ${viewerDomain} account`
+    : `signed-in account in the domain granted on the object`;
   if (viewerAccount) {
     return (
-      `Opens only for a signed-in ${domain} account. The link already names ` +
-      `${viewerAccount} via ?authuser=, so it picks that account even when the reader is ` +
-      `signed in to several. A 403 now means that browser profile is not signed in to ` +
-      `${viewerAccount} at all.`
+      `Opens only for a ${audience}. The link already names ${viewerAccount} via ` +
+      `?authuser=, so it picks that account even when the reader is signed in to ` +
+      `several. A 403 then usually means that browser profile is not signed in to ` +
+      `${viewerAccount} at all; the other cause is the object's domain grant having ` +
+      `been dropped, which refresh_link reports as access: "link".`
     );
   }
   return (
-    `Opens only for a signed-in ${domain} account. storage.cloud.google.com uses the ` +
-    `browser's DEFAULT Google account, so a reader signed in to several accounts gets a ` +
-    `403 even when one of them is a ${domain} account — the grant is fine, Google just ` +
-    `asked the wrong account. Tell them to append ?authuser=<their-${domain}-address> to ` +
+    `Opens only for a ${audience}. storage.cloud.google.com uses the browser's ` +
+    `DEFAULT Google account, so a reader signed in to several accounts gets a 403 ` +
+    `even when one of them would work — the grant is fine, Google just asked the ` +
+    `wrong account. Tell them to append ?authuser=<their-address-in-that-domain> to ` +
     `the URL. To stop having to say that, an operator can set the server's ` +
     `SENSITIVE_VIEWER_ACCOUNT and the link will carry it.`
   );
