@@ -31,6 +31,11 @@ concurrency:
 permissions:
   contents: read
   packages: write
+  # For the deploy-staging.yml job below, whose image-tag steps ask whether the
+  # release run that owes a missing image is still going. A called workflow may
+  # narrow what its caller grants but never widen it, so withholding this here
+  # is what would make that lookup fail — not a permission on the other side.
+  actions: read
 
 jobs:
   build-and-push:
