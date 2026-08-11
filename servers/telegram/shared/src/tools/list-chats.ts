@@ -12,6 +12,22 @@ const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
 const KINDS: ChatKind[] = ["user", "bot", "group", "channel"];
 
+function parseKinds(raw: unknown): ChatKind[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new Error(`\`kinds\` must be an array of: ${KINDS.join(", ")}.`);
+  }
+  const unknown = raw.filter((k) => !KINDS.includes(k as ChatKind));
+  if (unknown.length > 0) {
+    throw new Error(
+      `\`kinds\` contains ${unknown.map((k) => JSON.stringify(k)).join(", ")}, ` +
+        `which ${unknown.length === 1 ? "is not a chat kind" : "are not chat kinds"}. ` +
+        `Use: ${KINDS.join(", ")} — a supergroup is a "group".`,
+    );
+  }
+  return raw.length > 0 ? (raw as ChatKind[]) : undefined;
+}
+
 /**
  * The entry point of this server, and the only tool that needs no id.
  *
@@ -67,11 +83,18 @@ export function listChatsTool(gateway: GatewayFactory): ToolDefinition {
     handler: (raw) =>
       guard(async () => {
         const input = args(raw);
-        const kinds = Array.isArray(input.kinds)
-          ? input.kinds.filter((k): k is ChatKind =>
-              KINDS.includes(k as ChatKind),
-            )
-          : undefined;
+        // Refused, not dropped. A filter that silently disappears turns a
+        // narrow read of someone's private chat list into the whole list, and
+        // "supergroup" is the obvious wrong guess — this tool's own copy says
+        // `group` covers it. Widening a read on bad input is the wrong
+        // direction for this server.
+        const kinds = parseKinds(input.kinds);
+        if (input.query !== undefined && typeof input.query !== "string") {
+          throw new Error(
+            "`query` must be a string — a case-insensitive substring of the " +
+              'chat title or @username, e.g. "climbing".',
+          );
+        }
         const chats = await (
           await gateway()
         ).listChats({

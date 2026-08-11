@@ -44,7 +44,6 @@ export interface RawEntity {
   bot?: boolean;
   megagroup?: boolean;
   broadcast?: boolean;
-  phone?: string;
 }
 
 export interface RawDialog {
@@ -92,7 +91,6 @@ export interface MtprotoClient {
     params: { message: string; replyTo?: number; linkPreview?: boolean },
   ): Promise<RawMessage>;
   getEntity(ref: unknown): Promise<RawEntity>;
-  disconnect?(): Promise<unknown>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -188,9 +186,11 @@ export function toMessage(raw: RawMessage): Message {
  * What a caller may put in `chat`.
  *
  * A t.me link is accepted because it is what a human copies out of a Telegram
- * client and hands to an agent verbatim. A private-invite link (`t.me/+hash`)
- * is NOT a chat reference — it is an invitation — and saying so is more useful
- * than resolving it to nothing.
+ * client and hands to an agent verbatim — including the `t.me/c/<id>/<message>`
+ * form, which is what "Copy Link" produces inside a PRIVATE supergroup, i.e.
+ * exactly the kind of group this server exists to read. A private-INVITE link
+ * (`t.me/+hash`, `t.me/joinchat/hash`) is not a chat reference at all — it is an
+ * invitation — and saying so is more useful than resolving it to nothing.
  */
 export function parseChatRef(
   raw: string,
@@ -198,12 +198,22 @@ export function parseChatRef(
   const ref = raw.trim();
   if (ref === "") throw new UnknownChatError(raw, "empty reference");
 
-  const link = ref.match(
-    /^(?:https?:\/\/)?(?:t\.me|telegram\.me)\/(?:s\/)?([^/?#]+)/i,
-  );
-  const candidate = link ? link[1]! : ref;
+  const host = /^(?:https?:\/\/)?(?:t\.me|telegram\.me)\//i;
+  const isLink = host.test(ref);
+  const path = isLink ? ref.replace(host, "") : ref;
 
-  if (candidate.startsWith("+") || candidate.startsWith("joinchat")) {
+  // t.me/c/4123456789/8815 — the id is right there, and it is the one form a
+  // human can copy for a group with no @username. It carries the BARE id, and a
+  // bare positive id is a user peer to the library, so it is normalised to the
+  // `-100` form: this link only ever names a channel or supergroup.
+  const privateLink = isLink && path.match(/^c\/(\d+)/i);
+  if (privateLink) return { kind: "id", value: `-100${privateLink[1]!}` };
+
+  const candidate = path.split(/[/?#]/)[0] ?? "";
+
+  // An invite is `+hash` in either form, or the legacy `joinchat/hash` PATH.
+  // `joinchat` alone is a legal username, so the slash matters.
+  if (candidate.startsWith("+") || /^joinchat\//i.test(path)) {
     throw new UnknownChatError(
       raw,
       "that is a private INVITE link, not a chat reference. Join the chat in a " +
@@ -228,14 +238,32 @@ export function parseChatRef(
  * A supergroup is id 1234567890 in MTProto and -1001234567890 in every Bot API
  * surface and every "Copy Link" a human pastes. Matching on the canonical form
  * means a caller can hand over either.
+ *
+ * ONLY the `-100` prefix is folded. Stripping a bare `-` as well would make a
+ * legacy chat `-4123456789` equal to a USER `4123456789`, and user ids and
+ * channel ids come from overlapping ranges — so that fold silently widens the
+ * set of chats a reference can match, on the same path `send_message` resolves
+ * through. Two ids for one chat is a Telegram fact; three is a bug.
  */
 export function sameChatId(a: string, b: string): boolean {
   return canonicalId(a) === canonicalId(b);
 }
 
 function canonicalId(id: string): string {
-  const stripped = id.replace(/^-100/, "").replace(/^-/, "");
-  return stripped;
+  return id.replace(/^-100/, "");
+}
+
+/** Is this entity the one the reference asked for? */
+function resolvesTo(
+  parsed: { kind: "username" | "id"; value: string },
+  entity: RawEntity,
+): boolean {
+  if (parsed.kind === "username") {
+    return (
+      (entity.username ?? "").toLowerCase() === parsed.value.toLowerCase()
+    );
+  }
+  return sameChatId(idString(entity.id), parsed.value);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -254,6 +282,11 @@ export function createGateway(client: MtprotoClient): TelegramGateway {
   // Resolutions are memoised for the process. Resolving costs an API round trip
   // and every tool call needs one; a title that goes stale between calls is a
   // cosmetic cost against a per-call round trip on every read.
+  //
+  // What a memoised summary does NOT carry is the chat's volatile state: an
+  // unread count cached at first resolution would be reported as current for
+  // the life of the process. `list_chats` reads that from the dialog list every
+  // time, which is where a count belongs.
   const resolved = new Map<string, Resolved>();
 
   const dialogsOf = async (
@@ -277,7 +310,12 @@ export function createGateway(client: MtprotoClient): TelegramGateway {
       const entity = await client.getEntity(
         parsed.kind === "username" ? parsed.value : Number(parsed.value),
       );
-      if (entity) {
+      // A POSITIVE id is a user peer to the library, so asking it for a
+      // supergroup's bare id can come back with a different chat that happens to
+      // hold that number — user ids and channel ids share a range. Whatever it
+      // answers must be the chat that was asked for; if it is not, the dialog
+      // scan below decides instead. This is a wrong-chat WRITE otherwise.
+      if (entity && resolvesTo(parsed, entity)) {
         const hit = { summary: toChatSummary(entity), entity };
         resolved.set(parsed.value, hit);
         return hit;
@@ -288,28 +326,39 @@ export function createGateway(client: MtprotoClient): TelegramGateway {
     }
 
     const dialogs = await dialogsOf(RESOLVE_SCAN_LIMIT, true);
+    let fallback: Resolved | undefined;
     for (const dialog of dialogs) {
       const entity = dialog.entity ?? undefined;
       const dialogId = idString(dialog.id ?? entity?.id);
-      const matches =
+      const exact =
         parsed.kind === "id"
-          ? sameChatId(dialogId, parsed.value)
+          ? dialogId === parsed.value
           : entity?.username?.toLowerCase() === parsed.value.toLowerCase();
-      if (!matches) continue;
+      // `-100…` and the bare form name one supergroup, so a canonical match is a
+      // real answer — but only when no dialog answers to the id AS WRITTEN.
+      const canonical =
+        parsed.kind === "id" && sameChatId(dialogId, parsed.value);
+      if (!exact && !canonical) continue;
+
       const hit = {
         summary: toChatSummary(entity, {
           id: dialogId,
-          ...(dialog.unreadCount !== undefined
-            ? { unread_count: dialog.unreadCount }
-            : {}),
           ...(dialog.archived ? { archived: true } : {}),
         }),
         entity: entity ?? dialog.id,
       };
+      if (!exact) {
+        fallback ??= hit;
+        continue;
+      }
       resolved.set(parsed.value, hit);
       return hit;
     }
 
+    if (fallback) {
+      resolved.set(parsed.value, fallback);
+      return fallback;
+    }
     throw new UnknownChatError(ref);
   };
 

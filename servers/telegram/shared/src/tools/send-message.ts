@@ -73,15 +73,14 @@ export function sendMessageTool(gateway: GatewayFactory): ToolDefinition {
               `deliberately, rather than having one silently split.`,
           );
         }
+        const replyTo = optionalInt(input, "reply_to_message_id");
         return ok(
           await (
             await gateway()
           ).sendMessage({
             chat: requiredString(input, "chat"),
             text,
-            ...(optionalInt(input, "reply_to_message_id") !== undefined
-              ? { reply_to_message_id: optionalInt(input, "reply_to_message_id")! }
-              : {}),
+            ...(replyTo !== undefined ? { reply_to_message_id: replyTo } : {}),
             ...(input.disable_link_preview === true
               ? { disable_link_preview: true }
               : {}),

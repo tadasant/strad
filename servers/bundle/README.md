@@ -4,7 +4,7 @@ Seventeen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter
+/x-twitter /telegram
 /google-flights /gmail /google-calendar /google-docs /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
@@ -47,6 +47,7 @@ different places:
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
 | `remote-filesystem` | `servers/remote-filesystem` | remote-filesystem-tmp-public (strad's artifact store) |
 | `x-twitter` | `servers/x-twitter` | x-twitter |
+| `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
 | `pointsyeah` | `servers/pointsyeah` | pointsyeah |

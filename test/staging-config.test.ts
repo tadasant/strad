@@ -215,6 +215,7 @@ describe("staging config", () => {
     "google-docs-rw": 10,
     "google-calendar-ro": 4,
     "onepassword-ro": 5,
+    "telegram-ro": 5,
   };
 
   it.each(Object.entries(ALLOW_COUNTS))(
@@ -236,6 +237,7 @@ describe("staging config", () => {
     "google-docs-rw-external",
     "google-calendar-rw",
     "onepassword-rw",
+    "telegram-rw",
   ])("%s is the full-capability tier (no policy)", (slug) => {
     const server = CONFIG.servers.find((s) => s.slug === slug);
     expect(server).toBeDefined();

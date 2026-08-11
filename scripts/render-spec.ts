@@ -36,7 +36,7 @@
  * `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` overrides the image on
  * every supplementary component that shares that repository, which is how a
  * branch build and every ordinary staging deploy ship a tag that names one
- * commit without editing the config's 25 `image:` lines.
+ * commit without editing the config's 27 `image:` lines.
  *
  * `--require-immutable-images` refuses to emit a spec in which ANY component
  * ships a mutable tag. It is opt-in rather than the default because the two
@@ -554,7 +554,7 @@ if (gaps.length > 0) {
 //
 // `assertImmutableCoreImage` above guards the one image passed as an argument.
 // Every other component takes its image from the config, and for a year that
-// meant `ghcr.io/tadasant/strad-bundle:latest` on all 25 `supplementary-image`
+// meant `ghcr.io/tadasant/strad-bundle:latest` on all 27 `supplementary-image`
 // entries. App Platform resolved that tag once and kept the answer: staging ran
 // a bundle from before the `/secrets` mount existed for a week, restarting daily
 // onto the same cached digest, while `/healthz` stayed 200 and

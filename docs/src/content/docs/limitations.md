@@ -1006,9 +1006,10 @@ existed — but restricting one of those means "no new readers", not "no readers
 ### `upload_file` reads from the bundle container's filesystem
 
 The artifact store takes a `file://` URI, and it runs in the bundle — a container
-that also holds fifteen other servers' credentials in its environment. An agent
-that can call `upload_file` can therefore ask it to read a local path and publish
-a link to whatever came back.
+that also holds sixteen other servers' credentials in its environment, one of them
+a session string that IS a Telegram account. An agent that can call `upload_file`
+can therefore ask it to read a local path and publish a link to whatever came
+back.
 
 Paths under `/proc`, `/sys`, `/dev`, `/app`, `/root` and `/etc` are refused, which
 closes the obvious one (`file:///proc/self/environ` returns every secret in the
@@ -1099,16 +1100,18 @@ and one dependency line — no session re-mint, no change to any tool.
 
 `telegram-ro` and `telegram-rw` sit in `infra/strad.staging.yaml` with
 `enabled: false`. The mount is in the bundle image and the process registers it
-either way — it shows on `/healthz` as degraded — but no slug routes to it.
+either way — the bundle's own internal `/healthz` lists it, degraded — but no slug
+routes to it.
 
 **Why:** `render-spec` resolves every `${NAME}` from GCP Secret Manager and fails
 the deploy on one it cannot find, deliberately. A server whose credentials do not
 exist yet therefore cannot ship enabled; `enabled: false` is skipped at render, so
 the three unseeded refs cost nothing.
 
-**Cost:** a disabled server is invisible in a way a degraded one is not — absent
-from `/healthz` and the console, and `?servers=telegram-ro` is a 424. The config
-file is the only sign it exists.
+**Cost:** a disabled server is invisible where anyone would look — absent from the
+gateway's `/healthz` and from the console, and `?servers=telegram-ro` is a 424.
+Only the bundle's internal health route, which nothing outside the app can reach,
+shows the mount at all.
 
 **Undo:** seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
 `-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`

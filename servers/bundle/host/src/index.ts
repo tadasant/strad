@@ -311,7 +311,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other fifteen servers' readiness.
+  // login, and a slow login must not delay the other sixteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -441,7 +441,7 @@ async function loadTelegram(): Promise<Mount> {
 
 /**
  * secrets. Not mounted when it is not configured — the same posture as
- * 1Password: one server's missing config must not take the other fifteen down.
+ * 1Password: one server's missing config must not take the other sixteen down.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
@@ -855,7 +855,7 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 16 servers behind one health check, "ok: true" alone is not information.
+  // with 17 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,

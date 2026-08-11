@@ -158,9 +158,12 @@ structural `MtprotoClient` interface that the tests implement directly. See
 cd servers/telegram && npm test
 ```
 
-15 tests over a fake MTProto client, run on every PR by the `telegram` CI job:
+20 tests over a fake MTProto client, run on every PR by the `telegram` CI job:
 the group-history read that is the whole requirement, paging and its cursor, the
-dialog-scan fallback for an id whose access hash the session has not learned,
-the read-only tier withholding `send_message`, and the no-credentials path.
-Every identifier in the fixtures is invented — no real account, group or name
-appears in this repo.
+dialog-scan fallback for an id whose access hash the session has not learned, the
+id collision between a user and a supergroup (the fake resolves numeric peers by
+SIGN, the way the real client does, so a wrong-chat write cannot pass), the
+`t.me/c/` and invite-link forms, refusal of an unknown `kinds` filter, Telegram's
+classified failures, the read-only tier withholding `send_message`, and the
+no-credentials path. Every identifier in the fixtures is invented — no real
+account, group or name appears in this repo.

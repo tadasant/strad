@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { loadConfig, type TelegramConfig } from "./config.js";
 import type { TelegramGateway } from "./gateway.js";
+import { logWarning } from "./logging.js";
 import { createGateway, createMtprotoClient } from "./mtproto.js";
 import { parseToolGroups, registerTools, type ToolGroup } from "./tools.js";
 import type { GatewayFactory } from "./tools/shared.js";
@@ -43,13 +44,18 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     options.gatewayFactory ??
     (() => {
       // The promise is memoised, not the result: two concurrent first calls must
-      // not each open a connection. A FAILED connect is dropped, so a call after
-      // a fixed credential or a network blip can succeed without a redeploy.
+      // not each open a connection. A connect that FAILS drops the memo, so the
+      // next call retries — a missing variable that gets set, or a network blip,
+      // recovers without a redeploy. A session that Telegram rejects LATER does
+      // not: the connection is live, and `guard` says as much in the error.
       connecting ??= (async () => {
         const config = options.config ?? loadConfig(options.env);
         return createGateway(await createMtprotoClient(config));
       })().catch((err: unknown) => {
         connecting = undefined;
+        logWarning(
+          `connect failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
         throw err;
       });
       return connecting;

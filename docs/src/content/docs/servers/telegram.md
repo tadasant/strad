@@ -67,7 +67,7 @@ flowchart LR
 | `telegram-rw` | _(no policy — all six, `send_message` included)_                          |
 
 Both point at the same container, running at full capability. Read-only is a
-[gateway decision](/intro/concepts/#tool-policy), enforced on `tools/list` **and**
+[gateway decision](/intro/architecture/#capability-read-only-vs-read-write), enforced on `tools/list` **and**
 on `tools/call`: a withheld tool is refused with `-32600` before it reaches the
 mount. `test/telegram.policy.test.ts` proves it against a real gateway with a
 call-counting upstream — a refused `send_message` never arrives.

@@ -1655,9 +1655,9 @@ V4 cap, delete the V2 branch instead.
 ## 44. `upload_file` reads any local path outside a small denylist
 
 **What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and
-uploads whatever it reads. It runs in the bundle, whose environment holds fifteen
-other servers' credentials, so `file:///proc/self/environ` was a one-call way to
-publish all of them. `readSource` now refuses `/proc`, `/sys`, `/dev`, `/app`,
+uploads whatever it reads. It runs in the bundle, whose environment holds sixteen
+other servers' credentials — one of them a whole Telegram account — so
+`file:///proc/self/environ` was a one-call way to publish all of them. `readSource` now refuses `/proc`, `/sys`, `/dev`, `/app`,
 `/root` and `/etc`.
 
 **Why it is a hack.** A denylist is not a sandbox. Anything else the process can
@@ -1887,8 +1887,8 @@ no change to any tool.
 
 **What.** `telegram-ro` and `telegram-rw` are in `infra/strad.staging.yaml` with
 `enabled: false`. The mount is in the bundle image and the process registers it
-either way — it appears on `/healthz` as degraded — but no strad slug routes to
-it until a human flips them.
+either way — the BUNDLE's own `/healthz` lists it, degraded — but no strad slug
+routes to it until a human flips them.
 
 **Why.** `render-spec` resolves every `${NAME}` from GCP Secret Manager and fails
 the whole deploy on one it cannot find. That is the right behaviour (a
@@ -1896,9 +1896,11 @@ half-authenticated gateway is worse than a refused deploy), and it means a serve
 whose credentials do not exist yet cannot ship enabled. `enabled: false` is
 skipped at render, so the three unseeded refs cost nothing.
 
-**The edge.** A disabled server is invisible in a way a degraded one is not: it
-is not in `/healthz`, not in the console, and `?servers=telegram-ro` is a 424. The
-only sign it exists is this config file.
+**The edge.** A disabled server is invisible where anyone would look: the
+GATEWAY's `/healthz` reports the slugs strad routes, and a disabled one is not
+among them, nor in the console, and `?servers=telegram-ro` is a 424. Only the
+bundle's internal health route — which nothing outside the app can reach — knows
+the mount is there at all.
 
 **Undo.** Seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
 `-TELEGRAM_STRING_SESSION` (`secrets-sync.yml`), then delete the two `enabled:`

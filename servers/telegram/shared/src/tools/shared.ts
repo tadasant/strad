@@ -5,6 +5,7 @@
 
 import { ConfigError } from "../config.js";
 import { UnknownChatError, type TelegramGateway } from "../gateway.js";
+import { redact } from "../logging.js";
 
 export interface ToolResult {
   /** The SDK's `ServerResult` is open-ended; the index signature is what makes
@@ -40,7 +41,8 @@ export type GatewayFactory = () => Promise<TelegramGateway>;
 export const CHAT_DESCRIPTION =
   'Which chat, as: a numeric id from list_chats ("-1001234567890" or ' +
   '"1234567890" — either form of a supergroup id works), a public "@username", ' +
-  'or a public t.me link. A private invite link ("t.me/+…") is not a chat ' +
+  'or a t.me link — public ("t.me/name") or the private-supergroup form ' +
+  '("t.me/c/1234567890/42"). A private INVITE link ("t.me/+…") is not a chat ' +
   "reference. When you have no id yet, call list_chats first — it is also what " +
   "teaches this session about a chat it has never opened.";
 
@@ -59,7 +61,10 @@ export function ok(payload: unknown): ToolResult {
 }
 
 export function fail(err: unknown): ToolResult {
-  const message = err instanceof Error ? err.message : String(err);
+  // REDACTED, because most of what reaches here was written by the MTProto
+  // library rather than by this server, and an error that quotes the session
+  // string back at a caller would hand over the account.
+  const message = redact(err instanceof Error ? err.message : String(err));
   return { content: [{ type: "text", text: message }], isError: true };
 }
 

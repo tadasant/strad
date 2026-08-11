@@ -31,7 +31,6 @@ export interface Account {
   id: string;
   name: string;
   username?: string;
-  phone_country_hint?: string;
 }
 
 export interface MessageAuthor {

@@ -4,7 +4,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { createGateway, createMCPServer } from "../build/index.js";
-import { fakeClient, FRIEND, GROUP, ME } from "./fake-client.mjs";
+import {
+  fakeClient,
+  fakeDialogsWithCollision,
+  FRIEND,
+  GROUP,
+  ME,
+} from "./fake-client.mjs";
 
 /**
  * These drive the server through a REAL MCP client over an in-memory transport —
@@ -144,9 +150,119 @@ test("resolves a chat by id even when the session has never learned its access h
   const { json, isError } = await call(mcp, "get_chat", { chat: "4123456789" });
   assert.equal(isError, false);
   assert.equal(json.id, "-1004123456789");
-  assert.equal(json.unread_count, 3);
   assert.equal(json.kind, "group");
+  assert.equal(json.title, GROUP.title);
+  // Resolution does not carry a chat's volatile state: a memoised unread count
+  // would be reported as current for the life of the process.
+  assert.equal(json.unread_count, undefined);
   assert.ok(client.calls.some((c) => c.method === "getDialogs"));
+  await close();
+});
+
+test("a user whose id collides with the group's does not get the group's messages", async () => {
+  // User ids and channel ids come from overlapping ranges, so "4123456789" can
+  // name a PERSON while "-1004123456789" names a supergroup. Folding the two
+  // together sends a message meant for a group into someone's private chat.
+  const client = fakeClient();
+  client.setDialogs(fakeDialogsWithCollision());
+  const { mcp, close } = await connect({ client });
+
+  const person = await call(mcp, "get_chat", { chat: "4123456789" });
+  assert.equal(person.json.kind, "user");
+  assert.equal(person.json.title, "Not Ada");
+
+  const group = await call(mcp, "get_chat", { chat: "-1004123456789" });
+  assert.equal(group.json.kind, "group");
+  assert.equal(group.json.title, GROUP.title);
+  await close();
+});
+
+test("the same collision is resolved exactly when only the dialog scan can answer", async () => {
+  // With no access hash, resolution is a scan over the dialog list — and the
+  // scan must prefer the id AS WRITTEN over the `-100`-folded match.
+  const client = fakeClient({ entityLookupWorks: false });
+  client.setDialogs(fakeDialogsWithCollision());
+  const { mcp, close } = await connect({ client });
+
+  const person = await call(mcp, "get_chat", { chat: "4123456789" });
+  assert.equal(person.json.id, "4123456789");
+  assert.equal(person.json.kind, "user");
+
+  const group = await call(mcp, "get_chat", { chat: "-1004123456789" });
+  assert.equal(group.json.id, "-1004123456789");
+  assert.equal(group.json.kind, "group");
+  await close();
+});
+
+test("a t.me link resolves, and an invite link is refused without one", async () => {
+  const { mcp, close } = await connect();
+
+  // The form a human copies out of a PRIVATE supergroup — the kind this server
+  // exists to read — carries the id and nothing else usable.
+  const priv = await call(mcp, "get_chat", {
+    chat: "https://t.me/c/4123456789/8815",
+  });
+  assert.equal(priv.isError, false);
+  assert.equal(priv.json.kind, "group");
+
+  const pub = await call(mcp, "get_chat", { chat: "t.me/weekendclimbing" });
+  assert.equal(pub.json.username, "weekendclimbing");
+
+  for (const invite of ["t.me/+abcdefg", "https://t.me/joinchat/abcdefg"]) {
+    const res = await call(mcp, "get_chat", { chat: invite });
+    assert.equal(res.isError, true, `${invite} should be refused`);
+    assert.match(res.text, /private INVITE link/);
+  }
+  await close();
+});
+
+test("a bad `kinds` or `query` narrows nothing and is refused, not ignored", async () => {
+  // The failure direction matters: silently dropping the filter turns a narrow
+  // read of someone's private chat list into the whole of it.
+  const { mcp, client, close } = await connect();
+
+  const wrongKind = await call(mcp, "list_chats", { kinds: ["supergroup"] });
+  assert.equal(wrongKind.isError, true);
+  assert.match(wrongKind.text, /"supergroup"/);
+  assert.match(wrongKind.text, /a supergroup is a "group"/);
+
+  const wrongQuery = await call(mcp, "list_chats", { query: 12345 });
+  assert.equal(wrongQuery.isError, true);
+  assert.match(wrongQuery.text, /`query` must be a string/);
+
+  assert.equal(client.calls.filter((c) => c.method === "getDialogs").length, 0);
+  await close();
+});
+
+test("Telegram's own failures come back classified, and never carry a credential", async () => {
+  const client = fakeClient();
+  const session = "1BQANOTEyMDk3AAAAAAAAAAAAA-fake-session-string-fixture";
+  const { mcp, close } = await connect({ client });
+
+  const cases = [
+    ["FLOOD_WAIT_42", /rate-limiting/, /Wait the number of/],
+    ["AUTH_KEY_UNREGISTERED", /no longer valid/, /mint a new session string/],
+    ["CHAT_WRITE_FORBIDDEN", /refused this on permissions/, /still not be allowed to post/],
+  ];
+  for (const [raw, first, second] of cases) {
+    client.setMessages([]);
+    client.getMessages = async () => {
+      throw new Error(raw);
+    };
+    const res = await call(mcp, "get_chat_history", { chat: "@weekendclimbing" });
+    assert.equal(res.isError, true);
+    assert.match(res.text, first);
+    assert.match(res.text, second);
+  }
+
+  // The library's text reaches the caller. The session string must not.
+  client.getMessages = async () => {
+    throw new Error(`transport failed while sending session ${session}`);
+  };
+  const leaked = await call(mcp, "get_chat_history", { chat: "@weekendclimbing" });
+  assert.equal(leaked.isError, true);
+  assert.doesNotMatch(leaked.text, /fake-session-string-fixture/);
+  assert.match(leaked.text, /\[redacted\]/);
   await close();
 });
 

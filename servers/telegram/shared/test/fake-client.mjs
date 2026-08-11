@@ -38,6 +38,22 @@ export const FRIEND = {
   username: "ada_fixture",
 };
 
+/**
+ * A PERSON whose user id is the supergroup's id with no `-100`.
+ *
+ * Not a contrivance: user ids and channel ids are drawn from overlapping
+ * numeric ranges, and "-1004123456789" and "4123456789" are both documented
+ * ways to name the group. Which of the two this chat answers to decides whether
+ * `send_message` posts to a group or into someone's private conversation.
+ */
+export const COLLIDER = {
+  id: 4123456789,
+  className: "User",
+  firstName: "Not",
+  lastName: "Ada",
+  username: "not_ada_fixture",
+};
+
 export const ME = {
   id: 4999999999,
   className: "User",
@@ -94,7 +110,21 @@ export function fakeDialogs() {
       isChannel: true,
       entity: CHANNEL,
     },
-    { id: 4111111111, title: "Ada Lovelace", unreadCount: 1, isUser: true, entity: FRIEND },
+    {
+      id: 4111111111,
+      title: "Ada Lovelace",
+      unreadCount: 1,
+      isUser: true,
+      entity: FRIEND,
+    },
+  ];
+}
+
+/** The dialogs above, plus the person whose id collides with the group's. */
+export function fakeDialogsWithCollision() {
+  return [
+    ...fakeDialogs(),
+    { id: 4123456789, title: "Not Ada", unreadCount: 0, isUser: true, entity: COLLIDER },
   ];
 }
 
@@ -109,6 +139,7 @@ export function fakeClient(options = {}) {
   /** Every call, in order, so a test can assert what reached Telegram. */
   const calls = [];
   let archivedDialogs = [];
+  let dialogs = fakeDialogs();
   let messages = GROUP_MESSAGES;
   let nextSentId = 8900;
 
@@ -119,6 +150,9 @@ export function fakeClient(options = {}) {
     },
     setMessages(next) {
       messages = next;
+    },
+    setDialogs(next) {
+      dialogs = next;
     },
 
     async connect() {
@@ -133,13 +167,25 @@ export function fakeClient(options = {}) {
 
     async getDialogs(params) {
       calls.push({ method: "getDialogs", params });
-      return params.archived ? archivedDialogs : fakeDialogs();
+      return params.archived ? archivedDialogs : dialogs;
     },
 
+    /**
+     * Modelled on what the real client does, NOT on what would be convenient.
+     *
+     * A numeric peer is resolved by SIGN: a positive id is a user, `-100…` is a
+     * channel or supergroup, and a bare negative is a legacy chat. So asking for
+     * a supergroup by its bare id does not find the supergroup — it looks for a
+     * user with that number, and user and channel ids come from overlapping
+     * ranges. A fake that quietly resolved either form to the group would hide
+     * exactly the wrong-chat bug this models.
+     */
     async getEntity(ref) {
       calls.push({ method: "getEntity", ref });
+      const known = [GROUP, CHANNEL, FRIEND, COLLIDER, ME];
+
       if (typeof ref === "string") {
-        const match = [GROUP, CHANNEL, FRIEND].find(
+        const match = known.find(
           (e) => e.username?.toLowerCase() === ref.toLowerCase(),
         );
         if (match) return match;
@@ -150,9 +196,12 @@ export function fakeClient(options = {}) {
           "Could not find the input entity for PeerChannel. Please read https://…",
         );
       }
-      const match = [GROUP, CHANNEL, FRIEND].find(
-        (e) => String(e.id) === String(Math.abs(ref)).replace(/^100/, ""),
-      );
+      const wantsChannel = ref < 0;
+      const id = String(Math.abs(ref)).replace(/^100/, "");
+      const match = known.find((e) => {
+        const isChannel = e.className === "Channel";
+        return String(e.id) === id && isChannel === wantsChannel;
+      });
       if (match) return match;
       throw new Error("Could not find the input entity");
     },

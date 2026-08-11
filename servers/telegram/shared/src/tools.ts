@@ -28,13 +28,20 @@ export type ToolGroup = "readonly" | "readwrite";
 
 const ALL_GROUPS: ToolGroup[] = ["readonly", "readwrite"];
 
+/**
+ * FAILS CLOSED. An unset variable means the full surface — that is the bundle's
+ * posture, where the gateway decides capability — but a variable that is SET and
+ * unrecognised means someone tried to restrict this server and mistyped it, and
+ * the write tool here posts as a named human. Falling back to `readonly` costs
+ * that deployment a tool; falling back to everything costs it the guarantee.
+ */
 export function parseToolGroups(raw?: string): ToolGroup[] {
   if (!raw) return ALL_GROUPS;
   const requested = raw.split(",").map((g) => g.trim().toLowerCase());
   const valid = requested.filter((g): g is ToolGroup =>
     ALL_GROUPS.includes(g as ToolGroup),
   );
-  return valid.length > 0 ? valid : ALL_GROUPS;
+  return valid.length > 0 ? valid : ["readonly"];
 }
 
 interface Entry {
