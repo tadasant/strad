@@ -408,6 +408,7 @@ describe("infra/strad.staging.yaml", () => {
       "google-docs-rw -> /google-docs",
       "google-calendar-ro -> /google-calendar",
       "onepassword-ro -> /onepassword",
+      "telegram-ro -> /telegram",
     ]);
   });
 

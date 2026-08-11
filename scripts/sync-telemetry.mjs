@@ -21,7 +21,7 @@ export const SOURCE = join(root, "telemetry", "bundle", "instrument.mjs");
 
 /** Every image that runs a Node process we want resource metrics from. */
 export const TARGETS = [
-  // THE bundle: the one that co-locates sixteen servers, Chromium and `op` in a
+  // THE bundle: the one that co-locates seventeen servers, Chromium and `op` in a
   // single container. It is the process this telemetry exists to watch.
   "servers/bundle/otel/instrument.mjs",
   "servers/fetchpet/otel/instrument.mjs",

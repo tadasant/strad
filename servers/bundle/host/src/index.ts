@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 16 upstream MCP servers (16
+ * bundle — THE strad supplementary image. All 17 upstream MCP servers (17
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 25 supplementary-image entries
+ * gateway's config names more SLUGS than that — 27 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
- * TWENTY-FOUR of those are on one component. The twenty-fifth, `zimmer-secrets`,
+ * TWENTY-SIX of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
  * parameter store and `loadSecrets()` below reads `process.env` — one container,
  * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
@@ -32,8 +32,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Sixteen servers now share a process. A crash is a
- * 16-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Seventeen servers now share a process. A crash is a
+ * 17-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -210,6 +210,8 @@ async function buildMounts(): Promise<Mount[]> {
     register: (s) => xCreated.registerHandlers(s),
   });
 
+  mounts.push(await loadTelegram());
+
   // --- bundle-google: gmail / calendar / docs --------------------------------
   // These build per request (their factories are cheap and hold no client), which
   // is exactly what the bundle-google image does today.
@@ -309,7 +311,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other fifteen servers' readiness.
+  // login, and a slow login must not delay the other sixteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -405,8 +407,41 @@ async function loadRemoteFilesystem(): Promise<Mount> {
 }
 
 /**
+ * telegram — strad's own Telegram server, over MTProto with a USER session.
+ *
+ * MOUNTED EVEN WITH NO CREDENTIALS, degraded. Its three variables are a real
+ * person's Telegram login, and a deployment that has not injected them yet
+ * should still be able to SEE the tool surface — in the console, and from an
+ * agent's tools/list — rather than lose the slug entirely. Every call then fails
+ * with an error naming the three variables. Same posture as remote-filesystem,
+ * and for the same reason: one server's missing config must not cost the other
+ * sixteen their boot.
+ */
+async function loadTelegram(): Promise<Mount> {
+  const mod = (await loadFromTree("telegram", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+    missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
+  };
+
+  const created = mod.createMCPServer({ version: VERSION });
+  const missing = mod.missingCredentials();
+
+  return {
+    slug: "telegram",
+    tree: "telegram",
+    serverName: "strad-telegram",
+    capabilities: { tools: {} },
+    degraded:
+      missing.length > 0
+        ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; every tool will fail`
+        : null,
+    register: (s) => created.registerHandlers(s),
+  };
+}
+
+/**
  * secrets. Not mounted when it is not configured — the same posture as
- * 1Password: one server's missing config must not take the other fifteen down.
+ * 1Password: one server's missing config must not take the other sixteen down.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
@@ -820,7 +855,7 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 16 servers behind one health check, "ok: true" alone is not information.
+  // with 17 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -915,7 +950,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of sixteen servers must not kill the other
+  // One stray rejection from one of seventeen servers must not kill the other
   // fifteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {

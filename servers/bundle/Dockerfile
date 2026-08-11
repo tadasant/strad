@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Sixteen MCP servers, one container.
+# bundle — THE strad supplementary image. Seventeen MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from nine existing projects that live in different places:
+# assembled from ten existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -15,10 +15,11 @@
 #   servers/fetchpet        fetchpet               ├ one shared Chromium
 #   servers/pointsyeah      pointsyeah             ┘
 #   servers/x-twitter       X
+#   servers/telegram        telegram               (MTProto, USER session)
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging nine dependency trees is how you
+# Nothing is merged. That is on purpose: merging ten dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -98,6 +99,18 @@ RUN npm ci --no-audit --no-fund
 COPY servers/remote-filesystem/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- telegram -----------------------------------------------------------------
+# strad's own Telegram server, over MTProto with a USER session — the only
+# protocol that can read a group the account joined and does not administer. Its
+# dependencies are the MCP SDK and the MTProto client library.
+FROM ${PW} AS build-telegram
+WORKDIR /src
+COPY servers/telegram/package.json servers/telegram/package-lock.json ./
+COPY servers/telegram/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/telegram/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
 FROM ${PW} AS build-x-twitter
 WORKDIR /src
@@ -150,7 +163,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 16 MCP servers (API, Google, X.com, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 17 MCP servers (API, Google, X.com, Telegram, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -182,7 +195,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The nine trees, each with the node_modules it was built against.
+# The ten trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -192,6 +205,7 @@ COPY --from=build-goodeggs /src /app/trees/good-eggs
 COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
+COPY --from=build-telegram /src /app/trees/telegram
 
 # The host: the only new code in this image.
 COPY --from=build-host /src/node_modules /app/host/node_modules

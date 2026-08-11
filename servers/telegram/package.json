@@ -1,0 +1,14 @@
+{
+  "name": "telegram",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's Telegram MCP server — reads chats and message history as Tadas's own Telegram ACCOUNT over MTProto, which is the only protocol that can read a group he is not an admin of. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

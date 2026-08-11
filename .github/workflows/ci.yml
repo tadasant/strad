@@ -144,6 +144,25 @@ jobs:
         working-directory: servers/remote-filesystem
         run: npm test
 
+  # telegram reads a real person's private messages with a credential that IS
+  # their account, so its tests are the ones that must run on every PR: the tool
+  # surface (the read-only tier does not build send_message), the mapping and
+  # paging below it, and the no-credentials path — the state this server ships
+  # in, where it must still mount and list rather than take the bundle down.
+  telegram:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/telegram
+        run: npm ci
+      - name: Test (build + the tool-surface and credential suite)
+        working-directory: servers/telegram
+        run: npm test
+
   # onepassword and pointsyeah are the last two server trees with a build of their
   # own, and without these jobs a type error in either — `shared/src/tools/sanitize.ts`
   # is credential redaction — surfaces first as a failed bundle image build, which

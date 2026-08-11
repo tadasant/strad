@@ -12,10 +12,10 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares twenty-seven server SLUGS: twenty-five supplementary-image
+# This file declares twenty-nine server SLUGS: twenty-seven supplementary-image
 # entries, the `echo` builtin in core, and the `deepwiki` remote-http canary.
-# Twenty-four of the twenty-five land on fifteen upstream mounts inside the one
-# bundle image, because capability variants share a mount; the twenty-fifth
+# Twenty-six of the twenty-seven land on sixteen upstream mounts inside the one
+# bundle image, because capability variants share a mount; the twenty-seventh
 # (`zimmer-secrets`) runs that same image on a component of its own.
 #
 # THREE components, not two, and the third is not a capability variant: it is
@@ -58,7 +58,8 @@
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 4/9 · tailscale 7/15 ·
 # monarch 10/23 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
-# 1Password 5/9. test/staging-config.test.ts asserts every one of those numbers.
+# 1Password 5/9 · telegram 5/6. test/staging-config.test.ts asserts every one of
+# those numbers.
 
 version: 1
 
@@ -135,18 +136,20 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and fifteen of the image's sixteen
+  # THE bundle. One image, one component, and sixteen of the image's seventeen
   # upstream MCP servers — the bundle-api fleet, the Google trio, 1Password (with
-  # the `op` CLI baked in) and the three browser servers, which share ONE Chromium
-  # (never one per server: see servers/bundle/host/src/browser.ts). The sixteenth
-  # mount, `/x-twitter`, is in the image and has no slug here; the PROCESS
-  # registers all sixteen either way, which is what the sizing below is about.
+  # the `op` CLI baked in), telegram and the three browser servers, which share ONE
+  # Chromium (never one per server: see servers/bundle/host/src/browser.ts). The
+  # seventeenth mount, `/x-twitter`, is in the image and has no slug here; the
+  # PROCESS registers all seventeen either way — including `/telegram`, whose two
+  # slugs are disabled until their secrets are seeded — which is what the sizing
+  # below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with sixteen servers registered adds ~200MB. 0.5GB is absurd here;
-  # 1GB would be one bad page render from an OOM that takes all 24 slugs down
+  # and Node with seventeen servers registered adds ~200MB. 0.5GB is absurd here;
+  # 1GB would be one bad page render from an OOM that takes all 26 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
   # the OpenTelemetry data shows event-loop lag or CPU saturation, the next move
@@ -871,3 +874,69 @@ servers:
     timeoutMs: 180000
     env:
       POINTSYEAH_REFRESH_TOKEN: "${POINTSYEAH_REFRESH_TOKEN}"
+
+  # ---------------------------------------------------------------------------
+  # telegram — strad's own server, and the one that speaks MTProto as a PERSON.
+  #
+  # WHY NOT A BOT. The requirement is reading a group Tadas JOINED and does not
+  # administer. The Bot API cannot: a bot gets no history from before it joined,
+  # and a non-admin bot runs with privacy mode on, so it sees only the messages
+  # that address it. MTProto with a user session is the only protocol that
+  # answers it, which is why the credential below is a login and not a token.
+  #
+  # THE CREDENTIAL IS THE ACCOUNT. TELEGRAM_STRING_SESSION is a logged-in
+  # Telegram session: anything Tadas can read or send, a holder of that string
+  # can read or send, and it does not expire. It is revoked from a Telegram
+  # client (Settings -> Devices), not from here.
+  #
+  # DISABLED UNTIL THE THREE SECRETS ARE SEEDED. A `${REF}` that GCP Secret
+  # Manager does not hold FAILS the render — deliberately — so these two entries
+  # ship `enabled: false` and the deploy carries on without them. To turn them
+  # on: seed strad-staging-TELEGRAM_API_ID, -TELEGRAM_API_HASH and
+  # -TELEGRAM_STRING_SESSION (secrets-sync.yml), then delete both `enabled`
+  # lines. Nothing else changes; the mount is already in the image, and it is
+  # already listed on /healthz as degraded until the values arrive.
+  #
+  # TWO SLUGS, ONE MOUNT, and the difference is the `tools:` policy — the same
+  # shape as gmail-ro/gmail-rw. The read-only allow-list is the server's
+  # `readonly` tool group, name for name; `telegram-rw` has no policy and so
+  # gets send_message too.
+  - slug: telegram-ro
+    kind: supplementary-image
+    title: Telegram (read-only)
+    description: Read chats and group history as Tadas's own Telegram account.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /telegram
+    entitlements: [admin]
+    enabled: false
+    env:
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
+      TELEGRAM_STRING_SESSION: "${TELEGRAM_STRING_SESSION}"
+    tools:
+      allow:
+        - get_me
+        - list_chats
+        - get_chat
+        - get_chat_history
+        - search_messages
+
+  # Sends as Tadas himself: a message from this slug is indistinguishable from
+  # one he typed, and Telegram allows a delete for 48 hours and nothing after.
+  # Same credentials, declared again — a family's variants each declare their
+  # own, so disabling one cannot strip the secret from its sibling.
+  - slug: telegram-rw
+    kind: supplementary-image
+    title: Telegram (read-write)
+    description: Read chats and send messages as Tadas's own Telegram account.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /telegram
+    entitlements: [admin]
+    enabled: false
+    env:
+      TELEGRAM_API_ID: "${TELEGRAM_API_ID}"
+      TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
+      TELEGRAM_STRING_SESSION: "${TELEGRAM_STRING_SESSION}"
+    # No `tools:` — all six, send_message included.

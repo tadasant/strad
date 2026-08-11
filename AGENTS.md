@@ -69,6 +69,7 @@ not a confession.
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                   | `operate/secrets.md`, `limitations.md`                            |
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                      |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                     |
+| `servers/telegram/**` — a tool, the credential model, the read/write split          | `servers/telegram.md`, `limitations.md`                           |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                 |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                   |
 | `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                            |
@@ -95,10 +96,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------ |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                         |
-| **9**      | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
-| **16**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
-| **25**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
-| **27**     | total server slugs in staging (25 + the `echo` builtin + the `deepwiki` remote-http)       |
+| **10**     | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
+| **17**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
+| **27**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
+| **29**     | total server slugs in staging (27 + the `echo` builtin + the `deepwiki` remote-http)       |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -140,11 +141,15 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 16 mounted MCP servers, one shared Chromium,
-  assembled from NINE independently-built dependency trees.
+- `servers/bundle/` — one image, 17 mounted MCP servers, one shared Chromium,
+  assembled from TEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
+- `servers/telegram/` — strad's own Telegram server, behind `telegram-ro` and
+  `telegram-rw`. MTProto with a USER session, because the Bot API cannot read the
+  history of a group its account does not administer. The credential is a
+  logged-in account; the library lives behind one function in `mtproto.ts`.
 
 The prose for all of the above is in `docs/`.
 

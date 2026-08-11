@@ -43,6 +43,7 @@ on:
       - "servers/fetchpet/**"
       - "servers/pointsyeah/**"
       - "servers/x-twitter/**"
+      - "servers/telegram/**"
       - "images/bundle-google/**"
       - ".github/workflows/release-bundle-image.yml"
   workflow_dispatch:
