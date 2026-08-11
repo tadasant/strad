@@ -584,12 +584,23 @@ export interface ReleaseRun {
  */
 function deadRun(run: ReleaseRun | null): ReleaseRun | null {
   if (run === null) return null;
-  const done = run.status === "completed" && run.conclusion !== "success";
+  // A `conclusion` of null is NOT a verdict. `completed` can arrive before the
+  // conclusion settles, and reading the absence of "success" as failure would
+  // turn that instant into an unrecoverable hard stop — announced, absurdly, as
+  // "has already CONCLUDED (no conclusion)". Only an explicit non-success
+  // verdict ends the wait.
+  const done =
+    run.status === "completed" &&
+    run.conclusion !== null &&
+    run.conclusion !== "success";
   return done ? run : null;
 }
 
 /** How often to re-ask while waiting. Slow enough not to hammer the registry. */
 const WAIT_POLL_MS = 20_000;
+
+/** How long one Actions-API lookup may take before it is not worth having. */
+const LOOKUP_TIMEOUT_MS = 10_000;
 
 export async function resolveDeployTag(
   candidates: readonly Candidate[],
@@ -643,7 +654,7 @@ export async function resolveDeployTag(
       const dead = (run: ReleaseRun): Error =>
         new Error(
           `${owed}, and ${source.workflow} has already CONCLUDED for it ` +
-            `(${run.conclusion ?? "no conclusion"}): ${run.url}\n` +
+            `(${run.conclusion}): ${run.url}\n` +
             `That image is not coming, so there is nothing to wait for. ` +
             `${skew} — ${source.republish}.`,
         );
@@ -662,6 +673,12 @@ export async function resolveDeployTag(
         gone = deadRun(run);
         if (gone) throw dead(gone);
       }
+      // A run that exists and has not concluded is worth waiting for, so the
+      // remedy is `remedy`. NO run — for a commit the filter says owes an image,
+      // asked minutes after the push that would have created one — is a
+      // different animal: nothing is coming, and "wait for that build" names a
+      // build that does not exist. Say `republish` there instead.
+      const noRun = run === null && releaseRun !== undefined;
       throw new Error(
         `${owed}` +
           (waited
@@ -669,11 +686,11 @@ export async function resolveDeployTag(
               `${source.workflow} is slower than that, or it failed.\n`
             : `. ${source.workflow} is probably still building it, or it failed.\n`) +
           (run
-            ? `Its run is ${run.status}: ${run.url}\n`
-            : releaseRun
+            ? `Its run is ${run.status} (${run.conclusion ?? "no conclusion yet"}): ${run.url}\n`
+            : noRun
               ? `${source.workflow} has no run for that commit at all.\n`
               : "") +
-          `${skew}: ${source.remedy}.${lookupFailure}`,
+          `${skew}: ${noRun ? source.republish : source.remedy}.${lookupFailure}`,
       );
     }
   }
@@ -704,13 +721,20 @@ export interface ReleaseRunOptions {
 }
 
 /**
- * The newest run of `workflow` for a commit, or `null` if it has none.
+ * The run of `workflow` that decides whether the image is still coming, or
+ * `null` if the commit has no run at all.
  *
- * Newest by `created_at` rather than by list order: a re-run is a NEW run for
- * the same head sha, and it is the one that decides whether an image is still
- * coming. Reading a stale first entry would report `failure` for a build that
- * somebody has already restarted, and turn a fifteen-minute wait into an
- * immediate wrong answer.
+ * A LIVE run wins over a concluded one, whatever the timestamps say, and only
+ * then is the newest of the concluded ones taken. The question this answers is
+ * "is anything still going to publish this?", and one queued or in-flight run
+ * makes the answer yes no matter how many failures sit beside it.
+ *
+ * Recency alone is not enough for that. Re-running a workflow adds an ATTEMPT to
+ * the existing run rather than creating a second one, so `created_at` stays at
+ * the original push — while a `workflow_dispatch` for the same sha IS a separate
+ * run, and a failed dispatch can be newer than a push run somebody has since
+ * restarted. Picking the newest there would report `failure` over a build that
+ * is running, which is exactly the wrong answer to have quickly.
  *
  * Throws on anything it cannot read. `resolveDeployTag` swallows that — this is
  * a better error message, not a gate.
@@ -732,6 +756,9 @@ export function releaseRunLookup(
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
       },
+      // A stalled API must not cost more than the wait it is here to cut short.
+      // The catch upstream covers a rejection; nothing else bounds the latency.
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
     const body = (await res.json()) as {
@@ -744,13 +771,16 @@ export function releaseRunLookup(
     };
     const runs = body.workflow_runs ?? [];
     if (runs.length === 0) return null;
-    const newest = runs.reduce((a, b) =>
-      (b.created_at ?? "") > (a.created_at ?? "") ? b : a,
-    );
+    const live = runs.find((r) => r.status !== "completed");
+    const chosen =
+      live ??
+      runs.reduce((a, b) =>
+        (b.created_at ?? "") > (a.created_at ?? "") ? b : a,
+      );
     return {
-      status: newest.status ?? "unknown",
-      conclusion: newest.conclusion ?? null,
-      url: newest.html_url ?? url,
+      status: chosen.status ?? "unknown",
+      conclusion: chosen.conclusion ?? null,
+      url: chosen.html_url ?? url,
     };
   };
 }

@@ -924,7 +924,10 @@ jobs:
         # print in clear — the reason the rendered spec is never echoed. Nothing
         # here has done that so far; if it ever does, redact at the source rather
         # than deleting this step.
-        if: failure() && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        # `!seed_only` matches the doctl install's own gate. A seeding run
+        # deploys nothing, so there are no container logs to want — and without
+        # this it would warn about a doctl that was never meant to be there.
+        if: failure() && !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         continue-on-error: true
         env:
           # Its own, like every other doctl step. Reaching for whatever the
@@ -946,9 +949,11 @@ jobs:
             echo "::warning::doctl is not on PATH in this job; cannot dump container logs."
             exit 0
           fi
-          if ! APPS=$(doctl apps list --format ID,Spec.Name --no-header 2>&1); then
+          # stderr to a file, not into $APPS: a doctl notice merged into the
+          # table is a line awk will happily read as an app row.
+          if ! APPS=$(doctl apps list --format ID,Spec.Name --no-header 2>"$RUNNER_TEMP/doctl.err"); then
             echo "::warning::doctl apps list failed; cannot dump container logs:"
-            printf '%s\n' "$APPS"
+            cat "$RUNNER_TEMP/doctl.err"
             exit 0
           fi
           APP_ID=$(printf '%s\n' "$APPS" | awk '$2=="strad-staging"{print $1}')

@@ -95,11 +95,21 @@ if (!Number.isFinite(waitSeconds) || waitSeconds < 0) {
 }
 // GitHub Actions sets GITHUB_ACTOR in every step; the fallback is for a local run.
 const actor = process.env.GITHUB_ACTOR ?? "github-actions";
-const password = process.env.GHCR_PULL_TOKEN || process.env.GITHUB_TOKEN;
+// The REGISTRY credential, and on Actions it is GHCR_PULL_TOKEN or nothing. The
+// job token is also in this step's environment — it reads the Actions API below
+// — and letting it stand in here would answer a missing repo secret with
+// `HTTP 403` from GHCR, which reads like a registry outage rather than the
+// one-line fix it is. Off Actions there is no job token to confuse it with, and
+// a local run wants the fallback.
+const password =
+  process.env.GHCR_PULL_TOKEN ||
+  (process.env.GITHUB_ACTIONS ? undefined : process.env.GITHUB_TOKEN);
 
 if (!password) {
   console.error(
-    "::error::neither GHCR_PULL_TOKEN nor GITHUB_TOKEN is set; cannot read the registry",
+    process.env.GITHUB_ACTIONS
+      ? "::error::GHCR_PULL_TOKEN is not set; cannot read the registry"
+      : "::error::neither GHCR_PULL_TOKEN nor GITHUB_TOKEN is set; cannot read the registry",
   );
   process.exit(1);
 }

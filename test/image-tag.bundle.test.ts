@@ -492,6 +492,38 @@ describe("resolveDeployTag, when the run that owes the image has concluded", () 
     ).rejects.toThrow(/CONCLUDED for it \(cancelled\)/);
   });
 
+  it("does NOT count a completed run whose conclusion has not settled", async () => {
+    // `completed` can arrive before the conclusion does, and `null !==
+    // "success"` would read that instant as failure — an unrecoverable stop
+    // announced as "has already CONCLUDED (no conclusion)".
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun: async () => run({ conclusion: null }),
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+  });
+
+  it("tells someone with no run to publish one, not to wait for it", async () => {
+    // `remedy` is "wait for that build to finish, re-run it" — advice about a
+    // build that does not exist. The commit owes an image and the push that
+    // would have started one is minutes old by the time this runs.
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun: async () => null,
+      }),
+    ).rejects.toThrow(/dispatch release-bundle-image\.yml on `main`/);
+  });
+
   it("still waits while the build is actually running", async () => {
     // The whole reason the wait exists. A run in flight must not be confused
     // with a run that failed, or every merge touching a baked tree goes red.
@@ -545,7 +577,7 @@ describe("resolveDeployTag, when the run that owes the image has concluded", () 
         now: () => (clock += 20_000),
         releaseRun: async () => run({ conclusion: "success" }),
       }),
-    ).rejects.toThrow(/Its run is completed: /);
+    ).rejects.toThrow(/Its run is completed \(success\): /);
   });
 
   it("says so when the workflow has no run for that commit at all", async () => {
@@ -622,7 +654,45 @@ describe("releaseRunLookup", () => {
     expect(url).toContain(`head_sha=${A}`);
   });
 
-  it("reads the NEWEST run, so a re-run is not read as the old failure", async () => {
+  it("prefers a LIVE run over a concluded one, whatever the timestamps say", async () => {
+    // Re-running a workflow adds an attempt to the existing run rather than
+    // creating a second one, so `created_at` stays at the original push — while
+    // a `workflow_dispatch` for the same sha IS a separate run. Newest-wins
+    // would therefore report the failed dispatch over the restarted push and
+    // hard-stop a deploy whose image is actively building.
+    const fetchImpl = vi.fn(async () =>
+      okJson({
+        workflow_runs: [
+          {
+            status: "completed",
+            conclusion: "failure",
+            html_url: "the-dispatch-that-died",
+            created_at: "2026-08-11T15:30:00Z", // NEWER
+          },
+          {
+            status: "in_progress",
+            conclusion: null,
+            html_url: "the-push-that-is-building",
+            created_at: "2026-08-11T14:01:45Z", // older
+          },
+        ],
+      }),
+    );
+    await expect(
+      releaseRunLookup({
+        repository: "tadasant/strad",
+        workflow: BUNDLE_RELEASE_WORKFLOW,
+        token: "t",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })(A),
+    ).resolves.toEqual({
+      status: "in_progress",
+      conclusion: null,
+      url: "the-push-that-is-building",
+    });
+  });
+
+  it("takes the newest of several concluded runs when none is live", async () => {
     const fetchImpl = vi.fn(async () =>
       okJson({
         workflow_runs: [
@@ -633,8 +703,8 @@ describe("releaseRunLookup", () => {
             created_at: "2026-08-11T14:01:45Z",
           },
           {
-            status: "in_progress",
-            conclusion: null,
+            status: "completed",
+            conclusion: "success",
             html_url: "new",
             created_at: "2026-08-11T15:30:00Z",
           },
@@ -648,7 +718,11 @@ describe("releaseRunLookup", () => {
         token: "t",
         fetchImpl: fetchImpl as unknown as typeof fetch,
       })(A),
-    ).resolves.toEqual({ status: "in_progress", conclusion: null, url: "new" });
+    ).resolves.toEqual({
+      status: "completed",
+      conclusion: "success",
+      url: "new",
+    });
   });
 
   it("returns null when the workflow never ran for that commit", async () => {
@@ -821,6 +895,26 @@ describe("the rendered staging spec", () => {
  * `:latest` — the fix is not the resolver, it is the deploy CALLING it. That is
  * the line worth pinning.
  */
+/**
+ * The top-level `permissions:` block of a workflow, as a list of its entries.
+ *
+ * Read as a block rather than grepped: `actions: read` appearing anywhere in a
+ * 900-line file — in a job's own block, in a comment — says nothing about what
+ * the workflow grants, and a test that accepts it is a test that passes after
+ * the grant is deleted.
+ */
+function workflowPermissions(workflow: string): string[] {
+  const lines = workflow.split("\n");
+  const start = lines.indexOf("permissions:");
+  expect(start).toBeGreaterThan(-1);
+  const entries: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!/^ {2}\S/.test(line)) break;
+    entries.push(line.trim());
+  }
+  return entries;
+}
+
 describe("deploy-staging.yml", () => {
   const workflow = readFileSync(DEPLOY_WORKFLOW, "utf8");
 
@@ -860,17 +954,31 @@ describe("deploy-staging.yml", () => {
       );
       expect(step).toContain("GITHUB_TOKEN: ${{ github.token }}");
     }
-    expect(workflow).toMatch(/permissions:[\s\S]{0,400}\n {2}actions: read/);
+    expect(workflowPermissions(workflow)).toContain("actions: read");
   });
 
-  it("installs doctl before anything that can fail", () => {
+  it("is granted `actions: read` by the workflow that CALLS it", () => {
+    // The load-bearing half, and the one that fails silently. A called workflow
+    // may narrow its caller's permissions but never widen them, so dropping the
+    // grant from release-image.yml regresses every automatic deploy to the
+    // 900-second blind wait — with this suite green and no annotation anywhere.
+    const caller = readFileSync(".github/workflows/release-image.yml", "utf8");
+    expect(caller).toContain("uses: ./.github/workflows/deploy-staging.yml");
+    expect(workflowPermissions(caller)).toContain("actions: read");
+  });
+
+  it("installs doctl after the secrets read and before anything that can fail", () => {
     // "Dump the failing container's logs" runs on `failure()` from the secrets
     // read onward. Installing doctl after the tag and render steps left every
     // failure before the deploy with nothing to dump WITH — and the dump said
     // "no strad-staging app" rather than admitting it had not looked.
-    expect(workflow.indexOf("uses: digitalocean/action-doctl@v2")).toBeLessThan(
-      workflow.indexOf("id: coretag"),
-    );
+    //
+    // The lower bound matters as much as the upper one: the install's `if:`
+    // reads `steps.secrets.outputs.ready`, which is the empty string for a step
+    // that has not run yet, so ordering it FIRST would silently skip it.
+    const doctl = workflow.indexOf("uses: digitalocean/action-doctl@v2");
+    expect(workflow.indexOf("id: secrets")).toBeLessThan(doctl);
+    expect(doctl).toBeLessThan(workflow.indexOf("id: coretag"));
   });
 
   it("makes the log dump admit when it cannot ask", () => {

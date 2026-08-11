@@ -2153,8 +2153,14 @@ deploy that failed was for a LATER commit that owes no bundle image at all. The
 wedge is a property of the walk, not of the race.
 
 **Undo.** Drop `releaseRun` from the `resolveDeployTag` call in
-`scripts/resolve-image-tag.ts`. The walk then waits out its budget on every dead
-build again.
+`scripts/resolve-image-tag.ts`; delete `releaseRunLookup`, `ReleaseRun`,
+`deadRun` and `ImageSource.republish` from `src/deploy/imageTag.ts`; drop
+`actions: read` from `deploy-staging.yml` AND from `release-image.yml`, which
+grants it as that workflow's caller; drop `GITHUB_TOKEN` from the two tag steps;
+and delete the corresponding tests. The walk then waits out its budget on every
+dead build again. Dropping only the caller's grant is the same undo with no
+symptom — the lookup 403s and is swallowed — which is what
+`test/image-tag.bundle.test.ts` reads both workflows to prevent.
 
 ## What the human still needs to provision
 
