@@ -365,6 +365,12 @@ could not be consulted at all", which on a store-backed deployment means the
 resolver credential itself has stopped working — the step says so as an error
 rather than softening it.
 
+The roster has a third column now: **served per-server**. A supplementary `env:`
+name that every referencing server holds under its own
+`/strad/{env}/mcp/{slug}/static/` is listed there rather than as missing — the
+deployment resolves it, this namespace is simply not where. See [two servers, one
+variable name](/operate/secrets/#two-servers-one-variable-name).
+
 ## Seeding the store from the deploy environment
 
 `scripts/seed-store.ts` moves a deployment's `${NAME}` values out of the deploy

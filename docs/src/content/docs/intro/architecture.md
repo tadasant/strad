@@ -385,3 +385,12 @@ secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY`, both set by a human in `/
 and delivered by the resolver. What that server does with them — and why one
 boolean decides whether a link expires or demands a login — is [The artifact
 store](/servers/artifact-store/).
+
+`params: true` is not the only reader of that namespace. A `supplementary-image`
+server's `env:` `${NAME}` references resolve from its own
+`/strad/{env}/mcp/{slug}/static/` **before** the shared
+`/strad/{env}/gateway/static/`, with no flag, which is what lets two servers
+write the same `${NAME}` and be handed different values — see [two servers, one
+variable name](/operate/secrets/#two-servers-one-variable-name). The two paths
+differ in what they inject: `params:` takes the namespace whole, substitution
+takes only names the config already references.

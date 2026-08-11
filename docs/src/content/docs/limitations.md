@@ -798,6 +798,30 @@ MCP surface, no second container, no cost — and for a store a human manages an
 agent should enumerate that is arguably the right shape rather than merely the
 cheaper one. It is not built, and nothing blocks on it.
 
+### 52. Two servers on one bundle still cannot hold two values for one name
+
+A supplementary server's `env:` `${NAME}` resolves from
+`/strad/{env}/mcp/{slug}/static/` before the shared
+`/strad/{env}/gateway/static/`, so two servers can be given **different** values
+for one name — as long as they sit on different bundles. Two servers that share a
+bundle share a container, and a container has one `process.env`. `render-spec`
+fails the deploy when their namespaces disagree rather than picking a winner, and
+names both slugs and the key (never the values).
+
+That is a deployment decision rather than a renderer bug: the shared-bundle case
+is the capability-variant pattern — `telegram-ro` and `telegram-rw` are one mount,
+one upstream process, told apart by the gateway's `tools:` policy — and they share
+a container _because_ they share a credential. Two values means two components,
+which is a second billed App Platform service for a process that is otherwise
+identical.
+
+Two smaller edges travel with it. The failure lands at **render** time, not at
+`check-config` time: that gate holds no store credential, so it cannot know that
+two identical `${NAME}` strings resolve differently. And substitution covers a
+`supplementary-image`'s `env:` only — a `builtin`'s `options:` and a
+`remote-http`'s `url`/`headers` are resolved in-process at runtime, out of the
+gateway namespace, with `params: true` as their per-server path.
+
 ### 2b. A deploy without its prerequisites skips and stays green
 
 `workflow_dispatch` workflows are only invocable from the default branch, and

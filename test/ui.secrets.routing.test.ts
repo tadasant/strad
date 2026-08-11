@@ -187,6 +187,25 @@ describe("routing is computed from the config, not asserted", () => {
     expect(r.detail).toContain("params: true");
   });
 
+  it("a name the server's own env: references IS delivered, without params: true", () => {
+    // The second delivery route: a supplementary server's `${NAME}` refs are
+    // substituted from its own namespace before the gateway's, so this page
+    // must not tell a human that a value the renderer reads goes nowhere.
+    // `secrets` declares `SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${VIEWER_KEY}"`.
+    const r = classifyPath(CONFIG, `${MCP_NS}secrets/static/VIEWER_KEY`, true);
+    expect(r.state).toBe("delivered");
+    expect(r.when).toBe("deploy");
+    expect(r.detail).toContain("ahead of");
+  });
+
+  it("a name that server's env: does NOT reference is still not delivered", () => {
+    const r = classifyPath(CONFIG, `${MCP_NS}secrets/static/UNRELATED`, true);
+    expect(r.state).toBe("not-wired");
+    // And it says both ways out, not just the flag.
+    expect(r.detail).toContain("params: true");
+    expect(r.detail).toContain("${UNRELATED}");
+  });
+
   it("a path with no {slug}/static/ prefix routes to nothing", () => {
     expect(classifyPath(CONFIG, `${MCP_NS}TOKEN`, true).state).toBe("unrouted");
     expect(classifyPath(CONFIG, `${MCP_NS}wired/oauth/TOKEN`, true).state).toBe(

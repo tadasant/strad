@@ -1952,6 +1952,40 @@ only run on `main`.
 **Undo.** Point the ten call sites back at `docker/build-push-action@v6` (add
 `push: true`, which the wrapper supplies) and delete `.github/actions/build-push`.
 
+## 52. Two servers on ONE bundle still cannot hold two values for one name
+
+**What.** A supplementary server's `env:` `${NAME}` now resolves from
+`/strad/{env}/mcp/{slug}/static/` before `/strad/{env}/gateway/static/`, so two
+servers CAN be given different values for one name — as long as they are on
+different bundles. Two servers that share a bundle share a container, which has
+one `process.env`, and no resolution scheme reaches inside that. `renderAppSpec`
+throws when their namespaces disagree.
+
+**Why it is not fixed.** The shared-bundle case is the capability-variant pattern
+(`telegram-ro` / `telegram-rw`, `gmail-ro` / `gmail-rw`): two slugs, one mount,
+one upstream process, told apart by the gateway's `tools:` policy. They share a
+container BECAUSE they share a credential. Making them differ means giving each
+its own component — a second billed App Platform service (~$12/month) for a
+process that would otherwise be identical. That is a deployment decision, not a
+renderer bug, so the renderer states it instead of guessing.
+
+**The edge.**
+
+- The failure is at RENDER time, not at config-check time. `check-config` holds
+  no store credential, so it cannot know two identical `${NAME}` strings resolve
+  to different values; the deploy is the first thing that can. A config that
+  parses clean can still fail the render for this.
+- The error names the two slugs and the key, never the values.
+- Seeding a per-server namespace for a server that neither sets `params: true`
+  nor references the name is a `::warning::`, not a failure — a store is also
+  allowed to be a registry of values a human manages by hand. It ships green.
+- Substitution only covers a `supplementary-image`'s `env:`. A `builtin`'s
+  `options:` and a `remote-http`'s `url`/`headers` resolve IN-PROCESS at runtime,
+  from the gateway namespace; their per-server path is `params: true`.
+
+**Undo.** Drop `serverSecrets` from `renderAppSpec` and the per-server read from
+`render-spec`; every `${NAME}` goes back to the one flat gateway namespace.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

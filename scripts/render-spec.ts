@@ -66,7 +66,7 @@ import {
   gatewayNamespace,
   gatewayParameterPath,
   resolverFromEnv,
-  resolveServerParams,
+  staticNamespace,
   RESOLVER_ENV,
 } from "../src/secrets/parameters/index.ts";
 import {
@@ -74,6 +74,14 @@ import {
   consoleEnvNames,
   preflightSecrets,
 } from "../src/deploy/preflight.ts";
+import {
+  coveredPerServer,
+  envRefsBySlug,
+  mcpNamespace,
+  seededByServer,
+  substitutionBag,
+  unreadParameters,
+} from "../src/deploy/server-namespaces.ts";
 import {
   assertImmutableCoreImage,
   mutableImageComponents,
@@ -325,6 +333,74 @@ async function storeValues(): Promise<Record<string, string>> {
 // invariant is code rather than a sentence in a design doc.
 const consoleOnly = new Set(consoleEnvNames(config));
 
+/**
+ * A server namespace, resolved at most once per render.
+ *
+ * Two callers want the same read — `${NAME}` substitution below and the
+ * `params: true` injection further down — and `resolve()` renders the whole
+ * namespace, so asking twice would double the `:render` calls for a server that
+ * uses both.
+ */
+const namespaceCache = new Map<string, Promise<Record<string, string>>>();
+function resolveNamespace(namespace: string): Promise<Record<string, string>> {
+  const cached = namespaceCache.get(namespace);
+  if (cached) return cached;
+  const pending = store!.resolve(namespace);
+  namespaceCache.set(namespace, pending);
+  return pending;
+}
+
+// PER-SERVER SUBSTITUTION.
+//
+// Every `${NAME}` in a supplementary server's `env:` used to resolve from ONE
+// place — the gateway namespace — keyed on the name alone, which made a name a
+// deployment-wide singleton: `telegram-ro` and `telegram-rw` both write
+// `${TELEGRAM_API_HASH}` and could not be given different credentials. A server's
+// OWN namespace is consulted first now, and the shared one remains the fallback.
+// See src/deploy/server-namespaces.ts for the layering and why it needs no flag.
+//
+// Gated on a RESOLVER CREDENTIAL, not on the provider, which is where the
+// `params: true` path below already draws its line: no credential, no per-server
+// read, and every name falls back exactly as it did.
+const refsBySlug = envRefsBySlug(config);
+const serverSecrets: Record<string, Record<string, string>> = {};
+if (store) {
+  // ONE listing of /strad/{env}/mcp/ for the whole render. It is metadata — a
+  // secret parameter's payload is a `__REF__` pointer — so this reads no value,
+  // and it is what tells us which of the 27 servers is worth a `resolve()`.
+  const seeded = seededByServer(
+    config.gateway.env,
+    await store.list(mcpNamespace(config.gateway.env)),
+  );
+
+  for (const [slug, refs] of refsBySlug) {
+    const held = seeded.get(slug);
+    if (!held?.length) continue; // nobody seeded this one: shared bag, as before
+    if (![...refs].some((name) => held.includes(name))) continue;
+
+    const namespace = staticNamespace(config.gateway.env, slug);
+    const bag = substitutionBag(await resolveNamespace(namespace), refs);
+    if (Object.keys(bag).length === 0) continue;
+    serverSecrets[slug] = bag;
+    // Names only. Which server draws which name from where is exactly what an
+    // operator needs when two servers disagree about one name.
+    console.error(
+      `[render-spec] server "${slug}" resolves ` +
+        `${Object.keys(bag).sort().join(", ")} from ${namespace} ` +
+        `(ahead of ${gatewayNamespace(config.gateway.env)}).`,
+    );
+  }
+
+  // A SEEDED PARAMETER NOTHING READS IS THE FAILURE THIS FEATURE EXISTS TO END.
+  //
+  // The old renderer skipped a server without `params: true` with a bare
+  // `continue`: values seeded under its namespace produced no env var, no
+  // warning and a green deploy. Say it instead — by name, never by value.
+  for (const finding of unreadParameters(config, seeded)) {
+    console.error(`::warning::${finding.message}`);
+  }
+}
+
 if (wanted.length > 0) {
   // One namespace read, shared with the boot keys below. The values go straight
   // into the spec and are never logged, printed, or written anywhere but the
@@ -336,11 +412,33 @@ if (wanted.length > 0) {
       ? process.env[name]
       : (available[name] ?? process.env[name]);
     if (!value) {
+      // Not missing if every server that references it was served by its OWN
+      // namespace: the shared bag is a FALLBACK, and demanding a fallback for a
+      // name nothing falls back for would refuse a correct deploy. A name even
+      // one referencing server still needs from the shared bag is missing, and
+      // the error says which servers those are.
+      if (
+        !consoleOnly.has(name) &&
+        coveredPerServer(name, refsBySlug, serverSecrets)
+      ) {
+        continue;
+      }
+      const unserved = [...refsBySlug]
+        .filter(
+          ([slug, refs]) =>
+            refs.has(name) && serverSecrets[slug]?.[name] === undefined,
+        )
+        .map(([slug]) => slug);
       console.error(
         `::error::${name} is referenced by a supplementary server's env but ` +
           (storeBacked && !consoleOnly.has(name)
             ? `is not set in ${gatewayNamespace(config.gateway.env)}`
-            : `is not set in the environment`),
+            : `is not set in the environment`) +
+          (unserved.length > 0 && !consoleOnly.has(name)
+            ? `, and the server(s) that reference it (${unserved.join(", ")}) ` +
+              `have no ${name} of their own under ` +
+              `${mcpNamespace(config.gateway.env)}{slug}/static/ either`
+            : ""),
       );
       process.exit(1);
     }
@@ -466,10 +564,8 @@ for (const server of config.servers) {
     );
     continue;
   }
-  resolvedParams[server.slug] = await resolveServerParams(
-    resolver,
-    config.gateway.env,
-    server.slug,
+  resolvedParams[server.slug] = await resolveNamespace(
+    staticNamespace(config.gateway.env, server.slug),
   );
 }
 
@@ -523,6 +619,7 @@ const spec = renderAppSpec({
   supplementaryImage: values["bundle-image"],
   env: envs,
   secrets: scopedSecrets,
+  serverSecrets,
   bootSecrets,
   resolvedParams,
   domains: resolveDomains(),

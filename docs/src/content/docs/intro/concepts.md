@@ -136,7 +136,11 @@ the first backend. See [Architecture](/intro/architecture/#the-secrets-and-param
 `/strad/{env}/gateway/static/` sits beside `mcp/` and holds what belongs to the
 deployment rather than to one server — the `${NAME}` references a config makes,
 and the gateway's own keys. It is what `gateway.secrets.provider:
-gcp-parameter-store` reads at runtime. See [Secrets](/operate/secrets/).
+gcp-parameter-store` reads at runtime. A supplementary server's `env:` reference
+reads its own `mcp/{slug}/static/` first and falls back to this one, so the same
+`${NAME}` in two servers can mean two values; see [two servers, one variable
+name](/operate/secrets/#two-servers-one-variable-name) and
+[Secrets](/operate/secrets/).
 
 ## Secret provider
 
