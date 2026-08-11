@@ -7,7 +7,7 @@ description: >-
 #
 # ghcr answers a blob HEAD with `403 Forbidden` from time to time, in the middle
 # of an otherwise healthy push, on credentials that worked seconds earlier. It
-# took `main` red on 2026-08-11 (run 31475413673): the whole bundle built, the
+# turned `main` red on 2026-08-11 (run 31475413673): the whole bundle built, the
 # layers exported, `[auth] tadasant/strad-bundle:pull,push` succeeded, and then
 # nine seconds into `pushing layers`:
 #
@@ -21,16 +21,25 @@ description: >-
 # human noticing the alert and clicking re-run.
 #
 # So: run the same build up to three times, and let the third decide the job.
-# Every attempt is the identical `docker/build-push-action` call. The layers are
-# already in the runner's buildkit cache by then, so a retry re-pushes rather
-# than rebuilds, and costs seconds.
+# Every attempt is the identical `docker/build-push-action` call.
 #
 # WHAT THIS COSTS. The retry cannot tell a refused blob from a broken
 # `Dockerfile` — `docker/build-push-action` reports both as a failed step and
-# nothing else. A build that is genuinely broken is therefore attempted three
-# times, and its run takes a minute of backoff longer to go red. See HACKS.md
-# #51: this hides a persistent ghcr permission change behind three identical
-# 403s, so read the attempt warnings in the log before believing "flake".
+# nothing else — so what a retry costs depends on which one it got:
+#
+#   - The push failed. Every layer is in the runner's buildkit cache, so the
+#     retry re-pushes rather than rebuilds and costs seconds.
+#   - The BUILD failed. buildkit does not cache a failed layer, so that layer
+#     and everything after it run again on every attempt. A `Dockerfile` that is
+#     genuinely broken is therefore built three times, and for the bundle — ten
+#     dependency trees — that is minutes, not seconds, before the run goes red.
+#
+# See HACKS.md #51: this also hides a persistent ghcr permission change behind
+# three identical 403s, so read the attempt warnings before believing "flake".
+#
+# The inputs below are the ones the call sites use, and a `with:` key that is not
+# among them is dropped with a runner warning rather than an error. Adding a
+# `docker/build-push-action` input to a call site means declaring it here first.
 
 inputs:
   context:

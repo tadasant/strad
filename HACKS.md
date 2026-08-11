@@ -1915,7 +1915,7 @@ Every workflow step in this repo that pushes to ghcr goes through it.
 
 **Why.** ghcr answers a blob `HEAD` with `403 Forbidden` in the middle of an
 otherwise healthy push, on credentials that worked seconds earlier. On 2026-08-11
-it took `main` red ([run 31475413673](https://github.com/tadasant/strad/actions/runs/31475413673)):
+it turned `main` red ([run 31475413673](https://github.com/tadasant/strad/actions/runs/31475413673)):
 the bundle built, the layers exported, `[auth] tadasant/strad-bundle:pull,push`
 succeeded, and nine seconds into `pushing layers` one blob came back 403. The same
 commit, re-run with nothing changed, pushed fine. Neither buildkit nor
@@ -1926,17 +1926,28 @@ a human's attention.
 `docker/build-push-action` reports a broken `Dockerfile` and a refused blob the
 same way, as a failed step. So:
 
-- A genuinely broken build is attempted three times and takes a minute of backoff
-  longer to go red. The layers are in the runner's buildkit cache by then, so the
-  retries are cheap, but the run is slower to tell you.
+- A retry after a failed PUSH is cheap: the layers are in the runner's buildkit
+  cache, so it re-pushes rather than rebuilds. A retry after a failed BUILD is
+  not — buildkit does not cache a failed layer, so that layer and everything
+  after it run again on every attempt. A genuinely broken bundle `Dockerfile` is
+  built three times, which is minutes of extra wall clock before the run goes
+  red.
 - A REAL ghcr permission change — the package's visibility flipped, the linked
   repository dropped, `packages: write` removed — looks exactly like the flake,
   three times, and then goes red anyway. The tell is the log: three
   `::warning::build/push attempt N failed` lines with the same 403 mean the
   registry is not flaking, it is refusing. Read them before re-running.
+- The wrapper declares only the six inputs its call sites pass. A `with:` key it
+  does not declare is DROPPED with a runner warning, not an error — so adding,
+  say, `platforms:` or `secrets:` to a call site means declaring it on the
+  wrapper first, or the build quietly runs without it.
 
 Nothing here retries the ghcr login, the tag-digest check in `release-image.yml`,
 or the deploy's image pull; each is a separate 403 with a separate fix.
+
+`ci.yml`'s `lint` job runs `actionlint` over every workflow, which is what parses
+this action on a PR — no PR job loads it otherwise, because the steps that use it
+only run on `main`.
 
 **Undo.** Point the ten call sites back at `docker/build-push-action@v6` (add
 `push: true`, which the wrapper supplies) and delete `.github/actions/build-push`.

@@ -1076,18 +1076,23 @@ goes keyless, then delete `GCP_SA_KEY` from both repos.
 ### 51. Every image push is tried three times, and cannot tell a flake from a regression
 
 ghcr sometimes answers a blob `HEAD` with `403 Forbidden` in the middle of an
-otherwise healthy push, on credentials that worked seconds earlier. It took `main`
-red on 2026-08-11: the bundle built, the layers exported, the pull/push token was
-issued, and nine seconds into `pushing layers` one blob came back 403. The same
-commit, re-run unchanged, pushed fine. So `.github/actions/build-push` runs the
-identical build up to three times, 15s and 45s apart, and every push to ghcr in
-this repo goes through it.
+otherwise healthy push, on credentials that worked seconds earlier. It turned
+`main` red on 2026-08-11: the bundle built, the layers exported, the pull/push
+token was issued, and nine seconds into `pushing layers` one blob came back 403.
+The same commit, re-run unchanged, pushed fine. So `.github/actions/build-push`
+runs the identical build up to three times, 15s and 45s apart, and every push to
+ghcr in this repo goes through it.
 
 It cannot see why the step failed — a broken `Dockerfile` and a refused blob look
-the same from outside `docker/build-push-action`. A broken build is therefore
-built three times and goes red a minute later than it used to, and a real
+the same from outside `docker/build-push-action`. A retry after a refused push
+costs seconds, because the layers are cached; a retry after a failed build costs
+a rebuild, because buildkit does not cache a failed layer. So a broken bundle
+build runs three times, minutes of it, before the run goes red — and a real
 permission change (visibility flipped, linked repo dropped, `packages: write`
 removed) is retried twice before it goes red.
+
+The wrapper declares only the six inputs its call sites pass, and a `with:` key
+it does not declare is dropped with a warning rather than an error.
 
 **Undo:** point the call sites back at `docker/build-push-action@v6` and delete
 the wrapper. **Watch:** three `build/push attempt N failed` warnings carrying the

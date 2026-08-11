@@ -28,6 +28,21 @@ jobs:
       - name: Format
         run: npm run format:check
 
+      # Nothing else in a PR build reads a workflow. `.github/actions/build-push`
+      # is loaded only by steps that push to ghcr, and those run on `main` — so a
+      # malformed `action.yml` or a typo'd `uses:` merges green and first shows up
+      # as a startup_failure on the release path, where the fix is another merge.
+      # actionlint parses every workflow AND every local action they reference.
+      - name: Lint the workflows
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C "$tmp" actionlint
+          "$tmp/actionlint" -color
+
   test:
     runs-on: self-hosted
     steps:
