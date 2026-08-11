@@ -395,24 +395,33 @@ export interface Candidate {
  * Getting that sentence wrong sends whoever reads a red deploy at 3am to the
  * wrong workflow.
  *
- * ## A build that FAILED is not a build that is late
+ * ## A build that FAILED is not a build that is late, and only the BUNDLE's
+ * ## remedy can say so
  *
- * Both remedies name a DISPATCH rather than a re-run, and the distinction is
- * the difference between a way out and a loop. A re-run replays the workflow at
- * the commit that failed, so a commit whose own source broke the build fails
- * again and the tag it owes can never appear.
+ * A re-run replays the workflow at the commit that failed, so a commit whose own
+ * source broke the build fails again and the tag it owes can never appear. Which
+ * move DOES work depends on the walk-back rule, and the two images differ.
  *
- * `450ad5cb` (#127) put a `${{ }}` expression inside a `description:` in
- * `.github/actions/build-push/action.yml`; GitHub parses expressions in an
- * action manifest even inside a doc string, so all eight release workflows died
- * at load and that commit published nothing. `6d2dd228` (#129) fixed the
- * manifest and touched no baked tree, so nothing rebuilt — leaving `450ad5cb`
- * as the newest commit that owed a bundle image, with no image and no build
- * coming, and every prod deploy hard-stopping here after fifteen minutes of
- * waiting.
+ * The core self-heals, because `release-image.yml` builds every non-docs commit:
+ * the commit that fixes the build is itself a commit that publishes, and the
+ * walk stops there. Its remedy therefore names the wait and the `version` pin
+ * and nothing else — on the core path the commit the walk stops at is normally
+ * HEAD, so "dispatch on `main`" would rebuild the failing source and IS the
+ * re-run.
  *
- * A dispatch on `main` is what ends that: both release workflows carry
- * `workflow_dispatch`, both refuse any ref but `main`, and a dispatch publishes
+ * The bundle does not self-heal, because most commits cut no bundle image, and
+ * that is how `450ad5cb` (#127) parked every prod deploy. It put a `${{ }}`
+ * expression inside a `description:` in `.github/actions/build-push/action.yml`;
+ * GitHub parses expressions in an action manifest even inside a doc string, so
+ * all eight release workflows failed the moment they reached that action, and
+ * that commit — which touched `release-bundle-image.yml`, one of the paths the
+ * bundle watches — published nothing. `6d2dd228` (#129) fixed the manifest and
+ * touched no baked tree, so no bundle build fired, and `450ad5cb` stayed the
+ * newest commit owing a bundle image: no image, no build coming, and every prod
+ * deploy hard-stopping here after fifteen minutes of waiting.
+ *
+ * A DISPATCH is what ends that. `release-bundle-image.yml` carries
+ * `workflow_dispatch` and refuses any ref but `main`, and a dispatch publishes
  * an image for HEAD — which is where this walk starts, so it resolves at
  * distance 0 and the commit that owes an image is never asked about.
  */
@@ -429,18 +438,21 @@ export const CORE_IMAGE_SOURCE: ImageSource = {
   subject: "code",
   workflow: "release-image.yml",
   remedy:
-    "wait for the release to finish, dispatch release-image.yml on `main` if " +
-    "it failed (a re-run rebuilds the same commit), or dispatch with an " +
+    "wait for the release to finish, or re-dispatch this deploy with an " +
     "explicit `version`",
 };
 
 export const BUNDLE_IMAGE_SOURCE: ImageSource = {
   subject: "a tree the bundle image bakes",
   workflow: BUNDLE_RELEASE_WORKFLOW,
+  // The workflow's name is interpolated rather than spelled again: a rename that
+  // updated `workflow` and not this string would send the reader to a file that
+  // no longer exists, in the one sentence that has to be right.
   remedy:
-    "wait for that build to finish, dispatch release-bundle-image.yml on " +
-    "`main` if it failed (a re-run rebuilds the same commit), or dispatch with " +
-    "an explicit `bundle_version`",
+    `wait for that build to finish, dispatch ` +
+    `${BUNDLE_RELEASE_WORKFLOW.split("/").pop()} on \`main\` if it FAILED ` +
+    `(a re-run rebuilds the same commit), or re-dispatch this deploy with an ` +
+    `explicit \`bundle_version\``,
 };
 
 export interface ResolvedTag {
