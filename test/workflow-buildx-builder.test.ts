@@ -52,12 +52,19 @@ interface Step {
   name?: string;
 }
 
-/** Every local composite action's `action.yml`, globbed rather than listed. */
-function actionFiles(): string[] {
-  if (!existsSync(ACTION_DIR)) return [];
-  return readdirSync(ACTION_DIR)
-    .map((d) => `${ACTION_DIR}/${d}/action.yml`)
-    .filter((f) => existsSync(f));
+/**
+ * Every local composite action's manifest, globbed rather than listed — at any
+ * depth, and in both spellings. GitHub accepts `action.yaml` as readily as
+ * `action.yml`, so matching only one spelling would leave a whole action
+ * invisible to every assertion in this file rather than failing anything.
+ */
+function actionFiles(dir: string = ACTION_DIR): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const path = `${dir}/${e.name}`;
+    if (e.isDirectory()) return actionFiles(path);
+    return /^action\.ya?ml$/.test(e.name) ? [path] : [];
+  });
 }
 
 /**
@@ -207,7 +214,7 @@ describe("no build runs on a builder its own job does not own", () => {
 
   it("never writes the expression delimiter as an escape", () => {
     // `\${{` is not an escape — the runner has none — so it parses as an
-    // expression and takes the whole file to a startup_failure. That matters
+    // expression, and a malformed one fails the whole action to load. That matters
     // most in a local action: actionlint does NOT read a composite's `run:`
     // blocks even when it follows the `uses:` to them, so `ci.yml`'s workflow
     // lint cannot see this, and the steps that load `build-push` only run on
@@ -237,27 +244,52 @@ describe("no build runs on a builder its own job does not own", () => {
  *     Unrecognized named-value: 'steps'.
  *
  * That is not the step failing. The manifest fails validation, so the action
- * fails to load, so every job that calls it dies at startup — which on
- * 2026-08-11 was all four release workflows on `main`, on one commit, seconds in
+ * fails to load, so the step that calls it fails instantly — which on
+ * 2026-08-11 was all eight release workflows on `main`, on one commit, seconds
  * and before a single build ran. It shipped green because nothing on the PR path
  * loads this action (#51) and `actionlint` validates an action's interface
  * without evaluating its prose. HACKS.md #53.
  */
 describe("an action manifest's prose is never parsed as code", () => {
-  /** Fields the runner still template-parses, but that exist to be READ. */
-  const DOC_FIELDS = ["name", "description"];
+  /**
+   * Paths whose value is DOCUMENTATION — matched whole, never by leaf key.
+   *
+   * A `with:` value is an expression context whatever the input happens to be
+   * called, and plenty of actions take one called `name`:
+   * `docker/setup-buildx-action` does, `actions/upload-artifact` does. A step's
+   * `name:` is an expression context too. Keying on the leaf would fail this
+   * test on `with: {name: ${{ … }}}` — legal, common, and nothing to do with
+   * the bug — while claiming the action no longer loads.
+   */
+  const DOC_PATHS = [
+    /^(?:name|author|description)$/,
+    /^inputs\.[^.]+\.(?:description|deprecationMessage)$/,
+    /^outputs\.[^.]+\.description$/,
+  ];
 
-  /** Every `${{ … }}` in a documentation field, as `path` → `value`. */
-  function docExpressions(doc: unknown, path: string[] = []): string[] {
-    if (typeof doc === "string")
-      return DOC_FIELDS.includes(path.at(-1) ?? "") && doc.includes("${{")
-        ? [`${path.join(".")}: ${doc.replace(/\s+/g, " ").slice(0, 120)}`]
-        : [];
+  /**
+   * An input DEFAULT is a genuine expression context, so it is not documentation
+   * — but only for names that resolve before any step has run.
+   * `default: ${{ github.token }}` is the standard idiom and must pass; a
+   * `steps.`, `needs.` or `job.` reference there fails the manifest load exactly
+   * as a description does.
+   */
+  const DEFAULT_PATH = /^inputs\.[^.]+\.default$/;
+  const TOO_LATE = /\$\{\{[^}]*\b(?:steps|needs|job)\./;
+
+  /** Every offending string in one manifest, as `path: value`. */
+  function violations(doc: unknown, path = ""): string[] {
+    if (typeof doc === "string") {
+      const bad =
+        (DOC_PATHS.some((r) => r.test(path)) && doc.includes("${{")) ||
+        (DEFAULT_PATH.test(path) && TOO_LATE.test(doc));
+      return bad ? [`${path}: ${doc.replace(/\s+/g, " ").slice(0, 120)}`] : [];
+    }
     if (Array.isArray(doc))
-      return doc.flatMap((v, i) => docExpressions(v, [...path, `[${i}]`]));
+      return doc.flatMap((v, i) => violations(v, `${path}[${i}]`));
     if (doc && typeof doc === "object")
       return Object.entries(doc).flatMap(([k, v]) =>
-        docExpressions(v, [...path, k]),
+        violations(v, path ? `${path}.${k}` : k),
       );
     return [];
   }
@@ -271,11 +303,11 @@ describe("an action manifest's prose is never parsed as code", () => {
 
   it.each(files)("%s documents expressions without writing them", (file) => {
     expect(
-      docExpressions(parse(readFileSync(file, "utf8"))),
-      `${file} writes \`\${{\` in a documentation field. The runner evaluates ` +
-        `it when it loads the manifest, where a \`steps\` context does not ` +
-        `exist — so the action fails to load and every workflow calling it ` +
-        `fails at startup. Name the expression in prose instead.`,
+      violations(parse(readFileSync(file, "utf8"))),
+      `${file} writes \`\${{\` where the runner cannot resolve it. It is ` +
+        `evaluated when the manifest LOADS, against a scope with no \`steps\` ` +
+        `— so the action fails to load and every step that calls it, in every ` +
+        `workflow, fails instantly. Name the expression in prose instead.`,
     ).toEqual([]);
   });
 });

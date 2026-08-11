@@ -2071,12 +2071,15 @@ only contexts it has there are the ones that exist before any step runs:
     Unrecognized named-value: 'steps'.
 
 That is not a step failing. The manifest fails validation, the action fails to
-load, and every job calling it dies at startup — all four release workflows on
+load, and the step calling it fails instantly — all eight release workflows on
 `main`, on one commit, seconds in, before any build ran. actionlint was green on
-it. `test/workflow-buildx-builder.test.ts` now asserts both halves: `\${{`
-appears in no shell step, and `${{` appears in no `name:` or `description:` of
-any local action manifest. `outputs.*.value` is excluded — that one is a real,
-deferred expression context, which is why `digest` works.
+it. `test/workflow-buildx-builder.test.ts` asserts all three spellings of the
+rule: `\${{` appears in no shell step, `${{` appears in no `name:` or
+`description:` of any local action manifest, and no `inputs.*.default` reaches
+for `steps`, `needs` or `job`. `outputs.*.value` is excluded — that one is a
+real, deferred expression context, which is why `digest` works, and a plain
+`inputs.*.default` is too. It reads `action.yaml` as well as `action.yml`, at any
+depth, because a manifest it does not find is a manifest it cannot fail.
 
 **What is deliberately NOT here.** No retry around the build. A retry would have
 turned this red run green, but it treats the symptom: with an explicit

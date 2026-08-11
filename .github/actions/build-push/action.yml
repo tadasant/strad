@@ -42,12 +42,16 @@ description: >-
 # `docker/build-push-action` input to a call site means declaring it here first.
 #
 # NO FIELD IN THIS FILE MAY CONTAIN THE EXPRESSION DELIMITER AS PROSE. The runner
-# template-parses the whole manifest when it LOADS it, `description:` included,
-# and only `runs:` has a `steps` context — so an expression written as an example
-# in a description is evaluated, fails as `Unrecognized named-value: 'steps'`, and
-# takes the entire action to a startup_failure. That is not the step failing; it
-# is every job that calls this action, in every workflow, before any build runs.
-# It reddened all four release workflows on 2026-08-11 (HACKS.md #53). There is no
+# template-parses the whole manifest when it LOADS it, `description:` included.
+# Outside `runs:`, the only field with a `steps` context is `outputs.*.value` —
+# that one is deferred until the steps have run, which is why `digest` below
+# works. Everywhere else an expression is evaluated against the scope that exists
+# BEFORE any step runs, so an example written into a description is evaluated,
+# fails as `Unrecognized named-value: 'steps'`, and
+# takes the entire action down with it. The job gets as far as checkout, login
+# and setup-buildx, then the step whose `uses:` is this action fails instantly —
+# in every workflow that calls it, before any build runs.
+# It reddened all eight release workflows on 2026-08-11 (HACKS.md #53). There is
 # backslash escape either. Name an expression in prose, as the fields below do.
 
 inputs:

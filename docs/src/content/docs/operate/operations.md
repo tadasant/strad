@@ -676,8 +676,8 @@ next release. Know what that does and does not buy: actionlint validates an
 action's INTERFACE, and does not evaluate the prose in it. The runner
 template-parses the entire manifest when it loads it, so a `${{ … }}` written as
 an EXAMPLE in an input `description:` is evaluated against a scope that has no
-`steps` — the action then fails to LOAD, and every job calling it dies at
-startup. That reddened all four release workflows at once on 2026-08-11, green
+`steps` — the action then fails to LOAD, and every step calling it fails
+instantly. That reddened all eight release workflows at once on 2026-08-11, green
 actionlint and all. `test/workflow-buildx-builder.test.ts` is what covers it: no
 `${{` in the `name:` or `description:` of any local action manifest. See
 [Known limitations](/limitations/).
