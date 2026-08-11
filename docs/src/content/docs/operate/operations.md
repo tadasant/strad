@@ -249,9 +249,9 @@ A commit that changed **code** and has no image is a **hard stop**, not another
 step back. A missing tag there means `release-image.yml` is still building or has
 failed, and deploying the previous commit's image against this commit's config is
 exactly the new-config-meets-old-code skew this whole path exists to prevent. The
-deploy fails and tells you to wait for the release or pass an explicit `version`.
-A registry it cannot read is likewise an error, never a silent walk-back to
-something older.
+deploy fails and tells you to wait for the release, dispatch it on `main`, or
+pass an explicit `version`. A registry it cannot read is likewise an error, never
+a silent walk-back to something older.
 
 The walk asks what a commit changed **only** about a commit the registry has no
 image for, and only until it stops — so on a healthy `main` it runs no diff at
@@ -278,6 +278,29 @@ pre-#26 code again, with nothing in this repo having written the tag in between.
 Whatever moves it is external, so this repo cannot make `:latest` trustworthy —
 only stop depending on it. A tag that names one commit has no "most recent" for
 anything to disagree about.
+
+#### When the release build FAILED, dispatch it — do not re-run it
+
+A build that is late and a build that failed take different moves, and the wrong
+one loops. A re-run replays the workflow **at the commit that failed**, so if
+that commit is what broke the build, it fails again and the tag it owes can never
+appear. Meanwhile the fix lands as a later commit that touches nothing the image
+is built from, so nothing rebuilds — and the failed commit stays the newest one
+that owes an image, hard-stopping every deploy from then on.
+
+Both release workflows carry `workflow_dispatch` and both refuse any ref but
+`main`, so the way out is to **dispatch the release workflow on `main`**. That
+publishes an image for HEAD, which is where the walk starts, so it resolves at
+distance 0 and the commit that owes an image is never asked about.
+
+**Why.** `450ad5cb` put a `${{ }}` expression inside a `description:` in
+`.github/actions/build-push/action.yml`. GitHub parses expressions in an action
+manifest even inside a doc string, so the manifest failed to load and all eight
+release workflows died within seconds. `6d2dd228` fixed the manifest, touched no
+baked tree, and therefore rebuilt nothing — leaving `450ad5cb` as the newest
+commit owing a bundle image, with no image and no build coming. Every
+`Deploy strad production` hard-stopped there, for fifteen minutes of waiting
+each, until `release-bundle-image.yml` was dispatched on `main`.
 
 #### The bundle image
 

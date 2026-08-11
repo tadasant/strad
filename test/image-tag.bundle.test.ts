@@ -291,6 +291,25 @@ describe("resolveDeployTag, for the bundle", () => {
     ).rejects.toThrow(/release-bundle-image\.yml[\s\S]*bundle_version/);
   });
 
+  it("sends the reader to a DISPATCH, not to re-running the failed build", async () => {
+    // The remedy this replaced said "re-run it", and on 2026-08-11 that was the
+    // one move that could not work. `450ad5cb` broke the build-push action
+    // manifest, so every release workflow died at load; `6d2dd228` fixed the
+    // manifest but touched no baked tree, so nothing rebuilt, and `450ad5cb`
+    // stayed the newest commit that owed a bundle image — with every prod
+    // deploy hard-stopping here. A re-run replays `450ad5cb` and its broken
+    // manifest forever. A dispatch on `main` publishes HEAD, which is where the
+    // walk starts.
+    const published = vi.fn().mockResolvedValue(false);
+    const err = await resolveDeployTag([baked(A)], published, {
+      source: BUNDLE_IMAGE_SOURCE,
+    }).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toMatch(/dispatch release-bundle-image\.yml on `main`/);
+    expect(message).not.toMatch(/re-run it/);
+  });
+
   it("says which workflow when the whole window published nothing", async () => {
     const published = vi.fn().mockResolvedValue(false);
     await expect(

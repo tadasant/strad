@@ -391,9 +391,30 @@ export interface Candidate {
  * The walk is identical for both; only what it can say for itself differs. A
  * core commit with no image means "the release is still building" and the way
  * out is an explicit `version`. A bundle commit with no image means the tree it
- * touched is watched by `release-bundle-image.yml` and that run has not landed,
- * and the way out is re-running it. Getting that sentence wrong sends whoever
- * reads a red deploy at 3am to the wrong workflow.
+ * touched is watched by `release-bundle-image.yml` and that run has not landed.
+ * Getting that sentence wrong sends whoever reads a red deploy at 3am to the
+ * wrong workflow.
+ *
+ * ## A build that FAILED is not a build that is late
+ *
+ * Both remedies name a DISPATCH rather than a re-run, and the distinction is
+ * the difference between a way out and a loop. A re-run replays the workflow at
+ * the commit that failed, so a commit whose own source broke the build fails
+ * again and the tag it owes can never appear.
+ *
+ * `450ad5cb` (#127) put a `${{ }}` expression inside a `description:` in
+ * `.github/actions/build-push/action.yml`; GitHub parses expressions in an
+ * action manifest even inside a doc string, so all eight release workflows died
+ * at load and that commit published nothing. `6d2dd228` (#129) fixed the
+ * manifest and touched no baked tree, so nothing rebuilt — leaving `450ad5cb`
+ * as the newest commit that owed a bundle image, with no image and no build
+ * coming, and every prod deploy hard-stopping here after fifteen minutes of
+ * waiting.
+ *
+ * A dispatch on `main` is what ends that: both release workflows carry
+ * `workflow_dispatch`, both refuse any ref but `main`, and a dispatch publishes
+ * an image for HEAD — which is where this walk starts, so it resolves at
+ * distance 0 and the commit that owes an image is never asked about.
  */
 export interface ImageSource {
   /** What this commit changed that demanded an image, e.g. "code". */
@@ -408,14 +429,18 @@ export const CORE_IMAGE_SOURCE: ImageSource = {
   subject: "code",
   workflow: "release-image.yml",
   remedy:
-    "wait for the release to finish, or dispatch with an explicit `version`",
+    "wait for the release to finish, dispatch release-image.yml on `main` if " +
+    "it failed (a re-run rebuilds the same commit), or dispatch with an " +
+    "explicit `version`",
 };
 
 export const BUNDLE_IMAGE_SOURCE: ImageSource = {
   subject: "a tree the bundle image bakes",
   workflow: BUNDLE_RELEASE_WORKFLOW,
   remedy:
-    "wait for that build to finish, re-run it, or dispatch with an explicit `bundle_version`",
+    "wait for that build to finish, dispatch release-bundle-image.yml on " +
+    "`main` if it failed (a re-run rebuilds the same commit), or dispatch with " +
+    "an explicit `bundle_version`",
 };
 
 export interface ResolvedTag {
