@@ -40,16 +40,25 @@ description: >-
 # The inputs below are the ones the call sites use, and a `with:` key that is not
 # among them is dropped with a runner warning rather than an error. Adding a
 # `docker/build-push-action` input to a call site means declaring it here first.
+#
+# NO FIELD IN THIS FILE MAY CONTAIN THE EXPRESSION DELIMITER AS PROSE. The runner
+# template-parses the whole manifest when it LOADS it, `description:` included,
+# and only `runs:` has a `steps` context — so an expression written as an example
+# in a description is evaluated, fails as `Unrecognized named-value: 'steps'`, and
+# takes the entire action to a startup_failure. That is not the step failing; it
+# is every job that calls this action, in every workflow, before any build runs.
+# It reddened all four release workflows on 2026-08-11 (HACKS.md #53). There is no
+# backslash escape either. Name an expression in prose, as the fields below do.
 
 inputs:
   builder:
     description: >-
-      The buildx builder to run on — `${{ steps.<id>.outputs.name }}` from this
-      job's own `docker/setup-buildx-action`. Not optional in practice: an empty
-      value falls back to the box-wide `~/.docker/buildx/current`, which a
-      concurrent job on this self-hosted runner rewrites and then deletes out
-      from under an in-flight build (HACKS.md #53). The guard step below refuses
-      to build without it.
+      The buildx builder to run on: pass this job's own
+      `docker/setup-buildx-action` output — steps.<id>.outputs.name — as an
+      expression. Not optional in practice: an empty value falls back to the
+      box-wide `~/.docker/buildx/current`, which a concurrent job on this
+      self-hosted runner rewrites and then deletes out from under an in-flight
+      build (HACKS.md #53). The guard step below refuses to build without it.
     required: true
   context:
     description: Build context, as docker/build-push-action takes it.
@@ -92,12 +101,12 @@ runs:
     # `--builder`" and silently resolves against the shared pointer. That is the
     # exact bug this input exists to close, so refuse rather than build.
     #
-    # The message below names the expression it wants WITHOUT writing it. A
-    # `run:` block is an expression context, and there is no backslash escape for
-    # the opening delimiter — the runner would parse the example as an expression
-    # and fail the whole action to a startup_failure. actionlint does not read a
-    # local action's `run:` blocks even when it follows the `uses:` to them, so
-    # nothing in a PR build would say so; see #51 for what that costs.
+    # The message below names the expression it wants WITHOUT writing it, for the
+    # reason given at `inputs:` above — the rule is file-wide, not specific to a
+    # `run:` block. actionlint validates a local action's INTERFACE and reads
+    # neither its `run:` blocks nor its prose, so nothing in a PR build would say
+    # so; see #51 for what that costs. `test/workflow-buildx-builder.test.ts` is
+    # what actually enforces it.
     - name: Refuse to build on a builder this job does not own
       shell: bash
       env:

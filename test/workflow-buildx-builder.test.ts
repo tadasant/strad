@@ -223,6 +223,63 @@ describe("no build runs on a builder its own job does not own", () => {
   });
 });
 
+/**
+ * The same mistake one field over, which the escape test above does not cover
+ * and which cost a whole release path.
+ *
+ * The runner template-parses an action manifest when it LOADS it — every string
+ * in the file, not just the ones under `runs:`. A `description:` is prose to a
+ * human and an expression context to the parser, and the only contexts it has
+ * there are the ones available before any step runs. So an example expression
+ * written into a description is EVALUATED, and `steps` is not a name it knows:
+ *
+ *     ./.github/actions/build-push/action.yml (Line: 46, Col: 18):
+ *     Unrecognized named-value: 'steps'.
+ *
+ * That is not the step failing. The manifest fails validation, so the action
+ * fails to load, so every job that calls it dies at startup — which on
+ * 2026-08-11 was all four release workflows on `main`, on one commit, seconds in
+ * and before a single build ran. It shipped green because nothing on the PR path
+ * loads this action (#51) and `actionlint` validates an action's interface
+ * without evaluating its prose. HACKS.md #53.
+ */
+describe("an action manifest's prose is never parsed as code", () => {
+  /** Fields the runner still template-parses, but that exist to be READ. */
+  const DOC_FIELDS = ["name", "description"];
+
+  /** Every `${{ … }}` in a documentation field, as `path` → `value`. */
+  function docExpressions(doc: unknown, path: string[] = []): string[] {
+    if (typeof doc === "string")
+      return DOC_FIELDS.includes(path.at(-1) ?? "") && doc.includes("${{")
+        ? [`${path.join(".")}: ${doc.replace(/\s+/g, " ").slice(0, 120)}`]
+        : [];
+    if (Array.isArray(doc))
+      return doc.flatMap((v, i) => docExpressions(v, [...path, `[${i}]`]));
+    if (doc && typeof doc === "object")
+      return Object.entries(doc).flatMap(([k, v]) =>
+        docExpressions(v, [...path, k]),
+      );
+    return [];
+  }
+
+  const files = actionFiles();
+
+  // Guard the guard: this whole describe passes vacuously over an empty list.
+  it("finds the local actions to check at all", () => {
+    expect(files).toContain(COMPOSITE);
+  });
+
+  it.each(files)("%s documents expressions without writing them", (file) => {
+    expect(
+      docExpressions(parse(readFileSync(file, "utf8"))),
+      `${file} writes \`\${{\` in a documentation field. The runner evaluates ` +
+        `it when it loads the manifest, where a \`steps\` context does not ` +
+        `exist — so the action fails to load and every workflow calling it ` +
+        `fails at startup. Name the expression in prose instead.`,
+    ).toEqual([]);
+  });
+});
+
 describe("the shared build-push action cannot be called without a builder", () => {
   const composite = parse(readFileSync(COMPOSITE, "utf8")) as {
     inputs?: Record<string, { required?: boolean }>;

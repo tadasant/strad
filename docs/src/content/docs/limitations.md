@@ -1168,15 +1168,24 @@ takes it as an input and refuses to build without one, because an omitted input
 interpolates to the empty string and reads as "no `--builder`".
 `test/workflow-buildx-builder.test.ts` fails the PR that drops either half.
 
-**One thing that fix exposed.** The guard lives in a `run:` block of a local
-composite action, and the `actionlint` step that gates every PR does not read
-those — it validates an action's interface, not the shell inside it. Nothing else
-in a PR build loads that action either, since the steps using it run only on
-`main` (#51). So its shell is unlinted, and `\${{` in it would be fatal: there is
-no backslash escape for the expression delimiter, so the runner parses it as an
-expression and fails the action to a `startup_failure` on the release path. The
-test now asserts that sequence appears in no shell step, in any workflow or local
-action.
+**One thing that fix exposed, the expensive way.** The `actionlint` step that
+gates every PR validates a local action's interface — not the shell inside it,
+and not its prose. Nothing else in a PR build loads that action either, since the
+steps using it run only on `main` (#51). So the file is unlinted where it
+matters, and there is no backslash escape for the expression delimiter: the
+runner template-parses the WHOLE manifest when it loads it, so an expression
+written anywhere in it as an example is evaluated.
+
+The first version of this fix avoided that in the guard's shell message and then
+walked into it one field over, putting `steps.<id>.outputs.name` — as a live
+expression — in the `builder` input's `description:`, to document what to pass. A
+description has no `steps` context, so the manifest failed validation, the action
+failed to load, and all four release workflows died at startup on the same
+commit, before a single build ran. actionlint was green on it.
+`test/workflow-buildx-builder.test.ts` now asserts both halves: no `\${{` in a
+shell step, and no `${{` in the `name:` or `description:` of any local action
+manifest. An action's `outputs.*.value` is exempt — that is a genuine deferred
+expression context.
 
 **No retry was added.** With an explicit builder nothing on the box can reach
 this job's, so there is no transport failure left to retry — and a retry would
