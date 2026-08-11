@@ -81,16 +81,15 @@ export function artifactPayload(
     content_type: artifact.content_type,
     bucket: store.bucket(),
     ...(artifact.access === "restricted"
-      ? restrictedFields(store.viewerDomain(), store.viewerAccount())
+      ? restrictedFields(store)
       : {}),
     ...extra,
   };
 }
 
-function restrictedFields(
-  viewerDomain: string | undefined,
-  viewerAccount: string | undefined,
-): Record<string, unknown> {
+function restrictedFields(store: ArtifactStore): Record<string, unknown> {
+  const viewerDomain = store.viewerDomain();
+  const viewerAccount = store.viewerAccount();
   return {
     viewer_domain: viewerDomain,
     ...(viewerAccount ? { viewer_account: viewerAccount } : {}),
@@ -123,8 +122,10 @@ export function signInHint(
       `Opens only for a ${audience}. The link already names ${viewerAccount} via ` +
       `?authuser=, so it picks that account even when the reader is signed in to ` +
       `several. A 403 then usually means that browser profile is not signed in to ` +
-      `${viewerAccount} at all; the other cause is the object's domain grant having ` +
-      `been dropped, which refresh_link reports as access: "link".`
+      `${viewerAccount} at all — a DIFFERENT member of the domain opens it by ` +
+      `replacing the ?authuser= value in the URL with their own address. The other ` +
+      `cause is the object's domain grant having been dropped, which refresh_link ` +
+      `reports as access: "link".`
     );
   }
   return (
@@ -132,8 +133,8 @@ export function signInHint(
     `DEFAULT Google account, so a reader signed in to several accounts gets a 403 ` +
     `even when one of them would work — the grant is fine, Google just asked the ` +
     `wrong account. Tell them to append ?authuser=<their-address-in-that-domain> to ` +
-    `the URL. To stop having to say that, an operator can set the server's ` +
-    `SENSITIVE_VIEWER_ACCOUNT and the link will carry it.`
+    `the URL. To stop having to say that, an operator can set this server's ` +
+    `slug-prefixed _SENSITIVE_VIEWER_ACCOUNT and the link will carry it.`
   );
 }
 

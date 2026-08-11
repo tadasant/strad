@@ -71,7 +71,7 @@ test("no configured account means no authuser, rather than a guessed one", () =>
   assert.ok(!authenticatedBrowserUrl("bucket", "a.png", "").includes("authuser"));
 });
 
-test("a viewer account is validated at boot, where it can still be fixed", () => {
+test("a viewer account is validated when config is read, not at link time", () => {
   const base = { RF_GCS_BUCKET: "b", RF_SENSITIVE_VIEWER_DOMAIN: "example.com" };
   assert.equal(
     loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "dana@example.com" }).viewerAccount,
@@ -109,6 +109,25 @@ test("a viewer account is validated at boot, where it can still be fixed", () =>
       RF_SENSITIVE_VIEWER_ACCOUNT: " dana@example.com ",
     }).viewerAccount,
     "dana@example.com",
+  );
+  // Whitespace or a control character INSIDE the value would reach the reader
+  // as a percent-escape in the URL and verbatim in `sign_in_hint`, which an
+  // agent is told to relay. A hyphen must still be accepted.
+  assert.throws(
+    () => loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "da na@example.com" }),
+    /must be a full email address/,
+  );
+  assert.throws(
+    () => loadConfig("RF", { ...base, RF_SENSITIVE_VIEWER_ACCOUNT: "d\u0000a@example.com" }),
+    /must be a full email address/,
+  );
+  assert.equal(
+    loadConfig("RF", {
+      RF_GCS_BUCKET: "b",
+      RF_SENSITIVE_VIEWER_DOMAIN: "my-company.com",
+      RF_SENSITIVE_VIEWER_ACCOUNT: "dana@my-company.com",
+    }).viewerAccount,
+    "dana@my-company.com",
   );
   // Case is not a mismatch: email domains are case-insensitive.
   assert.equal(

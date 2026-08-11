@@ -976,6 +976,18 @@ anyone whose default account was already right. Either way, every restricted
 response carries a `sign_in_hint` field saying what to tell a human whose link
 `403`s.
 
+**What is verified.** Against the live bucket: the grant lands and reads back, the
+bare URL `302`s to Google sign-in, and `?authuser=` is accepted by that endpoint
+and echoed back decoded. The last step — that a signed-in multi-account browser
+then renders the object instead of `403`ing — needs a real Workspace session and
+has not been confirmed. Strongly evidenced, not proven.
+
+**Two further ways the hint and the grant disagree.** `restricted` is read off the
+object's ACL, not off this deployment's config, so an object granted to some other
+`domain-` still gets this deployment's `authuser` appended. And the domain check is
+an exact match, so a Workspace alias or subdomain address
+(`dana@mail.example.com` under `example.com`) is rejected outright.
+
 ### `set_sensitivity` cannot recall a link that is already out there
 
 A signed URL is valid until it expires, independently of the object's ACL.

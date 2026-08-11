@@ -360,6 +360,7 @@ servers:
     env:
       REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "my-screenshots"
       REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN: "example.com"
+      # REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_ACCOUNT: "dana@example.com"
 
   # The 1Password CLI (`op`) is baked into the image; the image ships no
   # credential. The server refuses to serve without an elicitation posture, and

@@ -56,10 +56,11 @@ https://storage.cloud.google.com/<bucket>/<path>?authuser=dana%40example.com
 ```
 
 The account is a **hint, never a grant**. The `domain-<viewer>` ACL is what
-authorises, so every member of the domain can still open the artifact whatever
-the hint says. Without the setting no `authuser` is emitted — naming an account
-the reader is not signed in to bounces them to a sign-in page, which is worse
-than the bare URL for anyone whose default account is already right.
+authorises, so the artifact stays readable by the whole domain — a different
+member opens it by replacing the `authuser` value in the URL with their own
+address. Without the setting no `authuser` is emitted: naming an account the
+reader is not signed in to bounces them to a sign-in page, which is worse than
+the bare URL for anyone whose default account is already right.
 
 Either way, a restricted response carries a `sign_in_hint` field saying which
 account opens the link and what to do about a `403`. That text is the answer to

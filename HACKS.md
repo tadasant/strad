@@ -1652,51 +1652,6 @@ description and the docs both say "no new readers", not "no readers".
 product's ceiling. `refresh_link` absorbs the difference. If Google ever raises the
 V4 cap, delete the V2 branch instead.
 
-## 48. A restricted link opens as the reader's DEFAULT Google account
-
-**What.** `is_sensitive: true` grants `domain-<viewer>` READER on the object and
-hands back `https://storage.cloud.google.com/<bucket>/<path>`. That host is
-cookie-authenticated, and a bare URL resolves against **one** of the reader's
-signed-in Google accounts — the browser profile's default, account 0, which for
-most people is a personal `gmail.com` address. That account is not in the granted
-Workspace domain, so Google answers `403`.
-
-The reader IS signed in to an account that would open it. Google never asked that
-account, and the `403` is byte-identical to "you were never granted access", so it
-reads as a broken grant and sends whoever debugs it to the wrong console.
-
-`servers/remote-filesystem/shared/src/links.ts` therefore appends Google's account
-selector, `?authuser=<address>`, when `_SENSITIVE_VIEWER_ACCOUNT` names one.
-
-**Why it is a hack.** The account is configuration, and it is a **hint, not a
-grant** — the `domain-` ACL still authorises the whole domain, so the two can
-drift: an operator who names a departed employee sends every reader to an account
-nobody is signed in to. `loadConfig` catches the two mechanical versions of that
-(not an address, not inside the viewer domain) and cannot catch the semantic one.
-That check runs where `loadConfig` does — when the store is first built, on the
-first tool call after a deploy — so a bad value fails EVERY tool, not just a
-sensitive upload. Deliberate: a cosmetic setting whose only other symptom is
-someone else's broken link is worth failing loudly for.
-
-**Why not derive it.** The server never learns who the reader is. An MCP tool call
-carries the agent's identity, not the human's, and the link is minted before
-anyone opens it. Configuration is the only place the address can come from.
-
-**Why not always emit one.** With no configured account we emit the bare URL
-rather than guessing. `authuser` naming an account the reader is NOT signed in to
-bounces them to a sign-in page — worse than the `403` for anyone whose default
-account was already correct. The `sign_in_hint` on every restricted response
-covers that case in words instead.
-
-**What this does NOT fix.** A reader signed in to no Google account, or to no
-account in the viewer domain, still cannot open the artifact — correctly. And an
-object whose domain grant was dropped (an `is_sensitive: false` re-upload over the
-same path silently re-writes the ACL) `403`s for everyone regardless of
-`authuser`; `refresh_link` reporting `access: "link"` for something you believe is
-sensitive is the tell.
-
-**Undo.** Unset `_SENSITIVE_VIEWER_ACCOUNT` and links go back to the bare form.
-
 ## 44. `upload_file` reads any local path outside a small denylist
 
 **What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and
@@ -1829,6 +1784,77 @@ runners, so no two jobs ever share a filesystem or a daemon. Short of that, ever
 fixed name a job writes on a shared box wants a `${{ github.run_id }}` in it.
 
 ---
+
+## 48. A restricted link opens as the reader's DEFAULT Google account
+
+**What.** `is_sensitive: true` grants `domain-<viewer>` READER on the object and
+hands back `https://storage.cloud.google.com/<bucket>/<path>`. That host is
+cookie-authenticated, and a bare URL resolves against **one** of the reader's
+signed-in Google accounts — the browser profile's default, account 0, which for
+most people is a personal `gmail.com` address. That account is not in the granted
+Workspace domain, so Google answers `403`.
+
+The reader IS signed in to an account that would open it. Google never asked that
+account, and the `403` is byte-identical to "you were never granted access", so it
+reads as a broken grant and sends whoever debugs it to the wrong console.
+
+`servers/remote-filesystem/shared/src/links.ts` therefore appends Google's account
+selector, `?authuser=<address>`, when `_SENSITIVE_VIEWER_ACCOUNT` names one.
+
+**Why it is a hack.** The account is configuration, and it is a **hint, not a
+grant** — the `domain-` ACL still authorises the whole domain, so the two can
+drift: an operator who names a departed employee sends every reader to an account
+nobody is signed in to. `loadConfig` catches the two mechanical versions of that
+(not an address, not inside the viewer domain) and cannot catch the semantic one.
+That check runs where `loadConfig` does — when the store is first built, on the
+first tool call after a deploy — so a bad value fails EVERY tool, not just a
+sensitive upload. Deliberate, and consistent with `_LINK_DEFAULT_DAYS` and
+`_UPLOAD_BASE_URL`, which already throw from the same function: a cosmetic
+setting whose only other symptom is someone else's broken link is worth failing
+loudly for. **The blast radius is wider than the reachability probe can see**,
+though — `tools/list` never constructs the store, so the slug still answers and
+`/healthz` stays green while every `tools/call` fails. The bundle host's
+`degraded` computation keys on `GCS_BUCKET` and `SENSITIVE_VIEWER_DOMAIN` only,
+and was deliberately not widened here (it lives outside this server's tree).
+
+**Two more ways the hint and the grant disagree.** `access: "restricted"` is read
+off the object's ACL, not off this deployment's config, so an object granted to
+some OTHER `domain-` gets this deployment's `authuser` appended — an account
+provably not on that object's ACL, where the bare URL might have worked. And the
+domain check is an exact match, so a legitimate Workspace alias or subdomain
+address (`dana@mail.example.com` under `example.com`) is rejected with no
+workaround but leaving the variable unset.
+
+**It puts a real work address in a URL.** Restricted links get pasted into PR
+descriptions and chat. That is a minor disclosure the bare form did not make, and
+it is the price of the parameter.
+
+**Why not derive it.** The server never learns who the reader is. An MCP tool call
+carries the agent's identity, not the human's, and the link is minted before
+anyone opens it. Configuration is the only place the address can come from.
+
+**Why not always emit one.** With no configured account we emit the bare URL
+rather than guessing. `authuser` naming an account the reader is NOT signed in to
+bounces them to a sign-in page — worse than the `403` for anyone whose default
+account was already correct. The `sign_in_hint` on every restricted response
+covers that case in words instead.
+
+**What this does NOT fix.** A reader signed in to no Google account, or to no
+account in the viewer domain, still cannot open the artifact — correctly. And an
+object whose domain grant was dropped (an `is_sensitive: false` re-upload over the
+same path silently re-writes the ACL) `403`s for everyone regardless of
+`authuser`; `refresh_link` reporting `access: "link"` for something you believe is
+sensitive is the tell.
+
+**What is verified, and what is not.** Against the live bucket: the `domain-`
+grant lands and reads back, the bare URL `302`s to Google sign-in, and
+`?authuser=<address>` is accepted by that endpoint and echoed back decoded
+through its `continue=` URL. What is NOT verified is the last step — that a
+signed-in multi-account browser then RENDERS the object rather than `403`ing —
+because it needs a real Workspace session nobody automating this has. Treat the
+fix as strongly-evidenced, not proven, until someone confirms it in a browser.
+
+**Undo.** Unset `_SENSITIVE_VIEWER_ACCOUNT` and links go back to the bare form.
 
 ## What the human still needs to provision
 

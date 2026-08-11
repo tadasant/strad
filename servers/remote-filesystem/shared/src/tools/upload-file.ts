@@ -82,7 +82,8 @@ in-memory payloads or files already visible to this server through file://.
 **\`access\` values:**
 - \`link\` — private object, reachable only through the signed URL above
 - \`restricted\` — private object, reachable only by a signed-in member of the viewer
-  domain (\`viewer_domain\` and \`sign_in_hint\` are included in the response). If the
+  domain (\`viewer_domain\` and \`sign_in_hint\` are included in the response, plus
+  \`viewer_account\` where the deployment configures one). If the
   human reports a 403, give them \`sign_in_hint\` before anything else: the usual cause
   is that their browser opened the link as the wrong one of several signed-in Google
   accounts, not a missing grant.

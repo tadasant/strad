@@ -149,7 +149,17 @@ export function loadConfig(
     // intended trade: a cosmetic setting that is wrong is still a setting whose
     // only symptom would otherwise be someone else's broken link.
     const at = viewerAccount.indexOf("@");
-    if (at <= 0 || at !== viewerAccount.lastIndexOf("@") || at === viewerAccount.length - 1) {
+    if (
+      at <= 0 ||
+      at !== viewerAccount.lastIndexOf("@") ||
+      at === viewerAccount.length - 1 ||
+      // Whitespace and control characters survive `encodeURIComponent` as
+      // escapes and reach the reader inside a URL and inside `sign_in_hint`,
+      // which an agent is told to relay verbatim. An address contains neither.
+      // A hyphen is deliberately not in this class: "dana@my-company.com".
+      // eslint-disable-next-line no-control-regex
+      /[\s\u0000-\u001f\u007f]/.test(viewerAccount)
+    ) {
       throw new ConfigError(
         `${envName(prefix, "viewerAccount")}="${viewerAccount}" must be a full email ` +
           `address (e.g. "dana@example.com"). Google's account selector takes an ` +

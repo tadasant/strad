@@ -287,6 +287,43 @@ test("a temporary upload URL stores bytes once and returns the artifact link", a
   assert.match(replay.content[0].text, /missing or expired/);
 });
 
+/**
+ * The POST path is the one agents are steered towards for anything nontrivial,
+ * so a sensitive artifact uploaded that way must come back with the same
+ * account hint as `upload_file` — it goes through the same `store.put`, and
+ * this pins that it keeps going through the same response shape.
+ */
+test("a sensitive POST upload returns the account hint too", async () => {
+  const store = new FakeStore({
+    viewerDomain: "tadasant.com",
+    viewerAccount: "dana@tadasant.com",
+  });
+  const created = createMCPServer({
+    version: "test",
+    storeFactory: () => store,
+    uploadLeases: new UploadLeaseStore({
+      slug: "remote-filesystem-tmp-public",
+      now: () => store.now,
+    }),
+  });
+
+  const lease = created.uploadLeases.create(
+    { path: "finances/statement.html", content_type: "text/html", is_sensitive: true },
+    store.defaultLinkDays(),
+  );
+  const uploaded = await created.handleUpload(
+    lease.upload_url.split("/").pop(),
+    Buffer.from("<p>balances</p>"),
+  );
+  const body = JSON.parse(uploaded.content[0].text);
+
+  assert.equal(body.access, "restricted");
+  assert.equal(body.viewer_domain, "tadasant.com");
+  assert.equal(body.viewer_account, "dana@tadasant.com");
+  assert.match(body.url, /\?authuser=dana%40tadasant\.com$/);
+  assert.match(body.sign_in_hint, /authuser/);
+});
+
 test("refresh_link revives an expired link without touching the artifact", async () => {
   const store = new FakeStore();
   store.seed("screenshots/8379/v1-kpi-dashboard.png", { body: "png-bytes" });
