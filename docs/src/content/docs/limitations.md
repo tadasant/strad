@@ -1193,6 +1193,41 @@ this job's, so there is no transport failure left to retry — and a retry would
 cost what #51 costs, three full bundle builds for a genuinely broken
 `Dockerfile`.
 
+### 54. A bundle build that fails blocks every later deploy, not just its own
+
+The staging deploy ships the bundle as `sha-<commit>`, resolved by walking
+first-parent history for the newest commit that published one. A commit inside
+`release-bundle-image.yml`'s `paths:` filter is required to have published, so
+the walk stops there — with an error, if no image exists. Walking past it would
+deploy an older bundle against this commit's config, which is the outage in #33's
+clothing.
+
+That stop is not confined to the deploy that first hits it. Most commits touch no
+baked tree, so the walk steps past them and arrives at the same broken ancestor
+on every later merge. **One failed bundle build wedges `main` until some commit
+publishes a bundle image again.**
+
+It happened the same day as #53 and because of it. The bundle release for #127's
+commit died loading the broken action manifest; #129 fixed the manifest but
+touched no baked tree, so it published nothing either. `Release image` on `main`
+then failed at "Resolve an immutable bundle image tag" after 16m51s, having
+waited the full 900-second budget for an image whose build had failed fourteen
+minutes before the deploy started.
+
+**What the step does about it.** It asks the Actions API whether the run that
+owes the image is still going. A run that has concluded without success ends the
+wait immediately and names itself; a run still queued or in flight is what the
+wait is for. The lookup needs `actions: read`, and a workflow that calls
+`deploy-staging.yml` must grant it too — a called workflow may narrow its
+caller's permissions, never widen them. Without it the step waits out its full
+budget and cannot say which of the two happened.
+
+**What it does not do.** Weaken the hard stop. There is no fallback to an older
+bundle, and the recovery is a human publishing an image: re-run the failed build,
+or — when the failure is IN that commit, so a re-run only rebuilds it — dispatch
+`release-bundle-image.yml` on `main`, which publishes `sha-<HEAD>` and ends the
+walk before it reaches the stuck commit.
+
 ### 49. The Telegram MTProto library is archived upstream
 
 `servers/telegram` speaks MTProto through `telegram` (GramJS), whose last release

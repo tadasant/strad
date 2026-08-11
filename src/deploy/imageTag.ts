@@ -432,6 +432,16 @@ export interface ImageSource {
   workflow: string;
   /** What to do about it, as an imperative clause. */
   remedy: string;
+  /**
+   * The same advice for a run that has already CONCLUDED without publishing, as
+   * an imperative clause.
+   *
+   * `remedy` covers a run whose image may still arrive, so it offers the wait
+   * first and hedges the rest. This one is printed only where the walk KNOWS
+   * there is nothing coming, and it drops the wait entirely — the section above
+   * is the whole of why, and it is not repeated here.
+   */
+  republish: string;
 }
 
 export const CORE_IMAGE_SOURCE: ImageSource = {
@@ -440,6 +450,9 @@ export const CORE_IMAGE_SOURCE: ImageSource = {
   remedy:
     "wait for the release to finish, or re-dispatch this deploy with an " +
     "explicit `version`",
+  republish:
+    "re-run that release, or re-dispatch this deploy with an explicit " +
+    "`version` naming an image that exists",
 };
 
 export const BUNDLE_IMAGE_SOURCE: ImageSource = {
@@ -453,6 +466,15 @@ export const BUNDLE_IMAGE_SOURCE: ImageSource = {
     `${BUNDLE_RELEASE_WORKFLOW.split("/").pop()} on \`main\` if it FAILED ` +
     `(a re-run rebuilds the same commit), or re-dispatch this deploy with an ` +
     `explicit \`bundle_version\``,
+  // Interpolated for the same reason `remedy` is: this sentence names the
+  // workflow a reader is about to go dispatch, and a rename that updated one
+  // string and not the other would send them to a file that is not there.
+  republish:
+    `re-run that build if its tree can still build; when the failure is IN ` +
+    `that commit a re-run only rebuilds it, so dispatch ` +
+    `${BUNDLE_RELEASE_WORKFLOW.split("/").pop()} on \`main\` instead — it ` +
+    `publishes \`sha-<main HEAD>\`, which ends the walk before it ever ` +
+    `reaches this commit`,
 };
 
 export interface ResolvedTag {
@@ -509,6 +531,20 @@ export interface ResolvedTag {
  * and only then does it fail. It buys the bundle the same ordering the core gets
  * for free. It is never reached on a healthy deploy, because the first probe
  * already answered.
+ *
+ * ## Waiting for a build that is already dead
+ *
+ * The wait assumes the missing image is COMING. When the release run for that
+ * commit has already concluded without success, it is not, and the fifteen
+ * minutes buy nothing but a later error — 16m51s of a shared runner on
+ * 2026-08-11, ending in "it is slower than that, or it failed" with no way to
+ * tell which. `options.releaseRun` answers that question directly: a run that
+ * has CONCLUDED unsuccessfully ends the wait at once and names itself, and a
+ * run that is still going is why the wait is right to continue.
+ *
+ * It is an optimisation on the diagnosis, never a new way to fail. A lookup that
+ * throws is swallowed and reported in the error that the walk was going to
+ * produce anyway.
  */
 export interface DeployTagOptions {
   source?: ImageSource;
@@ -517,13 +553,54 @@ export interface DeployTagOptions {
    * Zero (the default) fails on the first miss, which is right for the core.
    */
   waitMs?: number;
+  /**
+   * The state of the release run that owes the missing image, if it can be
+   * read. Asked ONLY about a commit that is required to publish and has not, so
+   * a healthy deploy never calls it. Return `null` when the workflow has no run
+   * for that commit at all.
+   */
+  releaseRun?: (sha: string) => Promise<ReleaseRun | null>;
   /** Test seams. Unset in production. */
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 }
 
+/** A run of the workflow that owes an image, as far as this module cares. */
+export interface ReleaseRun {
+  /** `queued`, `in_progress`, `completed` — whatever the API reports. */
+  status: string;
+  /** `success`, `failure`, `cancelled`… and `null` until it completes. */
+  conclusion: string | null;
+  /** Where to go look. */
+  url: string;
+}
+
+/**
+ * The run, if it has finished without publishing: waiting for it is waiting
+ * forever. `null` for a run still queued or in flight, which is what the wait is
+ * FOR — returning the run rather than a boolean keeps that distinction in the
+ * type, where a `run is ReleaseRun` predicate would have narrowed a live run
+ * away in the else branch.
+ */
+function deadRun(run: ReleaseRun | null): ReleaseRun | null {
+  if (run === null) return null;
+  // A `conclusion` of null is NOT a verdict. `completed` can arrive before the
+  // conclusion settles, and reading the absence of "success" as failure would
+  // turn that instant into an unrecoverable hard stop — announced, absurdly, as
+  // "has already CONCLUDED (no conclusion)". Only an explicit non-success
+  // verdict ends the wait.
+  const done =
+    run.status === "completed" &&
+    run.conclusion !== null &&
+    run.conclusion !== "success";
+  return done ? run : null;
+}
+
 /** How often to re-ask while waiting. Slow enough not to hammer the registry. */
 const WAIT_POLL_MS = 20_000;
+
+/** How long one Actions-API lookup may take before it is not worth having. */
+const LOOKUP_TIMEOUT_MS = 10_000;
 
 export async function resolveDeployTag(
   candidates: readonly Candidate[],
@@ -534,6 +611,9 @@ export async function resolveDeployTag(
   const waitMs = options.waitMs ?? 0;
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? (() => Date.now());
+  // Cleared after a lookup throws: one unreadable API is a note in the error,
+  // not a call re-made on every poll for fifteen minutes.
+  let releaseRun = options.releaseRun;
 
   if (candidates.length === 0) {
     throw new Error(
@@ -549,23 +629,68 @@ export async function resolveDeployTag(
       // This commit owes an image. Wait for the build that owes it, if the
       // caller allotted time — a rejecting `published` still propagates, so an
       // unreadable registry never spends the budget looking like an absent tag.
+      //
+      // Unless that build is already dead, which `lookUp` is here to notice:
+      // then the wait has nothing to wait for and the error is available now.
+      const owed = `commit ${candidate.sha.slice(0, 12)} changed ${source.subject} but published no image (${tag})`;
+      const skew =
+        `Deploying an older image against this commit's config is the skew ` +
+        `this check exists to prevent, so this is a hard stop`;
+      let lookupFailure = "";
+      const lookUp = async (): Promise<ReleaseRun | null> => {
+        if (!releaseRun) return null;
+        try {
+          return await releaseRun(candidate.sha);
+        } catch (err) {
+          // The diagnosis is not allowed to become the failure. Report what
+          // could not be read in the error the walk was going to throw anyway.
+          lookupFailure =
+            `\n(could not read ${source.workflow} runs for that commit: ` +
+            `${err instanceof Error ? err.message : String(err)})`;
+          releaseRun = undefined;
+          return null;
+        }
+      };
+      const dead = (run: ReleaseRun): Error =>
+        new Error(
+          `${owed}, and ${source.workflow} has already CONCLUDED for it ` +
+            `(${run.conclusion}): ${run.url}\n` +
+            `That image is not coming, so there is nothing to wait for. ` +
+            `${skew} — ${source.republish}.`,
+        );
+
+      let run = await lookUp();
+      let gone = deadRun(run);
+      if (gone) throw dead(gone);
+
       const deadline = now() + waitMs;
       let waited = false;
       while (now() < deadline) {
         waited = true;
         await sleep(WAIT_POLL_MS);
         if (await published(tag)) return { tag, sha: candidate.sha, distance };
+        run = await lookUp();
+        gone = deadRun(run);
+        if (gone) throw dead(gone);
       }
+      // A run that exists and has not concluded is worth waiting for, so the
+      // remedy is `remedy`. NO run — for a commit the filter says owes an image,
+      // asked minutes after the push that would have created one — is a
+      // different animal: nothing is coming, and "wait for that build" names a
+      // build that does not exist. Say `republish` there instead.
+      const noRun = run === null && releaseRun !== undefined;
       throw new Error(
-        `commit ${candidate.sha.slice(0, 12)} changed ${source.subject} but ` +
-          `published no image (${tag})` +
+        `${owed}` +
           (waited
             ? `, and none appeared in ${Math.round(waitMs / 1000)}s of waiting. ` +
               `${source.workflow} is slower than that, or it failed.\n`
             : `. ${source.workflow} is probably still building it, or it failed.\n`) +
-          `Deploying an older image against this commit's config is the skew ` +
-          `this check exists to prevent, so this is a hard stop: ` +
-          `${source.remedy}.`,
+          (run
+            ? `Its run is ${run.status} (${run.conclusion ?? "no conclusion yet"}): ${run.url}\n`
+            : noRun
+              ? `${source.workflow} has no run for that commit at all.\n`
+              : "") +
+          `${skew}: ${noRun ? source.republish : source.remedy}.${lookupFailure}`,
       );
     }
   }
@@ -577,6 +702,87 @@ export async function resolveDeployTag(
       `them was required to publish one (${source.workflow}). ` +
       `Deepen the walk, or ${source.remedy}.`,
   );
+}
+
+export interface ReleaseRunOptions {
+  /**
+   * `owner/name` of the repo whose Actions runs to read — the SOURCE repo, not
+   * the image's. `tadasant/strad` publishes `tadasant/strad-bundle`, and only
+   * the first has workflow runs.
+   */
+  repository: string;
+  /** The workflow file. A path is fine; the API wants its basename. */
+  workflow: string;
+  /** Needs `actions: read`. The GHCR pull token is package-scoped and will not do. */
+  token: string;
+  /** `GITHUB_API_URL`, for GHES. */
+  api?: string;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * The run of `workflow` that decides whether the image is still coming, or
+ * `null` if the commit has no run at all.
+ *
+ * A LIVE run wins over a concluded one, whatever the timestamps say, and only
+ * then is the newest of the concluded ones taken. The question this answers is
+ * "is anything still going to publish this?", and one queued or in-flight run
+ * makes the answer yes no matter how many failures sit beside it.
+ *
+ * Recency alone is not enough for that. Re-running a workflow adds an ATTEMPT to
+ * the existing run rather than creating a second one, so `created_at` stays at
+ * the original push — while a `workflow_dispatch` for the same sha IS a separate
+ * run, and a failed dispatch can be newer than a push run somebody has since
+ * restarted. Picking the newest there would report `failure` over a build that
+ * is running, which is exactly the wrong answer to have quickly.
+ *
+ * Throws on anything it cannot read. `resolveDeployTag` swallows that — this is
+ * a better error message, not a gate.
+ */
+export function releaseRunLookup(
+  opts: ReleaseRunOptions,
+): (sha: string) => Promise<ReleaseRun | null> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const api = opts.api ?? "https://api.github.com";
+  const file = opts.workflow.split("/").pop();
+
+  return async function releaseRun(sha: string): Promise<ReleaseRun | null> {
+    const url =
+      `${api}/repos/${opts.repository}/actions/workflows/${file}/runs` +
+      `?head_sha=${sha}&per_page=100`;
+    const res = await doFetch(url, {
+      headers: {
+        authorization: `Bearer ${opts.token}`,
+        accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28",
+      },
+      // A stalled API must not cost more than the wait it is here to cut short.
+      // The catch upstream covers a rejection; nothing else bounds the latency.
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+    const body = (await res.json()) as {
+      workflow_runs?: {
+        status?: string | null;
+        conclusion?: string | null;
+        html_url?: string;
+        created_at?: string;
+      }[];
+    };
+    const runs = body.workflow_runs ?? [];
+    if (runs.length === 0) return null;
+    const live = runs.find((r) => r.status !== "completed");
+    const chosen =
+      live ??
+      runs.reduce((a, b) =>
+        (b.created_at ?? "") > (a.created_at ?? "") ? b : a,
+      );
+    return {
+      status: chosen.status ?? "unknown",
+      conclusion: chosen.conclusion ?? null,
+      url: chosen.html_url ?? url,
+    };
+  };
 }
 
 export interface RegistryOptions {

@@ -52,6 +52,7 @@ import {
   isOutsidePathFilter,
   parsePathsFilter,
   registryProbe,
+  releaseRunLookup,
   resolveDeployTag,
   type Candidate,
 } from "../src/deploy/imageTag.ts";
@@ -94,11 +95,21 @@ if (!Number.isFinite(waitSeconds) || waitSeconds < 0) {
 }
 // GitHub Actions sets GITHUB_ACTOR in every step; the fallback is for a local run.
 const actor = process.env.GITHUB_ACTOR ?? "github-actions";
-const password = process.env.GHCR_PULL_TOKEN || process.env.GITHUB_TOKEN;
+// The REGISTRY credential, and on Actions it is GHCR_PULL_TOKEN or nothing. The
+// job token is also in this step's environment — it reads the Actions API below
+// — and letting it stand in here would answer a missing repo secret with
+// `HTTP 403` from GHCR, which reads like a registry outage rather than the
+// one-line fix it is. Off Actions there is no job token to confuse it with, and
+// a local run wants the fallback.
+const password =
+  process.env.GHCR_PULL_TOKEN ||
+  (process.env.GITHUB_ACTIONS ? undefined : process.env.GITHUB_TOKEN);
 
 if (!password) {
   console.error(
-    "::error::neither GHCR_PULL_TOKEN nor GITHUB_TOKEN is set; cannot read the registry",
+    process.env.GITHUB_ACTIONS
+      ? "::error::GHCR_PULL_TOKEN is not set; cannot read the registry"
+      : "::error::neither GHCR_PULL_TOKEN nor GITHUB_TOKEN is set; cannot read the registry",
   );
   process.exit(1);
 }
@@ -153,10 +164,27 @@ async function main(): Promise<void> {
     password: password as string,
   });
 
+  // Why the release run is worth a lookup: the wait assumes the image is on its
+  // way. When the run that owes it has already failed, the budget buys nothing
+  // — 16m51s on 2026-08-11, to reach an error that could not say whether the
+  // build was slow or dead. GITHUB_TOKEN needs `actions: read`; without it (a
+  // local run) the walk behaves exactly as before.
+  const sourceRepo = process.env.GITHUB_REPOSITORY;
+  const apiToken = process.env.GITHUB_TOKEN;
+  const releaseRun =
+    sourceRepo && apiToken
+      ? releaseRunLookup({
+          repository: sourceRepo,
+          workflow: source.workflow,
+          token: apiToken,
+          api: process.env.GITHUB_API_URL,
+        })
+      : undefined;
+
   const resolved = await resolveDeployTag(
     candidates,
     registryProbe({ registry, repository, token }),
-    { source, waitMs: waitSeconds * 1000 },
+    { source, waitMs: waitSeconds * 1000, releaseRun },
   );
   const image = `${registry}/${repository}:${resolved.tag}`;
 

@@ -2091,6 +2091,81 @@ built three times, ten dependency trees each.
 **Undo.** Drop `use: false` and the `builder:` inputs and delete the test. Every
 build then resolves the shared pointer again.
 
+## 54. A bundle build that fails blocks every later deploy, not just its own
+
+**What.** `deploy-staging.yml` resolves the bundle's `sha-<commit>` tag by
+walking first-parent history and stopping at the newest commit that published
+one. A commit inside `release-bundle-image.yml`'s `paths:` filter is REQUIRED to
+have published, so the walk stops there whether or not an image exists — the
+alternative is deploying an older bundle against this commit's config, which is
+the skew the whole path exists to prevent.
+
+The consequence is that the stop is not confined to the deploy that first hits
+it. Most commits touch no baked tree, so the walk steps past them and arrives at
+the same broken ancestor on every subsequent merge. One failed bundle build wedges
+`main` until something publishes a bundle image again.
+
+**How it failed.** #127 (`450ad5c`) added a `builder:` input to
+`.github/actions/build-push/action.yml` and wrote `${{ steps.… }}` in its
+`description:`. The runner template-parses a manifest when it LOADS it, so every
+workflow calling that action died instantly — including the bundle release for
+that same commit, which had edited `release-bundle-image.yml` and therefore owed
+an image ([run 31499320064](https://github.com/tadasant/strad/actions/runs/31499320064),
+failed in 37s). #53 has the rest of that story.
+
+#129 (`6d2dd22`) fixed the manifest. It touches `.github/actions/`, `HACKS.md`,
+`docs/` and `test/` — nothing the bundle bakes — so it published no bundle image
+either. `Release image` on `main` then failed in `deploy-staging / deploy`
+([run 31503763883](https://github.com/tadasant/strad/actions/runs/31503763883)),
+16m51s in, at "Resolve an immutable bundle image tag": it had waited the full 900
+seconds for `sha-450ad5c…`, whose build had failed fourteen minutes before the
+deploy even started. Every later merge would have failed the same way.
+
+**Two things made it cost more than it had to.**
+
+The wait could not tell "still building" from "already dead". Both end in the
+same timeout and the error said so: "is slower than that, or it failed". The run's
+state was one API call away the whole time.
+
+The remedy the error offered was wrong for this case. "Re-run it" checks out the
+same commit, and that commit's tree is the bug — every re-run of that build fails
+identically, forever. #130 fixed that sentence, and it is the one printed on
+every path where the run's state cannot be read.
+
+**The fix.** The resolver takes an optional `releaseRun` lookup
+(`releaseRunLookup` in `src/deploy/imageTag.ts`, the job's own `GITHUB_TOKEN` and
+`actions: read`) and asks it about a commit that owes an image and has none. A run
+that has CONCLUDED without success ends the wait immediately and names itself;
+one still queued or in flight is exactly what the wait is for. A lookup that
+throws is swallowed into a note on the error the walk was going to produce
+anyway — the diagnosis is not allowed to become the failure.
+
+`ImageSource.republish` is the same advice for a run already known to be dead,
+kept separate from `remedy` because the two are printed in different situations.
+`remedy` still has to hedge — the image may yet arrive, so it offers the wait
+first. `republish` is reached only where there is nothing to wait for, so it
+drops the wait and says the one thing that works: dispatch
+`release-bundle-image.yml` on `main`, which builds HEAD and publishes
+`sha-<HEAD>`, ending the walk at distance 0 before it can reach the stuck commit.
+That is what cleared this one, in 40 seconds.
+
+**What is deliberately NOT here.** No fallback to an older bundle when the owed
+image is missing — that is the outage in #33's clothing. No ordering change
+either: making `release-image.yml` call the bundle build instead of racing it
+would have surfaced #127's breakage sooner but changed nothing here, because the
+deploy that failed was for a LATER commit that owes no bundle image at all. The
+wedge is a property of the walk, not of the race.
+
+**Undo.** Drop `releaseRun` from the `resolveDeployTag` call in
+`scripts/resolve-image-tag.ts`; delete `releaseRunLookup`, `ReleaseRun`,
+`deadRun` and `ImageSource.republish` from `src/deploy/imageTag.ts`; drop
+`actions: read` from `deploy-staging.yml` AND from `release-image.yml`, which
+grants it as that workflow's caller; drop `GITHUB_TOKEN` from the two tag steps;
+and delete the corresponding tests. The walk then waits out its budget on every
+dead build again. Dropping only the caller's grant is the same undo with no
+symptom — the lookup 403s and is swallowed — which is what
+`test/image-tag.bundle.test.ts` reads both workflows to prevent.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

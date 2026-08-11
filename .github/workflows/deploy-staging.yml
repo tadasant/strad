@@ -118,6 +118,11 @@ concurrency:
 
 permissions:
   contents: read
+  # Read-only, and only so the image-tag steps can ask whether the release run
+  # that owes a missing image is still going or has already died. A caller of
+  # this reusable workflow must grant it too — a called workflow may narrow the
+  # caller's permissions, never widen them.
+  actions: read
 
 jobs:
   # Build the dispatched ref into branch-scoped images.
@@ -347,6 +352,27 @@ jobs:
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "Loaded ${#NAMES[@]} secret(s) from Secret Manager."
 
+      - name: Install doctl
+        # Binary only. Given a token this action runs `doctl auth init`, which
+        # writes it in cleartext to $HOME/.config/doctl/config.yaml. The action
+        # ships no `post:` step, so nothing scopes that file to the job — and on
+        # `self-hosted` every runner process on the box shares /home/runner.
+        # `no_auth` skips the write; each doctl step below supplies the token
+        # through its own env.
+        #
+        # HERE, not beside the deploy that first uses it, and the gate below is
+        # why: "Dump the failing container's logs" runs on `failure()` from
+        # exactly this point on. Installed later, every failure BEFORE the deploy
+        # — a tag that will not resolve, a spec that will not render — reached
+        # that dump with no `doctl` on PATH, and the dump answered
+        # "no strad-staging app; nothing to dump." It had not looked. A bundle
+        # tag resolution died that way on 2026-08-11 and the deploy that could
+        # have been read was never fetched.
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        uses: digitalocean/action-doctl@v2
+        with:
+          no_auth: "true"
+
       - name: Resolve an immutable core image tag
         # Only when nothing else already names the image: a branch build has its
         # own tag, and an explicit `version` is a deliberate pin (a rollback).
@@ -365,6 +391,10 @@ jobs:
           # GITHUB_TOKEN can write this repo's packages but the deploy already
           # depends on GHCR_PULL_TOKEN for the pull, so use the same one.
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          # A DIFFERENT token for a different API: the job's own, for reading
+          # whether the release that owes a missing image is still running.
+          # GHCR_PULL_TOKEN is package-scoped and cannot read Actions at all.
+          GITHUB_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -419,6 +449,7 @@ jobs:
         id: bundletag
         env:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           # The bundle is its own package, beside the core's: tadasant/strad ->
           # tadasant/strad-bundle.
           REPOSITORY: ${{ github.repository }}-bundle
@@ -633,18 +664,6 @@ jobs:
             exit 1
           fi
           node scripts/attach-registry-creds.mjs "$RUNNER_TEMP/spec.json" "tadasant:${GHCR_PULL_TOKEN}"
-
-      - name: Install doctl
-        # Binary only. Given a token this action runs `doctl auth init`, which
-        # writes it in cleartext to $HOME/.config/doctl/config.yaml. The action
-        # ships no `post:` step, so nothing scopes that file to the job — and on
-        # `self-hosted` every runner process on the box shares /home/runner.
-        # `no_auth` skips the write; each doctl step below supplies the token
-        # through its own env.
-        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
-        uses: digitalocean/action-doctl@v2
-        with:
-          no_auth: "true"
 
       - name: Deploy (create or update strad-staging)
         if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
@@ -905,11 +924,39 @@ jobs:
         # print in clear — the reason the rendered spec is never echoed. Nothing
         # here has done that so far; if it ever does, redact at the source rather
         # than deleting this step.
-        if: failure() && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
+        # `!seed_only` matches the doctl install's own gate. A seeding run
+        # deploys nothing, so there are no container logs to want — and without
+        # this it would warn about a doctl that was never meant to be there.
+        if: failure() && !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true'
         continue-on-error: true
+        env:
+          # Its own, like every other doctl step. Reaching for whatever the
+          # secrets read happened to leave in $GITHUB_ENV works right up until
+          # that name is not among them, and the way it fails is a step that
+          # reports on an app it never reached. `default` is the only context in
+          # which doctl reads the token from the environment at all.
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          DIGITALOCEAN_CONTEXT: default
         run: |
           set +e
-          APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
+          # "COULD NOT ASK" IS NOT "THE ANSWER IS NO". Every way of failing to
+          # reach the API lands in the same empty $APP_ID as a genuinely absent
+          # app, and the message below then reports, confidently, on an app
+          # nothing looked for. That is what happened on 2026-08-11: the bundle
+          # tag step failed, `doctl` was not installed yet, and this step said
+          # "no strad-staging app; nothing to dump." about a live app.
+          if ! command -v doctl >/dev/null 2>&1; then
+            echo "::warning::doctl is not on PATH in this job; cannot dump container logs."
+            exit 0
+          fi
+          # stderr to a file, not into $APPS: a doctl notice merged into the
+          # table is a line awk will happily read as an app row.
+          if ! APPS=$(doctl apps list --format ID,Spec.Name --no-header 2>"$RUNNER_TEMP/doctl.err"); then
+            echo "::warning::doctl apps list failed; cannot dump container logs:"
+            cat "$RUNNER_TEMP/doctl.err"
+            exit 0
+          fi
+          APP_ID=$(printf '%s\n' "$APPS" | awk '$2=="strad-staging"{print $1}')
           [ -z "$APP_ID" ] && { echo "no strad-staging app; nothing to dump."; exit 0; }
           # Sort on the creation timestamp rather than trusting list order:
           # doctl does not contract newest-first, and silently dumping a

@@ -9,8 +9,10 @@ import {
   matchesPathFilter,
   mutableImageComponents,
   parsePathsFilter,
+  releaseRunLookup,
   resolveDeployTag,
   type Candidate,
+  type ReleaseRun,
 } from "../src/deploy/imageTag.ts";
 
 /**
@@ -412,6 +414,343 @@ describe("resolveDeployTag, for the bundle", () => {
 });
 
 // ---------------------------------------------------------------------------
+// waiting for a build that is already dead
+// ---------------------------------------------------------------------------
+
+/**
+ * The 16m51s failure of 2026-08-11, and what it cost.
+ *
+ * #127 put a `${{ … }}` expression inside the `description:` of an input in
+ * `.github/actions/build-push/action.yml`. GitHub evaluates expressions in an
+ * action manifest, so every workflow using that action died loading it —
+ * including the bundle release for that same commit, which touched
+ * release-bundle-image.yml and was therefore REQUIRED to publish an image.
+ *
+ * #129 fixed the manifest. It touched no tree the bundle bakes, so it published
+ * no bundle image either — and from then on every deploy walked HEAD, stepped
+ * past it, reached #127's commit, and waited 900 seconds for an image whose
+ * build had failed fourteen minutes before the deploy even started. The error
+ * it finally printed offered "wait for that build to finish, re-run it" — and a
+ * re-run checks out the commit whose tree is the bug, so it fails identically,
+ * forever.
+ *
+ * None of that is unknowable at the time. The run's state is one API call away.
+ */
+describe("resolveDeployTag, when the run that owes the image has concluded", () => {
+  const RUN_URL = "https://github.com/tadasant/strad/actions/runs/31499320064";
+  const run = (over: Partial<ReleaseRun> = {}): ReleaseRun => ({
+    status: "completed",
+    conclusion: "failure",
+    url: RUN_URL,
+    ...over,
+  });
+
+  it("fails at once rather than spending the wait on a dead build", async () => {
+    const published = vi.fn().mockResolvedValue(false);
+    const sleep = vi.fn(async () => {});
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+        releaseRun: async () => run(),
+      }),
+    ).rejects.toThrow(/already CONCLUDED for it \(failure\)/);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(published).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the run, so the reader lands on the failure and not on this step", async () => {
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        releaseRun: async () => run(),
+      }),
+    ).rejects.toThrow(RUN_URL);
+  });
+
+  it("offers a remedy that works when the failure is IN that commit", async () => {
+    // "Re-run it" is the wrong answer for the case that produced this: the
+    // re-run rebuilds the same broken tree. Dispatching the release on `main`
+    // publishes `sha-<HEAD>` and ends the walk before it reaches the commit.
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun: async () => run(),
+      }),
+    ).rejects.toThrow(/dispatch release-bundle-image\.yml on `main`/);
+  });
+
+  it("counts a cancelled run as dead too", async () => {
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun: async () => run({ conclusion: "cancelled" }),
+      }),
+    ).rejects.toThrow(/CONCLUDED for it \(cancelled\)/);
+  });
+
+  it("does NOT count a completed run whose conclusion has not settled", async () => {
+    // `completed` can arrive before the conclusion does, and `null !==
+    // "success"` would read that instant as failure — an unrecoverable stop
+    // announced as "has already CONCLUDED (no conclusion)".
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun: async () => run({ conclusion: null }),
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+  });
+
+  it("tells someone with no run to publish one, not to wait for it", async () => {
+    // `remedy` is "wait for that build to finish, re-run it" — advice about a
+    // build that does not exist. The commit owes an image and the push that
+    // would have started one is minutes old by the time this runs.
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun: async () => null,
+      }),
+    ).rejects.toThrow(/dispatch release-bundle-image\.yml on `main`/);
+  });
+
+  it("still waits while the build is actually running", async () => {
+    // The whole reason the wait exists. A run in flight must not be confused
+    // with a run that failed, or every merge touching a baked tree goes red.
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const sleep = vi.fn(async () => {});
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+        now: () => (clock += 20_000),
+        releaseRun: async () =>
+          run({ status: "in_progress", conclusion: null }),
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends the wait the moment the running build dies", async () => {
+    const releaseRun = vi
+      .fn()
+      .mockResolvedValueOnce(run({ status: "in_progress", conclusion: null }))
+      .mockResolvedValue(run());
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun,
+      }),
+    ).rejects.toThrow(/already CONCLUDED/);
+    expect(releaseRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a run that succeeded and published nothing anyway", async () => {
+    // Not a hard stop of its own — a tag can lag its push — but the run's state
+    // belongs in the error either way. "It succeeded and the tag is absent" is
+    // a different bug from "it never ran", and the message must not blur them.
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 60_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun: async () => run({ conclusion: "success" }),
+      }),
+    ).rejects.toThrow(/Its run is completed \(success\): /);
+  });
+
+  it("says so when the workflow has no run for that commit at all", async () => {
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun: async () => null,
+      }),
+    ).rejects.toThrow(/has no run for that commit at all/);
+  });
+
+  it("asks nothing on a healthy walk", async () => {
+    // One API call per deploy would be one more thing between a green merge and
+    // a deployed image. This is diagnosis, and only a failing walk needs it.
+    const releaseRun = vi.fn();
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false) // HEAD cut no bundle image, as usual
+      .mockResolvedValueOnce(true); // its parent did
+    await expect(
+      resolveDeployTag([outside(A), baked(B)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun,
+      }),
+    ).resolves.toEqual({ tag: `sha-${B}`, sha: B, distance: 1 });
+    expect(releaseRun).not.toHaveBeenCalled();
+  });
+
+  it("does not let an unreadable Actions API become the failure", async () => {
+    // The diagnosis is not allowed to be the thing that breaks. A 403 on the
+    // runs API must leave the walk exactly as it was — the same error, plus a
+    // note about what could not be read.
+    const releaseRun = vi.fn().mockRejectedValue(new Error("HTTP 403"));
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 60_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun,
+      }),
+    ).rejects.toThrow(
+      /none appeared in 60s[\s\S]*could not read[\s\S]*HTTP 403/,
+    );
+    // And it is asked ONCE, not on every poll for fifteen minutes.
+    expect(releaseRun).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("releaseRunLookup", () => {
+  const okJson = (body: unknown): Response =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  it("asks the SOURCE repo's workflow about that commit", async () => {
+    // The image lives in tadasant/strad-bundle and the runs live in
+    // tadasant/strad. Asking the package's name for workflow runs 404s.
+    const fetchImpl = vi.fn(async (_url: string) =>
+      okJson({ workflow_runs: [] }),
+    );
+    await releaseRunLookup({
+      repository: "tadasant/strad",
+      workflow: BUNDLE_RELEASE_WORKFLOW,
+      token: "t",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })(A);
+    const url = String(fetchImpl.mock.calls[0]?.[0]);
+    expect(url).toContain(
+      "/repos/tadasant/strad/actions/workflows/release-bundle-image.yml/runs",
+    );
+    expect(url).toContain(`head_sha=${A}`);
+  });
+
+  it("prefers a LIVE run over a concluded one, whatever the timestamps say", async () => {
+    // Re-running a workflow adds an attempt to the existing run rather than
+    // creating a second one, so `created_at` stays at the original push — while
+    // a `workflow_dispatch` for the same sha IS a separate run. Newest-wins
+    // would therefore report the failed dispatch over the restarted push and
+    // hard-stop a deploy whose image is actively building.
+    const fetchImpl = vi.fn(async () =>
+      okJson({
+        workflow_runs: [
+          {
+            status: "completed",
+            conclusion: "failure",
+            html_url: "the-dispatch-that-died",
+            created_at: "2026-08-11T15:30:00Z", // NEWER
+          },
+          {
+            status: "in_progress",
+            conclusion: null,
+            html_url: "the-push-that-is-building",
+            created_at: "2026-08-11T14:01:45Z", // older
+          },
+        ],
+      }),
+    );
+    await expect(
+      releaseRunLookup({
+        repository: "tadasant/strad",
+        workflow: BUNDLE_RELEASE_WORKFLOW,
+        token: "t",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })(A),
+    ).resolves.toEqual({
+      status: "in_progress",
+      conclusion: null,
+      url: "the-push-that-is-building",
+    });
+  });
+
+  it("takes the newest of several concluded runs when none is live", async () => {
+    const fetchImpl = vi.fn(async () =>
+      okJson({
+        workflow_runs: [
+          {
+            status: "completed",
+            conclusion: "failure",
+            html_url: "old",
+            created_at: "2026-08-11T14:01:45Z",
+          },
+          {
+            status: "completed",
+            conclusion: "success",
+            html_url: "new",
+            created_at: "2026-08-11T15:30:00Z",
+          },
+        ],
+      }),
+    );
+    await expect(
+      releaseRunLookup({
+        repository: "tadasant/strad",
+        workflow: BUNDLE_RELEASE_WORKFLOW,
+        token: "t",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })(A),
+    ).resolves.toEqual({
+      status: "completed",
+      conclusion: "success",
+      url: "new",
+    });
+  });
+
+  it("returns null when the workflow never ran for that commit", async () => {
+    const fetchImpl = vi.fn(async () => okJson({ workflow_runs: [] }));
+    await expect(
+      releaseRunLookup({
+        repository: "tadasant/strad",
+        workflow: BUNDLE_RELEASE_WORKFLOW,
+        token: "t",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })(A),
+    ).resolves.toBeNull();
+  });
+
+  it("throws rather than inventing a state it could not read", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 403 }));
+    await expect(
+      releaseRunLookup({
+        repository: "tadasant/strad",
+        workflow: BUNDLE_RELEASE_WORKFLOW,
+        token: "t",
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      })(A),
+    ).rejects.toThrow(/HTTP 403/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // the spec-level gate
 // ---------------------------------------------------------------------------
 
@@ -556,6 +895,26 @@ describe("the rendered staging spec", () => {
  * `:latest` — the fix is not the resolver, it is the deploy CALLING it. That is
  * the line worth pinning.
  */
+/**
+ * The top-level `permissions:` block of a workflow, as a list of its entries.
+ *
+ * Read as a block rather than grepped: `actions: read` appearing anywhere in a
+ * 900-line file — in a job's own block, in a comment — says nothing about what
+ * the workflow grants, and a test that accepts it is a test that passes after
+ * the grant is deleted.
+ */
+function workflowPermissions(workflow: string): string[] {
+  const lines = workflow.split("\n");
+  const start = lines.indexOf("permissions:");
+  expect(start).toBeGreaterThan(-1);
+  const entries: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!/^ {2}\S/.test(line)) break;
+    entries.push(line.trim());
+  }
+  return entries;
+}
+
 describe("deploy-staging.yml", () => {
   const workflow = readFileSync(DEPLOY_WORKFLOW, "utf8");
 
@@ -581,6 +940,51 @@ describe("deploy-staging.yml", () => {
     expect(workflow).toMatch(
       /WAIT: \$\{\{ github\.ref == 'refs\/heads\/main' && '\d+' \|\| '0' \}\}/,
     );
+  });
+
+  it("gives the tag steps a token that can read Actions", () => {
+    // GHCR_PULL_TOKEN is package-scoped: it reads the registry and nothing
+    // else. Without the job's own token the resolver silently drops back to
+    // "wait the full budget and guess", which is the behaviour that cost 16m51s
+    // on a build that had already failed.
+    for (const id of ["id: coretag", "id: bundletag"]) {
+      const step = workflow.slice(
+        workflow.indexOf(id),
+        workflow.indexOf("run: |", workflow.indexOf(id)),
+      );
+      expect(step).toContain("GITHUB_TOKEN: ${{ github.token }}");
+    }
+    expect(workflowPermissions(workflow)).toContain("actions: read");
+  });
+
+  it("is granted `actions: read` by the workflow that CALLS it", () => {
+    // The load-bearing half, and the one that fails silently. A called workflow
+    // may narrow its caller's permissions but never widen them, so dropping the
+    // grant from release-image.yml regresses every automatic deploy to the
+    // 900-second blind wait — with this suite green and no annotation anywhere.
+    const caller = readFileSync(".github/workflows/release-image.yml", "utf8");
+    expect(caller).toContain("uses: ./.github/workflows/deploy-staging.yml");
+    expect(workflowPermissions(caller)).toContain("actions: read");
+  });
+
+  it("installs doctl after the secrets read and before anything that can fail", () => {
+    // "Dump the failing container's logs" runs on `failure()` from the secrets
+    // read onward. Installing doctl after the tag and render steps left every
+    // failure before the deploy with nothing to dump WITH — and the dump said
+    // "no strad-staging app" rather than admitting it had not looked.
+    //
+    // The lower bound matters as much as the upper one: the install's `if:`
+    // reads `steps.secrets.outputs.ready`, which is the empty string for a step
+    // that has not run yet, so ordering it FIRST would silently skip it.
+    const doctl = workflow.indexOf("uses: digitalocean/action-doctl@v2");
+    expect(workflow.indexOf("id: secrets")).toBeLessThan(doctl);
+    expect(doctl).toBeLessThan(workflow.indexOf("id: coretag"));
+  });
+
+  it("makes the log dump admit when it cannot ask", () => {
+    const dump = workflow.slice(workflow.indexOf("Dump the failing container"));
+    expect(dump).toContain("command -v doctl");
+    expect(dump).toMatch(/doctl apps list failed/);
   });
 
   it("resolves the bundle even when `version` pins the core", () => {

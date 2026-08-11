@@ -309,6 +309,17 @@ several minutes longer. So on a merge that touches a baked tree, the bundle's
 every such merge would deploy red. The step re-asks for up to 15 minutes before
 it gives up — only in the case that would otherwise be a hard stop.
 
+The wait assumes the image is **coming**. When it is not — the run that owed it
+has already finished without publishing — the step asks the Actions API for that
+run's state and stops immediately, with the run's URL, rather than spending the
+budget on a build that ended before the deploy began. A run still queued or in
+flight is exactly what the wait is for, and is left alone. The lookup needs
+`actions: read`, which `deploy-staging.yml` requests and every caller of it has
+to grant as well; without it the step falls back to waiting out the budget, which
+is what it did before. Either way the deploy stays stopped until an image exists —
+see [when the bundle build failed](#when-the-bundle-build-failed-dispatch-it-rather-than-re-run-it)
+below for the move that publishes one.
+
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
 `release-bundle-image.yml` has a `paths:` filter — twelve entries: the ten trees
@@ -385,8 +396,9 @@ prerequisites are present it: authenticates to GCP
 (`google-github-actions/auth@v2`, preferring Workload Identity Federation, falling
 back to `GCP_SA_KEY`), installs `gcloud`, reads `strad-staging-*` from Secret
 Manager (masked, into `$GITHUB_ENV` — same skip-vs-error split if none are found),
-renders the spec to `$RUNNER_TEMP/spec.json` (never echoed), attaches a durable
-GHCR pull credential, installs `doctl`, asserts the spec is still the one this job
+installs `doctl`, resolves both image tags, renders the spec to
+`$RUNNER_TEMP/spec.json` (never echoed), attaches a durable
+GHCR pull credential, asserts the spec is still the one this job
 rendered, runs `doctl apps create/update --spec … --wait` for
 `strad-staging`, and finally smoke-tests the live host (`/healthz` up, `/mcp` ==
 `401`, and **every slug we deploy actually serving tools**). The last of those
@@ -517,6 +529,13 @@ If any of that fails, a last step dumps the `core` and `bundle` containers' own
 logs for the newest deployment. App Platform reports only which component exited
 non-zero, never why; the why is in the container's log. The step never fails the
 job — the deploy already did — it only adds the evidence.
+
+It covers every failure from the secrets read onward, which is why `doctl` is
+installed there rather than beside the deploy that first uses it. When it cannot
+reach the API — no `doctl` on `PATH`, an `apps list` that errors — it says so
+and stops, rather than reporting "no strad-staging app". Every way of failing to
+ask lands in the same empty result as a genuinely absent app, and the difference
+matters most on exactly the failures this step exists for.
 
 <aside class="starlight-aside starlight-aside--note">
 
