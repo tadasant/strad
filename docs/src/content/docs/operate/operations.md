@@ -253,6 +253,12 @@ deploy fails and tells you to wait for the release or pass an explicit `version`
 A registry it cannot read is likewise an error, never a silent walk-back to
 something older.
 
+The core recovers from a failed release on its own, which is why its remedy stops
+there. `release-image.yml` builds every non-docs commit, so the commit that fixes
+a broken build is itself a commit that publishes, and the walk stops on it. The
+bundle has no such property — see [when the bundle build
+failed](#when-the-bundle-build-failed-dispatch-it-rather-than-re-run-it) below.
+
 The walk asks what a commit changed **only** about a commit the registry has no
 image for, and only until it stops — so on a healthy `main` it runs no diff at
 all, because HEAD published. That matters beyond speed: it means a commit the
@@ -344,6 +350,34 @@ mutable tag is not decided by what the registry holds.
 Three slugs were dead, not one — `secrets`, `zimmer-secrets` (its own component,
 same image, same cached digest) and `remote-filesystem-tmp-public`, whose path
 that same PR had renamed.
+
+##### When the bundle build FAILED, dispatch it rather than re-run it
+
+A build that is **late** and a build that **failed** take different moves, and the
+wrong one loops. A re-run replays the workflow at the commit that failed, so a
+commit whose own source broke the build fails again and the tag it owes can never
+appear. The core survives that, because every non-docs commit publishes: the
+commit that fixes the build is itself the commit the walk stops on. The bundle
+does not, because most commits cut no bundle image — so a fix that touches no
+baked tree rebuilds nothing, and the failed commit stays the newest one owing an
+image, hard-stopping every deploy from then on.
+
+`release-bundle-image.yml` carries `workflow_dispatch` and refuses any ref but
+`main`, so the way out is to **dispatch it on `main`**. That publishes an image
+for HEAD, which is where the walk starts, so it resolves at distance 0 and the
+commit that owes an image is never asked about. This is also why the hard stop's
+own message names a dispatch and not a re-run.
+
+**Why.** `450ad5cb` put a `${{ }}` expression inside a `description:` in
+`.github/actions/build-push/action.yml`. GitHub parses expressions in an action
+manifest even inside a doc string, so all eight release workflows failed the
+moment they reached that action — and that commit had edited
+`release-bundle-image.yml`, one of the paths the bundle watches, so it owed an
+image and published none. `6d2dd228` fixed the manifest and touched no baked
+tree, so no bundle build fired. `450ad5cb` stayed the newest commit owing a
+bundle image, and every `Deploy strad production` walked back to it, waited out
+the full fifteen minutes, and hard-stopped — until `release-bundle-image.yml` was
+dispatched on `main`.
 
 That split is deliberate: an automatic release shouldn't turn red just because the
 account isn't seeded yet, but a human asking for a deploy should hear "no." When
