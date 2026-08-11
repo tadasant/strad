@@ -8,7 +8,7 @@ import { renderAppSpec } from "../src/deploy/appspec.ts";
  *
  * Two things are checked here, and they are the two things that would rot:
  *
- *   1. COMPONENT COUNT. 27 servers must render as exactly THREE components —
+ *   1. COMPONENT COUNT. 29 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
  *      the config is a $5-$25/month regression that nobody would otherwise
  *      notice, so the number is pinned rather than merely bounded. The third one
@@ -104,7 +104,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and sixteen servers now share a
+    // exists for — it is where Chromium, `op` and seventeen servers now share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -176,7 +176,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(25);
+    expect(supplementary.length).toBe(27);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is

@@ -39,10 +39,10 @@ number, know which of these you mean and grep for the others:
 | The number | What it counts                                                                       | Where it's decided                                    |
 | ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
 | **3**      | App Platform components                                                              | `renderAppSpec` output; `test/staging-config.test.ts` |
-| **9**      | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
-| **16**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
-| **25**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                            |
-| **27**     | total server slugs in staging (25 + `echo` builtin + `deepwiki` remote-http)         | `infra/strad.staging.yaml`                            |
+| **10**     | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
+| **17**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
+| **27**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                            |
+| **29**     | total server slugs in staging (27 + `echo` builtin + `deepwiki` remote-http)         | `infra/strad.staging.yaml`                            |
 
 A slug is not a mount, and a mount is not a component. Say which one you mean.
 
@@ -169,7 +169,7 @@ boundaries.
    - **Run the count check.** If your diff changed anything about the bundle, the
      config, or the components, grep every number:
      ```bash
-     git grep -nEi '\b(thirteen|fourteen|twenty-(two|three|five|six)|13|14|22|23|25|26)\b' -- '*.md' '*.mdx' 'src/' 'servers/bundle/' 'infra/'
+     git grep -nEi '\b(nine|sixteen|thirteen|fourteen|twenty-(two|three|four|five|six|seven)|9|13|14|16|22|23|24|25|26)\b' -- '*.md' '*.mdx' 'src/' 'servers/bundle/' 'infra/'
      ```
      and make each hit say which thing it counts.
 

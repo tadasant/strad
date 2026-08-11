@@ -258,7 +258,7 @@ function elapsedSeconds(startedAt: bigint): number {
  * So: when the request NAMED its servers, an upstream that cannot be listed
  * fails the request. When it did not — the unfiltered "everything I'm entitled
  * to" listing, which is a fleet-wide question — one sick server still must not
- * take down the other twenty-six, so it contributes zero tools and a log line.
+ * take down the other twenty-eight, so it contributes zero tools and a log line.
  * That asymmetry is the whole rule. `ToolSurfaceMonitor` is what makes the
  * degraded case visible without anyone having to ask (see reachability.ts).
  *

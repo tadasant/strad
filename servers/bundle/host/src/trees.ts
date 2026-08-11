@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * The collapsed bundle is ONE image assembled from NINE existing npm projects —
+ * The collapsed bundle is ONE image assembled from TEN existing npm projects —
  * bundle-api, bundle-google, onepassword, secrets, remote-filesystem, good-eggs,
- * fetchpet, pointsyeah, x-twitter — each of which is copied in, installed and built exactly
+ * fetchpet, pointsyeah, x-twitter, telegram — each of which is copied in, installed and built exactly
  * as its own image builds it, keeping its own `node_modules` and its own lockfile.
  *
- * WHY NOT ONE FLAT npm PROJECT. Because merging nine dependency trees into one
+ * WHY NOT ONE FLAT npm PROJECT. Because merging ten dependency trees into one
  * is how you find out, in production, that fetchpet pinned playwright-extra and
  * bundle-google pinned express 4 and someone's transitive zod moved. Each tree
  * stays byte-for-byte the tree its own CI already proves; this host just imports
@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
  * is deliberate: three browsers on one vCPU is the thing we are trying not to do.
  */
 
-/** Where the Dockerfile lays the nine trees down. */
+/** Where the Dockerfile lays the ten trees down. */
 export const TREES_DIR = process.env.STRAD_TREES_DIR ?? "/app/trees";
 
 export type TreeName =
@@ -32,7 +32,8 @@ export type TreeName =
   | "good-eggs"
   | "fetchpet"
   | "pointsyeah"
-  | "x-twitter";
+  | "x-twitter"
+  | "telegram";
 
 export function treeDir(tree: TreeName): string {
   return join(TREES_DIR, tree);
@@ -42,7 +43,7 @@ export function treeDir(tree: TreeName): string {
  * Import a built module out of one of the trees, by path.
  *
  * A path import (not a bare specifier) is what lets one process host packages
- * from nine unrelated `node_modules`: resolution of the module's OWN imports then
+ * from ten unrelated `node_modules`: resolution of the module's OWN imports then
  * happens relative to where the file lives, which is inside its tree.
  */
 export async function loadFromTree<T>(
@@ -59,7 +60,7 @@ export async function loadFromTree<T>(
  * Each tree's shared code registers handlers with Zod schemas from its own SDK
  * copy, so the `Server` those handlers are registered on — and the transport it
  * connects to — must come from that same copy. Resolving the SDK per tree keeps
- * every mount internally consistent, instead of relying on nine copies of the SDK
+ * every mount internally consistent, instead of relying on ten copies of the SDK
  * being structurally interchangeable (they usually are; "usually" is not a
  * property you want under a credentials manager).
  */

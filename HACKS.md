@@ -647,10 +647,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Sixteen servers now share one process, and one Chromium
+## 24. Seventeen servers now share one process, and one Chromium
 
-The collapsed bundle is one container running sixteen MCP servers and one
-headless Chromium. An OOM there is a sixteen-server outage; it used to be a
+The collapsed bundle is one container running seventeen MCP servers and one
+headless Chromium. An OOM there is a seventeen-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -1855,6 +1855,55 @@ because it needs a real Workspace session nobody automating this has. Treat the
 fix as strongly-evidenced, not proven, until someone confirms it in a browser.
 
 **Undo.** Unset `_SENSITIVE_VIEWER_ACCOUNT` and links go back to the bare form.
+
+## 49. The Telegram MTProto library is archived upstream
+
+**What.** `servers/telegram` speaks MTProto through `telegram` — GramJS — whose
+last release was February 2025 and whose npm page now carries a deprecation
+notice pointing at [`teleproto`](https://www.npmjs.com/package/teleproto), a
+maintained fork of the same code. strad installs the archived one.
+
+**Why.** GramJS is what the session string is minted by, and `StringSession` is
+that string's format; every instruction a human follows to produce the credential
+is written against it. `teleproto` is API-compatible and reads the same session
+strings, but it is a single-maintainer fork, and swapping the library that holds
+a credential equivalent to a whole Telegram account is a decision to take
+deliberately rather than to inherit from an npm warning.
+
+**The edge.** Telegram raises its TL layer regularly and an archived client will
+eventually meet a constructor it does not know. The methods this server calls
+(`messages.getHistory`, `messages.search`, `messages.sendMessage`, dialogs) are
+among the oldest and most stable in the protocol, so the likely failure is a
+single unparsed field rather than a dead mount — but "likely" is the operative
+word, and nothing in CI would catch it, because CI has no credential.
+
+**Undo.** `createMtprotoClient` in `servers/telegram/shared/src/mtproto.ts` is the
+only function that imports the library; everything above it drives a structural
+`MtprotoClient` interface the tests implement directly. Swapping to `teleproto`
+is that function, its two imports and the dependency line — no session re-mint,
+no change to any tool.
+
+## 50. The telegram slugs ship disabled, because an unseeded `${REF}` fails the render
+
+**What.** `telegram-ro` and `telegram-rw` are in `infra/strad.staging.yaml` with
+`enabled: false`. The mount is in the bundle image and the process registers it
+either way — it appears on `/healthz` as degraded — but no strad slug routes to
+it until a human flips them.
+
+**Why.** `render-spec` resolves every `${NAME}` from GCP Secret Manager and fails
+the whole deploy on one it cannot find. That is the right behaviour (a
+half-authenticated gateway is worse than a refused deploy), and it means a server
+whose credentials do not exist yet cannot ship enabled. `enabled: false` is
+skipped at render, so the three unseeded refs cost nothing.
+
+**The edge.** A disabled server is invisible in a way a degraded one is not: it
+is not in `/healthz`, not in the console, and `?servers=telegram-ro` is a 424. The
+only sign it exists is this config file.
+
+**Undo.** Seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
+`-TELEGRAM_STRING_SESSION` (`secrets-sync.yml`), then delete the two `enabled:`
+lines. The allow-lists are already checked against the real image by
+`policy:check`, so nothing else needs proving first.
 
 ## What the human still needs to provision
 

@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that sixteen servers, nine dependency trees and
+ * What it is really checking is that seventeen servers, ten dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -62,6 +62,9 @@ const EXPECT = {
   fetchpet: null,
   pointsyeah: null,
   "x-twitter": 9,
+  // get_me, list_chats, get_chat, get_chat_history, search_messages, and the one
+  // write tool, send_message — which `telegram-ro` is the allow-list without.
+  telegram: 6,
 };
 
 /**
@@ -85,6 +88,10 @@ const PARTIAL_SURFACES = {
   fetchpet: "browser server; its surface follows the app it drives",
   pointsyeah: "browser server; its surface follows the app it drives",
 };
+
+const TELEGRAM_TOOLS = new Set([
+  "get_me", "list_chats", "get_chat", "get_chat_history", "search_messages", "send_message",
+]);
 
 const X_TWITTER_TOOLS = new Set([
   "get_my_account", "get_user", "get_home_timeline", "get_user_tweets",
@@ -166,7 +173,7 @@ let failed = 0;
 // buildMounts() and left out of EXPECT ships with no tool-count coverage and no
 // complaint — the loop below only walks what EXPECT already names. Each side is
 // named rather than counted, because a rename moves a mount without moving the
-// count, and "16 mounted, 16 in EXPECT" would otherwise read like a pass.
+// count, and "17 mounted, 17 in EXPECT" would otherwise read like a pass.
 const mounted = new Set(health.servers.map((s) => s.slug));
 const expectedSlugs = new Set(Object.keys(EXPECT));
 const unchecked = [...mounted].filter((s) => !expectedSlugs.has(s));
@@ -181,9 +188,9 @@ if (unchecked.length || absent.length) {
   );
 }
 
-// Two trees registering the SAME slug is the collision a nine-tree single process
+// Two trees registering the SAME slug is the collision a ten-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 17 mounts' slugs is 16 entries wide and matches EXPECT exactly.
+// Set of 18 mounts' slugs is 17 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(
@@ -196,7 +203,13 @@ for (const [slug, expected] of Object.entries(EXPECT)) {
     const tools = await listTools(`/${slug}`);
     const isExactXSurface = slug !== "x-twitter" ||
       tools.length === X_TWITTER_TOOLS.size && tools.every((tool) => X_TWITTER_TOOLS.has(tool));
-    const ok = (expected === null || tools.length === expected) && isExactXSurface;
+    // Named, not just counted, for the same reason as X: the staging allow-list
+    // for `telegram-ro` is these names minus send_message, and a RENAME keeps
+    // the count and silently narrows that slug to nothing it can call.
+    const isExactTelegramSurface = slug !== "telegram" ||
+      tools.length === TELEGRAM_TOOLS.size && tools.every((tool) => TELEGRAM_TOOLS.has(tool));
+    const ok = (expected === null || tools.length === expected) &&
+      isExactXSurface && isExactTelegramSurface;
     if (!ok) failed += 1;
     console.log(
       `${ok ? "ok  " : "FAIL"} /${slug}: ${tools.length} tools${expected === null ? "" : ` (expected ${expected})`}`,

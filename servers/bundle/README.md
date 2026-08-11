@@ -1,6 +1,6 @@
 # bundle — THE strad supplementary image
 
-Sixteen MCP servers. One container. One Chromium. One `op` binary.
+Seventeen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
@@ -34,9 +34,9 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How nine projects become one image
+## How ten projects become one image
 
-`Dockerfile`'s build context is the **repo root**, because the servers live in nine
+`Dockerfile`'s build context is the **repo root**, because the servers live in ten
 different places:
 
 | tree | source | servers |
@@ -53,7 +53,7 @@ different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging nine dependency trees is how you
+`/app/trees/<name>`. Nothing is merged. Merging ten dependency trees is how you
 find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -108,7 +108,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Sixteen servers share a process. A crash is a sixteen-server outage. Everything
+Seventeen servers share a process. A crash is a seventeen-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the

@@ -1,5 +1,5 @@
 # BuildKit reads <dockerfile>.dockerignore in preference to the context root's
-# .dockerignore. This image's context IS the repo root (it assembles eight
+# .dockerignore. This image's context IS the repo root (it assembles ten
 # projects), so it needs its own — the root .dockerignore is written for the
 # strad core image and would not exclude the right things here.
 **/node_modules

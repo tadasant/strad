@@ -273,11 +273,11 @@ enum grows its second value there. See
 
 ## The deployment
 
-### 24. Sixteen servers share one process and one CPU
+### 24. Seventeen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts sixteen MCP servers and
+The `bundle` component runs one Node process that mounts seventeen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-sixteen down together, and Chromium contends with every other server for the single
+seventeen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -374,7 +374,7 @@ nothing in the deployment said so.
 
 The core had an immutable tag to reach for and was already a render-time argument.
 The bundle's tag is a config value, which is why it took a `--bundle-image` the
-deploy always passes rather than editing 25 `image:` lines per release.
+deploy always passes rather than editing 27 `image:` lines per release.
 
 **What also detects it:** not the tag, the consequence. Core probes each slug's
 `tools/list` on an interval and publishes the slugs serving nothing on
@@ -1071,6 +1071,48 @@ to GCP with a long-lived `GCP_SA_KEY`.
 **Undo:** provision Workload Identity Federation (a pool + provider bound to
 `tadasant/strad` and `tadasant/tadasant-internal`) so `google-github-actions/auth@v2`
 goes keyless, then delete `GCP_SA_KEY` from both repos.
+
+### 49. The Telegram MTProto library is archived upstream
+
+`servers/telegram` speaks MTProto through `telegram` (GramJS), whose last release
+was February 2025 and whose npm page now points at
+[`teleproto`](https://www.npmjs.com/package/teleproto) — a maintained fork of the
+same code, API-compatible, reading the same session strings.
+
+**Why the archived one:** GramJS is what the session string is minted by, and
+every instruction a human follows to produce that credential is written against
+it. Swapping the library that holds a credential equivalent to a whole Telegram
+account is a deliberate decision, not one to inherit from an npm warning.
+
+**Cost:** Telegram raises its TL layer regularly and an archived client will
+eventually meet a constructor it does not know. The calls this server makes
+(history, search, send, dialogs) are among the protocol's oldest and most stable,
+so the likely failure is one unparsed field rather than a dead mount — and
+nothing in CI would catch it, because CI holds no Telegram credential.
+
+**Undo:** `createMtprotoClient` in `servers/telegram/shared/src/mtproto.ts` is the
+only function that imports the library. Everything above it drives a structural
+interface the tests implement directly, so the swap is that function, its imports
+and one dependency line — no session re-mint, no change to any tool.
+
+### 50. The telegram slugs ship disabled until their secrets are seeded
+
+`telegram-ro` and `telegram-rw` sit in `infra/strad.staging.yaml` with
+`enabled: false`. The mount is in the bundle image and the process registers it
+either way — it shows on `/healthz` as degraded — but no slug routes to it.
+
+**Why:** `render-spec` resolves every `${NAME}` from GCP Secret Manager and fails
+the deploy on one it cannot find, deliberately. A server whose credentials do not
+exist yet therefore cannot ship enabled; `enabled: false` is skipped at render, so
+the three unseeded refs cost nothing.
+
+**Cost:** a disabled server is invisible in a way a degraded one is not — absent
+from `/healthz` and the console, and `?servers=telegram-ro` is a 424. The config
+file is the only sign it exists.
+
+**Undo:** seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
+`-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`
+lines.
 
 ---
 
