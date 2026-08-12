@@ -1,11 +1,12 @@
 {
   "name": "slack-workspace-mcp-server-shared",
   "version": "0.0.1",
-  "description": "Shared code for Slack MCP server implementations",
+  "description": "strad's fork of the Slack MCP server: pulsemcp/mcp-servers experimental/slack, plus the Slack-mrkdwn-is-not-Markdown delta. See FORK.md.",
   "main": "build/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write .",

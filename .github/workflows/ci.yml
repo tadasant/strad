@@ -178,6 +178,33 @@ jobs:
         working-directory: servers/telegram
         run: npm test
 
+  # bundle-api holds six pure-API servers. Five are verbatim vendor copies and get
+  # no tests here, for the reason spelled out in the onepassword job below. The
+  # sixth, slack, is FORKED (servers/bundle-api/fork/slack/FORK.md): its write
+  # tools carry the Slack-mrkdwn rules and a post-hoc advisory, because `~text~`
+  # is strikethrough and a message that uses `~` for "approximately" posts
+  # successfully with paragraphs struck out. That delta has no upstream to defend
+  # it and no sync script to detect its loss, so its tests are the guard rail —
+  # they fail if a re-vendor drops the descriptions or starts rewriting a
+  # caller's text. The build step also typechecks the other five plus remote/,
+  # which otherwise surfaces first as a failed bundle image build.
+  bundle_api:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: servers/bundle-api
+        run: npm ci
+      - name: Build (typecheck fork/slack + five vendored trees + remote)
+        working-directory: servers/bundle-api
+        run: npm run build
+      - name: Test (the slack fork's mrkdwn suite)
+        working-directory: servers/bundle-api
+        run: npm test
+
   # onepassword and pointsyeah are the last two server trees with a build of their
   # own, and without these jobs a type error in either — `shared/src/tools/sanitize.ts`
   # is credential redaction — surfaces first as a failed bundle image build, which

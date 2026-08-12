@@ -1,14 +1,17 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
+import {
+  MRKDWN_TEXT_GUIDANCE,
+  MRKDWN_TOOL_WARNING,
+  withMrkdwnAdvisory,
+} from '../mrkdwn.js';
 
 const PARAM_DESCRIPTIONS = {
   channel_id:
     'The channel ID to post the message to (e.g., "C1234567890"). ' +
     'Get channel IDs using the slack_get_channels tool.',
-  text:
-    'The message content to post. Supports Slack markdown formatting: ' +
-    '*bold*, _italic_, `code`, ```code blocks```, and <URL|link text>.',
+  text: `The message content to post. ${MRKDWN_TEXT_GUIDANCE}`,
 } as const;
 
 export const PostMessageSchema = z.object({
@@ -17,6 +20,8 @@ export const PostMessageSchema = z.object({
 });
 
 const TOOL_DESCRIPTION = `Post a new message to a Slack channel.
+
+${MRKDWN_TOOL_WARNING}
 
 Creates a new message in the specified channel. The message appears as a new post, not as a reply to any thread.
 
@@ -66,13 +71,16 @@ export function postMessageTool(server: Server, clientFactory: ClientFactory) {
           content: [
             {
               type: 'text',
-              text:
+              text: withMrkdwnAdvisory(
                 `Message posted successfully!\n\n` +
-                `Channel: ${parsed.channel_id}\n` +
-                `Timestamp: ${message.ts}\n` +
-                `Posted at: ${time}\n\n` +
-                `Content:\n${parsed.text}\n\n` +
-                `Use the timestamp (ts: ${message.ts}) to reply to this message or add reactions.`,
+                  `Channel: ${parsed.channel_id}\n` +
+                  `Timestamp: ${message.ts}\n` +
+                  `Posted at: ${time}\n\n` +
+                  `Content:\n${parsed.text}\n\n` +
+                  `Use the timestamp (ts: ${message.ts}) to reply to this message or add reactions.`,
+                parsed.text,
+                { channelId: parsed.channel_id, messageTs: message.ts }
+              ),
             },
           ],
         };

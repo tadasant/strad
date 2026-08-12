@@ -15,7 +15,7 @@
 FROM node:22-slim AS build
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="bundle-api — strad supplementary-image bundle of 7 pure-API MCP servers (streamable-HTTP)."
+LABEL org.opencontainers.image.description="bundle-api — strad supplementary-image bundle of 6 pure-API MCP servers (streamable-HTTP)."
 LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
@@ -24,7 +24,7 @@ WORKDIR /app
 # NODE_ENV is intentionally unset here: the build needs devDependencies
 # (typescript, @types). It is pinned to production below, for the runtime.
 COPY package.json package-lock.json ./
-COPY upstream/slack/package.json ./upstream/slack/package.json
+COPY fork/slack/package.json ./fork/slack/package.json
 COPY upstream/serpapi-hotels/package.json ./upstream/serpapi-hotels/package.json
 COPY upstream/tailscale/package.json ./upstream/tailscale/package.json
 COPY upstream/monarch-money/package.json ./upstream/monarch-money/package.json
@@ -33,7 +33,9 @@ COPY upstream/google-flights/package.json ./upstream/google-flights/package.json
 COPY remote/package.json ./remote/package.json
 RUN npm ci --no-audit --no-fund
 
-# Sources, then build every vendored shared/ workspace, then the remote host.
+# Sources, then build every server workspace (fork/ and upstream/), then the
+# remote host.
+COPY fork ./fork
 COPY upstream ./upstream
 COPY remote ./remote
 

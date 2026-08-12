@@ -1,6 +1,11 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
+import {
+  MRKDWN_TEXT_GUIDANCE,
+  MRKDWN_TOOL_WARNING,
+  withMrkdwnAdvisory,
+} from '../mrkdwn.js';
 
 const PARAM_DESCRIPTIONS = {
   channel_id:
@@ -9,9 +14,7 @@ const PARAM_DESCRIPTIONS = {
   thread_ts:
     'The timestamp of the parent message to reply to (e.g., "1234567890.123456"). ' +
     'This creates a threaded reply under that message.',
-  text:
-    'The reply content. Supports Slack markdown formatting: ' +
-    '*bold*, _italic_, `code`, ```code blocks```, and <URL|link text>.',
+  text: `The reply content. ${MRKDWN_TEXT_GUIDANCE}`,
   broadcast:
     'Also post the reply to the channel (not just the thread). Default: false. ' +
     'When true, the reply appears both in the thread and as a channel message.',
@@ -25,6 +28,8 @@ export const ReplyToThreadSchema = z.object({
 });
 
 const TOOL_DESCRIPTION = `Reply to an existing thread in Slack.
+
+${MRKDWN_TOOL_WARNING}
 
 Posts a message as a reply to a specific thread. The reply will appear nested under the parent message.
 
@@ -83,14 +88,17 @@ export function replyToThreadTool(server: Server, clientFactory: ClientFactory) 
           content: [
             {
               type: 'text',
-              text:
+              text: withMrkdwnAdvisory(
                 `Reply posted successfully!\n\n` +
-                `Channel: ${parsed.channel_id}\n` +
-                `Thread: ${parsed.thread_ts}\n` +
-                `Reply timestamp: ${message.ts}\n` +
-                `Posted at: ${time}\n` +
-                (parsed.broadcast ? 'Broadcasted to channel: Yes\n' : '') +
-                `\nContent:\n${parsed.text}`,
+                  `Channel: ${parsed.channel_id}\n` +
+                  `Thread: ${parsed.thread_ts}\n` +
+                  `Reply timestamp: ${message.ts}\n` +
+                  `Posted at: ${time}\n` +
+                  (parsed.broadcast ? 'Broadcasted to channel: Yes\n' : '') +
+                  `\nContent:\n${parsed.text}`,
+                parsed.text,
+                { channelId: parsed.channel_id, messageTs: message.ts }
+              ),
             },
           ],
         };

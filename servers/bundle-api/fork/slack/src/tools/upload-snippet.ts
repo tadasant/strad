@@ -8,7 +8,10 @@ const PARAM_DESCRIPTIONS = {
     'Get channel IDs using the slack_get_channels tool.',
   content:
     'The text content to upload as a snippet. Can be arbitrarily long — ' +
-    'use this instead of slack_post_message when content exceeds message length limits.',
+    'use this instead of slack_post_message when content exceeds message length limits. ' +
+    'FORMAT: this is a FILE body, not a message — it is uploaded verbatim and Slack ' +
+    'applies no mrkdwn to it. "~", "**" and [text](url) are safe here and stay literal. ' +
+    'The reverse of the trap on slack_post_message, whose text IS mrkdwn.',
   filename:
     'Filename for the snippet (e.g., "output.txt", "error.log", "code.py"). ' +
     'Slack uses the file extension for syntax highlighting. Default: "snippet.txt".',
@@ -27,6 +30,13 @@ export const UploadSnippetSchema = z.object({
 });
 
 const TOOL_DESCRIPTION = `Upload text content as a file snippet to a Slack channel.
+
+FORMAT — the one Slack write tool whose text is NOT mrkdwn. Snippet content is a
+file body: it is stored and rendered verbatim, no formatting characters are
+interpreted, and none of the mrkdwn traps that apply to slack_post_message,
+slack_reply_to_thread and slack_update_message apply here. "~", "**", [text](url)
+and # headings all survive unchanged. That makes this the right tool for content
+you need reproduced exactly.
 
 Uploads content as a text file/snippet, bypassing Slack's message length limits. Use this when content is too long for slack_post_message (e.g., long URLs, logs, code, JSON payloads).
 

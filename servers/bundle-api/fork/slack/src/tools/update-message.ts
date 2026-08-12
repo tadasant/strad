@@ -1,6 +1,11 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
+import {
+  MRKDWN_TEXT_GUIDANCE,
+  MRKDWN_TOOL_WARNING,
+  withMrkdwnAdvisory,
+} from '../mrkdwn.js';
 
 const PARAM_DESCRIPTIONS = {
   channel_id:
@@ -11,7 +16,10 @@ const PARAM_DESCRIPTIONS = {
     'This is shown as "ts" in message outputs.',
   text:
     'The new content for the message. Completely replaces the existing text. ' +
-    'Supports Slack markdown: *bold*, _italic_, `code`, ```code blocks```.',
+    `${MRKDWN_TEXT_GUIDANCE} ` +
+    'LENGTH: chat.update caps text at 4,000 characters, which is shorter than ' +
+    'chat.postMessage allows — a message long enough to post is not always short ' +
+    'enough to edit.',
 } as const;
 
 export const UpdateMessageSchema = z.object({
@@ -21,6 +29,8 @@ export const UpdateMessageSchema = z.object({
 });
 
 const TOOL_DESCRIPTION = `Update an existing message in Slack.
+
+${MRKDWN_TOOL_WARNING}
 
 Modifies the content of a message that was previously posted. The message will show an "(edited)" indicator after being updated.
 
@@ -36,6 +46,9 @@ Modifies the content of a message that was previously posted. The message will s
 
 **Note:**
 - You can only edit messages that the bot posted
+- chat.update caps text at 4,000 characters. chat.postMessage does not, so a long
+  message can post and then be impossible to edit — check length before posting
+  anything you may need to correct
 - The edit history is not preserved - only the final content is shown
 - Consider adding reactions instead if you just want to acknowledge a message`;
 
@@ -78,12 +91,15 @@ export function updateMessageTool(server: Server, clientFactory: ClientFactory) 
           content: [
             {
               type: 'text',
-              text:
+              text: withMrkdwnAdvisory(
                 `Message updated successfully!\n\n` +
-                `Channel: ${parsed.channel_id}\n` +
-                `Timestamp: ${message.ts}\n` +
-                `Updated at: ${time}\n\n` +
-                `New content:\n${parsed.text}`,
+                  `Channel: ${parsed.channel_id}\n` +
+                  `Timestamp: ${message.ts}\n` +
+                  `Updated at: ${time}\n\n` +
+                  `New content:\n${parsed.text}`,
+                parsed.text,
+                { channelId: parsed.channel_id, messageTs: message.ts }
+              ),
             },
           ],
         };

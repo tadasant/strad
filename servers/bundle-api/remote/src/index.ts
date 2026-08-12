@@ -6,7 +6,7 @@
  * Every server here is a plain HTTP/API wrapper (no browser, no subprocess), so
  * they cost almost nothing to run and share a single Node process happily. Each
  * one reuses the SAME `shared/` tool logic as its published stdio `local/`
- * server (vendored verbatim under ../upstream/<slug>) — nothing about any tool
+ * server (../upstream/<slug>, vendored verbatim; ../fork/slack, forked) — nothing about any tool
  * is reimplemented here. The only thing this file adds is the transport: an
  * Express front door that speaks StreamableHTTPServerTransport, which strad's
  * core gateway proxies to over the private network at
