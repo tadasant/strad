@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { createMCPServer, toolDefinitions, UploadLeaseStore } from "../build/index.js";
+import {
+  createMCPServer,
+  createUploadLeaseStore,
+  loadConfig,
+  toolDefinitions,
+  UploadLeaseStore,
+} from "../build/index.js";
 import { FakeStore } from "./fake-store.mjs";
 
 /**
@@ -496,4 +502,85 @@ test("every tool description carries the sections the house style requires", () 
       );
     }
   }
+});
+
+/**
+ * ONE PROCESS, TWO INSTANCES, TWO BUCKETS.
+ *
+ * The bundle host builds one instance of this server per strad slug and hands
+ * each a view of the container's environment in which its own `<SLUG>__*` values
+ * shadow the bare ones. Two things have to be true for that to mean anything: the
+ * instance must read the env it was handed rather than `process.env`, and the
+ * `envPrefix` must survive intact — the view falls back to BARE names, and the
+ * bare `GCS_BUCKET` belongs to the `gcs` server pointing at a different bucket in
+ * the same container.
+ */
+
+/** Set keys on process.env for the duration of `fn`, then put it back. */
+function withProcessEnv(vars, fn) {
+  const before = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of before) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+test("config comes from the env the instance was handed, under its prefix", () => {
+  withProcessEnv(
+    {
+      REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "bucket-from-the-process",
+      GCS_BUCKET: "the-gcs-servers-bucket",
+    },
+    () => {
+      // The slug-scoped view the host builds: a per-slug value shadowing the bare
+      // one, exactly as slugEnvView produces it.
+      const view = {
+        ...process.env,
+        REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "bucket-from-the-view",
+      };
+      assert.equal(
+        loadConfig("REMOTE_FILESYSTEM_TMP_PUBLIC", view).bucket,
+        "bucket-from-the-view",
+      );
+      // A second instance, its own view, its own bucket — same process.
+      const other = {
+        ...process.env,
+        REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET: "bucket-for-the-other-slug",
+      };
+      assert.equal(
+        loadConfig("REMOTE_FILESYSTEM_TMP_PUBLIC", other).bucket,
+        "bucket-for-the-other-slug",
+      );
+      // And never the bare name, whatever the view says: that one is the gcs
+      // server's, and reading it is the bug the prefix exists to prevent.
+      assert.notEqual(
+        loadConfig("REMOTE_FILESYSTEM_TMP_PUBLIC", view).bucket,
+        "the-gcs-servers-bucket",
+      );
+    },
+  );
+});
+
+test("the upload base url is read from the handed-in env too", () => {
+  withProcessEnv(
+    { REMOTE_FILESYSTEM_TMP_PUBLIC_UPLOAD_BASE_URL: "https://from-the-process" },
+    () => {
+      const leases = createUploadLeaseStore({
+        slug: "remote-filesystem-archive",
+        envPrefix: "REMOTE_FILESYSTEM_TMP_PUBLIC",
+        env: {
+          REMOTE_FILESYSTEM_TMP_PUBLIC_UPLOAD_BASE_URL: "https://from-the-view",
+        },
+      });
+      const target = leases.create({ path: "a.txt", content_type: "text/plain" }, 14);
+      assert.match(target.upload_url, /^https:\/\/from-the-view/);
+      // The route carries the SLUG, so two instances mint distinguishable URLs.
+      assert.match(target.upload_url, /remote-filesystem-archive/);
+    },
+  );
 });

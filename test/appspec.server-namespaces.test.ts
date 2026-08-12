@@ -183,14 +183,17 @@ describe("per-server env namespaces", () => {
         SUPPLEMENTARY("telegram-rw", "bundle"),
       "  - name: bundle\n",
     );
-    expect(() =>
-      render(yaml, {
-        serverSecrets: {
-          "telegram-ro": { TELEGRAM_API_HASH: "fake-readonly-hash" },
-          "telegram-rw": { TELEGRAM_API_HASH: "fake-readwrite-hash" },
-        },
-      }),
-    ).toThrow(/separate bundles/);
+    expect(
+      () =>
+        render(yaml, {
+          serverSecrets: {
+            "telegram-ro": { TELEGRAM_API_HASH: "fake-readonly-hash" },
+            "telegram-rw": { TELEGRAM_API_HASH: "fake-readwrite-hash" },
+          },
+        }),
+      // One path is one mount: the error now offers a path of its own first,
+      // and a separate bundle second.
+    ).toThrow(/ONE mount in the container/);
   });
 
   it("allows two servers on one bundle to be seeded the SAME value", () => {

@@ -167,6 +167,16 @@ different values — see [two servers, one variable
 name](/operate/secrets/#two-servers-one-variable-name) for the semantics, the
 compatibility argument and the one-bundle-one-environment limit.
 
+A namespace decides which value a server resolves; it does not decide where the
+value can go. **Every** supplementary server's `env:` is additionally emitted under
+per-slug names (`TELEGRAM_RW__TELEGRAM_API_HASH`: the slug uppercased, `-` to `_`,
+joined with `__`), unconditionally, so the set of names is computable from one
+server's config entry. Nothing is removed: the bare names keep their values and
+every server reads them unchanged, which is why the core and bundle images can
+deploy in any order. What `path:` decides is which slugs can READ their own names —
+the host runs one instance per path — and two slugs on ONE path resolving one
+variable differently still throws.
+
 Three things happen here as a result:
 
 - **One listing, then targeted reads.** `render-spec` lists `/strad/{env}/mcp/`
@@ -350,8 +360,11 @@ A collision between two servers' `env:` maps in one bundle — two different
 `${REF}` _strings_ under one key — is **not** a check here: it is rejected
 earlier, by the schema itself, along with the `consoleEnv:`-against-`core` half.
 (The case the schema cannot see is two servers whose ref strings are identical
-and whose per-server namespaces resolve them differently; `renderAppSpec` throws
-on that, at render time, when the values exist.) That is the better place for it: a schema rule
+and whose per-server namespaces resolve them differently. `renderAppSpec` sees
+that at render time, when the values exist: a slug that can be its own mount is
+given its own `<SLUG>__<NAME>` set, and two that cannot — two slugs sharing a
+path, or two capability-variant groups — still throw.) That is
+the better place for the schema's half: a schema rule
 fires at boot as well as at this gate. See [`env:` may be bare; `consoleEnv:` must
 be
 slug-namespaced](/servers/interface/#env-may-be-bare-consoleenv-must-be-slug-namespaced).

@@ -26,7 +26,7 @@ a GHCR image.
   the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
   typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
   Anything CI cannot enumerate is skipped WITH A REASON, never failed.
-- Two modules are VENDORED across an npm-tree boundary, and each has a sync
+- Three modules are VENDORED across an npm-tree boundary, and each has a sync
   script and a drift test. Edit the source, never the copy; run the sync and
   commit both halves.
   - `npm run presence:sync` re-vendors `src/secrets/presence.ts` into the bundle
@@ -39,6 +39,12 @@ a GHCR image.
     tree grows a second implementation of a name the wire owns. Both halves
     address the SAME GCP parameter, and a drift here is the one failure in this
     subsystem that is silent (`HACKS.md` #33).
+  - `npm run envprefix:sync` re-vendors `src/secrets/env-prefix.ts` — the slug →
+    box-variable-name mangling — into the bundle host tree.
+    `test/env-prefix.sync.test.ts` fails CI on drift. The renderer NAMES a
+    variable and the host is the only thing that reads it back, so a drift puts
+    the credential on the container under a name nothing looks for: green deploy,
+    clean boot log, every call failing on a variable that is right there.
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml`.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
@@ -74,6 +80,7 @@ not a confession.
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                         |
 | `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                                  |
 | `src/deploy/server-namespaces.ts` — the per-server/gateway resolution order         | `operate/secrets.md`, `operate/deploy-model.md`, `servers/interface.md` |
+| `src/secrets/env-prefix.ts` — the slug → box-variable-name mangling                 | `operate/secrets.md`, `limitations.md`, and `npm run envprefix:sync`    |
 | `scripts/resolve-image-tag.ts`, `src/deploy/imageTag.ts`                            | `operate/operations.md`                                                 |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                               | `operate/telemetry.md`                                                  |
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI          | `intro/architecture.md`, `operate/telemetry.md`, and every count        |

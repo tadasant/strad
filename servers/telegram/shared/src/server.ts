@@ -13,7 +13,15 @@ export interface CreateMCPServerOptions {
   /** Injected in tests; production builds one over MTProto. */
   gatewayFactory?: GatewayFactory;
   toolGroups?: ToolGroup[];
-  /** Injected in tests; production reads `process.env`. */
+  /**
+   * The environment this instance reads. Defaults to `process.env`.
+   *
+   * The bundle host passes a SLUG-SCOPED VIEW (`TELEGRAM_RO__TELEGRAM_API_HASH`
+   * ahead of `TELEGRAM_API_HASH`), which is what lets one container run
+   * `telegram-ro` and `telegram-rw` on two different accounts. Nothing in this
+   * server may reach past it to a global, or the two instances quietly become
+   * one.
+   */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -68,7 +76,8 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     registerTools(
       target,
       factory ?? gatewayFactory,
-      options.toolGroups ?? parseToolGroups(process.env.ENABLED_TOOLGROUPS),
+      options.toolGroups ??
+        parseToolGroups((options.env ?? process.env).ENABLED_TOOLGROUPS),
     );
   };
 

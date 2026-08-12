@@ -28,7 +28,8 @@
     "store:seed": "node --experimental-transform-types scripts/seed-store.ts",
     "telemetry:sync": "node scripts/sync-telemetry.mjs",
     "presence:sync": "node scripts/sync-presence.mjs",
-    "wire:sync": "node scripts/sync-parameter-wire.mjs"
+    "wire:sync": "node scripts/sync-parameter-wire.mjs",
+    "envprefix:sync": "node scripts/sync-env-prefix.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

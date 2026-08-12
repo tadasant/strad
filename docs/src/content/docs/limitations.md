@@ -798,22 +798,27 @@ MCP surface, no second container, no cost — and for a store a human manages an
 agent should enumerate that is arguably the right shape rather than merely the
 cheaper one. It is not built, and nothing blocks on it.
 
-### 52. Two servers on one bundle still cannot hold two values for one name
+### 52. Two slugs on one PATH still cannot hold two values for one name
 
 A supplementary server's `env:` `${NAME}` resolves from
 `/strad/{env}/mcp/{slug}/static/` before the shared
 `/strad/{env}/gateway/static/`, so two servers can be given **different** values
-for one name — as long as they sit on different bundles. Two servers that share a
-bundle share a container, and a container has one `process.env`. `render-spec`
-fails the deploy when their namespaces disagree rather than picking a winner, and
-names both slugs and the key (never the values).
+for one name. Where those values can then LAND depends on whether the two slugs
+are two mounts:
 
-That is a deployment decision rather than a renderer bug: the shared-bundle case
-is the capability-variant pattern — `telegram-ro` and `telegram-rw` are one mount,
-one upstream process, told apart by the gateway's `tools:` policy — and they share
-a container _because_ they share a credential. Two values means two components,
-which is a second billed App Platform service for a process that is otherwise
-identical.
+- **Different `path:`** — two instances in the container, each reading its own
+  [per-slug variable name](/operate/secrets/#two-servers-one-variable-name). Both
+  values land on one bundle; no second component.
+- **Same `path:`** — one instance, serving both slugs from one set of
+  credentials. There is nowhere for a second value to go, whatever it is called,
+  so `render-spec` fails the deploy rather than picking a winner, naming both
+  slugs, the path and the key (never the values). The answer is a separate path,
+  a separate bundle, or the same value.
+
+The same-path case is not a renderer bug: it is the capability-variant pattern —
+`telegram-ro` and `telegram-rw` as two names for one mount, told apart by the
+gateway's `tools:` policy — and those two share a container _because_ they share
+a credential.
 
 It also costs store round trips. `list()` enumerates every managed parameter in
 the project and filters by prefix, and `resolve()` calls it again — so a render
@@ -1309,6 +1314,52 @@ shows the mount at all.
 **Undo:** seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
 `-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`
 lines.
+
+### 56. Per-slug variable names are emitted for every server; only two of the ten trees can read one
+
+Every supplementary server's `env:` lands on its bundle twice — under the bare
+name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
+variables are called is computable from that server's own config entry. Four
+limits travel with it, and each is decidable by looking at the config.
+
+**Only a slug that is its own mount can READ its names.** The bundle host serves
+one instance per path, so a slug is handed its own names only when it is the only
+slug on its path and that path is `/<its own slug>`. Capability variants sharing
+`/gmail` are one process: their per-slug names exist on the container, and what
+they read is the bare name. Two slugs on one path resolving one variable
+differently is still a hard error — one process cannot hold two credentials,
+whatever the variables are called.
+
+**Only `telegram` and `remote-filesystem` read an injected environment.** The
+other eight trees in the bundle image are vendored upstream code that reads
+`process.env` directly, often lazily at call time, so they see the bare names
+only. The renderer cannot tell which tree an image contains — an image is a tag in
+someone else's config — so a slug of another tree given its own path renders,
+warns, and serves nothing, because the image has no mount at that path.
+Reachability reports the deployment `degraded`, which is where you would see it.
+
+**A slug starting with a digit gets no per-slug names**, because `1PASSWORD__X` is
+not a portable variable name. It reads the bare names, and the render says so by
+name.
+
+**A `params: true` server's variables are not covered**, because they are not in
+`env:` — a managed parameter's name comes from its path in the store, so there is
+no declaration to prefix. Prod's `telegram-ro` is `params: true`, so giving it a
+credential of its own means moving it to explicit `env:` refs first.
+
+**What it costs a rendered spec.** One extra variable per supplementary `env:`
+entry: prod's `bundle` goes from 36 to 87 and staging's from 34 to 83, with
+nothing removed and no value changed anywhere, and `core` untouched. Each
+supplementary credential therefore appears twice in the spec, encrypted at rest by
+DigitalOcean both times.
+
+Two smaller edges. The console's presence probe asks the bundle about **bare**
+names only, so it reports the bare variable healthy and says nothing about the
+per-slug name a server may actually be reading. And a slug may no longer contain
+`--`, or lead or trail with `-`, because `a--b` + `C` and `a` + `B__C` would
+otherwise be one variable; no slug in any strad config has ever used either shape.
+
+**Undo:** `HACKS.md` #56.
 
 ---
 

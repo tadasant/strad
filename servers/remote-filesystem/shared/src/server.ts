@@ -18,6 +18,16 @@ export interface CreateMCPServerOptions {
    * `GCS_*` names the `gcs` server owns in the same container. See config.ts.
    */
   envPrefix?: string;
+  /**
+   * The environment this instance reads. Defaults to `process.env`.
+   *
+   * The bundle host passes a SLUG-SCOPED VIEW, so a second slug of this server
+   * can point at a second bucket from the same container. It layers OVER
+   * `envPrefix` rather than replacing it: the prefix is what keeps this server
+   * off the bare `GCS_*` names the `gcs` server owns in the same process, and the
+   * view's fallback to a bare name would walk straight into them.
+   */
+  env?: NodeJS.ProcessEnv;
   /** Injected in tests; production reads the environment. */
   config?: StoreConfig;
   storeFactory?: StoreFactory;
@@ -52,6 +62,7 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       slug: options.uploadSlug ?? "remote-filesystem-tmp-public",
       config: options.config,
       envPrefix: options.envPrefix,
+      env: options.env,
     });
 
   const resolveStoreFactory = (storeFactory?: StoreFactory): StoreFactory =>
@@ -59,7 +70,7 @@ export function createMCPServer(options: CreateMCPServerOptions) {
     options.storeFactory ??
     ((): ArtifactStore => {
       store ??= new GcsArtifactStore(
-        options.config ?? loadConfig(options.envPrefix ?? ""),
+        options.config ?? loadConfig(options.envPrefix ?? "", options.env),
       );
       return store;
     });
@@ -72,7 +83,8 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       target,
       resolveStoreFactory(storeFactory),
       uploadLeases,
-      options.toolGroups ?? parseToolGroups(process.env.ENABLED_TOOLGROUPS),
+      options.toolGroups ??
+        parseToolGroups((options.env ?? process.env).ENABLED_TOOLGROUPS),
     );
   };
 

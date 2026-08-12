@@ -9,11 +9,29 @@ import { z } from "zod";
  * The core ships with ZERO servers. Everything below is opt-in.
  */
 
+/**
+ * A server's identity: in tool names (`<slug>__<tool>`), in `?servers=`, in its
+ * parameter namespace — and, since the renderer names a supplementary server's
+ * variables after it, on the container itself.
+ *
+ * DASHES MAY NOT DOUBLE UP, and may not lead or trail. That is not tidiness; it
+ * is what makes the box name of a variable unambiguous. `slugEnvPrefix` uppercases
+ * the slug and turns `-` into `_`, then joins to the variable name with `__`, so a
+ * slug carrying `--` would put the separator INSIDE the prefix: `a--b` + `C` and
+ * `a` + `B__C` become the same variable, and one server's credential silently
+ * becomes another's. A trailing `-` does the same against a variable name that
+ * starts with `_`. Neither shape has ever appeared in a strad config; forbidding
+ * them is what lets src/secrets/env-prefix.ts promise injectivity rather than hope
+ * for it.
+ */
 const SLUG = z
   .string()
+  .max(63, "slug must be at most 63 characters")
   .regex(
-    /^[a-z0-9][a-z0-9-]{0,62}$/,
-    "slug must be lowercase alphanumeric with dashes",
+    /^[a-z0-9]+(-[a-z0-9]+)*$/,
+    "slug must be lowercase alphanumeric with single dashes between segments " +
+      "(no leading, trailing or doubled dash — a doubled dash would make two " +
+      "different servers' environment variables collide on the container)",
   );
 
 /**

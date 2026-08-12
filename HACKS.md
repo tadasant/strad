@@ -1955,6 +1955,14 @@ only run on `main`.
 
 ## 52. Two servers on ONE bundle still cannot hold two values for one name
 
+**⚠️ MOSTLY RESOLVED by #56** — two servers on one bundle CAN now hold two values,
+provided they are two MOUNTS (different `path:`). Two slugs on the SAME path are
+still one instance of one server in one container, and that half is not a
+resolution problem at all — it is what "capability variant" means. The renderer
+still throws for it, with a message that now offers separate paths first. The
+paragraph below is the state before #56; the cost it names (a second billed
+component) is no longer the only answer.
+
 **What.** A supplementary server's `env:` `${NAME}` now resolves from
 `/strad/{env}/mcp/{slug}/static/` before `/strad/{env}/gateway/static/`, so two
 servers CAN be given different values for one name — as long as they are on
@@ -2225,6 +2233,108 @@ the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
 drop the `bundle_api` CI job. Tool names, tool count and the `slack` /
 `slack-readonly` policy split are unchanged by the fork, so nothing downstream
 moves either way.
+
+## 56. Per-slug box names are emitted for every server; two of ten trees can read one
+
+**What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
+onto its bundle TWICE: under the bare name it always had, and under
+`<SLUG>__<NAME>` — the slug uppercased, `-` to `_`, joined with `__`. That is what
+lets one container hold two values for one variable.
+
+**THERE IS NO CONDITION ON THE NAMING, and there used to be.** The first version
+minted the second name only where a bundle had a real disagreement, then where a
+per-server namespace had been seeded. Both were correct and both were wrong to
+ship: you could not look at a server and know what its variables were called,
+because the answer depended on what some OTHER slug had been seeded. Tadas called
+that out — "it should just be explicit in every case" — and he is right. The rule
+is now flat: given a config, the whole set of names is computable per server, by
+hand, with no reference to any other server and no knowledge of the store.
+
+**NOTHING IS REMOVED.** The bare names keep their values, so every tree in the
+image that reads `process.env` directly goes on reading them, and the core and
+bundle images can deploy in any order. That was the reasoning against the first
+design's other half — dropping a contested bare name is bundle-wide while the
+disagreement is between two servers, so a third slug loses a variable it reads —
+and it survives unchanged.
+
+**WHAT REMAINS CONDITIONAL IS READING, NOT NAMING**, and it is a property of the
+config you can check by eye rather than a fact about the secret store. The bundle
+host serves ONE INSTANCE PER PATH, so a slug is handed its own names only if it is
+the only slug on its path and that path is `/<its own slug>` (the host mounts a
+discovered slug at the slug, having no config to read a path out of). Capability
+variants sharing `/gmail` are one process; they are named like everything else and
+they read the bare names. Two slugs on one path resolving one variable differently
+is therefore still a hard error — one process cannot hold two credentials, whatever
+the variables are called.
+
+**WHAT IT COSTS A RENDERED SPEC.** One extra variable per supplementary `env:`
+entry. Measured against `main`: prod's `bundle` goes 36 -> 87 variables and
+staging's 34 -> 83, nothing removed, no value changed on any component, `core`
+untouched; the serialized spec roughly doubles (8.0KB -> 16.8KB for prod). This is
+the property the conditional was buying and it is the price of being legible. It
+is safe for the reason above — nothing is removed — but it does mean each
+supplementary credential appears twice in the spec, encrypted at rest by
+DigitalOcean both times.
+
+**Two categories cannot be named**, both decidable from the config alone:
+
+- **A slug starting with a digit.** `1PASSWORD__X` is not a portable variable
+  name. That server has no per-slug names, reads the bare ones exactly as it
+  always did, and the render warns naming the slug.
+- **A `params: true` server's variables.** They are not in `env:` — a managed
+  parameter's name comes from its path in the store — so there is no declaration
+  to prefix. Prod's `telegram-ro` is `params: true`, so giving it a credential of
+  its own means moving it to explicit `env:` refs first.
+
+**The edges.**
+
+- **Only `telegram` and `remote-filesystem` read an injected env.** The other
+  eight trees are vendored upstream code reading `process.env`, often lazily at
+  call time (`onepassword` builds its client per call off
+  `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
+  per-request without a race, so each tree needs its own seam and gets it when it
+  needs one. The renderer cannot tell which tree an image contains, so a slug of
+  another tree given its own path renders, warns, and serves nothing;
+  reachability is what reports it.
+- **The host still infers which slugs to mount from variable names.** It never
+  sees strad's config, so it scans `process.env` for a COMPLETE set of a tree's
+  required variables under a slug prefix. That is the one inference left in the
+  scheme. It is why a slug must be pathed at `/<its own slug>` to be reachable,
+  and why a slug that is NOT its own mount may still be discovered and mounted at
+  `/<slug>` — an inert route nothing forwards to, since the gateway routes by the
+  config's `path:`. Requiring the complete set is what keeps a single unrelated
+  `SOMESLUG__TELEGRAM_API_ID` from standing up a credentialed telegram instance.
+- **The console's presence probe asks about bare names only**
+  (`src/gateway/bundle-presence.ts`). For a slug reading its own names it reports
+  the bare variable healthy and says nothing about the per-slug one.
+- **Everything is decided from the SET of servers on a bundle, never during the
+  walk.** Two order-dependence bugs were caught in review: a same-path pair
+  declared second and third was compared only against a different-path server and
+  rendered clean, and a capability-variant group threw or not depending on whether
+  it was declared before or after the server that disagreed with it.
+- **`remote-filesystem` ends up double-prefixed.** A second slug reads
+  `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`; the inner prefix
+  keeps it off the bare `GCS_*` names the `gcs` server owns in the same container,
+  and the env view falls back to bare names, so collapsing the two would point it
+  at the wrong bucket.
+- **The mangling rule is vendored across an npm boundary** (`npm run
+envprefix:sync`), like `presence.ts` and `wire.ts`. A drift means the renderer
+  names a variable one way and the host reads another: green deploy, clean boot
+  log, every call failing on a variable that is right there.
+- **The slug schema got tighter to make the rule injective.** No `--`, no leading
+  or trailing `-`. Without it `a--b` + `C` and `a` + `B__C` are one variable. No
+  slug in staging or prod has ever used either shape.
+- **The bundle host has no test suite.** It is typechecked by the `bundle_image`
+  CI job and nothing more, so `extraSlugs` and the per-slug wiring are covered
+  through the modules they call and the two trees' own suites. Pre-existing, and
+  this made it matter more.
+
+**Undo.** Delete the per-slug post-pass in `src/deploy/appspec.ts` (the path-group
+loop and the two checks after it) and restore the unconditional throw; drop `env:`
+from the two trees' `createMCPServer` options; collapse `extraSlugs`/`deferred`
+back to a single `loadTelegram()` / `loadRemoteFilesystem()` call; delete
+`src/secrets/env-prefix.ts`, its vendored copy and its sync script. The slug schema
+can stay tight either way.
 
 ## What the human still needs to provision
 
