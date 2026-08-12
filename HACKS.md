@@ -1937,6 +1937,11 @@ same way, as a failed step. So:
   three times, and then goes red anyway. The tell is the log: three
   `::warning::build/push attempt N failed` lines with the same 403 mean the
   registry is not flaking, it is refusing. Read them before re-running.
+- …and so did a third thing, until #57 closed it: a credential a CONCURRENT job
+  had logged out of. That one also produced three identical 403s and also was not
+  the registry refusing, so read #57's error strings — `oauth token: denied` and
+  `anonymous token … 403` — before believing this bullet and going to check the
+  package's settings.
 - The wrapper declares only the seven inputs its call sites pass. A `with:` key
   it does not declare is DROPPED with a runner warning, not an error — so adding,
   say, `platforms:` or `secrets:` to a call site means declaring it on the
@@ -2335,6 +2340,112 @@ from the two trees' `createMCPServer` options; collapse `extraSlugs`/`deferred`
 back to a single `loadTelegram()` / `loadRemoteFilesystem()` call; delete
 `src/secrets/env-prefix.ts`, its vendored copy and its sync script. The slug schema
 can stay tight either way.
+
+## 57. The ghcr credential is a box-wide file, and the slowest build loses it
+
+**✅ RESOLVED** — every job that logs in points `DOCKER_CONFIG` at
+`$RUNNER_TEMP/docker` first. The underlying condition — one docker daemon, one
+`$HOME`, several concurrent runner processes — is unchanged, and is the same one
+behind #53.
+
+**What.** `~/.docker/config.json` is where `docker login` puts a registry
+credential. `runs-on: self-hosted` means every job runs as the same user, so
+there is exactly ONE of that file for the machine. Nine jobs in this repo run
+`docker/login-action` against ghcr, each writing `auths["ghcr.io"]` with its own
+job's `GITHUB_TOKEN` — and each running `docker logout ghcr.io` in a post step,
+because `logout: true` is that action's default.
+
+So the last job to log in owns the credential every concurrent build pushes with,
+and the first job to finish deletes it. A buildx CLI reads that file ONCE, at
+startup, and a long build pushes with whatever it read there — which by then can
+belong to a job that has ended, and GitHub revokes a job's `GITHUB_TOKEN` the
+moment it does.
+
+**How it failed.** On 2026-08-12, [run 31561342124](https://github.com/tadasant/strad/actions/runs/31561342124)
+took `main` red on `Release bundle image`, three attempts, three 403s, on commit
+`2b40c2f`. Three jobs from one push, on one box:
+
+| Time (UTC)    | What                                                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `03:50:53.46` | the bundle job logs in to ghcr with its own token                                                                   |
+| `03:50:53.99` | the bundle-API job logs in — **the shared entry is now its token**                                                  |
+| `03:50:59.38` | the bundle's buildx starts, loading `config.json` once: the bundle-API job's token                                  |
+| `03:51:45.75` | the bundle-API job's post step: `docker logout ghcr.io`                                                             |
+| `03:51:49`    | the bundle-API job ENDS, so GitHub revokes the token buildx is holding                                              |
+| `03:52:18.70` | `Release image` logs in, writing its own token to the emptied file                                                  |
+| `03:53:07`    | the bundle finishes and pushes, with the token it read at `03:50:59`: `failed to fetch oauth token: denied: denied` |
+| `03:53:22.97` | `Release image`'s post step: `docker logout ghcr.io`                                                                |
+| `03:53:24`    | retry 2's fresh buildx finds NO ghcr entry, asks for an anonymous token: `403`                                      |
+| `03:54:15`    | retry 3, the same, and the job goes red                                                                             |
+
+`Release bundle-api image` and `Release image` both pushed fine in that same push,
+which is the whole tell: each was short enough to finish while its own credential
+was still the one in the file. **The bug selects for the slowest build**, which is
+the bundle, every time — and the two sibling successes are what make it read as
+"something specific to the bundle" rather than a race.
+
+**Why nothing caught it.** Every symptom points away from this repo. A revoked
+token and an absent one produce `oauth token: denied` and `anonymous token … 403`,
+which are the errors ghcr returns for a package whose visibility flipped or whose
+`packages: write` was removed — so #51's own guidance ("three identical 403s mean
+the registry is refusing, not flaking — check the package's settings") reads the
+evidence correctly and sends you to the wrong place. Meanwhile the retry makes it
+worse rather than better: each attempt re-reads a file that is emptier than the
+last, so the FIRST attempt carries the most information and the one that decides
+the job carries the least.
+
+**The fix.** `.github/actions/docker-config` writes
+`DOCKER_CONFIG=$RUNNER_TEMP/docker` through `$GITHUB_ENV`, and every job that logs
+in calls it first. `RUNNER_TEMP` is per runner installation and emptied between
+jobs — the same private-path argument `deploy-staging.yml` makes for
+`$RUNNER_TEMP/spec.json` (#47, the `/tmp/spec.json` collision). One variable
+moves the docker CLI, BOTH of `docker/login-action`'s steps and buildx's auth
+provider together, so the post-step logout stays on and empties only this job's
+own file.
+
+**What a fresh config directory does NOT inherit, and why that is safe here.**
+`~/.docker` holds more than `auths`: `cli-plugins/` (buildx IS a CLI plugin),
+`contexts/` and `currentContext`, `proxies`, `credHelpers`. An isolated directory
+starts empty, so a box that kept any of those in `$HOME` would lose them — and a
+buildx the CLI cannot find would fail every release job on `main`, on the first
+run after the merge, since nothing on the PR path executes these workflows.
+Checked against the runner's own log rather than assumed
+([run 31561342124](https://github.com/tadasant/strad/actions/runs/31561342124)):
+`docker info` reports `Path: /usr/libexec/docker/cli-plugins/docker-buildx` — the
+system plugin directory, which the CLI searches regardless of `DOCKER_CONFIG` —
+and `Context: default`, so there is no context to carry either. **Re-check both if
+the runner is ever rebuilt with a rootless or manually-installed docker**, where
+buildx lands in `~/.docker/cli-plugins` and the daemon is selected by a context.
+Seeding the directory from `$HOME` would be the fix, minus `credsStore` and
+`credHelpers` — a credential helper is box-wide state and would put this race
+straight back.
+
+Three details are load-bearing, and each is a line away from being gone:
+
+- It is written through `$GITHUB_ENV`, not a job-level `env:`, because
+  `runner.temp` is NOT available in `jobs.<id>.env` — it expands to the empty
+  string there, which names `/docker`, an absolute path the whole box shares.
+  That is the same trap `deploy-staging.yml` documents at its `steps:`.
+- It runs before `docker/setup-buildx-action`, not just before the login: buildx
+  keeps its builder metadata under `$DOCKER_CONFIG/buildx`, and a builder created
+  in one config directory cannot be removed by a post step reading another.
+- `logout:` stays at its default. `logout: false` is the obvious other fix and is
+  worse — it stops a job DELETING the shared credential while leaving it
+  OVERWRITING one, and leaves a live ghcr token in a box-wide file after the job
+  ends.
+
+`test/workflow-docker-config.test.ts` fails the PR that drops the step, reorders
+it, turns `logout` off, or hand-rolls a `docker login` in a `run:` block; it also
+RUNS the action's shell to prove the path derives from `RUNNER_TEMP` and that an
+empty `RUNNER_TEMP` refuses rather than falling back.
+
+**What is deliberately NOT here.** A `concurrency:` group serialising the release
+workflows would also end it, and would cost every push the SUM of its builds
+rather than the longest — the bundle alone is ten dependency trees. Isolation
+costs a `mkdir`.
+
+**Undo.** Delete `.github/actions/docker-config`, its nine call sites and the
+test. Every job then logs in to the same file again.
 
 ## What the human still needs to provision
 

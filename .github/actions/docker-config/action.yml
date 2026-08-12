@@ -1,0 +1,88 @@
+name: Give this job its own docker config
+description: >-
+  Point DOCKER_CONFIG at a directory only this job can reach, so a concurrent
+  job's ghcr login and logout cannot rewrite the credential this job pushes with.
+
+# WHY THIS EXISTS
+#
+# `~/.docker/config.json` is where `docker login` puts a registry credential, and
+# on this box there is exactly ONE of it. `runs-on: self-hosted` means every job
+# runs as the same user, so nine workflows that all do
+#
+#   docker/login-action@v3  ->  docker login ghcr.io
+#
+# are all writing the same `auths["ghcr.io"]` entry, with their own job's
+# `GITHUB_TOKEN`, over each other. Worse, `docker/login-action` defaults to
+# `logout: true`, so its post step runs `docker logout ghcr.io` — which DELETES
+# that entry out from under whatever else on the box is mid-push.
+#
+# This is HACKS.md #53 one file over. The pointer was the shared thing there; the
+# credential is the shared thing here, and it is the more damaging of the two,
+# because the loser does not crash — it re-authenticates as nobody and gets a 403
+# from ghcr that reads exactly like a registry outage.
+#
+# HOW IT FAILED (2026-08-12, run 31561342124, `main` red on `Release bundle image`):
+#
+#   03:50:53.46  the bundle job logs in to ghcr, with its own token
+#   03:50:53.99  the bundle-API job logs in — same file, half a second later, so
+#                the shared entry is now the bundle-API job's token
+#   03:50:59.38  the bundle job's buildx CLI starts. It loads config.json ONCE,
+#                at startup, so it now holds the bundle-API job's credential
+#   03:51:45.75  the bundle-API job's post step: `docker logout ghcr.io`
+#   03:51:49     the bundle-API job ENDS, so GitHub revokes that job's token
+#   03:52:18.70  `Release image` logs in, writing its own token to the empty file
+#   03:53:07     the bundle's ten-minute build finishes and pushes — presenting
+#                the token it loaded at 03:50:59, which has been dead for 78s:
+#                `failed to fetch oauth token: denied: denied`
+#   03:53:22.97  `Release image`'s post step: `docker logout ghcr.io`
+#   03:53:24     retry 2 starts a fresh buildx, which loads a config with no ghcr
+#                entry at all and asks for an ANONYMOUS token: `403 Forbidden`
+#   03:54:15     retry 3, same, and the job goes red
+#
+# Three attempts, three 403s, and the package's permissions were never touched.
+# The two sibling image jobs in that same push both pushed fine, because both
+# were short enough to finish while their own credential was still the one in the
+# file. The bug selects for the slowest build, which is the bundle, every time.
+#
+# THE FIX IS ISOLATION, NOT ORDERING. Serialising the release workflows would
+# also end it, and would cost every push the sum of the builds rather than the
+# longest. `DOCKER_CONFIG` is read by the docker CLI, by `docker/login-action`
+# (main step AND post step), and by buildx's auth provider, so moving it moves
+# all three at once — and `RUNNER_TEMP` is per runner installation and emptied
+# between jobs, which is the same private-path argument `deploy-staging.yml`
+# makes for `$RUNNER_TEMP/spec.json`.
+#
+# It has to be written through `$GITHUB_ENV` rather than a job-level `env:`,
+# because `runner.temp` is NOT available in `jobs.<id>.env` — it expands to the
+# empty string there, which would name a shared absolute directory and put the
+# credential straight back in a place other jobs can reach.
+#
+# CALL IT BEFORE `docker/setup-buildx-action`, not just before the login: buildx
+# keeps its builder metadata under `$DOCKER_CONFIG/buildx`, and a builder created
+# in one config directory cannot be removed by a post step reading another.
+# `test/workflow-docker-config.test.ts` is what enforces that ordering.
+#
+# NO FIELD IN THIS FILE MAY CONTAIN THE EXPRESSION DELIMITER AS PROSE — the
+# runner template-parses the whole manifest when it LOADS it, `description:`
+# included, and a failed parse takes down every workflow that calls this action
+# before a single step runs. See `.github/actions/build-push/action.yml` and
+# HACKS.md #53 for what that cost the last time.
+
+runs:
+  using: composite
+  steps:
+    - name: Point DOCKER_CONFIG at a directory only this job can reach
+      shell: bash
+      run: |
+        # An empty RUNNER_TEMP would name `/docker` — an absolute path shared
+        # with every other job on the box, which is the bug this closes. Refuse
+        # rather than isolate the credential into a shared directory and say so.
+        if [ -z "${RUNNER_TEMP:-}" ]; then
+          echo "::error::RUNNER_TEMP is empty, so this job has no private directory to put its docker credentials in. See HACKS.md #57."
+          exit 1
+        fi
+
+        dir="${RUNNER_TEMP}/docker"
+        mkdir -p "${dir}"
+        echo "DOCKER_CONFIG=${dir}" >> "${GITHUB_ENV}"
+        echo "docker config isolated to ${dir}"

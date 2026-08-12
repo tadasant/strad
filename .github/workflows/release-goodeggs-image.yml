@@ -33,6 +33,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This job's ghcr credential goes somewhere no concurrent job can rewrite
+      # or log out of. Before the login AND before buildx, which keeps its
+      # builder metadata in the same directory. HACKS.md #57.
+      - uses: ./.github/actions/docker-config
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
