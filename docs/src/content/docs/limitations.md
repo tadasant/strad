@@ -1428,6 +1428,55 @@ otherwise be one variable; no slug in any strad config has ever used either shap
 
 ---
 
+### 58. The google-flights date grid costs one request per date, and two of its fields are not trustworthy
+
+`servers/bundle-api/fork/google-flights/` is the second fork in that tree (#55 is
+the first), taken from the published `google-flights-mcp-server` v0.2.6. It fixes
+three defects that all shipped a confident, wrong answer with no error attached:
+cabin class and passenger counts encoded at protobuf field numbers Google skips
+as unknown fields, so every search was economy and one adult; the two baggage
+entries read in the wrong order; and a `get_date_grid` that returned a trailing
+61-day price _history_ instead of future departure dates. `FORK.md` in that
+directory carries the evidence. What follows is what remains.
+
+**The grid is one request per date.** Google's search response contains no
+forward-looking grid to read — the only future date in the whole document is the
+anchor the caller asked for — so the grid is built by searching each date in
+turn, rate-limited and in sequence. The default 7-day window takes about ten
+seconds and the 31-day maximum about forty-seven. The cap and the sequencing are
+deliberate: a burst against someone else's page is the quickest way to get the
+tool blocked outright. The cost is stated in the tool description, because an
+agent should be able to choose a narrower window knowingly.
+
+**Cost:** a genuinely wide date search is not something this tool can serve. The
+honest answer to "cheapest month" is several calls, and the tool says so rather
+than returning a fast, wrong grid — which is precisely what it used to do.
+
+**Two fields are reported as unknown rather than guessed.**
+`segments[].legroom` is populated on economy offers and absent on the premium
+offers this fork can now retrieve, so business and first report `null`. And
+`fare_brand` names a tier _within_ the requested cabin, not the cabin: a
+business-class result whose tier reads `"Economy Flex"` is not an economy fare.
+Both are documented in the tool description instead of being smoothed over with a
+plausible transformation — the same call the baggage parser makes when it reports
+an absent entry as `null` rather than as zero.
+
+**Cost:** a caller that wants premium legroom, or a human-readable fare name,
+does not get one from this server.
+
+**Only its tests defend the delta,** exactly as with #55. A re-vendor that pastes
+the published package over `fork/google-flights/src` reverts every fix silently.
+`fork/google-flights/test/fork.test.mjs`, run on every PR by `ci.yml`'s
+`bundle_api` job, asserts the encoded `tfs` bytes rather than a round-trip
+through this repo's own schema — a round-trip passes on the broken numbering,
+since the bug was a disagreement with a schema that lives at Google — and asserts
+the grid's window as literal dates, because which dates came back was the bug.
+
+**Undo:** move the tree back under `upstream/`, restore the Dockerfile `COPY`
+lines and `loadApiTree`'s path, and drop `fork/google-flights` from the
+`bundle-api` workspaces, build and test scripts. Tool names and tool count are
+unchanged by the fork.
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

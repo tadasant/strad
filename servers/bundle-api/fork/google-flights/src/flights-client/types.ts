@@ -17,8 +17,10 @@ export interface FlightSegment {
 }
 
 export interface FlightExtensions {
-  carry_on_included: boolean;
-  checked_bags_included: number;
+  /** `null` when Google stated nothing — which is not the same as "not included". */
+  carry_on_included: boolean | null;
+  /** `null` when Google stated nothing — which is not the same as zero bags. */
+  checked_bags_included: number | null;
 }
 
 export interface FlightOffer {
@@ -48,6 +50,10 @@ export interface DateGridResult {
   date_grid: DateGridEntry[];
   cheapest: DateGridEntry | null;
   currency: string;
+  /** The departure dates actually covered — the caller should not have to infer them. */
+  window: { anchor_date: string; days: number; from: string; to: string };
+  /** Dates in the window that returned no offers at all. */
+  unavailable_dates: string[];
 }
 
 export interface AirportResult {
@@ -102,10 +108,14 @@ export interface GetDateGridOptions {
   origin: string;
   destination: string;
   departure_date?: string;
+  /** Held fixed while the departure date varies. Required for `round_trip`. */
+  return_date?: string;
   trip_type: 'one_way' | 'round_trip';
   seat_class: 'economy' | 'premium_economy' | 'business' | 'first';
   adults: number;
   currency: string;
+  /** Days in the grid, centred on the anchor. Default 7, max 31 — each day is one request. */
+  window_days?: number;
 }
 
 export type SeatClass = 'economy' | 'premium_economy' | 'business' | 'first';

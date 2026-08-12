@@ -2447,6 +2447,58 @@ costs a `mkdir`.
 **Undo.** Delete `.github/actions/docker-config`, its nine call sites and the
 test. Every job then logs in to the same file again.
 
+## 58. The google-flights date grid costs one request per date, and two of its fields still cannot be trusted
+
+**What.** `servers/bundle-api/fork/google-flights/` is the second FORK in that
+tree (#55 is the first), taken from the published `google-flights-mcp-server`
+v0.2.6. Three defects are fixed there — cabin class and passenger counts encoded
+at protobuf field numbers Google skips as unknown, the two baggage entries read
+in the wrong order, and a `get_date_grid` that returned a trailing 61-day price
+HISTORY instead of future departure dates. `fork/google-flights/FORK.md` carries
+the evidence for each. What follows is what is left.
+
+**The grid is N requests, and that is inherent.** Google's search response
+contains no forward-looking date grid to read: the only future date anywhere in
+the document is the anchor the caller asked for. So the grid is assembled by
+searching each date, one rate-limited request apiece, in sequence. A 7-day window
+(the default) takes ~10s; the 31-day cap takes ~47s. The cap and the sequencing
+are deliberate — a burst against someone else's page is the fastest way to get
+the whole tool blocked — but it does mean a genuinely wide date search is not
+something this tool can serve, and the honest answer to "cheapest month" is
+several calls or none. If Google exposes a calendar RPC, that is the better
+source and this becomes one request again.
+
+**Two fields remain untrustworthy, and are documented rather than guessed.**
+`segments[].legroom` reads `leg[30]`, which is populated on economy offers
+(`"31 inches"`) and absent on the business offers this fork can now retrieve — so
+premium cabins report `null`. And `fare_brand` is a tier WITHIN the requested
+cabin, not a product name: a business-class result whose tier reads
+`"Economy Flex"` is not an economy fare. Upstream's own comment concedes the
+mapping is a best-effort read of undocumented numeric codes. Both are stated in
+the tool description instead of being papered over with a plausible-looking
+transformation, which is the same call `parseExtensions` makes when it reports an
+absent baggage entry as `null` rather than as zero.
+
+**The sharp edge is the same one #55 has.** A fork has no upstream to diff
+against, and a re-vendor that pastes the published package over `fork/google-flights/src`
+reverts every fix with nothing to say so. What stands in for a drift test is
+`servers/bundle-api/fork/google-flights/test/fork.test.mjs`, run by `ci.yml`'s
+`bundle_api` job. It asserts the ENCODED `tfs` bytes rather than a round-trip
+through this repo's own schema — a round-trip would pass on the broken numbering,
+because the bug was a disagreement with a schema that lives at Google, not an
+inconsistency here — and it asserts the grid's window as literal dates, because
+which dates came back _was_ the bug. A revert fails those by name. A revert that
+also deletes the tests does not (#46).
+
+**Undo.** Copy the published package's `shared/` back over
+`fork/google-flights/src`, `git mv servers/bundle-api/fork/google-flights
+servers/bundle-api/upstream/google-flights`, restore the `COPY` lines in EACH of
+`servers/bundle/Dockerfile` and `servers/bundle-api/Dockerfile`, point
+`loadApiTree` in `servers/bundle/host/src/index.ts` back at
+`upstream/${slug}/build/index.js`, and drop `fork/google-flights` from the
+`bundle-api` workspaces, build and test scripts. Tool names and tool count are
+unchanged by the fork, so no `tools:` policy moves either way.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

@@ -8,13 +8,16 @@ message FlightData {
   string date = 2;
   Airport from_flight = 13;
   Airport to_flight = 14;
-  optional int32 max_stops = 9;
+  optional int32 max_stops = 5;
 }
 
+// seat and passengers were numbered 1 and 6 here and in flights-client.ts, which
+// Google parses as unknown fields and skips — so every request was economy, one
+// adult, whatever the caller asked for. See the note in getProtoRoot().
 message Info {
   repeated FlightData data = 3;
-  Seat seat = 1;
-  repeated Passenger passengers = 6;
+  Seat seat = 9;
+  repeated Passenger passengers = 8;
   Trip trip = 19;
 }
 

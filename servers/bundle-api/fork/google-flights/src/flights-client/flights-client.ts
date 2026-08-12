@@ -74,7 +74,7 @@ function getProtoRoot(): protobuf.Root {
 
   const FlightData = new protobuf.Type('FlightData')
     .add(new protobuf.Field('date', 2, 'string'))
-    .add(new protobuf.Field('maxStops', 9, 'int32', 'optional'))
+    .add(new protobuf.Field('maxStops', 5, 'int32', 'optional'))
     .add(new protobuf.Field('fromFlight', 13, 'Airport'))
     .add(new protobuf.Field('toFlight', 14, 'Airport'));
 
@@ -101,10 +101,30 @@ function getProtoRoot(): protobuf.Root {
     INFANT_ON_LAP: 4,
   });
 
+  /**
+   * FIELD NUMBERS ARE THE WHOLE CONTRACT HERE, and two of them were wrong.
+   *
+   * `tfs` is an unsigned protobuf blob in a URL. Google parses it with the real
+   * schema; a field this side numbers differently is not an error on either end,
+   * it is an UNKNOWN FIELD — proto3 skips it silently and the server falls back
+   * to its default. So `seat` at 1 and `passengers` at 6 meant every request
+   * asked for economy, one adult, no matter what the caller passed. No error, no
+   * warning, and a `query` echo in the response that repeated the caller's
+   * intent back to them while Google had been asked for something else.
+   *
+   * Verified against Google's own parsed-request echo (`ds:0[1][1]`, index 5 =
+   * cabin, index 6 = [adults, children, infants_in_seat, infants_on_lap]):
+   *
+   *   seat=1,pax=6  business/3 adults -> echo `1, [1,0,0,0]`  (economy, 1 adult)
+   *   seat=9,pax=8  business/3 adults -> echo `3, [3,0,0,0]`  (as asked)
+   *
+   * and end to end on AKL->SFO 2027-01-10, where business went from $955 with
+   * "31 inches" of legroom (an economy fare) to $2,848.
+   */
   const Info = new protobuf.Type('Info')
-    .add(new protobuf.Field('seat', 1, 'Seat'))
+    .add(new protobuf.Field('seat', 9, 'Seat'))
     .add(new protobuf.Field('data', 3, 'FlightData', 'repeated'))
-    .add(new protobuf.Field('passengers', 6, 'Passenger', 'repeated'))
+    .add(new protobuf.Field('passengers', 8, 'Passenger', 'repeated'))
     .add(new protobuf.Field('trip', 19, 'Trip'));
 
   root.add(Airport);
@@ -255,17 +275,41 @@ function parseSegment(leg: any[]): FlightSegment | null {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+/**
+ * Baggage, from `offer[4][6]` — which is `[checked_bag_count, carry_on_count]`,
+ * NOT `[carry_on_flag, checked_bag_flag]`.
+ *
+ * The two entries were read in the wrong order, and a missing entry was read as
+ * "not included" rather than "not stated". On a long-haul international search
+ * every offer carries `[null, 1]`, which the old mapping turned into "carry-on
+ * NOT included, 1 checked bag included" — for every carrier, identically, and
+ * backwards in both halves.
+ *
+ * Established against the text Google renders for the same offers (each label
+ * appears 8x in the page, so divide by 8). LAX->JFK 2026-09-15 is the decisive
+ * one because all four combinations occur:
+ *
+ *   [0,1] x106  <->  848  "1 carry-on bag included. 0 checked bags included."
+ *   [1,1] x8    <->   64  "1 carry-on bag included. 1 checked bag included."
+ *   [2,1] x1    <->    8  "1 carry-on bag included. 2 checked bags included."
+ *   [0,0] x1    <->    8  "0 carry-on bags included. 0 checked bags included."
+ *
+ * An exact bijection, and it only holds with index 0 as the CHECKED count.
+ *
+ * `null` means Google stated nothing — which is what it does on the AKL->SFO
+ * international search, where it renders no baggage text at all. That is
+ * reported as `null` (unknown), never as `false`/`0`: an agent quoting "no
+ * checked bag included" to a traveller because a scraper defaulted a missing
+ * field is the failure this fork exists to stop.
+ */
 function parseExtensions(raw: any): FlightExtensions {
-  // offer[4][6] contains baggage amenity flags: [carry_on_flag, checked_bag_flag]
-  // carry_on_flag: 0 = included
-  // checked_bag_flag: 0 = not included, 1 = one bag included, 2 = two bags included
   const amenityFlags = raw?.[4]?.[6];
-  const carryOnIncluded = Array.isArray(amenityFlags) ? amenityFlags[0] === 0 : true;
-  const checkedBagsIncluded = Array.isArray(amenityFlags) ? amenityFlags[1] || 0 : 0;
+  const checkedRaw = Array.isArray(amenityFlags) ? amenityFlags[0] : undefined;
+  const carryOnRaw = Array.isArray(amenityFlags) ? amenityFlags[1] : undefined;
 
   return {
-    carry_on_included: carryOnIncluded,
-    checked_bags_included: checkedBagsIncluded,
+    carry_on_included: typeof carryOnRaw === 'number' ? carryOnRaw > 0 : null,
+    checked_bags_included: typeof checkedRaw === 'number' ? checkedRaw : null,
   };
 }
 
@@ -439,15 +483,25 @@ function filterByStops(
 // option on Google's web UI. Excluding every tier-1 fare therefore silently
 // drops legitimate (often the cheapest) itineraries.
 //
-// A genuine basic-economy product is distinguished by stripping amenities. The
-// dependable signal in Google's payload is checked-bag inclusion: the carry-on
-// flag (amenityFlags[0]) is frequently null on international fares, but the
-// checked-bag count is populated. We therefore treat a fare as basic economy
-// only when it is the lowest fare tier AND includes no free checked bag. This
-// keeps amenitied tier-1 fares (like the United example) while still excluding
-// the bare-bones, restriction-heavy fares the filter is meant to remove.
+// A genuine basic-economy product is distinguished by stripping amenities, and
+// the amenity it strips is the CARRY-ON: that is what "basic economy" names on
+// the US carriers the filter exists for. So a fare is basic economy only when it
+// is the lowest fare tier AND includes no free carry-on. That keeps amenitied
+// tier-1 fares (like the United example) while still excluding the bare-bones
+// ones.
+//
+// This reads carry_on_included where it used to read checked_bags_included, and
+// that is not a behaviour change — it is the same field. The old code had the
+// two `offer[4][6]` entries swapped (see parseExtensions), so "checked bags == 0"
+// was already testing the carry-on count; correcting the field names without
+// correcting this predicate is what would have changed behaviour. Verified
+// identical on three routes: SFO->LAX excludes 9 of 171 before and after,
+// LAX->JFK 1 of 116, AKL->SFO 0 of 112.
+//
+// An unknown carry-on (`null` — Google stated nothing) is NOT basic economy: the
+// filter is on by default, and a silent default must not drop flights.
 export function isBasicEconomy(offer: FlightOffer): boolean {
-  return offer.fare_brand === 'Economy' && offer.extensions.checked_bags_included === 0;
+  return offer.fare_brand === 'Economy' && offer.extensions.carry_on_included === false;
 }
 
 // =============================================================================
@@ -538,17 +592,44 @@ export async function searchFlights(options: SearchFlightsOptions): Promise<Sear
   };
 }
 
-export async function getDateGrid(options: GetDateGridOptions): Promise<DateGridResult> {
-  // We need to make a search request to get the date grid data
-  // The date grid is embedded in the same response as flight results
-  const anchorDate =
-    options.departure_date ||
-    new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+export const MAX_GRID_DAYS = 31;
+export const DEFAULT_GRID_DAYS = 7;
 
+/** `YYYY-MM-DD` for a UTC day offset, with no local-timezone rounding. */
+function addDays(date: string, days: number): string {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  return new Date(ms + days * 86_400_000).toISOString().split('T')[0];
+}
+
+/**
+ * The departure dates a grid covers: `windowDays` days centred on the anchor,
+ * shifted forward so it never starts before `today`.
+ *
+ * Pure and exported so the window logic is testable without touching Google —
+ * the bug this replaces was entirely about which dates came back.
+ *
+ * Centring is what makes "cheapest around my date" work; clamping is what stops
+ * the old behaviour of answering a January question with last June. If the
+ * anchor itself is in the past the window starts today, and the anchor is still
+ * included when it can be.
+ */
+export function gridDates(anchor: string, windowDays: number, today: string): string[] {
+  const days = Math.max(1, Math.min(MAX_GRID_DAYS, Math.floor(windowDays)));
+  const centred = addDays(anchor, -Math.floor((days - 1) / 2));
+  const start = centred < today ? today : centred;
+  return Array.from({ length: days }, (_, i) => addDays(start, i));
+}
+
+/** The lowest price on one departure date, or `null` if the date has no offers. */
+async function lowestPriceOnDate(
+  options: GetDateGridOptions,
+  departureDate: string
+): Promise<number | null> {
   const tfs = await buildTfsParam({
     origin: options.origin,
     destination: options.destination,
-    departureDate: anchorDate,
+    departureDate,
+    returnDate: options.return_date,
     tripType: options.trip_type,
     seatClass: options.seat_class,
     adults: options.adults,
@@ -557,8 +638,16 @@ export async function getDateGrid(options: GetDateGridOptions): Promise<DateGrid
     infantsOnLap: 0,
   });
 
-  const url = buildFlightsUrl(tfs, options.currency);
-  const html = await rateLimitedFetch(url);
+  const html = await rateLimitedFetch(buildFlightsUrl(tfs, options.currency));
+  if (
+    html.includes('unusual traffic') ||
+    html.includes('Please show you&#39;re not a robot') ||
+    html.includes('sorry/index')
+  ) {
+    throw new Error(
+      'Google is rate-limiting requests. Please wait a few minutes before trying again.'
+    );
+  }
 
   const ds1 = extractDs1(html);
   if (!ds1) {
@@ -567,35 +656,70 @@ export async function getDateGrid(options: GetDateGridOptions): Promise<DateGrid
     );
   }
 
-  const dateGrid: DateGridEntry[] = [];
+  let lowest: number | null = null;
+  for (const offer of parseFlightOffers(ds1, options.currency)) {
+    if (lowest === null || offer.price < lowest) lowest = offer.price;
+  }
+  return lowest;
+}
 
-  // Date grid is at ds1[5][10][0] — array of [timestamp_ms, price] pairs
-  const calendarData = ds1?.[5]?.[10]?.[0];
-  if (Array.isArray(calendarData)) {
-    for (const entry of calendarData) {
-      if (Array.isArray(entry) && entry.length >= 2) {
-        const timestamp = entry[0];
-        const price = entry[1];
-        if (typeof timestamp === 'number' && typeof price === 'number') {
-          const date = new Date(timestamp).toISOString().split('T')[0];
-          dateGrid.push({ date, price });
-        }
-      }
+/**
+ * A price per DEPARTURE DATE, built by pricing each date in the window.
+ *
+ * WHAT THIS REPLACES. The old implementation read `ds1[5][10][0]` and called it
+ * the date grid. That array is a price HISTORY: the trailing 61 days ending
+ * yesterday, i.e. what this itinerary has been costing recently. Its dates have
+ * nothing to do with the anchor, and on 2026-08-12 a grid anchored on
+ * 2027-01-10 came back as 2026-06-12 to 2026-08-11 — every date already in the
+ * past. Re-running it with three different anchors returned the same 61 dates
+ * every time. The anchor was never ignored on the way OUT (the request carried
+ * it correctly); the response was simply the wrong series.
+ *
+ * There is no forward-looking grid anywhere in that page to read instead — the
+ * only future date in the whole document is the anchor itself. So the grid is
+ * assembled the honest way: one search per date, lowest offer per date.
+ *
+ * THE COST IS REAL, and it is why the window is small by default and capped.
+ * Each date is one rate-limited request (1.5s apart), so a 7-day grid takes
+ * ~10s and the 31-day maximum takes ~47s. Requests are issued in sequence, not
+ * in parallel: this is scraping someone else's page, and a burst is both rude
+ * and the fastest way to get the whole tool blocked.
+ *
+ * A date with no offers is reported in `unavailable_dates` rather than dropped
+ * silently or priced as zero.
+ */
+export async function getDateGrid(options: GetDateGridOptions): Promise<DateGridResult> {
+  const today = new Date().toISOString().split('T')[0];
+  const anchorDate = options.departure_date || addDays(today, 7);
+  const dates = gridDates(anchorDate, options.window_days ?? DEFAULT_GRID_DAYS, today);
+
+  const dateGrid: DateGridEntry[] = [];
+  const unavailable: string[] = [];
+
+  for (const date of dates) {
+    // One bad date must not lose the dates already priced: a partial grid is
+    // useful and an exception is not.
+    let price: number | null = null;
+    try {
+      price = await lowestPriceOnDate(options, date);
+    } catch (error) {
+      logDebug('getDateGrid', `${date}: ${(error as Error).message}`);
     }
+    if (price === null) unavailable.push(date);
+    else dateGrid.push({ date, price });
   }
 
-  // Find cheapest
   let cheapest: DateGridEntry | null = null;
   for (const entry of dateGrid) {
-    if (!cheapest || entry.price < cheapest.price) {
-      cheapest = entry;
-    }
+    if (!cheapest || entry.price < cheapest.price) cheapest = entry;
   }
 
   return {
     date_grid: dateGrid,
     cheapest,
     currency: options.currency,
+    window: { anchor_date: anchorDate, days: dates.length, from: dates[0], to: dates[dates.length - 1] },
+    unavailable_dates: unavailable,
   };
 }
 
