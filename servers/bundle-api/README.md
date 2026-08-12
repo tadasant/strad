@@ -24,7 +24,7 @@ marginal cost each.
 servers/bundle-api/
   upstream/<slug>/   # VENDORED VERBATIM from pulsemcp/mcp-servers@44f32a32
                      #   (each server's shared/ tool-logic factory)
-  fork/slack/        # FORKED from the same monorepo, and edited here
+  fork/slack/        # FORKED from the same monorepo @b1f13fe, and edited here
   remote/            # NEW streamable-HTTP host over all six createMCPServer()s
   Dockerfile         # node:22-slim -> ghcr.io/tadasant/strad-bundle-api
 ```
@@ -32,20 +32,23 @@ servers/bundle-api/
 The `upstream/<slug>` directories are each an upstream server's `shared/`
 package, copied verbatim (fixes go upstream, then re-vendor — see HACKS.md).
 `remote/src/index.ts` reuses each one's `createMCPServer()` factory; **no tool
-logic is reimplemented**.
+logic is reimplemented**. It swaps stdio for an Express front door speaking
+`StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`), mounting each
+server at `/<slug>`. strad's core gateway proxies to it over the private network
+at `${bundle-api.PRIVATE_URL}/<slug>`.
 
 `fork/slack` is the one exception, and it sits under a different directory so
-that the exception is visible from the path. Slack's message format is mrkdwn,
+that the exception is visible from the path. Both hashes above are repo HEADs at
+the moment a copy was taken, not commits that touched the server in question —
+`b1f13fe` is simply where slack was last verified byte-identical to upstream,
+which is the version the fork diverges from. Slack's message format is mrkdwn,
 not Markdown, `~text~` is strikethrough, and a message that uses `~` as an
 "approximately" sign posts successfully with whole paragraphs struck through —
 no error, anywhere. Upstream's write tools call the format "Slack markdown" and
 never mention the tilde, so the fix has to live in the tool definitions. What
 changed, and why it warns rather than rewrites, is in
 [`fork/slack/FORK.md`](fork/slack/FORK.md). `npm test` at this level runs the
-fork's suite, which is what stops a re-vendor from quietly reverting it. It swaps stdio for an Express front door speaking
-`StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`), mounting each
-server at `/<slug>`. strad's core gateway proxies to it over the private network
-at `${bundle-api.PRIVATE_URL}/<slug>`.
+fork's suite, which is what stops a re-vendor from quietly reverting it.
 
 Per request we mint a fresh, stateless MCP `Server` + transport and reuse the
 factory's `registerHandlers`. Each factory is created ONCE at startup (tailscale

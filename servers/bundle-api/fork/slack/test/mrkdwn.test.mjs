@@ -10,7 +10,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+
 import { lintMrkdwn, mrkdwnAdvisory, MRKDWN_TEXT_GUIDANCE } from '../build/mrkdwn.js';
+import { createRegisterTools } from '../build/tools.js';
 import { postMessageTool } from '../build/tools/post-message.js';
 import { replyToThreadTool } from '../build/tools/reply-to-thread.js';
 import { updateMessageTool } from '../build/tools/update-message.js';
@@ -41,10 +44,55 @@ test('the incident message reports strikethrough', () => {
   assert.ok(strike, 'six tildes must be reported as strikethrough');
   // Six tildes pair off into three struck spans.
   assert.equal(strike.count, 3);
-  assert.ok(
-    strike.samples[0].includes('750 som'),
-    `the first struck span should quote the text Slack ate, got ${strike.samples[0]}`
-  );
+  // Pin the exact span, not a substring of it: a regression returning the whole
+  // match or the wrong capture group would still "include" the fare.
+  assert.equal(strike.samples[0], '750 som each (');
+});
+
+test('a struck span of any length is reported — paragraphs are the point', () => {
+  // A length cap here would miss precisely the failure this module exists for,
+  // and chat.postMessage accepts far more text than any comfortable bound.
+  const long = `~750 som${'x'.repeat(20000)} and ~$9`;
+  const findings = lintMrkdwn(long);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].rule, 'strikethrough');
+});
+
+test('a code span adjacent to a tilde does not suppress the pair', () => {
+  // stripCode must not leave whitespace on the opening tilde's inner edge.
+  assert.deepEqual(rules('~`750` som and ~$9'), ['strikethrough']);
+});
+
+test('Slack has no CommonMark, so deep and indented headings count too', () => {
+  assert.deepEqual(rules('####### seven hashes'), ['heading']);
+  assert.deepEqual(rules('      # four spaces in'), ['heading']);
+});
+
+test('a Markdown link with no scheme is still a Markdown link', () => {
+  assert.deepEqual(rules('[the doc](/operate/secrets/)'), ['link']);
+  assert.deepEqual(rules('[mail me](mailto:a@example.com)'), ['link']);
+});
+
+test('the anti-noise promises hold', () => {
+  // Stated in the description rather than linted, so pin that they stay silent.
+  assert.deepEqual(rules('snake_case_name and another_identifier_here'), []);
+  assert.deepEqual(rules('see #general and #alerts'), []);
+  assert.deepEqual(rules('a *bold* word and _italics_'), []);
+});
+
+test('samples are capped and the remainder is counted', () => {
+  const text = '~a~ ~b~ ~c~ ~d~ ~e~';
+  const findings = lintMrkdwn(text);
+  assert.equal(findings[0].count, 5);
+  assert.equal(findings[0].samples.length, 3);
+  assert.match(mrkdwnAdvisory(text, { channelId: 'C1', messageTs: '1.2' }), /and 2 more/);
+});
+
+test('with no message_ts there is no repair paragraph', () => {
+  const advisory = mrkdwnAdvisory('~750 som and ~$9', { channelId: 'C1' });
+  assert.ok(advisory);
+  assert.match(advisory, /STRUCK THROUGH/);
+  assert.doesNotMatch(advisory, /To repair/);
 });
 
 test('a single unpaired tilde is not reported', () => {
@@ -114,6 +162,18 @@ test('clean text produces no advisory at all', () => {
 
 const WRITE_TEXT_TOOLS = [postMessageTool, replyToThreadTool, updateMessageTool];
 
+const ALL_TOOL_FACTORIES = [
+  getChannelsTool,
+  getChannelTool,
+  getThreadTool,
+  downloadFileTool,
+  postMessageTool,
+  replyToThreadTool,
+  updateMessageTool,
+  reactToMessageTool,
+  uploadSnippetTool,
+];
+
 test('every tool taking message text leads with the mrkdwn trap', () => {
   for (const factory of WRITE_TEXT_TOOLS) {
     const tool = factory(null, () => ({}));
@@ -126,8 +186,10 @@ test('every tool taking message text leads with the mrkdwn trap', () => {
 test('no tool still calls the format "Slack markdown formatting"', () => {
   // The upstream phrasing this fork exists to remove: it calls mrkdwn markdown,
   // which is the assumption that produced the struck-through message, and it
-  // omits the one construct that silently wrecks one.
-  for (const factory of [...WRITE_TEXT_TOOLS, uploadSnippetTool]) {
+  // omits the one construct that silently wrecks one. Checked over ALL NINE
+  // tools, not just the ones that were reworded — a re-vendor could reintroduce
+  // it anywhere.
+  for (const factory of ALL_TOOL_FACTORIES) {
     const tool = factory(null, () => ({}));
     const surface = tool.description + JSON.stringify(tool.inputSchema);
     assert.doesNotMatch(surface, /Supports Slack markdown/i, `${tool.name} still says it`);
@@ -152,22 +214,25 @@ test('slack_upload_snippet documents the opposite: a snippet is not mrkdwn', () 
   assert.match(tool.inputSchema.properties.content.description, /verbatim/);
 });
 
-test('the fork renames no upstream tool', () => {
-  // Every caller of the published package addresses these names, and the
-  // gateway's `tools: allow` policy for slack-readonly names four of them.
-  const names = [
-    getChannelsTool,
-    getChannelTool,
-    getThreadTool,
-    downloadFileTool,
-    postMessageTool,
-    replyToThreadTool,
-    updateMessageTool,
-    reactToMessageTool,
-    uploadSnippetTool,
-  ].map((f) => f(null, () => ({})).name);
+/** The tool names a group really registers, read off the registration table. */
+async function registeredNames(groups) {
+  let listed = null;
+  const fakeServer = {
+    setRequestHandler(schema, handler) {
+      if (schema === ListToolsRequestSchema) listed = handler;
+    },
+  };
+  createRegisterTools(() => ({}), groups)(fakeServer);
+  assert.ok(listed, 'createRegisterTools must register a tools/list handler');
+  const { tools } = await listed();
+  return tools.map((t) => t.name).sort();
+}
 
-  assert.deepEqual(names.sort(), [
+test('the fork renames, adds and drops no upstream tool', async () => {
+  // Read from createRegisterTools rather than a hand-written list, so a tool
+  // dropped from ALL_TOOLS in src/tools.ts fails here too. Every caller of the
+  // published package addresses these names.
+  assert.deepEqual(await registeredNames(['readonly', 'write']), [
     'slack_download_file',
     'slack_get_channel',
     'slack_get_channels',
@@ -177,6 +242,18 @@ test('the fork renames no upstream tool', () => {
     'slack_reply_to_thread',
     'slack_update_message',
     'slack_upload_snippet',
+  ]);
+});
+
+test('the readonly group is exactly the four tools slack-readonly allows', async () => {
+  // infra/strad.staging.yaml and strad.config.example.yaml both carve the
+  // `slack-readonly` slug's `tools: allow` list out of this group. An allow-list
+  // is exhaustive, so a tool moving between groups narrows that slug in silence.
+  assert.deepEqual(await registeredNames(['readonly']), [
+    'slack_download_file',
+    'slack_get_channel',
+    'slack_get_channels',
+    'slack_get_thread',
   ]);
 });
 
@@ -246,6 +323,21 @@ test('slack_update_message warns, so a repair that reintroduces the bug is caugh
   });
   assert.equal(client.sent[0].text, 'still ~750 som and ~$9');
   assert.match(result.content[0].text, /Slack mrkdwn warning/);
+});
+
+test('slack_upload_snippet never appends an advisory — a snippet is not mrkdwn', async () => {
+  // The description says the mrkdwn rules do not apply here. The handler has to
+  // agree, or the tool tells a caller to repair something Slack never mangled.
+  const uploaded = [];
+  const tool = uploadSnippetTool(null, () => ({
+    async uploadSnippet(content, options) {
+      uploaded.push({ content, options });
+      return { id: 'F123', name: 'notes.txt' };
+    },
+  }));
+  const result = await tool.handler({ channel_id: 'C1', content: INCIDENT });
+  assert.equal(uploaded[0].content, INCIDENT);
+  assert.doesNotMatch(result.content[0].text, /mrkdwn warning/);
 });
 
 test('a failed send reports the failure and nothing else', async () => {

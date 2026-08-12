@@ -61,20 +61,25 @@ that the bytes handed to `chat.postMessage` are the bytes the caller passed.
 that silently edits the words a caller chose fails in exactly the way this fork
 exists to prevent — quietly, with a success result — and it fails in a way the
 caller cannot detect by reading the response. So the check runs after the send
-and reports:
+and reports. Verbatim output of `mrkdwnAdvisory()` over an excerpt of the message
+that started this, quoted from a real run rather than written by hand:
 
 ```
 ⚠️ Slack mrkdwn warning: this posted successfully, but Slack does NOT render
 it the way it was written. mrkdwn is not Markdown.
 
 • 3 tilde pair(s) — Slack has STRUCK THROUGH the text between each pair
-    "750 som each (~$9), 4–5 hrs. Leaves Karakol main bus…"
+    "750 som each ("
+    "500 som pp, or 2000–3000 som ("
+    "5000-7000 som for a 4x4; Naryn cars run"
   mrkdwn has no backslash escape: write "approx." or "≈", or wrap the value in `backticks`.
 
-To repair: slack_update_message with channel_id "C0BG98BRH7U" and message_ts
-"1786453389.428549". Note that chat.update caps text at 4,000 characters — a
-message long enough to post is not always short enough to edit.
+To repair: slack_update_message with channel_id "C0BG98BRH7U" and message_ts "1786453389.428549". Note that chat.update caps text at 4,000 characters — a message long enough to post is not always short enough to edit.
 ```
+
+Each quoted span ENDS at the closing tilde, which is why they read as fragments:
+that is exactly the run of text Slack ate. `test/mrkdwn.test.mjs` pins the first
+one character-for-character.
 
 An advisory is the only in-band signal available: the message has already
 posted, which is the whole shape of the failure.

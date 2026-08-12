@@ -33,7 +33,7 @@ export const MRKDWN_TEXT_GUIDANCE =
   'THE TRAP: "~" is the strikethrough delimiter, so a tilde meaning "approximately" ' +
   'pairs with the next tilde in the message and strikes through everything between them ' +
   '— write "approx." or "≈" instead, or wrap the value in backticks. ' +
-  'Bold is *one asterisk* (**two** posts the asterisks literally). Italic is _underscores_. ' +
+  'Bold is *one asterisk* (**two** leaves the extra asterisks showing). Italic is _underscores_. ' +
   'Links are <https://example.com|link text>, never [link text](https://example.com). ' +
   '`code` and ```code blocks``` work as expected. ' +
   'Headings (#), tables, and Markdown list syntax do NOT exist in mrkdwn and post as ' +
@@ -42,12 +42,13 @@ export const MRKDWN_TEXT_GUIDANCE =
 /** The same rules, formatted as the opening section of a tool description. */
 export const MRKDWN_TOOL_WARNING = `⚠️ FORMAT — Slack mrkdwn is NOT Markdown. Read this before composing text.
 
-- "~" is STRIKETHROUGH. Two tildes anywhere in the message pair up and strike
-  through everything between them. A tilde used as "approximately" ("~750 som",
-  "~$9") is the common way this goes wrong, it strikes through whole paragraphs,
-  and it does NOT error — the message posts and the tool reports success. Write
-  "approx." or "≈", or put the value in \`backticks\`.
-- Bold is *one asterisk*. **Two asterisks** posts the asterisks literally.
+- "~" is STRIKETHROUGH. A tilde followed by a non-space pairs with the next
+  tilde in the message and strikes through everything between them. A tilde
+  meaning "approximately" ("~750 som", "~$9") is the common way this goes wrong,
+  it strikes through whole paragraphs, and it does NOT error — the message posts
+  and the tool reports success. Write "approx." or "≈", or put the value in
+  \`backticks\`.
+- Bold is *one asterisk*. **Two asterisks** leaves the extra asterisks showing.
 - Italic is _underscores_.
 - Links are <https://example.com|link text>. [link text](https://example.com)
   posts as literal brackets and parentheses.
@@ -70,12 +71,17 @@ export interface MrkdwnFinding {
 
 /**
  * Slack resolves code spans BEFORE the inline formatting characters, so a tilde
- * inside `backticks` or a ```fence``` is literal and must not be reported. Each
- * span is replaced by a single space: two tildes separated only by a code span
- * really do pair up in Slack, and collapsing to a space preserves that.
+ * inside `backticks` or a ```fence``` is literal and must not be reported.
+ *
+ * Each span collapses to a NUL rather than to a space, and the difference
+ * matters at a delimiter's edge. Two tildes separated only by a code span really
+ * do pair up in Slack, and so does `~`code`` more~` — a space there would look
+ * like whitespace on the opening tilde's inner edge and suppress the finding.
+ * NUL cannot occur in the patterns' own character classes, so it reads as
+ * ordinary content everywhere else.
  */
 function stripCode(text: string): string {
-  return text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
+  return text.replace(/```[\s\S]*?```/g, '\u0000').replace(/`[^`\n]*`/g, '\u0000');
 }
 
 /**
@@ -83,15 +89,22 @@ function stripCode(text: string): string {
  * strikethrough), and strikethrough DOES span newlines — which is why one stray
  * tilde can take a paragraph with it.
  *
- * The closing edge is treated leniently on purpose. The cost of the two errors
- * is not symmetric: over-reporting spends a few lines of a tool result that the
- * caller can read and dismiss, while under-reporting ships a mangled message to
- * a channel of humans with a success result attached. When in doubt, warn.
+ * The closing edge is treated leniently on purpose, and the span is UNBOUNDED
+ * for the same reason. The cost of the two errors is not symmetric:
+ * over-reporting spends a few lines of a tool result that the caller can read
+ * and dismiss, while under-reporting ships a mangled message to a channel of
+ * humans with a success result attached. A length cap here would have missed
+ * exactly the case the module exists for — a pair with whole paragraphs between
+ * it — and `chat.postMessage` accepts far more text than any comfortable bound.
+ * A negated class with a lazy quantifier stays linear, so the cap bought nothing.
+ * When in doubt, warn.
  */
-const STRIKETHROUGH = /~(?=[^\s~])([^~]{0,4000}?)~/g;
+const STRIKETHROUGH = /~(?=[^\s~])([^~]*?)~/g;
 const DOUBLE_ASTERISK = /\*\*(?=[^\s*])([^*\n]{0,400}?[^\s*])\*\*/g;
-const MARKDOWN_LINK = /\[([^\]\n]{1,300})\]\((https?:\/\/[^)\s]{1,600})\)/g;
-const MARKDOWN_HEADING = /^[ \t]{0,3}#{1,6}[ \t]+(\S[^\n]{0,200})/gm;
+// Slack has no CommonMark, so neither the "at most 6 hashes" nor the "at most 3
+// leading spaces" rule applies: `####### x` and `      # x` both post literally.
+const MARKDOWN_LINK = /\[([^\]\n]{1,300})\]\(([^)\s]{1,600})\)/g;
+const MARKDOWN_HEADING = /^[ \t]*#+[ \t]+(\S[^\n]{0,200})/gm;
 
 const MAX_SAMPLES = 3;
 const SAMPLE_CHARS = 72;
@@ -104,7 +117,11 @@ function sample(span: string): string {
 function collect(text: string, rule: MrkdwnRule, pattern: RegExp): MrkdwnFinding | null {
   const samples: string[] = [];
   let count = 0;
-  // Each pattern is declared with /g and is re-scanned from the start here.
+  // The patterns are module-level /g objects shared by every mount in this
+  // process, and `lastIndex` is state on them. That is safe ONLY because this
+  // loop is synchronous by contract: Node runs it to completion before another
+  // caller's tool call resumes. Introduce an `await` in here and two concurrent
+  // callers will silently scan each other's offsets.
   pattern.lastIndex = 0;
   for (let m = pattern.exec(text); m !== null; m = pattern.exec(text)) {
     count += 1;

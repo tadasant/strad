@@ -2218,8 +2218,9 @@ exactly as quietly as the bug it is preventing.
 
 **Undo.** Copy `experimental/slack/shared/src` back over `fork/slack/src`,
 `git mv servers/bundle-api/fork/slack servers/bundle-api/upstream/slack`, restore
-the two `COPY` lines in `servers/bundle/Dockerfile` and
-`servers/bundle-api/Dockerfile`, point `loadApiTree` in
+the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
+`servers/bundle-api/Dockerfile` (the manifest one and the source one), point
+`loadApiTree` in
 `servers/bundle/host/src/index.ts` back at `upstream/${slug}/build/index.js`, and
 drop the `bundle_api` CI job. Tool names, tool count and the `slack` /
 `slack-readonly` policy split are unchanged by the fork, so nothing downstream
