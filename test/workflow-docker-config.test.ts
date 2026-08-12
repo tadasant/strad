@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -49,6 +56,7 @@ const MIN_LOGIN_JOBS = 9;
 interface Step {
   uses?: string;
   id?: string;
+  if?: unknown;
   name?: string;
   run?: string;
   with?: Record<string, unknown>;
@@ -85,8 +93,12 @@ function* jobs(): Generator<{ file: string; job: string; steps: Step[] }> {
   }
 }
 
+// The `@` is not required: an UNPINNED `uses: docker/login-action` logs in just
+// the same, and matching only the pinned spelling would make such a step
+// invisible to every assertion here while `found` stayed at nine.
 const isLogin = (s: Step) =>
-  s.uses?.startsWith("docker/login-action@") ?? false;
+  s.uses === "docker/login-action" ||
+  (s.uses?.startsWith("docker/login-action@") ?? false);
 const isSetup = (s: Step) =>
   s.uses?.startsWith("docker/setup-buildx-action@") ?? false;
 const isIsolate = (s: Step) => s.uses === ISOLATE;
@@ -96,8 +108,10 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
     let found = 0;
 
     for (const { file, job, steps } of jobs()) {
-      const login = steps.findIndex(isLogin);
-      if (login < 0) continue;
+      // EVERY login, not just the first: a second one later in the same job
+      // writes the same entry and would be ordered against nothing.
+      const logins = steps.flatMap((s, i) => (isLogin(s) ? [i] : []));
+      if (logins.length === 0) continue;
       found++;
 
       const isolate = steps.findIndex(isIsolate);
@@ -109,11 +123,21 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
           `out of.`,
       ).toBeGreaterThanOrEqual(0);
 
+      // A conditional isolate step satisfies every index check above and then
+      // does not run, which is the unisolated job with a green test.
       expect(
-        isolate,
-        `${file} (${job}) isolates its docker config AFTER logging in, so the ` +
-          `credential lands in the shared file and the isolated one is empty.`,
-      ).toBeLessThan(login);
+        steps[isolate]!.if,
+        `${file} (${job}) makes ${ISOLATE} conditional. It has to run on every ` +
+          `path that logs in, or the login it guards writes the shared file.`,
+      ).toBeUndefined();
+
+      for (const login of logins)
+        expect(
+          isolate,
+          `${file} (${job}) isolates its docker config AFTER logging in, so ` +
+            `the credential lands in the shared file and the isolated one is ` +
+            `empty.`,
+        ).toBeLessThan(login);
 
       // buildx keeps its builder metadata under `$DOCKER_CONFIG/buildx`. A
       // builder created before this step is recorded in one directory and torn
@@ -155,11 +179,11 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
     for (const { file, job, steps } of jobs())
       for (const step of steps.filter(isLogin))
         expect(
-          step.with?.logout,
+          step.with?.logout ?? true,
           `${file} (${job}) turns off \`logout\`. With DOCKER_CONFIG isolated ` +
             `the post-step logout only empties this job's own file, and ` +
             `skipping it leaves a live token behind on the runner.`,
-        ).toBeUndefined();
+        ).toBe(true);
   });
 });
 
@@ -180,13 +204,19 @@ describe("the isolation action puts the credential somewhere private", () => {
    * that mentions it in a comment and then writes `/tmp/docker`, which is the
    * shared path this whole file exists to forbid — and by an inverted guard,
    * which still reads fine.
+   *
+   * `-e -o pipefail` are the flags GitHub's default `shell: bash` supplies, and
+   * the step relies on them rather than setting its own. A plain `bash -c` here
+   * would run it under LOOSER rules than production: an unwritable RUNNER_TEMP
+   * aborts the step on the runner and would sail through this test, exporting a
+   * DOCKER_CONFIG that names a directory `mkdir` never created.
    */
   const run = (runnerTemp: string): { status: number; env: string } => {
     const home = mkdtempSync(join(tmpdir(), "docker-config-"));
     const githubEnv = join(home, "github.env");
-    execFileSync("bash", ["-c", `: > ${JSON.stringify(githubEnv)}`]);
+    writeFileSync(githubEnv, "");
     try {
-      execFileSync("bash", ["-c", step!.run!], {
+      execFileSync("bash", ["-e", "-o", "pipefail", "-c", step!.run!], {
         env: {
           ...process.env,
           RUNNER_TEMP: runnerTemp,
@@ -200,19 +230,32 @@ describe("the isolation action puts the credential somewhere private", () => {
         status: (e as { status?: number }).status ?? -1,
         env: readFileSync(githubEnv, "utf8"),
       };
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   };
 
   it("exports a DOCKER_CONFIG under the runner's own temp directory", () => {
     const temp = mkdtempSync(join(tmpdir(), "runner-temp-"));
-    const { status, env } = run(temp);
+    try {
+      const { status, env } = run(temp);
 
-    expect(status, `${MANIFEST} failed with a RUNNER_TEMP set`).toBe(0);
-    expect(
-      env.trim(),
-      `${MANIFEST} does not export a DOCKER_CONFIG under \`$RUNNER_TEMP\`, so ` +
-        `the credential stays in a directory the whole box shares.`,
-    ).toBe(`DOCKER_CONFIG=${temp}/docker`);
+      expect(status, `${MANIFEST} failed with a RUNNER_TEMP set`).toBe(0);
+      expect(
+        env.trim(),
+        `${MANIFEST} does not export a DOCKER_CONFIG under \`$RUNNER_TEMP\`, ` +
+          `so the credential stays in a directory the whole box shares.`,
+      ).toBe(`DOCKER_CONFIG=${temp}/docker`);
+
+      // …and it must EXIST. `docker login` creates a missing config directory,
+      // but `docker buildx` reading a builder record out of one does not.
+      expect(
+        existsSync(`${temp}/docker`),
+        `${MANIFEST} exports a DOCKER_CONFIG it never created.`,
+      ).toBe(true);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 
   it("refuses rather than falling back to a shared path", () => {

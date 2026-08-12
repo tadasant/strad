@@ -1322,6 +1322,15 @@ job deleting the shared credential while leaving it overwriting one, and leave a
 live token on the runner. `test/workflow-docker-config.test.ts` fails the PR that
 drops any of them.
 
+**What a fresh config directory does not inherit.** `~/.docker` also holds
+`cli-plugins/` — buildx is a CLI plugin — plus `contexts/`, `currentContext` and
+`proxies`, and an isolated directory starts without them. On this runner that
+costs nothing, checked rather than assumed: `docker info` reports buildx at
+`/usr/libexec/docker/cli-plugins/docker-buildx`, the system path the CLI searches
+whatever `DOCKER_CONFIG` says, and `Context: default`. Re-check if the runner is
+ever rebuilt with a rootless or hand-installed docker, where buildx lives in
+`$HOME` and the daemon is chosen by a context.
+
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
 than the longest — the bundle alone is ten dependency trees. Isolation costs a

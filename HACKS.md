@@ -2398,10 +2398,27 @@ the job carries the least.
 `DOCKER_CONFIG=$RUNNER_TEMP/docker` through `$GITHUB_ENV`, and every job that logs
 in calls it first. `RUNNER_TEMP` is per runner installation and emptied between
 jobs — the same private-path argument `deploy-staging.yml` makes for
-`$RUNNER_TEMP/spec.json` (#18's neighbour, the `/tmp/spec.json` collision). One
-variable moves the docker CLI, BOTH of `docker/login-action`'s steps and buildx's
-auth provider together, so the post-step logout stays on and empties only this
-job's own file.
+`$RUNNER_TEMP/spec.json` (#47, the `/tmp/spec.json` collision). One variable
+moves the docker CLI, BOTH of `docker/login-action`'s steps and buildx's auth
+provider together, so the post-step logout stays on and empties only this job's
+own file.
+
+**What a fresh config directory does NOT inherit, and why that is safe here.**
+`~/.docker` holds more than `auths`: `cli-plugins/` (buildx IS a CLI plugin),
+`contexts/` and `currentContext`, `proxies`, `credHelpers`. An isolated directory
+starts empty, so a box that kept any of those in `$HOME` would lose them — and a
+buildx the CLI cannot find would fail every release job on `main`, on the first
+run after the merge, since nothing on the PR path executes these workflows.
+Checked against the runner's own log rather than assumed
+([run 31561342124](https://github.com/tadasant/strad/actions/runs/31561342124)):
+`docker info` reports `Path: /usr/libexec/docker/cli-plugins/docker-buildx` — the
+system plugin directory, which the CLI searches regardless of `DOCKER_CONFIG` —
+and `Context: default`, so there is no context to carry either. **Re-check both if
+the runner is ever rebuilt with a rootless or manually-installed docker**, where
+buildx lands in `~/.docker/cli-plugins` and the daemon is selected by a context.
+Seeding the directory from `$HOME` would be the fix, minus `credsStore` and
+`credHelpers` — a credential helper is box-wide state and would put this race
+straight back.
 
 Three details are load-bearing, and each is a line away from being gone:
 
