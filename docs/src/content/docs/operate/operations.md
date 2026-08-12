@@ -150,6 +150,38 @@ action, and fails the PR that drops either half. See
 
 </aside>
 
+<aside class="starlight-aside starlight-aside--note">
+
+**Why every job logs in to its own docker config.** The pointer is not the only
+box-wide file in `$HOME`. `~/.docker/config.json` holds the registry credential,
+and nine jobs here run `docker/login-action` against ghcr — each writing
+`auths["ghcr.io"]` with its own job's `GITHUB_TOKEN`, and each running `docker
+logout ghcr.io` in a post step, because `logout: true` is that action's default.
+So the last job to log in owns the credential every concurrent build pushes with,
+and the first job to finish deletes it.
+
+A buildx CLI reads that file once, at startup, and a long build pushes with
+whatever it read. On 2026-08-12 the bundle release loaded a sibling job's token,
+pushed with it three minutes later — 78 seconds after that job had ended and
+GitHub had revoked it — and then retried twice against a file a second job's
+logout had emptied, asking ghcr for an anonymous token and taking two 403s. Three
+attempts, three refusals, `main` red, and nobody had touched the package's
+permissions. The two sibling image jobs in that same push both succeeded: the bug
+selects for the slowest build, which is always the bundle.
+
+So every job that logs in calls `./.github/actions/docker-config` first, which
+points `DOCKER_CONFIG` at `$RUNNER_TEMP/docker` — per runner installation, and
+emptied between jobs, the same private-path argument the deploy makes for its
+rendered spec. One variable moves the CLI, both of `docker/login-action`'s steps
+and buildx's auth provider together, so the post-step logout stays on and empties
+only this job's own file. It is called before `docker/setup-buildx-action` as well
+as before the login, since buildx keeps its builder metadata in the same
+directory. `test/workflow-docker-config.test.ts` fails the PR that drops it,
+reorders it, or hand-rolls a `docker login` in a `run:` block. See
+[limitations #57](/limitations/#57-the-ghcr-credential-is-a-box-wide-file-and-the-slowest-build-loses-it).
+
+</aside>
+
 ## `release-image.yml` — mint and ship
 
 Runs on push to `main` (ignoring `**/*.md` and `docs/**`) and on `workflow_dispatch`.
