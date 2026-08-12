@@ -37,14 +37,19 @@ Runs on PRs and pushes to `main`. Fifteen jobs, all `runs-on: self-hosted`:
   and its tests pin the two things that decide one: `is_sensitive` picks the kind of
   link, and GCS's 7-day V4 ceiling is what forces V2 for the 14-day default.
 - **`bundle_api`** — `npm ci`, `npm run build`, `npm test` over the `bundle-api`
-  tree. Five of its six servers are verbatim vendor copies and get no tests here,
-  for the reason the `onepassword` job below spells out. The sixth, `slack`, is a
-  **fork** — see [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta).
-  Slack renders mrkdwn, mrkdwn is not Markdown, `~text~` is strikethrough, and a
-  message using `~` for "approximately" posts successfully with paragraphs struck
-  out. The fork's write tools lead with that rule and warn in the tool result
-  after the fact. That delta has no sync script and no upstream to diff against,
-  so its tests are what stops a re-vendor from silently reverting it.
+  tree. Four of its six servers are verbatim vendor copies and get no tests here,
+  for the reason the `onepassword` job below spells out. The other two are
+  **forks**, and neither has a sync script or an upstream to diff against, so
+  their tests are the only thing that stops a re-vendor from silently reverting
+  them. `slack` — see [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
+  renders mrkdwn, which is not Markdown: `~text~` is strikethrough, so a message
+  using `~` for "approximately" posts successfully with paragraphs struck out,
+  and the fork's write tools lead with that rule and warn in the tool result
+  after the fact. `google-flights` — see [limitations #58](/limitations/#58-the-google-flights-date-grid-costs-one-request-per-date-and-two-of-its-fields-are-not-trustworthy) —
+  fixes three defects that each returned a confident wrong answer: cabin class
+  and passenger counts encoded at protobuf field numbers Google skips as unknown,
+  baggage flags read in the wrong order, and a date grid that returned a trailing
+  price history instead of future departures.
 - **`onepassword`** and **`pointsyeah`** — build-only jobs, one per tree: `npm ci`
   then `npm run build`, which is `tsc` over every workspace in the ordering the
   image's Dockerfile uses. There is no test step, and that is deliberate: the

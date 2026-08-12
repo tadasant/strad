@@ -75,9 +75,11 @@ export function searchFlightsTool(_server: Server, clientFactory: FlightsClientF
 
 Returns structured flight data including prices, airlines, times, durations, stops, individual flight segments with aircraft type and legroom, fare brand (e.g. "Economy", "Economy+", "Economy Flex"), and fare extensions (carry-on and checked bag inclusion).
 
-The fare_brand field indicates the fare tier: "Economy" (basic/lowest tier), "Economy+" (mid-tier with extras), or "Economy Flex" (higher tier with more flexibility). This is derived from Google's numeric fare tier data and may be null if unavailable. Use the extensions field (carry_on_included, checked_bags_included) for concrete amenity details.
+The fare_brand field indicates the fare tier WITHIN the requested cabin: "Economy" (lowest tier), "Economy+" (mid-tier), or "Economy Flex" (higher tier). It is derived from Google's numeric fare tier data and may be null. It does NOT name the cabin — a business-class search returns business fares whose tier still reads "Economy Flex". The cabin you get is the seat_class you asked for; the query block echoes it back.
 
-By default, basic economy fares (fare_brand "Economy") are excluded from results since they typically have significant restrictions (no carry-on, no seat selection, non-refundable). Set exclude_basic_economy to false to include all fare tiers.
+The extensions field reports baggage: checked_bags_included (a count) and carry_on_included (a boolean). Either may be null, which means Google stated nothing for that fare — null is NOT "not included", and should be reported as unknown rather than as zero. Google commonly omits checked-bag information entirely on international itineraries.
+
+By default, basic economy fares are excluded: the lowest fare tier with no free carry-on. Set exclude_basic_economy to false to include all fare tiers.
 
 IMPORTANT — Handling large result sets: Popular routes often return 50-150+ flights. If total_results is high, recommend narrowing with filters (max_stops, sort_by, seat_class) rather than paginating through everything. For example, set max_stops to "nonstop" or sort_by to "price" to surface the most relevant options quickly.
 

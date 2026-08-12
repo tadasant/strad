@@ -11,7 +11,7 @@ single internal Node process:
 | `tailscale` | Tailscale VPN | policy / devices / keys |
 | `monarch-money` | Monarch Money | personal finance |
 | `gcs` | Google Cloud Storage | object storage |
-| `google-flights` | Google Flights | flight search |
+| `google-flights` | Google Flights (**forked** — see [`fork/google-flights/FORK.md`](fork/google-flights/FORK.md)) | flight search |
 
 None of these drives a browser or spawns a subprocess — they are all HTTP/API
 wrappers — so unlike [good-eggs](../good-eggs) (which needs a Chromium base and
@@ -22,10 +22,11 @@ marginal cost each.
 
 ```
 servers/bundle-api/
-  upstream/<slug>/   # VENDORED VERBATIM from pulsemcp/mcp-servers@44f32a32
-                     #   (each server's shared/ tool-logic factory)
-  fork/slack/        # FORKED from the same monorepo @b1f13fe, and edited here
-  remote/            # NEW streamable-HTTP host over all six createMCPServer()s
+  upstream/<slug>/       # VENDORED VERBATIM from pulsemcp/mcp-servers@44f32a32
+                         #   (each server's shared/ tool-logic factory)
+  fork/slack/            # FORKED from the same monorepo @b1f13fe, and edited here
+  fork/google-flights/   # FORKED from google-flights-mcp-server@0.2.6
+  remote/                # NEW streamable-HTTP host over all six createMCPServer()s
   Dockerfile         # node:22-slim -> ghcr.io/tadasant/strad-bundle-api
 ```
 
@@ -37,18 +38,28 @@ logic is reimplemented**. It swaps stdio for an Express front door speaking
 server at `/<slug>`. strad's core gateway proxies to it over the private network
 at `${bundle-api.PRIVATE_URL}/<slug>`.
 
-`fork/slack` is the one exception, and it sits under a different directory so
-that the exception is visible from the path. Both hashes above are repo HEADs at
-the moment a copy was taken, not commits that touched the server in question —
-`b1f13fe` is simply where slack was last verified byte-identical to upstream,
-which is the version the fork diverges from. Slack's message format is mrkdwn,
-not Markdown, `~text~` is strikethrough, and a message that uses `~` as an
-"approximately" sign posts successfully with whole paragraphs struck through —
-no error, anywhere. Upstream's write tools call the format "Slack markdown" and
-never mention the tilde, so the fix has to live in the tool definitions. What
-changed, and why it warns rather than rewrites, is in
-[`fork/slack/FORK.md`](fork/slack/FORK.md). `npm test` at this level runs the
-fork's suite, which is what stops a re-vendor from quietly reverting it.
+`fork/` holds the two exceptions, under a different directory so that the
+exception is visible from the path. Hashes and versions above are the points a
+copy was last verified identical to upstream, which is what each fork diverges
+from — not commits that touched the server in question.
+
+**`fork/slack`.** Slack's message format is mrkdwn, not Markdown, `~text~` is
+strikethrough, and a message that uses `~` as an "approximately" sign posts
+successfully with whole paragraphs struck through — no error, anywhere.
+Upstream's write tools call the format "Slack markdown" and never mention the
+tilde, so the fix has to live in the tool definitions. What changed, and why it
+warns rather than rewrites, is in [`fork/slack/FORK.md`](fork/slack/FORK.md).
+
+**`fork/google-flights`.** Three defects that each returned a confident, wrong
+answer with no error attached: cabin class and passenger counts were encoded at
+protobuf field numbers Google skips as unknown fields (so every search was
+economy, one adult), the two baggage entries were read in the wrong order, and
+`get_date_grid` returned a trailing 61-day price HISTORY rather than future
+departure dates. Details and the evidence for each are in
+[`fork/google-flights/FORK.md`](fork/google-flights/FORK.md).
+
+`npm test` at this level runs both forks' suites, which is what stops a
+re-vendor from quietly reverting either.
 
 Per request we mint a fresh, stateless MCP `Server` + transport and reuse the
 factory's `registerHandlers`. Each factory is created ONCE at startup (tailscale
@@ -118,6 +129,6 @@ The same slug-prefixed form works for every toggled server
 
 ```
 npm ci
-npm run build   # builds every upstream/ workspace, then remote/
+npm run build   # builds every fork/ and upstream/ workspace, then remote/
 node remote/build/index.js
 ```

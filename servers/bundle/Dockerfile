@@ -42,7 +42,7 @@ COPY servers/bundle-api/upstream/serpapi-hotels/package.json ./upstream/serpapi-
 COPY servers/bundle-api/upstream/tailscale/package.json ./upstream/tailscale/
 COPY servers/bundle-api/upstream/monarch-money/package.json ./upstream/monarch-money/
 COPY servers/bundle-api/upstream/gcs/package.json ./upstream/gcs/
-COPY servers/bundle-api/upstream/google-flights/package.json ./upstream/google-flights/
+COPY servers/bundle-api/fork/google-flights/package.json ./fork/google-flights/
 COPY servers/bundle-api/remote/package.json ./remote/
 RUN npm ci --no-audit --no-fund
 COPY servers/bundle-api/fork ./fork

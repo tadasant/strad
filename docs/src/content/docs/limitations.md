@@ -1080,10 +1080,10 @@ publish `shared` and the elicitation library as real packages.
 
 ### 55. The slack server is a fork, and only its tests defend the delta
 
-`servers/bundle-api/fork/slack/` is the one server tree in this repo that is a
-FORK rather than a vendor copy. Five of the six servers in `bundle-api` sit in
-`upstream/` and are copied verbatim; slack sits in `fork/`, and strad has edited
-its tool definitions.
+`servers/bundle-api/fork/slack/` is a FORK rather than a vendor copy. Four of the
+six servers in `bundle-api` sit in `upstream/` and are copied verbatim; slack
+sits in `fork/` alongside `google-flights` (#58), and strad has edited its tool
+definitions.
 
 The reason is Slack's message format. Slack renders **mrkdwn**, mrkdwn is not
 Markdown, and `~text~` is strikethrough — so an agent writing `~750 som` and
@@ -1427,6 +1427,58 @@ otherwise be one variable; no slug in any strad config has ever used either shap
 **Undo:** `HACKS.md` #56.
 
 ---
+
+### 58. The google-flights date grid costs one request per date, and two of its fields are not trustworthy
+
+`servers/bundle-api/fork/google-flights/` is the second fork in that tree (#55 is
+the first), taken from the published `google-flights-mcp-server` v0.2.6. It fixes
+three defects that all shipped a confident, wrong answer with no error attached:
+cabin class and passenger counts encoded at protobuf field numbers Google skips
+as unknown fields, so every search was economy and one adult; the two baggage
+entries read in the wrong order; and a `get_date_grid` that returned a trailing
+61-day price _history_ instead of future departure dates. `FORK.md` in that
+directory carries the evidence. What follows is what remains.
+
+**The grid is one request per date.** Google's search response contains no
+forward-looking grid to read — the only future date in the whole document is the
+anchor the caller asked for — so the grid is built by searching each date in
+turn, rate-limited and in sequence. A date costs `max(1.5s, Google's own response
+time)` — measured at 7.2s for five dates, so the 7-day default lands near ten
+seconds, and a slow Google raises it rather than being absorbed by the gap.
+`window_days` caps at 31 and the grid abandons at a 55s budget,
+reporting unreached dates: the MCP SDK's default request timeout is 60s, and a
+client that gives up does not stop the loop. Sequencing is deliberate too — a
+burst against someone else's page is the quickest way to get the tool blocked
+outright.
+
+**Cost:** a genuinely wide date search is not something this tool can serve. The
+honest answer to "cheapest month" is several calls, and the tool says so rather
+than returning a fast grid of the wrong dates.
+
+**Two fields are reported as unknown rather than guessed.**
+`segments[].legroom` is populated on economy offers and absent on the premium
+offers this fork can now retrieve, so business and first report `null`. And
+`fare_brand` names a tier _within_ the requested cabin, not the cabin: a
+business-class result whose tier reads `"Economy Flex"` is not an economy fare.
+Both are documented in the tool description instead of being smoothed over with a
+plausible transformation — the same call the baggage parser makes when it reports
+an absent entry as `null` rather than as zero.
+
+**Cost:** a caller that wants premium legroom, or a human-readable fare name,
+does not get one from this server.
+
+**Only its tests defend the delta,** exactly as with #55. A re-vendor that pastes
+the published package over `fork/google-flights/src` reverts every fix silently.
+`fork/google-flights/test/fork.test.mjs`, run on every PR by `ci.yml`'s
+`bundle_api` job, asserts the encoded `tfs` bytes rather than a round-trip
+through this repo's own schema — a round-trip passes on the broken numbering,
+since the bug was a disagreement with a schema that lives at Google — and asserts
+the grid's window as literal dates, because which dates came back was the bug.
+
+**Undo:** move the tree back under `upstream/`, restore the Dockerfile `COPY`
+lines and `loadApiTree`'s path, and drop `fork/google-flights` from the
+`bundle-api` workspaces, build and test scripts. Tool names and tool count are
+unchanged by the fork.
 
 ## What the human still needs to provision
 

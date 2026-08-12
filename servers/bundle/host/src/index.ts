@@ -367,7 +367,7 @@ async function loadApiTree(): Promise<ApiTree> {
   const mod = async (slug: string): Promise<{ createMCPServer: Factory }> =>
     loadFromTree("bundle-api", `upstream/${slug}/build/index.js`);
 
-  // slack is the one server in that tree strad FORKED rather than vendored
+  // slack is one of two servers in that tree strad FORKED rather than vendored
   // verbatim — its write tools carry the Slack-mrkdwn rules and a post-hoc
   // advisory that upstream does not have. It builds from fork/, not upstream/.
   // See servers/bundle-api/fork/slack/FORK.md.
@@ -377,7 +377,16 @@ async function loadApiTree(): Promise<ApiTree> {
   const serpapi = await mod("serpapi-hotels");
   const tailscale = await mod("tailscale");
   const gcs = await mod("gcs");
-  const flights = await mod("google-flights");
+
+  // google-flights is the other fork. Upstream's protobuf numbered two Info
+  // fields wrong, so Google silently ignored cabin class AND passenger counts;
+  // its baggage flags were read in the wrong order; and its date grid returned a
+  // trailing price HISTORY rather than future departure dates. All three are
+  // fixed here. See servers/bundle-api/fork/google-flights/FORK.md.
+  const flights = (await loadFromTree(
+    "bundle-api",
+    "fork/google-flights/build/index.js",
+  )) as { createMCPServer: Factory };
 
   const monarchMod = (await loadFromTree(
     "bundle-api",
