@@ -89,10 +89,12 @@ seventeen `path`s on one container.
 Two servers may also share a `path` in one bundle — that is the capability-variant
 pattern (`gmail-ro` and `gmail-rw`, told apart by their `tools:` policy). What they
 cannot share is a value: a bundle is one `process.env`, so two servers in one
-bundle declaring the same `env:` key with **different** values is a schema error —
-and two whose `${NAME}` is spelled the same but resolves differently, out of
-[their own namespaces](/operate/secrets/#two-servers-one-variable-name), is a
-render error. Two values for one name means two bundles.
+bundle declaring the same `env:` key with **different** values is a schema error,
+and two whose `${NAME}` is spelled the same but resolves differently out of
+[their own namespaces](/operate/secrets/#two-servers-one-variable-name) is a
+render error — for servers that share a `path`. A slug on a path of its own
+(`path: /<its own slug>`) is a separate instance in the container and can be given
+[variables of its own](/operate/secrets/#where-the-two-values-actually-land).
 
 Fields: `image` (required), `bundle` (required), `path` (defaults to `/mcp`, must
 start with `/`), `env` and `headers` (maps whose values may be `${NAME}` secrets),
@@ -146,9 +148,11 @@ plus two that shape how this server gets its values:
   substitution injects only names the config already references.
 
   Whether two servers on **one bundle** can then hold two values for one name is
-  decided by `path:`, not by the namespace: two slugs on two paths are two
-  instances in the container and each gets its own `<SLUG>__<NAME>`; two slugs on
-  one path are one instance, and the render fails rather than pick a winner.
+  decided by `path:`, not by the namespace. A slug that is the only one on its
+  path, and whose path is `/<its own slug>`, can be its own instance in the
+  container and gets its variables under `<SLUG>__<NAME>` as well as the bare
+  ones; two slugs on one path are one instance, and the render fails rather than
+  pick a winner.
 
 ```yaml
 servers:

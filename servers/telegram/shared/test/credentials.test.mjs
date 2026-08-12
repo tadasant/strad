@@ -161,9 +161,10 @@ test("an instance reads the environment it was handed, not the process's", async
 test("two instances in one process do not share a tool surface", async () => {
   // The capability half of the same property: what each instance serves comes
   // from ITS env, so a per-slug value cannot bleed across.
-  // Both halves discriminate: the process says the OPPOSITE of each injected
-  // value, so an instance that reached for the global would fail its assertion
-  // rather than pass it by coincidence.
+  // The process says "readonly"; the rw instance is injected "readwrite". An
+  // instance that reached for the global would serve five tools where six are
+  // asserted, so the rw half is what makes this discriminating — the ro half
+  // pins that the injected value is honoured at all.
   await withProcessEnv({ ENABLED_TOOLGROUPS: "readonly" }, async () => {
     const ro = await open({ env: { ...CREDS, ENABLED_TOOLGROUPS: "readonly" } });
     const rw = await open({

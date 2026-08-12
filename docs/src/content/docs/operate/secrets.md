@@ -307,41 +307,53 @@ namespace.
 
 A namespace decides which value a server _resolves_. It does not decide where the
 value can _go_ — a bundle is a component is a container with one `process.env`,
-and one name holds one value. So a second value gets a second name:
+and one name holds one value. So a second value gets a second set of names:
 
-| On the box                       | Carries                                                               |
-| -------------------------------- | --------------------------------------------------------------------- |
-| `TELEGRAM_API_HASH`              | The value of the **first server that declared it**. Read by everyone. |
-| `TELEGRAM_RW__TELEGRAM_API_HASH` | `telegram-rw`'s value, because it resolved a different one.           |
+| On the box                       | Read by                                                      |
+| -------------------------------- | ------------------------------------------------------------ |
+| `TELEGRAM_API_HASH`              | Every server on the bundle. Unchanged, and never taken away. |
+| `TELEGRAM_RW__TELEGRAM_API_HASH` | The `telegram-rw` instance only.                             |
 
 The per-slug name is the slug uppercased with `-` turned into `_`, joined to the
 variable with `__`. A server reads its own name first and falls back to the bare
-one, so a server that agrees — or that nobody seeded — reads exactly what it
-always read.
+one, so a server that has none reads exactly what it always read.
 
-**Nothing is ever taken away.** The bare name keeps the first-declared value, and
-only a DISSENTER gets a name of its own. That matters more than it sounds: the
-obvious design drops the contested bare name, and the drop is bundle-wide while
-the disagreement is between two servers — so a third server that never disagreed
-with anyone loses a variable it reads. Adding a slug would break slugs that
-already worked. Because nothing is removed, a config that contests nothing renders
-byte for byte what it rendered before.
+**A path is a mount.** The bundle host serves one instance per path, so every slug
+on one path shares one upstream process and one set of credentials. A slug can be
+given variables of its own only if the host can be made to build a separate
+instance for it, which needs all three of:
 
-Two things have to be true for a dissenter, and both are checked at render:
+1. **It is the only slug on its path**, and
+2. **that path is `/<its own slug>`** — the host mounts a discovered slug at the
+   slug, having no config to read a path out of — and
+3. **the slug mangles to a usable variable name** (so not one starting with a
+   digit).
 
-1. **`path: /<slug>`, exactly.** The bundle host serves a mount per path and
-   builds one instance per slug it finds a per-slug variable set for — mounted at
-   the slug, because it never sees strad's config. A dissenter on any other path
-   would route to the mount that holds the _first_ server's credential and run as
-   the wrong account, so `render-spec` refuses it.
-2. **A tree that reads an injected environment.** `telegram` and
-   `remote-filesystem` do. The other trees in the bundle image read `process.env`
-   directly, so they see the bare name only — which is why they are never the
-   dissenter. See
-   [limitations #55](/limitations/#55-a-per-slug-variable-name-is-minted-for-the-dissenter-only).
+A group that fails any of those — capability variants sharing `/gmail`, a server
+on a conventional path — can only ever read the bare name, so the bare name is
+theirs and `render-spec` refuses a config where two such groups need different
+values.
 
-A slug that cannot mangle to a usable variable name (one starting with a digit) is
-refused as a dissenter for the same reason: there would be no name to give it.
+**Nothing is ever taken away.** Only a server that can have its own instance gets
+its own names, and it gets its **whole** `env:` under them, not just the variables
+it disagrees about — the host identifies a slug by finding a complete set of its
+server's required variables, and two Telegram accounts normally share one Telegram
+application, so often only the session string differs. Emitting just that one name
+would leave the host discovering nothing and mounting nothing at the path the
+render had made mandatory.
+
+**Seeding the namespace is what turns it on, not the values being unequal.** A
+slug that is a mount of its own and has anything under
+`/strad/{env}/mcp/{slug}/static/` gets per-slug names — whether or not its value
+differs from its neighbour's. Keying on inequality would mean re-seeding a slug to
+the same credential silently dropped its names, and with them the instance the
+host mounts for it: a secret-store edit would take a working slug off the air with
+a clean render. And once any slug on a bundle has them, **every** mount-of-its-own
+on that bundle gets them, so two slugs on two paths can never end up one mounted
+and one not.
+
+Everything else renders exactly as it did. A deployment that has seeded no
+per-server namespace produces a byte-identical app spec.
 
 :::caution[Two slugs on one path is still one credential]
 `render-spec` **fails the deploy** when two slugs that share a `path:` resolve one

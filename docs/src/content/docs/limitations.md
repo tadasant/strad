@@ -1315,44 +1315,49 @@ shows the mount at all.
 `-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`
 lines.
 
-### 55. A per-slug variable name is minted for the dissenter only
+### 55. Per-slug variable names reach two of the ten trees, and only a mount of its own
 
-A supplementary server's variable can land on the container under a name derived
-from its slug — `TELEGRAM_RW__TELEGRAM_API_HASH` — which is what lets one
-container hold two values for one variable. Three limits travel with it.
+A supplementary server's variables can land on the container under names derived
+from its slug — `TELEGRAM_RW__TELEGRAM_API_HASH` — which is what lets one container
+hold two values for one variable. Four limits travel with it.
 
-**Only a dissenter gets one.** The bare name belongs to the first server that
-declared it and is never removed or repointed; a server that resolves a
-_different_ value gets a name of its own. So whether
-`TELEGRAM_RW__TELEGRAM_API_HASH` exists on the box depends on what some _other_
-server was seeded, and which server keeps the bare name depends on config order.
-Both are deliberate: the alternative is dropping the contested bare name, which is
-bundle-wide while the disagreement is between two servers — a third server that
-never disagreed would lose a variable it reads, so adding a slug would break slugs
-that already worked. Nothing is removed, so a config that contests nothing renders
-byte for byte what it rendered before.
+**Only a slug that can be its own mount gets them**: the only slug on its path,
+that path being `/<its own slug>`, and a slug that mangles to a usable variable
+name. The bundle host mounts a discovered slug at the slug, having no config to
+read a path out of, so anything else would route to a different mount and read the
+other server's credential — `render-spec` refuses that rather than shipping it.
+Capability variants sharing one path (`gmail-ro` / `gmail-rw` / `gmail-rw-external`
+on `/gmail`) are one mount by definition and can never have their own; two such
+groups needing different values is refused too.
 
-**Only `telegram` and `remote-filesystem` can be the dissenter.** A per-slug name
-means nothing unless the server reads an injected environment rather than
-`process.env`, and eight of the ten trees in the bundle image are vendored
-upstream code that reads globals — often lazily, at call time. Those trees see the
-bare name only. Nothing stops you configuring one of them as a dissenter; it will
-render, and that slug will simply not see its value.
+**Only `telegram` and `remote-filesystem` can read one.** A per-slug name means
+nothing unless the server reads an injected environment rather than `process.env`,
+and eight of the ten trees in the bundle image are vendored upstream code that
+reads globals — often lazily, at call time. The renderer cannot tell which tree an
+image contains, so nothing stops you configuring a slug of another tree this way:
+it will render, the `::warning::` will name it, and that slug will serve nothing,
+because the image has no mount at its path. Reachability reports the deployment
+`degraded`, which is where you would see it.
 
-**`remote-filesystem` ends up double-prefixed.** A second slug of it would read
+**A `params: true` server cannot have its own.** A managed parameter's name comes
+from its path in the store rather than from `env:`, so it never enters this
+reasoning; two servers contributing one variable where either is a parameter still
+hits the older shadow error. The motivating deployment is in exactly that state —
+prod's `telegram-ro` is `params: true` — so adopting this there means moving that
+slug to explicit `env:` refs first.
+
+**`remote-filesystem` ends up double-prefixed.** A second slug of it reads
 `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. The inner prefix
 keeps that server off the bare `GCS_*` names, which belong to the `gcs` server in
 the same container; the outer one separates two instances. Collapsing them would
 make a missing per-slug value fall back to the `gcs` server's bucket.
 
-Three smaller edges. A dissenter must be configured `path: /<slug>` — the bundle
-host mounts a per-slug instance at the slug, having no config to read a path out
-of — and `render-spec` refuses anything else rather than let it route to the mount
-holding the other server's credential. A slug may no longer contain `--`, or lead
-or trail with `-`, because `a--b` + `C` and `a` + `B__C` would otherwise be one
-variable; no slug in any strad config has ever used either shape. And a slug
-starting with a digit cannot be a dissenter at all (`1PASSWORD` is not a portable
-variable name) — it is refused by name.
+Two smaller edges. The console's presence probe asks the bundle about **bare**
+names only, so for a slug with its own names `/ui/secrets` reports the bare
+variable healthy — which it is — and says nothing about whether the per-slug name
+the server actually reads is present. And a slug may no longer contain `--`, or
+lead or trail with `-`, because `a--b` + `C` and `a` + `B__C` would otherwise be
+one variable; no slug in any strad config has ever used either shape.
 
 **Undo:** `HACKS.md` #55.
 

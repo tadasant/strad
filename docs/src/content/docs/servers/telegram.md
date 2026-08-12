@@ -70,10 +70,11 @@ Both point at the same **mount** — one `path:`, one instance, one MTProto
 connection built once from one set of credentials and memoised for the life of
 the process. That is why the two slugs cannot be two accounts as written: the
 mount has no idea which slug a request arrived under, since the only per-slug
-thing on the wire is the path. Giving each its own `path:` makes the bundle host
-build one instance per slug, each reading
-[its own variables](/operate/secrets/#where-the-two-values-actually-land) —
-`TELEGRAM_RO__TELEGRAM_API_HASH` and `TELEGRAM_RW__TELEGRAM_API_HASH` — off one
+thing on the wire is the path. Giving each its own `path:` — `/telegram-ro` and
+`/telegram-rw`, matching the slug exactly — and seeding either one's own
+namespace makes the bundle host build one instance per slug, each reading
+[its own variables](/operate/secrets/#where-the-two-values-actually-land)
+(`TELEGRAM_RO__TELEGRAM_API_HASH`, `TELEGRAM_RW__TELEGRAM_API_HASH`) off one
 container. As long as they share a path they share an account, which is the
 arrangement today and the correct one while there is one account to share.
 

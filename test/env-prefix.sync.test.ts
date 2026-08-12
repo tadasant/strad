@@ -59,8 +59,14 @@ describe("the marker names the bundle host looks for", () => {
       "servers/remote-filesystem/shared/src/config.ts",
       "utf8",
     );
-    expect(config).toContain("REMOTE_FILESYSTEM_TMP_PUBLIC");
+    // The tree owns the SUFFIX and the host owns the prefix, so the marker name
+    // only exists as the two of them composed. Assert each half where it is
+    // actually declared — the tree's prefix appears in its config.ts only in a
+    // comment, so grepping for that would survive the rename it exists to catch.
     expect(config).toContain('bucket: "GCS_BUCKET"');
+    expect(host).toContain(
+      'REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC"',
+    );
     expect(host).toContain("REMOTE_FS_ENV_PREFIX}_GCS_BUCKET");
   });
 });

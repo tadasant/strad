@@ -2233,96 +2233,108 @@ the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
 drop the `bundle_api` CI job. Tool names, tool count and the `slack` /
 `slack-readonly` policy split are unchanged by the fork, so nothing downstream
 moves either way.
-## 56. A per-slug box name is minted for the dissenter only
 
-**What.** A supplementary server's `env:` variable can now land on the container
-under a name derived from its slug — `TELEGRAM_RW__TELEGRAM_API_HASH` — so one
-container can hold two values for one variable. Three things bound it, and all
-three are deliberate.
 
-**Only a DISSENTER gets one, and nothing is ever taken away.** The bare name
-belongs to the first server that declared it and keeps that value; a server whose
-`env:` resolves that name to a DIFFERENT value gets a name of its own. The obvious
-design is the other one — drop the contested bare name, since it can only be one
-of the two — and it is wrong for a reason worth writing down: the drop is
-BUNDLE-WIDE while the disagreement is between two servers. `gmail-ro`, `gmail-rw`
-and `gmail-rw-external` share a path and a value; add a `gmail-personal` on its own
-path with a different one, and dropping the bare `GOOGLE_REFRESH_TOKEN` takes the
-three that never disagreed with anyone off the air, because their tree reads
-`process.env` and knows nothing about per-slug names. Adding a slug would break
-slugs that already worked, and would turn a render-time error into a runtime
-outage. So the renderer only ever ADDS: prod and staging render byte-identical
-specs to what they rendered before this existed, which is the property that made
-it landable without a flag.
+## 56. Per-slug box names reach two of the ten trees, and only a mount of its own
 
-**Only telegram and remote-filesystem can BE the dissenter.** A per-slug name is
-useless unless the server reads an injected environment rather than `process.env`,
-and eight of the ten trees in the bundle image are vendored upstream code that
-reads globals — often lazily, at call time (`onepassword` builds its client per
-call off `OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay
-`process.env` per-request without a race, so each tree needs its own seam and gets
-it when it needs it. Nothing stops a config making one of the other eight a
-dissenter; it renders, and that slug simply does not see its value. The renderer
-cannot know which trees are migrated — that is a property of the IMAGE, and the
-image is a tag in someone else's config.
+**What.** A supplementary server's `env:` variables can land on the container
+under names derived from its slug — `TELEGRAM_RW__TELEGRAM_API_HASH` — so one
+container can hold two values for one variable. What bounds it is what the bundle
+host can be made to mount, and what the trees in that image can read.
 
-**`remote-filesystem` ends up double-prefixed.** A second slug of that server
-reads `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. It reads badly
-and it is correct: the inner prefix keeps that server off the bare `GCS_*` names,
-which belong to the `gcs` server in the same container, and the env view falls
-back to bare names — so collapsing the two prefixes would make a missing per-slug
-value resolve to the gcs server's bucket. Two prefixes doing two jobs.
+**A PATH IS A MOUNT, and that is the unit.** The host serves one instance per
+path, so every slug on one path shares one upstream process with one set of
+credentials. A slug can be given names of its own only if it is the only slug on
+its path, that path is `/<its own slug>` (the host mounts a discovered slug at the
+slug, having no config to read a path out of), and the slug mangles to a usable
+variable name. Everything else can only read the bare name, so the bare name
+belongs to those groups and two of them needing different values is a refusal.
+The `path: /<slug>` half is enforced rather than documented because the failure it
+prevents is a server that works and acts as the wrong account.
+
+**NOTHING IS EVER TAKEN AWAY.** Dropping the contested bare name was the obvious
+design and it is wrong: the drop is bundle-wide while the disagreement is between
+two servers. `gmail-ro`, `gmail-rw` and `gmail-rw-external` share a path and a
+value; add a `gmail-personal` with a different one, and dropping the bare
+`GOOGLE_REFRESH_TOKEN` takes the three that never disagreed off the air, because
+their tree reads `process.env`. Adding a slug would break slugs that already
+worked. So the renderer only ever ADDS, and prod and staging render byte-identical
+specs.
+
+**A SLUG GETS ITS WHOLE `env:`, not the keys it disagrees about.** The host
+identifies a slug by finding a COMPLETE set of a tree's required variables under
+its prefix, and two Telegram accounts normally share one Telegram application — so
+usually only `TELEGRAM_STRING_SESSION` differs. Emitting that one name left the
+host finding two of three markers, discovering nothing, and mounting nothing at
+the path the render had just made mandatory: a slug configured, entitled, routed
+and 404. Caught in review, and now asserted by composing the renderer's output
+with the host's own discovery function rather than testing each half alone.
+
+**SEEDING IS THE TRIGGER, NOT INEQUALITY.** A mount-of-its-own with anything under
+`/strad/{env}/mcp/{slug}/static/` gets per-slug names whether or not its value
+differs. Keying on inequality means re-seeding a slug to its neighbour's
+credential silently drops its names, and with them its instance — a secret-store
+edit taking a working slug off the air with a clean render. And once any slug on a
+bundle has them, every mount-of-its-own on that bundle does, so two slugs on two
+paths cannot end up one mounted and one not.
+
+**ONLY TWO TREES CAN READ ONE.** `telegram` and `remote-filesystem` take an
+injected env; the other eight are vendored upstream code reading `process.env`,
+often lazily at call time (`onepassword` builds its client per call off
+`OP_SERVICE_ACCOUNT_TOKEN`). A single process cannot overlay `process.env`
+per-request without a race, so each tree needs its own seam and gets it when it
+needs one. The renderer cannot tell which tree an image contains — an image is a
+tag in someone else's config — so a slug of another tree configured this way
+renders, warns, and serves nothing; reachability is what reports it.
 
 **The edges.**
 
-- **A dissenter must be configured `path: /<slug>`, and the renderer refuses
-  anything else.** The bundle host has no config to read a path out of, so it
-  mounts a per-slug instance at the slug. A dissenter routed anywhere else lands
-  on the mount holding the FIRST declarant's credential and runs as the wrong
-  account — a working server, wrong identity, no error. That is the one failure
-  here that would be genuinely hard to see, so it is a render-time throw rather
-  than a note in the docs.
-- **A same-path pair is compared against every prior owner, not the first one.**
-  Keeping only the first owner per key made the check order-dependent: a same-path
-  pair declared second and third was only ever compared against a DIFFERENT-path
-  server, so one mount with two credentials rendered clean. Same config, reordered,
-  threw. Caught in review, before it landed.
-- **The bundle host learns the server list from variable names, not from config.**
-  It never sees strad's config, so "is there a second telegram?" is answered by
-  scanning `process.env` for a COMPLETE per-slug set of that tree's required
-  variables. All of them, not any one: the marker names are ordinary variables
-  rather than reserved words, so "any one" would let a single unrelated
-  `SOMESLUG__TELEGRAM_API_ID` stand up a live, credentialed telegram instance at a
-  path nobody asked for. Rename one of those variables in the tree without
-  updating `TELEGRAM_MARKER_NAMES` in the host and discovery silently finds
-  nothing; `test/env-prefix.sync.test.ts` greps both files for the names.
-- **A discovered slug that collides with a mount this image already serves is
-  refused, by name.** Routes are registered first-wins, so `/secrets` answering
-  with telegram's tools is not a failure anyone would diagnose from the symptom.
-  The discovered instances are therefore built LAST, and the conventional mount
-  wins.
+- **`params: true` cannot participate.** A parameter's name comes from a path in
+  the store rather than from `env:`, so it never enters this reasoning, and two
+  servers contributing one variable where either is a parameter still hits the
+  older shadow error. Prod's `telegram-ro` is `params: true`, so adopting this
+  there means moving it to explicit `env:` refs first.
+- **The console's presence probe asks about bare names only**
+  (`src/gateway/bundle-presence.ts`). For a slug with its own names it reports the
+  bare variable healthy — which it is — and says nothing about the per-slug name
+  the server actually reads. The one surface that answers "is the credential on
+  the box?" does not yet answer it for the generated name.
+- **Everything is decided from the SET of servers on a bundle, never during the
+  walk.** Two order-dependence bugs were caught in review: a same-path pair
+  declared second and third was compared only against a different-path server and
+  rendered clean, and a capability-variant group threw or not depending on whether
+  it was declared before or after a dissenter. Both are gone because the whole
+  decision is a post-pass over path groups.
+- **`remote-filesystem` ends up double-prefixed.** A second slug reads
+  `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`; the inner prefix
+  keeps it off the bare `GCS_*` names the `gcs` server owns in the same container,
+  and the env view falls back to bare names, so collapsing the two would point it
+  at the wrong bucket.
+- **The host discovers a slug from a COMPLETE marker set**, never any one name.
+  The markers are ordinary variables rather than reserved words, so "any one"
+  would let a single unrelated `SOMESLUG__TELEGRAM_API_ID` stand up a live,
+  credentialed telegram instance at a path nobody asked for. A discovered slug
+  colliding with a mount the image already serves is refused by name, and
+  discovered instances are built last so they cannot shadow a conventional one.
 - **The mangling rule is vendored across an npm boundary** (`npm run
-envprefix:sync`), like `presence.ts` and `wire.ts` before it. A drift means the
-  renderer names a variable one way and the host reads another: green deploy,
-  clean boot log, every call failing on a variable that is right there.
-- **The slug schema got tighter to make the rule injective.** A slug may no longer
-  contain `--`, or lead or trail with `-`. Without that, `a--b` + `C` and `a` +
-  `B__C` are the same variable. No slug in staging or prod has ever used either
-  shape, so nothing had to move.
-- **A slug that starts with a digit cannot be a dissenter**, because `1PASSWORD`
-  is not a portable variable name. It works exactly as it always did on the bare
-  names; only dissenting is refused, by name.
+envprefix:sync`), like `presence.ts` and `wire.ts`. A drift means the renderer
+  names a variable one way and the host reads another: green deploy, clean boot
+  log, every call failing on a variable that is right there.
+- **The slug schema got tighter to make the rule injective.** No `--`, no leading
+  or trailing `-`. Without it `a--b` + `C` and `a` + `B__C` are one variable. No
+  slug in staging or prod has ever used either shape.
 - **The bundle host has no test suite.** It is typechecked by the `bundle_image`
   CI job and nothing more, so `extraSlugs` and the per-slug wiring are covered
-  only through the modules they call (`test/env-prefix.test.ts`) and the two
-  trees' own suites. That is pre-existing and this made it matter more.
+  through the modules they call and the two trees' own suites. Pre-existing, and
+  this made it matter more.
 
-**Undo.** Delete the `dissenters` collection and its two post-pass loops from
-`src/deploy/appspec.ts`, restore the unconditional throw and the last-writer-wins
-`env` merge; drop `env:` from the two trees' `createMCPServer` options; collapse
-`extraSlugs`/`deferred` back to a single `loadTelegram()` / `loadRemoteFilesystem()`
-call; delete `src/secrets/env-prefix.ts`, its vendored copy and its sync script.
-The slug schema can stay tight either way.
+**Undo.** Delete the per-slug post-pass in `src/deploy/appspec.ts` (the path-group
+loop and the two checks after it) and restore the unconditional throw; drop `env:`
+from the two trees' `createMCPServer` options; collapse `extraSlugs`/`deferred`
+back to a single `loadTelegram()` / `loadRemoteFilesystem()` call; delete
+`src/secrets/env-prefix.ts`, its vendored copy and its sync script. The slug schema
+can stay tight either way.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

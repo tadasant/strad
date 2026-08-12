@@ -168,14 +168,15 @@ name](/operate/secrets/#two-servers-one-variable-name) for the semantics, the
 compatibility argument and the one-bundle-one-environment limit.
 
 A namespace decides which value a server resolves; it does not decide where the
-value can go. The bare name belongs to the **first server that declared it** and
-is never removed; a server that resolves a _different_ value gets
-`<SLUG>__<NAME>` of its own (the slug uppercased, `-` to `_`, joined with `__`),
-and a `::warning::` names the slug and the variable and neither value. A dissenter
-must serve `path: /<slug>` — that is what makes it a second instance in the
-container, and the renderer refuses anything else. Two slugs on ONE path are one
-instance and it throws. Nothing is ever taken away, so a deployment that has
-seeded nothing per-server renders byte for byte what it rendered before.
+value can go. A slug that is a **mount of its own** — the only slug on its path,
+that path being `/<its own slug>` — and that has anything seeded under its own
+namespace additionally gets its whole `env:` under per-slug names
+(`TELEGRAM_RW__TELEGRAM_API_HASH`: the slug uppercased, `-` to `_`, joined with
+`__`), and a `::warning::` names the slug and the variables and no value. Nothing
+is removed: the bare names keep their values and every other server on the bundle
+reads them unchanged. Two slugs on ONE path are one mount, and two values there
+still throws. A deployment that has seeded no per-server namespace renders byte
+for byte what it rendered before.
 
 Three things happen here as a result:
 
@@ -361,9 +362,9 @@ A collision between two servers' `env:` maps in one bundle — two different
 earlier, by the schema itself, along with the `consoleEnv:`-against-`core` half.
 (The case the schema cannot see is two servers whose ref strings are identical
 and whose per-server namespaces resolve them differently. `renderAppSpec` sees
-that at render time, when the values exist: the first declarant keeps the bare
-name and the dissenter is given its own `<SLUG>__<NAME>`, unless the two serve the
-SAME path, in which case they are one mount and it throws.) That is
+that at render time, when the values exist: a slug that can be its own mount is
+given its own `<SLUG>__<NAME>` set, and two that cannot — two slugs sharing a
+path, or two capability-variant groups — still throw.) That is
 the better place for the schema's half: a schema rule
 fires at boot as well as at this gate. See [`env:` may be bare; `consoleEnv:` must
 be
