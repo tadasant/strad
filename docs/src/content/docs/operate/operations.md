@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Fourteen jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Fifteen jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -36,6 +36,15 @@ Runs on PRs and pushes to `main`. Fourteen jobs, all `runs-on: self-hosted`:
   `remote-filesystem` server tree. Its whole product is the link it hands a human,
   and its tests pin the two things that decide one: `is_sensitive` picks the kind of
   link, and GCS's 7-day V4 ceiling is what forces V2 for the 14-day default.
+- **`bundle_api`** — `npm ci`, `npm run build`, `npm test` over the `bundle-api`
+  tree. Five of its six servers are verbatim vendor copies and get no tests here,
+  for the reason the `onepassword` job below spells out. The sixth, `slack`, is a
+  **fork** — see [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta).
+  Slack renders mrkdwn, mrkdwn is not Markdown, `~text~` is strikethrough, and a
+  message using `~` for "approximately" posts successfully with paragraphs struck
+  out. The fork's write tools lead with that rule and warn in the tool result
+  after the fact. That delta has no sync script and no upstream to diff against,
+  so its tests are what stops a re-vendor from silently reverting it.
 - **`onepassword`** and **`pointsyeah`** — build-only jobs, one per tree: `npm ci`
   then `npm run build`, which is `tsc` over every workspace in the ordering the
   image's Dockerfile uses. There is no test step, and that is deliberate: the

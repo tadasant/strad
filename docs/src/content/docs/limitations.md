@@ -1073,6 +1073,44 @@ depend on. strad's ESLint, Prettier, and TypeScript are scoped away from
 **Undo:** land shared fixes upstream and re-vendor; longer term, have upstream
 publish `shared` and the elicitation library as real packages.
 
+### 55. The slack server is a fork, and only its tests defend the delta
+
+`servers/bundle-api/fork/slack/` is the one server tree in this repo that is a
+FORK rather than a vendor copy. Five of the six servers in `bundle-api` sit in
+`upstream/` and are copied verbatim; slack sits in `fork/`, and strad has edited
+its tool definitions.
+
+The reason is Slack's message format. Slack renders **mrkdwn**, mrkdwn is not
+Markdown, and `~text~` is strikethrough — so an agent writing `~750 som` and
+`~$9` in the same message has written one struck-through run covering everything
+between them. Nothing errors: the message posts, the tool reports success, and
+the only signal is a human reading the channel. Upstream's write tools describe
+their text as "Supports Slack markdown formatting", which is the assumption that
+produces the bug, and never mention the tilde. The fork rewrites those
+descriptions and appends a warning to the tool result when the text that was
+just sent contains a construct Slack will render differently.
+
+**Cost:** a fork has no upstream to diff against, so a re-vendor that pastes
+`experimental/slack/shared/src` over `fork/slack/src` reverts the fix and nothing
+reports it. The vendored modules elsewhere in strad (`presence.ts`, `wire.ts`)
+each have a sync script and a drift test; this has neither, by construction. What
+stands in for one is `fork/slack/test/mrkdwn.test.mjs`, run on every PR by
+`ci.yml`'s `bundle_api` job. It fails if a write tool stops leading with the
+tilde rule, if any tool is renamed, or if the server starts rewriting a caller's
+text.
+
+**The warning is after the fact.** It cannot stop the bad message — nothing
+errors, so there is no send to refuse — and it is heuristic: deliberately lenient
+about where a strikethrough closes (it over-reports rather than missing one), and
+deliberately silent about `_italics_`, which would fire on every `snake_case`
+identifier. It never escapes or rewrites the text; `~` has legitimate uses, and a
+server that edits the words a caller chose fails just as quietly as the bug it
+is preventing.
+
+**Undo:** move the tree back under `upstream/`, restore the two Dockerfile `COPY`
+lines and `loadApiTree`'s path, and drop the CI job. Tool names, tool count and
+the `slack` / `slack-readonly` policy split are unchanged by the fork.
+
 ### 11. Playwright is pinned to the base image's Chromium
 
 The browser images build `FROM mcr.microsoft.com/playwright:v1.61.1-noble` and pin

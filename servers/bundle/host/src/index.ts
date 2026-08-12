@@ -295,7 +295,13 @@ async function loadApiTree(): Promise<ApiTree> {
   const mod = async (slug: string): Promise<{ createMCPServer: Factory }> =>
     loadFromTree("bundle-api", `upstream/${slug}/build/index.js`);
 
-  const slack = await mod("slack");
+  // slack is the one server in that tree strad FORKED rather than vendored
+  // verbatim — its write tools carry the Slack-mrkdwn rules and a post-hoc
+  // advisory that upstream does not have. It builds from fork/, not upstream/.
+  // See servers/bundle-api/fork/slack/FORK.md.
+  const slack = (await loadFromTree("bundle-api", "fork/slack/build/index.js")) as {
+    createMCPServer: Factory;
+  };
   const serpapi = await mod("serpapi-hotels");
   const tailscale = await mod("tailscale");
   const gcs = await mod("gcs");

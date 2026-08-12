@@ -2166,6 +2166,66 @@ dead build again. Dropping only the caller's grant is the same undo with no
 symptom — the lookup 403s and is swallowed — which is what
 `test/image-tag.bundle.test.ts` reads both workflows to prevent.
 
+## 55. The slack server is a FORK, and nothing detects a re-vendor that reverts it
+
+**What.** `servers/bundle-api/upstream/<slug>/` is vendored verbatim from
+[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers) — five of the six
+servers in that tree, under the same terms as good-eggs (#10). The sixth,
+slack, is not. It lives in `servers/bundle-api/fork/slack/`, forked at
+`b1f13fedeb9be97ac03514d637a4616f760b6dee`, and strad has edited its tool
+definitions.
+
+The delta is the Slack message format. Slack renders mrkdwn, mrkdwn is not
+Markdown, and `~text~` is STRIKETHROUGH — so an agent that writes `~750 som` and
+`~$9` in one message has written one struck-through run covering everything
+between them. Upstream's three write tools describe their text as "Supports
+Slack markdown formatting", which is the assumption that produces the bug, and
+they never mention the tilde. The fork rewrites those descriptions and appends a
+post-hoc advisory to a successful send. `fork/slack/FORK.md` carries the file-by-file
+table so the next re-vendor is a merge with a list rather than a diff read cold.
+
+**Why.** Two other vendored trees carry the same divergence risk (#15, #19, #45),
+and the rule everywhere else is that fixes go upstream and get re-vendored. This
+one cannot wait on that round trip in the way those could: the failure ships
+public messages to a channel of humans, with a success result attached, every
+time an agent guesses. The description fix IS worth having upstream — it is not
+strad-specific — and `pulsemcp/pulsemcp#5071` asks for it. Until it lands there,
+the running server is the only place the fix reaches a session.
+
+**The sharp edge.** The two VENDORED modules in this repo (`presence.ts`,
+`wire.ts`) each have a sync script and a drift test, because the failure of a
+silent divergence is a silent one. A FORK has the opposite problem and no such
+guard: there is no upstream to diff against, and a re-vendor that pastes
+`experimental/slack/shared/src` over `fork/slack/src` reverts the delta with
+nothing to say so. What stands in for the drift test is
+`servers/bundle-api/fork/slack/test/mrkdwn.test.mjs`, run by `ci.yml`'s
+`bundle_api` job: it asserts that every write tool leads with the tilde rule,
+that none of them still says "Supports Slack markdown formatting", that no tool
+was renamed, and that the bytes handed to `chat.postMessage` are the bytes the
+caller passed. A revert fails those. A revert that also deletes the tests does
+not — the same hole `check-tool-policy` has (#46), and the same answer: the test
+file is the artifact under review.
+
+**The advisory is after the fact, and heuristic.** It cannot prevent the bad
+message, because nothing errors — the check runs on the text that was already
+sent, and its value is naming the ids to repair with. Its linter is deliberately
+lenient on a strikethrough's closing edge (it over-reports rather than missing
+one) and deliberately silent about `_italics_`, which would fire on every
+`snake_case` identifier and train a reader to skip the whole advisory. It does
+not escape or rewrite the caller's text, and a test pins that: `~` has
+legitimate uses, and a server that silently edits the words a caller chose fails
+exactly as quietly as the bug it is preventing.
+
+**Undo.** Copy `experimental/slack/shared/src` back over `fork/slack/src`,
+`git mv servers/bundle-api/fork/slack servers/bundle-api/upstream/slack`, restore
+the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
+`servers/bundle-api/Dockerfile` (the manifest one and the source one), point
+`loadApiTree` in
+`servers/bundle/host/src/index.ts` back at `upstream/${slug}/build/index.js`, and
+drop the `bundle_api` CI job. Tool names, tool count and the `slack` /
+`slack-readonly` policy split are unchanged by the fork, so nothing downstream
+moves either way.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

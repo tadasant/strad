@@ -37,7 +37,7 @@ ARG PW=mcr.microsoft.com/playwright:v1.61.1-noble
 FROM ${PW} AS build-api
 WORKDIR /src
 COPY servers/bundle-api/package.json servers/bundle-api/package-lock.json ./
-COPY servers/bundle-api/upstream/slack/package.json ./upstream/slack/
+COPY servers/bundle-api/fork/slack/package.json ./fork/slack/
 COPY servers/bundle-api/upstream/serpapi-hotels/package.json ./upstream/serpapi-hotels/
 COPY servers/bundle-api/upstream/tailscale/package.json ./upstream/tailscale/
 COPY servers/bundle-api/upstream/monarch-money/package.json ./upstream/monarch-money/
@@ -45,6 +45,7 @@ COPY servers/bundle-api/upstream/gcs/package.json ./upstream/gcs/
 COPY servers/bundle-api/upstream/google-flights/package.json ./upstream/google-flights/
 COPY servers/bundle-api/remote/package.json ./remote/
 RUN npm ci --no-audit --no-fund
+COPY servers/bundle-api/fork ./fork
 COPY servers/bundle-api/upstream ./upstream
 COPY servers/bundle-api/remote ./remote
 RUN npm run build && npm prune --omit=dev
