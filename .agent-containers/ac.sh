@@ -324,7 +324,9 @@ cmd_destroy() {
 # --------------------------------------------------------------------------- #
 
 usage() {
-  sed -n '3,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # 25, not 26: line 26 is `set -euo pipefail`, and printing it as help text is
+  # how this kind of range fails.
+  sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 main() {

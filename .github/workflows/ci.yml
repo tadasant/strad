@@ -427,11 +427,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Stopped containers only, and only ones a day old: a concurrent job's
-      # container is running, so this cannot touch it. Ours are torn down below;
-      # this is for the runs that were killed before they got there.
-      - name: Sweep what earlier runs leaked
-        run: docker container prune -f --filter until=24h || true
+      # No sweep step here, unlike `bundle_image` and `build_image`. Those two
+      # name their artifacts and label them `strad-ci`, so their sweep is scoped
+      # to what they created. This job's containers are compose's, and compose
+      # labels them by PROJECT — which is per-run, so there is no stable filter
+      # that means "mine and not a concurrent job's". An unscoped
+      # `docker container prune` would be the only box-wide destructive step in
+      # this file, and it would be reaping other jobs' containers to tidy up
+      # after ours. The `if: always()` teardown is the cleanup; a run killed
+      # before it reaches that leaks a container under a per-run project name
+      # nothing else wants.
 
       # The cheap gate, first: interpolation, indentation, an unknown key. It
       # needs no daemon, so it fails in seconds rather than after a build.

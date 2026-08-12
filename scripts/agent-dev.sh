@@ -32,7 +32,9 @@ case "${1:-}" in
   --background | -b) BACKGROUND=true ;;
   "") ;;
   -h | --help)
-    sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # 24, not 25: line 25 is `set -euo pipefail`, and printing it as help text
+    # is how this kind of range fails.
+    sed -n '3,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *)
