@@ -1,9 +1,7 @@
 import { z } from 'zod';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { FlightsClientFactory } from '../server.js';
-
-const MAX_GRID_DAYS = 31;
-const DEFAULT_GRID_DAYS = 7;
+import { MAX_GRID_DAYS, DEFAULT_GRID_DAYS } from '../flights-client/flights-client.js';
 
 export const GetDateGridSchema = z
   .object({
@@ -42,7 +40,8 @@ export const GetDateGridSchema = z
       .describe('Currency code for prices (e.g., "USD", "EUR")'),
   })
   // A round trip with no return leg is not a cheaper round trip, it is a
-  // different query. Upstream accepted this and quietly priced a one-way.
+  // different query, and pricing a one-way under a round-trip request is a
+  // silently wrong answer rather than a cheap one.
   .refine((v) => v.trip_type !== 'round_trip' || Boolean(v.return_date), {
     message: 'return_date is required when trip_type is round_trip',
     path: ['return_date'],
@@ -55,9 +54,13 @@ export function getDateGridTool(_server: Server, clientFactory: FlightsClientFac
 
 Returns one entry per date, the cheapest date overall, the window actually covered, and any dates with no offers. Use it when travel dates are flexible — find the cheapest day here, then call search_flights on that day for the itineraries.
 
-Every date in the window is a separate live query, issued in sequence about 1.5s apart, so the call takes roughly 1.5s x window_days: about 10s at the 7-day default and about 47s at the 31-day maximum. Ask for the window you need rather than the largest one.
+Every date in the window is a separate live query, issued in sequence at least 1.5s apart, so the call costs about 1.5s per date and more when Google is slow: roughly 10s at the 7-day default, and a measured 7.2s for 5 dates. Ask for the window you need rather than the largest one. The whole grid stops at a 55s budget and reports any dates it did not reach in not_attempted_dates, so a wide window can come back partial rather than late.
 
-The window never starts before today; an anchor in the past is moved forward rather than returning dates that cannot be booked.`,
+Prices exclude basic economy, matching search_flights' default, so a price here is one search_flights will also show. Stops are not filtered, so a cheap day may be a long connection.
+
+The window never starts before today; an anchor in the past is moved forward rather than returning dates that cannot be booked.
+
+Read unavailable_dates (priced, no flights that day) and failed_dates (the request did not complete) as different things — only the first is about the route.`,
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -112,6 +115,8 @@ The window never starts before today; an anchor in the past is moved forward rat
           origin: parsed.origin,
           destination: parsed.destination,
           trip_type: parsed.trip_type,
+          return_date: parsed.return_date ?? null,
+          window_days: parsed.window_days,
           seat_class: parsed.seat_class,
           adults: parsed.adults,
         };
@@ -128,8 +133,10 @@ The window never starts before today; an anchor in the past is moved forward rat
                   currency: parsed.currency,
                   window: result.window,
                   unavailable_dates: result.unavailable_dates,
+                  failed_dates: result.failed_dates,
+                  not_attempted_dates: result.not_attempted_dates,
                   message:
-                    'No offers on any date in the window. This may happen for routes with no service, or for a window Google has no fares for yet.',
+                    'Every date priced successfully and none had offers. This may happen for routes with no service, or for a window Google has no fares for yet.',
                 }),
               },
             ],

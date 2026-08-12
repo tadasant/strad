@@ -37,19 +37,29 @@ const DEFAULT_HEADERS: Record<string, string> = {
   Cookie: 'CONSENT=PENDING+987; SOCS=CAESHAgBEhJnd3NfMjAyMzA4MTAtMF9SQzIaAmRlIAEaBgiAo_CmBg',
 };
 
-// Rate limiting: track last request time
-let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL_MS = 1500;
 
+/**
+ * The next instant a request may be sent. Reserved SYNCHRONOUSLY.
+ *
+ * Reading a "last request" timestamp, awaiting, and then writing it back is not
+ * atomic: two overlapping callers read the same value, sleep the same amount and
+ * fire together. One MCP tool call used to be one request, which hid that. A
+ * date grid is up to 31, and every google-flights call in the bundle is served
+ * by ONE Node process — so two concurrent grids would burst in pairs, which is
+ * the exact behaviour the sequencing exists to avoid.
+ *
+ * Claiming the slot before the first await makes the interval hold across
+ * concurrent callers as well as sequential ones.
+ */
+let nextRequestSlot = 0;
+
 async function rateLimitedFetch(url: string): Promise<string> {
-  const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
-  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL_MS) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest)
-    );
-  }
-  lastRequestTime = Date.now();
+  const sendAt = Math.max(Date.now(), nextRequestSlot);
+  nextRequestSlot = sendAt + MIN_REQUEST_INTERVAL_MS;
+
+  const wait = sendAt - Date.now();
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
 
   const response = await fetch(url, { headers: DEFAULT_HEADERS });
   if (!response.ok) {
@@ -490,16 +500,23 @@ function filterByStops(
 // tier-1 fares (like the United example) while still excluding the bare-bones
 // ones.
 //
-// This reads carry_on_included where it used to read checked_bags_included, and
-// that is not a behaviour change — it is the same field. The old code had the
-// two `offer[4][6]` entries swapped (see parseExtensions), so "checked bags == 0"
-// was already testing the carry-on count; correcting the field names without
-// correcting this predicate is what would have changed behaviour. Verified
-// identical on three routes: SFO->LAX excludes 9 of 171 before and after,
-// LAX->JFK 1 of 116, AKL->SFO 0 of 112.
+// Reading carry_on_included here is what KEEPS this predicate on the field it
+// was already testing. `offer[4][6]` is [checked, carry_on] and the old code had
+// the two swapped (see parseExtensions), so its `checked_bags_included === 0`
+// was reading the carry-on count all along. Correcting the field names without
+// moving this test with them is what would have changed behaviour — and badly:
+// on SFO->LAX no fare has a free checked bag, so the filter would have gone from
+// excluding 9 offers of 171 to excluding all 27 lowest-tier ones.
 //
-// An unknown carry-on (`null` — Google stated nothing) is NOT basic economy: the
-// filter is on by default, and a silent default must not drop flights.
+// Wherever Google states a carry-on count the two agree exactly — SFO->LAX 9 of
+// 171, LAX->JFK 1 of 116, AKL->SFO 0 of 112, before and after.
+//
+// Where Google states NOTHING they deliberately differ. The old expression
+// `flags[1] || 0` collapsed a null to 0, so an unstated carry-on counted as
+// basic economy and the fare was dropped. Here `null` is unknown and the fare is
+// KEPT: this filter is on by default, and a default that silently drops flights
+// on absent data is the same class of failure as reporting that absence as
+// "not included".
 export function isBasicEconomy(offer: FlightOffer): boolean {
   return offer.fare_brand === 'Economy' && offer.extensions.carry_on_included === false;
 }
@@ -595,6 +612,21 @@ export async function searchFlights(options: SearchFlightsOptions): Promise<Sear
 export const MAX_GRID_DAYS = 31;
 export const DEFAULT_GRID_DAYS = 7;
 
+/**
+ * Wall-clock ceiling for a whole grid.
+ *
+ * Each date costs `max(1500ms, however long Google takes)`, and Google's result
+ * page is not a fast fetch — 2-3s per date is typical, so the 31-day maximum can
+ * run past a minute. The MCP SDK's default per-request timeout is 60s, and a
+ * client that gives up does not stop this loop: it would keep scraping for a
+ * caller that is no longer listening.
+ *
+ * So the grid stops at 55s and says it stopped, rather than running to a
+ * deadline it cannot see. A truncated grid that reports its own truncation is
+ * usable; a timed-out one is not.
+ */
+export const GRID_BUDGET_MS = 55_000;
+
 /** `YYYY-MM-DD` for a UTC day offset, with no local-timezone rounding. */
 function addDays(date: string, days: number): string {
   const ms = Date.parse(`${date}T00:00:00Z`);
@@ -602,25 +634,57 @@ function addDays(date: string, days: number): string {
 }
 
 /**
+ * Reject a date that passes a `\d{4}-\d{2}-\d{2}` regex but is not a real day.
+ *
+ * `2026-02-30` parses — V8 rolls it forward to 2026-03-02 — so without this a
+ * typo silently becomes a different date, and if the rolled date lands in the
+ * past the clamp then moves it to today. The caller would get next week's prices
+ * labelled with the date they asked for, which is this fork's whole failure mode.
+ */
+function assertRealDate(date: string, label: string): void {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  if (Number.isNaN(ms) || new Date(ms).toISOString().split('T')[0] !== date) {
+    throw new Error(`${label} is not a real calendar date: ${date}`);
+  }
+}
+
+/**
  * The departure dates a grid covers: `windowDays` days centred on the anchor,
  * shifted forward so it never starts before `today`.
  *
  * Pure and exported so the window logic is testable without touching Google —
- * the bug this replaces was entirely about which dates came back.
+ * the defect this replaces was entirely about which dates came back.
  *
- * Centring is what makes "cheapest around my date" work; clamping is what stops
- * the old behaviour of answering a January question with last June. If the
- * anchor itself is in the past the window starts today, and the anchor is still
- * included when it can be.
+ * Centring is what makes "cheapest around my date" work; clamping is what keeps
+ * every date bookable. If the anchor itself is in the past the window starts
+ * today, and the anchor is still included when it can be.
+ *
+ * `until` (exclusive) drops dates a fixed return leg has already passed: a
+ * round-trip grid holds `return_date` still while the departure moves, and a
+ * departure at or after the return is not a trip.
  */
-export function gridDates(anchor: string, windowDays: number, today: string): string[] {
+export function gridDates(
+  anchor: string,
+  windowDays: number,
+  today: string,
+  until?: string
+): string[] {
+  assertRealDate(anchor, 'departure_date');
   const days = Math.max(1, Math.min(MAX_GRID_DAYS, Math.floor(windowDays)));
   const centred = addDays(anchor, -Math.floor((days - 1) / 2));
   const start = centred < today ? today : centred;
-  return Array.from({ length: days }, (_, i) => addDays(start, i));
+  const dates = Array.from({ length: days }, (_, i) => addDays(start, i));
+  return until ? dates.filter((d) => d < until) : dates;
 }
 
-/** The lowest price on one departure date, or `null` if the date has no offers. */
+/**
+ * The lowest price on one departure date, or `null` if the date has no offers.
+ *
+ * Basic-economy fares are excluded, because `search_flights` excludes them BY
+ * DEFAULT and the grid's stated purpose is to pick a date to search. A grid
+ * quoting a fare the follow-up search then filters out sends the caller looking
+ * for a price that is not there.
+ */
 async function lowestPriceOnDate(
   options: GetDateGridOptions,
   departureDate: string
@@ -658,6 +722,7 @@ async function lowestPriceOnDate(
 
   let lowest: number | null = null;
   for (const offer of parseFlightOffers(ds1, options.currency)) {
+    if (isBasicEconomy(offer)) continue;
     if (lowest === null || offer.price < lowest) lowest = offer.price;
   }
   return lowest;
@@ -691,22 +756,67 @@ async function lowestPriceOnDate(
 export async function getDateGrid(options: GetDateGridOptions): Promise<DateGridResult> {
   const today = new Date().toISOString().split('T')[0];
   const anchorDate = options.departure_date || addDays(today, 7);
-  const dates = gridDates(anchorDate, options.window_days ?? DEFAULT_GRID_DAYS, today);
+  if (options.return_date) assertRealDate(options.return_date, 'return_date');
+
+  const dates = gridDates(
+    anchorDate,
+    options.window_days ?? DEFAULT_GRID_DAYS,
+    today,
+    options.return_date
+  );
+  if (dates.length === 0) {
+    throw new Error(
+      `No departure date in the window falls before return_date ${options.return_date}. ` +
+        'Move the anchor earlier, narrow window_days, or push the return date out.'
+    );
+  }
 
   const dateGrid: DateGridEntry[] = [];
   const unavailable: string[] = [];
+  const failed: { date: string; error: string }[] = [];
+  const notAttempted: string[] = [];
+  const startedAt = Date.now();
 
-  for (const date of dates) {
-    // One bad date must not lose the dates already priced: a partial grid is
-    // useful and an exception is not.
+  for (let i = 0; i < dates.length; i++) {
+    const date = dates[i];
+
+    // A caller that has already given up must not keep this loop scraping.
+    if (Date.now() - startedAt > GRID_BUDGET_MS) {
+      notAttempted.push(...dates.slice(i));
+      break;
+    }
+
     let price: number | null = null;
     try {
       price = await lowestPriceOnDate(options, date);
     } catch (error) {
-      logDebug('getDateGrid', `${date}: ${(error as Error).message}`);
+      const message = (error as Error).message;
+      failed.push({ date, error: message });
+
+      // A DATE with no flights and a REQUEST that did not complete are different
+      // answers, and only one of them is about the route. Collapsing the second
+      // into the first is how "Google is rate-limiting us" got reported as "no
+      // flights on any of these days" — a confident, well-formed, wrong answer.
+      //
+      // A block is also not per-date: continuing would hammer Google for every
+      // remaining day and deepen it. Stop, and say where we stopped.
+      const blocked = message.includes('rate-limiting') || message.includes('page structure');
+      if (blocked || failed.length >= 3) {
+        notAttempted.push(...dates.slice(i + 1));
+        break;
+      }
+      continue;
     }
+
     if (price === null) unavailable.push(date);
     else dateGrid.push({ date, price });
+  }
+
+  // Nothing priced AND something broke: the failure is the answer, not "no
+  // offers". Surfacing it as an error is what puts the real reason in front of
+  // the caller instead of a plausible one about the route.
+  if (dateGrid.length === 0 && failed.length > 0) {
+    throw new Error(`No date could be priced. First failure on ${failed[0].date}: ${failed[0].error}`);
   }
 
   let cheapest: DateGridEntry | null = null;
@@ -718,8 +828,15 @@ export async function getDateGrid(options: GetDateGridOptions): Promise<DateGrid
     date_grid: dateGrid,
     cheapest,
     currency: options.currency,
-    window: { anchor_date: anchorDate, days: dates.length, from: dates[0], to: dates[dates.length - 1] },
+    window: {
+      anchor_date: anchorDate,
+      days: dates.length,
+      from: dates[0],
+      to: dates[dates.length - 1],
+    },
     unavailable_dates: unavailable,
+    failed_dates: failed,
+    not_attempted_dates: notAttempted,
   };
 }
 

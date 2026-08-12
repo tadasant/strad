@@ -44,11 +44,23 @@ no other `[timestamp, price]` array. So the grid is now assembled the honest way
 **one search per date**, lowest offer per date, over a window centred on the
 anchor and clamped so it never begins before today.
 
-That costs one rate-limited request per date, which is why the window is small by
-default (7 days, ~10s) and capped (31 days, ~47s), why the cost is stated in the
-tool description, and why the requests are issued in sequence rather than in
-parallel — this is scraping someone else's page, and a burst is both rude and the
-fastest way to get the tool blocked outright.
+That costs one request per date, and the cost per date is
+`max(1.5s, however long Google takes)` — the limiter's interval runs start to
+start, so a slow response is not absorbed by the gap, it replaces it. Measured:
+7.2s for a 5-date grid, i.e. about 1.5s per date with the floor dominating, which
+puts the 7-day default near 10s.
+
+That is the good case, and it is not the one to design for. The window is capped
+at 31 days AND the whole grid stops at a 55s wall-clock budget, reporting the
+dates it did not reach: the MCP SDK's default per-request timeout is 60s, and a
+client that gives up does not stop the loop, so an unbudgeted grid would keep
+scraping for a caller who is no longer listening.
+
+The requests go in sequence, not in parallel — this is scraping someone else's
+page, and a burst is both rude and the fastest way to get the tool blocked
+outright. The rate limiter reserves its slot synchronously for the same reason:
+read-await-write is not atomic, and two concurrent grids in the one bundle
+process would otherwise fire in pairs.
 
 ### 2. Cabin class — and passenger counts — never reached Google
 
@@ -118,29 +130,34 @@ checked bags on the AKL→SFO search — it renders no baggage text there at all
 included" because a scraper defaulted a missing field is the failure this fork
 exists to prevent.
 
-**`isBasicEconomy` moved with it, and that is not a behaviour change.** It tested
-`checked_bags_included === 0`, which — given the swap — was already reading the
-carry-on count. It now says what it was doing: lowest fare tier **and** no free
-carry-on, which is what "basic economy" names on the US carriers the filter
-exists for. Correcting the field names *without* correcting this predicate is
-what would have changed behaviour, and badly: on SFO→LAX every fare has zero free
-checked bags, so the filter would have gone from excluding 9 offers to excluding
-all 27 tier-1 ones. Verified identical on three routes — SFO→LAX 9 of 171 before
-and after, LAX→JFK 1 of 116, AKL→SFO 0 of 112.
+**`isBasicEconomy` had to move with it.** It tested `checked_bags_included === 0`,
+which — given the swap — was already reading the carry-on count. It now says what
+it was doing: lowest fare tier **and** no free carry-on, which is what "basic
+economy" names on the US carriers the filter exists for. Correcting the field
+names *without* moving this predicate is what would have changed behaviour, and
+badly: on SFO→LAX no fare has a free checked bag, so the filter would have gone
+from excluding 9 offers to excluding all 27 lowest-tier ones.
 
-An unknown carry-on is not basic economy: this filter is **on by default**, and a
-silent default must not drop flights.
+Wherever Google states a carry-on count, old and new agree exactly — SFO→LAX 9 of
+171 excluded before and after, LAX→JFK 1 of 116, AKL→SFO 0 of 112.
+
+Where Google states **nothing**, they deliberately differ, and this is the one
+behavioural change in the filter. The old expression `flags[1] || 0` collapsed a
+null to 0, so an unstated carry-on counted as basic economy and the fare was
+dropped. Now `null` is unknown and the fare is kept. This filter is **on by
+default**, and a default that silently drops flights on absent data is the same
+class of failure as reporting that absence as "not included".
 
 ## The delta
 
 | File | Change |
 | --- | --- |
-| `src/flights-client/flights-client.ts` | `Info.seat` 1→9, `Info.passengers` 6→8, `FlightData.maxStops` 9→5. `parseExtensions` reads `[checked, carry_on]` and maps absent→`null`. `isBasicEconomy` tests the carry-on. `getDateGrid` rewritten to price each date; new exported `gridDates` window. |
-| `src/flights-client/types.ts` | Baggage fields become nullable. `GetDateGridOptions` gains `window_days` and `return_date`; `DateGridResult` gains `window` and `unavailable_dates`. |
+| `src/flights-client/flights-client.ts` | `Info.seat` 1→9, `Info.passengers` 6→8, `FlightData.maxStops` 9→5. `parseExtensions` reads `[checked, carry_on]` and maps absent→`null`. `isBasicEconomy` tests the carry-on. `getDateGrid` rewritten to price each date, classifying no-offers / failed / not-attempted separately and raising a block rather than reporting it as an empty route; new exported `gridDates` (with a real-calendar-date guard and a return-date bound) and `GRID_BUDGET_MS`. The rate limiter reserves its slot synchronously. |
+| `src/flights-client/types.ts` | Baggage fields become nullable. `GetDateGridOptions` gains `window_days` and `return_date`; `DateGridResult` gains `window`, `unavailable_dates`, `failed_dates` and `not_attempted_dates`. |
 | `src/flights.proto` | The two field numbers, matched to the code. |
 | `src/tools/get-date-grid.ts` | `window_days` and `return_date` params; description states the per-date cost and the no-past-dates guarantee; `round_trip` now requires a return date instead of quietly pricing a one-way. |
 | `src/tools/search-flights.ts` | Description: `fare_brand` is a tier *within* the cabin and does not name the cabin; a `null` baggage value means unknown, not zero. |
-| `test/fork.test.mjs` | **New.** Sixteen tests over all three. |
+| `test/fork.test.mjs` | **New.** Twenty-four tests over all three, the tool schema, and the fan-out (driven through an injected `fetch`). |
 
 No tool is renamed, added or removed. The surface is still the three tools the
 `google-flights` slug serves, so every `tools:` policy entry still names a tool
@@ -154,6 +171,17 @@ would have passed on the broken numbering, because the bug was never an
 inconsistency on this side; it was a disagreement with a schema that lives at
 Google. Likewise `gridDates` is pure and exported so the window can be asserted
 as dates, since "which dates came back" *was* the bug.
+
+The fan-out tests drive `getDateGrid` through an injected `fetch`, which is what
+pins the distinction the old shape could not make: a date with **no offers**, a
+date whose **request failed**, and dates **never attempted** are three different
+answers, and only the first is about the route. One of them asserts that a
+rate-limit block raises and stops after a single request rather than scraping the
+remaining thirty dates and then reporting "no offers on any date".
+
+`flights.proto` is pinned against the encoder, because the `.proto` is
+documentation and a half-applied re-vendor could fix one and leave the other
+reading as authority for the numbering that caused the bug.
 
 ## Known gaps, not fixed here
 

@@ -1080,10 +1080,10 @@ publish `shared` and the elicitation library as real packages.
 
 ### 55. The slack server is a fork, and only its tests defend the delta
 
-`servers/bundle-api/fork/slack/` is the one server tree in this repo that is a
-FORK rather than a vendor copy. Five of the six servers in `bundle-api` sit in
-`upstream/` and are copied verbatim; slack sits in `fork/`, and strad has edited
-its tool definitions.
+`servers/bundle-api/fork/slack/` is a FORK rather than a vendor copy. Four of the
+six servers in `bundle-api` sit in `upstream/` and are copied verbatim; slack
+sits in `fork/` alongside `google-flights` (#58), and strad has edited its tool
+definitions.
 
 The reason is Slack's message format. Slack renders **mrkdwn**, mrkdwn is not
 Markdown, and `~text~` is strikethrough — so an agent writing `~750 som` and
@@ -1442,15 +1442,18 @@ directory carries the evidence. What follows is what remains.
 **The grid is one request per date.** Google's search response contains no
 forward-looking grid to read — the only future date in the whole document is the
 anchor the caller asked for — so the grid is built by searching each date in
-turn, rate-limited and in sequence. The default 7-day window takes about ten
-seconds and the 31-day maximum about forty-seven. The cap and the sequencing are
-deliberate: a burst against someone else's page is the quickest way to get the
-tool blocked outright. The cost is stated in the tool description, because an
-agent should be able to choose a narrower window knowingly.
+turn, rate-limited and in sequence. A date costs `max(1.5s, Google's own response
+time)` — measured at 7.2s for five dates, so the 7-day default lands near ten
+seconds, and a slow Google raises it rather than being absorbed by the gap.
+`window_days` caps at 31 and the grid abandons at a 55s budget,
+reporting unreached dates: the MCP SDK's default request timeout is 60s, and a
+client that gives up does not stop the loop. Sequencing is deliberate too — a
+burst against someone else's page is the quickest way to get the tool blocked
+outright.
 
 **Cost:** a genuinely wide date search is not something this tool can serve. The
 honest answer to "cheapest month" is several calls, and the tool says so rather
-than returning a fast, wrong grid — which is precisely what it used to do.
+than returning a fast grid of the wrong dates.
 
 **Two fields are reported as unknown rather than guessed.**
 `segments[].legroom` is populated on economy offers and absent on the premium

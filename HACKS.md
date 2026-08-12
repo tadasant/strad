@@ -2182,11 +2182,11 @@ symptom — the lookup 403s and is swallowed — which is what
 ## 55. The slack server is a FORK, and nothing detects a re-vendor that reverts it
 
 **What.** `servers/bundle-api/upstream/<slug>/` is vendored verbatim from
-[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers) — five of the six
-servers in that tree, under the same terms as good-eggs (#10). The sixth,
-slack, is not. It lives in `servers/bundle-api/fork/slack/`, forked at
+[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers) — four of the six
+servers in that tree, under the same terms as good-eggs (#10). Slack is not. It
+lives in `servers/bundle-api/fork/slack/`, forked at
 `b1f13fedeb9be97ac03514d637a4616f760b6dee`, and strad has edited its tool
-definitions.
+definitions. `google-flights` is the other fork in that tree (#58).
 
 The delta is the Slack message format. Slack renders mrkdwn, mrkdwn is not
 Markdown, and `~text~` is STRIKETHROUGH — so an agent that writes `~750 som` and
@@ -2460,13 +2460,23 @@ the evidence for each. What follows is what is left.
 **The grid is N requests, and that is inherent.** Google's search response
 contains no forward-looking date grid to read: the only future date anywhere in
 the document is the anchor the caller asked for. So the grid is assembled by
-searching each date, one rate-limited request apiece, in sequence. A 7-day window
-(the default) takes ~10s; the 31-day cap takes ~47s. The cap and the sequencing
-are deliberate — a burst against someone else's page is the fastest way to get
-the whole tool blocked — but it does mean a genuinely wide date search is not
-something this tool can serve, and the honest answer to "cheapest month" is
-several calls or none. If Google exposes a calendar RPC, that is the better
-source and this becomes one request again.
+searching each date, one request apiece, in sequence. A date costs
+`max(1.5s, Google's own response time)`: the limiter's interval runs start to
+start, so a slow response replaces the gap rather than being absorbed by it.
+Measured at 7.2s for 5 dates — the floor dominating — which puts the 7-day
+default near 10s.
+
+Two ceilings, not one: `window_days` caps at 31, and the whole grid abandons at a
+55s wall-clock budget, reporting unreached dates in `not_attempted_dates`. The
+budget is the load-bearing one. The MCP SDK's default per-request timeout is 60s
+(strad's gateway allows 120s, but a client on the default does not), and a client
+that times out does NOT stop this loop — it would keep scraping for a caller that
+has gone. A truncated grid that says it truncated is usable; a timed-out one
+costs the requests and returns nothing.
+
+So a genuinely wide date search is not something this tool can serve, and the
+honest answer to "cheapest month" is several calls or none. If Google exposes a
+calendar RPC, that is the better source and this becomes one request again.
 
 **Two fields remain untrustworthy, and are documented rather than guessed.**
 `segments[].legroom` reads `leg[30]`, which is populated on economy offers

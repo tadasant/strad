@@ -205,16 +205,25 @@ test('basic economy is the lowest tier with no free carry-on', () => {
       rawOffer({ price: 200, airline: 'United', flags: [0, 0], fareTier: 1, token: 'g' }),
       rawOffer({ price: 260, airline: 'United', flags: [0, 1], fareTier: 1, token: 'h' }),
       rawOffer({ price: 320, airline: 'Delta', flags: [0, 0], fareTier: 3, token: 'i' }),
-      rawOffer({ price: 1183, airline: 'Air NZ', flags: [null, 1], fareTier: 1, token: 'j' }),
+      rawOffer({ price: 1183, airline: 'Air NZ', flags: [0, null], fareTier: 1, token: 'j' }),
+      rawOffer({ price: 1190, airline: 'Qantas', flags: undefined, fareTier: 1, token: 'k' }),
     ]),
     'USD'
   );
   assert.equal(isBasicEconomy(offers[0]), true, 'tier 1 + no carry-on');
   assert.equal(isBasicEconomy(offers[1]), false, 'tier 1 but carry-on included');
   assert.equal(isBasicEconomy(offers[2]), false, 'no carry-on but not the lowest tier');
-  // The default filter is ON. An unknown carry-on must not silently drop a
-  // flight — which is every international fare Google says nothing about.
+
+  // The two cases where the predicate deliberately differs from the old one.
+  // The old `flags[1] || 0` collapsed an ABSENT carry-on to 0 and dropped the
+  // fare; the filter is on by default, so that silently lost flights on data
+  // Google never stated. These must be `false` for a reason no other assertion
+  // here covers — note carry_on is null, not 1, so a passing result cannot come
+  // from "the carry-on is included".
+  assert.equal(offers[3].extensions.carry_on_included, null, 'fixture must be UNKNOWN, not included');
   assert.equal(isBasicEconomy(offers[3]), false, 'unknown carry-on is not basic economy');
+  assert.equal(offers[4].extensions.carry_on_included, null, 'fixture must be UNKNOWN, not included');
+  assert.equal(isBasicEconomy(offers[4]), false, 'absent baggage array is not basic economy');
 });
 
 // =============================================================================
@@ -282,4 +291,177 @@ test('windows are contiguous and ordered', () => {
 test('the window crosses a month and a year boundary correctly', () => {
   const dates = gridDates('2026-12-31', 5, TODAY);
   assert.deepEqual(dates, ['2026-12-29', '2026-12-30', '2026-12-31', '2027-01-01', '2027-01-02']);
+});
+
+// =============================================================================
+// The tool-layer delta, and the fan-out itself
+// =============================================================================
+//
+// The tests above cover flights-client.ts. Nothing there would notice a
+// re-vendor that pasted upstream's src/tools/get-date-grid.ts back — which would
+// silently drop window_days, return_date and the round-trip guard while leaving
+// all sixteen green. These cover that file, and the loop that calls it.
+
+import { GetDateGridSchema } from '../build/tools/get-date-grid.js';
+import { getDateGrid } from '../build/flights-client/flights-client.js';
+
+test('the grid schema defaults, caps, and rejects a round trip with no return leg', () => {
+  const base = { origin: 'AKL', destination: 'SFO' };
+
+  const d = GetDateGridSchema.parse(base);
+  assert.equal(d.window_days, 7, 'default window');
+  assert.equal(d.trip_type, 'one_way');
+  assert.equal(d.seat_class, 'economy');
+
+  assert.throws(() => GetDateGridSchema.parse({ ...base, window_days: 40 }), /window_days|31/i);
+  assert.throws(
+    () => GetDateGridSchema.parse({ ...base, trip_type: 'round_trip' }),
+    /return_date is required/
+  );
+  // …and accepts it once the return leg is there.
+  assert.equal(
+    GetDateGridSchema.parse({ ...base, trip_type: 'round_trip', return_date: '2027-01-20' })
+      .return_date,
+    '2027-01-20'
+  );
+});
+
+/** A Google-shaped page carrying one offer at `price`. */
+function pageWith(price) {
+  const ds1 = [];
+  ds1[3] = [[rawOffer({ price, airline: 'Air NZ', flags: [0, 1], fareTier: 3, token: `t${price}` })]];
+  return `<html><script>AF_initDataCallback({key: 'ds:1', hash: '1', data:${JSON.stringify(ds1)}, sideChannel: {}});</script></html>`;
+}
+
+/** Swap global fetch for the duration of one call, recording the URLs asked for. */
+async function withFetch(handler, run) {
+  const real = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return handler(String(url), urls.length);
+  };
+  try {
+    return { result: await run(), urls };
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+
+const ok = (body) => ({ ok: true, status: 200, text: async () => body });
+
+const GRID_OPTS = {
+  origin: 'AKL',
+  destination: 'SFO',
+  departure_date: '2027-01-10',
+  trip_type: 'one_way',
+  seat_class: 'economy',
+  adults: 1,
+  currency: 'USD',
+  window_days: 3,
+};
+
+test('the fan-out prices every date in the window, and reports the window it covered', async () => {
+  const prices = { 1: 900, 2: 700, 3: 800 };
+  const { result, urls } = await withFetch(
+    (_url, n) => ok(pageWith(prices[n])),
+    () => getDateGrid(GRID_OPTS)
+  );
+
+  assert.equal(urls.length, 3, 'one request per date — this is what makes the grid real');
+  assert.equal(new Set(urls).size, 3, 'each date must be its OWN query, not the same one thrice');
+  assert.deepEqual(
+    result.date_grid.map((e) => e.date),
+    ['2027-01-09', '2027-01-10', '2027-01-11']
+  );
+  assert.deepEqual(result.cheapest, { date: '2027-01-10', price: 700 });
+  assert.equal(result.window.anchor_date, '2027-01-10');
+  assert.deepEqual(result.failed_dates, []);
+  assert.deepEqual(result.unavailable_dates, []);
+});
+
+test('one failed date does not lose the dates that priced', async () => {
+  const { result } = await withFetch(
+    (_url, n) => (n === 2 ? Promise.reject(new Error('socket hang up')) : ok(pageWith(600))),
+    () => getDateGrid(GRID_OPTS)
+  );
+
+  assert.equal(result.date_grid.length, 2, 'a partial grid is useful');
+  assert.equal(result.failed_dates.length, 1);
+  assert.equal(result.failed_dates[0].date, '2027-01-10');
+  assert.match(result.failed_dates[0].error, /socket hang up/);
+  // The distinction the old code could not make: this date is not "no flights".
+  assert.ok(!result.unavailable_dates.includes('2027-01-10'));
+});
+
+test('a date with no offers is unavailable, not failed', async () => {
+  const empty = `<html><script>AF_initDataCallback({key: 'ds:1', hash: '1', data:[], sideChannel: {}});</script></html>`;
+  const { result } = await withFetch(
+    (_url, n) => ok(n === 2 ? empty : pageWith(500)),
+    () => getDateGrid(GRID_OPTS)
+  );
+  assert.deepEqual(result.unavailable_dates, ['2027-01-10']);
+  assert.deepEqual(result.failed_dates, []);
+});
+
+test('a block stops the run and is raised, not reported as "no flights anywhere"', async () => {
+  // The failure this guard exists for: Google blocks on the first date, and the
+  // old shape would have kept scraping and then answered "no offers on any date
+  // in the window" — about the route, which is not what happened.
+  const { urls } = await withFetch(
+    () => ok('<html>Our systems have detected unusual traffic</html>'),
+    () =>
+      assert.rejects(() => getDateGrid({ ...GRID_OPTS, window_days: 31 }), /rate-limiting/).then(
+        () => null
+      )
+  );
+  assert.equal(urls.length, 1, 'a block must not be retried across the remaining 30 dates');
+});
+
+test('a round-trip grid never prices a departure at or after its fixed return', () => {
+  const dates = gridDates('2027-01-10', 7, TODAY, '2027-01-12');
+  assert.deepEqual(dates, ['2027-01-07', '2027-01-08', '2027-01-09', '2027-01-10', '2027-01-11']);
+  assert.ok(dates.every((d) => d < '2027-01-12'));
+});
+
+test('a date that passes the regex but is not a real day is rejected, not rolled over', () => {
+  // 2026-02-30 parses — V8 rolls it to 2026-03-02, which is in the past, so the
+  // clamp would then move it to today and label next week's prices with the
+  // caller's date.
+  assert.throws(() => gridDates('2026-02-30', 7, TODAY), /not a real calendar date/);
+  assert.throws(() => gridDates('2027-13-01', 7, TODAY), /not a real calendar date/);
+  assert.doesNotThrow(() => gridDates('2028-02-29', 7, TODAY), 'a real leap day is fine');
+});
+
+test('flights.proto records the same field numbers the encoder uses', async () => {
+  // The .proto is documentation — getProtoRoot() builds the schema in code — so
+  // a re-vendor can fix one and miss the other, and the file would then read as
+  // authority for the numbers that caused the bug.
+  const { readFile } = await import('node:fs/promises');
+  const proto = await readFile(new URL('../src/flights.proto', import.meta.url), 'utf8');
+  assert.match(proto, /Seat seat = 9;/);
+  assert.match(proto, /repeated Passenger passengers = 8;/);
+  assert.match(proto, /optional int32 max_stops = 5;/);
+  assert.doesNotMatch(proto, /Seat seat = 1;/, 'the numbering that made every search economy');
+});
+
+test('a return date before the whole window is refused, not silently emptied', async () => {
+  // Every candidate departure is at or after the fixed return, so there is no
+  // trip to price. Erroring names the contradiction; an empty grid would read as
+  // "this route has no flights".
+  await assert.rejects(
+    () =>
+      getDateGrid({
+        origin: 'AKL',
+        destination: 'SFO',
+        departure_date: '2027-01-10',
+        return_date: '2027-01-01',
+        trip_type: 'round_trip',
+        seat_class: 'economy',
+        adults: 1,
+        currency: 'USD',
+        window_days: 5,
+      }),
+    /falls before return_date/
+  );
 });

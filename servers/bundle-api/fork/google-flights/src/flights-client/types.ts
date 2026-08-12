@@ -52,8 +52,12 @@ export interface DateGridResult {
   currency: string;
   /** The departure dates actually covered — the caller should not have to infer them. */
   window: { anchor_date: string; days: number; from: string; to: string };
-  /** Dates in the window that returned no offers at all. */
+  /** Priced successfully, but the route has no offers that day. */
   unavailable_dates: string[];
+  /** The request did not complete — NOT the same as "no flights that day". */
+  failed_dates: { date: string; error: string }[];
+  /** Dropped after the wall-clock budget ran out, or after a block stopped the run. */
+  not_attempted_dates: string[];
 }
 
 export interface AirportResult {
