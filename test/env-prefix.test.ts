@@ -13,10 +13,10 @@ import {
  * The rule that decides what a supplementary server's variable is CALLED on the
  * container — and, one file over in a different npm tree, how it is read back.
  *
- * The failure this guards is not a crash. A mangling the renderer and the host
- * disagree about produces a container that holds the credential under a name
- * nothing looks for: green deploy, clean boot log, every tool call failing on a
- * variable that is right there.
+ * The failure this guards is not a crash. If the renderer and the host mangle a
+ * name differently, the container holds the credential under a name nothing looks
+ * for: green deploy, clean boot log, every tool call failing on a variable that is
+ * right there.
  */
 
 describe("the box name of a slug's variable", () => {

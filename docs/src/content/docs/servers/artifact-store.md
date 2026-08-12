@@ -233,8 +233,8 @@ bare `GCS_*` names: the `gcs` server owns those in the same container and points
 at a different bucket, and one process cannot hold two values of `GCS_BUCKET`.
 
 The host also hands each instance a
-[slug-scoped view](/operate/secrets/#where-the-two-values-actually-land) of the
-environment rather than `process.env`, so a second slug of this server on its own
+[slug-scoped view](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
+of the environment rather than `process.env`, so a second slug of this server on its own
 `path:` can point at a second bucket from the same container. The two prefixes
 stack — that slug reads `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`
 — and both are load-bearing: the view falls back to bare names, and the bare

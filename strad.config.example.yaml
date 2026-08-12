@@ -163,14 +163,14 @@ servers:
   # servers write the same `${NAME}` and be given different values; seed nothing
   # per-server and it resolves exactly as it always has.
   #
-  # Two servers on ONE bundle can differ too, but only if they are two MOUNTS. A
-  # bundle is one container with one environment, so a slug that is a mount of its
-  # own — the only slug on its path, and that path is `/<its own slug>` — also
-  # gets its variables under per-slug names (TELEGRAM_RW__TELEGRAM_API_HASH), and
-  # the bundle host builds it a separate instance. Bare names are never removed.
-  # Two slugs on the SAME path are one instance of one server holding one
-  # credential, and the render fails rather than picking a winner.
-  # See docs/operate/secrets.md.
+  # EVERY server's env: also lands under per-slug names on its bundle —
+  # TELEGRAM_RW__TELEGRAM_API_HASH — with no condition attached, so what a
+  # server's variables are called is computable from this entry alone. Bare names
+  # are never removed. What decides whether a slug can READ its own names is
+  # `path:`: the bundle host runs one instance per path, so a slug gets its own
+  # only if it is the only one on `path: /<its own slug>`. Two slugs on the SAME
+  # path are one instance holding one credential, and the render fails rather than
+  # picking a winner. See docs/operate/secrets.md.
   #
   # Two other ways a server gets its values, both shown further down:
   #   - `consoleEnv:` — env that lands on the CORE gateway ONLY (the human /ui),

@@ -303,57 +303,63 @@ namespace.
     TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}" # ← /strad/prod/mcp/telegram-rw/static/
 ```
 
-### Where the two values actually land
+### What a server's variables are called on the box
 
 A namespace decides which value a server _resolves_. It does not decide where the
 value can _go_ — a bundle is a component is a container with one `process.env`,
-and one name holds one value. So a second value gets a second set of names:
+and one name holds one value. So **every** supplementary server's `env:` is
+emitted twice onto its bundle:
 
-| On the box                       | Read by                                                      |
+| On the box                       | Carries                                                      |
 | -------------------------------- | ------------------------------------------------------------ |
-| `TELEGRAM_API_HASH`              | Every server on the bundle. Unchanged, and never taken away. |
-| `TELEGRAM_RW__TELEGRAM_API_HASH` | The `telegram-rw` instance only.                             |
+| `TELEGRAM_API_HASH`              | The bare name it always had. Never removed, never repointed. |
+| `TELEGRAM_RW__TELEGRAM_API_HASH` | The same variable, named for `telegram-rw`.                  |
 
 The per-slug name is the slug uppercased with `-` turned into `_`, joined to the
-variable with `__`. A server reads its own name first and falls back to the bare
-one, so a server that has none reads exactly what it always read.
+variable with `__`. **There is no condition on this.** Given a config you can
+compute the whole set by hand, one server at a time, without looking at any other
+server and without knowing what has been seeded anywhere. A server reads its own
+name first and falls back to the bare one, so a server whose per-slug name holds
+the same value reads the same thing either way.
 
-**A path is a mount.** The bundle host serves one instance per path, so every slug
-on one path shares one upstream process and one set of credentials. A slug can be
-given variables of its own only if the host can be made to build a separate
-instance for it, which needs all three of:
+An earlier version minted the second name only where two servers resolved one
+variable differently. That was correct and unreadable: what a variable was called
+depended on what some _other_ slug happened to have been seeded, so you could not
+look at a server and know its own names.
 
-1. **It is the only slug on its path**, and
-2. **that path is `/<its own slug>`** — the host mounts a discovered slug at the
-   slug, having no config to read a path out of — and
-3. **the slug mangles to a usable variable name** (so not one starting with a
-   digit).
+### What is still conditional is reading, not naming
 
-A group that fails any of those — capability variants sharing `/gmail`, a server
-on a conventional path — can only ever read the bare name, so the bare name is
-theirs and `render-spec` refuses a config where two such groups need different
-values.
+The bundle host serves **one instance per path**. So a slug can only be handed its
+own names — as opposed to merely having them exist — if the host can build a
+separate instance for it, which needs the slug to be **the only one on its path**
+and that path to be **`/<its own slug>`** (the host mounts a discovered slug at the
+slug, having no config to read a path out of).
 
-**Nothing is ever taken away.** Only a server that can have its own instance gets
-its own names, and it gets its **whole** `env:` under them, not just the variables
-it disagrees about — the host identifies a slug by finding a complete set of its
-server's required variables, and two Telegram accounts normally share one Telegram
-application, so often only the session string differs. Emitting just that one name
-would leave the host discovering nothing and mounting nothing at the path the
-render had made mandatory.
+That is a property of the config you can check by eye. `gmail-ro`, `gmail-rw` and
+`gmail-rw-external` all serve `/gmail`: one process, one set of credentials. Their
+per-slug names exist on the container like everyone else's; what they read is the
+bare name. Which is why two slugs on one path resolving one variable to different
+values is still a hard error — one process cannot hold two credentials, whatever
+the variables are called.
 
-**Seeding the namespace is what turns it on, not the values being unequal.** A
-slug that is a mount of its own and has anything under
-`/strad/{env}/mcp/{slug}/static/` gets per-slug names — whether or not its value
-differs from its neighbour's. Keying on inequality would mean re-seeding a slug to
-the same credential silently dropped its names, and with them the instance the
-host mounts for it: a secret-store edit would take a working slug off the air with
-a clean render. And once any slug on a bundle has them, **every** mount-of-its-own
-on that bundle gets them, so two slugs on two paths can never end up one mounted
-and one not.
+Two categories cannot be named at all, both decidable from the config alone:
 
-Everything else renders exactly as it did. A deployment that has seeded no
-per-server namespace produces a byte-identical app spec.
+- **A slug starting with a digit.** `1PASSWORD__X` is not a portable variable
+  name, so that server has no per-slug names and reads the bare ones. The render
+  says so by name.
+- **A `params: true` server's variables**, because they are not in `env:` at all —
+  a managed parameter's name comes from its path in the store. There is no
+  declaration to name.
+
+### What this changes about a rendered spec
+
+Emitting unconditionally means the app spec gains one variable per supplementary
+`env:` entry. Measured against `main`: prod's `bundle` goes from 36 to 87
+variables and staging's from 34 to 83, with **nothing removed and no value
+changed** on any component, and `core` untouched. Every server therefore reads
+exactly what it read before, which is also why the core and bundle images can
+deploy in any order — an image that knows nothing about per-slug names finds every
+bare name where it always was.
 
 :::caution[Two slugs on one path is still one credential]
 `render-spec` **fails the deploy** when two slugs that share a `path:` resolve one
@@ -362,8 +368,9 @@ name to different values, rather than picking one:
 ```
 bundle "bundle": servers "telegram-ro" and "telegram-rw" both set
 TELEGRAM_API_HASH under env:, both serve path "/telegram", and the two
-resolve to DIFFERENT values… Give the two servers separate paths…,
-separate bundles, or seed them the same value.
+resolve to DIFFERENT values… One path on one bundle is ONE mount in the
+container: one process, one set of credentials… Give each its own path —
+path: /<its-own-slug> — or its own bundle, or seed them the same value.
 ```
 
 That is the capability-variant pattern (`telegram-ro` / `telegram-rw`, `gmail-ro`

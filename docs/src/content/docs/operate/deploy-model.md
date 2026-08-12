@@ -168,15 +168,14 @@ name](/operate/secrets/#two-servers-one-variable-name) for the semantics, the
 compatibility argument and the one-bundle-one-environment limit.
 
 A namespace decides which value a server resolves; it does not decide where the
-value can go. A slug that is a **mount of its own** — the only slug on its path,
-that path being `/<its own slug>` — and that has anything seeded under its own
-namespace additionally gets its whole `env:` under per-slug names
-(`TELEGRAM_RW__TELEGRAM_API_HASH`: the slug uppercased, `-` to `_`, joined with
-`__`), and a `::warning::` names the slug and the variables and no value. Nothing
-is removed: the bare names keep their values and every other server on the bundle
-reads them unchanged. Two slugs on ONE path are one mount, and two values there
-still throws. A deployment that has seeded no per-server namespace renders byte
-for byte what it rendered before.
+value can go. **Every** supplementary server's `env:` is additionally emitted under
+per-slug names (`TELEGRAM_RW__TELEGRAM_API_HASH`: the slug uppercased, `-` to `_`,
+joined with `__`), unconditionally, so the set of names is computable from one
+server's config entry. Nothing is removed: the bare names keep their values and
+every server reads them unchanged, which is why the core and bundle images can
+deploy in any order. What `path:` decides is which slugs can READ their own names —
+the host runs one instance per path — and two slugs on ONE path resolving one
+variable differently still throws.
 
 Three things happen here as a result:
 

@@ -205,11 +205,13 @@ server's own** `/strad/{env}/mcp/{slug}/static/` namespace before the shared
 `/strad/{env}/gateway/static/` one, so two servers can write the same `${NAME}`
 and be handed different values. Nothing opts in: an unseeded per-server namespace
 resolves exactly as it always did. Two servers sharing a bundle share one
-container's environment, so a slug that is a **mount of its own** — the only slug
-on its path, that path being `/<its own slug>` — additionally gets its variables
-under per-slug names, `TELEGRAM_RW__TELEGRAM_API_HASH`. Bare names are never
-removed or repointed. Two slugs on one path are one instance holding one
-credential, and the render fails rather than picking a winner. [Two servers, one
+container's environment, so **every** supplementary server's `env:` also lands
+under per-slug names — `TELEGRAM_RW__TELEGRAM_API_HASH`, the slug uppercased with
+`-` as `_` and `__` as the separator — with no condition attached, so a server's
+names are computable from its own config entry. Bare names are never removed or
+repointed. Which slugs can _read_ their own names is the part `path:` decides: the
+bundle host runs one instance per path, so two slugs on one path are one instance
+holding one credential, and the render fails rather than picking a winner. [Two servers, one
 variable name](https://strad.tadasant.com/operate/secrets/#two-servers-one-variable-name).
 
 Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`

@@ -642,35 +642,38 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   }
 
   // ==========================================================================
-  // WHO OWNS THE BARE NAME, AND WHO GETS ONE OF THEIR OWN
+  // EVERY SUPPLEMENTARY VARIABLE GETS A PER-SLUG NAME. NO CONDITION.
   // ==========================================================================
   //
-  // A bundle is a component is a container is one `process.env`. The config
-  // schema already refuses two servers declaring one key with different REF
-  // STRINGS on one bundle; per-server namespaces (src/deploy/server-namespaces.ts)
-  // add the case it cannot see, because the strings are identical and the VALUES
-  // differ — `telegram-ro` and `telegram-rw` both writing `${TELEGRAM_API_HASH}`
-  // and each being seeded its own.
+  // A bundle is a component is a container is one `process.env`, so two servers
+  // that both write `${TELEGRAM_API_HASH}` and resolve it differently need two
+  // names. The obvious move is to mint the second name only where it is needed,
+  // and that is what this did first — and it is wrong, for a reason that is
+  // nothing to do with correctness: you could not look at a server and know what
+  // its variables are called on the box. The answer depended on what some OTHER
+  // slug happened to have been seeded, which is unreadable and unpredictable.
   //
-  // A PATH IS A MOUNT. The bundle host serves one instance per path, so every
-  // slug on one path shares one upstream process with one set of credentials.
-  // That makes `path:` — not the slug, and not the order — the unit this reasons
-  // about. A path group holds one value for a key or the render throws.
+  // So the rule is flat and mechanical. Every enabled `supplementary-image`
+  // server's resolved `env:` is emitted TWICE onto its bundle: once under the
+  // bare name it always had, and once under `<SLUG>__<NAME>` — the slug
+  // uppercased, `-` to `_`, joined with `__`. Given a config you can compute the
+  // whole set by hand, per server, with no reference to any other server.
   //
-  // A path group can be given VARIABLES OF ITS OWN only if the host can be made
-  // to build a separate instance for it, which needs all three of: exactly one
-  // slug in the group, `path: /<that slug>` (the host mounts a discovered slug at
-  // its slug, having no config to read a path out of), and a slug that mangles to
-  // a usable variable name. Anything else — a capability-variant group like
-  // gmail-ro/gmail-rw/gmail-rw-external on `/gmail`, or a server on a
-  // conventional path — can only ever read the bare name.
+  // NOTHING IS REMOVED. The bare names keep their values and every tree in the
+  // image that reads `process.env` directly goes on reading them, so this is
+  // additive to a running deployment and does not care which image is deployed
+  // first.
   //
-  // So the bare name goes to a group that has no alternative, and the groups that
-  // do have one take it. Two groups with no alternative and different values is
-  // unrepresentable, and throws.
+  // WHAT REMAINS CONDITIONAL IS READING, NOT NAMING, and it is a property of the
+  // config you can check by eye: the bundle host serves ONE INSTANCE PER PATH, so
+  // a slug can only be handed its own names if it is the only slug on its path
+  // and that path is `/<its own slug>`. Capability variants sharing `/gmail` are
+  // one process; they are named here like everything else, and they read the bare
+  // names. That is why two servers on ONE path with different values still throw:
+  // one process, one credential, nothing to do with naming.
   const emittedAliases = new Map<string, Record<string, string>>();
-  /** For the one warning at the end: which slug got which names, and why. */
-  const named: { bundle: string; slug: string; aliases: string[] }[] = [];
+  /** Slugs whose name cannot be mangled — reported once, at the end. */
+  const unnameable = new Map<string, Set<string>>();
 
   for (const [bundle, contributions] of perServerEnv) {
     /** path -> the slugs serving it, in declaration order. */
@@ -680,7 +683,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         c.slug,
       );
     }
-    /** A path the host can be made to serve as its own instance. */
+    /** The slug the host can serve as its own instance, for this path. */
     const ownInstance = (path: string): string | null => {
       const slugs = groupSlugs.get(path) ?? [];
       if (slugs.length !== 1) return null;
@@ -690,6 +693,9 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     };
 
     // --- one value per path, or throw ---------------------------------------
+    //
+    // One path is one upstream process holding one set of credentials. A second
+    // value has nowhere to go there, whatever it is called.
     /** path -> key -> value, plus the slug that put it there. */
     const byPath = new Map<
       string,
@@ -707,19 +713,23 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               `resolve to DIFFERENT values — one of them comes from a ` +
               `per-server namespace ` +
               `(/strad/${config.gateway.env}/mcp/{slug}/static/). One path on ` +
-              `one bundle is ONE mount in the container, so one value would ` +
-              `silently overwrite the other. Give the two servers separate ` +
-              `paths (each then needs path: /<its-own-slug>, which is where the ` +
-              `bundle host mounts a per-slug instance), separate bundles, or ` +
-              `seed them the same value.`,
+              `one bundle is ONE mount in the container: one process, one set of ` +
+              `credentials, so one value would silently overwrite the other. ` +
+              `Give each its own path — path: /<its-own-slug>, which is where ` +
+              `the bundle host mounts a per-slug instance — or its own bundle, ` +
+              `or seed them the same value.`,
           );
         }
         if (!prior) held.set(key, { slug: c.slug, value });
       }
     }
 
-    // --- per key: who owns the bare name, and who dissents -------------------
-    const dissentingSlugs = new Set<string>();
+    // --- which value the BARE name carries ----------------------------------
+    //
+    // A path group that cannot be its own instance reads the bare name and
+    // nothing else, so the bare name is theirs. Two such groups disagreeing is
+    // unrepresentable and throws — again about instances, not about names.
+    const entry = imageBundles.get(bundle);
     const keys = new Set(contributions.flatMap((c) => Object.keys(c.env)));
     for (const key of keys) {
       const holders = [...byPath]
@@ -730,75 +740,52 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
           value: held.get(key)!.value,
           own: ownInstance(path),
         }));
-      // A group with no instance of its own has no way to read anything but the
-      // bare name, so it is the owner. Failing that, the first declared group.
       const owner = holders.find((h) => h.own === null) ?? holders[0]!;
       for (const h of holders) {
-        if (h.value === owner.value) continue;
-        if (h.own === null) {
-          throw new Error(
-            `bundle "${bundle}": servers "${owner.slug}" (path "${owner.path}") ` +
-              `and "${h.slug}" (path "${h.path}") resolve ${key} to DIFFERENT ` +
-              `values, and neither can be given a variable of its own — the ` +
-              `bundle host mounts a per-slug instance at "/<slug>", so a server ` +
-              `that needs its own value must be the only one on ` +
-              `path: /<its-own-slug>. Fix that, give one its own bundle, or ` +
-              `seed them the same value.`,
-          );
-        }
-        dissentingSlugs.add(h.own);
+        if (h.value === owner.value || h.own !== null) continue;
+        throw new Error(
+          `bundle "${bundle}": servers "${owner.slug}" (path "${owner.path}") ` +
+            `and "${h.slug}" (path "${h.path}") resolve ${key} to DIFFERENT ` +
+            `values, and neither can be given an instance of its own — the ` +
+            `bundle host mounts a per-slug instance at "/<slug>", so a server ` +
+            `that needs its own value must be the only one on ` +
+            `path: /<its-own-slug>. Fix that, give one its own bundle, or seed ` +
+            `them the same value.`,
+        );
       }
-      // The bare name carries the owner's value, whatever the declaration order
-      // put there first.
-      const entry = imageBundles.get(bundle);
       if (entry) entry.env[key] = owner.value;
     }
 
-    // --- who gets a complete set of per-slug names --------------------------
-    //
-    // THE WHOLE `env:`, not just the keys it dissented on, because the host
-    // discovers a slug by finding a COMPLETE set of a tree's required variables
-    // under that slug's prefix. Two Telegram accounts normally share one
-    // Telegram application, so only the session string differs — emit that one
-    // name and the host finds two of three markers, discovers nothing, and
-    // mounts nothing at the path the render just demanded. The slug would be
-    // configured, entitled, routed and 404.
-    //
-    // A SEEDED NAMESPACE COUNTS EVEN WHEN THE VALUES AGREE. Dissent is a
-    // property of two values being unequal, so keying only on it would mean
-    // re-seeding a slug to the same credential as its neighbour silently drops
-    // its names — and with them the instance the host was mounting for it. An
-    // edit in the secret store would take a working slug off the air with a
-    // clean render. Having its own namespace is the stable, operator-controlled
-    // signal, and every deployment that has seeded none renders untouched.
-    for (const c of contributions) {
-      if (ownInstance(c.path) !== c.slug) continue;
-      if (Object.keys(opts.serverSecrets?.[c.slug] ?? {}).length > 0)
-        dissentingSlugs.add(c.slug);
-    }
-    // ONCE A BUNDLE USES PER-SLUG NAMES, EVERY MOUNT OF ITS OWN GETS THEM.
-    //
-    // Otherwise the obvious configuration has a hole in it: give `telegram-ro`
-    // and `telegram-rw` a path each and seed only the second, and the first is
-    // a mount of its own that the host is never told about — `/telegram-ro`
-    // serves nothing, while `/telegram-rw` works. Both or neither is the only
-    // arrangement that is not a trap, and this is what makes it both.
-    if (dissentingSlugs.size === 0) continue;
-    for (const c of contributions) {
-      if (ownInstance(c.path) === c.slug) dissentingSlugs.add(c.slug);
-    }
+    // --- the per-slug names, for everybody -----------------------------------
     const emitted = emittedAliases.get(bundle) ?? {};
     for (const c of contributions) {
-      if (!dissentingSlugs.has(c.slug)) continue;
-      const aliases: string[] = [];
       for (const [key, value] of Object.entries(c.env)) {
-        const alias = prefixedEnvName(c.slug, key)!;
+        const alias = prefixedEnvName(c.slug, key);
+        // The one shape that cannot be named: a slug mangling to something that
+        // is not a portable variable name (one starting with a digit). It reads
+        // the bare names exactly as it always did.
+        if (alias === null) {
+          (
+            unnameable.get(bundle) ??
+            unnameable.set(bundle, new Set()).get(bundle)!
+          ).add(c.slug);
+          continue;
+        }
         emitted[alias] = value;
-        aliases.push(alias);
       }
-      named.push({ bundle, slug: c.slug, aliases: aliases.sort() });
     }
     emittedAliases.set(bundle, emitted);
+  }
+
+  for (const [bundle, slugs] of unnameable) {
+    opts.onWarning?.(
+      `bundle "${bundle}": ${[...slugs].sort().join(", ")} get no per-slug ` +
+        `variable names, because the slug does not mangle to a portable ` +
+        `variable name (one cannot start with a digit). Those servers read the ` +
+        `bare names, as every server did before per-slug names existed, and ` +
+        `cannot be given a value of their own on a shared bundle. Rename the ` +
+        `slug if they need one.`,
+    );
   }
 
   // A PER-SLUG NAME MAY NOT LAND ON A NAME SOMETHING ELSE ALREADY OWNS.
@@ -824,26 +811,6 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       }
       delete emitted[key];
     }
-  }
-
-  // Said once, per bundle, naming slugs and variables and never a value. The
-  // operator needs it because the per-slug name is GENERATED — it appears in no
-  // config file, and it is what a seeding question ("is the credential on the
-  // box?") has to be asked about from here on.
-  for (const bundle of new Set(named.map((n) => n.bundle))) {
-    const mine = named.filter((n) => n.bundle === bundle);
-    opts.onWarning?.(
-      `bundle "${bundle}": ${mine
-        .map((n) => `"${n.slug}" (${n.aliases.join(", ")})`)
-        .sort()
-        .join(", ")} resolve at least one variable to a value the bare name ` +
-        `does not carry, so each gets its WHOLE env: under per-slug names. The ` +
-        `bare names are unchanged and every other server on this bundle reads ` +
-        `them as before. Each of these slugs must serve path: /<its-own-slug> ` +
-        `(enforced) and run on a tree that reads an injected environment — ` +
-        `telegram and remote-filesystem do; the rest of the bundle image reads ` +
-        `process.env and would see nothing.`,
-    );
   }
 
   // A PARAMETER MAY NOT SHADOW ANOTHER SERVER'S VARIABLE ON THE SAME BUNDLE.
@@ -946,10 +913,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         scope: "RUN_TIME",
         type: "SECRET",
       })),
-      // Per-slug names, for the slugs the block above decided need a mount of
-      // their own. Nothing here replaces a bare name — the bare ones are all
-      // still above — and this is empty for every bundle in every deployment
-      // that has seeded no per-server namespace, which is all of them today.
+      // The same values under their per-slug names — every server on this
+      // bundle, with no condition attached, which is the whole point. Nothing
+      // here replaces a bare name: the bare ones are all still above, holding
+      // the values they always held.
       ...Object.entries(emittedAliases.get(name) ?? {}).map(
         ([key, value]): EnvVar => ({
           key,

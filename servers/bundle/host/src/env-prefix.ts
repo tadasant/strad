@@ -27,10 +27,12 @@
  * `telegram` + `RO__X` is `TELEGRAM__RO__X`, `telegram-ro` + `X` is
  * `TELEGRAM_RO__X`.
  *
- * BOTH NAMES ARE EMITTED, and the container prefers the prefixed one. That is
- * what makes this landable in one commit: the trees that have been migrated to an
- * injected env view read `PREFIX__NAME`, and the ten that have not keep reading
- * the bare `NAME` they always read. See `slugEnvView`.
+ * BOTH NAMES ARE EMITTED, FOR EVERY SERVER, and the container prefers the
+ * prefixed one. There is no condition on the naming: given a config you can work
+ * out what a server's variables are called from that server's own entry, without
+ * looking at any other server. The trees migrated to an injected env view read
+ * `PREFIX__NAME`; the eight that have not keep reading the bare `NAME` they
+ * always read. See `slugEnvView`.
  *
  * This module is IMPORT-FREE on purpose: it is vendored into the bundle host tree
  * across an npm boundary (`npm run envprefix:sync`). The renderer names the
@@ -118,10 +120,10 @@ export function slugEnvView(
  * EVERY name must be present, not any one, and that is the whole filter. The
  * names are a tree's REQUIRED variables, so a partial set is not a server —
  * whereas "any one" would let a single unrelated variable conjure a mount. The
- * renderer emits a per-slug name for a DISSENTING value only, so one server
- * disagreeing about a name another tree happens to share (`TELEGRAM_API_ID` is
- * not a reserved word) would otherwise stand up a live, credentialed instance at
- * a path nobody asked for.
+ * renderer names EVERY supplementary server's `env:`, and these names are
+ * ordinary variables rather than reserved words, so a server that happens to
+ * declare one of them (`TELEGRAM_API_ID` belongs to nobody) would otherwise stand
+ * up a live, credentialed instance at a path nobody asked for.
  *
  * A prefix is also required to round-trip through {@link slugEnvPrefix}, which
  * rejects a head that is not a mangled slug at all — `FOO__BAR__X` does not

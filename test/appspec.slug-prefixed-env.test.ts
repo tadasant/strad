@@ -4,7 +4,7 @@ import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
 import { slugsWithPrefixedNames } from "../src/secrets/env-prefix.ts";
 
 /**
- * SLUG-PREFIXED BOX NAMES, at the renderer.
+ * PER-SLUG BOX NAMES, at the renderer.
  *
  * src/deploy/server-namespaces.ts decides which NAMESPACE a supplementary
  * server's `${NAME}` resolves from. This decides what the resolved value is
@@ -12,12 +12,16 @@ import { slugsWithPrefixedNames } from "../src/secrets/env-prefix.ts";
  * one `process.env`, and two servers that both want `TELEGRAM_API_HASH` need two
  * names, not two namespaces.
  *
- * The rule is strictly ADDITIVE, and most of these tests are about that. The
- * bare name belongs to the first server that declared it and is never taken
- * away; a server that resolves a DIFFERENT value gets `<SLUG>__<NAME>` of its
- * own. Dropping the contested bare name was the first design and it is wrong:
- * the drop is bundle-wide while the disagreement is between two servers, so a
- * third server that never disagreed with anyone would lose a variable it reads.
+ * THE RULE IS FLAT: every enabled supplementary server's `env:` is emitted twice,
+ * under the bare name and under `<SLUG>__<NAME>`, with no condition attached.
+ * Given a config you can compute the whole set by hand, per server, without
+ * looking at any other server. An earlier version minted the second name only
+ * where two values disagreed, which was correct and unreadable — what a variable
+ * was called depended on what some other slug had been seeded.
+ *
+ * What is still conditional is READING, and it is checkable by eye: the bundle
+ * host serves one instance per path, so only a slug that is the only one on
+ * `path: /<its own slug>` can be handed its own names.
  *
  * Every value here is an obviously-fake placeholder. Nothing in this file is a
  * credential, and nothing in this file is shaped like one on purpose.
@@ -50,7 +54,6 @@ const TELEGRAM = (slug: string, path: string, bundle = "bundle") =>
 `;
 
 const SHARED = { TELEGRAM_API_HASH: "fake-shared-hash" };
-
 const RO = { TELEGRAM_API_HASH: "fake-readonly-hash" };
 const RW = { TELEGRAM_API_HASH: "fake-readwrite-hash" };
 
@@ -82,7 +85,10 @@ const envOf = (spec: ReturnType<typeof renderAppSpec>, component: string) =>
     ]),
   );
 
-const aliasKeys = (spec: ReturnType<typeof renderAppSpec>, component: string) =>
+const perSlugKeys = (
+  spec: ReturnType<typeof renderAppSpec>,
+  component: string,
+) =>
   Object.keys(envOf(spec, component))
     .filter((k) => k.includes("__"))
     .sort();
@@ -96,67 +102,88 @@ const throwsWith = (fn: () => unknown): string => {
   return "";
 };
 
-describe("a deployment nothing contests", () => {
-  it("emits the bare name it always emitted, and not one alias", () => {
-    // The claim the 26 supplementary servers in prod rest on.
+describe("every supplementary server is named, with no condition attached", () => {
+  it("emits the bare name and the per-slug name for a server nobody seeded", () => {
+    // The point of the whole change: no trigger, nothing to reason about. This
+    // config has one server, one shared value and no per-server namespace at
+    // all, and the per-slug name is there anyway.
     const warnings: string[] = [];
-    const spec = render(
-      CONFIG(
-        TELEGRAM("telegram-ro", "/telegram") +
-          TELEGRAM("telegram-rw", "/telegram"),
-      ),
-      { warnings },
-    );
+    const spec = render(CONFIG(TELEGRAM("telegram-ro", "/telegram")), {
+      warnings,
+    });
+    const env = envOf(spec, "bundle");
 
-    expect(envOf(spec, "bundle").TELEGRAM_API_HASH).toBe("fake-shared-hash");
-    // An unambiguous bare name is read by every tree in the image, migrated or
-    // not, so a second copy of a credential in the spec would buy nothing.
-    expect(aliasKeys(spec, "bundle")).toEqual([]);
+    expect(env.TELEGRAM_API_HASH).toBe("fake-shared-hash");
+    expect(env.TELEGRAM_RO__TELEGRAM_API_HASH).toBe("fake-shared-hash");
     expect(warnings).toEqual([]);
   });
 
-  it("is unchanged when a seeded server is not a mount of its own", () => {
-    // #125 layering with nobody to disagree with, on the conventional path:
-    // telegram-ro's own value simply becomes the bundle's value, under the bare
-    // name, as it did before.
-    const spec = render(CONFIG(TELEGRAM("telegram-ro", "/telegram")), {
-      serverSecrets: { "telegram-ro": RO },
-    });
-    expect(envOf(spec, "bundle").TELEGRAM_API_HASH).toBe("fake-readonly-hash");
-    expect(aliasKeys(spec, "bundle")).toEqual([]);
-  });
-
-  it("names a seeded server on its own path even with nobody to disagree with", () => {
-    // Seeding a namespace is the STABLE signal, and value inequality is not: if
-    // per-slug names appeared only where two values differ, re-seeding this slug
-    // to its neighbour's credential would drop them — and with them the instance
-    // the bundle host mounts for it. A secret-store edit would take a working
-    // slug off the air with a clean render.
-    const spec = render(CONFIG(TELEGRAM("telegram-ro", "/telegram-ro")), {
-      serverSecrets: { "telegram-ro": RO },
-    });
-    expect(envOf(spec, "bundle").TELEGRAM_API_HASH).toBe("fake-readonly-hash");
-    expect(aliasKeys(spec, "bundle")).toEqual([
-      "TELEGRAM_RO__TELEGRAM_API_HASH",
-    ]);
-  });
-
-  it("is unchanged when two slugs on separate BUNDLES hold different values", () => {
-    // The old answer still works, and still costs a container.
+  it("names capability variants too, even though they read the bare name", () => {
+    // gmail-ro / gmail-rw / gmail-rw-external share `/gmail`, so they are one
+    // instance in the container and read the bare name. They are still NAMED —
+    // "what is this server's variable called" has one answer for every server.
     const spec = render(
       CONFIG(
-        TELEGRAM("telegram-ro", "/telegram", "bundle") +
-          TELEGRAM("telegram-rw", "/telegram", "bundle-rw"),
-        "  - name: bundle\n  - name: bundle-rw\n",
+        TELEGRAM("gmail-ro", "/gmail") +
+          TELEGRAM("gmail-rw", "/gmail") +
+          TELEGRAM("gmail-rw-external", "/gmail"),
       ),
-      { serverSecrets: { "telegram-ro": RO, "telegram-rw": RW } },
     );
-    expect(envOf(spec, "bundle").TELEGRAM_API_HASH).toBe("fake-readonly-hash");
-    expect(envOf(spec, "bundle-rw").TELEGRAM_API_HASH).toBe(
-      "fake-readwrite-hash",
+    expect(perSlugKeys(spec, "bundle")).toEqual([
+      "GMAIL_RO__TELEGRAM_API_HASH",
+      "GMAIL_RW_EXTERNAL__TELEGRAM_API_HASH",
+      "GMAIL_RW__TELEGRAM_API_HASH",
+    ]);
+    expect(envOf(spec, "bundle").TELEGRAM_API_HASH).toBe("fake-shared-hash");
+  });
+
+  it("is the same set whether or not a per-server namespace was seeded", () => {
+    // The property Tadas asked for, stated as a test: seeding changes VALUES,
+    // never which names exist.
+    const yaml = CONFIG(TELEGRAM("telegram-ro", "/telegram-ro"));
+    expect(perSlugKeys(render(yaml), "bundle")).toEqual(
+      perSlugKeys(
+        render(yaml, { serverSecrets: { "telegram-ro": RO } }),
+        "bundle",
+      ),
     );
-    expect(aliasKeys(spec, "bundle")).toEqual([]);
-    expect(aliasKeys(spec, "bundle-rw")).toEqual([]);
+    expect(
+      envOf(render(yaml, { serverSecrets: { "telegram-ro": RO } }), "bundle")
+        .TELEGRAM_RO__TELEGRAM_API_HASH,
+    ).toBe("fake-readonly-hash");
+  });
+
+  it("emits per-slug names as SECRETs, and keeps them off core", () => {
+    const spec = render(CONFIG(TELEGRAM("telegram-ro", "/telegram")));
+    const alias = spec.services
+      .find((s) => s.name === "bundle")!
+      .envs.find((e) => e.key === "TELEGRAM_RO__TELEGRAM_API_HASH")!;
+    expect(alias.type).toBe("SECRET");
+    expect(alias.scope).toBe("RUN_TIME");
+    expect(perSlugKeys(spec, "core")).toEqual([]);
+    expect(envOf(spec, "core").TELEGRAM_API_HASH).toBeUndefined();
+  });
+
+  it("names nothing for a disabled server", () => {
+    // `enabled: false` is skipped wholesale, exactly as it was.
+    const spec = render(
+      CONFIG(
+        TELEGRAM("telegram-ro", "/telegram") +
+          `  - slug: telegram-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    path: /telegram
+    enabled: false
+    entitlements: [admin]
+    env:
+      TELEGRAM_API_HASH: "\${TELEGRAM_API_HASH}"
+`,
+      ),
+    );
+    expect(perSlugKeys(spec, "bundle")).toEqual([
+      "TELEGRAM_RO__TELEGRAM_API_HASH",
+    ]);
   });
 });
 
@@ -166,100 +193,56 @@ describe("two slugs of one tree, two credentials, one container", () => {
     TELEGRAM("telegram-rw", "/telegram-rw");
   const SEEDED = { "telegram-ro": RO, "telegram-rw": RW };
 
-  it("keeps the bare name for the first declarant and names the dissenter", () => {
-    // The headline. Before this, the same configuration was a hard error and the
-    // only answer was a second container.
+  it("gives each its own value under its own name", () => {
+    // The capability this exists for. Before it, the same configuration was a
+    // hard error and the only answer was a second billed component.
     const spec = render(CONFIG(TWO_PATHS), { serverSecrets: SEEDED });
     const env = envOf(spec, "bundle");
 
-    // telegram-ro declared first, so the bare name carries its value and nothing
-    // on the bundle loses a variable.
-    expect(env.TELEGRAM_API_HASH).toBe("fake-readonly-hash");
-    // Each is a mount of its own and each was seeded, so each gets its own name
-    // — including the one that also owns the bare one.
     expect(env.TELEGRAM_RO__TELEGRAM_API_HASH).toBe("fake-readonly-hash");
     expect(env.TELEGRAM_RW__TELEGRAM_API_HASH).toBe("fake-readwrite-hash");
-    expect(aliasKeys(spec, "bundle")).toEqual([
-      "TELEGRAM_RO__TELEGRAM_API_HASH",
-      "TELEGRAM_RW__TELEGRAM_API_HASH",
-    ]);
-
     // One bundle. The whole point is that this does NOT need a second container.
     expect(spec.services.map((s) => s.name).sort()).toEqual(["bundle", "core"]);
   });
 
-  it("never removes or repoints a name the component already held", () => {
-    // The property that makes an added slug safe for the slugs already there:
-    // every name in the no-dissent render survives, with its value, into the
-    // dissenting one.
+  it("never removes or repoints a bare name", () => {
+    // What makes an added slug safe for the slugs already there: every bare name
+    // in the unseeded render survives, with its value, into the seeded one.
     const before = envOf(render(CONFIG(TWO_PATHS)), "bundle");
     const after = envOf(
       render(CONFIG(TWO_PATHS), { serverSecrets: { "telegram-rw": RW } }),
       "bundle",
     );
     for (const [key, value] of Object.entries(before)) {
+      if (key.includes("__")) continue;
       expect(after[key]).toBe(value);
     }
   });
 
-  it("does not let a third server's disagreement cost an innocent one its variable", () => {
-    // gmail-ro / gmail-rw / gmail-rw-external share one path and one value; a
-    // fourth slug on its own path is seeded a different one. The three that
-    // agreed keep the bare name their (unmigrated) tree reads — dropping it
-    // would have taken three working slugs down to add one.
-    const spec = render(
-      CONFIG(
-        TELEGRAM("gmail-ro", "/gmail") +
-          TELEGRAM("gmail-rw", "/gmail") +
-          TELEGRAM("gmail-rw-external", "/gmail") +
-          TELEGRAM("gmail-personal", "/gmail-personal"),
-      ),
-      { serverSecrets: { "gmail-personal": RW } },
-    );
-    const env = envOf(spec, "bundle");
-    expect(env.TELEGRAM_API_HASH).toBe("fake-shared-hash");
-    expect(env.GMAIL_PERSONAL__TELEGRAM_API_HASH).toBe("fake-readwrite-hash");
-  });
+  it("does not let one server's own value cost another one its variable", () => {
+    // gmail-ro / gmail-rw / gmail-rw-external share a path and a value; a fourth
+    // slug on its own path is seeded a different one. The three that share keep
+    // the bare name their (unmigrated) tree reads, in either declaration order.
+    const variants =
+      TELEGRAM("gmail-ro", "/gmail") +
+      TELEGRAM("gmail-rw", "/gmail") +
+      TELEGRAM("gmail-rw-external", "/gmail");
+    const solo = TELEGRAM("gmail-personal", "/gmail-personal");
+    const seeded = { serverSecrets: { "gmail-personal": RW } };
 
-  it("emits the per-slug name as a SECRET, and keeps it off core", () => {
-    const spec = render(CONFIG(TWO_PATHS), { serverSecrets: SEEDED });
-    const alias = spec.services
-      .find((s) => s.name === "bundle")!
-      .envs.find((e) => e.key === "TELEGRAM_RW__TELEGRAM_API_HASH")!;
-    expect(alias.type).toBe("SECRET");
-    expect(alias.scope).toBe("RUN_TIME");
-    expect(aliasKeys(spec, "core")).toEqual([]);
-    expect(envOf(spec, "core").TELEGRAM_API_HASH).toBeUndefined();
-  });
-
-  it("says what it did, naming slugs and variables and never a value", () => {
-    const warnings: string[] = [];
-    const spec = render(CONFIG(TWO_PATHS), {
-      serverSecrets: SEEDED,
-      warnings,
-    });
-
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/TELEGRAM_RW__TELEGRAM_API_HASH/);
-    expect(warnings[0]).toMatch(/telegram-rw/);
-    for (const value of [
-      "fake-readonly-hash",
-      "fake-readwrite-hash",
-      "fake-shared-hash",
-    ]) {
-      expect(warnings[0]).not.toContain(value);
+    for (const yaml of [CONFIG(variants + solo), CONFIG(solo + variants)]) {
+      const env = envOf(render(yaml, seeded), "bundle");
+      expect(env.TELEGRAM_API_HASH).toBe("fake-shared-hash");
+      expect(env.GMAIL_PERSONAL__TELEGRAM_API_HASH).toBe("fake-readwrite-hash");
+      expect(env.GMAIL_RO__TELEGRAM_API_HASH).toBe("fake-shared-hash");
     }
-    // And nothing leaves a literal ref behind in the spec.
-    expect(JSON.stringify(spec)).not.toContain("${TELEGRAM_API_HASH}");
   });
 });
 
 describe("what the renderer refuses", () => {
   it("refuses two values on slugs that share a path", () => {
-    // Same path is one instance in the bundle host, serving both slugs from one
-    // set of credentials. A second value has nowhere to go, whatever it is
-    // called, so this stays a hard error — and the message says what the answer
-    // is now.
+    // One path is one instance holding one credential. Nothing to do with
+    // naming — a second value has nowhere to go there whatever it is called.
     const thrown = throwsWith(() =>
       render(
         CONFIG(
@@ -269,17 +252,31 @@ describe("what the renderer refuses", () => {
         { serverSecrets: { "telegram-ro": RO, "telegram-rw": RW } },
       ),
     );
-    expect(thrown).toMatch(/separate paths/);
     expect(thrown).toMatch(/ONE mount/);
+    expect(thrown).toMatch(/path: \/<its-own-slug>/);
     expect(thrown).not.toContain("fake-readonly-hash");
     expect(thrown).not.toContain("fake-readwrite-hash");
   });
 
+  it("refuses two servers that need different values and neither can have an instance", () => {
+    // `telegram-ro` shares the conventional `/telegram`; `telegram-rw` sits on a
+    // path that is not its slug. Both read the bare name, and the bare name holds
+    // one value.
+    const thrown = throwsWith(() =>
+      render(
+        CONFIG(
+          TELEGRAM("telegram-ro", "/telegram") +
+            TELEGRAM("telegram-rw", "/telegram-elsewhere"),
+        ),
+        { serverSecrets: { "telegram-rw": RW } },
+      ),
+    );
+    expect(thrown).toMatch(/neither can be given an instance of its own/);
+    expect(thrown).toMatch(/path: \/<its-own-slug>/);
+    expect(thrown).not.toContain("fake-readwrite-hash");
+  });
+
   it("catches a same-path pair whatever order the config declares it in", () => {
-    // The bug this replaced: only the FIRST server to declare a key was kept, so
-    // a same-path pair declared second and third was compared against a
-    // different-path server and never against each other — one mount, two
-    // credentials, no error. Both orders must throw.
     const pair =
       TELEGRAM("b-ro", "/shared") +
       TELEGRAM("b-rw", "/shared") +
@@ -307,70 +304,47 @@ describe("what the renderer refuses", () => {
       expect(thrown).toMatch(/path "\/shared"/);
     }
   });
+});
 
-  it("refuses a server that needs its own value and cannot be given one", () => {
-    // Neither of these can be a mount of its own — `telegram-ro` shares the
-    // conventional `/telegram`, `telegram-rw` sits on a path that is not its
-    // slug — so neither can read anything but the bare name, and the bare name
-    // holds one value. Refused at render, where it can still be fixed, rather
-    // than shipped as a server quietly running on the other one's credential.
-    const thrown = throwsWith(() =>
-      render(
-        CONFIG(
-          TELEGRAM("telegram-ro", "/telegram") +
-            TELEGRAM("telegram-rw", "/telegram-elsewhere"),
-        ),
-        { serverSecrets: { "telegram-rw": RW } },
-      ),
-    );
-    expect(thrown).toMatch(/neither can be given a variable of its own/);
-    expect(thrown).toMatch(/path: \/<its-own-slug>/);
-    expect(thrown).not.toContain("fake-readwrite-hash");
+describe("the one shape that cannot be named", () => {
+  const DIGIT = TELEGRAM("1telegram", "/1telegram");
+
+  it("says so by name, and leaves the server on its bare names", () => {
+    // A slug starting with a digit mangles to `1TELEGRAM`, which is not a
+    // portable variable name. This is the ONLY server that gets no per-slug
+    // name, it is decidable from the slug alone, and it is said out loud.
+    const warnings: string[] = [];
+    const spec = render(CONFIG(TELEGRAM("telegram-ro", "/telegram") + DIGIT), {
+      warnings,
+    });
+    const env = envOf(spec, "bundle");
+
+    expect(env.TELEGRAM_API_HASH).toBe("fake-shared-hash");
+    expect(perSlugKeys(spec, "bundle")).toEqual([
+      "TELEGRAM_RO__TELEGRAM_API_HASH",
+    ]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/1telegram/);
+    expect(warnings[0]).toMatch(/cannot start with a digit/);
+    expect(warnings[0]).not.toContain("fake-shared-hash");
   });
 
-  it("refuses one whose slug cannot become a variable name", () => {
-    // A leading digit mangles to something POSIX will not accept, so this server
-    // can never be given a name of its own however it is pathed.
+  it("still refuses to give it a value of its own", () => {
     const thrown = throwsWith(() =>
-      render(
-        CONFIG(
-          TELEGRAM("telegram-ro", "/telegram") +
-            TELEGRAM("1telegram", "/1telegram"),
-        ),
-        { serverSecrets: { "1telegram": RW } },
-      ),
+      render(CONFIG(TELEGRAM("telegram-ro", "/telegram") + DIGIT), {
+        serverSecrets: { "1telegram": RW },
+      }),
     );
-    expect(thrown).toMatch(/neither can be given a variable of its own/);
+    expect(thrown).toMatch(/neither can be given an instance of its own/);
     expect(thrown).toMatch(/1telegram/);
-    expect(thrown).not.toContain("fake-readwrite-hash");
-  });
-
-  it("does not depend on the order a capability-variant group is declared in", () => {
-    // gmail-ro/gmail-rw/gmail-rw-external share `/gmail` and one value; a fourth
-    // slug on its own path is seeded a different one. The three sharing a path
-    // can never be a mount of their own, so they own the bare name whether they
-    // are declared before or after the dissenter — an earlier version compared
-    // against whichever server came first and threw on one of the two orders.
-    const variants =
-      TELEGRAM("gmail-ro", "/gmail") +
-      TELEGRAM("gmail-rw", "/gmail") +
-      TELEGRAM("gmail-rw-external", "/gmail");
-    const solo = TELEGRAM("gmail-personal", "/gmail-personal");
-    const seeded = { serverSecrets: { "gmail-personal": RW } };
-
-    for (const yaml of [CONFIG(variants + solo), CONFIG(solo + variants)]) {
-      const env = envOf(render(yaml, seeded), "bundle");
-      expect(env.TELEGRAM_API_HASH).toBe("fake-shared-hash");
-      expect(env.GMAIL_PERSONAL__TELEGRAM_API_HASH).toBe("fake-readwrite-hash");
-    }
   });
 });
 
 describe("what per-slug names deliberately do NOT touch", () => {
   it("leaves a `params: true` server's variables under the names the store gave them", () => {
-    // A managed parameter's NAME comes from its path in the store, not from the
-    // config, so there is no `env:` entry to prefix and nothing here that could
-    // be made unique by prefixing. Left alone, deliberately.
+    // A managed parameter's NAME comes from its path in the store, not from
+    // `env:`. There is no `env:` entry to name, so there is nothing here to
+    // prefix — the mechanical reason, checkable from the config.
     const spec = renderAppSpec({
       config: parseConfig(
         CONFIG(`  - slug: telegram-ro
@@ -389,17 +363,12 @@ describe("what per-slug names deliberately do NOT touch", () => {
       resolvedParams: { "telegram-ro": { TELEGRAM_API_HASH: "fake-hash" } },
     });
     expect(envOf(spec, "bundle").TELEGRAM_API_HASH).toBe("fake-hash");
-    expect(aliasKeys(spec, "bundle")).toEqual([]);
+    expect(perSlugKeys(spec, "bundle")).toEqual([]);
   });
 
   it("leaves the broadcast env and core's own variables alone", () => {
     const spec = renderAppSpec({
-      config: parseConfig(
-        CONFIG(
-          TELEGRAM("telegram-ro", "/telegram-ro") +
-            TELEGRAM("telegram-rw", "/telegram-rw"),
-        ),
-      ),
+      config: parseConfig(CONFIG(TELEGRAM("telegram-ro", "/telegram"))),
       appName: "strad-test",
       region: "nyc",
       image: IMAGE,
@@ -407,12 +376,11 @@ describe("what per-slug names deliberately do NOT touch", () => {
         { key: "STRAD_TOKENS", value: "t", scope: "RUN_TIME", type: "SECRET" },
       ],
       secrets: SHARED,
-      serverSecrets: { "telegram-rw": RW },
     });
     for (const component of ["core", "bundle"]) {
       const env = envOf(spec, component);
       expect(env.STRAD_TOKENS).toBe("t");
-      expect(env.TELEGRAM_RW__STRAD_TOKENS).toBeUndefined();
+      expect(env.TELEGRAM_RO__STRAD_TOKENS).toBeUndefined();
     }
   });
 });
@@ -422,19 +390,12 @@ describe("what per-slug names deliberately do NOT touch", () => {
  *
  * The renderer NAMES variables; the bundle host DISCOVERS a slug from the names
  * it finds and mounts an instance for it. Each half was tested and the pair was
- * not, and the gap between them was a real bug: two Telegram accounts normally
- * share one Telegram application, so `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`
- * are identical and only the session string differs. Emitting only the name that
- * DIFFERS left the host looking at two of three markers, discovering nothing, and
- * mounting nothing at the path the renderer had just made mandatory — a slug that
- * is configured, entitled, routed, and 404.
- *
- * So this asserts the property that actually matters: render a real two-account
- * config, hand the resulting environment to the host's own discovery function,
- * and get the dissenting slug back.
+ * not, and the gap between them was a real bug — the renderer emitted only the
+ * names a server disagreed about, while the host needs a COMPLETE set of a tree's
+ * required variables, so a slug could be configured, entitled, routed and 404.
+ * Unconditional emission removes the gap by construction; this is what proves it.
  */
 describe("the renderer's output and the bundle host's discovery", () => {
-  /** Telegram's three credential variables, as its config.ts declares them. */
   const TELEGRAM_ENV = `    env:
       TELEGRAM_API_ID: "\${TELEGRAM_API_ID}"
       TELEGRAM_API_HASH: "\${TELEGRAM_API_HASH}"
@@ -454,20 +415,22 @@ describe("the renderer's output and the bundle host's discovery", () => {
     "TELEGRAM_API_HASH",
     "TELEGRAM_STRING_SESSION",
   ];
+  const APP = {
+    TELEGRAM_API_ID: "1111111",
+    TELEGRAM_API_HASH: "fake-shared-hash",
+    TELEGRAM_STRING_SESSION: "fake-session-one",
+  };
 
-  it("agrees: a dissenter that shares an app id is still discovered", () => {
+  it("a slug that shares an app id is still discovered, because every name is emitted", () => {
+    // Two Telegram accounts normally share one Telegram APPLICATION, so the id
+    // and hash are identical and only the session string differs. Emitting only
+    // what differs left the host finding two of three markers.
     const spec = render(
       CONFIG(
         server("telegram", "/telegram") + server("telegram-rw", "/telegram-rw"),
       ),
       {
-        secrets: {
-          TELEGRAM_API_ID: "1111111",
-          TELEGRAM_API_HASH: "fake-shared-hash",
-          TELEGRAM_STRING_SESSION: "fake-session-one",
-        },
-        // ONLY the session differs — the app id and hash are the same
-        // application, which is the normal shape of two accounts.
+        secrets: APP,
         serverSecrets: {
           "telegram-rw": { TELEGRAM_STRING_SESSION: "fake-session-two" },
         },
@@ -475,40 +438,35 @@ describe("the renderer's output and the bundle host's discovery", () => {
     );
     const env = envOf(spec, "bundle");
 
-    // The dissenter gets its WHOLE env, including the two names it agrees about.
     expect(env.TELEGRAM_RW__TELEGRAM_STRING_SESSION).toBe("fake-session-two");
     expect(env.TELEGRAM_RW__TELEGRAM_API_ID).toBe("1111111");
     expect(env.TELEGRAM_RW__TELEGRAM_API_HASH).toBe("fake-shared-hash");
-    // The conventional mount is untouched.
     expect(env.TELEGRAM_STRING_SESSION).toBe("fake-session-one");
 
-    // The incumbent gets a complete set too — a bundle either uses per-slug
-    // names for every mount of its own or for none, so that `/telegram` and
-    // `/telegram-rw` cannot end up one mounted and one not.
-    expect(env.TELEGRAM__TELEGRAM_STRING_SESSION).toBe("fake-session-one");
-
-    // And the host — given exactly this environment — finds both, and mounts
-    // `telegram-rw` at /telegram-rw. `telegram` is its conventional slug, so the
-    // host's `extraSlugs` filters it out and mounts it once, as it always did.
+    // The host, given exactly this environment, finds both and mounts
+    // `telegram-rw` at /telegram-rw. `telegram` is the conventional slug, which
+    // `extraSlugs` filters out so it is mounted once, as always.
     expect(slugsWithPrefixedNames(env, MARKERS)).toEqual([
       "telegram",
       "telegram-rw",
     ]);
   });
 
-  it("agrees the other way: no dissent means nothing to discover", () => {
+  it("finds nothing for a slug that is not a mount of its own", () => {
+    // Two slugs on the conventional path are one instance. They are named, but
+    // the host mounts `/telegram` once and neither slug adds a mount.
     const spec = render(
       CONFIG(
         server("telegram-ro", "/telegram") + server("telegram-rw", "/telegram"),
       ),
-      {
-        secrets: {
-          TELEGRAM_API_ID: "1111111",
-          TELEGRAM_API_HASH: "fake-shared-hash",
-          TELEGRAM_STRING_SESSION: "fake-session-one",
-        },
-      },
+      { secrets: APP },
     );
-    expect(slugsWithPrefixedNames(envOf(spec, "bundle"), MARKERS)).toEqual([]);
+    const discovered = slugsWithPrefixedNames(envOf(spec, "bundle"), MARKERS);
+    expect(discovered).toEqual(["telegram-ro", "telegram-rw"]);
+    // Neither is the conventional `telegram` slug, so the host would try to mount
+    // both — which is exactly why `extraSlugs` exists and why the paths in the
+    // config are what decide routing. Nothing routes to them: the gateway sends
+    // both slugs to `/telegram`.
+    expect(discovered).not.toContain("telegram");
   });
 });

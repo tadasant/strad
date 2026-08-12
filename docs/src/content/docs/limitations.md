@@ -1315,51 +1315,51 @@ shows the mount at all.
 `-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`
 lines.
 
-### 55. Per-slug variable names reach two of the ten trees, and only a mount of its own
+### 56. Per-slug variable names are emitted for every server; only two of the ten trees can read one
 
-A supplementary server's variables can land on the container under names derived
-from its slug — `TELEGRAM_RW__TELEGRAM_API_HASH` — which is what lets one container
-hold two values for one variable. Four limits travel with it.
+Every supplementary server's `env:` lands on its bundle twice — under the bare
+name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
+variables are called is computable from that server's own config entry. Four
+limits travel with it, and each is decidable by looking at the config.
 
-**Only a slug that can be its own mount gets them**: the only slug on its path,
-that path being `/<its own slug>`, and a slug that mangles to a usable variable
-name. The bundle host mounts a discovered slug at the slug, having no config to
-read a path out of, so anything else would route to a different mount and read the
-other server's credential — `render-spec` refuses that rather than shipping it.
-Capability variants sharing one path (`gmail-ro` / `gmail-rw` / `gmail-rw-external`
-on `/gmail`) are one mount by definition and can never have their own; two such
-groups needing different values is refused too.
+**Only a slug that is its own mount can READ its names.** The bundle host serves
+one instance per path, so a slug is handed its own names only when it is the only
+slug on its path and that path is `/<its own slug>`. Capability variants sharing
+`/gmail` are one process: their per-slug names exist on the container, and what
+they read is the bare name. Two slugs on one path resolving one variable
+differently is still a hard error — one process cannot hold two credentials,
+whatever the variables are called.
 
-**Only `telegram` and `remote-filesystem` can read one.** A per-slug name means
-nothing unless the server reads an injected environment rather than `process.env`,
-and eight of the ten trees in the bundle image are vendored upstream code that
-reads globals — often lazily, at call time. The renderer cannot tell which tree an
-image contains, so nothing stops you configuring a slug of another tree this way:
-it will render, the `::warning::` will name it, and that slug will serve nothing,
-because the image has no mount at its path. Reachability reports the deployment
-`degraded`, which is where you would see it.
+**Only `telegram` and `remote-filesystem` read an injected environment.** The
+other eight trees in the bundle image are vendored upstream code that reads
+`process.env` directly, often lazily at call time, so they see the bare names
+only. The renderer cannot tell which tree an image contains — an image is a tag in
+someone else's config — so a slug of another tree given its own path renders,
+warns, and serves nothing, because the image has no mount at that path.
+Reachability reports the deployment `degraded`, which is where you would see it.
 
-**A `params: true` server cannot have its own.** A managed parameter's name comes
-from its path in the store rather than from `env:`, so it never enters this
-reasoning; two servers contributing one variable where either is a parameter still
-hits the older shadow error. The motivating deployment is in exactly that state —
-prod's `telegram-ro` is `params: true` — so adopting this there means moving that
-slug to explicit `env:` refs first.
+**A slug starting with a digit gets no per-slug names**, because `1PASSWORD__X` is
+not a portable variable name. It reads the bare names, and the render says so by
+name.
 
-**`remote-filesystem` ends up double-prefixed.** A second slug of it reads
-`REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. The inner prefix
-keeps that server off the bare `GCS_*` names, which belong to the `gcs` server in
-the same container; the outer one separates two instances. Collapsing them would
-make a missing per-slug value fall back to the `gcs` server's bucket.
+**A `params: true` server's variables are not covered**, because they are not in
+`env:` — a managed parameter's name comes from its path in the store, so there is
+no declaration to prefix. Prod's `telegram-ro` is `params: true`, so giving it a
+credential of its own means moving it to explicit `env:` refs first.
+
+**What it costs a rendered spec.** One extra variable per supplementary `env:`
+entry: prod's `bundle` goes from 36 to 87 and staging's from 34 to 83, with
+nothing removed and no value changed anywhere, and `core` untouched. Each
+supplementary credential therefore appears twice in the spec, encrypted at rest by
+DigitalOcean both times.
 
 Two smaller edges. The console's presence probe asks the bundle about **bare**
-names only, so for a slug with its own names `/ui/secrets` reports the bare
-variable healthy — which it is — and says nothing about whether the per-slug name
-the server actually reads is present. And a slug may no longer contain `--`, or
-lead or trail with `-`, because `a--b` + `C` and `a` + `B__C` would otherwise be
-one variable; no slug in any strad config has ever used either shape.
+names only, so it reports the bare variable healthy and says nothing about the
+per-slug name a server may actually be reading. And a slug may no longer contain
+`--`, or lead or trail with `-`, because `a--b` + `C` and `a` + `B__C` would
+otherwise be one variable; no slug in any strad config has ever used either shape.
 
-**Undo:** `HACKS.md` #55.
+**Undo:** `HACKS.md` #56.
 
 ---
 

@@ -639,7 +639,7 @@ describe("render-spec, per-server namespaces", () => {
     // Same two servers, one container. There is no environment that holds both.
     const result = await render(TWO_SERVERS("bundle", "bundle"));
     expect(result.ok).toBe(false);
-    expect(result.stderr).toContain("separate bundles");
+    expect(result.stderr).toContain("ONE mount in the container");
     expect(result.stderr).not.toContain("fake-readonly-hash");
   });
 
