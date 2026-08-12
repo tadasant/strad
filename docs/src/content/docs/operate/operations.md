@@ -86,16 +86,24 @@ Runs on PRs and pushes to `main`. Fifteen jobs, all `runs-on: self-hosted`:
 - **`docs_site`** — `npm ci && npm run build` in `docs/`. The documentation site is
   meant to stay true commit-by-commit, so a broken link, bad frontmatter, or a page
   missing from the `sidebar` array fails the PR rather than the deploy.
-- **`dev_env`** — both [local development](/start/local/) paths, end to end. It
-  builds `.agent-containers/Dockerfile.dev`, boots the workspace, runs `setup.sh`
-  and `run.sh` inside it, and asserts the gateway serves — not merely a 200, but a
+- **`dev_env`** — both [local development](/start/local/) paths, end to end. First
+  the no-Docker one: `npm ci`, then `npm run dev:agent -- --background`, which
+  only exits 0 once `/healthz` answered. Then the container one: build
+  `.agent-containers/Dockerfile.dev`, boot the workspace, run `setup.sh` and
+  `run.sh` inside it, and demand the gateway serves — not merely a 200, but a
   `/healthz` naming the `echo` server, since mounting one is why the dev config
   exists. It also asserts the three properties that are decisions rather than
   accidents: `node_modules` comes from the named volume and not the host bind
   mount, `/var/run/docker.sock` is **not** in the container, and re-running
-  `run.sh` is a no-op rather than an `EADDRINUSE` crash. Then it runs
-  `npm run dev:agent -- --background` on the runner itself, which is the
-  no-Docker path and shares no code with the container one.
+  `run.sh` is a no-op rather than an `EADDRINUSE` crash.
+
+  That order is load bearing. The compose stack mounts a named volume at
+  `/app/node_modules` inside a bind-mounted checkout, so if the directory does not
+  already exist the **daemon creates it, as root** — and the host `npm ci` that
+  follows is then an `EACCES` on a workspace the runner owns. Installing first
+  means the mount point is already the runner's, and it sharpens the volume
+  assertion: with the host tree populated, a non-empty tree inside the container
+  is the volume rather than the bind mount showing through.
 
   The dev environment's users are newcomers and agents — the two populations
   least able to debug it, and the two most likely to read a broken boot as

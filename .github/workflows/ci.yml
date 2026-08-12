@@ -438,6 +438,44 @@ jobs:
       - name: The compose file parses
         run: docker compose -f "$COMPOSE_FILE" config > /dev/null
 
+      # `npm run dev:agent` is the path most sessions will actually take, and it
+      # shares no code with the container path below. Node only — that is the
+      # whole point of it.
+      #
+      # BEFORE the container, and that ordering is load bearing. The compose
+      # stack mounts a named volume at /app/node_modules inside a bind-mounted
+      # checkout, so if the directory does not already exist the DAEMON creates
+      # it, as root — and then this step's `npm ci` is an EACCES on a workspace
+      # the runner owns. Installing first means the mount point is already there
+      # and already the runner's. It also makes the volume assertion below say
+      # more: the host tree is populated, so a non-empty tree inside the
+      # container is the volume rather than the bind mount showing through.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: The no-Docker path boots
+        run: |
+          set -euo pipefail
+          npm ci
+          # A pinned port would be a shared resource on a shared box; with PORT
+          # unset the script asks the kernel for a free one, so let it, and read
+          # the port and pid back out of what it prints.
+          out=$(npm run --silent dev:agent -- --background)
+          echo "$out"
+          # --background only returns 0 once /healthz answered, so reaching here
+          # is already the assertion. The rest is for the log, and for the kill.
+          port=$(printf '%s' "$out" | grep -o 'localhost:[0-9]*' | head -n 1 | cut -d: -f2)
+          pid=$(printf '%s' "$out" | grep -o 'pid [0-9]*' | head -n 1 | cut -d' ' -f2)
+          curl -fsS "http://127.0.0.1:${port}/healthz"
+          echo
+          # By pid, never by pattern: `pkill -f node` on a box that runs every
+          # job of every PR is a way to fail somebody else's build. The script
+          # launches the dev command through `sh -c "exec …"` precisely so this
+          # pid is the node process — through `npm run` it would be npm's, and
+          # killing that leaves the --watch supervisor holding the port.
+          kill "$pid" 2> /dev/null || true
+
       - name: Build and start the workspace
         run: |
           set -euo pipefail
@@ -510,34 +548,13 @@ jobs:
           # Re-running run.sh is a no-op, not an EADDRINUSE crash. Agents re-run
           # things.
           echo "--- run.sh is idempotent"
-          dc exec -T app .agent-containers/run.sh | tee /tmp/rerun.txt
-          grep -q "already serving" /tmp/rerun.txt
-
-      # `npm run dev:agent` is the path most sessions will actually take, and it
-      # shares no code with the container path above. Node only — that is the
-      # whole point of it.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: The no-Docker path boots too
-        run: |
-          set -euo pipefail
-          npm ci
-          # A pinned port would be a shared resource on a shared box; with PORT
-          # unset the script asks the kernel for a free one, so let it, and read
-          # the port and pid back out of what it prints.
-          out=$(npm run --silent dev:agent -- --background)
-          echo "$out"
-          # --background only returns 0 once /healthz answered, so reaching here
-          # is already the assertion. The rest is for the log, and for the kill.
-          port=$(printf '%s' "$out" | grep -o 'localhost:[0-9]*' | head -n 1 | cut -d: -f2)
-          pid=$(printf '%s' "$out" | grep -o 'pid [0-9]*' | head -n 1 | cut -d' ' -f2)
-          curl -fsS "http://127.0.0.1:${port}/healthz"
-          echo
-          # By pid, never by pattern: `pkill -f node` on a box that runs every
-          # job of every PR is a way to fail somebody else's build.
-          kill "$pid" 2> /dev/null || true
+          # Captured in a variable rather than a file: a fixed path under /tmp is
+          # a shared resource on this box exactly like a fixed port is, and a
+          # concurrent job writing it between the tee and the grep is a green
+          # that proves nothing.
+          rerun=$(dc exec -T app .agent-containers/run.sh)
+          echo "$rerun"
+          printf '%s' "$rerun" | grep -q "already serving"
 
       - name: Tear down
         if: always()
@@ -547,6 +564,12 @@ jobs:
           # the next run's `actions/checkout` cannot clean the workspace.
           docker compose --project-name "$AC_PROJECT" -f "$COMPOSE_FILE" exec -T app rm -rf /app/.logs 2>/dev/null || true
           docker compose --project-name "$AC_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+          # `down -v` drops the volume; the mount POINT it was attached to stays
+          # in the checkout. It is the runner's own directory when the step above
+          # this job's install created it, and root's when something went wrong
+          # before that — an empty root-owned directory a runner-owned parent can
+          # still rmdir. Either way it must not be left for the next checkout.
+          rmdir node_modules 2>/dev/null || true
           rm -rf "$AC_CLAUDE_DIR" "$AC_GH_DIR" || true
 
   # The docs site is the canonical prose for how strad works, and the premise is
