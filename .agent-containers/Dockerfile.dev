@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1
+# check=error=true
+
+# Development image for a containerized strad workspace.
+#
+# This is NOT the production Dockerfile (that one is at the repo root: a
+# two-stage build that compiles to dist/ and runs `node dist/index.js` as uid
+# 1000). This one is a batteries-included dev box: the CLI tooling an agent
+# session expects, and nothing compiled in.
+#
+# The repo is bind-mounted at /app at runtime (see docker-compose.dev.yml), so we
+# deliberately do NOT COPY the source in — dependencies are installed by setup.sh
+# against the mounted package-lock.json, and edits on the host are live inside.
+
+# Same base as the production image, and the floor package.json declares
+# (engines.node >= 22 — `node --experimental-transform-types`, which is what
+# `npm run dev` is, does not exist before it).
+FROM node:22-slim
+
+# System dependencies:
+#   - git, curl, ca-certificates, gnupg, openssh-client: source control + installers
+#   - tmux, jq, ripgrep: agent session ergonomics (ac.sh runs Claude Code in tmux)
+#   - procps: `ps`, for finding the dev server run.sh backgrounded
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+        git \
+        curl \
+        ca-certificates \
+        gnupg \
+        openssh-client \
+        tmux \
+        jq \
+        ripgrep \
+        procps && \
+    rm -rf /var/lib/apt/lists/*
+
+# GitHub CLI (gh) — agents open PRs with it, and it brokers git credentials below.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update -qq && \
+    apt-get install --no-install-recommends -y gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# No Docker CLI, on purpose. zimmer's dev image ships one because its container
+# drives sibling containers through a mounted /var/run/docker.sock; strad's code
+# drives no containers, so neither the socket nor the client is here. See the
+# compose file.
+
+# Claude Code CLI (native installer). ac.sh launches it inside tmux.
+RUN curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Use gh as the git credential helper for GitHub, so a mounted `gh` auth token
+# transparently authenticates git pushes/pulls over HTTPS.
+RUN git config --global credential."https://github.com".helper "!gh auth git-credential" && \
+    git config --global credential."https://gist.github.com".helper "!gh auth git-credential" && \
+    git config --global --add safe.directory /app
+
+WORKDIR /app
+
+# The compose file overrides this with `sleep infinity` (the container is a
+# long-lived workspace; the gateway is started inside it by run.sh). This default
+# keeps `docker run` on the image alone from exiting immediately.
+CMD ["sleep", "infinity"]

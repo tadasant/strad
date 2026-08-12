@@ -1,0 +1,89 @@
+# Containerized strad dev stack.
+#
+# ONE service. strad is a stateless Node process — no database, no cache, no
+# background worker — so there is nothing for a `db` or `redis` service to do
+# here. What this buys you is isolation of the WORKSPACE: a clone, a toolchain
+# and a set of credentials that belong to one session and collide with nothing.
+#
+# The `app` container is a long-lived workspace and does NOT auto-start the
+# gateway: it runs `sleep infinity`, setup.sh installs into it, and run.sh starts
+# the dev server inside it (ac.sh does all three for you).
+#
+# Host ports are dynamic by default (APP_PORT=0 → a random free host port maps to
+# container :8080), so many isolated sessions run in parallel without colliding.
+# `docker compose port app 8080` — or `ac.sh status` — tells you the assigned one.
+#
+# No compose healthcheck on `app`, deliberately: until run.sh has run there is
+# nothing listening, so a healthcheck would report a correctly-idle workspace as
+# unhealthy. ac.sh polls /healthz after run.sh instead, which is the moment the
+# answer becomes meaningful.
+#
+# Teardown MUST use `-v` or the node_modules volume leaks:
+#   docker compose -f .agent-containers/docker-compose.dev.yml down -v
+#
+# Project name: this default (`strad-dev-local`) is a SINGLE shared stack, which
+# is what you get running compose directly. ac.sh overrides it with
+# `-p strad-dev-<name>` so each session gets its own. Both start with
+# `strad-dev-`; unlike zimmer, nothing in strad reaps by that prefix, so it is a
+# convention for humans and `docker ps` rather than a contract with a job.
+
+name: strad-dev-local
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: .agent-containers/Dockerfile.dev
+    command: sleep infinity
+    environment:
+      # Inline rather than an `env_file`. strad's .gitignore has `.env.*`, so a
+      # committed `.agent-containers/.env.dev` would be silently ignored and the
+      # stack would boot with none of this — write it where git can see it.
+
+      # The dev config: console bypass on, echo mounted. See strad.config.dev.yaml.
+      STRAD_CONFIG: /app/strad.config.dev.yaml
+      PORT: "8080"
+
+      # Two of the console bypass's three locks (the third is in the config).
+      # Nothing sensitive: this token opens a console on a gateway with one echo
+      # server in it.
+      ALLOW_DEV_AUTH: "true"
+      ADMIN_BOOTSTRAP_TOKEN: change-me
+
+      # Core ↔ bundle shared secret. Nothing local speaks to a bundle; boot reads
+      # it anyway, so give it a value that is obviously not one.
+      STRAD_INTERNAL_TOKEN: change-me
+
+      # /mcp needs a minted system token, and the console bypass cannot stand in
+      # for one. Mint into this with:
+      #   npm run token:mint -- --label dev --roles admin
+      STRAD_TOKENS: "[]"
+    volumes:
+      # The repo itself, live-mounted. Edits on the host appear instantly inside.
+      - ..:/app
+      # node_modules as a named volume, NOT the bind mount underneath it. Without
+      # this, a container `npm ci` overwrites the host's tree (and vice versa) —
+      # and on a macOS host that means Linux binaries landing in the checkout you
+      # also run `npm test` against. Dropped by `down -v`.
+      - node_modules:/app/node_modules
+      # The host's Claude Code + gh credentials, so an agent inside is already
+      # logged in. Optional — the stack boots without them.
+      #
+      # Redirectable, and CI redirects them: a bind mount whose source is missing
+      # is CREATED by the daemon, as root. Pointed at a real `$HOME` on a shared
+      # box that would leave root-owned `~/.claude` and `~/.config/gh` behind for
+      # whoever logs in next, which is a worse failure than not having them.
+      - ${AC_CLAUDE_DIR:-${HOME}/.claude}:/root/.claude
+      - ${AC_GH_DIR:-${HOME}/.config/gh}:/root/.config/gh
+      #
+      # NOT mounted: /var/run/docker.sock. zimmer mounts it because zimmer's own
+      # code drives Docker; strad's does not, and the socket is root-equivalent
+      # access to the host — any container that can reach it can start a
+      # privileged container mounting /. It is not a cost worth paying for a
+      # capability nothing here uses. See .agent-containers/README.md.
+    ports:
+      # APP_PORT=0 (the default) publishes container :8080 on a random host port.
+      - "${APP_PORT:-0}:8080"
+
+volumes:
+  node_modules:

@@ -45,7 +45,16 @@ a GHCR image.
     variable and the host is the only thing that reads it back, so a drift puts
     the credential on the container under a name nothing looks for: green deploy,
     clean boot log, every call failing on a variable that is right there.
-- `npm run dev` starts the gateway on `:8080` against `strad.config.yaml`.
+- `npm run dev` starts the gateway on `:8080` against `strad.config.yaml` — the
+  stock config, which has zero servers and a console nobody can enter.
+- `npm run dev:agent` (`scripts/agent-dev.sh`) is the one to reach for instead:
+  a FREE port, `strad.config.dev.yaml` (console bypass on, `echo` mounted), and
+  the dev env vars defaulted. `--background` nohups it and polls `/healthz`, so a
+  boot crash is reported as one. No Docker and no root — strad has no database,
+  no cache and no build step in dev, so there is nothing to containerize for
+  correctness. `.agent-containers/` is the heavier path (a workspace container
+  per session, `ac.sh clone|status|open|attach|logs|stop|destroy`) and buys
+  isolation, not capability. Both are in `docs/.../start/local.md`.
 - `servers/**` is **outside** the core TypeScript program (see `eslint.config.js`).
   Each server tree has its own lockfile and is built by its own image.
 
@@ -86,6 +95,7 @@ not a confession.
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI          | `intro/architecture.md`, `operate/telemetry.md`, and every count        |
 | `infra/strad.staging.yaml`                                                          | `operate/operations.md`, `servers/adding.md`                            |
 | `.github/workflows/**`                                                              | `operate/operations.md`                                                 |
+| `.agent-containers/**`, `scripts/agent-dev.sh`, `strad.config.dev.yaml`             | `start/local.md`, and `.agent-containers/README.md` + `VERIFY.md`       |
 | custom domains, `gateway.publicUrl`                                                 | `operate/dns.md`                                                        |
 | a `HACKS.md` entry added or resolved                                                | `limitations.md`                                                        |
 

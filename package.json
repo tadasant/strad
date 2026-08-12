@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --experimental-transform-types --watch src/index.ts",
+    "dev:agent": "./scripts/agent-dev.sh",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

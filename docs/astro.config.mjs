@@ -84,6 +84,10 @@ export default defineConfig({
           ],
         },
         {
+          label: "Get started",
+          items: [{ label: "Local development", slug: "start/local" }],
+        },
+        {
           label: "Servers",
           items: [
             { label: "The server-config interface", slug: "servers/interface" },
