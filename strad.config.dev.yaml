@@ -1,0 +1,52 @@
+# The config the local dev environment boots against.
+#
+# strad.config.yaml is the config baked into the stock image, and it has ZERO
+# servers — which is correct for a shipped artifact and useless to look at. This
+# one is the opposite: the smallest config that gives you something to POINT AN
+# MCP CLIENT AT and a console you can actually enter.
+#
+# It is used by `npm run dev:agent` and by the `.agent-containers/` stack. It is
+# NOT deployed anywhere: infra/strad.staging.yaml is the real one.
+#
+# Nothing here resolves a `${NAME}`, so it needs no secrets and boots offline.
+
+version: 1
+
+gateway:
+  name: strad
+  env: dev
+
+auth:
+  staticTokens:
+    enabled: true
+    store: env
+
+  # Enter /console with ADMIN_BOOTSTRAP_TOKEN instead of Google OAuth. This is
+  # the flag that turns the local console from a 401 wall into a screen, and it
+  # is the reason this file exists separately from strad.config.yaml — the stock
+  # config leaves it off, and a dev environment nobody can log into is not one.
+  #
+  # ALLOW_DEV_AUTH=true and ADMIN_BOOTSTRAP_TOKEN must also be set; the dev boot
+  # paths set both. It cannot authenticate /mcp under any circumstances.
+  consoleDevBypass:
+    enabled: true
+    roles: [admin]
+
+roles:
+  admin:
+    servers: ["*"]
+
+bundles: []
+
+servers:
+  # The echo builtin, in-process. It needs no credential, no network and no
+  # container, so `tools/list` on a fresh clone returns a real tool rather than
+  # an empty array — which is the difference between "the gateway is up" and
+  # "the gateway is up and routing".
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    options:
+      greeting: "hello from your dev strad"

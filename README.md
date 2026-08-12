@@ -158,7 +158,8 @@ npm run token:mint -- --label "my agent" --roles admin --env staging
 ```bash
 npm install
 npm test            # unit + real-MCP-client end-to-end, in-process
-npm run dev         # local server on :8080
+npm run dev         # local server on :8080, against the zero-server stock config
+npm run dev:agent   # a free port, the dev config, a console you can enter
 npm run typecheck
 npm run lint
 
@@ -167,7 +168,11 @@ npm run lint
 npm run config:check -- --config infra/strad.staging.yaml
 ```
 
-Requires Node 22 (uses native TypeScript execution).
+Requires Node 22 (uses native TypeScript execution). No database, no cache, no
+build step in dev — `npm run dev:agent` is the whole local environment, and it
+prints the URL it picked. For several isolated sessions at once there is a
+containerized workspace in `.agent-containers/`; both are documented in
+[Local development](https://docs.strad.tadasant.com/start/local/).
 
 ## Secrets
 

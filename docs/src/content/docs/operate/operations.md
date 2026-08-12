@@ -11,7 +11,7 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Fifteen jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Sixteen jobs, all `runs-on: self-hosted`:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -91,16 +91,39 @@ Runs on PRs and pushes to `main`. Fifteen jobs, all `runs-on: self-hosted`:
 - **`docs_site`** — `npm ci && npm run build` in `docs/`. The documentation site is
   meant to stay true commit-by-commit, so a broken link, bad frontmatter, or a page
   missing from the `sidebar` array fails the PR rather than the deploy.
+- **`dev_env`** — both [local development](/start/local/) paths, end to end. First
+  the no-Docker one: `npm ci`, then `npm run dev:agent -- --background`, which
+  only exits 0 once `/healthz` answered. Then the container one: build
+  `.agent-containers/Dockerfile.dev`, boot the workspace, run `setup.sh` and
+  `run.sh` inside it, and demand the gateway serves — not merely a 200, but a
+  `/healthz` naming the `echo` server, since mounting one is why the dev config
+  exists. It also asserts the three properties that are decisions rather than
+  accidents: `node_modules` comes from the named volume and not the host bind
+  mount, `/var/run/docker.sock` is **not** in the container, and re-running
+  `run.sh` is a no-op rather than an `EADDRINUSE` crash.
+
+  That order is load bearing. The compose stack mounts a named volume at
+  `/app/node_modules` inside a bind-mounted checkout, so if the directory does not
+  already exist the **daemon creates it, as root** — and the host `npm ci` that
+  follows is then an `EACCES` on a workspace the runner owns. Installing first
+  means the mount point is already the runner's, and it sharpens the volume
+  assertion: with the host tree populated, a non-empty tree inside the container
+  is the volume rather than the bind mount showing through.
+
+  The dev environment's users are newcomers and agents — the two populations
+  least able to debug it, and the two most likely to read a broken boot as
+  "strad is broken". Nothing else in CI touches either path.
 
 <aside class="starlight-aside starlight-aside--note">
 
-**Why `ci.yml`'s two docker jobs name everything per run.** `bundle_image` and
-`build_image` both build an image and boot it, on a self-hosted box whose docker
-daemon every concurrent job shares. So the container name, the image tag and the
-host port are all suffixed or assigned per run: the tag is
-`ci-<run id>-<run attempt>`, the container carries the same suffix, and the port
-is published as `-p 127.0.0.1::8080` and read back with `docker port`, rather than
-bound to a fixed `-p 8080:8080`.
+**Why `ci.yml`'s three docker jobs name everything per run.** `bundle_image`,
+`build_image` and `dev_env` all build an image and boot it, on a self-hosted box
+whose docker daemon every concurrent job shares. So the container name, the image
+tag, the compose project and the host port are all suffixed or assigned per run:
+the tag is `ci-<run id>-<run attempt>`, the container carries the same suffix,
+`dev_env`'s compose project is `strad-dev-ci-<run id>-<run attempt>`, and the port
+is published as `-p 127.0.0.1::8080` (or `APP_PORT=0`) and read back with
+`docker port`, rather than bound to a fixed `-p 8080:8080`.
 
 Two of the three failures that prevents are loud — a duplicate `--name`, a bound
 host port — and the third is not. Given a shared `strad:ci`, a concurrent job can

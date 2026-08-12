@@ -403,6 +403,191 @@ jobs:
           npm install --package-lock-only
           git diff --exit-code package-lock.json
 
+  # The dev environment is the one thing in this repo whose users are all
+  # newcomers and agents — the two populations least able to debug it. So it is
+  # asserted end to end rather than reviewed: build the workspace image, install
+  # into it, start the gateway, and demand that it serves.
+  #
+  # A stale Dockerfile.dev fails nothing else. `npm run dev:agent` is exercised
+  # by nothing else. Both are how a session gets its first look at strad, and a
+  # broken one reads as "strad is broken".
+  dev_env:
+    runs-on: self-hosted
+    env:
+      # Per-run, for the reason spelled out on `bundle_image`: one runner box
+      # means one docker daemon, and a fixed compose project would have two
+      # concurrent jobs sharing a container, a volume and a build.
+      AC_PROJECT: strad-dev-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_FILE: .agent-containers/docker-compose.dev.yml
+      # The credential mounts, redirected away from the runner's real HOME. A
+      # bind mount whose source does not exist is created by the daemon as root,
+      # and this box's HOME belongs to a human.
+      AC_CLAUDE_DIR: /tmp/ac-ci-claude-${{ github.run_id }}-${{ github.run_attempt }}
+      AC_GH_DIR: /tmp/ac-ci-gh-${{ github.run_id }}-${{ github.run_attempt }}
+      # Name the builder instead of resolving the ambient one. `default` is the
+      # daemon's own builder: it always exists, it loads what it builds, and no
+      # concurrent job's teardown can remove it mid-build. That is the same
+      # hazard `bundle_image` spells out, answered with one variable rather than
+      # a job-scoped buildkit — a dev image needs no cache export.
+      BUILDX_BUILDER: default
+    # Every compose call below spells `--project-name`, and the directory setup
+    # spells `install -d`, rather than the `-p` short form of either.
+    # `test/ci-workflow.isolation.test.ts` scans this file for `-p <arg>` and
+    # demands every hit be an unbound host port — which is the right guard, and
+    # cannot tell `docker run -p` from `mkdir -p`. Long forms keep it strict.
+    steps:
+      - uses: actions/checkout@v4
+
+      # No sweep step here, unlike `bundle_image` and `build_image`. Those two
+      # name their artifacts and label them `strad-ci`, so their sweep is scoped
+      # to what they created. This job's containers are compose's, and compose
+      # labels them by PROJECT — which is per-run, so there is no stable filter
+      # that means "mine and not a concurrent job's". An unscoped
+      # `docker container prune` would be the only box-wide destructive step in
+      # this file, and it would be reaping other jobs' containers to tidy up
+      # after ours. The `if: always()` teardown is the cleanup; a run killed
+      # before it reaches that leaks a container under a per-run project name
+      # nothing else wants.
+
+      # The cheap gate, first: interpolation, indentation, an unknown key. It
+      # needs no daemon, so it fails in seconds rather than after a build.
+      - name: The compose file parses
+        run: docker compose -f "$COMPOSE_FILE" config > /dev/null
+
+      # `npm run dev:agent` is the path most sessions will actually take, and it
+      # shares no code with the container path below. Node only — that is the
+      # whole point of it.
+      #
+      # BEFORE the container, and that ordering is load bearing. The compose
+      # stack mounts a named volume at /app/node_modules inside a bind-mounted
+      # checkout, so if the directory does not already exist the DAEMON creates
+      # it, as root — and then this step's `npm ci` is an EACCES on a workspace
+      # the runner owns. Installing first means the mount point is already there
+      # and already the runner's. It also makes the volume assertion below say
+      # more: the host tree is populated, so a non-empty tree inside the
+      # container is the volume rather than the bind mount showing through.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: The no-Docker path boots
+        run: |
+          set -euo pipefail
+          npm ci
+          # A pinned port would be a shared resource on a shared box; with PORT
+          # unset the script asks the kernel for a free one, so let it, and read
+          # the port and pid back out of what it prints.
+          out=$(npm run --silent dev:agent -- --background)
+          echo "$out"
+          # --background only returns 0 once /healthz answered, so reaching here
+          # is already the assertion. The rest is for the log, and for the kill.
+          port=$(printf '%s' "$out" | grep -o 'localhost:[0-9]*' | head -n 1 | cut -d: -f2)
+          pid=$(printf '%s' "$out" | grep -o 'pid [0-9]*' | head -n 1 | cut -d' ' -f2)
+          curl -fsS "http://127.0.0.1:${port}/healthz"
+          echo
+          # By pid, never by pattern: `pkill -f node` on a box that runs every
+          # job of every PR is a way to fail somebody else's build. The script
+          # launches the dev command through `sh -c "exec …"` precisely so this
+          # pid is the node process — through `npm run` it would be npm's, and
+          # killing that leaves the --watch supervisor holding the port.
+          kill "$pid" 2> /dev/null || true
+
+      - name: Build and start the workspace
+        run: |
+          set -euo pipefail
+          install -d "$AC_CLAUDE_DIR" "$AC_GH_DIR"
+          # APP_PORT=0 asks the daemon for a free host port, which is what lets
+          # this run beside anything else on the box. Read back below.
+          APP_PORT=0 docker compose --project-name "$AC_PROJECT" -f "$COMPOSE_FILE" up -d --build
+
+      - name: Install, start the gateway, and demand it serves
+        run: |
+          set -euo pipefail
+          dc() { docker compose --project-name "$AC_PROJECT" -f "$COMPOSE_FILE" "$@"; }
+
+          dc exec -T app .agent-containers/setup.sh
+
+          # The node_modules volume, not the bind mount: the container must have
+          # its own tree. A count of zero means the volume was shadowed and the
+          # container is running the host's install, which on a different libc
+          # is a bug that surfaces nowhere near here.
+          count=$(dc exec -T app sh -c 'ls node_modules | wc -l' | tr -d '[:space:]')
+          echo "node_modules entries: ${count}"
+          case "$count" in
+            "" | 0 | *[!0-9]*)
+              echo "::error::node_modules is empty inside the container; the named volume is not doing its job"
+              exit 1
+              ;;
+          esac
+
+          # The socket's absence is a security property of this image, not an
+          # oversight — see .agent-containers/README.md. Assert it, so adding it
+          # back has to be deliberate.
+          if dc exec -T app sh -c 'test -S /var/run/docker.sock'; then
+            echo "::error::/var/run/docker.sock is mounted into the dev container; that is root-equivalent host access and strad's dev stack does not take it"
+            exit 1
+          fi
+
+          dc exec -T app .agent-containers/run.sh
+
+          mapping=$(dc port app 8080 2>/dev/null | head -n 1 || true)
+          port=${mapping##*:}
+          case "$port" in
+            "" | *[!0-9]*)
+              echo "::error::could not read the host port for the app service; \`docker compose port\` said: ${mapping:-<no output>}"
+              dc logs app || true
+              exit 1
+              ;;
+          esac
+          base="http://127.0.0.1:${port}"
+          echo "compose port -> ${mapping}; base ${base}"
+
+          for i in $(seq 1 60); do
+            if curl -fsS "$base/healthz" > /dev/null 2>&1; then break; fi
+            sleep 1
+          done
+
+          echo "--- /healthz"
+          health=$(curl -fsS "$base/healthz" || true)
+          echo "$health"
+          # Not merely 200: the dev config exists to mount `echo`, so a healthy
+          # gateway with an empty server list is the failure this catches.
+          case "$health" in
+            *'"servers":["echo"]'*) echo "OK: echo is mounted" ;;
+            *)
+              echo "::error::/healthz did not report the echo server; the dev config did not take"
+              dc exec -T app tail -50 /app/.logs/app.log || true
+              exit 1
+              ;;
+          esac
+
+          # Re-running run.sh is a no-op, not an EADDRINUSE crash. Agents re-run
+          # things.
+          echo "--- run.sh is idempotent"
+          # Captured in a variable rather than a file: a fixed path under /tmp is
+          # a shared resource on this box exactly like a fixed port is, and a
+          # concurrent job writing it between the tee and the grep is a green
+          # that proves nothing.
+          rerun=$(dc exec -T app .agent-containers/run.sh)
+          echo "$rerun"
+          printf '%s' "$rerun" | grep -q "already serving"
+
+      - name: Tear down
+        if: always()
+        run: |
+          # The container runs as root against a bind-mounted checkout, so its
+          # log directory belongs to root on the host. Remove it from INSIDE, or
+          # the next run's `actions/checkout` cannot clean the workspace.
+          docker compose --project-name "$AC_PROJECT" -f "$COMPOSE_FILE" exec -T app rm -rf /app/.logs 2>/dev/null || true
+          docker compose --project-name "$AC_PROJECT" -f "$COMPOSE_FILE" down -v --remove-orphans 2>/dev/null || true
+          # `down -v` drops the volume; the mount POINT it was attached to stays
+          # in the checkout. It is the runner's own directory when the step above
+          # this job's install created it, and root's when something went wrong
+          # before that — an empty root-owned directory a runner-owned parent can
+          # still rmdir. Either way it must not be left for the next checkout.
+          rmdir node_modules 2>/dev/null || true
+          rm -rf "$AC_CLAUDE_DIR" "$AC_GH_DIR" || true
+
   # The docs site is the canonical prose for how strad works, and the premise is
   # that it stays true commit-by-commit. Keeping it from silently rotting means
   # building it here: a broken link, bad frontmatter, or a page missing from the
