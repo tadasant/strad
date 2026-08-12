@@ -16,7 +16,7 @@ Every server, regardless of kind, has these base fields (from
 
 | Field                  | Default      | Meaning                                                                               |
 | ---------------------- | ------------ | ------------------------------------------------------------------------------------- |
-| `slug`                 | _(required)_ | Identifier, `^[a-z0-9][a-z0-9-]{0,62}$`. Goes in `?servers=` and prefixes every tool. |
+| `slug`                 | _(required)_ | Identifier, `^[a-z0-9]+(-[a-z0-9]+)*$`, max 63. Goes in `?servers=`, prefixes every tool, and [names this server's variables on the container](/operate/secrets/#where-the-two-values-actually-land) — which is why a dash may not double up, lead or trail. |
 | `kind`                 | _(required)_ | `remote-http` \| `supplementary-image` \| `builtin`.                                  |
 | `entitlements`         | `[]`         | Roles allowed to reach this server. **Empty = nobody** (fail closed).                 |
 | `enabled`              | `true`       | Set `false` to configure without exposing.                                            |
@@ -144,6 +144,11 @@ plus two that shape how this server gets its values:
   [two servers, one variable name](/operate/secrets/#two-servers-one-variable-name).
   The two paths differ in what they inject: `params:` injects everything it finds,
   substitution injects only names the config already references.
+
+  Whether two servers on **one bundle** can then hold two values for one name is
+  decided by `path:`, not by the namespace: two slugs on two paths are two
+  instances in the container and each gets its own `<SLUG>__<NAME>`; two slugs on
+  one path are one instance, and the render fails rather than pick a winner.
 
 ```yaml
 servers:

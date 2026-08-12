@@ -288,35 +288,76 @@ injects nothing the config does not name. One server may use both, out of one
 namespace.
 
 ```yaml
-# Different values for one name — different bundles, because…
+# Different values for one name, on ONE bundle — because they are two mounts.
 - slug: telegram-ro
   kind: supplementary-image
-  bundle: bundle-telegram-ro
+  bundle: bundle
+  path: /telegram-ro # ← its own path, so its own instance in the container
   env:
     TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}" # ← /strad/prod/mcp/telegram-ro/static/
 - slug: telegram-rw
   kind: supplementary-image
-  bundle: bundle-telegram-rw
+  bundle: bundle
+  path: /telegram-rw
   env:
     TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}" # ← /strad/prod/mcp/telegram-rw/static/
 ```
 
-:::caution[One bundle is one container is one environment]
-Two servers that **share a bundle** share a `process.env`, so they cannot hold two
-values for one key. `render-spec` **fails the deploy** when their namespaces
-disagree, rather than picking one:
+### Where the two values actually land
+
+A namespace decides which value a server _resolves_. It does not decide where the
+value can _go_ — a bundle is a component is a container with one `process.env`,
+and one name holds one value. So a second value gets a second name:
+
+| On the box                       | Carries                                                               |
+| -------------------------------- | --------------------------------------------------------------------- |
+| `TELEGRAM_API_HASH`              | The value of the **first server that declared it**. Read by everyone. |
+| `TELEGRAM_RW__TELEGRAM_API_HASH` | `telegram-rw`'s value, because it resolved a different one.           |
+
+The per-slug name is the slug uppercased with `-` turned into `_`, joined to the
+variable with `__`. A server reads its own name first and falls back to the bare
+one, so a server that agrees — or that nobody seeded — reads exactly what it
+always read.
+
+**Nothing is ever taken away.** The bare name keeps the first-declared value, and
+only a DISSENTER gets a name of its own. That matters more than it sounds: the
+obvious design drops the contested bare name, and the drop is bundle-wide while
+the disagreement is between two servers — so a third server that never disagreed
+with anyone loses a variable it reads. Adding a slug would break slugs that
+already worked. Because nothing is removed, a config that contests nothing renders
+byte for byte what it rendered before.
+
+Two things have to be true for a dissenter, and both are checked at render:
+
+1. **`path: /<slug>`, exactly.** The bundle host serves a mount per path and
+   builds one instance per slug it finds a per-slug variable set for — mounted at
+   the slug, because it never sees strad's config. A dissenter on any other path
+   would route to the mount that holds the _first_ server's credential and run as
+   the wrong account, so `render-spec` refuses it.
+2. **A tree that reads an injected environment.** `telegram` and
+   `remote-filesystem` do. The other trees in the bundle image read `process.env`
+   directly, so they see the bare name only — which is why they are never the
+   dissenter. See
+   [limitations #55](/limitations/#55-a-per-slug-variable-name-is-minted-for-the-dissenter-only).
+
+A slug that cannot mangle to a usable variable name (one starting with a digit) is
+refused as a dissenter for the same reason: there would be no name to give it.
+
+:::caution[Two slugs on one path is still one credential]
+`render-spec` **fails the deploy** when two slugs that share a `path:` resolve one
+name to different values, rather than picking one:
 
 ```
 bundle "bundle": servers "telegram-ro" and "telegram-rw" both set
-TELEGRAM_API_HASH under env:, and the two resolve to DIFFERENT values…
-Give the two servers separate bundles, or seed them the same value.
+TELEGRAM_API_HASH under env:, both serve path "/telegram", and the two
+resolve to DIFFERENT values… Give the two servers separate paths…,
+separate bundles, or seed them the same value.
 ```
 
-Capability variants (`telegram-ro` / `telegram-rw`, `gmail-ro` / `gmail-rw`) share
-a container **because** they share a credential — they differ in the gateway's
-`tools:` policy, never in their environment. Seeding both with the same value is
-correct and supported. Wanting two different values means wanting two components,
-and that is a billed choice you make in the config.
+That is the capability-variant pattern (`telegram-ro` / `telegram-rw`, `gmail-ro`
+/ `gmail-rw`): two slugs, one mount, one upstream process, told apart by the
+gateway's `tools:` policy. They share a container **because** they share a
+credential, and seeding both with the same value is correct and supported.
 :::
 
 ### A parameter nothing reads now says so

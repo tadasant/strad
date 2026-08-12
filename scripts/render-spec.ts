@@ -683,6 +683,8 @@ const spec = renderAppSpec({
   bootSecrets,
   resolvedParams,
   domains: resolveDomains(),
+  // Names and paths only — the renderer never hands a value to this.
+  onWarning: (message) => console.error(`::warning::${message}`),
 });
 
 // EVERY COMPONENT CAN EITHER FETCH ITS BOOT ENV OR IS HANDED IT.

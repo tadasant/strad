@@ -798,22 +798,27 @@ MCP surface, no second container, no cost — and for a store a human manages an
 agent should enumerate that is arguably the right shape rather than merely the
 cheaper one. It is not built, and nothing blocks on it.
 
-### 52. Two servers on one bundle still cannot hold two values for one name
+### 52. Two slugs on one PATH still cannot hold two values for one name
 
 A supplementary server's `env:` `${NAME}` resolves from
 `/strad/{env}/mcp/{slug}/static/` before the shared
 `/strad/{env}/gateway/static/`, so two servers can be given **different** values
-for one name — as long as they sit on different bundles. Two servers that share a
-bundle share a container, and a container has one `process.env`. `render-spec`
-fails the deploy when their namespaces disagree rather than picking a winner, and
-names both slugs and the key (never the values).
+for one name. Where those values can then LAND depends on whether the two slugs
+are two mounts:
 
-That is a deployment decision rather than a renderer bug: the shared-bundle case
-is the capability-variant pattern — `telegram-ro` and `telegram-rw` are one mount,
-one upstream process, told apart by the gateway's `tools:` policy — and they share
-a container _because_ they share a credential. Two values means two components,
-which is a second billed App Platform service for a process that is otherwise
-identical.
+- **Different `path:`** — two instances in the container, each reading its own
+  [per-slug variable name](/operate/secrets/#two-servers-one-variable-name). Both
+  values land on one bundle; no second component.
+- **Same `path:`** — one instance, serving both slugs from one set of
+  credentials. There is nowhere for a second value to go, whatever it is called,
+  so `render-spec` fails the deploy rather than picking a winner, naming both
+  slugs, the path and the key (never the values). The answer is a separate path,
+  a separate bundle, or the same value.
+
+The same-path case is not a renderer bug: it is the capability-variant pattern —
+`telegram-ro` and `telegram-rw` as two names for one mount, told apart by the
+gateway's `tools:` policy — and those two share a container _because_ they share
+a credential.
 
 It also costs store round trips. `list()` enumerates every managed parameter in
 the project and filters by prefix, and `resolve()` calls it again — so a render
@@ -1309,6 +1314,47 @@ shows the mount at all.
 **Undo:** seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
 `-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`
 lines.
+
+### 55. A per-slug variable name is minted for the dissenter only
+
+A supplementary server's variable can land on the container under a name derived
+from its slug — `TELEGRAM_RW__TELEGRAM_API_HASH` — which is what lets one
+container hold two values for one variable. Three limits travel with it.
+
+**Only a dissenter gets one.** The bare name belongs to the first server that
+declared it and is never removed or repointed; a server that resolves a
+_different_ value gets a name of its own. So whether
+`TELEGRAM_RW__TELEGRAM_API_HASH` exists on the box depends on what some _other_
+server was seeded, and which server keeps the bare name depends on config order.
+Both are deliberate: the alternative is dropping the contested bare name, which is
+bundle-wide while the disagreement is between two servers — a third server that
+never disagreed would lose a variable it reads, so adding a slug would break slugs
+that already worked. Nothing is removed, so a config that contests nothing renders
+byte for byte what it rendered before.
+
+**Only `telegram` and `remote-filesystem` can be the dissenter.** A per-slug name
+means nothing unless the server reads an injected environment rather than
+`process.env`, and eight of the ten trees in the bundle image are vendored
+upstream code that reads globals — often lazily, at call time. Those trees see the
+bare name only. Nothing stops you configuring one of them as a dissenter; it will
+render, and that slug will simply not see its value.
+
+**`remote-filesystem` ends up double-prefixed.** A second slug of it would read
+`REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. The inner prefix
+keeps that server off the bare `GCS_*` names, which belong to the `gcs` server in
+the same container; the outer one separates two instances. Collapsing them would
+make a missing per-slug value fall back to the `gcs` server's bucket.
+
+Three smaller edges. A dissenter must be configured `path: /<slug>` — the bundle
+host mounts a per-slug instance at the slug, having no config to read a path out
+of — and `render-spec` refuses anything else rather than let it route to the mount
+holding the other server's credential. A slug may no longer contain `--`, or lead
+or trail with `-`, because `a--b` + `C` and `a` + `B__C` would otherwise be one
+variable; no slug in any strad config has ever used either shape. And a slug
+starting with a digit cannot be a dissenter at all (`1PASSWORD` is not a portable
+variable name) — it is refused by name.
+
+**Undo:** `HACKS.md` #55.
 
 ---
 

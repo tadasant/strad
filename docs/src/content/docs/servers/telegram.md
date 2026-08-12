@@ -66,6 +66,17 @@ flowchart LR
 | `telegram-ro` | `get_me`, `list_chats`, `get_chat`, `get_chat_history`, `search_messages`  |
 | `telegram-rw` | _(no policy — all six, `send_message` included)_                          |
 
+Both point at the same **mount** — one `path:`, one instance, one MTProto
+connection built once from one set of credentials and memoised for the life of
+the process. That is why the two slugs cannot be two accounts as written: the
+mount has no idea which slug a request arrived under, since the only per-slug
+thing on the wire is the path. Giving each its own `path:` makes the bundle host
+build one instance per slug, each reading
+[its own variables](/operate/secrets/#where-the-two-values-actually-land) —
+`TELEGRAM_RO__TELEGRAM_API_HASH` and `TELEGRAM_RW__TELEGRAM_API_HASH` — off one
+container. As long as they share a path they share an account, which is the
+arrangement today and the correct one while there is one account to share.
+
 Both point at the same container, running at full capability. Read-only is a
 [gateway decision](/intro/architecture/#capability-read-only-vs-read-write), enforced on `tools/list` **and**
 on `tools/call`: a withheld tool is refused with `-32600` before it reaches the

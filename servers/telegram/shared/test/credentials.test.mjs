@@ -101,3 +101,81 @@ test("a credential never survives a log line", () => {
   assert.match(redact(line), /\[redacted\]/);
   assert.equal(redact("connect failed: ECONNRESET"), "connect failed: ECONNRESET");
 });
+
+/**
+ * ONE PROCESS, TWO INSTANCES, TWO ENVIRONMENTS.
+ *
+ * `telegram-ro` and `telegram-rw` are two strad slugs, and the bundle host now
+ * builds one instance of this server per slug, handing each a view of the
+ * container's environment in which its own `TELEGRAM_RO__*` values shadow the
+ * bare ones. That only holds if nothing in here reaches past the handed-in env
+ * to `process.env` — one global read and the two instances quietly become one,
+ * which is the bug the whole arrangement exists to prevent.
+ *
+ * These set `process.env` to something DIFFERENT from what they inject, so a
+ * global read fails the test rather than passing it by coincidence.
+ */
+
+/** Set keys on process.env for the duration of `fn`, then put it back. */
+async function withProcessEnv(vars, fn) {
+  const before = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of before) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function open(serverOptions) {
+  const { server, registerHandlers } = createMCPServer({
+    version: "test",
+    ...serverOptions,
+  });
+  await registerHandlers(server);
+  const mcp = new Client({ name: "test", version: "1" }, { capabilities: {} });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await Promise.all([mcp.connect(a), server.connect(b)]);
+  return { mcp, close: () => Promise.all([mcp.close(), server.close()]) };
+}
+
+test("an instance reads the environment it was handed, not the process's", async () => {
+  await withProcessEnv(CREDS, async () => {
+    // Fully configured globally; handed nothing. A global read would connect (or
+    // try to); reading the injected view refuses by name.
+    const { mcp, close } = await open({ env: {} });
+    const res = await mcp.callTool({ name: "list_chats", arguments: {} });
+    const text = res.content.map((c) => c.text).join("\n");
+    assert.equal(res.isError, true);
+    assert.match(text, /Telegram is not configured/);
+    // And the process-wide value is not what it reported on, so nothing leaked
+    // from the global into the message either.
+    assert.doesNotMatch(text, /fake-session-string-fixture/);
+    await close();
+  });
+});
+
+test("two instances in one process do not share a tool surface", async () => {
+  // The capability half of the same property: what each instance serves comes
+  // from ITS env, so a per-slug value cannot bleed across.
+  // Both halves discriminate: the process says the OPPOSITE of each injected
+  // value, so an instance that reached for the global would fail its assertion
+  // rather than pass it by coincidence.
+  await withProcessEnv({ ENABLED_TOOLGROUPS: "readonly" }, async () => {
+    const ro = await open({ env: { ...CREDS, ENABLED_TOOLGROUPS: "readonly" } });
+    const rw = await open({
+      env: { ...CREDS, ENABLED_TOOLGROUPS: "readwrite" },
+    });
+
+    const roTools = (await ro.mcp.listTools()).tools.map((t) => t.name);
+    const rwTools = (await rw.mcp.listTools()).tools.map((t) => t.name);
+
+    assert.equal(roTools.includes("send_message"), false);
+    assert.equal(rwTools.includes("send_message"), true);
+
+    await Promise.all([ro.close(), rw.close()]);
+  });
+});

@@ -6,6 +6,13 @@
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
+ * SEVENTEEN IS THE FLOOR, not a constant. Two trees (telegram, remote-filesystem)
+ * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
+ * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
+ * separately serves /telegram, /telegram-ro and /telegram-rw. No deployment does
+ * that today, and the conventional path is always mounted, so a config that does
+ * not ask for it sees exactly the seventeen it saw before.
+ *
  * TWENTY-SIX of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
  * parameter store and `loadSecrets()` below reads `process.env` — one container,
@@ -47,6 +54,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
+import { slugEnvView, slugsWithPrefixedNames } from "./env-prefix.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
   authorizePresence,
@@ -134,8 +142,50 @@ function scrubCapabilityEnv(): void {
   }
 }
 
+/**
+ * Which slugs to mount a tree under: its conventional path, plus every slug the
+ * environment carries per-slug values for.
+ *
+ * THIS PROCESS NEVER SEES strad's CONFIG. It knows the server list only through
+ * the variables the renderer baked onto the container, so "is there a second
+ * telegram?" is answered by looking for `<SLUG>__TELEGRAM_API_ID` and nothing
+ * else. src/secrets/env-prefix.ts (vendored here) owns the name shape on both
+ * sides of that.
+ *
+ * THE DEFAULT SLUG IS ALWAYS MOUNTED, even when per-slug values exist. A config
+ * that points several slugs at the conventional path — which is every strad
+ * deployment today — must keep resolving without editing that config first, so
+ * this only ever ADDS mounts.
+ */
+function extraSlugs(
+  defaultSlug: string,
+  markerNames: readonly string[],
+): string[] {
+  const discovered = slugsWithPrefixedNames(process.env, markerNames).filter(
+    (slug) => slug !== defaultSlug,
+  );
+  if (discovered.length > 0) {
+    log(
+      `${defaultSlug}: per-slug environment found for ${discovered.join(", ")} — ` +
+        `mounting ${discovered.length + 1} instance(s)`,
+    );
+  }
+  return discovered;
+}
+
 async function buildMounts(): Promise<Mount[]> {
   const mounts: Mount[] = [];
+  /**
+   * Instances the ENVIRONMENT asked for, built after every conventional mount.
+   *
+   * A discovered slug is a name derived from `process.env`, and the routes below
+   * are registered first-wins — so one that collides with a mount this image
+   * already serves would SHADOW it, and `/secrets` answering with telegram's
+   * tools is not a failure anyone would diagnose from the symptom. Deferring
+   * them makes the conventional mount win, and the loop at the end refuses the
+   * collision by name rather than silently.
+   */
+  const deferred: { slug: string; load: () => Promise<Mount> }[] = [];
 
   // --- bundle-api: six pure-API servers --------------------------------------
   // Factories are called ONCE (tailscale memoizes a client; monarch needs a
@@ -185,7 +235,12 @@ async function buildMounts(): Promise<Mount[]> {
     register: (s) => api.gcs.registerHandlers(s),
   });
 
-  mounts.push(await loadRemoteFilesystem());
+  mounts.push(await loadRemoteFilesystem("remote-filesystem-tmp-public"));
+  for (const slug of extraSlugs(
+    "remote-filesystem-tmp-public",
+    REMOTE_FS_MARKER_NAMES,
+  ))
+    deferred.push({ slug, load: () => loadRemoteFilesystem(slug) });
 
   mounts.push({
     slug: "google-flights",
@@ -210,7 +265,9 @@ async function buildMounts(): Promise<Mount[]> {
     register: (s) => xCreated.registerHandlers(s),
   });
 
-  mounts.push(await loadTelegram());
+  mounts.push(await loadTelegram("telegram"));
+  for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
+    deferred.push({ slug, load: () => loadTelegram(slug) });
 
   // --- bundle-google: gmail / calendar / docs --------------------------------
   // These build per request (their factories are cheap and hold no client), which
@@ -272,6 +329,21 @@ async function buildMounts(): Promise<Mount[]> {
 
   // --- browser servers, sharing ONE Chromium --------------------------------
   for (const mount of await loadBrowserMounts()) mounts.push(mount);
+
+  // --- the instances the environment asked for, last -------------------------
+  const taken = new Set(mounts.map((m) => m.slug));
+  for (const { slug, load } of deferred) {
+    if (taken.has(slug)) {
+      logWarn(
+        `NOT mounting a per-slug instance for "${slug}": /${slug} is already ` +
+          `served by another server in this image, and mounting it here would ` +
+          `shadow that one. Rename the strad slug.`,
+      );
+      continue;
+    }
+    taken.add(slug);
+    mounts.push(await load());
+  }
 
   return mounts;
 }
@@ -380,23 +452,44 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  */
 const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
 
-async function loadRemoteFilesystem(): Promise<Mount> {
+/**
+ * The names that make a per-slug instance of this server worth building.
+ *
+ * NOTE THE DOUBLE PREFIX a second slug produces:
+ * `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. It reads badly and
+ * it is still correct — the two prefixes do different jobs. The inner one keeps
+ * this server off the bare `GCS_*` names, which belong to the `gcs` server in the
+ * same container; the outer one separates two instances of THIS server. Collapsing
+ * them by dropping the inner prefix would make the bare-name fallback resolve
+ * `GCS_BUCKET` to the gcs server's bucket, which is the exact bug config.ts exists
+ * to prevent.
+ */
+const REMOTE_FS_MARKER_NAMES = [`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
+
+async function loadRemoteFilesystem(slug: string): Promise<Mount> {
   const mod = (await loadFromTree(
     "remote-filesystem",
     "shared/build/index.js",
   )) as { createMCPServer: Factory };
 
+  const env = slugEnvView(process.env, slug);
+
   const created = mod.createMCPServer({
     version: VERSION,
     envPrefix: REMOTE_FS_ENV_PREFIX,
+    // The instance reads THIS view, not the process environment. Two instances
+    // in one process is the whole point, and it only works because nothing below
+    // reaches back to a global.
+    env,
+    // Signed upload URLs carry the slug, and the route below is per-mount.
+    uploadSlug: slug,
   });
 
-  const bucket = process.env[`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
-  const viewerDomain =
-    process.env[`${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN`];
+  const bucket = env[`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
+  const viewerDomain = env[`${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN`];
 
   return {
-    slug: "remote-filesystem-tmp-public",
+    slug,
     tree: "remote-filesystem",
     serverName: "strad-remote-filesystem",
     capabilities: { tools: {} },
@@ -422,18 +515,32 @@ async function loadRemoteFilesystem(): Promise<Mount> {
  * with an error naming the three variables. Same posture as remote-filesystem,
  * and for the same reason: one server's missing config must not cost the other
  * sixteen their boot.
+ *
+ * ONE INSTANCE PER SLUG. `telegram-ro` and `telegram-rw` are two strad slugs, and
+ * for as long as they were two names for one mount they were also one MTProto
+ * connection built from one set of credentials — the factory memoises it for the
+ * life of the process. A second account therefore needs a second INSTANCE, not
+ * merely a second variable, which is why this takes a slug and reads its own view
+ * of the environment.
  */
-async function loadTelegram(): Promise<Mount> {
+const TELEGRAM_MARKER_NAMES = [
+  "TELEGRAM_API_ID",
+  "TELEGRAM_API_HASH",
+  "TELEGRAM_STRING_SESSION",
+];
+
+async function loadTelegram(slug: string): Promise<Mount> {
   const mod = (await loadFromTree("telegram", "shared/build/index.js")) as {
     createMCPServer: Factory;
     missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
   };
 
-  const created = mod.createMCPServer({ version: VERSION });
-  const missing = mod.missingCredentials();
+  const env = slugEnvView(process.env, slug);
+  const created = mod.createMCPServer({ version: VERSION, env });
+  const missing = mod.missingCredentials(env);
 
   return {
-    slug: "telegram",
+    slug,
     tree: "telegram",
     serverName: "strad-telegram",
     capabilities: { tools: {} },

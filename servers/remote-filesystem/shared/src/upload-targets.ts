@@ -152,17 +152,20 @@ export function createUploadLeaseStore(options: {
   slug: string;
   config?: StoreConfig;
   envPrefix?: string;
+  /** The environment this instance reads. See CreateMCPServerOptions.env. */
+  env?: NodeJS.ProcessEnv;
   now?: () => number;
 }): UploadLeaseStore {
+  const env = options.env ?? process.env;
   return new UploadLeaseStore({
     slug: options.slug,
     uploadBaseUrl:
       options.config?.uploadBaseUrl ??
-      process.env[prefixed(options.envPrefix ?? "", "UPLOAD_BASE_URL")]?.replace(
+      env[prefixed(options.envPrefix ?? "", "UPLOAD_BASE_URL")]?.replace(
         /\/$/,
         "",
       ) ??
-      process.env.STRAD_PUBLIC_URL?.replace(/\/$/, ""),
+      env.STRAD_PUBLIC_URL?.replace(/\/$/, ""),
     now: options.now,
   });
 }

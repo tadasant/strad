@@ -1,5 +1,6 @@
 import type { StradConfig } from "../config/schema.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
+import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
 import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
 import { BUNDLE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
@@ -101,6 +102,15 @@ export interface RenderOptions {
    * set as "every bundle".
    */
   bootSecrets?: Readonly<Record<string, string>>;
+  /**
+   * Where a non-fatal finding goes. Absent means "nowhere" — the renderer is
+   * usable as a pure function in tests and in the console.
+   *
+   * `scripts/render-spec.ts` passes an emitter that writes `::warning::` lines,
+   * which is what puts a finding in the deploy log. Nothing here ever passes a
+   * VALUE to it; a warning names slugs, variables and paths.
+   */
+  onWarning?: (message: string) => void;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
   coreInstanceSizeSlug?: string;
@@ -473,6 +483,19 @@ export function sameRepository(a: ImageRef, b: ImageRef): boolean {
   );
 }
 
+/**
+ * Merge `next` into `prev` without overwriting a key `prev` already holds, and
+ * without disturbing the order `prev` holds them in. New keys append.
+ */
+function firstWins(
+  prev: Record<string, string> | undefined,
+  next: Record<string, string>,
+): Record<string, string> {
+  const merged: Record<string, string> = { ...(prev ?? {}) };
+  for (const [key, value] of Object.entries(next)) merged[key] ??= value;
+  return merged;
+}
+
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
 
@@ -514,11 +537,31 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   const paramOwners = new Map<string, Map<string, Set<string>>>();
   /** bundle -> every variable on it that came from a PARAMETER. */
   const paramKeys = new Map<string, Set<string>>();
-  /** bundle -> key -> the first server that resolved it, and to what. */
+  /**
+   * bundle -> key -> every server that resolved it, in declaration order.
+   *
+   * The FIRST entry owns the bare name; the rest are compared against it and
+   * against each other. All of them, not just the first — see the same-path
+   * check below for why a running comparison against one owner is not enough.
+   */
   const envValueOwners = new Map<
     string,
-    Map<string, { slug: string; value: string }>
+    Map<string, { slug: string; path: string; value: string }[]>
   >();
+  /**
+   * Every (server, variable) that resolved to something other than the value the
+   * bare name carries. Validated and turned into per-slug names after the whole
+   * server list has been walked — see the loop below.
+   */
+  const dissenters: {
+    bundle: string;
+    slug: string;
+    path: string;
+    key: string;
+    value: string;
+    /** The server that declared this key first, and therefore owns the bare name. */
+    bareOwner: string;
+  }[] = [];
 
   for (const server of config.servers) {
     if (!server.enabled) continue;
@@ -548,7 +591,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
       );
 
-      // TWO SERVERS ON ONE BUNDLE CANNOT HOLD TWO VALUES FOR ONE NAME.
+      // TWO MOUNTS ON ONE BUNDLE CANNOT SHARE ONE BARE NAME.
       //
       // A bundle is a component is a container is one `process.env`. The config
       // schema already refuses two servers declaring the same key with different
@@ -557,25 +600,70 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // shape of `telegram-ro` and `telegram-rw` both writing
       // `${TELEGRAM_API_HASH}` and each being seeded its own.
       //
-      // Merging would pick one at random and inject it under both slugs, so this
-      // throws instead. The answer is separate bundles: capability variants share
-      // a container BECAUSE they share a credential, and two credentials is two
-      // containers.
-      const valueOwners = envValueOwners.get(server.bundle) ?? new Map();
+      // THE BARE NAME BELONGS TO THE FIRST SERVER THAT DECLARED IT, and is never
+      // taken away. Dropping it was the obvious move and it is wrong: the drop is
+      // bundle-wide while the disagreement is between two servers, so a THIRD
+      // server that never disagreed with anyone loses a variable it reads —
+      // silently, if its tree is one of the eight that read `process.env`
+      // directly. Adding a slug would then break slugs that already worked, and
+      // turn a render-time error into a runtime outage. So nothing is ever
+      // deleted here: a DISSENTER — a server whose value differs from the bare
+      // one — gets `<SLUG>__<NAME>` of its own, and every existing name on the
+      // component keeps meaning what it meant.
+      //
+      // `path:` is what separates an error from an alias, because it is what
+      // decides whether there are two SERVERS or two names for one. Two slugs on
+      // one path are ONE mount in the bundle host, serving both from one process
+      // with one set of credentials — there is nowhere for a second value to go,
+      // whatever it is called. Two slugs on different paths are two instances,
+      // and each can read its own name.
+      const valueOwners =
+        envValueOwners.get(server.bundle) ??
+        new Map<string, { slug: string; path: string; value: string }[]>();
       for (const [key, value] of Object.entries(resolvedEnv)) {
-        const first = valueOwners.get(key);
-        if (first && first.value !== value) {
+        const owners = valueOwners.get(key) ?? [];
+        valueOwners.set(key, owners);
+        owners.push({ slug: server.slug, path: server.path, value });
+        // The first declaration IS the bare name. Nothing to compare it to.
+        if (owners.length === 1) continue;
+
+        // Compared against EVERY prior owner on this path, not just the first —
+        // a same-path pair that happens to be declared second and third is the
+        // same one mount with two credentials, and comparing only against the
+        // first owner would let config order decide whether it is caught.
+        const clash = owners
+          .slice(0, -1)
+          .find((o) => o.path === server.path && o.value !== value);
+        if (clash) {
           throw new Error(
-            `bundle "${server.bundle}": servers "${first.slug}" and ` +
-              `"${server.slug}" both set ${key} under env:, and the two ` +
-              `resolve to DIFFERENT values — one of them comes from a ` +
-              `per-server namespace (/strad/${config.gateway.env}/mcp/{slug}/static/). ` +
-              `One bundle is one container with one environment, so one value ` +
-              `would silently overwrite the other. Give the two servers ` +
+            `bundle "${server.bundle}": servers "${clash.slug}" and ` +
+              `"${server.slug}" both set ${key} under env:, both serve ` +
+              `path "${server.path}", and the two resolve to DIFFERENT ` +
+              `values — one of them comes from a per-server namespace ` +
+              `(/strad/${config.gateway.env}/mcp/{slug}/static/). One path on ` +
+              `one bundle is ONE mount in the container, so one value would ` +
+              `silently overwrite the other. Give the two servers separate ` +
+              `paths (the bundle host then runs one instance per slug, each ` +
+              `reading its own ${slugEnvPrefix(server.slug) ?? "SLUG"}__${key}), ` +
               `separate bundles, or seed them the same value.`,
           );
         }
-        if (!first) valueOwners.set(key, { slug: server.slug, value });
+
+        // Agrees with the bare name: reads it, exactly as it always did.
+        if (value === owners[0]!.value) continue;
+
+        // A DISSENTER. What it needs to be given a name of its own is checked
+        // AFTER the whole server list, not here: a same-path clash is the more
+        // fundamental error and the more useful message, and a running loop
+        // cannot see a clash whose other half has not been declared yet.
+        dissenters.push({
+          bundle: server.bundle,
+          slug: server.slug,
+          path: server.path,
+          key,
+          value,
+          bareOwner: owners[0]!.slug,
+        });
       }
       envValueOwners.set(server.bundle, valueOwners);
 
@@ -603,7 +691,14 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
 
       imageBundles.set(server.bundle, {
         image: server.image,
-        env: { ...(prev?.env ?? {}), ...resolvedEnv },
+        // FIRST writer wins, which is what makes "the bare name belongs to the
+        // first server that declared it" true of the emitted spec and not just
+        // of the check above. It changes nothing for a config that predates
+        // per-slug names: two servers could only ever reach here holding the
+        // same value for a key, and the disagreeing case threw. Key ORDER stays
+        // first-seen — a spread the other way round would rewrite the whole
+        // env array's order on a config where no value moved at all.
+        env: firstWins(prev?.env, resolvedEnv),
         params: { ...(prev?.params ?? {}), ...params },
         // Which VARIABLES each `params: true` server contributed, by slug. Names
         // only — see paramKeysEnv() for why the component needs to be told.
@@ -617,6 +712,87 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
     }
+  }
+
+  // WHAT A DISSENTER NEEDS BEFORE IT CAN BE GIVEN A NAME OF ITS OWN.
+  //
+  // Both of these are refusals rather than warnings, because both produce a
+  // credential that is ON the container and reaches NO server — indistinguishable
+  // from a seeding mistake, and diagnosable only by reading a rendered spec.
+  const emittedAliases = new Map<string, Record<string, string>>();
+  for (const d of dissenters) {
+    const alias = prefixedEnvName(d.slug, d.key);
+    if (alias === null) {
+      throw new Error(
+        `bundle "${d.bundle}": server "${d.slug}" resolves ${d.key} to a ` +
+          `different value than "${d.bareOwner}" does, so it needs a per-slug ` +
+          `variable name — and its slug does not mangle to a usable one (a ` +
+          `variable name cannot start with a digit). Rename the slug, give it ` +
+          `its own bundle, or seed it the same value.`,
+      );
+    }
+    // The bundle host mounts a per-slug instance at `/<slug>`, because it never
+    // sees this config. A dissenter routed anywhere else reads whatever that
+    // other mount was given — which is the FIRST declarant's credential, so the
+    // symptom is a working server acting as the wrong account.
+    if (d.path !== `/${d.slug}`) {
+      throw new Error(
+        `bundle "${d.bundle}": server "${d.slug}" resolves ${d.key} to a ` +
+          `different value than "${d.bareOwner}" does, so the bundle host has to ` +
+          `run it as its OWN instance — which it mounts at "/${d.slug}", because ` +
+          `it never sees this config. This server is configured with path ` +
+          `"${d.path}", so it would route to a different mount and read the ` +
+          `other server's credential. Set path: /${d.slug}, or seed the two the ` +
+          `same value.`,
+      );
+    }
+    const emitted = emittedAliases.get(d.bundle) ?? {};
+    emitted[alias] = d.value;
+    emittedAliases.set(d.bundle, emitted);
+  }
+
+  // A PER-SLUG NAME MAY NOT LAND ON A NAME SOMETHING ELSE ALREADY OWNS.
+  //
+  // Contrived but not impossible: a server declaring a variable literally called
+  // `A__B` collides with slug `a`'s alias for `B`. The alias is generated rather
+  // than written down, so nobody would see it in the config — hence a check here
+  // rather than a note in the docs. Same value is not a collision, and because
+  // nothing is ever deleted above, this sees every name the component holds.
+  for (const [bundle, emitted] of emittedAliases) {
+    const entry = imageBundles.get(bundle);
+    if (!entry) continue;
+    for (const [key, value] of Object.entries(emitted)) {
+      const claimed = entry.env[key] ?? entry.params[key];
+      if (claimed === undefined || claimed === value) continue;
+      throw new Error(
+        `bundle "${bundle}": the per-slug name ${key} collides with a variable ` +
+          `of the same name that another server on this bundle already sets to a ` +
+          `different value. Rename that variable.`,
+      );
+    }
+  }
+
+  // Said once, per bundle, naming slugs and variables and never a value. The
+  // operator needs it because the per-slug name is GENERATED — it appears in no
+  // config file, and it is what a seeding question ("is the credential on the
+  // box?") has to be asked about from here on.
+  for (const bundle of new Set(dissenters.map((d) => d.bundle))) {
+    const mine = dissenters.filter((d) => d.bundle === bundle);
+    opts.onWarning?.(
+      `bundle "${bundle}": ${mine.length} variable(s) resolve to a value other ` +
+        `than the one the bare name carries, so they are ALSO emitted under a ` +
+        `per-slug name — ${mine
+          .map(
+            (d) => `${prefixedEnvName(d.slug, d.key)} (${d.slug}'s ${d.key})`,
+          )
+          .sort()
+          .join(
+            ", ",
+          )}. The bare name(s) still carry the first-declared value ` +
+        `and every other server on this bundle reads them unchanged. Only a ` +
+        `server whose image reads an injected environment (telegram, ` +
+        `remote-filesystem) can see a per-slug name.`,
+    );
   }
 
   // A PARAMETER MAY NOT SHADOW ANOTHER SERVER'S VARIABLE ON THE SAME BUNDLE.
@@ -719,6 +895,17 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         scope: "RUN_TIME",
         type: "SECRET",
       })),
+      // Per-slug names, for the contested variables only — the bare name they
+      // replace was deleted above. Empty for every bundle where no two mounts
+      // disagreed, which is every bundle in every deployment today.
+      ...Object.entries(emittedAliases.get(name) ?? {}).map(
+        ([key, value]): EnvVar => ({
+          key,
+          value,
+          scope: "RUN_TIME",
+          type: "SECRET",
+        }),
+      ),
       // Resolved managed parameters are already literal — emit them as
       // SECRET env vars directly, WITHOUT resolveMap, so a value containing
       // `${…}` cannot be mistaken for an unresolved ref.

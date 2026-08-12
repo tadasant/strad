@@ -272,7 +272,11 @@ The server list drives how containers are grouped:
 
 - **Lightweight builtins** colocate in one bundle at roughly $0 marginal cost.
 - **A bundle runs ONE image** — but any number of servers may share it, on
-  distinct paths, and capability variants may even share a path.
+  distinct paths, and capability variants may even share a path. Sharing a path
+  means sharing an INSTANCE: one upstream process, one set of credentials, told
+  apart only by the gateway's `tools:` policy. Two slugs that need different
+  credentials need different paths, and the bundle host then builds one instance
+  per slug from [its own variables](/operate/secrets/#where-the-two-values-actually-land).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
   serialises rendering. strad's own deployment puts everything (17 mounted servers,
