@@ -355,26 +355,36 @@ opposite fixes. `consoleDenial()` in `src/auth/dev.ts` decides which, and both
 `/console` (JSON) and the `/ui` sign-in wall (HTML) render its answer, so the two
 surfaces cannot drift into disagreeing.
 
-| The 401                   | What it means                                                                                   | The fix             |
-| ------------------------- | ----------------------------------------------------------------------------------------------- | ------------------- |
-| `invalid_bootstrap_token` | The dev bypass is **live** here. The token presented was missing or did not match.              | Fix your token.     |
-| `console_unavailable`     | No console door at all: no Google OAuth, and the bypass is held shut by one of its four guards. | Fix the deployment. |
+| The 401                   | What it means                                                                           | The fix             |
+| ------------------------- | --------------------------------------------------------------------------------------- | ------------------- |
+| `invalid_bootstrap_token` | The dev bypass is **live** here. The token presented was missing or did not match.      | Fix your token.     |
+| `console_unavailable`     | No console door at all: no usable Google OAuth, and a guard is holding the bypass shut. | Fix the deployment. |
 
 Both carry `devBypass`: `"active"` in the first case, and the guard that is
-holding — `ALLOW_DEV_AUTH is not 'true'`, `ADMIN_BOOTSTRAP_TOKEN is not set`,
-`NODE_ENV=production requires ALLOW_DEV_AUTH_IN_PRODUCTION=true as well` — in the
-second. One request answers "is the bypass switched off, or is my token wrong",
-which is the question an operator actually has.
+holding — `auth.consoleDevBypass.enabled is false`, `ALLOW_DEV_AUTH is not 'true'`,
+`ADMIN_BOOTSTRAP_TOKEN is not set`, `NODE_ENV=production requires
+ALLOW_DEV_AUTH_IN_PRODUCTION=true as well` — in the second. One request answers
+"is the bypass switched off, or is my token wrong", which is the question an
+operator actually has. A request with no credential at all gets
+`invalid_bootstrap_token` too: on a deployment whose only door is the bypass,
+"you presented nothing" and "you presented the wrong thing" have the same fix.
 
 Naming the first case tells an unauthenticated caller that a dev bypass is live
-on that deployment, and that is deliberate. The answer only ever changes on a
-deployment that has passed all four guards — an operator's explicit, loudly-logged
-decision to hold the console with one shared secret. A deployment that has not
-(real prod, which fails closed on a copied staging spec) gets `console_unavailable`
-and discloses nothing it did not before. It is **not** gated on `NODE_ENV`, which
-would blind the one environment this is for: staging runs `NODE_ENV=production`
-with both dev-auth acknowledgements set. Nothing about the token itself — length,
-prefix, how close an attempt was — is ever disclosed.
+on that deployment, and that is deliberate. The answer only ever differs on a
+deployment that clears the whole triple guard and has a token set — an operator's
+explicit, loudly-logged decision to hold the console with one shared secret.
+A deployment that has not (real prod, which fails closed on a copied staging spec)
+gets `console_unavailable` naming the guard that holds it, which is the same thing
+that refusal has always carried. It is **not** gated on `NODE_ENV`, which would
+blind the one environment this is for: staging runs `NODE_ENV=production` with
+both dev-auth acknowledgements set.
+
+This is a narrower rule than the one `/mcp` follows above, where **every** failure
+is one opaque `401` — and the difference is what is being distinguished. There, the
+distinctions are halves of a credential: which token, which field was right. Here
+it is whether a door exists at all, not how close an attempt came to opening it.
+Nothing about the token itself — length, prefix, how close an attempt was — is
+disclosed, and `/mcp` keeps its opaque `401`.
 
 ## Entitlement: the token disposes
 

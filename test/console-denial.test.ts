@@ -18,12 +18,18 @@ import { createApp } from "../src/http/app.ts";
  *   2. No console auth path is usable at all — no Google OAuth, and the bypass
  *      is switched off somewhere in its triple guard. Fix the deployment.
  *
- * Both once answered `console_unavailable`, under one message — "the dev bypass
- * is not usable" — that asserted the second diagnosis even in the first case,
- * where the bypass was live. Telling them apart cost a control experiment
- * against a second instance the operator controlled: send a deliberately wrong
- * token to a box whose bypass is known-live, and compare. This file is that
- * control experiment, run as a test.
+ * One body answered both, and it asserted the second diagnosis — "the dev bypass
+ * is not usable" — even where the bypass was live and its own `devBypass` field
+ * said so. Telling them apart then took a control experiment against a second
+ * instance the operator controlled: send a deliberately wrong token to a box
+ * whose bypass is known-live, and compare. This file is that control experiment,
+ * run as a test, so one request answers it instead.
+ *
+ * Four gateways stand in for four deployments, because the disclosure argument
+ * is about WHICH deployments answer differently: a live bypass, one switched
+ * off, staging (NODE_ENV=production with both dev-auth acknowledgements), and
+ * real prod (the acknowledgement missing, so it fails closed). A fifth has
+ * Google sign-in wired, where the question never arises.
  */
 
 const CONFIG = parseConfig(`
@@ -73,23 +79,69 @@ const PROD_ENV: NodeJS.ProcessEnv = {
   ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
 };
 
+/**
+ * A deployment where Google sign-in can actually complete. The bypass is live
+ * here too — that is the point: the OAuth path takes precedence, so the denial
+ * is never reached and no bypass state is exposed.
+ */
+const GOOGLE_CONFIG = parseConfig(`
+version: 1
+gateway: { name: strad, env: test, publicUrl: "https://strad.example.com" }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+  google:
+    enabled: true
+    hostedDomain: example.com
+    roles: [admin]
+roles:
+  admin: { servers: ["*"] }
+`);
+
+const GOOGLE_ENV: NodeJS.ProcessEnv = {
+  STRAD_TOKENS: "[]",
+  ALLOW_DEV_AUTH: "true",
+  ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
+  // Long enough to clear the session-key floor, so `sessions` is non-null.
+  CONSOLE_SESSION_SECRET: "an-explicitly-rotated-console-key-for-tests",
+};
+
+/** Stands in for the provider at its one boundary: the URL it sends people to. */
+const FAKE_GOOGLE = {
+  beginAuth: () => ({
+    state: "state-1",
+    codeVerifier: "verifier-1",
+    url: "https://accounts.google.com/o/oauth2/v2/auth?state=state-1",
+  }),
+  completeAuth: () => {
+    throw new Error("not exercised here");
+  },
+};
+
 const servers: Server[] = [];
 
-async function boot(env: NodeJS.ProcessEnv): Promise<string> {
+async function boot(
+  env: NodeJS.ProcessEnv,
+  opts: {
+    config?: typeof CONFIG;
+    googleProvider?: Parameters<typeof createApp>[0]["googleProvider"];
+  } = {},
+): Promise<string> {
+  const config = opts.config ?? CONFIG;
   const app = createApp({
-    config: CONFIG,
+    config,
     registry: await Registry.build({
-      config: CONFIG,
+      config,
       secrets: new EnvSecretProvider({}),
       mode: "core",
       env,
     }),
-    tokenStore: tokenStoreFromConfig(CONFIG, env),
+    tokenStore: tokenStoreFromConfig(config, env),
     mode: "core",
     env,
-    // No Google OAuth on any of these: the bypass is the only door, which is
-    // the deployment shape the two denials are about.
-    googleProvider: null,
+    // No Google OAuth on the four denial gateways: the bypass is the only door,
+    // which is the deployment shape the two denials are about.
+    googleProvider: opts.googleProvider ?? null,
   });
   const srv = await new Promise<Server>((resolve) => {
     const s = app.listen(0, () => resolve(s));
@@ -104,14 +156,20 @@ let activeUrl: string;
 let inactiveUrl: string;
 let stagingUrl: string;
 let prodUrl: string;
+let googleReadyUrl: string;
 
 beforeAll(async () => {
-  [activeUrl, inactiveUrl, stagingUrl, prodUrl] = await Promise.all([
-    boot(ACTIVE_ENV),
-    boot(INACTIVE_ENV),
-    boot(STAGING_ENV),
-    boot(PROD_ENV),
-  ]);
+  [activeUrl, inactiveUrl, stagingUrl, prodUrl, googleReadyUrl] =
+    await Promise.all([
+      boot(ACTIVE_ENV),
+      boot(INACTIVE_ENV),
+      boot(STAGING_ENV),
+      boot(PROD_ENV),
+      boot(GOOGLE_ENV, {
+        config: GOOGLE_CONFIG,
+        googleProvider: FAKE_GOOGLE,
+      }),
+    ]);
 });
 
 afterAll(() => {
@@ -147,9 +205,9 @@ describe("/console tells a wrong token apart from an unusable bypass", () => {
   });
 
   it("is DISTINGUISHABLE from the error code alone, which is the whole point", async () => {
-    // The control experiment #4390 had to build by hand, as one assertion. The
-    // code has to carry it: a caller that has to parse prose, or diff a body
-    // against a known-good instance, is back where it started.
+    // The control experiment, as one assertion. The code has to carry it: a
+    // caller that has to parse prose, or diff a body against a known-good
+    // instance, is back where it started.
     const wrongTokenLiveBypass = await denial(activeUrl, "not-the-token");
     const anyTokenDeadBypass = await denial(inactiveUrl, "not-the-token");
     expect(wrongTokenLiveBypass.body.error).not.toBe(
@@ -197,10 +255,11 @@ describe("the disclosure boundary: only a deployment that turned the bypass ON",
     expect(body.devBypass).toBe("active");
   });
 
-  it("discloses NOTHING new on a deployment whose bypass is fail-closed", async () => {
+  it("discloses NOTHING about the bypass on a deployment where it is fail-closed", async () => {
     // Real production: ALLOW_DEV_AUTH rode along on a copied spec, but the
-    // separate production acknowledgement did not. The bypass is off, and the
-    // answer is byte-identical to what it was before this change.
+    // separate production acknowledgement did not. The whole body is pinned,
+    // because "we did not widen what a fail-closed prod says" is the claim the
+    // disclosure argument rests on. It names the guard, and nothing else.
     const { status, body } = await denial(prodUrl, "not-the-token");
     expect(status).toBe(401);
     expect(body).toEqual({
@@ -210,6 +269,50 @@ describe("the disclosure boundary: only a deployment that turned the bypass ON",
       devBypass:
         "NODE_ENV=production requires ALLOW_DEV_AUTH_IN_PRODUCTION=true as well",
     });
+  });
+
+  it("says nothing about the token itself, on either branch", async () => {
+    // Not the value, not a prefix, not a length, not how close an attempt came.
+    for (const url of [activeUrl, stagingUrl, inactiveUrl, prodUrl]) {
+      const { body } = await denial(url, "not-the-token");
+      const json = JSON.stringify(body);
+      expect(json).not.toContain(BOOTSTRAP);
+      expect(json).not.toContain(String(BOOTSTRAP.length));
+      expect(json).not.toContain("not-the-token");
+    }
+  });
+
+  it("does not answer at all when Google sign-in can complete", async () => {
+    // The precedence above the denial is what bounds this to OAuth-less
+    // deployments: a gateway that can finish a Google login sends the caller
+    // into it and never reaches consoleDenial(), so no bypass state is exposed.
+    const res = await fetch(`${googleReadyUrl}/console`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location") ?? "").toContain("accounts.google.com");
+
+    const ui = await fetch(`${googleReadyUrl}/ui`, { redirect: "manual" });
+    expect(ui.status).toBe(302);
+    expect(ui.headers.get("location") ?? "").toContain("/console/login");
+  });
+
+  it("leaves /mcp's opaque 401 exactly as it was", async () => {
+    // The bypass is live on this gateway and the bootstrap token is correct for
+    // /console. /mcp must still refuse it, with the one answer it gives every
+    // failure — the invariant the disclosure argument leans on (HACKS.md #2).
+    const res = await fetch(`${activeUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${BOOTSTRAP}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(res.status).toBe(401);
+    const body = JSON.stringify(await res.json());
+    expect(body).not.toContain("invalid_bootstrap_token");
+    expect(body).not.toContain("devBypass");
   });
 });
 
@@ -227,8 +330,9 @@ describe("the /ui sign-in wall makes the same distinction", () => {
     const html = await res.text();
     expect(res.status).toBe(401);
     expect(html).toContain("Sign in required");
-    // The old wall said "entry is via the console dev bypass — present the
-    // bootstrap token" even where no token could ever be accepted.
+    // Advertising "present the bootstrap token as ?token=…" on a deployment
+    // where no token can be accepted sends a human hunting for a credential
+    // that was never the problem.
     expect(html).not.toContain("?token=");
     expect(html).toContain("ALLOW_DEV_AUTH is not &#39;true&#39;");
   });
@@ -253,5 +357,19 @@ describe("consoleDenial() as a unit", () => {
     expect(consoleDenial(cfg, { ALLOW_DEV_AUTH: "true" }).devBypass).toBe(
       "ADMIN_BOOTSTRAP_TOKEN is not set",
     );
+  });
+
+  it("names the config flag, which is the guard an operator actually flips", () => {
+    const off = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: false }
+roles: {}
+`);
+    const denied = consoleDenial(off, ACTIVE_ENV);
+    expect(denied.error).toBe("console_unavailable");
+    expect(denied.devBypass).toBe("auth.consoleDevBypass.enabled is false");
   });
 });

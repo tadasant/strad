@@ -11,8 +11,9 @@ import { secretEquals, type Principal } from "./index.ts";
  *     /mcp; /mcp calls authenticateMcp(), which only knows about static tokens.
  *   - It still requires a secret: ADMIN_BOOTSTRAP_TOKEN. The console is not
  *     freely browsable just because OAuth is missing.
- *   - It is hard-disabled under NODE_ENV=production unless ALLOW_DEV_AUTH is
- *     explicitly "true". Fail closed: a missing/garbled env var disables it.
+ *   - It is hard-disabled under NODE_ENV=production unless
+ *     ALLOW_DEV_AUTH_IN_PRODUCTION is explicitly "true" as well. Fail closed: a
+ *     missing/garbled env var disables it.
  *   - It shouts at boot whenever it is live.
  *
  * Delete this file the day Google OAuth credentials land. See HACKS.md.
@@ -58,8 +59,8 @@ export function devBypassStatus(
   }
 
   // "active", not "enabled": this reason is surfaced to a caller who was just
-  // turned away, and "enabled" reads like the config flag — one of four guards —
-  // rather than the verdict that all four passed and the bypass is live.
+  // turned away, and "enabled" reads like the config flag — one guard of the
+  // triple guard — rather than the verdict that every guard passed.
   return { active: true, reason: "active" };
 }
 
@@ -83,15 +84,17 @@ export interface ConsoleDenial {
  *
  * **The disclosure this makes, deliberately.** Naming the first case tells an
  * unauthenticated caller that a dev bypass is live here. That is acceptable,
- * and the reason is the condition itself: the answer only ever changes on a
- * deployment that has passed all four guards in `devBypassStatus()` — the
- * config flag, `ALLOW_DEV_AUTH`, the separate production acknowledgement, and a
- * set token. A deployment that has not (real prod, which fails closed on a
- * copied staging spec) gets `console_unavailable`, byte for byte what it
- * answered before. So the operator who turned the bypass on has already
- * accepted a console door held by one shared secret; what leaks is the
- * existence of a door whose credential is unchanged by knowing it is there, and
- * the deployments that never opened one leak nothing new.
+ * and the reason is the condition itself: the answer only ever differs on a
+ * deployment that clears the triple guard in `devBypassStatus()` — the config
+ * flag, `ALLOW_DEV_AUTH`, the production acknowledgement that `NODE_ENV`
+ * demands — and has a token set. An operator who cleared all of that has
+ * already accepted a console door held by one shared secret, loudly, at boot.
+ * What leaks is the existence of a door whose credential is no weaker for being
+ * known about — and a refusal has always carried the guard state in `devBypass`
+ * anyway, so this makes an existing signal honest and machine-readable rather
+ * than moving the boundary. A deployment that has NOT cleared it — real prod, which fails
+ * closed on a copied staging spec — answers `console_unavailable` and names the
+ * guard that is holding, which carries no more than the same refusal always did.
  *
  * It is NOT gated on `NODE_ENV`, because that would withhold it from the exact
  * person it is for: staging runs `NODE_ENV=production` with both dev-auth
@@ -99,8 +102,12 @@ export interface ConsoleDenial {
  * where the bypass is the only way in. The gate is "is the bypass live", which
  * is the operator's own deliberate, loudly-logged decision.
  *
- * What is never disclosed: anything about the token itself. Not its length, not
- * a prefix, not whether the caller's own attempt was close.
+ * This is a narrower rule than `/mcp`'s, which answers every failure with one
+ * opaque 401 (`src/auth/index.ts`) because there the distinctions are halves of
+ * a credential — which token, which field was right. Here the distinction is
+ * whether a door exists, not how close an attempt came to opening it, so
+ * nothing about the token itself is disclosed: not its length, not a prefix,
+ * not whether the caller's own attempt was close. `/mcp` keeps its opaque 401.
  */
 export function consoleDenial(
   cfg: StradConfig,

@@ -1271,9 +1271,9 @@ export function renderSignIn(denial: ConsoleDenial): string {
          yet configured on this deployment, so entry is via the console dev
          bypass — present the bootstrap token as <code>?token=…</code>.`
       : `This console is gated by strad's SSO. Neither door is open on this
-         deployment: Google Workspace sign-in is not configured, and the console
-         dev bypass is not active. No token will get you in until an operator
-         changes that.`;
+         deployment: Google Workspace sign-in is not usable here — it is either
+         unconfigured or missing its credentials — and the console dev bypass is
+         not active. No token will get you in until an operator changes that.`;
   const body = `
 <div class="state state-warn signin">
   <div class="state-icon">${LOCK_SVG}</div>
