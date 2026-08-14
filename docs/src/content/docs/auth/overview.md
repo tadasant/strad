@@ -348,6 +348,34 @@ separate change, after Google sign-in is verified working in prod — in that or
 because `src/ui/console-auth.ts` imports from `src/auth/dev.ts` and removing the
 module first leaves `/ui` with no fallback authenticator.
 
+### The two ways console auth says no
+
+A caller who is turned away is in one of exactly two situations, and they need
+opposite fixes. `consoleDenial()` in `src/auth/dev.ts` decides which, and both
+`/console` (JSON) and the `/ui` sign-in wall (HTML) render its answer, so the two
+surfaces cannot drift into disagreeing.
+
+| The 401                   | What it means                                                                                   | The fix             |
+| ------------------------- | ----------------------------------------------------------------------------------------------- | ------------------- |
+| `invalid_bootstrap_token` | The dev bypass is **live** here. The token presented was missing or did not match.              | Fix your token.     |
+| `console_unavailable`     | No console door at all: no Google OAuth, and the bypass is held shut by one of its four guards. | Fix the deployment. |
+
+Both carry `devBypass`: `"active"` in the first case, and the guard that is
+holding — `ALLOW_DEV_AUTH is not 'true'`, `ADMIN_BOOTSTRAP_TOKEN is not set`,
+`NODE_ENV=production requires ALLOW_DEV_AUTH_IN_PRODUCTION=true as well` — in the
+second. One request answers "is the bypass switched off, or is my token wrong",
+which is the question an operator actually has.
+
+Naming the first case tells an unauthenticated caller that a dev bypass is live
+on that deployment, and that is deliberate. The answer only ever changes on a
+deployment that has passed all four guards — an operator's explicit, loudly-logged
+decision to hold the console with one shared secret. A deployment that has not
+(real prod, which fails closed on a copied staging spec) gets `console_unavailable`
+and discloses nothing it did not before. It is **not** gated on `NODE_ENV`, which
+would blind the one environment this is for: staging runs `NODE_ENV=production`
+with both dev-auth acknowledgements set. Nothing about the token itself — length,
+prefix, how close an attempt was — is ever disclosed.
+
 ## Entitlement: the token disposes
 
 Once a caller is authenticated, the servers they may reach are computed

@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { authenticateConsoleBypass, devBypassStatus } from "../auth/dev.ts";
+import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import type { Principal } from "../auth/index.ts";
 import {
   principalFromSession,
@@ -106,8 +106,13 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
       return;
     }
 
-    const status = devBypassStatus(config, env);
-    res.status(401).type("html").send(renderSignIn(status.reason));
+    // The same two-state refusal /console answers with, rendered for a human:
+    // "your token is wrong" and "there is no door here" need different next
+    // steps from whoever is reading it. See consoleDenial() in src/auth/dev.ts.
+    res
+      .status(401)
+      .type("html")
+      .send(renderSignIn(consoleDenial(config, env)));
   };
 }
 
