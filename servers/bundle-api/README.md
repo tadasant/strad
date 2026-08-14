@@ -6,7 +6,7 @@ single internal Node process:
 
 | slug | upstream server | tools |
 | --- | --- | --- |
-| `slack` | Slack workspace (**forked** — see [`fork/slack/FORK.md`](fork/slack/FORK.md)) | messaging / channels |
+| `slack` | Slack workspace (**forked** — see [`fork/slack/FORK.md`](fork/slack/FORK.md)) | messaging / channels / DMs |
 | `serpapi-hotels` | SerpApi Google Hotels | hotel search |
 | `tailscale` | Tailscale VPN | policy / devices / keys |
 | `monarch-money` | Monarch Money | personal finance |
@@ -43,12 +43,16 @@ exception is visible from the path. Hashes and versions above are the points a
 copy was last verified identical to upstream, which is what each fork diverges
 from — not commits that touched the server in question.
 
-**`fork/slack`.** Slack's message format is mrkdwn, not Markdown, `~text~` is
-strikethrough, and a message that uses `~` as an "approximately" sign posts
-successfully with whole paragraphs struck through — no error, anywhere.
+**`fork/slack`.** Two deltas. Slack's message format is mrkdwn, not Markdown,
+`~text~` is strikethrough, and a message that uses `~` as an "approximately" sign
+posts successfully with whole paragraphs struck through — no error, anywhere.
 Upstream's write tools call the format "Slack markdown" and never mention the
-tilde, so the fix has to live in the tool definitions. What changed, and why it
-warns rather than rewrites, is in [`fork/slack/FORK.md`](fork/slack/FORK.md).
+tilde, so the fix has to live in the tool definitions. The fork also **adds four
+DM tools** — `slack_send_dm`, `slack_get_dm`, `slack_get_dms`, `slack_find_user`
+— because upstream can address a channel and a thread but not a person, and
+Slack's DM flow is a two-call dance no agent should have to know. Thirteen tools,
+seven of them read-only. Both deltas, the recipient-naming rules and the OAuth
+scopes are in [`fork/slack/FORK.md`](fork/slack/FORK.md).
 
 **`fork/google-flights`.** Three defects that each returned a confident, wrong
 answer with no error attached: cabin class and passenger counts were encoded at
@@ -73,7 +77,14 @@ The image is credential-free. Each server reads its own env vars at runtime;
 strad supplies them via the config `env:` map (`${NAME}` refs resolved onto this
 bundle only). Non-exhaustive, per server:
 
-- **slack** — `SLACK_BOT_TOKEN` (required)
+- **slack** — `SLACK_BOT_TOKEN` (required). Bot-token OAuth scopes: `channels:read`,
+  `channels:history`, `groups:read`, `groups:history`, `chat:write`,
+  `reactions:write`, `files:read`, `files:write` for the channel tools; the DM
+  tools additionally need `im:read` + `im:history` (list and read DMs),
+  `im:write` (open a DM that does not exist yet), `users:read` (name a recipient
+  by anything but an ID), and optionally `users:read.email` (address by email)
+  and `mpim:read` (list group DMs). A missing scope fails the call, not the boot
+  — see [`fork/slack/FORK.md`](fork/slack/FORK.md) and HACKS.md #59.
 - **serpapi-hotels** — `SERPAPI_API_KEY` (required)
 - **tailscale** — `TAILSCALE_API_KEY` **or** `TAILSCALE_OAUTH_CLIENT_ID` + `TAILSCALE_OAUTH_CLIENT_SECRET`; optional `TAILSCALE_TAILNET`, `TAILSCALE_API_URL`
 - **monarch-money** — optional at boot (`MONARCH_SESSION_TOKEN`, or `MONARCH_EMAIL` + `MONARCH_PASSWORD` [+ `MONARCH_TOTP`/`MONARCH_EMAIL_OTP`]); `MONARCH_SESSION_PASSPHRASE`, `MONARCH_STATE_DIR`

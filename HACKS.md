@@ -2205,6 +2205,13 @@ they never mention the tilde. The fork rewrites those descriptions and appends a
 post-hoc advisory to a successful send. `fork/slack/FORK.md` carries the file-by-file
 table so the next re-vendor is a merge with a list rather than a diff read cold.
 
+The fork also ADDS four tools upstream does not have: `slack_send_dm`,
+`slack_get_dm`, `slack_get_dms` and `slack_find_user`. Upstream can post to a
+channel and to a thread and cannot address a person at all, and Slack's DM flow
+is two calls (`conversations.open` for the `D…` channel, then the ordinary
+`chat.postMessage`) — which is a dance an agent should not have to know. The
+scopes those calls need are #59.
+
 **Why.** Two other vendored trees carry the same divergence risk (#15, #19, #45),
 and the rule everywhere else is that fixes go upstream and get re-vendored. This
 one cannot wait on that round trip in the way those could: the failure ships
@@ -2221,9 +2228,10 @@ guard: there is no upstream to diff against, and a re-vendor that pastes
 nothing to say so. What stands in for the drift test is
 `servers/bundle-api/fork/slack/test/mrkdwn.test.mjs`, run by `ci.yml`'s
 `bundle_api` job: it asserts that every write tool leads with the tilde rule,
-that none of them still says "Supports Slack markdown formatting", that no tool
-was renamed, and that the bytes handed to `chat.postMessage` are the bytes the
-caller passed. A revert fails those. A revert that also deletes the tests does
+that none of them still says "Supports Slack markdown formatting", that the
+registered tool set is exactly the expected thirteen names, and that the bytes
+handed to `chat.postMessage` are the bytes the caller passed. `test/dm.test.mjs`
+does the same for the DM four. A revert fails those. A revert that also deletes the tests does
 not — the same hole `check-tool-policy` has (#46), and the same answer: the test
 file is the artifact under review.
 
@@ -2517,6 +2525,50 @@ servers/bundle-api/upstream/google-flights`, restore the `COPY` lines in EACH of
 `bundle-api` workspaces, build and test scripts. Tool names and tool count are
 unchanged by the fork, so no `tools:` policy moves either way.
 
+## 59. A DM needs Slack scopes the channel tools never asked for, and one of them is not installed
+
+**What.** The four DM tools the slack fork adds (#55) call five Slack methods the
+nine channel tools never touch, and each is gated on its own OAuth scope:
+
+| Call                               | Scope                   | Used by                                                            |
+| ---------------------------------- | ----------------------- | ------------------------------------------------------------------ |
+| `conversations.open`               | `im:write`              | `slack_send_dm`                                                    |
+| `conversations.list?types=im`      | `im:read`               | `slack_get_dms`, `slack_get_dm`, and `slack_send_dm`'s fallback    |
+| `conversations.list?types=im,mpim` | `mpim:read` **as well** | `slack_get_dms` with `include_group_dms: true`                     |
+| `users.list` / `users.info`        | `users:read`            | `slack_find_user`, and every recipient named by anything but an id |
+| `users.lookupByEmail`              | `users:read.email`      | naming a recipient by email address                                |
+
+`chat.postMessage` into a `D…` channel needs nothing beyond the `chat:write` the
+server already had, and `conversations.history` on one needs `im:history`.
+
+The Slack app installed on the Tadasant workspace holds `im:history`, `im:read`,
+`users:read` and `chat:write`, and **does not hold `im:write`, `mpim:read` or
+`users:read.email`** — verified against the live API on 2026-08-14. Adding a
+scope means editing the Slack app's configuration and reinstalling it, which is
+a human action in Slack's UI; no code in this repo can do it.
+
+**The consequence, precisely.** `conversations.open` is what creates a DM channel
+that does not exist yet. Without `im:write`, `slack_send_dm` falls back to
+`conversations.list?types=im` and uses the DM channel if one is already open — so
+sending to anyone the bot has ever exchanged a DM with WORKS today, and sending
+to a first-time recipient fails with an error naming the scope and the other way
+out (have them DM the bot once, which opens the conversation from their side).
+Group-DM listing and by-email addressing fail with the scope named, on the call
+rather than at boot: the tools list either way, because a tool surface that
+changes shape with a credential is a worse debugging story than a call that says
+what it needs.
+
+**Why anyway.** The motivating case is Zimmer DMing Tadas when a Claude account
+falls into `needs_reauth`, and that conversation has existed since 2026-05-30 —
+so the capability that matters is live now rather than after a human edits an app
+config. Withholding the whole surface until every scope is present would trade a
+working alert for a tidier dependency.
+
+**Undo:** add `im:write` (and `mpim:read` / `users:read.email` if group DMs or
+email addressing are wanted) to the Slack app's bot token scopes, reinstall the
+app to the workspace, and rotate `SLACK_BOT_TOKEN` in the parameter store. No
+code changes: the fallback is a `missing_scope` retry, so it simply stops firing.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather
@@ -2557,6 +2609,11 @@ because each one names the evidence that closed it.
       both `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
+- [ ] **Slack scope `im:write`** on the workspace's Slack app, then reinstall and
+      rotate `SLACK_BOT_TOKEN` → resolves the live half of hack #59. Without it
+      `slack_send_dm` reaches anyone the bot has an open DM with and nobody else.
+      `mpim:read` (group-DM listing) and `users:read.email` (addressing someone by
+      email) are the same edit, and both are optional.
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2. Tracked in
       issue #6.

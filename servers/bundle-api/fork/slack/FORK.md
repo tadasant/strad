@@ -13,6 +13,11 @@ v0.0.7. At that commit the vendored copy was byte-identical to upstream.
 
 ## Why it is forked
 
+Two reasons, in the order they arrived: the message format upstream describes
+wrongly, and the conversation type upstream cannot address at all.
+
+## 1. mrkdwn is not Markdown
+
 Slack's message format is **mrkdwn**, and mrkdwn is not Markdown. It shares
 punctuation with Markdown and disagrees about what the punctuation means. The
 disagreement that costs something is `~`: a tilde-delimited span is
@@ -35,11 +40,9 @@ change can fix that, so it is worth having upstream too; it is not worth waiting
 for, because the fix has to reach a running server, and this repo owns the one
 Tadas's sessions will talk to.
 
-## The delta
+### The mrkdwn delta
 
-Four files, plus one new module. Nothing else differs from upstream, no tool is
-renamed, and no tool is added or removed — the surface is still the same nine
-tools the `slack` and `slack-readonly` slugs are carved out of.
+Four files, plus one new module. No tool is renamed and none is removed.
 
 | File | Change |
 | --- | --- |
@@ -93,6 +96,96 @@ posted, which is the whole shape of the failure.
 - **Anything inside `` ` `` or ` ``` `.** Slack resolves code spans before the
   inline delimiters, so a tilde in there is literal. Two tildes separated *only*
   by a code span still pair up, and still get reported.
+
+## 2. Upstream cannot address a person
+
+Upstream posts to a channel and replies in a thread. It has no tool that opens or
+addresses a DM, so "tell Tadas his Claude account needs re-authenticating" had
+nowhere to go but a channel — which is the wrong room for a message meant for one
+person, and it is the message Zimmer needs to send when an account falls into
+`needs_reauth`.
+
+Slack's DM flow is two calls: `conversations.open` with a user ID returns a `D…`
+channel, and then it is an ordinary `chat.postMessage`. Exposing those as two
+tools would be the faithful translation and the worse surface — a two-step dance
+around an intermediate id, for one message. So `slack_send_dm` takes a person and
+some text, and the open is an implementation detail.
+
+### The DM delta
+
+Four tools added, one shared resolver, six client functions. Upstream's nine
+tools are untouched.
+
+| File | Change |
+| --- | --- |
+| `src/tools/send-dm.ts` | **New.** `slack_send_dm` — resolve, open, post, in one call. Carries the mrkdwn rules and advisory, like every other tool that takes text. |
+| `src/tools/get-dm.ts` | **New.** `slack_get_dm` — read the conversation with one person, by name or by `D…` id. |
+| `src/tools/get-dms.ts` | **New.** `slack_get_dms` — list the DM conversations, most recently active first. |
+| `src/tools/find-user.ts` | **New.** `slack_find_user` — turn "who is Tadas" into a user ID, and say why each candidate matched. |
+| `src/tools/resolve-user.ts` | **New.** The one place a recipient becomes an id. Not a tool. |
+| `src/slack-client/lib/{open-dm,get-dms,list-users,find-users,get-user,lookup-user-by-email}.ts` | **New.** One function per Slack method, in the shape the rest of `lib/` already has. |
+| `src/slack-client/lib/slack-error.ts` | **New.** Carries Slack's `needed` scope into the error message. |
+| `src/server.ts`, `src/types.ts`, `src/tools.ts`, `src/slack-client/slack-client.integration-mock.ts` | The interface, the shapes, the registration table, the mock. |
+
+`test/dm.test.mjs` pins it.
+
+### Naming a recipient
+
+One parameter, four forms: a user ID (`U0BFTSUN8MD`), an email address, a handle
+with or without the `@`, or a display or real name. Matching is
+case-insensitive, and exact beats prefix beats substring.
+
+**An identifier matching two people is an error, never a guess.** It comes back
+naming both candidates with their IDs and sends nothing. This is the one place
+where the cheaper behaviour — pick the best-sorted match — is unacceptable: a
+channel post to the wrong room is embarrassing, and a private message to the
+wrong person is not walkable-back. A tie at the best rank is a tie; a better
+match wins outright.
+
+The cost of the friendlier identifier is a directory scan (`users.list`,
+paginated, filtered here — Slack has no server-side user search) and the
+`users:read` scope. An email skips it via `users.lookupByEmail`, and a user ID
+skips it entirely.
+
+### Scopes, and the one that is missing
+
+The DM calls are gated on scopes the channel tools never needed:
+
+| Call | Scope |
+| --- | --- |
+| `conversations.open` | `im:write` |
+| `conversations.list?types=im` | `im:read` |
+| `conversations.list?types=im,mpim` | `im:read` **and** `mpim:read` |
+| `conversations.history` on a `D…` | `im:history` |
+| `users.list`, `users.info` | `users:read` |
+| `users.lookupByEmail` | `users:read.email` |
+| `chat.postMessage` to a `D…` | `chat:write` — already held |
+
+The token installed on the Tadasant workspace holds `im:history`, `im:read`,
+`users:read` and `chat:write`, and NOT `im:write`, `mpim:read` or
+`users:read.email`.
+
+So `openDm()` treats a `missing_scope` from `conversations.open` as a reason to
+look rather than a reason to stop: it scans the DMs that are already open and
+uses the one for that user. A token that can list an existing DM and post into it
+can send the message, and refusing would be refusing work it can plainly do. The
+scan cannot conjure a FIRST conversation, so when there is none the error names
+`im:write` and the other way out — the recipient DMs the bot once, which opens
+the conversation from their side. `HACKS.md` #59 is the whole picture.
+
+Group DMs are opt-in (`include_group_dms`, default false) for the same reason
+from the other end: `mpim:read` is a second scope, and Slack fails the WHOLE
+`types=im,mpim` listing without it. Defaulting it on would turn every DM listing
+into an error on a token that can list one-to-one DMs perfectly well.
+
+### Which tier the tools land in
+
+`slack_send_dm` is a write tool. `slack_get_dm`, `slack_get_dms` and
+`slack_find_user` are read-only, and `slack_get_dm` is built so that stays true:
+it resolves an EXISTING conversation with `conversations.list` rather than
+calling `conversations.open`, which would create one. A read-only tier that
+leaves a new row in someone's sidebar is not read-only. The `slack-readonly`
+slug's allow-list in `infra/strad.staging.yaml` names all three.
 
 ## Re-vendoring
 

@@ -39,7 +39,8 @@ const AS_JSON = process.argv.includes("--json");
 
 /** The mounts, and the tool count each should list at FULL capability. */
 const EXPECT = {
-  slack: 9,
+  slack: 13, // upstream's 9 plus the fork's four DM tools
+
   "serpapi-hotels": 3,
   tailscale: 15,
   "monarch-money": 23,

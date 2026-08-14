@@ -134,7 +134,39 @@ export interface User {
     real_name?: string;
     image_48?: string;
     image_72?: string;
+    /** Only populated when the token holds `users:read.email`. */
+    email?: string;
   };
+}
+
+/** Which field of a member a user search matched on. */
+export type UserMatchField = 'handle' | 'display_name' | 'real_name' | 'email';
+
+export interface UserMatch {
+  user: User;
+  /** 0 = exact, 1 = prefix, 2 = substring. Lower is a better match. */
+  rank: number;
+  field: UserMatchField;
+}
+
+/**
+ * A DM conversation. `is_im` conversations are one-to-one and carry the other
+ * member in `userId`; `is_mpim` group DMs carry a generated `name` instead
+ * (`mpdm-tadas--julie--zimmer-1`) and no single counterpart.
+ */
+export interface DirectMessage {
+  /** The DM channel id — `D…` — which every channel tool here also accepts. */
+  id: string;
+  isGroup: boolean;
+  userId?: string;
+  /** Resolved from `users.list` when the token can read it. */
+  user?: User;
+  /** Group DMs only. */
+  name?: string;
+  created: number;
+  /** Milliseconds since epoch, unlike `created`. Slack's shape, not ours. */
+  updated?: number;
+  isUserDeleted: boolean;
 }
 
 export interface PaginatedResponse<T> {
