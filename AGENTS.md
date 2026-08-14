@@ -114,10 +114,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                             |
 | ---------- | ------------------------------------------------------------------------------------------ |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                         |
-| **10**     | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
-| **17**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
-| **27**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
-| **29**     | total server slugs in staging (27 + the `echo` builtin + the `deepwiki` remote-http)       |
+| **11**     | dependency trees the bundle Dockerfile builds into `/app/trees`                            |
+| **18**     | MCP servers mounted inside the bundle image (`buildMounts()`)                              |
+| **28**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included) |
+| **30**     | total server slugs in staging (28 + the `echo` builtin + the `deepwiki` remote-http)       |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.

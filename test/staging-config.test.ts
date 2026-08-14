@@ -8,7 +8,7 @@ import { renderAppSpec } from "../src/deploy/appspec.ts";
  *
  * Two things are checked here, and they are the two things that would rot:
  *
- *   1. COMPONENT COUNT. 29 servers must render as exactly THREE components —
+ *   1. COMPONENT COUNT. 30 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
  *      the config is a $5-$25/month regression that nobody would otherwise
  *      notice, so the number is pinned rather than merely bounded. The third one
@@ -56,6 +56,7 @@ describe("staging config", () => {
           "TAILSCALE_API_KEY",
           "MONARCH_SESSION_TOKEN",
           "SERPAPI_API_KEY",
+          "PULSEMCP_SUBREGISTRY_API_KEY",
           "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL",
           "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY",
           "GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON",
@@ -94,7 +95,7 @@ describe("staging config", () => {
     // Internal-only: internal_ports and NO http_port (both is an API rejection).
     expect(bundle.internal_ports).toEqual([8080]);
     expect(bundle.http_port).toBeUndefined();
-    // The credentials of all fifteen upstream servers, unioned onto the one box
+    // The credentials of all sixteen upstream servers, unioned onto the one box
     // — and every one of them SECRET-typed, so App Platform encrypts it at rest.
     const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
@@ -104,7 +105,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and seventeen servers now share a
+    // exists for — it is where Chromium, `op` and eighteen servers now share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -176,7 +177,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(27);
+    expect(supplementary.length).toBe(28);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is

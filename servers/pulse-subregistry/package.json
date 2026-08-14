@@ -1,0 +1,14 @@
+{
+  "name": "pulse-subregistry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PulseMCP Sub-Registry browser: lists and fetches MCP server metadata through PulseMCP's registry API. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

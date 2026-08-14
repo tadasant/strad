@@ -16,6 +16,7 @@
 #   servers/pointsyeah      pointsyeah             ┘
 #   servers/x-twitter       X
 #   servers/telegram        telegram               (MTProto, USER session)
+#   servers/pulse-subregistry  pulse-subregistry
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
@@ -121,6 +122,15 @@ RUN npm ci --no-audit --no-fund
 COPY servers/x-twitter/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- pulse-subregistry -------------------------------------------------------
+FROM ${PW} AS build-pulse-subregistry
+WORKDIR /src
+COPY servers/pulse-subregistry/package.json servers/pulse-subregistry/package-lock.json ./
+COPY servers/pulse-subregistry/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/pulse-subregistry/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 FROM ${PW} AS build-goodeggs
 WORKDIR /src
 COPY servers/good-eggs/package.json servers/good-eggs/package-lock.json ./
@@ -196,7 +206,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The ten trees, each with the node_modules it was built against.
+# The eleven trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -207,6 +217,7 @@ COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
+COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 
 # The host: the only new code in this image.
 COPY --from=build-host /src/node_modules /app/host/node_modules

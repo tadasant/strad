@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * The collapsed bundle is ONE image assembled from TEN existing npm projects —
+ * The collapsed bundle is ONE image assembled from ELEVEN existing npm projects —
  * bundle-api, bundle-google, onepassword, secrets, remote-filesystem, good-eggs,
- * fetchpet, pointsyeah, x-twitter, telegram — each of which is copied in, installed and built exactly
+ * fetchpet, pointsyeah, x-twitter, telegram, pulse-subregistry — each of which is copied in, installed and built exactly
  * as its own image builds it, keeping its own `node_modules` and its own lockfile.
  *
  * WHY NOT ONE FLAT npm PROJECT. Because merging ten dependency trees into one
@@ -33,7 +33,8 @@ export type TreeName =
   | "fetchpet"
   | "pointsyeah"
   | "x-twitter"
-  | "telegram";
+  | "telegram"
+  | "pulse-subregistry";
 
 export function treeDir(tree: TreeName): string {
   return join(TREES_DIR, tree);
