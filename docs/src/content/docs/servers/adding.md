@@ -121,6 +121,37 @@ required SECRET; an unresolved `${…}` makes render fail loudly rather than let
 the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (see
 [Operations & CI](/operate/operations/#seeding-secrets)).
 
+## 4a. If the secret is not seeded yet, ship the entry `enabled: false`
+
+Declaring the server and seeding its credential are two steps, and a PR can only
+do the first. The render is **all or nothing** — one `${NAME}` the store does not
+hold exits `render-spec` with an error and no spec at all — so an entry merged
+ahead of its secret does not merely degrade its own slug. It stops the deploy for
+every other server in the file, on `main`, until someone notices.
+
+So an entry whose credential is not in the store yet lands disabled:
+
+```yaml
+- slug: pulse-subregistry
+  kind: supplementary-image
+  # ...
+  enabled: false # until PULSEMCP_SUBREGISTRY_API_KEY is in the store
+  env:
+    PULSEMCP_SUBREGISTRY_API_KEY: "${PULSEMCP_SUBREGISTRY_API_KEY}"
+```
+
+`enabled: false` is skipped everywhere it matters: `render-spec` never demands the
+name, the registry never mounts the slug, and the front door never lists it. The
+mount is still in the image and the entry still documents itself, so turning the
+server on later is a one-line diff and a redeploy.
+
+`test/staging-config.test.ts` holds the staging config to a **provisioning
+ledger** — `PROVISIONED_STATICS`, the names staging's store actually holds. An
+enabled entry referencing a name that is not on it fails CI, which is the cheap
+version of the failure; the expensive version is a red `main` and a blocked
+deploy. Adding a server enabled means seeding the secret **and** adding its name
+there, in the same PR.
+
 ## 4b. A credential the AGENT must not hold — `consoleEnv:`
 
 `env:` on a `supplementary-image` lands on the **container that answers `/mcp`**.
@@ -221,16 +252,17 @@ does not surface them.
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
-once. It declares twenty-nine server slugs: a core builtin (`echo`), a
+once. It declares thirty server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
-and twenty-seven `supplementary-image` entries — twenty-six sharing ONE bundle
-over the private network, which resolve onto the bundle image's seventeen mounts
-because every read-only / read-write pair is two entries on one path. One of
+and twenty-eight `supplementary-image` entries — twenty-seven sharing ONE bundle
+over the private network, which resolve onto seventeen of the bundle image's
+eighteen mounts because every read-only / read-write pair is two entries on one
+path. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
 credentials from step 4b, and `remote-filesystem-tmp-public` is the deploy-time
 `params: true` example from step 4c — `echo` is the runtime one.
 
-The twenty-fifth, `zimmer-secrets`, is the worked example for the one case where a
+The twenty-eighth, `zimmer-secrets`, is the worked example for the one case where a
 second **bundle** is the answer rather than a second `path`: it is the same image
 and the same `path: /secrets` as `secrets`, differing only in `bundle:` and in
 which store it points at. [Two stores, one

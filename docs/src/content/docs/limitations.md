@@ -273,11 +273,11 @@ enum grows its second value there. See
 
 ## The deployment
 
-### 24. Seventeen servers share one process and one CPU
+### 24. Eighteen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts seventeen MCP servers and
+The `bundle` component runs one Node process that mounts eighteen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-seventeen down together, and Chromium contends with every other server for the single
+eighteen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -374,7 +374,7 @@ nothing in the deployment said so.
 
 The core had an immutable tag to reach for and was already a render-time argument.
 The bundle's tag is a config value, which is why it took a `--bundle-image` the
-deploy always passes rather than editing 27 `image:` lines per release.
+deploy always passes rather than editing 28 `image:` lines per release.
 
 **What also detects it:** not the tag, the consequence. Core probes each slug's
 `tools/list` on an interval and publishes the slugs serving nothing on
@@ -1333,7 +1333,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is ten dependency trees. Isolation costs a
+than the longest — the bundle alone is eleven dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -1359,28 +1359,31 @@ only function that imports the library. Everything above it drives a structural
 interface the tests implement directly, so the swap is that function, its imports
 and one dependency line — no session re-mint, no change to any tool.
 
-### 50. The telegram slugs ship disabled until their secrets are seeded
+### 50. Three slugs ship disabled until their secrets are seeded
 
-`telegram-ro` and `telegram-rw` sit in `infra/strad.staging.yaml` with
-`enabled: false`. The mount is in the bundle image and the process registers it
+`telegram-ro`, `telegram-rw` and `pulse-subregistry` sit in
+`infra/strad.staging.yaml` with `enabled: false`. The mount is in the bundle image and the process registers it
 either way — the bundle's own internal `/healthz` lists it, degraded — but no slug
 routes to it.
 
 **Why:** `render-spec` resolves every `${NAME}` from GCP Secret Manager and fails
 the deploy on one it cannot find, deliberately. A server whose credentials do not
 exist yet therefore cannot ship enabled; `enabled: false` is skipped at render, so
-the three unseeded refs cost nothing.
+the four unseeded refs cost nothing. The render is also all-or-nothing — one spec,
+so one unseeded name stops the deploy for every other slug, which is what
+`pulse-subregistry` did to `main` on 2026-08-14 before it was gated.
 
 **Cost:** a disabled server is invisible where anyone would look — absent from the
 gateway's `/healthz` and from the console, and `?servers=telegram-ro` is a 424.
 Only the bundle's internal health route, which nothing outside the app can reach,
 shows the mount at all.
 
-**Undo:** seed `strad-staging-TELEGRAM_API_ID`, `-TELEGRAM_API_HASH` and
-`-TELEGRAM_STRING_SESSION` via `secrets-sync.yml`, then delete the two `enabled:`
-lines.
+**Undo:** per slug, seed the names it references — the three `TELEGRAM_*` values
+for the telegram pair, `PULSEMCP_SUBREGISTRY_API_KEY` for `pulse-subregistry` —
+then delete that entry's `enabled:` line and add each seeded name to
+`PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only two of the ten trees can read one
+### 56. Per-slug variable names are emitted for every server; only two of the eleven trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's

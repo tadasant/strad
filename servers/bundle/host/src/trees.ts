@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
  * fetchpet, pointsyeah, x-twitter, telegram, pulse-subregistry — each of which is copied in, installed and built exactly
  * as its own image builds it, keeping its own `node_modules` and its own lockfile.
  *
- * WHY NOT ONE FLAT npm PROJECT. Because merging ten dependency trees into one
+ * WHY NOT ONE FLAT npm PROJECT. Because merging eleven dependency trees into one
  * is how you find out, in production, that fetchpet pinned playwright-extra and
  * bundle-google pinned express 4 and someone's transitive zod moved. Each tree
  * stays byte-for-byte the tree its own CI already proves; this host just imports
@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
  * is deliberate: three browsers on one vCPU is the thing we are trying not to do.
  */
 
-/** Where the Dockerfile lays the ten trees down. */
+/** Where the Dockerfile lays the eleven trees down. */
 export const TREES_DIR = process.env.STRAD_TREES_DIR ?? "/app/trees";
 
 export type TreeName =

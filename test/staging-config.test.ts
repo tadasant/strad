@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
+import { bakedSecretNames } from "../src/deploy/preflight.ts";
 
 /**
  * The staging config is the proof that the collapse actually collapsed.
  *
- * Two things are checked here, and they are the two things that would rot:
+ * Three things are checked here, and they are the three that would rot:
  *
  *   1. COMPONENT COUNT. 30 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
@@ -23,6 +24,10 @@ import { renderAppSpec } from "../src/deploy/appspec.ts";
  *      ones the old per-container `*_ENABLED_TOOLGROUPS` produced — that is the
  *      whole point: the counts did not change, only who enforces them.
  *
+ *   3. THE STATICS THE DEPLOY DEMANDS. Every `${NAME}` an ENABLED entry
+ *      references is a name `render-spec` must resolve or the deploy dies —
+ *      see PROVISIONED_STATICS below.
+ *
  * The FULL (un-policied) counts are asserted where they can only honestly be
  * asserted — against the real running image, by servers/bundle/scripts/smoke.mjs,
  * which CI runs on the built container.
@@ -35,7 +40,68 @@ const CONFIG = parseConfig(
 
 const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
 
+/**
+ * THE PROVISIONING LEDGER: every `${NAME}` an ENABLED entry references, and
+ * therefore every name a staging deploy must be able to resolve.
+ *
+ * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
+ * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
+ * not degrade one slug — it fails the spec and takes all thirty down. That is
+ * the fail-loud property the store-backed deploy is built around, and it is
+ * worth keeping; what it costs is that "declare the server" and "seed the
+ * secret" are one atomic step, and a PR can only do the first half.
+ *
+ * So the second half is written down here. A name belongs on this list once it
+ * is actually set in `/strad/staging/gateway/static/` (or the referencing
+ * server's own `/strad/staging/mcp/<slug>/static/`). Adding a server whose
+ * credential is not seeded yet means shipping it `enabled: false` — the
+ * telegram and pulse-subregistry entries are exactly that — and NOT adding the
+ * name here. The assertion below is what makes the two halves disagree loudly,
+ * in CI, instead of quietly, in the deploy that runs after the merge.
+ */
+const PROVISIONED_STATICS = [
+  "FETCHPET_PASSWORD",
+  "FETCHPET_USERNAME",
+  "GCAL_IMPERSONATE_EMAIL",
+  "GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON",
+  "GMAIL_IMPERSONATE_EMAIL",
+  "GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL",
+  "GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY",
+  "GOODEGGS_EMAIL",
+  "GOODEGGS_PASSWORD",
+  "GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL",
+  "GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY",
+  "GOOGLE_DOCS_IMPERSONATE_EMAIL",
+  "GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL",
+  "GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY",
+  "MONARCH_SESSION_TOKEN",
+  "OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW",
+  "POINTSYEAH_REFRESH_TOKEN",
+  "SECRETS_ADMIN_KEY_JSON",
+  "SECRETS_VIEWER_KEY_JSON",
+  "SERPAPI_API_KEY",
+  "SLACK_BOT_TOKEN",
+  "TAILSCALE_API_KEY",
+  "ZIMMER_SECRETS_ADMIN_KEY_JSON",
+  "ZIMMER_SECRETS_VIEWER_KEY_JSON",
+];
+
 describe("staging config", () => {
+  it("references no static that staging has not been seeded with", () => {
+    // `bakedSecretNames` is the SAME function scripts/render-spec.ts derives its
+    // `wanted` list from, so this compares the ledger against the deploy's own
+    // demand rather than against a re-implementation of it. Both sides are
+    // sorted; a diff names the offending variable.
+    //
+    // Two ways to fail, and the fix differs:
+    //   - a name in the config, not in the ledger — the case that reddened
+    //     `main` on 2026-08-14 (pulse-subregistry, run 31798910011). Either seed
+    //     it and add it here, or ship the entry `enabled: false`.
+    //   - a name in the ledger, not in the config — a stale entry, or a server
+    //     that was disabled. Delete the line.
+    expect(bakedSecretNames(CONFIG)).toEqual(PROVISIONED_STATICS);
+  });
+
   it("renders exactly THREE components: core + bundle + the second store", () => {
     const spec = renderAppSpec({
       config: CONFIG,
@@ -48,39 +114,13 @@ describe("staging config", () => {
         tag: "latest",
       },
       env: [],
-      // Every ${REF} in a supplementary env map, resolved — appspec fails closed
-      // on an unresolved one, and this test is not the place to prove that.
+      // The ledger, resolved — which is exactly what a deploy has to hand this
+      // function, and one more reason the assertion above is worth having: this
+      // render is only a proof of the topology if the two lists cannot drift.
+      // appspec fails closed on an unresolved ref, and this test is not the
+      // place to prove that.
       secrets: Object.fromEntries(
-        [
-          "SLACK_BOT_TOKEN",
-          "TAILSCALE_API_KEY",
-          "MONARCH_SESSION_TOKEN",
-          "SERPAPI_API_KEY",
-          "PULSEMCP_SUBREGISTRY_API_KEY",
-          "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL",
-          "REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY",
-          "GCS_PULSEMCP_SERVICE_ACCOUNT_KEY_JSON",
-          "GMAIL_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL",
-          "GMAIL_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY",
-          "GMAIL_IMPERSONATE_EMAIL",
-          "GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL",
-          "GOOGLE_DOCS_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY",
-          "GOOGLE_DOCS_IMPERSONATE_EMAIL",
-          "GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_CLIENT_EMAIL",
-          "GOOGLE_CALENDAR_TADAS_SERVICE_ACCOUNT_PRIVATE_KEY",
-          "GCAL_IMPERSONATE_EMAIL",
-          "OP_SERVICE_ACCOUNT_TOKEN_TADAS_RW",
-          "GOODEGGS_EMAIL",
-          "GOODEGGS_PASSWORD",
-          "FETCHPET_USERNAME",
-          "FETCHPET_PASSWORD",
-          "POINTSYEAH_REFRESH_TOKEN",
-          "SECRETS_PROJECT_ID",
-          "SECRETS_VIEWER_KEY_JSON",
-          "SECRETS_ADMIN_KEY_JSON",
-          "ZIMMER_SECRETS_VIEWER_KEY_JSON",
-          "ZIMMER_SECRETS_ADMIN_KEY_JSON",
-        ].map((name) => [name, "x"]),
+        PROVISIONED_STATICS.map((name) => [name, "x"]),
       ),
     });
 

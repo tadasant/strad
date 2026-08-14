@@ -391,7 +391,7 @@ below for the move that publishes one.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — twelve entries: the ten trees
+`release-bundle-image.yml` has a `paths:` filter — thirteen entries: the eleven trees
 the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
 commits cut no bundle image and stepping past them is the normal case, not an
 exception. `--kind bundle` reads that filter out of
@@ -418,7 +418,7 @@ slug PR #33 had renamed it away from a week earlier. Core POSTed `initialize` to
 `/secrets`, Express answered 404, and the gateway turned a dead upstream into an
 empty tool list.
 
-`strad-bundle:latest` is written into all 27 `supplementary-image` entries, so
+`strad-bundle:latest` is written into all 28 `supplementary-image` entries, so
 those components' image block was byte-identical on every deploy and App Platform
 kept serving the digest it had resolved for that tag once —
 `sha256:6bb4e861…` on every `main` deploy for days, including one that had
@@ -808,18 +808,20 @@ actionlint and all. `test/workflow-buildx-builder.test.ts` is what covers it: no
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all three server kinds so the deploy path is proven end-to-end. It
-declares twenty-nine server slugs:
+declares thirty server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
-- twenty-six `supplementary-image` entries on the one `bundle` component running
-  `ghcr.io/tadasant/strad-bundle`. They land on the bundle image's seventeen mounts,
-  because a read-only and a read-write variant of one upstream are two entries
-  sharing one `path`. Two of them — `telegram-ro` and `telegram-rw` — carry
-  `enabled: false` until their secrets are seeded, so they are skipped at render;
-  see [Telegram](/servers/telegram/#not-configured-is-a-supported-state).
-- `zimmer-secrets` — a twenty-seventh `supplementary-image` entry, running that same
+- twenty-seven `supplementary-image` entries on the one `bundle` component running
+  `ghcr.io/tadasant/strad-bundle`. They land on seventeen of the bundle image's
+  eighteen mounts, because a read-only and a read-write variant of one upstream
+  are two entries sharing one `path`. Three of them — `telegram-ro`,
+  `telegram-rw` and `pulse-subregistry` — carry `enabled: false` until their
+  secrets are seeded, so they are skipped at render; see
+  [Telegram](/servers/telegram/#not-configured-is-a-supported-state) and
+  [A server whose secret is not seeded yet](#a-server-whose-secret-is-not-seeded-yet).
+- `zimmer-secrets` — a twenty-eighth `supplementary-image` entry, running that same
   image on its **own** component, `bundle-zimmer-secrets`. It is the only server
   that leaves the one bundle, and the only reason to leave it: a parameter store is
   `process.env`. See [Two stores, one
@@ -879,6 +881,28 @@ component appearing there is a billed regression, which is why the list is pinne
 rather than counted. `test/staging-config.multi-store.test.ts` is the guard on the
 second store specifically: which project, namespace and credential land on which
 component, and which admin identity each console page resolves to.
+
+### A server whose secret is not seeded yet
+
+The render fails closed on a `${NAME}` the store does not hold, and it fails the
+**whole spec** — `render-spec` exits 1 and `deploy-staging` never reaches
+`doctl`. That is the property worth having (a half-authenticated gateway is worse
+than no deploy), and its cost is an ordering rule: **the secret is seeded before
+the entry ships enabled.**
+
+A PR cannot seed a secret — staging's store is written by a human in the console,
+at `/ui/secrets` — so an entry that arrives ahead of its credential lands
+`enabled: false` and is turned on afterwards in a one-line diff. `telegram-ro`,
+`telegram-rw` and `pulse-subregistry` are all in that state.
+
+Merging one enabled instead is not a partial outage, it is a full stop: on
+2026-08-14, `pulse-subregistry` landed with an unseeded
+`PULSEMCP_SUBREGISTRY_API_KEY` and the next `Release image` run on `main` failed
+at "Render the App Platform spec", blocking staging for **all thirty** slugs. The
+guard is `PROVISIONED_STATICS` in `test/staging-config.test.ts`: the names
+staging's store holds, asserted against `bakedSecretNames()` — the same function
+`render-spec` derives its demand from. An enabled entry naming anything else
+fails CI on the PR rather than the deploy after it.
 
 ## Health and console surface
 

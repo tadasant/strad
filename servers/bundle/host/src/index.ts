@@ -1101,7 +1101,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of seventeen servers must not kill the other
+  // One stray rejection from one of eighteen servers must not kill the other
   // fifteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
