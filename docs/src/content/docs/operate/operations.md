@@ -391,7 +391,7 @@ below for the move that publishes one.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — twelve entries: the ten trees
+`release-bundle-image.yml` has a `paths:` filter — thirteen entries: the eleven trees
 the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
 commits cut no bundle image and stepping past them is the normal case, not an
 exception. `--kind bundle` reads that filter out of
@@ -418,7 +418,7 @@ slug PR #33 had renamed it away from a week earlier. Core POSTed `initialize` to
 `/secrets`, Express answered 404, and the gateway turned a dead upstream into an
 empty tool list.
 
-`strad-bundle:latest` is written into all 27 `supplementary-image` entries, so
+`strad-bundle:latest` is written into all 28 `supplementary-image` entries, so
 those components' image block was byte-identical on every deploy and App Platform
 kept serving the digest it had resolved for that tag once —
 `sha256:6bb4e861…` on every `main` deploy for days, including one that had
