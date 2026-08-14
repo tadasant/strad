@@ -1,7 +1,7 @@
 {
   "name": "slack-workspace-mcp-server-shared",
   "version": "0.0.1",
-  "description": "strad's fork of the Slack MCP server: pulsemcp/mcp-servers experimental/slack, plus the Slack-mrkdwn-is-not-Markdown delta. See FORK.md.",
+  "description": "strad's fork of the Slack MCP server: pulsemcp/mcp-servers experimental/slack, plus the Slack-mrkdwn-is-not-Markdown delta and four direct-message tools. See FORK.md.",
   "main": "build/index.js",
   "type": "module",
   "scripts": {

@@ -129,6 +129,8 @@ export interface User {
   display_name?: string;
   is_bot: boolean;
   is_admin?: boolean;
+  /** Deactivated. `users.info` and `users.lookupByEmail` still return these. */
+  deleted?: boolean;
   profile?: {
     display_name?: string;
     real_name?: string;
@@ -139,14 +141,43 @@ export interface User {
   };
 }
 
-/** Which field of a member a user search matched on. */
-export type UserMatchField = 'handle' | 'display_name' | 'real_name' | 'email';
+/**
+ * Which field of a member a user search matched on, most identifying first.
+ * The ORDER is load-bearing: it breaks a tie between two users whose matches
+ * rank equally, so a handle hit beats a real-name hit rather than whichever
+ * happened to sort first.
+ */
+export const USER_MATCH_FIELDS = ['handle', 'display_name', 'real_name', 'email'] as const;
+
+export type UserMatchField = (typeof USER_MATCH_FIELDS)[number];
 
 export interface UserMatch {
   user: User;
   /** 0 = exact, 1 = prefix, 2 = substring. Lower is a better match. */
   rank: number;
   field: UserMatchField;
+}
+
+/**
+ * A directory read, with whether it saw the whole directory.
+ *
+ * `truncated` is not a detail: "exactly one member matched" is only a promise
+ * about the pages that were fetched, and a caller about to send a private
+ * message to that one member needs to know which of the two it got.
+ */
+export interface UserDirectory {
+  users: User[];
+  truncated: boolean;
+}
+
+export interface UserSearch {
+  matches: UserMatch[];
+  truncated: boolean;
+}
+
+export interface DmList {
+  dms: DirectMessage[];
+  truncated: boolean;
 }
 
 /**

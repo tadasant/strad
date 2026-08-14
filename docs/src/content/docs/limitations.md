@@ -1129,13 +1129,13 @@ allow-list back to four, in both `infra/strad.staging.yaml` and
 The slack fork's four DM tools (#55) call five Slack methods the nine channel
 tools never touch, and each one is gated on its own OAuth scope:
 
-| Call                               | Scope                   | Used by                                                         |
-| ---------------------------------- | ----------------------- | --------------------------------------------------------------- |
-| `conversations.open`               | `im:write`              | `slack_send_dm`                                                 |
-| `conversations.list?types=im`      | `im:read`               | `slack_get_dms`, `slack_get_dm`, and `slack_send_dm`'s fallback |
-| `conversations.list?types=im,mpim` | `mpim:read` **as well** | `slack_get_dms` with `include_group_dms: true`                  |
-| `users.list` / `users.info`        | `users:read`            | `slack_find_user`, and any recipient not named by ID            |
-| `users.lookupByEmail`              | `users:read.email`      | naming a recipient by email address                             |
+| Call                               | Scope                   | Used by                                                                                                |
+| ---------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `conversations.open`               | `im:write`              | `slack_send_dm`                                                                                        |
+| `conversations.list?types=im`      | `im:read`               | `slack_get_dms`, `slack_get_dm`, and `slack_send_dm`'s fallback                                        |
+| `conversations.list?types=im,mpim` | `mpim:read` **as well** | `slack_get_dms` with `include_group_dms: true`                                                         |
+| `users.list` / `users.info`        | `users:read`            | `slack_find_user`, resolving any recipient not named by ID, and confirming the name behind one that is |
+| `users.lookupByEmail`              | `users:read.email`      | naming a recipient by email address                                                                    |
 
 Posting into a `D…` channel needs only the `chat:write` the server already had,
 and reading one needs `im:history`.

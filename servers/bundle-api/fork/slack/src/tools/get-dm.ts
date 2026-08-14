@@ -26,7 +26,7 @@ export const GetDmSchema = z
       .describe(PARAM_DESCRIPTIONS.message_limit),
   })
   .superRefine((value, ctx) => {
-    if (!value.user === !value.channel_id) {
+    if ((value.user === undefined) === (value.channel_id === undefined)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
@@ -89,7 +89,7 @@ export function getDmTool(server: Server, clientFactory: ClientFactory) {
         const client = clientFactory();
 
         let channelId = parsed.channel_id;
-        let heading = `# DM ${channelId}`;
+        let heading = '# DM';
 
         if (parsed.user !== undefined) {
           const recipient = await resolveUser(client, parsed.user);

@@ -1,4 +1,5 @@
 import type { ISlackClient } from '../server.js';
+import { compareMatches, equallyGood } from '../slack-client/lib/find-users.js';
 import type { User, UserMatch } from '../types.js';
 
 /**
@@ -8,7 +9,7 @@ import type { User, UserMatch } from '../types.js';
  * has lying around; a name is what the agent has and is not unique. So one
  * parameter takes all three forms and the AMBIGUITY, not the lookup, is what
  * gets surfaced: an identifier matching two people is an error listing both with
- * their ids, never a message delivered to whichever sorted first.
+ * their IDs, never a message delivered to whichever sorted first.
  */
 export const USER_PARAM_GUIDANCE =
   'The recipient. Accepts any of: a Slack user ID ("U0BFTSUN8MD" — exact and ' +
@@ -16,13 +17,26 @@ export const USER_PARAM_GUIDANCE =
   'users:read.email scope), a handle with or without the "@" ("@tadas"), or a ' +
   'display or real name ("Tadas Antanavicius"). Names are matched case-' +
   'insensitively, exact matches beat prefixes beat substrings, and an identifier ' +
-  'that matches more than one person is an ERROR listing the candidates rather ' +
-  'than a guess — re-run with the user ID of the one you meant. ' +
+  'that matches more than one person equally well is an ERROR listing the ' +
+  'candidates rather than a guess — re-run with the user ID of the one you meant. ' +
   'Use slack_find_user to search for an ID first if you are unsure.';
 
-/** Slack member ids are `U…`; enterprise-grid accounts are `W…`. */
-const USER_ID = /^[UW][A-Z0-9]{2,}$/i;
+/**
+ * Slack member ids: `U…` for a normal account, `W…` on enterprise grid, and at
+ * least eight characters after the prefix.
+ *
+ * Case-sensitive and length-bounded on purpose. A loose `/^[UW][A-Z0-9]{2,}$/i`
+ * also matches "will", "wes" and "una" — ordinary handles the tool description
+ * invites — and routes them down the id path, where they resolve to a fabricated
+ * id and fail at the send with a Slack error naming nothing the caller wrote.
+ */
+const USER_ID = /^[UW][A-Z0-9]{7,}$/;
 const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/** Shared with `slack_find_user`, so one rule decides what an address is. */
+export function looksLikeEmail(value: string): boolean {
+  return EMAIL.test(value.trim());
+}
 
 const MAX_CANDIDATES = 5;
 
@@ -30,10 +44,11 @@ export interface ResolvedUser {
   id: string;
   /** "Tadas Antanavicius (@tadas, U0BFTSUN8MD)" — what a result line should say. */
   label: string;
+  /** Absent when the directory could not confirm the id. The label says so too. */
   user?: User;
 }
 
-/** A recipient that could not be turned into exactly one user id. */
+/** A recipient that could not be turned into exactly one live user id. */
 export class UserResolutionError extends Error {
   constructor(message: string) {
     super(message);
@@ -49,31 +64,47 @@ export function userLabel(user: User): string {
 }
 
 function describe(matches: UserMatch[]): string {
-  const shown = matches.slice(0, MAX_CANDIDATES).map((m) => `${userLabel(m.user)} — matched on ${m.field}`);
+  const shown = matches
+    .slice(0, MAX_CANDIDATES)
+    .map((m) => `${userLabel(m.user)} — matched on ${m.field}`);
   const rest = matches.length - shown.length;
   return shown.join('; ') + (rest > 0 ? `; and ${rest} more` : '');
+}
+
+function refuseDeactivated(user: User, identifier: string): void {
+  if (user.deleted) {
+    throw new UserResolutionError(
+      `${userLabel(user)} is a deactivated account and cannot receive a DM ` +
+        `(resolved from "${identifier}").`
+    );
+  }
 }
 
 /**
  * Turns whatever a caller wrote into exactly one user id, or explains why it
  * could not.
  */
-export async function resolveUser(
-  client: ISlackClient,
-  identifier: string
-): Promise<ResolvedUser> {
+export async function resolveUser(client: ISlackClient, identifier: string): Promise<ResolvedUser> {
   const raw = identifier.trim();
 
   if (USER_ID.test(raw)) {
-    const id = raw.toUpperCase();
+    let user: User;
     try {
-      const user = await client.getUser(id);
-      return { id, label: userLabel(user), user };
-    } catch {
-      // users:read may be absent, or the id may be a bot/app id. Neither stops a
-      // DM from being addressed — it only costs the confirmation of who it is.
-      return { id, label: id };
+      user = await client.getUser(raw);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A real "no such user" is the caller's problem and must not be dressed up
+      // as a successful resolution; anything else (users:read missing, a
+      // transport blip) only costs the confirmation, not the delivery.
+      if (/user_not_found/.test(message)) {
+        throw new UserResolutionError(
+          `No workspace member has the ID "${raw}". Use slack_find_user to search by name.`
+        );
+      }
+      return { id: raw, label: `${raw} — identity UNVERIFIED, the user directory could not be read` };
     }
+    refuseDeactivated(user, raw);
+    return { id: user.id, label: userLabel(user), user };
   }
 
   if (EMAIL.test(raw)) {
@@ -85,26 +116,53 @@ export async function resolveUser(
           'slack_find_user by name or handle instead.'
       );
     }
+    refuseDeactivated(user, raw);
     return { id: user.id, label: userLabel(user), user };
   }
 
-  const matches = await client.findUsers(raw);
+  const { matches, truncated } = await client.findUsers(raw);
 
   if (matches.length === 0) {
     throw new UserResolutionError(
-      `No workspace member matches "${raw}". Try slack_find_user with a shorter query, ` +
-        'or pass the user ID directly.'
+      `No workspace member matches "${raw}"${
+        truncated ? ', though the directory listing was cut off before the end' : ''
+      }. Try slack_find_user with a shorter query, or pass the user ID directly.`
     );
   }
 
-  const best = matches.filter((m) => m.rank === matches[0].rank);
+  // findUsers already sorts, but a client implementation is not obliged to.
+  const ordered = [...matches].sort(compareMatches);
+  const best = ordered[0];
 
-  if (best.length > 1) {
+  // What counts as a rival depends on how strong the win is.
+  //
+  // An EXACT hit is a real claim to be the person named, so the field decides
+  // between two of them: an exact handle beats an exact real name, and only
+  // another exact hit on the SAME field is a tie.
+  //
+  // A prefix or substring hit is not a claim, it is a coincidence of letters.
+  // "ann" prefixes the handle `annoy-bot` and the real name "Ann Smith" alike,
+  // and preferring the handle there would DM a bot on a technicality. So at
+  // rank 1 or 2 any equally-close candidate is a rival, whatever it matched on.
+  const rivals = ordered
+    .slice(1)
+    .filter((m) => (best.rank === 0 ? equallyGood(m, best) : m.rank === best.rank));
+
+  if (rivals.length > 0) {
+    const tied = [best, ...rivals];
     throw new UserResolutionError(
-      `"${raw}" matches ${best.length} workspace members: ${describe(best)}. ` +
+      `"${raw}" matches ${tied.length} workspace members equally well: ${describe(tied)}. ` +
         'Re-run with the user ID of the one you meant.'
     );
   }
 
-  return { id: best[0].user.id, label: userLabel(best[0].user), user: best[0].user };
+  if (truncated && best.rank !== 0) {
+    throw new UserResolutionError(
+      `"${raw}" matched ${userLabel(best.user)}, but only ${ordered.length === 1 ? 'a part' : 'part'} ` +
+        'of the workspace directory was read before this tool hit its page cap — another ' +
+        'member could match it better. Re-run with a user ID, or with an exact handle.'
+    );
+  }
+
+  return { id: best.user.id, label: userLabel(best.user), user: best.user };
 }

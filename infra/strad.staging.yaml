@@ -285,6 +285,13 @@ servers:
         - slack_download_file
         # The DM reads. `slack_get_dm` resolves an EXISTING conversation rather
         # than calling conversations.open, so nothing here creates anything.
+        #
+        # Note what this tier can now SEE, which is the axis the read-only/
+        # read-write split says nothing about: the whole workspace directory
+        # (`slack_find_user`, including profile emails where the scope is
+        # present) and every private conversation the bot is part of. That is a
+        # deliberate widening — a read tool that cannot find a user is not much
+        # of a read tool — but it is a widening.
         - slack_get_dms
         - slack_get_dm
         - slack_find_user

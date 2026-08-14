@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import type { UserMatch } from '../types.js';
-import { userLabel } from './resolve-user.js';
+import { looksLikeEmail, userLabel } from './resolve-user.js';
 
 const PARAM_DESCRIPTIONS = {
   query:
@@ -17,8 +17,6 @@ export const FindUserSchema = z.object({
   query: z.string().min(1).describe(PARAM_DESCRIPTIONS.query),
   limit: z.number().min(1).max(50).default(10).describe(PARAM_DESCRIPTIONS.limit),
 });
-
-const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 const MATCH_QUALITY: Record<number, string> = {
   0: 'exact',
@@ -81,11 +79,12 @@ export function findUserTool(server: Server, clientFactory: ClientFactory) {
         // An email is exact by construction, and users.lookupByEmail answers it in
         // one call instead of a full directory scan.
         let matches: UserMatch[];
-        if (EMAIL.test(query)) {
+        let truncated = false;
+        if (looksLikeEmail(query)) {
           const user = await client.lookupUserByEmail(query);
           matches = user ? [{ user, rank: 0, field: 'email' }] : [];
         } else {
-          matches = await client.findUsers(query);
+          ({ matches, truncated } = await client.findUsers(query));
         }
 
         if (matches.length === 0) {
@@ -114,12 +113,19 @@ export function findUserTool(server: Server, clientFactory: ClientFactory) {
             ? `\n\n_${matches.length - shown.length} more match(es). Narrow the query or raise limit._`
             : '';
 
+        // Say it out loud: a search over part of a directory cannot promise that
+        // the person it did not read is not the better match.
+        const capped = truncated
+          ? '\n\n⚠️ The workspace directory was larger than this tool reads in one search, so ' +
+            'these are the matches from the part it saw. Another member may match better.'
+          : '';
+
         return {
           content: [
             {
               type: 'text',
               text:
-                `Found ${matches.length} member(s) matching "${query}":\n\n${list}${more}\n\n` +
+                `Found ${matches.length} member(s) matching "${query}":\n\n${list}${more}${capped}\n\n` +
                 'Pass a user ID to slack_send_dm or slack_get_dm to address one of them.',
             },
           ],

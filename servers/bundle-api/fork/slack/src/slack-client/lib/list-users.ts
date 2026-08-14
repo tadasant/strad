@@ -1,4 +1,4 @@
-import type { User } from '../../types.js';
+import type { User, UserDirectory } from '../../types.js';
 import { slackApiError } from './slack-error.js';
 
 interface UsersListResponse {
@@ -24,16 +24,22 @@ const PAGE_SIZE = 200;
 const MAX_PAGES = 10;
 
 /**
- * Lists the workspace's active members.
+ * Lists the workspace's active members, and says whether it saw all of them.
  *
  * Deleted accounts are dropped: they cannot receive a DM, and leaving them in
  * makes a departed colleague's handle resolve to a channel nobody reads.
+ *
+ * `truncated` is returned rather than swallowed because the caller's question is
+ * "is this the only match", and a scan that stopped at the page cap cannot
+ * answer it. A silent cap turns "exactly one member matched" into "exactly one
+ * member matched on the pages I happened to read", which is the same sentence
+ * right up until it delivers a private message to the wrong person.
  */
 export async function listUsers(
   baseUrl: string,
   headers: Record<string, string>,
   options?: { maxPages?: number }
-): Promise<User[]> {
+): Promise<UserDirectory> {
   const users: User[] = [];
   const maxPages = options?.maxPages ?? MAX_PAGES;
   let cursor: string | undefined;
@@ -70,5 +76,5 @@ export async function listUsers(
     page += 1;
   } while (cursor && page < maxPages);
 
-  return users;
+  return { users, truncated: cursor !== undefined };
 }

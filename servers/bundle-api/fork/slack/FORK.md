@@ -16,7 +16,7 @@ v0.0.7. At that commit the vendored copy was byte-identical to upstream.
 Two reasons, in the order they arrived: the message format upstream describes
 wrongly, and the conversation type upstream cannot address at all.
 
-## 1. mrkdwn is not Markdown
+### 1. mrkdwn is not Markdown
 
 Slack's message format is **mrkdwn**, and mrkdwn is not Markdown. It shares
 punctuation with Markdown and disagrees about what the punctuation means. The
@@ -40,7 +40,7 @@ change can fix that, so it is worth having upstream too; it is not worth waiting
 for, because the fix has to reach a running server, and this repo owns the one
 Tadas's sessions will talk to.
 
-### The mrkdwn delta
+#### The mrkdwn delta
 
 Four files, plus one new module. No tool is renamed and none is removed.
 
@@ -55,7 +55,7 @@ Four files, plus one new module. No tool is renamed and none is removed.
 `test/mrkdwn.test.mjs` pins all of it, including the parts a careless re-vendor
 would revert.
 
-### Advise, never rewrite
+#### Advise, never rewrite
 
 The server does **not** escape or rewrite the caller's text, and a test asserts
 that the bytes handed to `chat.postMessage` are the bytes the caller passed.
@@ -87,7 +87,7 @@ one character-for-character.
 An advisory is the only in-band signal available: the message has already
 posted, which is the whole shape of the failure.
 
-### What the linter deliberately does not report
+#### What the linter deliberately does not report
 
 - **Underscore italics.** `_` pairs the way `~` does, so `snake_case_name` really
   can come out italicised. But identifiers, paths and filenames carry underscores
@@ -97,7 +97,7 @@ posted, which is the whole shape of the failure.
   inline delimiters, so a tilde in there is literal. Two tildes separated *only*
   by a code span still pair up, and still get reported.
 
-## 2. Upstream cannot address a person
+### 2. Upstream cannot address a person
 
 Upstream posts to a channel and replies in a thread. It has no tool that opens or
 addresses a DM, so "tell Tadas his Claude account needs re-authenticating" had
@@ -111,7 +111,7 @@ tools would be the faithful translation and the worse surface — a two-step dan
 around an intermediate id, for one message. So `slack_send_dm` takes a person and
 some text, and the open is an implementation detail.
 
-### The DM delta
+#### The DM delta
 
 Four tools added, one shared resolver, six client functions. Upstream's nine
 tools are untouched.
@@ -129,25 +129,53 @@ tools are untouched.
 
 `test/dm.test.mjs` pins it.
 
-### Naming a recipient
+#### Naming a recipient
 
 One parameter, four forms: a user ID (`U0BFTSUN8MD`), an email address, a handle
 with or without the `@`, or a display or real name. Matching is
-case-insensitive, and exact beats prefix beats substring.
+case-insensitive, exact beats prefix beats substring, and — as the tie-break —
+a hit on a handle beats one on a display name beats one on a real name beats one
+on an email.
 
-**An identifier matching two people is an error, never a guess.** It comes back
-naming both candidates with their IDs and sends nothing. This is the one place
-where the cheaper behaviour — pick the best-sorted match — is unacceptable: a
-channel post to the wrong room is embarrassing, and a private message to the
-wrong person is not walkable-back. A tie at the best rank is a tie; a better
-match wins outright.
+**That second half is load-bearing.** Ranking on closeness alone lets a weak
+field win on a technicality: `annoy-bot` is a prefix match for "ann" and the
+Joanna whose real name contains it is only a substring match, so a comparison
+that ignores WHICH field matched hands the DM to the bot and reports no
+ambiguity at all.
+
+**A recipient that is not decisively one person is an error, never a guess.** It
+comes back naming the candidates with their IDs and sends nothing. Three things
+count as not decisive, and each one refuses:
+
+- a rival as close as the winner. What counts as a rival depends on how strong
+  the win is: an EXACT hit is a real claim to be the person named, so only
+  another exact hit on the same field ties it — but a prefix or substring hit is
+  not a claim, it is a coincidence of letters, so at those ranks any
+  equally-close candidate is a rival whatever field it matched on. That is the
+  `annoy-bot` case: preferring the handle there would DM a bot on a technicality;
+- a non-exact winner found while the directory listing was truncated, because
+  the better match may sit on a page that was never read;
+- a resolved account that is deactivated (`users.info` and `users.lookupByEmail`
+  both return those; `users.list` does not).
+
+This is the one place where the cheaper behaviour — take the best-sorted match —
+is unacceptable. A channel post to the wrong room is embarrassing; a private
+message to the wrong person is not walkable back.
+
+The id form is `^[UW][A-Z0-9]{7,}$`, case-SENSITIVE and length-bounded, and both
+halves matter: a looser `^[UW][A-Z0-9]{2,}$/i` also matches "will", "wes" and
+"una" — ordinary handles this very parameter invites — and routes them down the
+id path, where they resolve to a fabricated id and die at the send on a Slack
+error naming nothing the caller wrote. An id that Slack answers `user_not_found`
+for is refused rather than passed on; an id the directory merely could not be
+READ for still sends, with the result line saying the identity is unverified.
 
 The cost of the friendlier identifier is a directory scan (`users.list`,
 paginated, filtered here — Slack has no server-side user search) and the
 `users:read` scope. An email skips it via `users.lookupByEmail`, and a user ID
 skips it entirely.
 
-### Scopes, and the one that is missing
+#### Scopes, and the one that is missing
 
 The DM calls are gated on scopes the channel tools never needed:
 
@@ -165,20 +193,27 @@ The token installed on the Tadasant workspace holds `im:history`, `im:read`,
 `users:read` and `chat:write`, and NOT `im:write`, `mpim:read` or
 `users:read.email`.
 
-So `openDm()` treats a `missing_scope` from `conversations.open` as a reason to
-look rather than a reason to stop: it scans the DMs that are already open and
-uses the one for that user. A token that can list an existing DM and post into it
-can send the message, and refusing would be refusing work it can plainly do. The
-scan cannot conjure a FIRST conversation, so when there is none the error names
-`im:write` and the other way out — the recipient DMs the bot once, which opens
-the conversation from their side. `HACKS.md` #59 is the whole picture.
+So `openDm()` treats a refusal to OPEN (`missing_scope`, `not_allowed_token_type`,
+`restricted_action`) as a reason to look rather than a reason to stop: it scans
+the DMs that are already open and uses the one for that user. A token that can
+list an existing DM and post into it can send the message, and refusing would be
+refusing work it can plainly do. The scan cannot conjure a FIRST conversation, so
+when there is none the error repeats the scope Slack itself named and gives the
+other way out — the recipient DMs the bot once, which opens the conversation from
+their side. `HACKS.md` #59 is the whole picture.
+
+Every one of these scans is page-capped, and a cap that stops early is reported
+rather than swallowed. "No DM exists with this person" and "I stopped looking"
+are different answers, and only one of them should make a caller believe a
+conversation is absent — so `findDmChannel` throws instead of returning null, and
+`slack_find_user` says the directory was larger than it read.
 
 Group DMs are opt-in (`include_group_dms`, default false) for the same reason
 from the other end: `mpim:read` is a second scope, and Slack fails the WHOLE
 `types=im,mpim` listing without it. Defaulting it on would turn every DM listing
 into an error on a token that can list one-to-one DMs perfectly well.
 
-### Which tier the tools land in
+#### Which tier the tools land in
 
 `slack_send_dm` is a write tool. `slack_get_dm`, `slack_get_dms` and
 `slack_find_user` are read-only, and `slack_get_dm` is built so that stays true:

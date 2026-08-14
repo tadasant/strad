@@ -29,7 +29,8 @@ For each conversation:
 - DM channel ID (e.g. "D0BGVRZRX4Z") — an ordinary channel ID that every other
   tool here accepts
 - The other member: real name, handle and user ID
-- Last activity time
+- Last activity, where Slack reports one for the conversation. Where it does not,
+  the conversation's creation time is shown instead and labelled as such.
 
 **Use cases:**
 - Find the DM channel for someone you have messaged before
@@ -69,7 +70,7 @@ export function getDmsTool(server: Server, clientFactory: ClientFactory) {
         const parsed = GetDmsSchema.parse(args ?? {});
         const client = clientFactory();
 
-        const dms = await client.getDms({
+        const { dms, truncated } = await client.getDms({
           includeGroupDms: parsed.include_group_dms,
           limit: parsed.limit,
         });
@@ -98,21 +99,28 @@ export function getDmsTool(server: Server, clientFactory: ClientFactory) {
             if (dm.isGroup) flags.push('group');
             if (dm.isUserDeleted) flags.push('member deactivated');
             const flagStr = flags.length > 0 ? ` [${flags.join(', ')}]` : '';
-            const last = dm.updated ?? dm.created * 1000;
+            // Slack returns `updated` on a DM but does not document it. When it
+            // is absent the only timestamp available is the conversation's
+            // creation, and calling that "last activity" would be a lie.
+            const when =
+              dm.updated === undefined
+                ? `Conversation created: ${new Date(dm.created * 1000).toISOString()}`
+                : `Last activity: ${new Date(dm.updated).toISOString()}`;
 
-            return (
-              `• ${who}${flagStr}\n` +
-              `   DM channel: ${dm.id}\n` +
-              `   Last activity: ${new Date(last).toISOString()}`
-            );
+            return `• ${who}${flagStr}\n   DM channel: ${dm.id}\n   ${when}`;
           })
           .join('\n\n');
+
+        const capped = truncated
+          ? '\n\n⚠️ More DM conversations exist than this tool lists in one call; these are the ' +
+            'ones it read.'
+          : '';
 
         return {
           content: [
             {
               type: 'text',
-              text: `Found ${dms.length} DM conversation(s):\n\n${list}`,
+              text: `Found ${dms.length} DM conversation(s):\n\n${list}${capped}`,
             },
           ],
         };

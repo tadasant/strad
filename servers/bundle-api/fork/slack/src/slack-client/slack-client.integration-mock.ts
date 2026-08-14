@@ -1,6 +1,16 @@
 import type { ISlackClient } from '../server.js';
 import type { OpenDmResult } from './lib/open-dm.js';
-import type { Channel, DirectMessage, Message, SlackFile, User, UserMatch } from '../types.js';
+import { compareMatches } from './lib/find-users.js';
+import type {
+  Channel,
+  DirectMessage,
+  DmList,
+  Message,
+  SlackFile,
+  User,
+  UserMatch,
+  UserSearch,
+} from '../types.js';
 
 interface MockData {
   channels?: Channel[];
@@ -240,14 +250,16 @@ export function createIntegrationMockSlackClient(
       return user;
     },
 
-    async findUsers(query: string): Promise<UserMatch[]> {
+    async findUsers(query: string): Promise<UserSearch> {
       const normalized = query.trim().replace(/^@/, '').toLowerCase();
-      if (normalized === '') return [];
+      if (normalized === '') return { matches: [], truncated: false };
 
-      return (mockData.users ?? DEFAULT_USERS)
+      const matches = (mockData.users ?? DEFAULT_USERS)
         .map((user) => rank(user, normalized))
         .filter((m): m is UserMatch => m !== null)
-        .sort((a, b) => a.rank - b.rank || a.user.id.localeCompare(b.user.id));
+        .sort(compareMatches);
+
+      return { matches, truncated: false };
     },
 
     async lookupUserByEmail(email: string): Promise<User | null> {
@@ -271,14 +283,14 @@ export function createIntegrationMockSlackClient(
       return (mockData.dms ?? DEFAULT_DMS).find((dm) => dm.userId === userId)?.id ?? null;
     },
 
-    async getDms(options?: {
-      includeGroupDms?: boolean;
-      limit?: number;
-    }): Promise<DirectMessage[]> {
+    async getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DmList> {
       const dms = (mockData.dms ?? DEFAULT_DMS).filter(
         (dm) => options?.includeGroupDms || !dm.isGroup
       );
-      return options?.limit === undefined ? dms : dms.slice(0, options.limit);
+      return {
+        dms: options?.limit === undefined ? dms : dms.slice(0, options.limit),
+        truncated: false,
+      };
     },
   };
 

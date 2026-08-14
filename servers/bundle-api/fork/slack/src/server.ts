@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createRegisterTools } from './tools.js';
 import type { OpenDmResult } from './slack-client/lib/open-dm.js';
-import type { Channel, DirectMessage, Message, SlackFile, User, UserMatch } from './types.js';
+import type { Channel, DmList, Message, SlackFile, User, UserSearch } from './types.js';
 
 /**
  * Slack API client interface
@@ -102,9 +102,10 @@ export interface ISlackClient {
   getUser(userId: string): Promise<User>;
 
   /**
-   * Search workspace members by handle, display name, real name or email
+   * Search workspace members by handle, display name, real name or email.
+   * `truncated` reports whether the whole directory was read.
    */
-  findUsers(query: string): Promise<UserMatch[]>;
+  findUsers(query: string): Promise<UserSearch>;
 
   /**
    * Resolve an email address to a member, or null if nobody has it
@@ -117,14 +118,15 @@ export interface ISlackClient {
   openDm(userId: string): Promise<OpenDmResult>;
 
   /**
-   * Get the EXISTING DM channel id for a user, or null — opens nothing
+   * Get the EXISTING DM channel id for a user, or null — opens nothing.
+   * Throws rather than returning null when the scan was cut short.
    */
   findDmChannel(userId: string): Promise<string | null>;
 
   /**
    * List the DM conversations the bot is part of
    */
-  getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DirectMessage[]>;
+  getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DmList>;
 }
 
 /**
@@ -233,7 +235,7 @@ export class SlackClient implements ISlackClient {
     return getUser(this.baseUrl, this.headers, userId);
   }
 
-  async findUsers(query: string): Promise<UserMatch[]> {
+  async findUsers(query: string): Promise<UserSearch> {
     const { findUsers } = await import('./slack-client/lib/find-users.js');
     return findUsers(this.baseUrl, this.headers, query);
   }
@@ -253,10 +255,7 @@ export class SlackClient implements ISlackClient {
     return findDmChannel(this.baseUrl, this.headers, userId);
   }
 
-  async getDms(options?: {
-    includeGroupDms?: boolean;
-    limit?: number;
-  }): Promise<DirectMessage[]> {
+  async getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DmList> {
     const { getDms } = await import('./slack-client/lib/get-dms.js');
     return getDms(this.baseUrl, this.headers, options);
   }

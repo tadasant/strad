@@ -1,4 +1,4 @@
-import type { DirectMessage, User } from '../../types.js';
+import type { DirectMessage, DmList, User } from '../../types.js';
 import { listUsers } from './list-users.js';
 import { slackApiError } from './slack-error.js';
 
@@ -41,7 +41,7 @@ export async function listDmChannels(
   baseUrl: string,
   headers: Record<string, string>,
   options?: { includeGroupDms?: boolean; maxPages?: number }
-): Promise<DmChannel[]> {
+): Promise<{ channels: DmChannel[]; truncated: boolean }> {
   const types = options?.includeGroupDms ? 'im,mpim' : 'im';
   const maxPages = options?.maxPages ?? MAX_PAGES;
   const channels: DmChannel[] = [];
@@ -79,30 +79,36 @@ export async function listDmChannels(
     page += 1;
   } while (cursor && page < maxPages);
 
-  return channels;
+  return { channels, truncated: cursor !== undefined };
 }
 
 /**
- * The DM conversations the bot is part of, most recently active first, with the
- * other member resolved to a name.
+ * The DM conversations the bot is part of, with the other member resolved to a
+ * name.
  *
- * The enrichment is best-effort: a token that can read `im` but not `users` gets
- * the conversations with bare ids rather than an error, because a DM list with
- * ids in it is still usable and an error is not.
+ * Ordered by last activity where Slack reports one. `conversations.list` returns
+ * `updated` on a DM in practice but does not document it, so a conversation
+ * without one falls back to its creation time — and the tool says which of the
+ * two it printed rather than calling a creation date "last activity".
+ *
+ * The name enrichment is best-effort: a token that can read `im` but not `users`
+ * gets the conversations with bare ids rather than an error, because a DM list
+ * with ids in it is still usable and an error is not.
  */
 export async function getDms(
   baseUrl: string,
   headers: Record<string, string>,
   options?: { includeGroupDms?: boolean; limit?: number }
-): Promise<DirectMessage[]> {
-  const channels = await listDmChannels(baseUrl, headers, {
+): Promise<DmList> {
+  const { channels, truncated } = await listDmChannels(baseUrl, headers, {
     includeGroupDms: options?.includeGroupDms,
   });
 
   let byId = new Map<string, User>();
   if (channels.some((c) => c.user)) {
     try {
-      byId = new Map((await listUsers(baseUrl, headers)).map((u) => [u.id, u]));
+      const { users } = await listUsers(baseUrl, headers);
+      byId = new Map(users.map((u) => [u.id, u]));
     } catch {
       // users:read is absent. Ids still address a DM; names are a nicety.
     }
@@ -121,5 +127,8 @@ export async function getDms(
 
   dms.sort((a, b) => (b.updated ?? b.created * 1000) - (a.updated ?? a.created * 1000));
 
-  return options?.limit === undefined ? dms : dms.slice(0, options.limit);
+  return {
+    dms: options?.limit === undefined ? dms : dms.slice(0, options.limit),
+    truncated,
+  };
 }

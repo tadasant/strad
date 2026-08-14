@@ -2231,7 +2231,8 @@ nothing to say so. What stands in for the drift test is
 that none of them still says "Supports Slack markdown formatting", that the
 registered tool set is exactly the expected thirteen names, and that the bytes
 handed to `chat.postMessage` are the bytes the caller passed. `test/dm.test.mjs`
-does the same for the DM four. A revert fails those. A revert that also deletes the tests does
+pins the DM tools' behaviour and asserts the read-only tier is exactly its seven
+names. A revert fails those. A revert that also deletes the tests does
 not — the same hole `check-tool-policy` has (#46), and the same answer: the test
 file is the artifact under review.
 
@@ -2251,9 +2252,11 @@ the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
 `servers/bundle-api/Dockerfile` (the manifest one and the source one), point
 `loadApiTree` in
 `servers/bundle/host/src/index.ts` back at `upstream/${slug}/build/index.js`, and
-drop the `bundle_api` CI job. Tool names, tool count and the `slack` /
-`slack-readonly` policy split are unchanged by the fork, so nothing downstream
-moves either way.
+drop the `bundle_api` CI job. It also means dropping the DM tools: the `slack`
+slug goes back to nine tools and `slack-readonly`'s allow-list back to four, in
+both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the counts
+in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
+`.github/workflows/ci.yml`.
 
 ## 56. Per-slug box names are emitted for every server; two of eleven trees can read one
 
@@ -2530,13 +2533,13 @@ unchanged by the fork, so no `tools:` policy moves either way.
 **What.** The four DM tools the slack fork adds (#55) call five Slack methods the
 nine channel tools never touch, and each is gated on its own OAuth scope:
 
-| Call                               | Scope                   | Used by                                                            |
-| ---------------------------------- | ----------------------- | ------------------------------------------------------------------ |
-| `conversations.open`               | `im:write`              | `slack_send_dm`                                                    |
-| `conversations.list?types=im`      | `im:read`               | `slack_get_dms`, `slack_get_dm`, and `slack_send_dm`'s fallback    |
-| `conversations.list?types=im,mpim` | `mpim:read` **as well** | `slack_get_dms` with `include_group_dms: true`                     |
-| `users.list` / `users.info`        | `users:read`            | `slack_find_user`, and every recipient named by anything but an id |
-| `users.lookupByEmail`              | `users:read.email`      | naming a recipient by email address                                |
+| Call                               | Scope                   | Used by                                                                                                |
+| ---------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `conversations.open`               | `im:write`              | `slack_send_dm`                                                                                        |
+| `conversations.list?types=im`      | `im:read`               | `slack_get_dms`, `slack_get_dm`, and `slack_send_dm`'s fallback                                        |
+| `conversations.list?types=im,mpim` | `mpim:read` **as well** | `slack_get_dms` with `include_group_dms: true`                                                         |
+| `users.list` / `users.info`        | `users:read`            | `slack_find_user`, resolving any recipient not named by id, and confirming the name behind one that is |
+| `users.lookupByEmail`              | `users:read.email`      | naming a recipient by email address                                                                    |
 
 `chat.postMessage` into a `D…` channel needs nothing beyond the `chat:write` the
 server already had, and `conversations.history` on one needs `im:history`.
