@@ -890,11 +890,10 @@ The render fails closed on a `${NAME}` the store does not hold, and it fails the
 than no deploy), and its cost is an ordering rule: **the secret is seeded before
 the entry ships enabled.**
 
-A PR cannot seed a secret — that is a human at
-`/ui/secrets`, or the `secrets-sync` workflow — so an entry that arrives ahead of
-its credential lands `enabled: false` and is turned on afterwards in a one-line
-diff. `telegram-ro`, `telegram-rw` and `pulse-subregistry` are all in that state
-today.
+A PR cannot seed a secret — staging's store is written by a human in the console,
+at `/ui/secrets` — so an entry that arrives ahead of its credential lands
+`enabled: false` and is turned on afterwards in a one-line diff. `telegram-ro`,
+`telegram-rw` and `pulse-subregistry` are all in that state.
 
 Merging one enabled instead is not a partial outage, it is a full stop: on
 2026-08-14, `pulse-subregistry` landed with an unseeded

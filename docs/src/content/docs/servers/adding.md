@@ -126,8 +126,8 @@ the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (s
 Declaring the server and seeding its credential are two steps, and a PR can only
 do the first. The render is **all or nothing** — one `${NAME}` the store does not
 hold exits `render-spec` with an error and no spec at all — so an entry merged
-ahead of its secret does not degrade its own slug. It stops the deploy for every
-other server in the file, on `main`, until someone notices.
+ahead of its secret does not merely degrade its own slug. It stops the deploy for
+every other server in the file, on `main`, until someone notices.
 
 So an entry whose credential is not in the store yet lands disabled:
 

@@ -366,8 +366,8 @@ servers:
   # `${REF}` the store does not hold FAILS the render — that is the fail-loud
   # property render-spec exists for — and it fails the WHOLE spec, so one
   # unseeded name takes every other server's deploy down with it. Landing the
-  # entry disabled keeps the slug declared and the mount in the image while the
-  # other twenty-nine slugs deploy. To turn it on: set
+  # entry disabled keeps the slug declared and the mount in the image while
+  # every other slug deploys. To turn it on: set
   # PULSEMCP_SUBREGISTRY_API_KEY in /strad/staging/gateway/static/ (the console,
   # /ui/secrets), then delete the `enabled` line below and add the name to
   # PROVISIONED_STATICS in test/staging-config.test.ts — the ledger that test
