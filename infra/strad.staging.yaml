@@ -12,11 +12,17 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares twenty-nine server SLUGS: twenty-seven supplementary-image
+# This file declares thirty server SLUGS: twenty-eight supplementary-image
 # entries, the `echo` builtin in core, and the `deepwiki` remote-http canary.
-# Twenty-six of the twenty-seven land on sixteen upstream mounts inside the one
-# bundle image, because capability variants share a mount; the twenty-seventh
+# Twenty-seven of the twenty-eight land on seventeen upstream mounts inside the
+# one bundle image, because capability variants share a mount; the twenty-eighth
 # (`zimmer-secrets`) runs that same image on a component of its own.
+#
+# THREE of the twenty-eight carry `enabled: false` — telegram-ro, telegram-rw
+# and pulse-subregistry — because their credentials are not in the store yet.
+# A `${NAME}` the store does not hold fails the RENDER, and the render is the
+# whole spec, so an entry that ships enabled before its secret is seeded takes
+# every other server's deploy down with it.
 #
 # THREE components, not two, and the third is not a capability variant: it is
 # `bundle-zimmer-secrets`, a second copy of the bundle image fronting a SECOND
@@ -355,12 +361,24 @@ servers:
     entitlements: [admin]
 
   # PulseMCP registry API. Tenant is env-configured rather than mutable over MCP.
+  #
+  # DISABLED UNTIL ITS SECRET IS SEEDED, the same way telegram-ro/rw are. A
+  # `${REF}` the store does not hold FAILS the render — that is the fail-loud
+  # property render-spec exists for — and it fails the WHOLE spec, so one
+  # unseeded name takes every other server's deploy down with it. Landing the
+  # entry disabled keeps the slug declared and the mount in the image while the
+  # other twenty-nine slugs deploy. To turn it on: set
+  # PULSEMCP_SUBREGISTRY_API_KEY in /strad/staging/gateway/static/ (the console,
+  # /ui/secrets), then delete the `enabled` line below and add the name to
+  # PROVISIONED_STATICS in test/staging-config.test.ts — the ledger that test
+  # holds this config to.
   - slug: pulse-subregistry
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
     path: /pulse-subregistry
     entitlements: [admin]
+    enabled: false
     env:
       PULSEMCP_SUBREGISTRY_API_KEY: "${PULSEMCP_SUBREGISTRY_API_KEY}"
 

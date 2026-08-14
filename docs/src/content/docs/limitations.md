@@ -374,7 +374,7 @@ nothing in the deployment said so.
 
 The core had an immutable tag to reach for and was already a render-time argument.
 The bundle's tag is a config value, which is why it took a `--bundle-image` the
-deploy always passes rather than editing 27 `image:` lines per release.
+deploy always passes rather than editing 28 `image:` lines per release.
 
 **What also detects it:** not the tag, the consequence. Core probes each slug's
 `tools/list` on an interval and publishes the slugs serving nothing on

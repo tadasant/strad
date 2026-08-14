@@ -36,7 +36,7 @@
  * `--bundle-image ghcr.io/tadasant/strad-bundle:<tag>` overrides the image on
  * every supplementary component that shares that repository, which is how a
  * branch build and every ordinary staging deploy ship a tag that names one
- * commit without editing the config's 27 `image:` lines.
+ * commit without editing the config's 28 `image:` lines.
  *
  * `--require-immutable-images` refuses to emit a spec in which ANY component
  * ships a mutable tag. It is opt-in rather than the default because the two
@@ -367,7 +367,7 @@ const serverSecrets: Record<string, Record<string, string>> = {};
 if (store) {
   // ONE listing of /strad/{env}/mcp/ for the whole render. It is metadata — a
   // secret parameter's payload is a `__REF__` pointer — so this reads no value,
-  // and it is what tells us which of the 27 servers is worth a `resolve()`.
+  // and it is what tells us which of the 28 servers is worth a `resolve()`.
   const { seeded, unroutable } = groupByServer(
     config.gateway.env,
     await store.list(mcpNamespace(config.gateway.env)),

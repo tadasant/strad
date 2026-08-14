@@ -55,12 +55,13 @@ in-VPC hop (~4ms) with no public-edge hairpin.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts seventeen MCP servers in one
-Node process, assembled from ten independently-built dependency trees. The
-staging config maps twenty-six of its twenty-seven `supplementary-image` entries
-onto those seventeen mounts, because capability variants of one upstream are two
-entries pointing at the same path. The twenty-seventh runs on the second bundle,
-below.
+`ghcr.io/tadasant/strad-bundle` container that mounts eighteen MCP servers in one
+Node process, assembled from eleven independently-built dependency trees. The
+staging config maps twenty-seven of its twenty-eight `supplementary-image`
+entries onto seventeen of those mounts, because capability variants of one
+upstream are two entries pointing at the same path — `/x-twitter` is the
+eighteenth mount and has no staging slug. The twenty-eighth entry runs on the
+second bundle, below.
 
 It has a **second** bundle, `bundle-zimmer-secrets`, and the reason is worth
 stating because it is the one thing a bundle cannot share: `process.env`. That
@@ -73,8 +74,8 @@ Three numbers, three different things:
 | Number | What it counts                                                                      |
 | ------ | ----------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                 |
-| **17** | MCP servers mounted inside the bundle image                                         |
-| **29** | server slugs in `infra/strad.staging.yaml` (27 supplementary + `echo` + `deepwiki`) |
+| **18** | MCP servers mounted inside the bundle image                                         |
+| **30** | server slugs in `infra/strad.staging.yaml` (28 supplementary + `echo` + `deepwiki`) |
 
 ### The two modes
 
@@ -167,7 +168,7 @@ A failing upstream is handled differently depending on **who chose that server**
   Any named server failing fails the listing, not all of them.
 - **The request did not** (no `?servers=`, meaning "everything I'm entitled to")
   — the failing server contributes **zero tools** and a log line, rather than
-  taking the other twenty-eight down with it.
+  taking the other twenty-nine down with it.
 
 The trigger is a `tools/list` that **throws**. A server that answers with an
 empty list is a server with no tools, and no amount of error handling can tell
@@ -287,8 +288,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, seventeen servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all seventeen down together, and the
+**One process, one core, eighteen servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all eighteen down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

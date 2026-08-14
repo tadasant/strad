@@ -121,6 +121,37 @@ required SECRET; an unresolved `${…}` makes render fail loudly rather than let
 the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (see
 [Operations & CI](/operate/operations/#seeding-secrets)).
 
+## 4a. If the secret is not seeded yet, ship the entry `enabled: false`
+
+Declaring the server and seeding its credential are two steps, and a PR can only
+do the first. The render is **all or nothing** — one `${NAME}` the store does not
+hold exits `render-spec` with an error and no spec at all — so an entry merged
+ahead of its secret does not degrade its own slug. It stops the deploy for every
+other server in the file, on `main`, until someone notices.
+
+So an entry whose credential is not in the store yet lands disabled:
+
+```yaml
+- slug: pulse-subregistry
+  kind: supplementary-image
+  # ...
+  enabled: false # until PULSEMCP_SUBREGISTRY_API_KEY is in the store
+  env:
+    PULSEMCP_SUBREGISTRY_API_KEY: "${PULSEMCP_SUBREGISTRY_API_KEY}"
+```
+
+`enabled: false` is skipped everywhere it matters: `render-spec` never demands the
+name, the registry never mounts the slug, and the front door never lists it. The
+mount is still in the image and the entry still documents itself, so turning the
+server on later is a one-line diff and a redeploy.
+
+`test/staging-config.test.ts` holds the staging config to a **provisioning
+ledger** — `PROVISIONED_STATICS`, the names staging's store actually holds. An
+enabled entry referencing a name that is not on it fails CI, which is the cheap
+version of the failure; the expensive version is a red `main` and a blocked
+deploy. Adding a server enabled means seeding the secret **and** adding its name
+there, in the same PR.
+
 ## 4b. A credential the AGENT must not hold — `consoleEnv:`
 
 `env:` on a `supplementary-image` lands on the **container that answers `/mcp`**.
