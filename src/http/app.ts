@@ -1,5 +1,5 @@
 import express, { type Express } from "express";
-import { authenticateConsoleBypass, devBypassStatus } from "../auth/dev.ts";
+import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import {
   googleProviderFromEnv,
   AuthError,
@@ -415,13 +415,11 @@ function mountConsole(
       return;
     }
 
-    const status = devBypassStatus(cfg, env);
-    res.status(401).json({
-      error: "console_unavailable",
-      message:
-        "Google OAuth is not configured and the dev bypass is not usable.",
-      devBypass: status.reason,
-    });
+    // Two refusals, not one: a wrong bootstrap token against a live bypass is a
+    // different problem from a deployment with no console door at all, and they
+    // are told apart in consoleDenial() (src/auth/dev.ts), which also carries
+    // the reasoning about what that distinction discloses.
+    res.status(401).json(consoleDenial(cfg, env));
   });
 
   // The gate sends people here with the page they were trying to reach. Always

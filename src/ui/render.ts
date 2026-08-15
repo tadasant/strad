@@ -1,3 +1,4 @@
+import type { ConsoleDenial } from "../auth/dev.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
 import type { ServerView } from "./resolve.ts";
@@ -1255,16 +1256,30 @@ ${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">
   });
 }
 
-/** The 401 shown when the SSO gate is not satisfied and Google OAuth is off. */
-export function renderSignIn(reason: string): string {
+/**
+ * The 401 shown when the SSO gate is not satisfied and Google OAuth is off.
+ *
+ * It says one of two things, and which one is not cosmetic: telling a human to
+ * present a bootstrap token on a deployment where no token can be accepted
+ * sends them to hunt for a credential that was never the problem. The
+ * `ConsoleDenial` decides; this only renders it.
+ */
+export function renderSignIn(denial: ConsoleDenial): string {
+  const sub =
+    denial.error === "invalid_bootstrap_token"
+      ? `This console is gated by strad's SSO. Google Workspace sign-in is not
+         yet configured on this deployment, so entry is via the console dev
+         bypass — present the bootstrap token as <code>?token=…</code>.`
+      : `This console is gated by strad's SSO. Neither door is open on this
+         deployment: Google Workspace sign-in is not usable here — it is either
+         unconfigured or missing its credentials — and the console dev bypass is
+         not active. No token will get you in until an operator changes that.`;
   const body = `
 <div class="state state-warn signin">
   <div class="state-icon">${LOCK_SVG}</div>
   <p class="state-title">Sign in required</p>
-  <p class="state-sub">This console is gated by strad's SSO. Google Workspace
-    sign-in is not yet configured on this deployment, so entry is via the console
-    dev bypass — present the bootstrap token as <code>?token=…</code>.</p>
-  <p class="state-detail">${esc(reason)}</p>
+  <p class="state-sub">${sub}</p>
+  <p class="state-detail">${esc(`dev bypass: ${denial.devBypass}`)}</p>
 </div>`;
   return layout({ title: "Sign in", body });
 }

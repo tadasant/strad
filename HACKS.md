@@ -33,8 +33,15 @@ images are cut only from `main`.
 **What.** `/console` can be entered by presenting `ADMIN_BOOTSTRAP_TOKEN` instead
 of signing in with Google. Guarded three ways (`auth.consoleDevBypass.enabled` +
 `ALLOW_DEV_AUTH=true` + a set `ADMIN_BOOTSTRAP_TOKEN`), hard-disabled under
-`NODE_ENV=production` unless `ALLOW_DEV_AUTH` is _explicitly_ `true`, and it logs
-loudly at boot.
+`NODE_ENV=production` unless `ALLOW_DEV_AUTH_IN_PRODUCTION` is _explicitly_ `true`
+as well, and it logs loudly at boot.
+
+A caller who is refused is told which of two things happened:
+`invalid_bootstrap_token` (the bypass is live, the token is wrong) or
+`console_unavailable` (no console door at all). The first discloses that a bypass
+is active, and only ever on a deployment that deliberately turned one on — see
+`consoleDenial()` in `src/auth/dev.ts`, and "The two ways console auth says no"
+in `docs/src/content/docs/auth/overview.md`.
 
 **Crucial scope.** This bypass CANNOT authenticate `/mcp`. `/mcp` only ever
 accepts a static system token — there is no code path from the bypass to it. On
