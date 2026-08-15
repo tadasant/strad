@@ -252,6 +252,12 @@ servers:
         - slack_get_channel
         - slack_get_thread
         - slack_download_file
+        # The DM reads. `slack_get_dm` resolves an EXISTING conversation rather
+        # than calling conversations.open, so nothing here creates anything.
+        # Sending one is `slack_send_dm`, which this tier deliberately withholds.
+        - slack_get_dms
+        - slack_get_dm
+        - slack_find_user
 
   # No credential at all — public endpoints, every tool.
   - slug: google-flights

@@ -45,7 +45,9 @@ Runs on PRs and pushes to `main`. Sixteen jobs, all `runs-on: self-hosted`:
   renders mrkdwn, which is not Markdown: `~text~` is strikethrough, so a message
   using `~` for "approximately" posts successfully with paragraphs struck out,
   and the fork's write tools lead with that rule and warn in the tool result
-  after the fact. `google-flights` — see [limitations #58](/limitations/#58-the-google-flights-date-grid-costs-one-request-per-date-and-two-of-its-fields-are-not-trustworthy) —
+  after the fact. It also adds the four DM tools upstream has no equivalent for,
+  whose OAuth scopes are [limitations #59](/limitations/#59-a-dm-needs-slack-scopes-the-channel-tools-never-asked-for).
+  `google-flights` — see [limitations #58](/limitations/#58-the-google-flights-date-grid-costs-one-request-per-date-and-two-of-its-fields-are-not-trustworthy) —
   fixes three defects that each returned a confident wrong answer: cabin class
   and passenger counts encoded at protobuf field numbers Google skips as unknown,
   baggage flags read in the wrong order, and a date grid that returned a trailing
@@ -60,7 +62,7 @@ Runs on PRs and pushes to `main`. Sixteen jobs, all `runs-on: self-hosted`:
   redaction — at PR time rather than at bundle-image build time.
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
-  the full-capability tool count for each (slack 9, tailscale 15, monarch-money 23,
+  the full-capability tool count for each (slack 13, tailscale 15, monarch-money 23,
   gmail 8, google-docs 11, google-calendar 7, 1Password 9, secrets 4, …). Those
   counts are the numbers the gateway's read-only allow-lists are carved out of, so
   if an upstream grows or renames a tool, this is where it surfaces. For `secrets`

@@ -1,6 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createRegisterTools } from './tools.js';
-import type { Channel, Message, SlackFile } from './types.js';
+import type { OpenDmResult } from './slack-client/lib/open-dm.js';
+import type { Channel, DmList, Message, SlackFile, User, UserSearch } from './types.js';
 
 /**
  * Slack API client interface
@@ -94,6 +95,38 @@ export interface ISlackClient {
       threadTs?: string;
     }
   ): Promise<SlackFile>;
+
+  /**
+   * Get one workspace member by ID
+   */
+  getUser(userId: string): Promise<User>;
+
+  /**
+   * Search workspace members by handle, display name, real name or email.
+   * `truncated` reports whether the whole directory was read.
+   */
+  findUsers(query: string): Promise<UserSearch>;
+
+  /**
+   * Resolve an email address to a member, or null if nobody has it
+   */
+  lookupUserByEmail(email: string): Promise<User | null>;
+
+  /**
+   * Get the DM channel id for a user, opening the conversation if needed
+   */
+  openDm(userId: string): Promise<OpenDmResult>;
+
+  /**
+   * Get the EXISTING DM channel id for a user, or null — opens nothing.
+   * Throws rather than returning null when the scan was cut short.
+   */
+  findDmChannel(userId: string): Promise<string | null>;
+
+  /**
+   * List the DM conversations the bot is part of
+   */
+  getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DmList>;
 }
 
 /**
@@ -195,6 +228,36 @@ export class SlackClient implements ISlackClient {
   ): Promise<SlackFile> {
     const { uploadSnippet } = await import('./slack-client/lib/upload-snippet.js');
     return uploadSnippet(this.baseUrl, this.headers, content, options);
+  }
+
+  async getUser(userId: string): Promise<User> {
+    const { getUser } = await import('./slack-client/lib/get-user.js');
+    return getUser(this.baseUrl, this.headers, userId);
+  }
+
+  async findUsers(query: string): Promise<UserSearch> {
+    const { findUsers } = await import('./slack-client/lib/find-users.js');
+    return findUsers(this.baseUrl, this.headers, query);
+  }
+
+  async lookupUserByEmail(email: string): Promise<User | null> {
+    const { lookupUserByEmail } = await import('./slack-client/lib/lookup-user-by-email.js');
+    return lookupUserByEmail(this.baseUrl, this.headers, email);
+  }
+
+  async openDm(userId: string): Promise<OpenDmResult> {
+    const { openDm } = await import('./slack-client/lib/open-dm.js');
+    return openDm(this.baseUrl, this.headers, userId);
+  }
+
+  async findDmChannel(userId: string): Promise<string | null> {
+    const { findDmChannel } = await import('./slack-client/lib/open-dm.js');
+    return findDmChannel(this.baseUrl, this.headers, userId);
+  }
+
+  async getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DmList> {
+    const { getDms } = await import('./slack-client/lib/get-dms.js');
+    return getDms(this.baseUrl, this.headers, options);
   }
 }
 

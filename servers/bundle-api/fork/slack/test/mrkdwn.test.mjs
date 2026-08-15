@@ -23,6 +23,10 @@ import { getChannelsTool } from '../build/tools/get-channels.js';
 import { getChannelTool } from '../build/tools/get-channel.js';
 import { getThreadTool } from '../build/tools/get-thread.js';
 import { downloadFileTool } from '../build/tools/download-file.js';
+import { getDmsTool } from '../build/tools/get-dms.js';
+import { getDmTool } from '../build/tools/get-dm.js';
+import { findUserTool } from '../build/tools/find-user.js';
+import { sendDmTool } from '../build/tools/send-dm.js';
 
 // An abridged copy of the message that actually shipped struck through, in
 // #general on 2026-08-11. Six tildes, every one of them meaning "approximately".
@@ -160,7 +164,7 @@ test('clean text produces no advisory at all', () => {
 // the tool surface
 // ---------------------------------------------------------------------------
 
-const WRITE_TEXT_TOOLS = [postMessageTool, replyToThreadTool, updateMessageTool];
+const WRITE_TEXT_TOOLS = [postMessageTool, replyToThreadTool, updateMessageTool, sendDmTool];
 
 const ALL_TOOL_FACTORIES = [
   getChannelsTool,
@@ -172,6 +176,10 @@ const ALL_TOOL_FACTORIES = [
   updateMessageTool,
   reactToMessageTool,
   uploadSnippetTool,
+  getDmsTool,
+  getDmTool,
+  findUserTool,
+  sendDmTool,
 ];
 
 test('every tool taking message text leads with the mrkdwn trap', () => {
@@ -186,7 +194,7 @@ test('every tool taking message text leads with the mrkdwn trap', () => {
 test('no tool still calls the format "Slack markdown formatting"', () => {
   // The upstream phrasing this fork exists to remove: it calls mrkdwn markdown,
   // which is the assumption that produced the struck-through message, and it
-  // omits the one construct that silently wrecks one. Checked over ALL NINE
+  // omits the one construct that silently wrecks one. Checked over ALL THIRTEEN
   // tools, not just the ones that were reworded — a re-vendor could reintroduce
   // it anywhere.
   for (const factory of ALL_TOOL_FACTORIES) {
@@ -228,31 +236,39 @@ async function registeredNames(groups) {
   return tools.map((t) => t.name).sort();
 }
 
-test('the fork renames, adds and drops no upstream tool', async () => {
+test('the fork renames and drops no upstream tool, and adds exactly the DM four', async () => {
   // Read from createRegisterTools rather than a hand-written list, so a tool
   // dropped from ALL_TOOLS in src/tools.ts fails here too. Every caller of the
-  // published package addresses these names.
+  // published package addresses these names — upstream's nine are untouched, and
+  // the four the fork ADDS are the DM surface (test/dm.test.mjs covers them).
   assert.deepEqual(await registeredNames(['readonly', 'write']), [
     'slack_download_file',
+    'slack_find_user',
     'slack_get_channel',
     'slack_get_channels',
+    'slack_get_dm',
+    'slack_get_dms',
     'slack_get_thread',
     'slack_post_message',
     'slack_react_to_message',
     'slack_reply_to_thread',
+    'slack_send_dm',
     'slack_update_message',
     'slack_upload_snippet',
   ]);
 });
 
-test('the readonly group is exactly the four tools slack-readonly allows', async () => {
+test('the readonly group is exactly the seven tools slack-readonly allows', async () => {
   // infra/strad.staging.yaml and strad.config.example.yaml both carve the
   // `slack-readonly` slug's `tools: allow` list out of this group. An allow-list
   // is exhaustive, so a tool moving between groups narrows that slug in silence.
   assert.deepEqual(await registeredNames(['readonly']), [
     'slack_download_file',
+    'slack_find_user',
     'slack_get_channel',
     'slack_get_channels',
+    'slack_get_dm',
+    'slack_get_dms',
     'slack_get_thread',
   ]);
 });

@@ -2205,6 +2205,13 @@ they never mention the tilde. The fork rewrites those descriptions and appends a
 post-hoc advisory to a successful send. `fork/slack/FORK.md` carries the file-by-file
 table so the next re-vendor is a merge with a list rather than a diff read cold.
 
+The fork also ADDS four tools upstream does not have: `slack_send_dm`,
+`slack_get_dm`, `slack_get_dms` and `slack_find_user`. Upstream can post to a
+channel and to a thread and cannot address a person at all, and Slack's DM flow
+is two calls (`conversations.open` for the `D…` channel, then the ordinary
+`chat.postMessage`) — which is a dance an agent should not have to know. The
+scopes those calls need are #59.
+
 **Why.** Two other vendored trees carry the same divergence risk (#15, #19, #45),
 and the rule everywhere else is that fixes go upstream and get re-vendored. This
 one cannot wait on that round trip in the way those could: the failure ships
@@ -2221,9 +2228,11 @@ guard: there is no upstream to diff against, and a re-vendor that pastes
 nothing to say so. What stands in for the drift test is
 `servers/bundle-api/fork/slack/test/mrkdwn.test.mjs`, run by `ci.yml`'s
 `bundle_api` job: it asserts that every write tool leads with the tilde rule,
-that none of them still says "Supports Slack markdown formatting", that no tool
-was renamed, and that the bytes handed to `chat.postMessage` are the bytes the
-caller passed. A revert fails those. A revert that also deletes the tests does
+that none of them still says "Supports Slack markdown formatting", that the
+registered tool set is exactly the expected thirteen names, and that the bytes
+handed to `chat.postMessage` are the bytes the caller passed. `test/dm.test.mjs`
+pins the DM tools' behaviour and asserts the read-only tier is exactly its seven
+names. A revert fails those. A revert that also deletes the tests does
 not — the same hole `check-tool-policy` has (#46), and the same answer: the test
 file is the artifact under review.
 
@@ -2243,9 +2252,11 @@ the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
 `servers/bundle-api/Dockerfile` (the manifest one and the source one), point
 `loadApiTree` in
 `servers/bundle/host/src/index.ts` back at `upstream/${slug}/build/index.js`, and
-drop the `bundle_api` CI job. Tool names, tool count and the `slack` /
-`slack-readonly` policy split are unchanged by the fork, so nothing downstream
-moves either way.
+drop the `bundle_api` CI job. It also means dropping the DM tools: the `slack`
+slug goes back to nine tools and `slack-readonly`'s allow-list back to four, in
+both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the counts
+in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
+`.github/workflows/ci.yml`.
 
 ## 56. Per-slug box names are emitted for every server; two of eleven trees can read one
 
@@ -2517,6 +2528,65 @@ servers/bundle-api/upstream/google-flights`, restore the `COPY` lines in EACH of
 `bundle-api` workspaces, build and test scripts. Tool names and tool count are
 unchanged by the fork, so no `tools:` policy moves either way.
 
+## 59. A DM needs Slack scopes the channel tools never asked for, and one of them is not installed
+
+**What.** The four DM tools the slack fork adds (#55) call five Slack methods the
+nine channel tools never touch, and each is gated on its own OAuth scope:
+
+| Call                               | Scope                   | Used by                                                                                                |
+| ---------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `conversations.open`               | `im:write`              | `slack_send_dm`                                                                                        |
+| `conversations.list?types=im`      | `im:read`               | `slack_get_dms`, `slack_get_dm`, and `slack_send_dm`'s fallback                                        |
+| `conversations.list?types=im,mpim` | `mpim:read` **as well** | `slack_get_dms` with `include_group_dms: true`                                                         |
+| `users.list` / `users.info`        | `users:read`            | `slack_find_user`, resolving any recipient not named by id, and confirming the name behind one that is |
+| `users.lookupByEmail`              | `users:read.email`      | naming a recipient by email address                                                                    |
+
+`chat.postMessage` into a `D…` channel needs nothing beyond the `chat:write` the
+server already had, and `conversations.history` on one needs `im:history`.
+
+The last enumeration of the installed app's scopes — `auth.test`'s
+`x-oauth-scopes` header, read against the live API on 2026-08-14 — returned
+`channels:history`, `channels:read`, `groups:history`, `groups:read`,
+`files:read`, `files:write`, `reactions:write`, `chat:write`, `im:history`,
+`im:read` and `users:read`, and **not `im:write`, `mpim:read` or
+`users:read.email`**. Every claim below about what fails is measured against that
+set. Adding a scope means editing the Slack app's configuration and reinstalling
+it — a human action in Slack's UI that no code in this repo can take.
+
+**Tadas reports having added `im:write` on 2026-08-15, and that has NOT been
+re-verified here.** Re-enumerating the scopes needs the bot token, which is not
+reachable from an ordinary strad session: `SLACK_BOT_TOKEN` is injected into the
+`slack-workspace` MCP server's process, not into the agent's environment, and no
+tool that server exposes calls `conversations.open`, `users.list` or
+`users.lookupByEmail` — the four tools that would are the ones in this fork,
+which is not deployed until it merges. What WAS confirmed on 2026-08-15 is that
+the deployed token still authenticates and still reads a DM, so nothing rotated
+out from under the deployment. Treat the scope set above as the last measured
+truth and re-run `auth.test` from a session that holds the token before relying
+on `im:write`.
+
+**The consequence, precisely.** `conversations.open` is what creates a DM channel
+that does not exist yet. Without `im:write`, `slack_send_dm` falls back to
+`conversations.list?types=im` and uses the DM channel if one is already open — so
+sending to anyone the bot has ever exchanged a DM with WORKS today, and sending
+to a first-time recipient fails with an error naming the scope and the other way
+out (have them DM the bot once, which opens the conversation from their side).
+Group-DM listing and by-email addressing fail with the scope named, on the call
+rather than at boot: the tools list either way, because a tool surface that
+changes shape with a credential is a worse debugging story than a call that says
+what it needs.
+
+**Why anyway.** The motivating case is Zimmer DMing Tadas when a Claude account
+falls into `needs_reauth`, and that conversation has existed since 2026-05-30 —
+so the capability that matters is live now rather than after a human edits an app
+config. Withholding the whole surface until every scope is present would trade a
+working alert for a tidier dependency.
+
+**Undo:** add `im:write` (and `mpim:read` / `users:read.email` if group DMs or
+email addressing are wanted) to the Slack app's bot token scopes, reinstall the
+app to the workspace, and rotate `SLACK_BOT_TOKEN` in the parameter store. No
+code changes: the fallback is a `missing_scope` retry, so it simply stops firing.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather
@@ -2557,6 +2627,14 @@ because each one names the evidence that closed it.
       both `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` (non-secret) and
       `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_PRIVATE_KEY` (secret) in the `/ui/secrets` console.
 
+- [ ] **Slack scope `im:write`** on the workspace's Slack app, then reinstall and
+      rotate `SLACK_BOT_TOKEN` → resolves the live half of hack #59. Without it
+      `slack_send_dm` reaches anyone the bot has an open DM with and nobody else.
+      `mpim:read` (group-DM listing) and `users:read.email` (addressing someone by
+      email) are the same edit, and both are optional. **Reported done by Tadas on
+      2026-08-15 and left unchecked deliberately**: the box closes on a measured
+      `auth.test`, and no strad session holds the token to run one (#59). Run it
+      from anywhere that does, then check this and correct #59's scope list.
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2. Tracked in
       issue #6.

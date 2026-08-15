@@ -247,7 +247,7 @@ describe("staging config", () => {
 
   /** Tool counts, per capability tier — the numbers the containers used to make. */
   const ALLOW_COUNTS: Record<string, number> = {
-    "slack-readonly": 4,
+    "slack-readonly": 7,
     "tailscale-readonly": 7,
     "monarch-money-readonly": 10,
     "gmail-ro": 5,
@@ -269,7 +269,7 @@ describe("staging config", () => {
 
   it.each([
     // These tiers ARE the full tool set, so they carry no policy at all. Their
-    // counts (gmail 8, docs 11, calendar 7, 1Password 9, slack 9, tailscale 15,
+    // counts (gmail 8, docs 11, calendar 7, 1Password 9, slack 13, tailscale 15,
     // monarch 23) are asserted against the running image by the bundle's smoke test.
     "slack",
     "tailscale-readwrite",

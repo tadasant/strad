@@ -1,11 +1,73 @@
 import type { ISlackClient } from '../server.js';
-import type { Channel, Message, SlackFile } from '../types.js';
+import type { OpenDmResult } from './lib/open-dm.js';
+import { compareMatches } from './lib/find-users.js';
+import type {
+  Channel,
+  DirectMessage,
+  DmList,
+  Message,
+  SlackFile,
+  User,
+  UserMatch,
+  UserSearch,
+} from '../types.js';
 
 interface MockData {
   channels?: Channel[];
   messages?: Record<string, Message[]>; // channelId -> messages
   threads?: Record<string, Message[]>; // threadTs -> messages
+  users?: User[];
+  dms?: DirectMessage[]; // DM conversations, and the userId -> D… mapping
   [key: string]: unknown;
+}
+
+const DEFAULT_USERS: User[] = [
+  {
+    id: 'U0BFTSUN8MD',
+    name: 'tadas',
+    real_name: 'Tadas Antanavicius',
+    is_bot: false,
+    profile: { display_name: 'tadas', real_name: 'Tadas Antanavicius' },
+  },
+  {
+    id: 'U123456789',
+    name: 'mock.user',
+    real_name: 'Mock User',
+    is_bot: false,
+    profile: { display_name: 'mock', real_name: 'Mock User' },
+  },
+];
+
+const DEFAULT_DMS: DirectMessage[] = [
+  {
+    id: 'D0BGVRZRX4Z',
+    isGroup: false,
+    userId: 'U0BFTSUN8MD',
+    user: DEFAULT_USERS[0],
+    created: 1783890249,
+    updated: 1786500743223,
+    isUserDeleted: false,
+  },
+];
+
+/** The same ranking `findUsers` applies against the real directory. */
+function rank(user: User, query: string): UserMatch | null {
+  const fields: Array<[UserMatch['field'], string | undefined]> = [
+    ['handle', user.name],
+    ['display_name', user.profile?.display_name],
+    ['real_name', user.real_name ?? user.profile?.real_name],
+    ['email', user.profile?.email],
+  ];
+
+  for (const [field, value] of fields) {
+    const v = value?.toLowerCase();
+    if (!v) continue;
+    if (v === query) return { user, rank: 0, field };
+    if (v.startsWith(query)) return { user, rank: 1, field };
+    if (v.includes(query)) return { user, rank: 2, field };
+  }
+
+  return null;
 }
 
 /**
@@ -177,6 +239,57 @@ export function createIntegrationMockSlackClient(
         mimetype: 'text/plain',
         size: content.length,
         permalink: `https://slack.com/files/mock/${options.filename ?? 'snippet.txt'}`,
+      };
+    },
+
+    async getUser(userId: string): Promise<User> {
+      const user = (mockData.users ?? DEFAULT_USERS).find((u) => u.id === userId);
+      if (!user) {
+        throw new Error(`Slack API error on users.info: user_not_found`);
+      }
+      return user;
+    },
+
+    async findUsers(query: string): Promise<UserSearch> {
+      const normalized = query.trim().replace(/^@/, '').toLowerCase();
+      if (normalized === '') return { matches: [], truncated: false };
+
+      const matches = (mockData.users ?? DEFAULT_USERS)
+        .map((user) => rank(user, normalized))
+        .filter((m): m is UserMatch => m !== null)
+        .sort(compareMatches);
+
+      return { matches, truncated: false };
+    },
+
+    async lookupUserByEmail(email: string): Promise<User | null> {
+      const target = email.trim().toLowerCase();
+      return (
+        (mockData.users ?? DEFAULT_USERS).find(
+          (u) => u.profile?.email?.toLowerCase() === target
+        ) ?? null
+      );
+    },
+
+    async openDm(userId: string): Promise<OpenDmResult> {
+      const existing = (mockData.dms ?? DEFAULT_DMS).find((dm) => dm.userId === userId);
+      return {
+        channelId: existing?.id ?? `D${userId}`,
+        via: 'conversations.open',
+      };
+    },
+
+    async findDmChannel(userId: string): Promise<string | null> {
+      return (mockData.dms ?? DEFAULT_DMS).find((dm) => dm.userId === userId)?.id ?? null;
+    },
+
+    async getDms(options?: { includeGroupDms?: boolean; limit?: number }): Promise<DmList> {
+      const dms = (mockData.dms ?? DEFAULT_DMS).filter(
+        (dm) => options?.includeGroupDms || !dm.isGroup
+      );
+      return {
+        dms: options?.limit === undefined ? dms : dms.slice(0, options.limit),
+        truncated: false,
       };
     },
   };

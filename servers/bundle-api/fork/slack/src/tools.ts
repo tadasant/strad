@@ -11,6 +11,10 @@ import { updateMessageTool } from './tools/update-message.js';
 import { reactToMessageTool } from './tools/react-to-message.js';
 import { downloadFileTool } from './tools/download-file.js';
 import { uploadSnippetTool } from './tools/upload-snippet.js';
+import { findUserTool } from './tools/find-user.js';
+import { getDmsTool } from './tools/get-dms.js';
+import { getDmTool } from './tools/get-dm.js';
+import { sendDmTool } from './tools/send-dm.js';
 
 /**
  * Tool groups for permission-based access control
@@ -76,12 +80,16 @@ const ALL_TOOLS: ToolDefinition[] = [
   { factory: getChannelTool, groups: ['readonly', 'write'] },
   { factory: getThreadTool, groups: ['readonly', 'write'] },
   { factory: downloadFileTool, groups: ['readonly', 'write'] },
+  { factory: getDmsTool, groups: ['readonly', 'write'] },
+  { factory: getDmTool, groups: ['readonly', 'write'] },
+  { factory: findUserTool, groups: ['readonly', 'write'] },
   // Write tools
   { factory: postMessageTool, groups: ['write'] },
   { factory: replyToThreadTool, groups: ['write'] },
   { factory: updateMessageTool, groups: ['write'] },
   { factory: reactToMessageTool, groups: ['write'] },
   { factory: uploadSnippetTool, groups: ['write'] },
+  { factory: sendDmTool, groups: ['write'] },
 ];
 
 /**

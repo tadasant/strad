@@ -62,7 +62,7 @@
 # call with an auth error naming no cause.
 #
 # The allow-lists below are derived from each upstream's own tool-group
-# definitions, so the counts stay honest: slack 4/9 · tailscale 7/15 ·
+# definitions, so the counts stay honest: slack 7/13 · tailscale 7/15 ·
 # monarch 10/23 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
 # 1Password 5/9 · telegram 5/6. test/staging-config.test.ts asserts every one of
 # those numbers.
@@ -251,7 +251,14 @@ servers:
     entitlements: [admin]
 
   # ---------------------------------------------------------------------------
-  # Slack — 9 tools full, 4 read-only. ONE container, ONE path, TWO slugs.
+  # Slack — 13 tools full, 7 read-only. ONE container, ONE path, TWO slugs.
+  #
+  # Nine of the thirteen are upstream's; four are the fork's DM surface
+  # (`slack_send_dm`, `slack_get_dm`, `slack_get_dms`, `slack_find_user`). Those
+  # four need OAuth scopes the channel tools never asked for — `im:write`,
+  # `im:read` and `users:read`, plus `users:read.email` to address someone by
+  # email and `mpim:read` for group DMs. A scope the installed token lacks fails
+  # the call, not the boot: the tools list either way. See fork/slack/FORK.md.
   # ---------------------------------------------------------------------------
   - slug: slack
     kind: supplementary-image
@@ -276,6 +283,18 @@ servers:
         - slack_get_channel
         - slack_get_thread
         - slack_download_file
+        # The DM reads. `slack_get_dm` resolves an EXISTING conversation rather
+        # than calling conversations.open, so nothing here creates anything.
+        #
+        # Note what this tier can now SEE, which is the axis the read-only/
+        # read-write split says nothing about: the whole workspace directory
+        # (`slack_find_user`, including profile emails where the scope is
+        # present) and every private conversation the bot is part of. That is a
+        # deliberate widening — a read tool that cannot find a user is not much
+        # of a read tool — but it is a widening.
+        - slack_get_dms
+        - slack_get_dm
+        - slack_find_user
 
   # ---------------------------------------------------------------------------
   # Tailscale — 15 tools full, 7 read-only (policy/devices/keys, reads only).
