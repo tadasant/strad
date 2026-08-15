@@ -1151,12 +1151,28 @@ re-measured here**, and the page says so rather than assuming it: re-enumerating
 scopes needs the bot token, which is injected into the `slack-workspace` MCP
 server's process rather than into an agent's environment — and none of the tools
 that server currently exposes calls `conversations.open`, `users.list` or
-`users.lookupByEmail`. The four that would are the ones on this page, and they
-reach a running server only once they deploy. What was confirmed on 2026-08-15 is
-that the deployed token still authenticates and still reads a DM, so nothing
-rotated out from under the deployment. Re-run `auth.test` from somewhere holding
-the token before relying on `im:write`.
+`users.lookupByEmail`, and the 1Password copy of the token declined its reveal.
+What was confirmed on 2026-08-15 is that the deployed token still authenticates
+and still reads a DM, so nothing rotated out from under the deployment. Re-run
+`auth.test` from somewhere holding the token before relying on `im:write`.
 :::
+
+**A live DM test on 2026-08-15 measured capability, not scope.** Two messages
+were sent through `chat.postMessage` addressed by USER id, and both landed — one
+to a person whose DM channel already existed (empty, created when the app was
+installed), and one to an account this bot had never had a conversation with at
+all. The second is the interesting result and it still does not settle
+`im:write`: Slack opens the conversation itself when `channel` is a user id, and
+documents `chat:write` as the only scope that call needs. So a delivered message
+is equally consistent with "`im:write` was added yesterday" and with "`im:write`
+was never needed for this path", and only `auth.test` tells them apart.
+
+The second reading would make this entry moot — `slack_send_dm` drags `im:write`
+in only because it calls `conversations.open` before posting — and
+[issue #150](https://github.com/tadasant/strad/issues/150) carries that as a
+hypothesis to test rather than a change to make. Removing the
+`conversations.open` path while the scope list is unknown would trade a call
+known to work for one that is merely likely to.
 
 **What that costs.** `conversations.open` is what creates a DM that does not
 exist yet. Without `im:write`, `slack_send_dm` retries a `missing_scope` as a

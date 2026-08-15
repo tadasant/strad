@@ -2565,12 +2565,38 @@ re-verified here.** Re-enumerating the scopes needs the bot token, which is not
 reachable from an ordinary strad session: `SLACK_BOT_TOKEN` is injected into the
 `slack-workspace` MCP server's process, not into the agent's environment, and no
 tool that server exposes calls `conversations.open`, `users.list` or
-`users.lookupByEmail` — the four tools that would are the ones in this fork,
-which is not deployed until it merges. What WAS confirmed on 2026-08-15 is that
-the deployed token still authenticates and still reads a DM, so nothing rotated
-out from under the deployment. Treat the scope set above as the last measured
-truth and re-run `auth.test` from a session that holds the token before relying
-on `im:write`.
+`users.lookupByEmail`. The 1Password copy of the token declined its reveal twice,
+which is the approval gate answering rather than something to work around. Treat
+the scope set above as the last measured truth and re-run `auth.test` from
+somewhere that holds the token before relying on `im:write`.
+
+**What a live DM test on 2026-08-15 did and did not settle.** Two messages were
+sent through the deployed server's `chat.postMessage`, addressed by USER id
+rather than by channel id, and both were delivered:
+
+| Recipient                      | Prior DM channel                                                    | Result                            |
+| ------------------------------ | ------------------------------------------------------------------- | --------------------------------- |
+| `U0BGU04U6F6` (a person)       | `D0BHN8SKH8Q`, created at app-install time, zero messages in it     | delivered, `ts` 1786783069.838599 |
+| `U0BPJ1Z8L13` (an app account) | none — `conversations.list?types=im` did not list one on 2026-08-14 | delivered, `ts` 1786783106.193319 |
+
+The second row is the interesting one: a message reached a recipient this bot had
+never had a conversation with. **It still does not settle `im:write`,** and the
+reason is worth writing down rather than rediscovering. Slack documents
+`chat.postMessage` as opening the conversation itself when `channel` is a user id
+("a direct message conversation will be opened if it isn't open already"), under
+`chat:write` alone. So a successful send is consistent with BOTH "`im:write` was
+added yesterday" and "`im:write` was never needed for this path", and nothing
+available here distinguishes them. Only `auth.test` does.
+
+That second possibility is the more useful one, because it would make this entire
+entry moot: `slack_send_dm` calls `conversations.open` FIRST and only then posts,
+which is what drags `im:write` in. Posting straight to the user id — and taking
+the `D…` id off the response, which `chat.postMessage` returns — would need no
+scope the channel tools do not already have. It is a hypothesis, not a finding,
+because it cannot be told apart from the other explanation without the scope
+list; issue #150 carries it. Do not refactor on it until an `auth.test` says
+which world this is: if `im:write` IS installed, removing the
+`conversations.open` path would trade a working call for an unverified one.
 
 **The consequence, precisely.** `conversations.open` is what creates a DM channel
 that does not exist yet. Without `im:write`, `slack_send_dm` falls back to
@@ -2641,7 +2667,9 @@ because each one names the evidence that closed it.
       email) are the same edit, and both are optional. **Reported done by Tadas on
       2026-08-15 and left unchecked deliberately**: the box closes on a measured
       `auth.test`, and no strad session holds the token to run one (#59). Run it
-      from anywhere that does, then check this and correct #59's scope list.
+      from anywhere that does, then check this and correct #59's scope list. The
+      same `auth.test` decides issue #150, which — if `im:write` turns out never
+      to have been needed — deletes this item rather than checking it.
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2. Tracked in
       issue #6.
