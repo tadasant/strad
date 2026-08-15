@@ -2544,11 +2544,26 @@ nine channel tools never touch, and each is gated on its own OAuth scope:
 `chat.postMessage` into a `D…` channel needs nothing beyond the `chat:write` the
 server already had, and `conversations.history` on one needs `im:history`.
 
-The Slack app installed on the Tadasant workspace holds `im:history`, `im:read`,
-`users:read` and `chat:write`, and **does not hold `im:write`, `mpim:read` or
-`users:read.email`** — verified against the live API on 2026-08-14. Adding a
-scope means editing the Slack app's configuration and reinstalling it, which is
-a human action in Slack's UI; no code in this repo can do it.
+The last enumeration of the installed app's scopes — `auth.test`'s
+`x-oauth-scopes` header, read against the live API on 2026-08-14 — returned
+`channels:history`, `channels:read`, `groups:history`, `groups:read`,
+`files:read`, `files:write`, `reactions:write`, `chat:write`, `im:history`,
+`im:read` and `users:read`, and **not `im:write`, `mpim:read` or
+`users:read.email`**. Every claim below about what fails is measured against that
+set. Adding a scope means editing the Slack app's configuration and reinstalling
+it — a human action in Slack's UI that no code in this repo can take.
+
+**Tadas reports having added `im:write` on 2026-08-15, and that has NOT been
+re-verified here.** Re-enumerating the scopes needs the bot token, which is not
+reachable from an ordinary strad session: `SLACK_BOT_TOKEN` is injected into the
+`slack-workspace` MCP server's process, not into the agent's environment, and no
+tool that server exposes calls `conversations.open`, `users.list` or
+`users.lookupByEmail` — the four tools that would are the ones in this fork,
+which is not deployed until it merges. What WAS confirmed on 2026-08-15 is that
+the deployed token still authenticates and still reads a DM, so nothing rotated
+out from under the deployment. Treat the scope set above as the last measured
+truth and re-run `auth.test` from a session that holds the token before relying
+on `im:write`.
 
 **The consequence, precisely.** `conversations.open` is what creates a DM channel
 that does not exist yet. Without `im:write`, `slack_send_dm` falls back to
@@ -2616,7 +2631,10 @@ because each one names the evidence that closed it.
       rotate `SLACK_BOT_TOKEN` → resolves the live half of hack #59. Without it
       `slack_send_dm` reaches anyone the bot has an open DM with and nobody else.
       `mpim:read` (group-DM listing) and `users:read.email` (addressing someone by
-      email) are the same edit, and both are optional.
+      email) are the same edit, and both are optional. **Reported done by Tadas on
+      2026-08-15 and left unchecked deliberately**: the box closes on a measured
+      `auth.test`, and no strad session holds the token to run one (#59). Run it
+      from anywhere that does, then check this and correct #59's scope list.
 - [ ] **Google OAuth**: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` as
       `strad-staging-*` (and `strad-prod-*`) secrets → removes hack #2. Tracked in
       issue #6.

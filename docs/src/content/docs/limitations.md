@@ -1140,10 +1140,23 @@ tools never touch, and each one is gated on its own OAuth scope:
 Posting into a `D…` channel needs only the `chat:write` the server already had,
 and reading one needs `im:history`.
 
-The app installed on the Tadasant workspace holds `im:history`, `im:read`,
-`users:read` and `chat:write` — and **not** `im:write`, `mpim:read` or
-`users:read.email`. Adding one is an edit to the Slack app plus a reinstall, and
-that is a human action in Slack's UI.
+The last measured scope set — `auth.test`'s `x-oauth-scopes` header, read live on
+2026-08-14 — holds `im:history`, `im:read`, `users:read` and `chat:write`, and
+**not** `im:write`, `mpim:read` or `users:read.email`. Adding one is an edit to
+the Slack app plus a reinstall, and that is a human action in Slack's UI.
+
+:::caution[The scope set above is a measurement, and it has an expiry]
+The workspace owner reports having added `im:write` on 2026-08-15. That is **not
+re-measured here**, and the page says so rather than assuming it: re-enumerating
+scopes needs the bot token, which is injected into the `slack-workspace` MCP
+server's process rather than into an agent's environment — and none of the tools
+that server currently exposes calls `conversations.open`, `users.list` or
+`users.lookupByEmail`. The four that would are the ones on this page, and they
+reach a running server only once they deploy. What was confirmed on 2026-08-15 is
+that the deployed token still authenticates and still reads a DM, so nothing
+rotated out from under the deployment. Re-run `auth.test` from somewhere holding
+the token before relying on `im:write`.
+:::
 
 **What that costs.** `conversations.open` is what creates a DM that does not
 exist yet. Without `im:write`, `slack_send_dm` retries a `missing_scope` as a

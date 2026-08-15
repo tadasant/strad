@@ -180,6 +180,23 @@ test('an HTTP failure is reported as one, not as a Slack error', async () => {
   }
 });
 
+test('with im:write present, openDm opens and never scans', async () => {
+  // The other side of the fallback, and the reason adding the scope needs no
+  // code change: a successful conversations.open returns immediately, so the
+  // scan that exists for the scope-less token simply stops happening.
+  const stub = stubFetch({
+    'conversations.open': { ok: true, channel: { id: 'D0NEWLYOPENED' } },
+  });
+  try {
+    const result = await openDm(BASE, HEADERS, 'U0NEVERMET');
+    assert.deepEqual(result, { channelId: 'D0NEWLYOPENED', via: 'conversations.open' });
+    assert.deepEqual(stub.requests[0].body, { users: 'U0NEVERMET' });
+    assert.equal(stub.requests.length, 1, 'nothing else should be called');
+  } finally {
+    stub.restore();
+  }
+});
+
 test('openDm falls back to an existing DM when it may not open one', async () => {
   // The real shape of the deployed token: chat:write and im:read, no im:write.
   // Refusing to send there would refuse work the token can plainly do.
