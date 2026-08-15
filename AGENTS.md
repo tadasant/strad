@@ -13,6 +13,14 @@ a GHCR image.
 
 ## Working here
 
+**Production invariants.** Before starting work, read the desired invariants for
+the Tadasant production deployment — some of them are about strad directly. The
+`check-invariants-before-starting-work` skill loads them, and the canonical source
+is `artifacts/references/PRODUCTION_INVARIANTS.md` (reference id
+`production-invariants`) in the private `tadasant/tadasant-internal`. They are
+_desired_ invariants: not all of them hold, and work in this repo should move
+toward them, not away. If a change moves away from one, say so.
+
 - Use a feature branch off the latest `main`; `main` is protected and lands via PR.
 - `npm test` (Vitest) runs unit tests plus a real-MCP-client, in-process E2E.
 - `npm run typecheck`, `npm run lint`, `npm run format:check` — all three gate CI.
