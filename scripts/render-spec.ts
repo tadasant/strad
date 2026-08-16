@@ -522,7 +522,12 @@ if (storeBacked && store) {
   }
   console.error(
     `[render-spec] preflight ok: ${result.present.length} referenced secret(s) ` +
-      `present in ${result.namespace}.`,
+      `present in ${result.namespace}` +
+      (result.perServer.length > 0
+        ? `, plus ${result.perServer.length} served from the referencing ` +
+          `server's own namespace instead (${result.perServer.join(", ")})`
+        : "") +
+      `.`,
   );
 }
 

@@ -4,10 +4,11 @@ import {
   requiredSecretNames,
   supplementaryEnvNames,
 } from "./preflight.ts";
+import { CORE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
 import {
-  envRefsBySlug,
   mcpNamespace,
+  ownNamespaceRefsBySlug,
   seededByServer,
 } from "./server-namespaces.ts";
 import { isSecretRef } from "../secrets/parameters/wire.ts";
@@ -69,13 +70,16 @@ import type {
  *
  * ## Two namespaces, one verdict
  *
- * A supplementary `env:` ref does not resolve from the gateway namespace alone:
- * the server's own `/strad/{env}/mcp/{slug}/static/` is consulted first, and
- * wins (see src/deploy/server-namespaces.ts). So this lists that prefix too, and
- * a name every referencing server holds for itself is reported as `perServer`
- * rather than as missing — the deployment resolves it, this namespace simply is
- * not where. A name the CORE resolves is never covered that way: those are read
- * in-process, out of the gateway namespace, whatever a server was seeded.
+ * A server's `${NAME}` does not resolve from the gateway namespace alone: the
+ * server's own `/strad/{env}/mcp/{slug}/static/` is consulted first, and wins —
+ * at render time for a supplementary `env:` (src/deploy/server-namespaces.ts)
+ * and at runtime for every `url:`, `headers:` and builtin `options:` ref
+ * (src/secrets/provider). So this lists that prefix too, and a name every
+ * referencing server holds for itself is reported as `perServer` rather than as
+ * missing — the deployment resolves it, this namespace simply is not where.
+ *
+ * The gateway's own BOOT keys are never covered that way. There is no server to
+ * attribute `STRAD_TOKENS` to, and the process reads it for itself.
  *
  * ## It reads metadata, not values
  *
@@ -99,7 +103,7 @@ export interface StoreCheckResult {
    * `/strad/{env}/mcp/{slug}/static/` namespace instead.
    *
    * Neither present nor missing: the gateway namespace is a FALLBACK for a
-   * supplementary `env:` ref, so reporting these as missing would fail a
+   * server's own `${NAME}`, so reporting these as missing would fail a
    * deployment that resolves every name it needs. They are named rather than
    * silently dropped, because "seeded somewhere else" and "seeded" are different
    * facts about a store.
@@ -184,16 +188,15 @@ export async function checkStore(
   const metas = await store.list(namespace);
   const held = new Set(metas.filter((m) => m.hasValue).map((m) => m.variable));
 
-  // The second layer. A supplementary `env:` ref resolves from the server's own
-  // namespace first (see src/deploy/server-namespaces.ts), so a name every
-  // referencing server holds for itself is not missing from the deployment —
-  // only from this namespace. A name the CORE resolves is never covered this
-  // way: `requiredSecretNames()` is read in-process, out of the gateway
-  // namespace, whatever any server was seeded.
-  const refsBySlug = envRefsBySlug(config);
-  // Only when the config has a supplementary `env:` ref at all. `list()`
-  // enumerates the whole project, so a config that cannot use the second layer
-  // must not pay for a scan of it.
+  // The second layer. A server's `${NAME}` resolves from that server's own
+  // namespace first — at render time for a supplementary `env:`, at runtime for
+  // a `url:`, a `headers:` map or a builtin's `options:` — so a name every
+  // referencing server holds for itself is not missing from the deployment, only
+  // from this namespace.
+  const refsBySlug = ownNamespaceRefsBySlug(config);
+  // Only when some server references a `${NAME}` at all. `list()` enumerates the
+  // whole project, so a config that cannot use the second layer must not pay for
+  // a scan of it.
   const seeded =
     refsBySlug.size > 0
       ? seededByServer(
@@ -201,9 +204,17 @@ export async function checkStore(
           await store.list(mcpNamespace(config.gateway.env)),
         )
       : new Map<string, string[]>();
-  const core = new Set(requiredSecretNames(config));
+  // The gateway's OWN keys, and only those. This used to exclude every name in
+  // `requiredSecretNames()` — which is the boot keys PLUS every `${NAME}` the
+  // config references — on the grounds that a reference is "read in-process, out
+  // of the gateway namespace, whatever a server was seeded". That is no longer
+  // how a reference resolves: `forServer(slug)` reads the server's own namespace
+  // first (src/secrets/provider), so a `headers:` credential filed under its own
+  // server is resolved, not missing. What stays excluded is the set that has no
+  // server to attribute it to and is read by the process for itself.
+  const bootKeys = new Set<string>(CORE_BOOT_ENV_KEYS);
   const servedPerServer = (name: string): boolean => {
-    if (core.has(name)) return false;
+    if (bootKeys.has(name)) return false;
     const slugs = [...refsBySlug].filter(([, refs]) => refs.has(name));
     return (
       slugs.length > 0 &&

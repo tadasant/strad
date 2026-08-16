@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import { generateKeyPairSync } from "node:crypto";
 import type { Server } from "node:http";
 import { afterAll, describe, expect, it } from "vitest";
@@ -269,7 +270,7 @@ async function appWith(
     config,
     registry: await Registry.build({
       config,
-      secrets: new EnvSecretProvider(SECRETS),
+      secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
       mode: "core",
       env,
     }),

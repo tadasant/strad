@@ -2657,6 +2657,52 @@ so an offline local-tunnel is treated like any other unlistable named server.
 One test in `test/local-tunnel.test.ts` ("does not take a healthy server down
 with it") then fails, which is the intended alarm.
 
+## 61. A server's own namespace is read at runtime, so one bad parameter in it takes that slug down
+
+**What.** Every `${NAME}` written on a server entry now resolves from
+`/strad/{env}/mcp/{slug}/static/` before the shared gateway namespace, at runtime,
+in strad's own process (`src/secrets/provider/index.ts`). The layer is a
+`StoreSecretProvider` over that namespace, chained in front of the shared one — and
+`ChainSecretProvider` deliberately does NOT fall through on a throw.
+
+`resolve()` renders a whole namespace and fails hard on any parameter in it that
+will not render (#36). So seeding a slug's namespace widens that entry's blast
+radius by one namespace: a malformed parameter under `/strad/prod/mcp/anki/static/`
+fails `anki`'s ref resolution outright, rather than missing and letting the gateway
+namespace answer — even for a name the gateway namespace holds and that worked
+before anyone seeded anything.
+
+**Why anyway.** Falling through on a throw is the worse failure, and it is the one
+`ChainSecretProvider` was written to refuse: an unreachable store would silently
+demote a server to whatever the shared namespace happens to hold, which is how a
+rotated credential comes back from the dead. It is also the semantics a
+`params: true` server has had for the same namespace all along, resolved by the
+registry's parameter cache — so both halves of `/mcp/{slug}/static/` fail the same
+way, rather than one of them being quietly more forgiving.
+
+Two things bound it. The layer is LAZY, so a slug nobody seeded and nobody asks
+about never reads at all; and `StoreSecretProvider` serves a stale snapshot on a
+refresh that throws, so only a FIRST read failing propagates.
+
+**Two smaller costs of the same layer, recorded here rather than as entries of
+their own:**
+
+- A newly SEEDED per-server name appears within `ttlSeconds` (60s) rather than
+  `negativeTtlSeconds` (10s). The layer sets `negativeTtlMs: Infinity`, because a
+  miss on it is the normal case — most names live in the shared namespace — and
+  `list()` enumerates the whole project, so chasing every miss would cost a full
+  listing per gateway-resolved name per slug. Rotation of an existing per-server
+  value is unaffected; the shared layer keeps its miss refresh.
+- A fleet pays one namespace read per TTL per slug that both references a
+  `${NAME}` and is actually called, on top of the one shared read. Same shape as
+  the render-time cost in limitation #52, moved to the request path and cached.
+
+**Exit.** Whatever fixes #36 fixes this: a `resolve()` that can report a per-name
+failure without failing the namespace would let the layer miss cleanly on the bad
+name and answer normally for the rest. `store:check --resolve` already names an
+un-renderable parameter, and now covers `/strad/{env}/mcp/` as well as the gateway
+namespace.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

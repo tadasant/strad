@@ -346,6 +346,81 @@ describe("unreadParameters", () => {
     expect(findings[0]!.message).toContain("no ENABLED server");
   });
 
+  it("reads an UNHOSTED server's namespace, rather than calling it unread", () => {
+    // This used to report "runs outside strad's infrastructure and has no
+    // environment to inject. Its ${NAME} refs resolve from the gateway
+    // namespace." That was true of the RENDERER and is no longer true of the
+    // deployment: an unhosted server's url/headers are resolved in strad's own
+    // process, through its own namespace first. Seeding a credential here is
+    // the recommended shape, so reporting it as unread would tell an operator to
+    // undo the right thing.
+    const config = parseConfig(
+      yaml(
+        `  - slug: anki
+    kind: local-tunnel
+    url: https://tunnel.example.com/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${ANKI_MCP_API_KEY}"
+`,
+        "  - name: bundle\n",
+      ),
+    );
+    expect(
+      unreadParameters(config, new Map([["anki", ["ANKI_MCP_API_KEY"]]])),
+    ).toEqual([]);
+
+    // ...and a name it does NOT reference is still reported, by the one rule
+    // that was always real: nothing names it.
+    const findings = unreadParameters(
+      config,
+      new Map([["anki", ["ANKI_MCP_API_KEY", "STRAY"]]]),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.variables).toEqual(["STRAY"]);
+    expect(findings[0]!.message).toContain("local-tunnel");
+  });
+
+  it("reads a builtin's options: refs from its own namespace too", () => {
+    const config = parseConfig(
+      yaml(
+        `  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    options:
+      greeting: "\${ECHO_GREETING}"
+`,
+        "  - name: bundle\n",
+      ),
+    );
+    expect(
+      unreadParameters(config, new Map([["echo", ["ECHO_GREETING"]]])),
+    ).toEqual([]);
+  });
+
+  it("counts a supplementary server's headers:, not just its env:", () => {
+    // Those are the headers CORE sends when it proxies — resolved in core's
+    // process, through the same per-server layer.
+    const config = parseConfig(
+      yaml(
+        `  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${SHOP_PROXY_TOKEN}"
+`,
+        "  - name: bundle\n",
+      ),
+    );
+    expect(
+      unreadParameters(config, new Map([["shop", ["SHOP_PROXY_TOKEN"]]])),
+    ).toEqual([]);
+  });
+
   it("stays quiet for a params: true server, whose namespace is read whole", () => {
     const config = parseConfig(
       yaml(

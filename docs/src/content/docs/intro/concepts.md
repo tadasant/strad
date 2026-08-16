@@ -145,7 +145,7 @@ and the gateway's own keys. It is what `gateway.secrets.provider:
 gcp-parameter-store` reads at runtime. A supplementary server's `env:` reference
 reads its own `mcp/{slug}/static/` first and falls back to this one, so the same
 `${NAME}` in two servers can mean two values; see [two servers, one variable
-name](/operate/secrets/#two-servers-one-variable-name) and
+name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace) and
 [Secrets](/operate/secrets/).
 
 ## Secret provider

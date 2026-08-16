@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { metrics, trace } from "@opentelemetry/api";
@@ -159,7 +160,7 @@ beforeAll(async () => {
 
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: new EnvSecretProvider({}),
+    secrets: sharedSecretProviders(new EnvSecretProvider({})),
     mode: "core",
     env,
   });

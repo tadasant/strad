@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -14,6 +15,7 @@ import {
   fixTargets,
   observe,
   placeholderReason,
+  secretLookup,
   SOURCE_TOOLTIP,
   storeProject,
   tally,
@@ -316,6 +318,41 @@ describe("observe", () => {
     });
     expect(o!.state).toBe("placeholder");
     expect(o!.detail).not.toContain("change-me");
+  });
+
+  it("asks the referencing server's OWN namespace before calling it missing", async () => {
+    // THE FALSE RED THIS PREVENTS. A credential filed under
+    // /strad/{env}/mcp/{slug}/static/ is what the gateway actually resolves, so
+    // a name-only lookup would paint the row red on a deployment where the
+    // server works — and send the reader to seed a second copy in the shared
+    // namespace, which is the shape this is moving away from.
+    const lookup = secretLookup(EMPTY_BAG, {
+      shared: { get: async () => null },
+      forServer: (slug: string) => ({
+        get: async (name: string) =>
+          slug === "anki" && name === "ANKI_MCP_API_KEY"
+            ? "live-anki-key-abc123def456"
+            : null,
+      }),
+    });
+
+    const [seeded] = await observe(
+      [requirement("ANKI_MCP_API_KEY", { slugs: ["anki"] })],
+      { config: CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(seeded!.state).toBe("present");
+
+    // ...and a slug that holds nothing still reports missing, naming both the
+    // shared path and its own, so the reader knows which one to create.
+    const [absent] = await observe(
+      [requirement("OTHER_TOKEN", { slugs: ["other"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(absent!.state).toBe("missing");
+    expect(absent!.detail).toContain("/strad/test/gateway/static/OTHER_TOKEN");
+    expect(absent!.detail).toContain(
+      "/strad/test/mcp/other/static/OTHER_TOKEN",
+    );
   });
 
   it("reports an absent gateway secret as missing", async () => {
@@ -868,7 +905,7 @@ async function boot(
 ): Promise<{ url: string; close: () => void }> {
   const registry = await Registry.build({
     config,
-    secrets: provider,
+    secrets: sharedSecretProviders(provider),
     mode: "core",
     env: ENV,
   });
@@ -879,7 +916,7 @@ async function boot(
     mode: "core",
     env: ENV,
     secrets: bag,
-    secretProvider: provider,
+    secretProvider: sharedSecretProviders(provider),
   });
   const s = app.listen(0);
   await new Promise<void>((r) => s.on("listening", () => r()));
@@ -1213,7 +1250,7 @@ describe("GET /secrets in bundle mode", () => {
     const bundleEnv = { ...ENV, STRAD_BUNDLE: "bundle" };
     const registry = await Registry.build({
       config: CONFIG,
-      secrets: new EnvSecretProvider(SECRETS),
+      secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
       mode: "bundle",
       env: bundleEnv,
     });

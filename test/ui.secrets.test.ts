@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -151,7 +152,7 @@ beforeAll(async () => {
   fake = createFakeGcp();
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: new EnvSecretProvider(SECRETS),
+    secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
     mode: "core",
     env,
   });

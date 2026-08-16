@@ -3,6 +3,11 @@ import { collectSecretRefs } from "./appspec.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
 import {
+  mcpNamespace,
+  ownNamespaceRefsBySlug,
+  seededByServer,
+} from "./server-namespaces.ts";
+import {
   CORE_BOOT_ENV_KEYS,
   REQUIRED_BOOT_ENV_KEYS,
 } from "../secrets/provider/hydrate.ts";
@@ -33,10 +38,23 @@ import type { ParameterAdmin } from "../secrets/parameters/types.ts";
  */
 
 export interface PreflightResult {
-  /** Names the config references that the store does not hold. */
+  /** Names the config references that no namespace holds. */
   missing: string[];
-  /** Names the config references that the store does hold. */
+  /** Names the config references that the gateway namespace holds. */
   present: string[];
+  /**
+   * Names the gateway namespace does NOT hold and does not have to, because
+   * every server that references them holds them in its own
+   * `/strad/{env}/mcp/{slug}/static/` namespace.
+   *
+   * Neither present nor missing. The gateway namespace is the FALLBACK for a
+   * server's `${NAME}` (see src/secrets/provider), so failing the deploy for
+   * one of these would refuse a deployment that resolves every name it needs —
+   * which is exactly what a credential moved into its owner's namespace looks
+   * like. Named rather than silently dropped: "seeded somewhere else" and
+   * "seeded" are different facts about a store.
+   */
+  perServer: string[];
   /** The namespace consulted. */
   namespace: string;
 }
@@ -187,7 +205,8 @@ const OPTIONAL_BOOT_ENV_KEYS = CORE_BOOT_ENV_KEYS.filter(
 );
 
 /**
- * Check that every required name exists in the gateway namespace.
+ * Check that every required name is resolvable — from the gateway namespace, or
+ * from the namespace of every server that references it.
  *
  * `optional` names are checked and reported but never counted as missing — a
  * deployment with no console has no `GOOGLE_CLIENT_SECRET`, and demanding one
@@ -195,6 +214,29 @@ const OPTIONAL_BOOT_ENV_KEYS = CORE_BOOT_ENV_KEYS.filter(
  * are deliberately NOT optional: the `env` renderer marks them `required`, and a
  * store-backed deploy that shipped without them would come up with `/mcp`
  * rejecting everything, or unable to reach its own bundles.
+ *
+ * ## The second layer, and why it is not optional to check
+ *
+ * A server's `${NAME}` resolves from its OWN namespace first (src/secrets/provider
+ * for the runtime refs, src/deploy/server-namespaces.ts for a supplementary
+ * `env:`). This gate is the one that turns an unresolvable name into a failed
+ * deploy rather than a failed request, so it has to know about both layers in
+ * both directions:
+ *
+ *   - a name held ONLY per-server must not fail the deploy. Filing a server's
+ *     own credential in its own namespace is the recommended shape, and a gate
+ *     that reds the deploy for it would make the feature unusable.
+ *   - a name held per-server for SOME of its referencing servers and nowhere
+ *     else is still missing, for the ones that would fall through. Coverage is
+ *     all-or-nothing per name.
+ *
+ * A boot key is never covered that way. `CORE_BOOT_ENV_KEYS` is read by the
+ * gateway process for itself, out of the shared provider, with no server to
+ * attribute it to.
+ *
+ * The second listing is LAZY: a config whose servers reference nothing is not
+ * made to pay for a scan of `/strad/{env}/mcp/`, which `list()` serves by
+ * enumerating the project.
  */
 export async function preflightSecrets(
   store: Pick<ParameterAdmin, "list">,
@@ -205,14 +247,36 @@ export async function preflightSecrets(
   const metas = await store.list(namespace);
   const held = new Set(metas.filter((m) => m.hasValue).map((m) => m.variable));
 
+  const refsBySlug = ownNamespaceRefsBySlug(config);
+  const seeded =
+    refsBySlug.size > 0
+      ? seededByServer(
+          config.gateway.env,
+          await store.list(mcpNamespace(config.gateway.env)),
+        )
+      : new Map<string, string[]>();
+  const bootKeys = new Set<string>(CORE_BOOT_ENV_KEYS);
+
+  /** Does EVERY server that references this name hold it for itself? */
+  const coveredPerServer = (name: string): boolean => {
+    if (bootKeys.has(name)) return false;
+    const slugs = [...refsBySlug].filter(([, refs]) => refs.has(name));
+    return (
+      slugs.length > 0 &&
+      slugs.every(([slug]) => (seeded.get(slug) ?? []).includes(name))
+    );
+  };
+
   const optional = new Set(opts.optional ?? OPTIONAL_BOOT_ENV_KEYS);
   const present: string[] = [];
+  const perServer: string[] = [];
   const missing: string[] = [];
 
   for (const name of requiredSecretNames(config)) {
     if (held.has(name)) present.push(name);
+    else if (coveredPerServer(name)) perServer.push(name);
     else if (!optional.has(name)) missing.push(name);
   }
 
-  return { missing, present, namespace };
+  return { missing, present, perServer, namespace };
 }

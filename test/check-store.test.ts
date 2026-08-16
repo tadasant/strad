@@ -225,10 +225,10 @@ describe("the second layer: a name served per-server", () => {
     expect(check.missing).toContain("SHOP_PASSWORD");
   });
 
-  it("never covers a name the CORE resolves, whatever a server was seeded", async () => {
-    // GRANOLA_TOKEN is a remote-http header, resolved in-process out of the
-    // gateway namespace. A same-named parameter under some server's namespace
-    // does not answer for it.
+  it("does not cover a name seeded under a server that does not reference it", async () => {
+    // GRANOLA_TOKEN is `granola`'s header. A same-named parameter under SHOP's
+    // namespace answers for nobody: `granola` still falls through to the gateway
+    // namespace, which no longer has it.
     const fake = await seededFake();
     await fake.store.destroy(gatewayParameterPath("test", "GRANOLA_TOKEN"));
     await fake.store.create({
@@ -239,6 +239,39 @@ describe("the second layer: a name served per-server", () => {
     const check = await checkStore(fake.store, config);
     expect(check.missing).toContain("GRANOLA_TOKEN");
     expect(check.perServer).not.toContain("GRANOLA_TOKEN");
+  });
+
+  it("covers an UNHOSTED server's header ref from its own namespace", async () => {
+    // The case that changed. `granola` is a remote-http server, so its
+    // `${GRANOLA_TOKEN}` is resolved by the gateway process — and the gateway
+    // process now reads the server's own namespace first. Reporting this as
+    // missing would fail the pre-flip gate on a store that is correct.
+    const fake = await seededFake();
+    await fake.store.destroy(gatewayParameterPath("test", "GRANOLA_TOKEN"));
+    await fake.store.create({
+      path: parameterPath("test", "granola", "GRANOLA_TOKEN"),
+      secret: true,
+      value: "leak-canary-granola-own-ns-9f2a",
+    });
+    const check = await checkStore(fake.store, config);
+    expect(check.perServer).toContain("GRANOLA_TOKEN");
+    expect(check.missing).not.toContain("GRANOLA_TOKEN");
+  });
+
+  it("never covers a BOOT key, which no server references", async () => {
+    // STRAD_TOKENS is read by the gateway process for itself, out of the shared
+    // provider. There is no server to attribute it to and no namespace that can
+    // stand in for the gateway's.
+    const fake = await seededFake();
+    await fake.store.destroy(gatewayParameterPath("test", "STRAD_TOKENS"));
+    await fake.store.create({
+      path: parameterPath("test", "granola", "STRAD_TOKENS"),
+      secret: true,
+      value: "[]",
+    });
+    const check = await checkStore(fake.store, config);
+    expect(check.missing).toContain("STRAD_TOKENS");
+    expect(check.perServer).not.toContain("STRAD_TOKENS");
   });
 });
 

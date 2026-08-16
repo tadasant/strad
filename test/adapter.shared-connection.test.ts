@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import { randomUUID } from "node:crypto";
 import type { Server as HttpServer } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -320,7 +321,7 @@ servers:
     };
     const registry = await Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env,
     });

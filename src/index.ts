@@ -7,7 +7,7 @@ import { createApp } from "./http/app.ts";
 import { loadSecrets } from "./secrets/index.ts";
 import { resolverFromEnv } from "./secrets/parameters/index.ts";
 import {
-  buildSecretProvider,
+  buildSecretProviders,
   hydrateBootEnv,
 } from "./secrets/provider/index.ts";
 import {
@@ -57,7 +57,10 @@ async function main(): Promise<void> {
   // OTEL_EXPORTER_OTLP_HEADERS, which the OpenTelemetry SDK reads from the
   // environment on its own terms.
   const resolver = resolverFromEnv(env);
-  const secretProvider = buildSecretProvider({ config, env, resolver });
+  const secretProviders = buildSecretProviders({ config, env, resolver });
+  // The deployment-wide half. Boot hydration, the console roster and the
+  // readiness route all ask about names with no server to attribute them to.
+  const secretProvider = secretProviders.shared;
 
   // Fill in the handful of env vars that are read once, by code with no provider
   // in scope (the token store, the console's OAuth client, the OTLP header).
@@ -122,7 +125,7 @@ async function main(): Promise<void> {
 
   const registry = await Registry.build({
     config,
-    secrets: secretProvider,
+    secrets: secretProviders,
     mode,
     bundleName,
     env,
@@ -170,7 +173,7 @@ async function main(): Promise<void> {
     mode,
     env,
     secrets,
-    secretProvider,
+    secretProvider: secretProviders,
     toolSurfaces: () => toolSurfaces.snapshot(),
   });
 

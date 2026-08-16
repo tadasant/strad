@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -115,7 +116,7 @@ async function boot(): Promise<{ url: string; passes: () => number }> {
     config: CONFIG,
     registry: await Registry.build({
       config: CONFIG,
-      secrets: new EnvSecretProvider(SECRETS),
+      secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
       mode: "core",
       env: ENV,
     }),

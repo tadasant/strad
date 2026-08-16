@@ -1,5 +1,5 @@
 import type { StradConfig } from "../../config/schema.ts";
-import { gatewayNamespace } from "../parameters/namespace.ts";
+import { gatewayNamespace, staticNamespace } from "../parameters/namespace.ts";
 import { resolverFromEnv } from "../parameters/resolver.ts";
 import type { ParameterResolver } from "../parameters/types.ts";
 import { ChainSecretProvider } from "./chain.ts";
@@ -40,11 +40,62 @@ export interface BuildProviderOptions {
 }
 
 /**
- * Build the runtime secret provider this deployment declares.
+ * The runtime secret providers this deployment reads `${NAME}` through.
+ *
+ * TWO of them, because a `${NAME}` reference has an OWNER. A name written in a
+ * server entry belongs to that server; a name the deployment itself needs
+ * (`STRAD_TOKENS`, the console's OAuth client) belongs to nobody in particular.
+ * Handing every caller one provider made those the same thing, and made the
+ * per-slug namespace unreadable at runtime — the whole reason this type exists.
+ */
+export interface ServerSecretProviders {
+  /**
+   * The deployment-wide provider: the gateway namespace, optionally chained in
+   * front of the environment.
+   *
+   * For the gateway's own keys and for anything with no server to attribute it
+   * to. Also the LAST layer of every per-server provider, which is what keeps
+   * every existing deployment working unchanged.
+   */
+  readonly shared: SecretProvider;
+  /**
+   * The provider one server's own `${NAME}` refs resolve against: that server's
+   * `/strad/{env}/mcp/{slug}/static/` namespace FIRST, `shared` second.
+   *
+   * Memoised per slug — the layer holds a namespace snapshot cache, and a fresh
+   * one per call would read the store on every request.
+   */
+  forServer(slug: string): SecretProvider;
+  /** Drop every cached snapshot, shared and per-server alike. */
+  invalidate(name?: string): void;
+}
+
+/**
+ * Lift ONE provider into the set, with no per-server layer.
+ *
+ * The honest shape for every deployment that has no per-slug namespace to read:
+ * the `env` provider, where a container's `process.env` is flat, and any caller
+ * holding a single provider (a test, a tool that builds its own). `forServer`
+ * returning the same object is the correct answer there, not a stub.
+ */
+export function sharedSecretProviders(
+  provider: SecretProvider,
+): ServerSecretProviders {
+  return {
+    shared: provider,
+    forServer: () => provider,
+    invalidate: (name?: string) => provider.invalidate(name),
+  };
+}
+
+/**
+ * Build the runtime secret providers this deployment declares.
  *
  * `gateway.secrets.provider: env` returns a bare `EnvSecretProvider` — no cloud
  * client is constructed and no credential is looked for. That is the default and
- * it is what keeps strad deployable with no vendor attached.
+ * it is what keeps strad deployable with no vendor attached. `forServer` is the
+ * SAME provider there, and not as a shortcut: a container has one `process.env`
+ * and there is no per-slug layer for it to have.
  *
  * `gcp-parameter-store` builds the store provider over the gateway namespace,
  * optionally chained in front of the environment. It needs the ONE bootstrap
@@ -52,15 +103,50 @@ export interface BuildProviderOptions {
  * hard failure and not a silent downgrade: a deployment that asked for the store
  * and quietly got env vars instead would look healthy while serving whatever
  * stale values happened to be baked in.
+ *
+ * ## The per-server layer
+ *
+ *     1. /strad/{env}/mcp/{slug}/static/{NAME}   — this server's own namespace
+ *     2. the shared provider                      — gateway namespace, then env
+ *
+ * This is the SAME layering `src/deploy/server-namespaces.ts` already applies to
+ * a supplementary image's `env:` at render time, applied to the other half of
+ * the system — the refs strad resolves in its OWN process, which is every
+ * `url:`, every `headers:` and every builtin `options:` value. Those had exactly
+ * one source, the gateway namespace, so a credential belonging to one server had
+ * to be filed in the deployment-wide namespace to be readable at all. For an
+ * unhosted server (`remote-http`, `local-tunnel`) that was the only source there
+ * was: it runs no container, so `params: true` and the render-time layer are
+ * both closed to it.
+ *
+ * The server's own namespace WINS, for the reason it wins at render time: the
+ * shared namespace is where every existing name already is, so a gateway-first
+ * order would mean a per-server value could never take effect.
+ *
+ * It costs nothing where nobody uses it. The layer is LAZY — a `StoreSecretProvider`
+ * reads on first `get`, and `forServer` is only asked for a slug that references
+ * a `${NAME}` at all — and an empty namespace resolves to an empty snapshot, so
+ * layer 1 misses and layer 2 answers exactly as it did before.
+ *
+ * ## Why the per-server layer does not chase a miss
+ *
+ * `negativeTtlMs: Infinity` turns off `StoreSecretProvider`'s miss-triggered
+ * refresh for layer 1 only. A miss there is the NORMAL case — most names live in
+ * the shared namespace and always will — and `resolve()` lists the whole project
+ * per call, so chasing every one of them would re-enumerate the store for each
+ * gateway-resolved name on each slug. The ordinary TTL still refreshes the
+ * snapshot, so a newly seeded per-server value takes effect within `ttlSeconds`
+ * rather than `negativeTtlSeconds`. The shared layer keeps its miss refresh,
+ * which is where a brand-new name actually shows up.
  */
-export function buildSecretProvider(
+export function buildSecretProviders(
   opts: BuildProviderOptions,
-): SecretProvider {
+): ServerSecretProviders {
   const env = opts.env ?? process.env;
   const settings = opts.config.gateway.secrets;
   const envProvider = new EnvSecretProvider(env);
 
-  if (settings.provider === "env") return envProvider;
+  if (settings.provider === "env") return sharedSecretProviders(envProvider);
 
   const resolver =
     opts.resolver === undefined ? resolverFromEnv(env) : opts.resolver;
@@ -82,7 +168,37 @@ export function buildSecretProvider(
     },
   );
 
-  return settings.envFallback
+  const shared: SecretProvider = settings.envFallback
     ? new ChainSecretProvider([store, envProvider])
     : store;
+
+  const perServer = new Map<string, SecretProvider>();
+  const forServer = (slug: string): SecretProvider => {
+    const held = perServer.get(slug);
+    if (held) return held;
+    const own = new StoreSecretProvider(
+      resolver,
+      staticNamespace(opts.config.gateway.env, slug),
+      { ttlMs: settings.ttlSeconds * 1000, negativeTtlMs: Infinity },
+    );
+    // ChainSecretProvider unchanged, including its rule that a THROW does not
+    // fall through. An unreachable store must not silently demote a server to
+    // whatever the shared namespace happens to hold — that is how a rotated
+    // credential comes back from the dead. It is also the semantics a
+    // `params: true` server already has for the same namespace, resolved by the
+    // registry's parameter cache, so the two halves of `/mcp/{slug}/static/`
+    // fail the same way.
+    const chained = new ChainSecretProvider([own, shared]);
+    perServer.set(slug, chained);
+    return chained;
+  };
+
+  return {
+    shared,
+    forServer,
+    invalidate: (name?: string) => {
+      shared.invalidate(name);
+      for (const provider of perServer.values()) provider.invalidate(name);
+    },
+  };
 }

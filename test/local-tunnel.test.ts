@@ -1,3 +1,7 @@
+import {
+  buildSecretProviders,
+  sharedSecretProviders,
+} from "../src/secrets/provider/index.ts";
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -245,7 +249,7 @@ servers:
     const config = CONFIG(`http://127.0.0.1:${await deadPort()}/mcp`);
     return Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env: {},
     });
@@ -325,7 +329,7 @@ servers:
 `);
     const registry = await Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env: { STRAD_BUNDLE_URL_BUNDLE: `http://127.0.0.1:${await deadPort()}` },
     });
@@ -394,7 +398,7 @@ servers:
 `);
     const registry = await Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env: {},
     });
@@ -475,7 +479,7 @@ servers:
 `);
     const registry = await Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env: {},
     });
@@ -506,7 +510,7 @@ servers:
     const dead = await deadPort();
     const registry = await Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env: {
         STRAD_BUNDLE_URL_B1: `http://127.0.0.1:${dead}`,
@@ -534,7 +538,7 @@ servers:
 `);
     const registry = await Registry.build({
       config,
-      secrets: new EnvSecretProvider({}),
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
       mode: "core",
       env: {},
     });
@@ -544,5 +548,111 @@ servers:
     // slug is anybody's problem. For this kind it is nobody's.
     expect(registry.get("anki")?.kind).toBe("local-tunnel");
     await registry.close();
+  });
+});
+
+describe("credentials come from the server's OWN namespace", () => {
+  /**
+   * THE CASE THIS KIND EXISTS TO SERVE, end to end.
+   *
+   * A tunnel in front of a machine you own is locked down with Cloudflare Access
+   * service-token headers plus an app-level bearer, so a `local-tunnel` entry
+   * carries three credentials that belong to exactly one server. They had
+   * nowhere to live but `/strad/{env}/gateway/static/`: strad runs no container
+   * for an unhosted kind, so `params: true` and the render-time `env:` layer are
+   * both closed to it, and the runtime provider read one namespace.
+   *
+   * This asserts the whole path — config -> registry -> adapter -> wire — rather
+   * than the provider in isolation, because the provider was never the part in
+   * doubt. The part in doubt was whether the registry hands each server its own.
+   */
+  it("sends headers resolved from /strad/{env}/mcp/{slug}/static/", async () => {
+    const seen: Record<string, string | undefined> = {};
+    const app = express();
+    const mcp = new McpServer(
+      { name: "standin", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    mcp.tool("ping", "ping", {}, async () => ({
+      content: [{ type: "text", text: "pong" }],
+    }));
+    app.post(/.*/, (req, res) => {
+      void (async () => {
+        seen["cf-access-client-id"] = req.headers["cf-access-client-id"] as
+          string | undefined;
+        seen["cf-access-client-secret"] = req.headers[
+          "cf-access-client-secret"
+        ] as string | undefined;
+        seen.authorization = req.headers.authorization;
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+        });
+        res.on("close", () => void transport.close());
+        await mcp.server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      })();
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const config = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: test
+  secrets:
+    provider: gcp-parameter-store
+    envFallback: false
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+servers:
+  - slug: anki
+    kind: local-tunnel
+    url: "http://127.0.0.1:${port}/mcp"
+    entitlements: [admin]
+    headers:
+      CF-Access-Client-Id: "\${ANKI_CF_ACCESS_CLIENT_ID}"
+      CF-Access-Client-Secret: "\${ANKI_CF_ACCESS_CLIENT_SECRET}"
+      Authorization: "Bearer \${ANKI_MCP_API_KEY}"
+`);
+
+    // Seeded EXACTLY where Tadas seeded them in prod, and nowhere else. The
+    // gateway namespace holds a decoy for one of the three: a shared value must
+    // lose to the server's own.
+    const resolver = {
+      async resolve(namespace: string): Promise<Record<string, string>> {
+        if (namespace === "/strad/test/mcp/anki/static/") {
+          return {
+            ANKI_CF_ACCESS_CLIENT_ID: "id.access",
+            ANKI_CF_ACCESS_CLIENT_SECRET: "sekret",
+            ANKI_MCP_API_KEY: "bearer-mine",
+          };
+        }
+        if (namespace === "/strad/test/gateway/static/") {
+          return { ANKI_MCP_API_KEY: "bearer-shared" };
+        }
+        return {};
+      },
+    };
+
+    const registry = await Registry.build({
+      config,
+      secrets: buildSecretProviders({ config, env: {}, resolver }),
+      mode: "core",
+      env: {},
+    });
+    try {
+      const adapter = registry.get("anki")!;
+      expect((await adapter.listTools()).map((t) => t.name)).toEqual(["ping"]);
+      expect(seen["cf-access-client-id"]).toBe("id.access");
+      expect(seen["cf-access-client-secret"]).toBe("sekret");
+      expect(seen.authorization).toBe("Bearer bearer-mine");
+    } finally {
+      await registry.close();
+    }
   });
 });
