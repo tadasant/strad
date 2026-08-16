@@ -1,3 +1,4 @@
+import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -117,7 +118,7 @@ export function paramsConsumers(config: StradConfig): ParamsConsumer[] {
   const out: ParamsConsumer[] = [];
   for (const server of config.servers) {
     if (!server.enabled) continue;
-    if (server.kind === "remote-http") continue;
+    if (isUnhosted(server)) continue;
     const substitutes =
       server.kind === "supplementary-image" &&
       Object.values(server.env).some((raw) => refsIn(raw).length > 0);
@@ -147,7 +148,7 @@ export function prefixSuggestions(config: StradConfig): {
 }[] {
   const wired = new Map(paramsConsumers(config).map((c) => [c.slug, c.via]));
   return config.servers
-    .filter((s) => s.enabled && s.kind !== "remote-http")
+    .filter((s) => s.enabled && !isUnhosted(s))
     .map((s) => ({
       slug: s.slug,
       prefix: `${s.slug}/static/`,
@@ -232,13 +233,13 @@ export function classifyPath(
     };
   }
 
-  if (server.kind === "remote-http") {
+  if (isUnhosted(server)) {
     return {
       state: "unrouted",
       slug,
       label: "not wired",
       detail:
-        `"${slug}" is a remote-http server — strad runs no container for it and there is no ` +
+        `"${slug}" is a ${server.kind} server — strad runs no container for it and there is no ` +
         "environment to inject, so it can never consume a managed parameter.",
     };
   }

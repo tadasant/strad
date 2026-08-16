@@ -1,3 +1,4 @@
+import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
@@ -559,7 +560,9 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
 
   for (const server of config.servers) {
     if (!server.enabled) continue;
-    if (server.kind === "remote-http") continue; // no container: it's someone else's
+    // No container of ours: a third party's server, or the operator's own
+    // machine behind a tunnel. Either way there is nothing here to deploy.
+    if (isUnhosted(server)) continue;
 
     if (server.kind === "supplementary-image") {
       // Several supplementary servers may share one bundle image (bundle-api

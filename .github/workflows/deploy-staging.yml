@@ -742,6 +742,9 @@ jobs:
           # It does NOT gate on:
           #   - `remote-http`. deepwiki lives on the public internet and having a
           #     bad afternoon is not a reason to fail strad's deploy. Annotated.
+          #   - `local-tunnel`. A server on a machine a human owns, which is off
+          #     most of the time BY DESIGN. Failing a deploy because a laptop is
+          #     closed would be the same mistake as the line above, only louder.
           #   - `empty`. A server that ANSWERS with no tools is a credential
           #     story, and the capability report below is deliberately non-gating
           #     for exactly that reason. Annotated too, never fatal.
@@ -754,7 +757,8 @@ jobs:
             if body=$(curl -fsS "$HOST/healthz" 2>/dev/null); then
               if printf '%s' "$body" | jq -e '.toolSurfaces' >/dev/null 2>&1; then
                 bad=$(printf '%s' "$body" | jq -c '[.toolSurfaces.servers[]
-                  | select(.kind != "remote-http" and .state == "unreachable")
+                  | select(.kind != "remote-http" and .kind != "local-tunnel"
+                           and .state == "unreachable")
                   | .slug]')
                 [ "$bad" = "[]" ] && break
               else

@@ -171,6 +171,31 @@ export class Registry {
           break;
         }
 
+        case "local-tunnel": {
+          // Same transport as remote-http, and the same per-operation endpoint
+          // thunk — a tunnel URL is exactly the kind of value that changes
+          // without a deploy (a Cloudflare quick tunnel mints a new hostname
+          // every restart), so resolving it per call is the point rather than
+          // an inherited detail.
+          adapters.set(
+            server.slug,
+            new HttpServerAdapter({
+              slug: server.slug,
+              kind: "local-tunnel",
+              endpoint: async () => ({
+                url: await resolveRefsAsync(server.url, secrets),
+                headers: await resolveMapAsync(server.headers, secrets),
+              }),
+              timeoutMs: server.timeoutMs,
+              // The one behavioural difference from remote-http: an absent
+              // machine must be a fast, legible failure rather than a hang.
+              connectTimeoutMs: server.connectTimeoutMs,
+            }),
+          );
+          slugs.push(server.slug);
+          break;
+        }
+
         case "supplementary-image": {
           // The component runs on the private network. App Platform binds
           // ${bundle-name.PRIVATE_URL} into this env var at deploy time; it

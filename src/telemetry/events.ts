@@ -77,6 +77,14 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     /** THE line this whole change exists for. `error` is excluded; see above. */
     "mcp.list_tools_failed": ["slug", "explicit"],
     "mcp.list_resources_failed": ["slug"],
+    /**
+     * A `local-tunnel` slug dropped from a listing because its machine is off.
+     *
+     * Deliberately NOT a `_failed` event: nothing failed. It answers "how often
+     * is the laptop actually there", which is the only operational question
+     * this kind of server raises, and it does so without implying an incident.
+     */
+    "mcp.local_machine_offline": ["slug", "listed"],
     /** A slug that is mounted and serving nothing. */
     "strad.tool_surface_degraded": ["slug", "state", "reason"],
     "strad.tool_surface_recovered": ["slug", "tool_count"],
@@ -161,6 +169,7 @@ export function eventExportEnabled(): boolean {
 const THROTTLED = new Set([
   "mcp.list_tools_failed",
   "mcp.list_resources_failed",
+  "mcp.local_machine_offline",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
 ]);

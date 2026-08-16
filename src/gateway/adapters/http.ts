@@ -125,14 +125,20 @@ class Conn {
 /**
  * Proxies an MCP server reachable over Streamable HTTP.
  *
- * This backs TWO config kinds, because at runtime they are the same thing:
+ * This backs THREE config kinds, because at runtime they are the same thing:
  *
  *   remote-http          -> some URL on the internet (Granola's server, ...)
+ *   local-tunnel         -> a URL that tunnels to a machine a human owns
  *   supplementary-image  -> a container we deployed, at ${bundle.PRIVATE_URL}
  *
  * The only difference is who resolved the URL. Keeping one implementation means
  * a supplementary image gets the same retry/timeout behaviour as a third-party
  * server, for free.
+ *
+ * `local-tunnel` differs in one respect that IS behavioural rather than
+ * cosmetic: its upstream is expected to be absent much of the time, so the
+ * handshake is bounded by `connectTimeoutMs` and a connection failure is
+ * reported as a machine that is offline. See `LocalMachineOfflineError`.
  *
  * ## The endpoint is a thunk, not a value
  *
@@ -150,7 +156,7 @@ class Conn {
  */
 export class HttpServerAdapter implements ServerAdapter {
   readonly slug: string;
-  readonly kind: "remote-http" | "supplementary-image";
+  readonly kind: "remote-http" | "local-tunnel" | "supplementary-image";
 
   private conn: Conn | null = null;
   private connecting: Promise<Conn> | null = null;
@@ -181,7 +187,7 @@ export class HttpServerAdapter implements ServerAdapter {
   constructor(
     private readonly opts: {
       slug: string;
-      kind: "remote-http" | "supplementary-image";
+      kind: "remote-http" | "local-tunnel" | "supplementary-image";
       /** Resolve the current URL + headers. Called on every operation. */
       endpoint: () => Promise<HttpEndpoint>;
       /**
@@ -190,6 +196,23 @@ export class HttpServerAdapter implements ServerAdapter {
        * for all the world like an App Platform bug. It is not. Set it here.
        */
       timeoutMs: number;
+      /**
+       * Bound on the HANDSHAKE specifically. Unset -> the handshake is bounded
+       * by `timeoutMs` like every other hop.
+       *
+       * Worth separating for an upstream that is legitimately absent much of the
+       * time, because the two answer different questions: `timeoutMs` is "how
+       * long may this work take", and this is "how long until I conclude nobody
+       * is there". A closed laptop should not cost a caller the former.
+       *
+       * It is applied TWICE, deliberately. The SDK's own request timeout rejects
+       * the `initialize` call, and an `AbortSignal` on the underlying fetch kills
+       * the socket. Only the second one covers the case that actually hurts: a
+       * host that accepts a TCP connection and then says nothing, where undici
+       * would otherwise sit on it for its 300s headers timeout with the SDK
+       * timer unable to free the socket.
+       */
+      connectTimeoutMs?: number;
       /**
        * Set when the upstream is ITSELF a strad gateway (a bundle component).
        *
@@ -260,7 +283,15 @@ export class HttpServerAdapter implements ServerAdapter {
     if (existing) return this.settle(existing, attemptsLeft);
 
     const epoch = this.epoch;
+    const connectTimeoutMs = this.opts.connectTimeoutMs;
     this.connecting = (async () => {
+      // Flipped once the handshake is done. The fetch wrapper below closes over
+      // it so that the connect deadline applies to the handshake's HTTP request
+      // and NOT to the tool calls that later run on the same transport — a
+      // 5s bound is right for "is anyone home" and quite wrong for a tool that
+      // drives a browser.
+      let handshaking = connectTimeoutMs !== undefined;
+
       const transport = new StreamableHTTPClientTransport(
         new URL(endpoint.url),
         {
@@ -283,7 +314,16 @@ export class HttpServerAdapter implements ServerAdapter {
             propagation.inject(context.active(), headers, {
               set: (h, k, v) => h.set(k, v),
             });
-            return fetch(url, { ...init, headers });
+            if (!handshaking || connectTimeoutMs === undefined) {
+              return fetch(url, { ...init, headers });
+            }
+            // Compose rather than replace: the SDK sets its own signal on this
+            // request, and dropping it would strip the caller's cancellation.
+            const deadline = AbortSignal.timeout(connectTimeoutMs);
+            const signal = init?.signal
+              ? AbortSignal.any([init.signal, deadline])
+              : deadline;
+            return fetch(url, { ...init, headers, signal });
           },
         },
       );
@@ -308,7 +348,22 @@ export class HttpServerAdapter implements ServerAdapter {
       // often the FIRST thing to get slow — a bundle too busy to answer
       // `initialize` inside the timeout looks, from the client's side, like a
       // server that does not exist.
-      await this.hop("connect", () => client.connect(transport));
+      try {
+        await this.hop("connect", () =>
+          client.connect(
+            transport,
+            connectTimeoutMs === undefined
+              ? undefined
+              : { timeout: connectTimeoutMs },
+          ),
+        );
+      } finally {
+        // Whatever happened, the connect deadline stops applying: on success
+        // the transport goes on to serve tool calls, and on failure it is
+        // discarded. Clearing it in `finally` is what keeps a retry from
+        // inheriting a signal that has already fired.
+        handshaking = false;
+      }
 
       // Only publish this client if the credential it was built with is still
       // the current one, and the adapter is still open. Two concurrent calls
@@ -365,8 +420,29 @@ export class HttpServerAdapter implements ServerAdapter {
         // fails loudly rather than spinning.
         return this.connect(attemptsLeft - 1);
       }
-      throw new UpstreamError(this.slug, err);
+      throw this.wrap(err);
     }
+  }
+
+  /**
+   * Turn an upstream failure into the error a caller should see.
+   *
+   * One place, because both the handshake path and the request path need the
+   * same judgement: a `local-tunnel` that could not be REACHED is an offline
+   * machine, and anything else is an upstream error. A local-tunnel that
+   * answered with a JSON-RPC error is emphatically NOT offline — the machine is
+   * up and said no — so this leans on the same `isConnectionFault` split that
+   * decides whether to retire a connection.
+   */
+  private wrap(err: unknown): UpstreamError {
+    if (this.kind === "local-tunnel" && isConnectionFault(err)) {
+      return new LocalMachineOfflineError(
+        this.slug,
+        err,
+        this.opts.connectTimeoutMs,
+      );
+    }
+    return new UpstreamError(this.slug, err);
   }
 
   /**
@@ -444,7 +520,7 @@ export class HttpServerAdapter implements ServerAdapter {
       return await this.hop(op, () => run(conn.client));
     } catch (err) {
       if (isConnectionFault(err)) this.retire(conn);
-      throw new UpstreamError(this.slug, err);
+      throw this.wrap(err);
     } finally {
       conn.release();
     }
@@ -706,11 +782,40 @@ export class UpstreamError extends Error {
   constructor(
     readonly slug: string,
     readonly cause: unknown,
+    message?: string,
   ) {
     super(
-      `upstream MCP server "${slug}" failed: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`,
+      message ??
+        `upstream MCP server "${slug}" failed: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+    );
+  }
+}
+
+/**
+ * A `local-tunnel` server whose machine did not answer.
+ *
+ * The distinction from a plain `UpstreamError` is not decoration. For every
+ * other kind, "the upstream did not answer" is a fault worth investigating; for
+ * this one it is the expected condition whenever the machine is off, and the
+ * only useful thing to tell anyone is WHICH machine and that it is offline. It
+ * subclasses `UpstreamError` so that every existing catch, retire and telemetry
+ * path treats it identically — only the words differ.
+ *
+ * The message is strad's OWN, built from the slug and a duration. It relays no
+ * upstream prose, which is what makes it safe to hand to a client verbatim —
+ * see the note in gateway/mcpServer.ts about not echoing an upstream's text.
+ */
+export class LocalMachineOfflineError extends UpstreamError {
+  constructor(slug: string, cause: unknown, waitedMs: number | undefined) {
+    super(
+      slug,
+      cause,
+      `the machine hosting "${slug}" is not reachable` +
+        (waitedMs === undefined ? "" : ` (no answer within ${waitedMs}ms)`) +
+        `. "${slug}" is a local-tunnel server: it works only while that machine ` +
+        `is running the server and its tunnel is up. Nothing is wrong with strad.`,
     );
   }
 }

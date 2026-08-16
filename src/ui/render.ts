@@ -1,4 +1,5 @@
 import type { ConsoleDenial } from "../auth/dev.ts";
+import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
 import type { ServerView } from "./resolve.ts";
@@ -855,7 +856,7 @@ function deliveryChip(routing: Routing): string {
 function deliveryBanner(config: StradConfig, resolver: boolean): string {
   const consumers = paramsConsumers(config);
   const total = config.servers.filter(
-    (s) => s.enabled && s.kind !== "remote-http",
+    (s) => s.enabled && !isUnhosted(s),
   ).length;
 
   // Two independent conditions, and the banner must not claim delivery on the
@@ -948,10 +949,7 @@ function secretsGuide(
   const reading = new Set(consumers.map((c) => c.slug));
   const unwiredCandidates = config.servers.filter(
     (s) =>
-      s.enabled &&
-      s.kind !== "remote-http" &&
-      !reading.has(s.slug) &&
-      s.slug !== slug,
+      s.enabled && !isUnhosted(s) && !reading.has(s.slug) && s.slug !== slug,
   );
   const unwired =
     unwiredCandidates.find((s) => s.kind === "supplementary-image") ??

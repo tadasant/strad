@@ -1,3 +1,4 @@
+import { isUnhosted } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -142,7 +143,9 @@ function requirementsOf(
     for (const name of refsIn(raw)) out.push({ name, delivery, consoleKey });
   };
 
-  if (server.kind === "remote-http") {
+  // Both unhosted kinds carry the same two ref-bearing fields, and strad
+  // resolves them in its own process because there is no container to inject.
+  if (isUnhosted(server)) {
     push(server.url, "gateway");
     for (const value of Object.values(server.headers)) push(value, "gateway");
     return out;
@@ -184,7 +187,7 @@ export function collectRequirements(config: StradConfig): SecretRequirement[] {
   const byName = new Map<string, SecretRequirement>();
   const paramsSlugs = new Set(
     config.servers
-      .filter((s) => s.enabled && s.kind !== "remote-http" && s.params)
+      .filter((s) => s.enabled && !isUnhosted(s) && s.params)
       .map((s) => s.slug),
   );
 
@@ -1325,7 +1328,7 @@ function managedParamObservations(
   server: ServerConfig,
   presence?: BundlePresence,
 ): SecretObservation[] {
-  if (server.kind === "remote-http" || !server.params) return [];
+  if (isUnhosted(server) || !server.params) return [];
   if (!presence) return [];
   const outcome = presence.probes.get(server.bundle);
   if (!outcome || outcome.kind !== "ok") return [];
@@ -1430,7 +1433,7 @@ export function deriveServerStatuses(
         // breaks the server while this page reports it has nothing to seed. This
         // page does not read that namespace, so the honest answer is that it did
         // not check — not that there was nothing to check.
-        const managed = server.kind !== "remote-http" && server.params;
+        const managed = !isUnhosted(server) && server.params;
         if (managed) {
           return {
             server,
