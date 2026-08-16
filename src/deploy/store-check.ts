@@ -204,14 +204,16 @@ export async function checkStore(
           await store.list(mcpNamespace(config.gateway.env)),
         )
       : new Map<string, string[]>();
-  // The gateway's OWN keys, and only those. This used to exclude every name in
-  // `requiredSecretNames()` — which is the boot keys PLUS every `${NAME}` the
-  // config references — on the grounds that a reference is "read in-process, out
-  // of the gateway namespace, whatever a server was seeded". That is no longer
-  // how a reference resolves: `forServer(slug)` reads the server's own namespace
-  // first (src/secrets/provider), so a `headers:` credential filed under its own
-  // server is resolved, not missing. What stays excluded is the set that has no
-  // server to attribute it to and is read by the process for itself.
+  // The gateway's OWN keys, and ONLY those.
+  //
+  // The tempting wider exclusion is every name in `requiredSecretNames()` — the
+  // boot keys plus every `${NAME}` the config references — on the grounds that a
+  // reference is read in-process out of the gateway namespace whatever a server
+  // was seeded. That is not how a reference resolves: `forServer(slug)` reads the
+  // server's own namespace first (src/secrets/provider), so a `headers:`
+  // credential filed under its own server is resolved, and calling it missing
+  // would fail the gate on a store that is correct. What belongs here is the set
+  // with no server to attribute it to, which the process reads for itself.
   const bootKeys = new Set<string>(CORE_BOOT_ENV_KEYS);
   const servedPerServer = (name: string): boolean => {
     if (bootKeys.has(name)) return false;

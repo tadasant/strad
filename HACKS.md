@@ -2684,6 +2684,14 @@ Two things bound it. The layer is LAZY, so a slug nobody seeded and nobody asks
 about never reads at all; and `StoreSecretProvider` serves a stale snapshot on a
 refresh that throws, so only a FIRST read failing propagates.
 
+The honest version of "lazy" is _seeded by nobody but CALLED_: that slug does read
+its empty namespace, and a throw there fails a name the shared namespace holds.
+What keeps this from being a real availability regression is that an EMPTY
+namespace cannot hard-fail on a parameter — there is none to render — so it can
+only fail on transport, and transport hits the shared layer in the same breath.
+The cases that genuinely differ are all ones where somebody seeded something
+broken under that slug.
+
 **Two smaller costs of the same layer, recorded here rather than as entries of
 their own:**
 
@@ -2699,9 +2707,15 @@ their own:**
 
 **Exit.** Whatever fixes #36 fixes this: a `resolve()` that can report a per-name
 failure without failing the namespace would let the layer miss cleanly on the bad
-name and answer normally for the rest. `store:check --resolve` already names an
-un-renderable parameter, and now covers `/strad/{env}/mcp/` as well as the gateway
-namespace.
+name and answer normally for the rest.
+
+**Nothing detects it ahead of time yet.** `store:check --resolve` renders the
+GATEWAY namespace only — it `list()`s `/strad/{env}/mcp/` to decide coverage and
+never `resolve()`s it, and `scripts/check-store.ts` says so on the `perServer`
+line ("and NOT render-checked"). So a per-server parameter that lists fine and
+will not render passes every gate and fails on the request path. Extending
+`--resolve` to the per-server namespaces it already enumerates is the cheap half
+of the exit, and is worth doing before the deep fix.
 
 ## What the human still needs to provision
 

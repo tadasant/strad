@@ -55,6 +55,18 @@ export interface PreflightResult {
    * "seeded" are different facts about a store.
    */
   perServer: string[];
+  /**
+   * For each MISSING name, the enabled servers that reference it and do not hold
+   * it themselves — the slugs that would fall through to a gateway namespace
+   * that does not have it either.
+   *
+   * A partially-seeded name is the likely failure once the second layer is in
+   * use, and "missing from the gateway namespace" is unhelpful advice for it:
+   * the fix is usually to seed the one slug that was skipped, not to put the
+   * value back in the shared namespace. Empty for a name no server references
+   * (a boot key).
+   */
+  unservedSlugs: Record<string, string[]>;
   /** The namespace consulted. */
   namespace: string;
 }
@@ -234,9 +246,10 @@ const OPTIONAL_BOOT_ENV_KEYS = CORE_BOOT_ENV_KEYS.filter(
  * gateway process for itself, out of the shared provider, with no server to
  * attribute it to.
  *
- * The second listing is LAZY: a config whose servers reference nothing is not
- * made to pay for a scan of `/strad/{env}/mcp/`, which `list()` serves by
- * enumerating the project.
+ * The second listing costs one extra `list()`, which `list()` serves by
+ * enumerating the project. The guard skips it only for a config whose servers
+ * reference no `${NAME}` at all — rare once runtime refs count, so treat this as
+ * one more enumeration per render rather than as an optimisation.
  */
 export async function preflightSecrets(
   store: Pick<ParameterAdmin, "list">,
@@ -271,12 +284,23 @@ export async function preflightSecrets(
   const present: string[] = [];
   const perServer: string[] = [];
   const missing: string[] = [];
+  const unservedSlugs: Record<string, string[]> = {};
 
   for (const name of requiredSecretNames(config)) {
     if (held.has(name)) present.push(name);
     else if (coveredPerServer(name)) perServer.push(name);
-    else if (!optional.has(name)) missing.push(name);
+    else if (!optional.has(name)) {
+      missing.push(name);
+      const short = [...refsBySlug]
+        .filter(
+          ([slug, refs]) =>
+            refs.has(name) && !(seeded.get(slug) ?? []).includes(name),
+        )
+        .map(([slug]) => slug)
+        .sort();
+      if (short.length > 0) unservedSlugs[name] = short;
+    }
   }
 
-  return { missing, present, perServer, namespace };
+  return { missing, present, perServer, unservedSlugs, namespace };
 }

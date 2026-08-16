@@ -518,6 +518,16 @@ if (storeBacked && store) {
       `::error::${result.missing.length} secret(s) referenced by the config are ` +
         `missing from ${result.namespace}: ${result.missing.join(", ")}`,
     );
+    // WHICH SLUG IS SHORT. A name held by some of its referencing servers and
+    // not others fails here, and "missing from the gateway namespace" points at
+    // the wrong fix — the value usually belongs under the one slug that was
+    // skipped. Names and slugs only.
+    for (const [name, slugs] of Object.entries(result.unservedSlugs)) {
+      console.error(
+        `::error::${name} is not held by ${slugs.join(", ")}. Seed it under ` +
+          `each of those servers' own namespace, or in ${result.namespace}.`,
+      );
+    }
     process.exit(1);
   }
   console.error(

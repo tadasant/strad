@@ -65,7 +65,6 @@ import { isSecretRef } from "../secrets/parameters/wire.ts";
  *
  * `consoleEnv:` is covered by neither: it is read from the deploy environment
  * only and lands on core.
- *
  */
 
 /** The prefix every per-server namespace sits under: `/strad/{env}/mcp/`. */
@@ -280,17 +279,16 @@ export function unreadParameters(
     // cannot set it and a builtin that does is served by the registry.
     if (!isUnhosted(server) && server.params) continue;
 
-    // WHAT IS LEFT IS ONE QUESTION FOR EVERY KIND: does this server reference
-    // the name?
+    // ONE QUESTION, FOR EVERY KIND: does this server reference the name?
     //
-    // It used to be three, and two of them were "no mechanism reads this at
-    // all" — an unhosted server was told its refs resolve from the gateway
-    // namespace, a builtin was told per-server substitution covers a
-    // supplementary `env:` only. Both were true of the renderer and neither is
-    // true any more: a server's `url:`, `headers:` and `options:` refs are
+    // The kind-specific answers this replaces — an unhosted server's refs come
+    // from the gateway namespace, a builtin is not covered because per-server
+    // substitution is an `env:` feature — describe the RENDERER, which is only
+    // half the system. A server's `url:`, `headers:` and `options:` refs are
     // resolved through its own namespace first, in strad's process, whatever
     // kind it is (src/secrets/provider). So the only way a seeded variable goes
-    // unread is the way that was always real — nothing names it.
+    // unread is the one that does not depend on a mechanism at all: nothing
+    // names it.
     const refs = byRefs.get(slug) ?? new Set<string>();
     const unread = variables.filter((v) => !refs.has(v));
     if (unread.length === 0) continue;

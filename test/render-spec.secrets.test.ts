@@ -193,6 +193,10 @@ describe("preflight", () => {
     const result = await preflightSecrets(fake.store, config);
     expect(result.perServer).toEqual([]);
     expect(result.missing).toContain("SHARED_TOKEN");
+    // And it names WHICH server is short. "missing from the gateway namespace"
+    // points at the wrong fix for a partially-seeded name: the value belongs
+    // under the slug that was skipped, not back in the shared namespace.
+    expect(result.unservedSlugs.SHARED_TOKEN).toEqual(["other"]);
   });
 
   it("never lets a BOOT key be covered by a server's namespace", async () => {

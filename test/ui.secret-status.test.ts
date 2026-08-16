@@ -355,6 +355,60 @@ describe("observe", () => {
     );
   });
 
+  it("calls a name MISSING when only SOME referencing servers hold it", async () => {
+    // The console must agree with the deploy gate. `coveredPerServer` is
+    // all-or-nothing per name: the unseeded server falls through to the shared
+    // namespace, which does not have it either, so it throws on every request.
+    // A green row here would say the opposite of what the deploy is about to do.
+    const lookup = secretLookup(EMPTY_BAG, {
+      shared: { get: async () => null },
+      forServer: (slug: string) => ({
+        get: async (name: string) =>
+          slug === "seeded" && name === "SHARED_TOKEN"
+            ? "live-token-abc123def456"
+            : null,
+      }),
+    });
+
+    const [both] = await observe(
+      [requirement("SHARED_TOKEN", { slugs: ["seeded", "unseeded"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(both!.state).toBe("missing");
+
+    // ...and present once the other one holds it too.
+    const [alone] = await observe(
+      [requirement("SHARED_TOKEN", { slugs: ["seeded"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(alone!.state).toBe("present");
+  });
+
+  it("settles a row from the shared layer without reading any per-server namespace", async () => {
+    // Cost, not correctness — but the cost is what made this worth writing.
+    // Every per-server provider holds its own namespace snapshot and resolving
+    // one enumerates the whole project, and `observe()` fans out over every
+    // requirement at once. Asking layer 1 first turned a single readiness poll
+    // into one full enumeration per referencing slug. A hit on the shared layer
+    // already means every referencing server resolves the name, so there is
+    // nothing left to ask.
+    const asked: string[] = [];
+    const lookup = secretLookup(EMPTY_BAG, {
+      shared: { get: async () => "live-shared-abc123def456" },
+      forServer: (slug: string) => {
+        asked.push(slug);
+        return { get: async () => "live-shared-abc123def456" };
+      },
+    });
+
+    const [o] = await observe(
+      [requirement("GRANOLA_TOKEN", { slugs: ["a", "b", "c"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(o!.state).toBe("present");
+    expect(asked).toEqual([]);
+  });
+
   it("reports an absent gateway secret as missing", async () => {
     const [o] = await observe([requirement("GRANOLA_TOKEN")], {
       config: CONFIG,
@@ -824,6 +878,46 @@ describe("fixTargets", () => {
     expect(last.detail).toContain("NOT a fix for this row");
     // ...and an actual fix is offered ahead of it.
     expect(targets[0]!.resource).toBe("strad-test-PARAMS_TOKEN");
+  });
+
+  it("words the per-server route by DELIVERY, not by namespace", () => {
+    // When a value takes effect is decided by how it is delivered. A gateway ref
+    // is read on the request path; a supplementary env: ref is baked at render
+    // time whichever namespace it came out of. Promising "no redeploy" for the
+    // second would be a promise the route does not keep.
+    const runtime = fixTargets(
+      STORE_CONFIG,
+      requirement("ANKI_MCP_API_KEY", {
+        deliveries: ["gateway"],
+        slugs: ["anki"],
+      }),
+      {},
+    )[0]!;
+    expect(runtime.resource).toBe(
+      "/strad/test/mcp/anki/static/ANKI_MCP_API_KEY",
+    );
+    expect(runtime.detail).toContain("no redeploy");
+
+    const baked = fixTargets(
+      STORE_CONFIG,
+      requirement("SHOP_PASSWORD", { deliveries: ["bundle"], slugs: ["shop"] }),
+      {},
+    )[0]!;
+    expect(baked.resource).toBe("/strad/test/mcp/shop/static/SHOP_PASSWORD");
+    expect(baked.detail).toContain("NEXT DEPLOY");
+    expect(baked.detail).not.toContain("no redeploy");
+  });
+
+  it("says a multi-server name needs EVERY referencing server to resolve it", () => {
+    const targets = fixTargets(
+      STORE_CONFIG,
+      requirement("SHARED_TOKEN", {
+        deliveries: ["gateway"],
+        slugs: ["one", "two"],
+      }),
+      {},
+    );
+    expect(targets[0]!.detail).toContain("EVERY one of them");
   });
 
   it("routes a consoleEnv-only name to the deploy environment, never the store", () => {
