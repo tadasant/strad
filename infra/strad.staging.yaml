@@ -267,8 +267,9 @@ servers:
   # reason it ignores deepwiki having a bad afternoon.
   - slug: anki
     kind: local-tunnel
-    url: https://hans-sectors-legislation-full.trycloudflare.com/mcp
+    url: https://anki.invalid/mcp
     entitlements: [admin]
+    enabled: false
 
   # ---------------------------------------------------------------------------
   # Slack — 13 tools full, 7 read-only. ONE container, ONE path, TWO slugs.
