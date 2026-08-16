@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -164,7 +165,7 @@ async function read(opts: {
     config: opts.config ?? CONFIG,
     bag,
     env: {},
-    secretProvider: new EnvSecretProvider(bag),
+    secretProvider: sharedSecretProviders(new EnvSecretProvider(bag)),
     presence: opts.presence ?? { probes: new Map() },
     store: opts.store === undefined ? null : opts.store,
   });
@@ -694,7 +695,7 @@ describe("the console and the readiness report, with a probe", () => {
       config: CONFIG,
       registry: await Registry.build({
         config: CONFIG,
-        secrets: new EnvSecretProvider(bag),
+        secrets: sharedSecretProviders(new EnvSecretProvider(bag)),
         mode: "core",
         env,
       }),
@@ -702,7 +703,7 @@ describe("the console and the readiness report, with a probe", () => {
       mode: "core",
       env,
       secrets: bag,
-      secretProvider: new EnvSecretProvider(bag),
+      secretProvider: sharedSecretProviders(new EnvSecretProvider(bag)),
       presence: presence({
         kind: "ok",
         report: report(

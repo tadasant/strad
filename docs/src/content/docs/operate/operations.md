@@ -510,7 +510,7 @@ The roster has a third column now: **served per-server**. A supplementary `env:`
 name that every referencing server holds under its own
 `/strad/{env}/mcp/{slug}/static/` is listed there rather than as missing — the
 deployment resolves it, this namespace is simply not where. See [two servers, one
-variable name](/operate/secrets/#two-servers-one-variable-name).
+variable name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace).
 
 ## Seeding the store from the deploy environment
 

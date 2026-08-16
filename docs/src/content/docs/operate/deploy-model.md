@@ -124,6 +124,13 @@ that is the **preflight**, which asks the store which names exist and never asks
 for a value. What it does not do is bake one: a baked copy would silently outrank
 a rotated stored one, and there would be two ways again.
 
+The preflight consults **both** namespaces, because a server's `${NAME}` resolves
+from its own before the shared one. A name every referencing server holds for
+itself is reported as served per-server and does not fail the deploy; a name even
+one referencing server would still fall through for does. Getting this wrong in
+the strict direction is not a small bug — this gate exits 1, so a credential filed
+in its owner's namespace would red every deploy until it was moved back out.
+
 #### The exception: a container that cannot ask the store
 
 "Read it at runtime instead" is a claim about strad's own process. A
@@ -144,7 +151,7 @@ different questions:
 
 | Check                                        | Fails the deploy when                                                                                                                                                                                  |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `preflightSecrets()`                         | the store does not **hold** a required name. It reads metadata, so it cannot tell whether the value renders.                                                                                           |
+| `preflightSecrets()`                         | **no namespace** holds a required name — neither the gateway's nor that of every server referencing it. It reads metadata, so it cannot tell whether the value renders.                                |
 | the required-boot-key check in `render-spec` | a required boot key resolves to **nothing** — the parameter is there, `list()` reports a value, and `:render` returns empty. Presence is not resolvability, and this is the half preflight cannot see. |
 | `bootEnvGaps()`                              | a component in the **rendered spec** holds neither a boot key it needs nor the credential to fetch it. A cross-check on the renderer itself.                                                           |
 
@@ -164,7 +171,7 @@ A supplementary server's `env:` refs resolve from **two** namespaces:
 `/strad/{env}/mcp/{slug}/static/` first, `/strad/{env}/gateway/static/` as the
 fallback. That is what lets two servers write the same `${NAME}` and mean
 different values — see [two servers, one variable
-name](/operate/secrets/#two-servers-one-variable-name) for the semantics, the
+name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace) for the semantics, the
 compatibility argument and the one-bundle-one-environment limit.
 
 A namespace decides which value a server resolves; it does not decide where the
@@ -188,7 +195,11 @@ Three things happen here as a result:
 - **The shared namespace is a fallback, not a requirement.** A name every
   referencing server holds for itself no longer has to exist in the gateway
   namespace; a name even one referencing server still needs from there is a hard
-  error that names the servers.
+  error that names the servers. The same is true of the refs strad resolves at
+  **runtime** — a `url:`, a `headers:` map, a builtin's `options:` — which are
+  layered the same way by the gateway process rather than by the renderer, and
+  which is the only route a kind strad runs no container for has to its own
+  namespace.
 - **A seeded namespace nothing reads is a `::warning::`** with the paths and
   variable names in it. It used to be a bare `continue`. So is a parameter that
   exists and yields no usable value — an un-dereferenced `__REF__`, an empty

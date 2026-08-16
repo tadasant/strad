@@ -126,6 +126,107 @@ describe("preflight", () => {
     expect(revealed).toBe(0);
   });
 
+  it("accepts a name held only in the referencing server's own namespace", async () => {
+    // THE UNHOSTED CASE. `granola` is a remote-http server: strad runs no
+    // container for it, so `params: true` and the render-time env: layer are
+    // both closed to it, and until this change the gateway namespace was the
+    // only place its `${GRANOLA_TOKEN}` could live. Now its own namespace is
+    // consulted first — and the deploy gate has to know that, or a credential
+    // filed where it belongs reds every deploy.
+    const fake = createFakeGcp();
+    for (const [name, value] of [
+      ["STRAD_TOKENS", "[]"],
+      ["STRAD_INTERNAL_TOKEN", "internal"],
+    ]) {
+      await fake.store.create({
+        path: gatewayParameterPath("test", name!),
+        secret: true,
+        value: value!,
+      });
+    }
+    await fake.store.create({
+      path: parameterPath("test", "granola", "GRANOLA_TOKEN"),
+      secret: true,
+      value: "gran-secret",
+    });
+
+    const config = parseConfig(CONFIG_YAML());
+    const result = await preflightSecrets(fake.store, config);
+
+    expect(result.missing).toEqual([]);
+    expect(result.perServer).toEqual(["GRANOLA_TOKEN"]);
+    // Not counted as present in the gateway namespace, because it is not there.
+    expect(result.present).toEqual(["STRAD_INTERNAL_TOKEN", "STRAD_TOKENS"]);
+  });
+
+  it("still fails a name only SOME of its referencing servers hold", async () => {
+    // Coverage is all-or-nothing per name: the server that was not seeded falls
+    // through to the gateway namespace, and the gateway namespace does not have
+    // it either. Reporting this one as covered would ship a broken slug.
+    const fake = createFakeGcp();
+    for (const [name, value] of [
+      ["STRAD_TOKENS", "[]"],
+      ["STRAD_INTERNAL_TOKEN", "internal"],
+    ]) {
+      await fake.store.create({
+        path: gatewayParameterPath("test", name!),
+        secret: true,
+        value: value!,
+      });
+    }
+    await fake.store.create({
+      path: parameterPath("test", "granola", "SHARED_TOKEN"),
+      secret: true,
+      value: "one",
+    });
+
+    const config = parseConfig(
+      CONFIG_YAML(`  - slug: other
+    kind: remote-http
+    url: https://other.example.com/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${SHARED_TOKEN}"
+`).replace("Bearer ${GRANOLA_TOKEN}", "Bearer ${SHARED_TOKEN}"),
+    );
+
+    const result = await preflightSecrets(fake.store, config);
+    expect(result.perServer).toEqual([]);
+    expect(result.missing).toContain("SHARED_TOKEN");
+    // And it names WHICH server is short. "missing from the gateway namespace"
+    // points at the wrong fix for a partially-seeded name: the value belongs
+    // under the slug that was skipped, not back in the shared namespace.
+    expect(result.unservedSlugs.SHARED_TOKEN).toEqual(["other"]);
+  });
+
+  it("never lets a BOOT key be covered by a server's namespace", async () => {
+    // `STRAD_TOKENS` is read by the gateway process for itself, out of the
+    // shared provider. No server references it, so nothing could seed it into
+    // coverage — but a config that named it in a header would otherwise let a
+    // per-server value stand in for a key the process never asks a server about.
+    const fake = createFakeGcp();
+    await fake.store.create({
+      path: parameterPath("test", "granola", "STRAD_TOKENS"),
+      secret: true,
+      value: "[]",
+    });
+    await fake.store.create({
+      path: gatewayParameterPath("test", "GRANOLA_TOKEN"),
+      secret: true,
+      value: "gran",
+    });
+
+    const config = parseConfig(
+      CONFIG_YAML().replace(
+        'Authorization: "Bearer ${GRANOLA_TOKEN}"',
+        'Authorization: "Bearer ${GRANOLA_TOKEN}"\n      X-Tokens: "${STRAD_TOKENS}"',
+      ),
+    );
+    const result = await preflightSecrets(fake.store, config);
+    expect(result.perServer).not.toContain("STRAD_TOKENS");
+    expect(result.missing).toContain("STRAD_TOKENS");
+  });
+
   it("reports a referenced-but-absent name", async () => {
     const fake = createFakeGcp();
     const config = parseConfig(CONFIG_YAML());

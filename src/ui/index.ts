@@ -35,7 +35,7 @@ import {
   forgetDeploymentDiagnosis,
   readDeploymentSecretStatus,
 } from "./secret-status.ts";
-import type { SecretProvider } from "../secrets/provider/index.ts";
+import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import {
   renderGcsBrowse,
   renderMessage,
@@ -126,7 +126,7 @@ export interface ConsoleUiOptions {
    * store and never in `process.env`. Absent, the index falls back to the bag,
    * which is exactly correct under the `env` provider.
    */
-  secretProvider?: SecretProvider;
+  secretProvider?: ServerSecretProviders;
   /**
    * Test seam: the transport the bundle presence probe uses. Defaults to fetch.
    *

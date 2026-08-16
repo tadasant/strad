@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -122,7 +123,7 @@ async function boot(
 ): Promise<{ url: string; close: () => void }> {
   const registry = await Registry.build({
     config,
-    secrets: provider,
+    secrets: sharedSecretProviders(provider),
     mode,
     bundleName: mode === "bundle" ? "bundle" : undefined,
     env,
@@ -134,7 +135,7 @@ async function boot(
     mode,
     env,
     secrets: bag,
-    secretProvider: provider,
+    secretProvider: sharedSecretProviders(provider),
     diagnosticStore,
   });
   const s: Server = app.listen(0);

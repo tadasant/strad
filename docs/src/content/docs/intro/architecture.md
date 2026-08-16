@@ -329,7 +329,11 @@ compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
   `gcp-parameter-store` they are read _at runtime_ from the parameter store, so a
   rotation of a request-path reference reaches a running gateway without a
   deploy, and the only secret in the spec on a component that runs strad is the
-  credential for the store itself. A third-party `supplementary-image` component
+  credential for the store itself. A `${NAME}` written on a server entry is read
+  from [that server's own
+  namespace](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace)
+  before the shared one — which is how an unhosted kind, with no container and no
+  deploy-time environment, gets a namespace of its own at all. A third-party `supplementary-image` component
   cannot read the store, so its own `env:` and its two boot keys are still read
   from the store at render time and baked onto it. See
   [Secrets](/operate/secrets/).
@@ -415,6 +419,6 @@ server's `env:` `${NAME}` references resolve from its own
 `/strad/{env}/mcp/{slug}/static/` **before** the shared
 `/strad/{env}/gateway/static/`, with no flag, which is what lets two servers
 write the same `${NAME}` and be handed different values — see [two servers, one
-variable name](/operate/secrets/#two-servers-one-variable-name). The two paths
+variable name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace). The two paths
 differ in what they inject: `params:` takes the namespace whole, substitution
 takes only names the config already references.

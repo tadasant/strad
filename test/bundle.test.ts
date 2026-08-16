@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -47,7 +48,7 @@ beforeAll(async () => {
   const bundleEnv: NodeJS.ProcessEnv = { STRAD_INTERNAL_TOKEN: INTERNAL };
   const bundleRegistry = await Registry.build({
     config: CONFIG,
-    secrets: new EnvSecretProvider({}),
+    secrets: sharedSecretProviders(new EnvSecretProvider({})),
     mode: "bundle",
     bundleName: "bundle-api",
     env: bundleEnv,
@@ -74,7 +75,7 @@ beforeAll(async () => {
   };
   const coreRegistry = await Registry.build({
     config: CONFIG,
-    secrets: new EnvSecretProvider({}),
+    secrets: sharedSecretProviders(new EnvSecretProvider({})),
     mode: "core",
     env: coreEnv,
   });

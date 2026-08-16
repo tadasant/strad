@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -14,6 +15,7 @@ import {
   fixTargets,
   observe,
   placeholderReason,
+  secretLookup,
   SOURCE_TOOLTIP,
   storeProject,
   tally,
@@ -316,6 +318,95 @@ describe("observe", () => {
     });
     expect(o!.state).toBe("placeholder");
     expect(o!.detail).not.toContain("change-me");
+  });
+
+  it("asks the referencing server's OWN namespace before calling it missing", async () => {
+    // THE FALSE RED THIS PREVENTS. A credential filed under
+    // /strad/{env}/mcp/{slug}/static/ is what the gateway actually resolves, so
+    // a name-only lookup would paint the row red on a deployment where the
+    // server works — and send the reader to seed a second copy in the shared
+    // namespace, which is the shape this is moving away from.
+    const lookup = secretLookup(EMPTY_BAG, {
+      shared: { get: async () => null },
+      forServer: (slug: string) => ({
+        get: async (name: string) =>
+          slug === "anki" && name === "ANKI_MCP_API_KEY"
+            ? "live-anki-key-abc123def456"
+            : null,
+      }),
+    });
+
+    const [seeded] = await observe(
+      [requirement("ANKI_MCP_API_KEY", { slugs: ["anki"] })],
+      { config: CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(seeded!.state).toBe("present");
+
+    // ...and a slug that holds nothing still reports missing, naming both the
+    // shared path and its own, so the reader knows which one to create.
+    const [absent] = await observe(
+      [requirement("OTHER_TOKEN", { slugs: ["other"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(absent!.state).toBe("missing");
+    expect(absent!.detail).toContain("/strad/test/gateway/static/OTHER_TOKEN");
+    expect(absent!.detail).toContain(
+      "/strad/test/mcp/other/static/OTHER_TOKEN",
+    );
+  });
+
+  it("calls a name MISSING when only SOME referencing servers hold it", async () => {
+    // The console must agree with the deploy gate. `coveredPerServer` is
+    // all-or-nothing per name: the unseeded server falls through to the shared
+    // namespace, which does not have it either, so it throws on every request.
+    // A green row here would say the opposite of what the deploy is about to do.
+    const lookup = secretLookup(EMPTY_BAG, {
+      shared: { get: async () => null },
+      forServer: (slug: string) => ({
+        get: async (name: string) =>
+          slug === "seeded" && name === "SHARED_TOKEN"
+            ? "live-token-abc123def456"
+            : null,
+      }),
+    });
+
+    const [both] = await observe(
+      [requirement("SHARED_TOKEN", { slugs: ["seeded", "unseeded"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(both!.state).toBe("missing");
+
+    // ...and present once the other one holds it too.
+    const [alone] = await observe(
+      [requirement("SHARED_TOKEN", { slugs: ["seeded"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(alone!.state).toBe("present");
+  });
+
+  it("settles a row from the shared layer without reading any per-server namespace", async () => {
+    // Cost, not correctness — but the cost is what made this worth writing.
+    // Every per-server provider holds its own namespace snapshot and resolving
+    // one enumerates the whole project, and `observe()` fans out over every
+    // requirement at once. Asking layer 1 first turned a single readiness poll
+    // into one full enumeration per referencing slug. A hit on the shared layer
+    // already means every referencing server resolves the name, so there is
+    // nothing left to ask.
+    const asked: string[] = [];
+    const lookup = secretLookup(EMPTY_BAG, {
+      shared: { get: async () => "live-shared-abc123def456" },
+      forServer: (slug: string) => {
+        asked.push(slug);
+        return { get: async () => "live-shared-abc123def456" };
+      },
+    });
+
+    const [o] = await observe(
+      [requirement("GRANOLA_TOKEN", { slugs: ["a", "b", "c"] })],
+      { config: STORE_CONFIG, lookup, bag: EMPTY_BAG },
+    );
+    expect(o!.state).toBe("present");
+    expect(asked).toEqual([]);
   });
 
   it("reports an absent gateway secret as missing", async () => {
@@ -789,6 +880,46 @@ describe("fixTargets", () => {
     expect(targets[0]!.resource).toBe("strad-test-PARAMS_TOKEN");
   });
 
+  it("words the per-server route by DELIVERY, not by namespace", () => {
+    // When a value takes effect is decided by how it is delivered. A gateway ref
+    // is read on the request path; a supplementary env: ref is baked at render
+    // time whichever namespace it came out of. Promising "no redeploy" for the
+    // second would be a promise the route does not keep.
+    const runtime = fixTargets(
+      STORE_CONFIG,
+      requirement("ANKI_MCP_API_KEY", {
+        deliveries: ["gateway"],
+        slugs: ["anki"],
+      }),
+      {},
+    )[0]!;
+    expect(runtime.resource).toBe(
+      "/strad/test/mcp/anki/static/ANKI_MCP_API_KEY",
+    );
+    expect(runtime.detail).toContain("no redeploy");
+
+    const baked = fixTargets(
+      STORE_CONFIG,
+      requirement("SHOP_PASSWORD", { deliveries: ["bundle"], slugs: ["shop"] }),
+      {},
+    )[0]!;
+    expect(baked.resource).toBe("/strad/test/mcp/shop/static/SHOP_PASSWORD");
+    expect(baked.detail).toContain("NEXT DEPLOY");
+    expect(baked.detail).not.toContain("no redeploy");
+  });
+
+  it("says a multi-server name needs EVERY referencing server to resolve it", () => {
+    const targets = fixTargets(
+      STORE_CONFIG,
+      requirement("SHARED_TOKEN", {
+        deliveries: ["gateway"],
+        slugs: ["one", "two"],
+      }),
+      {},
+    );
+    expect(targets[0]!.detail).toContain("EVERY one of them");
+  });
+
   it("routes a consoleEnv-only name to the deploy environment, never the store", () => {
     // Filing the console's admin credential inside the store would let the
     // weaker resolver credential read the stronger one.
@@ -868,7 +999,7 @@ async function boot(
 ): Promise<{ url: string; close: () => void }> {
   const registry = await Registry.build({
     config,
-    secrets: provider,
+    secrets: sharedSecretProviders(provider),
     mode: "core",
     env: ENV,
   });
@@ -879,7 +1010,7 @@ async function boot(
     mode: "core",
     env: ENV,
     secrets: bag,
-    secretProvider: provider,
+    secretProvider: sharedSecretProviders(provider),
   });
   const s = app.listen(0);
   await new Promise<void>((r) => s.on("listening", () => r()));
@@ -1213,7 +1344,7 @@ describe("GET /secrets in bundle mode", () => {
     const bundleEnv = { ...ENV, STRAD_BUNDLE: "bundle" };
     const registry = await Registry.build({
       config: CONFIG,
-      secrets: new EnvSecretProvider(SECRETS),
+      secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
       mode: "bundle",
       env: bundleEnv,
     });

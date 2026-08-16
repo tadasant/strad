@@ -8,7 +8,7 @@ import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import type { SecretBag } from "../secrets/index.ts";
-import type { SecretProvider } from "../secrets/provider/index.ts";
+import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
 import {
   RESOLVER_ENV,
@@ -322,7 +322,7 @@ export interface ReadinessHandlerOptions {
   /** The boot bag, for a `consoleEnv:` value that lands under its declared key. */
   secrets: SecretBag;
   /** The runtime provider, when the deployment has one. */
-  secretProvider?: SecretProvider;
+  secretProvider?: ServerSecretProviders;
   /** Test seam: the transport the bundle presence probe uses. */
   fetchImpl?: typeof fetch;
   /** Test seam: an already-probed bundle report. */

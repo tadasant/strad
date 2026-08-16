@@ -3,7 +3,7 @@ import {
   resolveMapAsync,
   resolveOptionsAsync,
   resolveRefsAsync,
-  type SecretProvider,
+  type ServerSecretProviders,
 } from "../secrets/provider/index.ts";
 import {
   staticNamespace,
@@ -34,8 +34,14 @@ export type Mode = "core" | "bundle";
 
 export interface RegistryOptions {
   config: StradConfig;
-  /** The runtime secret provider. See src/secrets/provider. */
-  secrets: SecretProvider;
+  /**
+   * The runtime secret providers. See src/secrets/provider.
+   *
+   * A SET rather than one provider: every `${NAME}` resolved below is written on
+   * a server entry, so it is resolved through `forServer(slug)` — that server's
+   * own `/strad/{env}/mcp/{slug}/static/` namespace layered over the shared one.
+   */
+  secrets: ServerSecretProviders;
   /**
    * "core"   — the public gateway. Mounts remote-http + core builtins directly,
    *            and proxies to every non-core bundle over the private network.
@@ -120,7 +126,10 @@ export class Registry {
     const optionsFor =
       (server: Extract<StradConfig["servers"][number], { kind: "builtin" }>) =>
       async (): Promise<Record<string, unknown>> => {
-        const base = await resolveOptionsAsync(server.options, secrets);
+        const base = await resolveOptionsAsync(
+          server.options,
+          secrets.forServer(server.slug),
+        );
         if (!server.params || !paramCache) return base;
         const params = await paramCache.get(
           staticNamespace(config.gateway.env, server.slug),
@@ -161,8 +170,14 @@ export class Registry {
               // third-party bearer token is the single most likely thing in a
               // strad config to be rotated, and it lives right here.
               endpoint: async () => ({
-                url: await resolveRefsAsync(server.url, secrets),
-                headers: await resolveMapAsync(server.headers, secrets),
+                url: await resolveRefsAsync(
+                  server.url,
+                  secrets.forServer(server.slug),
+                ),
+                headers: await resolveMapAsync(
+                  server.headers,
+                  secrets.forServer(server.slug),
+                ),
               }),
               timeoutMs: server.timeoutMs,
             }),
@@ -183,8 +198,14 @@ export class Registry {
               slug: server.slug,
               kind: "local-tunnel",
               endpoint: async () => ({
-                url: await resolveRefsAsync(server.url, secrets),
-                headers: await resolveMapAsync(server.headers, secrets),
+                url: await resolveRefsAsync(
+                  server.url,
+                  secrets.forServer(server.slug),
+                ),
+                headers: await resolveMapAsync(
+                  server.headers,
+                  secrets.forServer(server.slug),
+                ),
               }),
               timeoutMs: server.timeoutMs,
               // The one behavioural difference from remote-http: an absent
@@ -209,7 +230,10 @@ export class Registry {
               kind: "supplementary-image",
               endpoint: async () => ({
                 url: joinUrl(base, server.path),
-                headers: await resolveMapAsync(server.headers, secrets),
+                headers: await resolveMapAsync(
+                  server.headers,
+                  secrets.forServer(server.slug),
+                ),
               }),
               timeoutMs: server.timeoutMs,
             }),

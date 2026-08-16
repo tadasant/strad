@@ -92,6 +92,10 @@ export default defineConfig({
           items: [
             { label: "The server-config interface", slug: "servers/interface" },
             { label: "Adding a server", slug: "servers/adding" },
+            {
+              label: "Running a local-tunnel host",
+              slug: "servers/local-tunnel-host",
+            },
             { label: "The artifact store", slug: "servers/artifact-store" },
             { label: "Telegram", slug: "servers/telegram" },
           ],

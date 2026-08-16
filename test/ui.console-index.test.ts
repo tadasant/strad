@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -119,7 +120,7 @@ const boot = async (yaml: string): Promise<string> => {
   const provider = new EnvSecretProvider(BAG);
   const registry = await Registry.build({
     config,
-    secrets: provider,
+    secrets: sharedSecretProviders(provider),
     mode: "core",
     env: ENV,
   });
@@ -130,7 +131,7 @@ const boot = async (yaml: string): Promise<string> => {
     mode: "core",
     env: ENV,
     secrets: BAG,
-    secretProvider: provider,
+    secretProvider: sharedSecretProviders(provider),
   });
   const s = app.listen(0);
   await new Promise<void>((r) => s.on("listening", () => r()));
@@ -147,7 +148,7 @@ beforeAll(async () => {
   const provider = new EnvSecretProvider(BAG);
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: provider,
+    secrets: sharedSecretProviders(provider),
     mode: "core",
     env: ENV,
   });
@@ -158,7 +159,7 @@ beforeAll(async () => {
     mode: "core",
     env: ENV,
     secrets: BAG,
-    secretProvider: provider,
+    secretProvider: sharedSecretProviders(provider),
   });
   const s = app.listen(0);
   await new Promise<void>((r) => s.on("listening", () => r()));
@@ -351,7 +352,7 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
     const provider = new EnvSecretProvider(BAG);
     const registry = await Registry.build({
       config: CONFIG,
-      secrets: provider,
+      secrets: sharedSecretProviders(provider),
       mode: "core",
       env: ENV,
     });
@@ -362,7 +363,7 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
       mode: "core",
       env: ENV,
       secrets: BAG,
-      secretProvider: provider,
+      secretProvider: sharedSecretProviders(provider),
       diagnosticStore: counting,
     });
     const s = app.listen(0);

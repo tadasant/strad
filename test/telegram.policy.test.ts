@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server as McpServer } from "@modelcontextprotocol/sdk/server/index.js";
@@ -133,7 +134,7 @@ servers:
 
   const registry = await Registry.build({
     config,
-    secrets: new EnvSecretProvider({}),
+    secrets: sharedSecretProviders(new EnvSecretProvider({})),
     mode: "core",
     env,
   });

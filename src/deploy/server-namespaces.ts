@@ -6,7 +6,7 @@ import { refsIn } from "../secrets/provider/resolve.ts";
 import { isSecretRef } from "../secrets/parameters/wire.ts";
 
 /**
- * PER-SERVER SUBSTITUTION: where a supplementary server's `${NAME}` comes from.
+ * PER-SERVER SUBSTITUTION: where a server's `${NAME}` comes from.
  *
  * A supplementary image's `env:` map is resolved at render time, and for a long
  * while it was resolved out of exactly one place — `/strad/{env}/gateway/static/`
@@ -47,16 +47,24 @@ import { isSecretRef } from "../secrets/parameters/wire.ts";
  * make the collision visible. `renderAppSpec` throws when it happens (see
  * appspec.ts); different values for one name means different bundles.
  *
- * ## What this does not cover
+ * ## The other half, and where it lives
  *
- * `builtin` and `remote-http` servers resolve their `${NAME}` refs IN-PROCESS at
- * runtime, out of the gateway namespace, and are untouched here — their
- * per-server path is `params: true`, which is resolved by the registry. Nor does
- * it cover `consoleEnv:`, which is read from the deploy environment only and
- * lands on core, or a supplementary server's `headers:` — those are the headers
- * CORE sends when it proxies, resolved in core's own process from the gateway
- * namespace, and moving one into a container's environment would not even be the
- * same thing.
+ * This module is the RENDER-TIME half: a supplementary image's `env:`, resolved
+ * into a document. The refs strad resolves in its OWN process — every `url:`,
+ * every `headers:` map, every builtin `options:` value, for every kind — are
+ * layered the same way at runtime by `ServerSecretProviders.forServer()` in
+ * src/secrets/provider. Same order, same precedence, same reason. They are two
+ * implementations because they happen at different times against different
+ * inputs (a bag of values here, a live provider there), not because they are
+ * two policies.
+ *
+ * That matters most for an UNHOSTED server (`remote-http`, `local-tunnel`).
+ * strad runs no container for one, so `params: true` and this renderer are both
+ * closed to it, and its own namespace is reachable only through the runtime
+ * layer. `runtimeRefsBySlug` below is what lets the deploy gates see it.
+ *
+ * `consoleEnv:` is covered by neither: it is read from the deploy environment
+ * only and lands on core.
  */
 
 /** The prefix every per-server namespace sits under: `/strad/{env}/mcp/`. */
@@ -147,6 +155,75 @@ export function envRefsBySlug(config: StradConfig): Map<string, Set<string>> {
   return out;
 }
 
+/**
+ * `slug -> the ${NAME}s that server's RUNTIME fields reference`.
+ *
+ * The other half of the same question `envRefsBySlug` asks, for the refs strad
+ * resolves IN ITS OWN PROCESS rather than baking into a container: a `url:`, a
+ * `headers:` map, a builtin's `options:`. Those go through
+ * `ServerSecretProviders.forServer()` (src/secrets/provider), which reads the
+ * server's own namespace before the shared one — so a name seeded here is read,
+ * and a deploy gate that demanded it from the gateway namespace would refuse a
+ * deployment that works.
+ *
+ * NAMED FIELDS, not a walk of the whole object. `collectSecretRefs` walks
+ * everything, which is right for "what might this deployment need" and wrong
+ * here: a `${...}`-looking string in a `description` would invent a per-server
+ * ref and let a gate pass a name nothing resolves. Same reasoning, and the same
+ * field list, as `requirementsOf` in src/ui/secret-status.ts.
+ *
+ * A supplementary image's `headers:` counts. Those are the headers CORE sends
+ * when it proxies, resolved in core's process — a different mechanism from that
+ * server's `env:`, reading the same namespace.
+ */
+export function runtimeRefsBySlug(
+  config: StradConfig,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    const refs = new Set<string>();
+    const add = (raw: string): void => {
+      for (const name of refsIn(raw)) refs.add(name);
+    };
+    if (isUnhosted(server)) {
+      add(server.url);
+      for (const value of Object.values(server.headers)) add(value);
+    } else if (server.kind === "builtin") {
+      for (const value of Object.values(server.options)) {
+        if (typeof value === "string") add(value);
+      }
+    } else {
+      for (const value of Object.values(server.headers)) add(value);
+    }
+    if (refs.size > 0) out.set(server.slug, refs);
+  }
+  return out;
+}
+
+/**
+ * Both halves at once: every `${NAME}` a server can resolve from its OWN
+ * namespace, whether at render time (`env:`) or at runtime (`url:`, `headers:`,
+ * `options:`).
+ *
+ * This is the set a coverage check wants. Splitting it is what let the two
+ * mechanisms drift: `checkStore` knew about the render-time half and reported the
+ * runtime half as missing from a namespace it does not have to be in.
+ */
+export function ownNamespaceRefsBySlug(
+  config: StradConfig,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const source of [envRefsBySlug(config), runtimeRefsBySlug(config)]) {
+    for (const [slug, refs] of source) {
+      const held = out.get(slug) ?? new Set<string>();
+      for (const name of refs) held.add(name);
+      out.set(slug, held);
+    }
+  }
+  return out;
+}
+
 /** A seeded parameter that no server on this render will read. */
 export interface UnreadParameters {
   slug: string;
@@ -165,19 +242,17 @@ export interface UnreadParameters {
  * produced no injected variable, no warning, and a green deploy. Somebody did
  * exactly that, twice, and had nothing to go on.
  *
- * Three shapes, all reported by name:
+ * Two shapes, both reported by name:
  *   - the slug names no enabled server on this render (a typo, or a server
  *     turned off);
- *   - the server is a kind whose namespace the RENDERER never reads (a builtin
- *     or a remote-http, which get theirs at runtime via `params: true`);
- *   - the variable is seeded under a supplementary server that neither sets
- *     `params: true` nor writes `${VARIABLE}` anywhere in its `env:`.
+ *   - the server is enabled and references no `${VARIABLE}` by that name in any
+ *     field its own namespace serves, and does not set `params: true`.
  */
 export function unreadParameters(
   config: StradConfig,
   seeded: ReadonlyMap<string, string[]>,
 ): UnreadParameters[] {
-  const byRefs = envRefsBySlug(config);
+  const byRefs = ownNamespaceRefsBySlug(config);
   const out: UnreadParameters[] = [];
 
   for (const [slug, variables] of [...seeded].sort(([a], [b]) =>
@@ -199,48 +274,41 @@ export function unreadParameters(
       continue;
     }
 
-    if (isUnhosted(server)) {
-      out.push({
-        slug,
-        variables: [...variables],
-        message:
-          `${namespace} holds ${variables.length} parameter(s) ` +
-          `(${variables.join(", ")}) but "${slug}" is a ${server.kind} server — it ` +
-          `runs outside strad's infrastructure and has no environment to ` +
-          `inject. Its \${NAME} refs resolve from the gateway namespace.`,
-      });
-      continue;
-    }
-
     // A `params: true` server takes its WHOLE namespace, so nothing under it is
-    // unread by definition.
-    if (server.params) continue;
+    // unread by definition. Checked before the kind, because an unhosted server
+    // cannot set it and a builtin that does is served by the registry.
+    if (!isUnhosted(server) && server.params) continue;
 
-    if (server.kind === "builtin") {
-      out.push({
-        slug,
-        variables: [...variables],
-        message:
-          `${namespace} holds ${variables.length} parameter(s) ` +
-          `(${variables.join(", ")}) but the builtin "${slug}" does not set ` +
-          `params: true, and per-server substitution covers a supplementary ` +
-          `image's env: only. Set params: true to inject them.`,
-      });
-      continue;
-    }
-
+    // ONE QUESTION, FOR EVERY KIND: does this server reference the name?
+    //
+    // The kind-specific answers this replaces — an unhosted server's refs come
+    // from the gateway namespace, a builtin is not covered because per-server
+    // substitution is an `env:` feature — describe the RENDERER, which is only
+    // half the system. A server's `url:`, `headers:` and `options:` refs are
+    // resolved through its own namespace first, in strad's process, whatever
+    // kind it is (src/secrets/provider). So the only way a seeded variable goes
+    // unread is the one that does not depend on a mechanism at all: nothing
+    // names it.
     const refs = byRefs.get(slug) ?? new Set<string>();
     const unread = variables.filter((v) => !refs.has(v));
     if (unread.length === 0) continue;
+
+    const hint = isUnhosted(server)
+      ? `Reference it — headers: { Authorization: "Bearer \${${unread[0]}}" } — ` +
+        `or delete it.`
+      : server.kind === "builtin"
+        ? `Reference it from options:, or set params: true to inject the whole ` +
+          `namespace.`
+        : `Reference it — env: { ${unread[0]}: "\${${unread[0]}}" } — or set ` +
+          `params: true to inject the whole namespace.`;
+
     out.push({
       slug,
       variables: unread,
       message:
         `${namespace} holds ${unread.length} parameter(s) nothing reads ` +
-        `(${unread.join(", ")}): "${slug}" does not set params: true, and its ` +
-        `env: map references no \${NAME} by that name. Reference it — ` +
-        `env: { ${unread[0]}: "\${${unread[0]}}" } — or set params: true to ` +
-        `inject the whole namespace.`,
+        `(${unread.join(", ")}): the ${server.kind} "${slug}" names no ` +
+        `\${NAME} by that name. ${hint}`,
     });
   }
   return out;

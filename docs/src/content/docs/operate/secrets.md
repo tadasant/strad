@@ -260,20 +260,79 @@ rather than asked-for-politely because a disagreement here is the one failure in
 this subsystem that is silent: both halves keep answering, and one of them hands a
 process bytes that are not the value. See [Known limitations](/limitations/) #33.
 
-## Two servers, one variable name
+## A server's secrets live in that server's namespace
 
-A supplementary server's `env:` map may reference `${NAME}`, and the value comes
-from **two** namespaces, in this order:
+**Every `${NAME}` written on a server entry resolves from that server's own
+namespace first**, whatever the kind and whatever the field:
 
 | Order | Namespace                               | Holds                                    |
 | ----- | --------------------------------------- | ---------------------------------------- |
 | 1     | `/strad/{env}/mcp/{slug}/static/{NAME}` | That one server's value. **Wins.**       |
 | 2     | `/strad/{env}/gateway/static/{NAME}`    | The deployment-wide value. The fallback. |
 
-Before this, only the second existed for `env:`, so a name was a
-deployment-wide singleton: `telegram-ro` and `telegram-rw` both write
-`${TELEGRAM_API_HASH}` and could not be given different credentials, whatever was
-seeded where.
+The gateway namespace is for things that genuinely belong to the gateway —
+`STRAD_TOKENS`, `GOOGLE_CLIENT_SECRET`, a name several servers deliberately
+share. A credential that belongs to one MCP server belongs under that server.
+
+Before this, only the second namespace existed, so a name was a deployment-wide
+singleton: `telegram-ro` and `telegram-rw` both write `${TELEGRAM_API_HASH}` and
+could not be given different credentials, whatever was seeded where.
+
+### The same rule, applied at two times
+
+The layering is one rule with two implementations, because the two halves of a
+config are resolved at different moments:
+
+| The ref                                            | Resolved                               | By                                |
+| -------------------------------------------------- | -------------------------------------- | --------------------------------- |
+| A supplementary image's `env:`                     | At **render time**, baked onto the box | `src/deploy/server-namespaces.ts` |
+| A `url:`, a `headers:` map, a builtin's `options:` | At **runtime**, per request            | `src/secrets/provider`            |
+
+The runtime half is what makes this work for a kind strad runs **no container
+for**. `remote-http` and `local-tunnel` servers get no component, no image and no
+deploy-time environment, so `params: true` and the render-time layer are both
+closed to them — the gateway namespace was the only place their credentials could
+live. Now their own namespace is read first, in strad's own process, on the
+request path.
+
+```yaml
+# A local-tunnel server's three credentials, all its own.
+- slug: anki
+  kind: local-tunnel
+  url: https://anki.example.com/mcp
+  headers:
+    CF-Access-Client-Id: "${ANKI_CF_ACCESS_CLIENT_ID}"
+    CF-Access-Client-Secret: "${ANKI_CF_ACCESS_CLIENT_SECRET}"
+    Authorization: "Bearer ${ANKI_MCP_API_KEY}"
+```
+
+```
+/strad/prod/mcp/anki/static/ANKI_CF_ACCESS_CLIENT_ID
+/strad/prod/mcp/anki/static/ANKI_CF_ACCESS_CLIENT_SECRET
+/strad/prod/mcp/anki/static/ANKI_MCP_API_KEY
+```
+
+Because a runtime ref is read on the request path rather than baked, **rotating
+one of these needs no redeploy** — a new value is picked up within
+`gateway.secrets.ttlSeconds`. That is the one behavioural difference from the
+render-time half, where a supplementary `env:` still reaches its container only at
+the next deploy.
+
+:::note[A newly _seeded_ per-server name takes up to `ttlSeconds`, not `negativeTtlSeconds`]
+The per-server layer deliberately does not chase a cache miss. A miss there is the
+normal case — most names live in the shared namespace and always will — and
+resolving a namespace enumerates the store, so chasing every miss would cost a
+full listing per gateway-resolved name per slug. The ordinary TTL still refreshes
+it. The shared layer keeps its miss-driven refresh, which is where a brand-new
+name usually appears.
+:::
+
+### Under `gateway.secrets.provider: env` there is no second layer
+
+An `env` deployment reads every `${NAME}` out of `process.env`, which is flat.
+Per-server namespaces are a parameter-store feature; a value filed under one
+resolves for nobody on an `env` deployment. The console says so rather than
+offering it as a fix.
 
 **Nothing opts in.** A server nobody seeded has an empty first layer, falls back
 to the shared namespace, and renders exactly what it rendered before — that is
@@ -381,23 +440,44 @@ credential, and seeding both with the same value is correct and supported.
 
 ### A parameter nothing reads now says so
 
-Seeding `/strad/{env}/mcp/{slug}/static/` for a server without `params: true` used
-to be a **silent no-op**: no injected variable, no warning, a green deploy. The
-render now warns, by name:
+Seeding `/strad/{env}/mcp/{slug}/static/` for a server that references nothing by
+that name used to be a **silent no-op**: no injected variable, no warning, a green
+deploy. The render now warns, by name:
 
 ```
 ::warning::/strad/prod/mcp/telegram-rw/static/ holds 3 parameter(s) nothing reads
-(TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_STRING_SESSION): "telegram-rw" does
-not set params: true, and its env: map references no ${NAME} by that name.
+(TELEGRAM_API_HASH, TELEGRAM_API_ID, TELEGRAM_STRING_SESSION): the
+supplementary-image "telegram-rw" names no ${NAME} by that name.
 ```
+
+There is **one** rule behind that warning and it is the same for every kind: does
+the server reference the name? A seeded variable under an unhosted or builtin slug
+used to be reported as unread on the grounds that no mechanism could ever read it,
+and that is no longer true.
 
 It warns rather than fails, because a store is also allowed to be a registry of
 values a human manages by hand. The same judgement drives the chip on each row of
 the console's parameters page, so the answer is the same in both places.
 
-`scripts/check-store.ts` knows about the layer too: a name every referencing
-server holds under its own namespace is reported as **served per-server** rather
-than missing from the gateway namespace.
+### The gates know about the second layer
+
+Three of them, and each would otherwise refuse a store that is correct:
+
+- **`render-spec`'s preflight** — a name held by every server that references it
+  is reported as served per-server, not missing. This is the load-bearing one: it
+  exits 1 on an unresolvable name, so without it, filing a credential where it
+  belongs would red **every** deploy.
+- **`scripts/check-store.ts`** — the pre-flip gate reports the same names under
+  `perServer` rather than `missing`.
+- **The console's secret roster** — a row is resolved through the referencing
+  server's own provider, so a per-server-seeded credential reads green, and the
+  server's own namespace is offered first as the place to fix a missing one.
+
+Coverage is **all-or-nothing per name**. If two servers reference `${SHARED}` and
+only one of them holds it, the other still falls through to the gateway namespace,
+so the name is missing and the deploy fails. The gateway's own boot keys
+(`STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`, …) can never be covered this way: no
+server references them, and the process reads them for itself.
 
 ## Fail-loud, without reading a value
 
@@ -1024,16 +1104,23 @@ route offered **first** is decided by what the deployment declares, because the 
 are not interchangeable:
 
 - `provider: env` → GCP Secret Manager, `strad-<env>-<NAME>`, then redeploy.
-- `provider: gcp-parameter-store` → `/strad/<env>/gateway/static/<NAME>`, read at
-  runtime, with a link straight to the parameters console that can write it.
+- `provider: gcp-parameter-store` → the referencing server's own
+  `/strad/<env>/mcp/<slug>/static/<NAME>` **first**, then
+  `/strad/<env>/gateway/static/<NAME>`, each with a link straight to the
+  parameters console that can write it.
 
-A server with `params: true` also gets its own namespace listed —
-`/strad/<env>/mcp/<slug>/static/<NAME>` — but **last, and labelled as not a fix for
-that row**. A managed parameter does not resolve a `${NAME}` reference: the
-renderer looks a referenced name up in the gateway namespace and then the deploy
-environment, and fails before server-parameter resolution runs at all. Moving a
-credential there is a config change (drop the `${NAME}` entry from that server's
-`env:`), not a value you can add to unblock the current deploy.
+The server's own namespace leads because that is where a credential belonging to
+one server goes, and because it resolves without a redeploy. Where a name is
+referenced by several servers the row says so: a value under one of them covers
+that slug alone, and the rest still fall back to the shared namespace.
+
+On an `env` deployment the order is reversed and the per-server route is dropped
+entirely — there is no store in that read path. A `params: true` server's own
+namespace is still listed there, **last, and labelled as not a fix for that row**:
+a managed parameter does not resolve a `${NAME}` reference on a deployment that
+resolves references from the environment. Moving a credential there is a config
+change (drop the `${NAME}` entry from that server's `env:`), not a value you can
+add to unblock the current deploy.
 
 The project is read from the deployment rather than assumed: the resolver's own
 `STRAD_PARAMS_PROJECT_ID` if this process holds one, else the `secrets` server's

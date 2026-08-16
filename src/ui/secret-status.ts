@@ -15,6 +15,7 @@ import {
   RESOLVER_ENV,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
+import { mcpNamespace } from "../deploy/server-namespaces.ts";
 import { errorSummary } from "../secrets/provider/snapshot.ts";
 import {
   placeholderReason,
@@ -368,7 +369,7 @@ export interface ObserveOptions {
    * outage into a wall of red "not seeded" — see secrets/provider/types.ts, which
    * holds the same line for the same reason.
    */
-  lookup: (name: string) => Promise<string | null>;
+  lookup: SecretLookup;
   /**
    * Core's own environment. The only place a `consoleEnv:` value can be found,
    * because it is filed under the declared KEY and the ref name is deliberately
@@ -430,7 +431,7 @@ export async function observe(
   return Promise.all(
     requirements.map(async (requirement) => {
       const found = await withDeadline(
-        () => opts.lookup(requirement.name),
+        () => opts.lookup(requirement.name, requirement.slugs),
         timeoutMs,
       );
       return classify(requirement, found, opts);
@@ -696,10 +697,18 @@ function gatewayHalf(
       storeBacked &&
       requirement.deliveries.includes("bundle") &&
       !requirement.deliveries.includes("gateway");
+    // WHICH namespace is deliberately NOT guessed.
+    //
+    // The tempting inference — resolved, but absent from the gateway namespace's
+    // index, therefore it came from a server's own namespace — is wrong two ways.
+    // `envFallback` defaults to true, so a store-backed deployment can resolve a
+    // name out of `process.env` and land in exactly that state; and with several
+    // referencing servers there is no way to say WHICH namespace answered without
+    // the lookup reporting it. So the sentence names the store and stops, and the
+    // per-server path is described where it is actionable instead: in the fix
+    // targets below.
     return finish(requirement, attempt.ok, {
-      where: storeBacked
-        ? `the parameter store, under ${gatewayNamespace(config.gateway.env)}`
-        : "this process's environment",
+      where: storeBacked ? "the parameter store" : "this process's environment",
       source: storeBacked ? "GSM" : "ENV",
       evidence: storeBacked ? { by: "store" } : { by: "core" },
       lands: bundleOnly
@@ -793,8 +802,20 @@ function gatewayHalf(
     evidence: storeBacked ? { by: "store" } : { by: "core" },
     detail: storeBacked
       ? `Not seeded: ${gatewayNamespace(config.gateway.env)}${requirement.name} does not ` +
-        `exist in the parameter store, so every value that references it resolves to ` +
-        `nothing. ` +
+        `exist in the parameter store` +
+        // Both layers, because both are checked. A reader told only about the
+        // gateway path would seed there when the credential belongs to one
+        // server — which is the shape this deployment is moving away from.
+        (requirement.slugs.length
+          ? `, and neither does it under the namespace of any server that ` +
+            `references it (${requirement.slugs
+              .map(
+                (slug) =>
+                  `${staticNamespace(config.gateway.env, slug)}${requirement.name}`,
+              )
+              .join(", ")})`
+          : "") +
+        `, so every value that references it resolves to nothing. ` +
         (requirement.deliveries.includes("bundle")
           ? `The next deploy fails in render-spec's baked-secret pass — preflight ` +
             `deliberately excludes a supplementary server's env:.`
@@ -1009,25 +1030,76 @@ function finish(
 // ---------------------------------------------------------------------------
 
 /**
- * The lookup `observe()` wants, built from what the deployment has.
+ * Read one `${NAME}`, on behalf of the servers that reference it.
  *
- * The RUNTIME provider when one was supplied, and the boot bag otherwise. Both
- * honour the contract `observe()` depends on: `null` means the backend answered
- * and the name is absent, and a throw means it could not be consulted.
- * Collapsing those would turn a store outage into a wall of red "not seeded",
- * which is the one failure mode that would make the console worse than nothing.
+ * `null` means the backend answered and the name is absent; a throw means it
+ * could not be consulted. `observe()` depends on that distinction — collapsing
+ * the two would turn a store outage into a wall of red "not seeded", which is
+ * the one failure mode that would make this page worse than nothing.
  *
- * The provider is the right seam rather than the bag alone because it is the
- * only one that can answer for a store-backed deployment, where a name lives in
- * the parameter store and never in `process.env`. Absent, the bag is exactly
- * correct — under the `env` provider the bag IS the environment.
+ * The slugs are not decoration. A server's refs resolve from its OWN
+ * `/strad/{env}/mcp/{slug}/static/` namespace before the shared one (see
+ * src/secrets/provider), so a lookup that knew only the name would report a
+ * per-server-seeded credential as missing on a deployment where it resolves
+ * fine — the console's job is to say what the gateway will actually do.
  */
+export type SecretLookup = (
+  name: string,
+  slugs?: readonly string[],
+) => Promise<string | null>;
+
+/** The structural half of `ServerSecretProviders` this module needs. */
+export interface SecretLookupProviders {
+  shared: { get(name: string): Promise<string | null> };
+  forServer(slug: string): { get(name: string): Promise<string | null> };
+}
+
 export function secretLookup(
   bag: SecretBag,
-  provider?: { get(name: string): Promise<string | null> },
-): (name: string) => Promise<string | null> {
-  if (provider) return (name: string) => provider.get(name);
-  return async (name: string) => bag[name] ?? null;
+  providers?: SecretLookupProviders,
+): SecretLookup {
+  if (!providers) return async (name: string) => bag[name] ?? null;
+  return async (name: string, slugs?: readonly string[]) => {
+    // NO SLUG TO ATTRIBUTE IT TO: a boot key, or a name every referencing server
+    // was disabled out of. The shared provider is the whole answer.
+    if (!slugs || slugs.length === 0) return providers.shared.get(name);
+
+    // THE SHARED LAYER FIRST, and it settles the row on its own when it hits.
+    //
+    // Reading this the other way round — each slug's own provider in turn, first
+    // hit wins — is wrong twice over, and both were live bugs.
+    //
+    // WRONG VERDICT. "Some slug resolves it" is not the question. Every layer-1
+    // namespace falls back to this one, so a hit HERE means every referencing
+    // server resolves the name; a hit in ONE server's namespace says nothing
+    // about its peers. Two servers writing `Bearer ${SHARED_TOKEN}` with only
+    // one of them seeded would read green while the other threw on every
+    // request — the exact case `coveredPerServer` fails the deploy for.
+    //
+    // WRONG COST. Every per-server provider holds its own namespace snapshot,
+    // and resolving a namespace enumerates the whole project. `observe()` fans
+    // out over every requirement at once, so asking layer 1 first turned one
+    // readiness poll into one full enumeration per referencing slug — dozens, to
+    // learn that dozens of namespaces are empty. Asking the shared layer first
+    // costs one read for the whole page, and reaches layer 1 only for a name
+    // that is genuinely absent from it, which is the only case where layer 1
+    // changes the answer.
+    const shared = await providers.shared.get(name);
+    if (shared !== null) return shared;
+
+    // The shared layer missed, so the name resolves only if EVERY referencing
+    // server holds it for itself. One short slug makes the row missing, and the
+    // value of the last one is what gets classified — they are the same
+    // credential's worth of evidence, and a placeholder in any of them is worth
+    // reporting.
+    let value: string | null = null;
+    for (const slug of slugs) {
+      const own = await providers.forServer(slug).get(name);
+      if (own === null) return null;
+      value = own;
+    }
+    return value;
+  };
 }
 
 export interface SecretReading {
@@ -1060,7 +1132,7 @@ export interface SecretReading {
 export async function readSecretStatus(opts: {
   config: StradConfig;
   bag: SecretBag;
-  lookup: (name: string) => Promise<string | null>;
+  lookup: SecretLookup;
   /** What each bundle reports it holds. Absent = the older, weaker claim. */
   presence?: BundlePresence;
   /** The store's own account of itself, for telling the four states apart. */
@@ -1179,7 +1251,7 @@ export async function readDeploymentSecretStatus(opts: {
   config: StradConfig;
   bag: SecretBag;
   env: NodeJS.ProcessEnv;
-  secretProvider?: { get(name: string): Promise<string | null> };
+  secretProvider?: SecretLookupProviders;
   /** Test seam: the presence probe's transport. */
   fetchImpl?: typeof fetch;
   /** Test seam: the already-probed bundle report, skipping the transport. */
@@ -1688,40 +1760,105 @@ export function fixTargets(
     commands: secretManagerCommands(smName, project),
   };
 
+  // THE SERVER'S OWN NAMESPACE — on a store-backed deployment, the route to
+  // recommend rather than a footnote.
+  //
+  // A `${NAME}` reference resolves from `/strad/{env}/mcp/{slug}/static/` FIRST,
+  // at runtime by the gateway (src/secrets/provider) and at render time for a
+  // supplementary `env:` (src/deploy/server-namespaces.ts), so a credential that
+  // belongs to one server belongs here and the shared namespace is the fallback.
+  // The `env`-provider branch below is the one place where that is not true, and
+  // it says so.
+  //
+  // Store-backed only. Under `gateway.secrets.provider: env` there is no store in
+  // the read path at all — `forServer` is the process environment, which is flat
+  // — so a value here would resolve for nothing.
+  // WHEN a value here takes effect depends on the DELIVERY, not on the namespace.
+  // A `gateway` ref is resolved on the request path, so it lands without a
+  // redeploy; a supplementary image's `env:` is baked at render time whichever
+  // namespace it came out of, so it reaches the container at the next deploy.
+  // Saying "no redeploy" for the second would be a promise this does not keep.
+  const runtimeRef = requirement.deliveries.includes("gateway");
+  const bakedRef = requirement.deliveries.includes("bundle");
+  const lands = runtimeRef
+    ? `It is read on the request path, so a value here takes effect within ` +
+      `gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s) with no redeploy.`
+    : `Its \${${requirement.name}} is a supplementary image's env: ref, baked at ` +
+      `render time — so a value here reaches the container at the NEXT DEPLOY, not on write.`;
+
+  // A name referenced ONLY from a consoleEnv: map is not served by this route at
+  // all — that half is read from the deploy environment, never from the store —
+  // and the early return above only catches the case where console is the ONLY
+  // delivery. A name declared under both still needs the store route for its
+  // other half, so the target stays and the caveat is said out loud.
+  const consoleCaveat = requirement.deliveries.includes("console")
+    ? ` This name is ALSO declared under a consoleEnv: map, and that half is read ` +
+      `from the deploy environment — a value here does nothing for it.`
+    : "";
+
+  const perServerTargets: FixTarget[] =
+    storeBacked && (runtimeRef || bakedRef)
+      ? requirement.slugs.map((slug) => ({
+          store: "GCP Parameter Manager (index) + Secret Manager (value)",
+          resource: `${staticNamespace(gatewayEnv, slug)}${requirement.name}`,
+          project,
+          detail:
+            `"${slug}" resolves \${${requirement.name}} from its OWN namespace before the ` +
+            `shared one, so this is where a credential that belongs to this server goes. ` +
+            `${lands} The next deploy's preflight accepts it in place of ${path}.` +
+            (requirement.slugs.length > 1
+              ? ` ${requirement.slugs.length} servers reference this name, and the ` +
+                `deploy demands that EVERY one of them resolve it: a value here covers ` +
+                `"${slug}" alone, and the others still need ${namespace} or a value of ` +
+                `their own.`
+              : "") +
+            consoleCaveat +
+            projectNote,
+          commands: [
+            `# Console: namespace ${mcpNamespace(gatewayEnv)} · prefix "${slug}/static/" · variable ${requirement.name}`,
+          ],
+          href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
+        }))
+      : [];
+
   targets.push(
-    ...(storeBacked ? [storeTarget, bakedTarget] : [bakedTarget, storeTarget]),
+    ...(storeBacked
+      ? [...perServerTargets, storeTarget, bakedTarget]
+      : [bakedTarget, storeTarget]),
   );
 
-  // A `params: true` server's own namespace, LAST and explicitly labelled as not
-  // a fix for this row.
+  // Under the `env` provider the note above stays a note, and stays LAST.
   //
-  // It was offered first, under a heading that reads "most likely route first",
-  // and that was wrong: the requirement here is a `${NAME}` REFERENCE in `env:`
-  // or `headers:`, and putting the name under `/strad/{env}/mcp/{slug}/static/`
-  // does not resolve a reference. render-spec looks a referenced name up in the
-  // GATEWAY namespace and then the environment, and exits 1 if neither has it —
-  // before `resolveServerParams` runs at all. So the first thing a reader was
-  // told to do left the deploy failing with the identical error.
-  for (const slug of requirement.paramsSlugs) {
-    targets.push({
-      store: "GCP Parameter Manager + Secret Manager (a different mechanism)",
-      resource: `${staticNamespace(gatewayEnv, slug)}${requirement.name}`,
-      project,
-      detail:
-        `NOT a fix for this row — noted because it is the adjacent thing to reach for. ` +
-        `"${slug}" sets \`params: true\`, so everything under its static namespace is ` +
-        `injected into that server's environment. But this row is a \${${requirement.name}} ` +
-        `REFERENCE, and render-spec resolves a reference from the gateway namespace or the ` +
-        `deploy environment — never from a server's own namespace — so a value here leaves ` +
-        `the deploy failing exactly as it does now. Use it to replace the \`${requirement.name}\` ` +
-        `entry in that server's env: with a managed parameter, which is a config change.` +
-        projectNote,
-      commands: [
-        `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
-        `# ...then DELETE the \${${requirement.name}} entry from ${slug}'s env: in the config.`,
-      ],
-      href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
-    });
+  // The per-server route is a STORE route: `forServer` layers a namespace read
+  // in front of the shared one, and on an `env` deployment there is no store in
+  // the read path — every `${NAME}` comes from `process.env`, which is flat. So
+  // a value under a server's own namespace still changes nothing about this row
+  // here, and offering it as a fix would send a reader to create a resource that
+  // resolves for nobody. It is named anyway because it is the adjacent thing to
+  // reach for.
+  if (!storeBacked) {
+    for (const slug of requirement.paramsSlugs) {
+      targets.push({
+        store: "GCP Parameter Manager + Secret Manager (a different mechanism)",
+        resource: `${staticNamespace(gatewayEnv, slug)}${requirement.name}`,
+        project,
+        detail:
+          `NOT a fix for this row — noted because it is the adjacent thing to reach for. ` +
+          `"${slug}" sets \`params: true\`, so everything under its static namespace is ` +
+          `injected into that server's environment. But this deployment sets ` +
+          `gateway.secrets.provider: env, so a \${${requirement.name}} REFERENCE is ` +
+          `resolved from the deploy environment and the rendered spec — never from a ` +
+          `parameter namespace — and a value here leaves the deploy failing exactly as it ` +
+          `does now. Use it to replace the \`${requirement.name}\` entry in that server's ` +
+          `env: with a managed parameter, which is a config change.` +
+          projectNote,
+        commands: [
+          `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
+          `# ...then DELETE the \${${requirement.name}} entry from ${slug}'s env: in the config.`,
+        ],
+        href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
+      });
+    }
   }
 
   return targets;

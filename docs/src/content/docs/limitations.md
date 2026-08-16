@@ -832,7 +832,7 @@ for one name. Where those values can then LAND depends on whether the two slugs
 are two mounts:
 
 - **Different `path:`** — two instances in the container, each reading its own
-  [per-slug variable name](/operate/secrets/#two-servers-one-variable-name). Both
+  [per-slug variable name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace). Both
   values land on one bundle; no second component.
 - **Same `path:`** — one instance, serving both slugs from one set of
   credentials. There is nowhere for a second value to go, whatever it is called,
@@ -1454,6 +1454,53 @@ nothing in CI would catch it, because CI holds no Telegram credential.
 only function that imports the library. Everything above it drives a structural
 interface the tests implement directly, so the swap is that function, its imports
 and one dependency line — no session re-mint, no change to any tool.
+
+### 61. A server's own namespace is read at runtime, so one bad parameter in it takes that slug down
+
+Every `${NAME}` written on a server entry resolves from
+`/strad/{env}/mcp/{slug}/static/` before the shared gateway namespace, at runtime,
+in strad's own process. That layer is chained in front of the shared one, and the
+chain deliberately does **not** fall through on a throw — an unreachable store must
+not silently demote a server to whatever the shared namespace happens to hold,
+which is how a rotated credential comes back from the dead.
+
+Combined with [#36](#36-one-un-renderable-parameter-makes-the-whole-gateway-namespace-resolve-to-nothing),
+that widens the blast radius by one namespace: a malformed parameter under a slug's
+own namespace fails that slug's ref resolution outright, rather than missing and
+letting the gateway namespace answer — even for a name the gateway namespace holds
+and that worked before anyone seeded anything. It is the same semantics a
+`params: true` server has always had for that namespace, so both halves of
+`/mcp/{slug}/static/` fail the same way rather than one being quietly more
+forgiving.
+
+Two things bound it: the layer is **lazy**, so a slug nobody seeded and nobody
+calls never reads at all, and a refresh that throws serves the last good snapshot —
+only a first read failing propagates.
+
+A slug seeded by nobody but _called_ does read its own empty namespace, and in
+principle a throw there fails a name the shared namespace holds. In practice an
+empty namespace has no parameter to fail on, so it can only fail on transport —
+and transport takes the shared layer with it anyway. Every case that genuinely
+differs is one where something broken was seeded under that slug.
+
+Two smaller costs of the same layer:
+
+- **A newly seeded per-server name takes up to `ttlSeconds` (60s)**, not
+  `negativeTtlSeconds` (10s). The layer does not chase a cache miss, because a miss
+  on it is the normal case and resolving a namespace enumerates the whole project —
+  chasing every miss would cost a full listing per gateway-resolved name per slug.
+  Rotating an existing per-server value is unaffected.
+- **One namespace read per TTL per slug** that both references a `${NAME}` and is
+  actually called, on top of the shared read. The same shape as #52's render-time
+  cost, moved to the request path and cached.
+
+Whatever fixes #36 fixes this. **Nothing detects it ahead of time yet**:
+`store:check --resolve` renders the gateway namespace only. It `list()`s
+`/strad/{env}/mcp/` to decide coverage and never `resolve()`s it — the report says
+so, marking a `perServer` name "NOT render-checked" — so a per-server parameter
+that lists fine and will not render passes every gate and fails on the request
+path. Extending `--resolve` to the namespaces it already enumerates is the cheap
+half of the exit.
 
 ### 50. Three slugs ship disabled until their secrets are seeded
 

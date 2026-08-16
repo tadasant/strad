@@ -123,6 +123,15 @@ strad deploys nothing for it — no component, no bundle, no `env:`. `${NAME}`
 references in `url` and `headers` resolve in strad's own process, so a tunnel
 hostname that rotates can live in the secret store instead of the config.
 
+Those refs resolve from **this server's own namespace first** —
+`/strad/{env}/mcp/{slug}/static/{NAME}` — and the shared gateway namespace only as
+a fallback, so a tunnel's credentials live under the server they belong to and can
+be rotated without a redeploy. See [Secrets](/operate/secrets/).
+
+Running the machine at the other end — a named tunnel, a login item, Cloudflare
+Access in front of it — is its own page:
+[Running a local-tunnel host](/servers/local-tunnel-host/).
+
 ### 3. `supplementary-image`
 
 A server **served by a container image**. strad deploys the image as an
@@ -137,7 +146,7 @@ pattern (`gmail-ro` and `gmail-rw`, told apart by their `tools:` policy). What t
 cannot share is a value: a bundle is one `process.env`, so two servers in one
 bundle declaring the same `env:` key with **different** values is a schema error,
 and two whose `${NAME}` is spelled the same but resolves differently out of
-[their own namespaces](/operate/secrets/#two-servers-one-variable-name) is a
+[their own namespaces](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace) is a
 render error — for servers that share a `path`. A slug on a path of its own
 (`path: /<its own slug>`) is a separate instance in the container, so it reads
 [its own per-slug names](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
@@ -190,7 +199,7 @@ plus two that shape how this server gets its values:
   resolves from `/strad/{env}/mcp/{slug}/static/` **before** the shared
   `/strad/{env}/gateway/static/`, with no flag and for every server — which is what
   lets two servers write the same `${NAME}` and be given different values. See
-  [two servers, one variable name](/operate/secrets/#two-servers-one-variable-name).
+  [two servers, one variable name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace).
   The two paths differ in what they inject: `params:` injects everything it finds,
   substitution injects only names the config already references.
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import type { ParameterResolver } from "../src/secrets/parameters/types.ts";
 import {
-  buildSecretProvider,
+  buildSecretProviders,
   ChainSecretProvider,
   EnvSecretProvider,
   hydrateBootEnv,
@@ -321,7 +321,7 @@ describe("${NAME} resolution against a provider", () => {
   });
 });
 
-describe("buildSecretProvider", () => {
+describe("buildSecretProviders", () => {
   const base = `
 version: 1
 auth:
@@ -334,8 +334,10 @@ gateway:
   it("defaults to the environment, constructing no cloud client", () => {
     const config = parseConfig(base);
     expect(config.gateway.secrets.provider).toBe("env");
-    const p = buildSecretProvider({ config, env: {}, resolver: null });
-    expect(p.name).toBe("env");
+    const p = buildSecretProviders({ config, env: {}, resolver: null });
+    expect(p.shared.name).toBe("env");
+    // No per-slug layer to have: a container's process.env is flat.
+    expect(p.forServer("anki")).toBe(p.shared);
   });
 
   it("chains store-then-env when the store is declared", async () => {
@@ -343,11 +345,11 @@ gateway:
     provider: gcp-parameter-store
 `);
     const f = fakeResolver({ FROM_STORE: "s" });
-    const p = buildSecretProvider({
+    const p = buildSecretProviders({
       config,
       env: { FROM_ENV: "e" },
       resolver: f.resolver,
-    });
+    }).shared;
     expect(await p.get("FROM_STORE")).toBe("s");
     expect(await p.get("FROM_ENV")).toBe("e");
   });
@@ -358,11 +360,11 @@ gateway:
     envFallback: false
 `);
     const f = fakeResolver({ FROM_STORE: "s" });
-    const p = buildSecretProvider({
+    const p = buildSecretProviders({
       config,
       env: { FROM_ENV: "e" },
       resolver: f.resolver,
-    });
+    }).shared;
     expect(await p.get("FROM_STORE")).toBe("s");
     expect(await p.get("FROM_ENV")).toBeNull();
   });
@@ -374,7 +376,7 @@ gateway:
     provider: gcp-parameter-store
 `);
     expect(() =>
-      buildSecretProvider({ config, env: {}, resolver: null }),
+      buildSecretProviders({ config, env: {}, resolver: null }),
     ).toThrow(/no store credential/);
   });
 });
@@ -475,5 +477,166 @@ describe("no value ever reaches an error or a log", () => {
     );
     expect(hydrated).toEqual(["STRAD_TOKENS"]);
     expect(JSON.stringify(hydrated)).not.toContain(VALUE);
+  });
+});
+
+// =============================================================================
+// The per-server layer
+// =============================================================================
+
+/**
+ * A resolver that answers PER NAMESPACE, and counts what it was asked.
+ *
+ * The other fake in this file ignores its argument, which is fine while there is
+ * one namespace. The whole point below is that there are two.
+ */
+function namespacedResolver(
+  byNamespace: Record<string, Record<string, string>>,
+) {
+  const asked: string[] = [];
+  return {
+    resolver: {
+      async resolve(namespace: string): Promise<Record<string, string>> {
+        asked.push(namespace);
+        return { ...(byNamespace[namespace] ?? {}) };
+      },
+    } satisfies ParameterResolver,
+    asked,
+    set(namespace: string, values: Record<string, string>) {
+      byNamespace[namespace] = values;
+    },
+  };
+}
+
+describe("per-server secret providers", () => {
+  const STORE_CONFIG = parseConfig(`
+version: 1
+auth:
+  staticTokens: { enabled: true }
+gateway:
+  name: strad
+  env: test
+  secrets:
+    provider: gcp-parameter-store
+    envFallback: false
+`);
+
+  const GATEWAY_NS = "/strad/test/gateway/static/";
+  const ANKI_NS = "/strad/test/mcp/anki/static/";
+
+  it("prefers the server's OWN namespace over the shared one", async () => {
+    const f = namespacedResolver({
+      [GATEWAY_NS]: { ANKI_MCP_API_KEY: "shared" },
+      [ANKI_NS]: { ANKI_MCP_API_KEY: "mine" },
+    });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    expect(await providers.forServer("anki").get("ANKI_MCP_API_KEY")).toBe(
+      "mine",
+    );
+    // The shared provider is unchanged — this is a layer, not a rewrite.
+    expect(await providers.shared.get("ANKI_MCP_API_KEY")).toBe("shared");
+  });
+
+  it("falls back to the shared namespace for a server nobody seeded", async () => {
+    // The back-compat guarantee, stated as a test: every deployment that works
+    // today has an empty layer 1 for every server.
+    const f = namespacedResolver({ [GATEWAY_NS]: { GRANOLA_TOKEN: "shared" } });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    expect(await providers.forServer("granola").get("GRANOLA_TOKEN")).toBe(
+      "shared",
+    );
+  });
+
+  it("resolves the SAME name to DIFFERENT values for two servers", async () => {
+    const f = namespacedResolver({
+      [GATEWAY_NS]: {},
+      [ANKI_NS]: { TOKEN: "anki" },
+      "/strad/test/mcp/other/static/": { TOKEN: "other" },
+    });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    expect(await providers.forServer("anki").get("TOKEN")).toBe("anki");
+    expect(await providers.forServer("other").get("TOKEN")).toBe("other");
+  });
+
+  it("memoises per slug, so a per-request thunk does not re-read the store", async () => {
+    const f = namespacedResolver({ [ANKI_NS]: { TOKEN: "t" } });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    expect(providers.forServer("anki")).toBe(providers.forServer("anki"));
+    await providers.forServer("anki").get("TOKEN");
+    await providers.forServer("anki").get("TOKEN");
+    expect(f.asked.filter((ns) => ns === ANKI_NS)).toHaveLength(1);
+  });
+
+  it("does not re-list the store chasing a miss on the per-server layer", async () => {
+    // A miss on layer 1 is the NORMAL case — most names live in the shared
+    // namespace — and `resolve()` enumerates the project. Chasing every one of
+    // them would cost a full listing per gateway-resolved name per slug.
+    const f = namespacedResolver({
+      [GATEWAY_NS]: { SHARED: "s" },
+      [ANKI_NS]: {},
+    });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    for (let i = 0; i < 3; i += 1) {
+      expect(await providers.forServer("anki").get("SHARED")).toBe("s");
+    }
+    expect(f.asked.filter((ns) => ns === ANKI_NS)).toHaveLength(1);
+  });
+
+  it("reports a name no layer holds as null, not as a throw", async () => {
+    const f = namespacedResolver({ [GATEWAY_NS]: {}, [ANKI_NS]: {} });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    expect(await providers.forServer("anki").get("NOPE")).toBeNull();
+  });
+
+  it("invalidate() drops the per-server snapshots too", async () => {
+    // The console writes through this seam. A write to a server's own namespace
+    // that only cleared the shared cache would leave the page reporting the old
+    // value it just replaced.
+    const f = namespacedResolver({ [GATEWAY_NS]: {}, [ANKI_NS]: { T: "old" } });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    expect(await providers.forServer("anki").get("T")).toBe("old");
+    f.set(ANKI_NS, { T: "new" });
+    providers.invalidate();
+    expect(await providers.forServer("anki").get("T")).toBe("new");
+  });
+
+  it("does not consult the store for a slug nothing asks about", async () => {
+    // The layer is lazy. A fleet of 30 slugs must not cost 30 listings at boot.
+    const f = namespacedResolver({ [GATEWAY_NS]: { SHARED: "s" } });
+    const providers = buildSecretProviders({
+      config: STORE_CONFIG,
+      env: {},
+      resolver: f.resolver,
+    });
+    providers.forServer("anki");
+    expect(f.asked).toEqual([]);
   });
 });

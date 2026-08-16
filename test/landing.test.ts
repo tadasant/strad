@@ -1,3 +1,4 @@
+import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -99,7 +100,7 @@ async function boot(
 ): Promise<{ url: string; close: () => void }> {
   const registry = await Registry.build({
     config,
-    secrets: new EnvSecretProvider(SECRETS),
+    secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
     mode: "core",
     env,
   });
@@ -121,7 +122,7 @@ async function boot(
 beforeAll(async () => {
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: new EnvSecretProvider(SECRETS),
+    secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
     mode: "core",
     env,
   });
@@ -357,7 +358,7 @@ describe("GET / in bundle mode", () => {
   it("is not served — a bundle component is internal and has no front door", async () => {
     const registry = await Registry.build({
       config: CONFIG,
-      secrets: new EnvSecretProvider(SECRETS),
+      secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
       mode: "bundle",
       env: { ...env, STRAD_BUNDLE: "bundle-gcs" },
     });
