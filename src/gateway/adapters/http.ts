@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import type { Request, Response } from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
   ErrorCode,
   McpError,
@@ -314,7 +317,15 @@ export class HttpServerAdapter implements ServerAdapter {
             propagation.inject(context.active(), headers, {
               set: (h, k, v) => h.set(k, v),
             });
-            if (!handshaking || connectTimeoutMs === undefined) {
+            // POSTs only. The SDK opens the long-lived server->client SSE
+            // stream with a GET, fired from `send()` WITHOUT being awaited, so
+            // it lands here a microtask before the handshake resolves and would
+            // otherwise inherit the connect deadline — killing the notification
+            // stream a few seconds into every connection and making the SDK
+            // reconnect it. A deadline meant for "is anyone home" has no
+            // business on a stream that is supposed to stay open.
+            const isGet = (init?.method ?? "GET").toUpperCase() === "GET";
+            if (!handshaking || isGet || connectTimeoutMs === undefined) {
               return fetch(url, { ...init, headers });
             }
             // Compose rather than replace: the SDK sets its own signal on this
@@ -420,29 +431,38 @@ export class HttpServerAdapter implements ServerAdapter {
         // fails loudly rather than spinning.
         return this.connect(attemptsLeft - 1);
       }
-      throw this.wrap(err);
+      throw this.wrap(err, "connect");
     }
   }
 
   /**
    * Turn an upstream failure into the error a caller should see.
    *
-   * One place, because both the handshake path and the request path need the
-   * same judgement: a `local-tunnel` that could not be REACHED is an offline
-   * machine, and anything else is an upstream error. A local-tunnel that
-   * answered with a JSON-RPC error is emphatically NOT offline — the machine is
-   * up and said no — so this leans on the same `isConnectionFault` split that
-   * decides whether to retire a connection.
+   * "The machine is off" is a claim about the TRANSPORT, and only about it.
+   *
+   * It is tempting to reuse `isConnectionFault` here, since both questions look
+   * like "was this the connection's fault". They are not the same question.
+   * That predicate decides whether to RETIRE A SOCKET, where guessing wrong
+   * costs one handshake, so it answers `true` for everything it does not
+   * recognise. This decides what to TELL A HUMAN, and what
+   * `listToolsFor` may quietly drop — and there, guessing wrong means a running
+   * machine is reported as switched off and its failure disappears from a
+   * listing that should have failed. So this predicate is narrow, and anything
+   * it is unsure about stays an ordinary upstream error.
    */
-  private wrap(err: unknown): UpstreamError {
-    if (this.kind === "local-tunnel" && isConnectionFault(err)) {
-      return new LocalMachineOfflineError(
-        this.slug,
-        err,
-        this.opts.connectTimeoutMs,
-      );
-    }
-    return new UpstreamError(this.slug, err);
+  private wrap(err: unknown, phase: "connect" | "request"): UpstreamError {
+    if (this.kind !== "local-tunnel") return new UpstreamError(this.slug, err);
+    const verdict = offlineVerdict(err, phase);
+    if (!verdict) return new UpstreamError(this.slug, err);
+    return new LocalMachineOfflineError(
+      this.slug,
+      err,
+      // A duration is only honest when a deadline is what expired, and only the
+      // handshake's deadline is this one. A refused connection came back in a
+      // millisecond, and saying "no answer within 5000ms" about it invites
+      // someone to go looking for a slow network.
+      verdict === "timeout" ? this.opts.connectTimeoutMs : undefined,
+    );
   }
 
   /**
@@ -520,7 +540,13 @@ export class HttpServerAdapter implements ServerAdapter {
       return await this.hop(op, () => run(conn.client));
     } catch (err) {
       if (isConnectionFault(err)) this.retire(conn);
-      throw this.wrap(err);
+      // A request failure CAN be an offline verdict, and usually is the first
+      // one anyone sees: the connection is cached, so shutting a laptop is
+      // discovered by a request running on a socket that has just died rather
+      // than by a fresh handshake. What `phase` buys is the narrower reading of
+      // a DEADLINE here — the machine answered the handshake this request is
+      // running on, so a timeout now is a slow tool, not an absent machine.
+      throw this.wrap(err, "request");
     } finally {
       conn.release();
     }
@@ -770,6 +796,81 @@ function isConnectionFault(err: unknown): boolean {
     );
   }
   return true;
+}
+
+/**
+ * HTTP statuses that mean "the edge is up, the machine behind it is not".
+ *
+ * A tunnel is two hops, and the far one is the machine. When the machine goes,
+ * the near hop stays up and answers on its behalf: Cloudflare says 530 (or 521
+ * / 522 / 523 / 524), a plain reverse proxy says 502 / 503 / 504. This is the
+ * COMMONEST offline shape in practice — the hostname still resolves, still
+ * terminates TLS, and still answers — and reading it as an ordinary HTTP error
+ * would mean the one failure this kind exists for is the one it misses.
+ *
+ * 4xx is deliberately absent. A 404 means something answered and did not have
+ * that path, which is a config error and not a closed lid; a 500 means the
+ * server itself is running and threw. Calling either of those "your machine is
+ * off" sends someone to check a laptop that was never the problem.
+ */
+const ORIGIN_UNREACHABLE_STATUSES = new Set([
+  502, 503, 504, 521, 522, 523, 524, 530,
+]);
+
+/**
+ * Is this handshake failure a machine that is not there?
+ *
+ * Returns why, or null for "not an offline verdict". Null is the safe answer
+ * and the default for anything unrecognised: an ordinary upstream error is
+ * merely unhelpful, while a false offline verdict both misdescribes the fault
+ * and lets `listToolsFor` drop the slug from a listing in silence.
+ */
+function offlineVerdict(
+  err: unknown,
+  phase: "connect" | "request",
+): "timeout" | "unreachable" | null {
+  if (err instanceof McpError) {
+    // A deadline expiring means "nobody answered" during the HANDSHAKE and
+    // "this tool is slow" during a request — the machine already proved it was
+    // there by completing the handshake this request is running on.
+    if (err.code === ErrorCode.RequestTimeout) {
+      return phase === "connect" ? "timeout" : null;
+    }
+    if (err.code === ErrorCode.ConnectionClosed) return "unreachable";
+    // Any other code ARRIVED, in a JSON-RPC response, over a working
+    // transport. The machine is up and said no.
+    return null;
+  }
+  if (err instanceof StreamableHTTPError) {
+    // `code` is the HTTP status, and -1 for "unexpected content type" — which
+    // is a response, so not an offline verdict either.
+    return err.code !== undefined && ORIGIN_UNREACHABLE_STATUSES.has(err.code)
+      ? "unreachable"
+      : null;
+  }
+  // An abort — ours, from the connect deadline — or a fetch that never got a
+  // response at all: DNS failure, connection refused, TLS failure.
+  if (err instanceof Error) {
+    if (err.name === "TimeoutError" || err.name === "AbortError")
+      return "timeout";
+    if (
+      /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket hang up/i.test(
+        err.message,
+      )
+    ) {
+      return "unreachable";
+    }
+    // `fetch` wraps the real reason in `cause`, and the message above is often
+    // just "fetch failed" with everything useful one level down.
+    const cause = (err as { cause?: unknown }).cause;
+    if (
+      cause instanceof Error &&
+      /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT/i.test(cause.message)
+    ) {
+      return "unreachable";
+    }
+  }
+  return null;
 }
 
 /** A JSON-RPC `-32601`, through the `UpstreamError` wrapper or raw. */

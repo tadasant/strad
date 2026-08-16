@@ -48,7 +48,7 @@ OAuth loop against the gateway.
 ## Attaching a server
 
 Everything lives in one config file. Adding a server is one entry. There are
-three kinds:
+four kinds:
 
 ```yaml
 servers:
@@ -60,7 +60,14 @@ servers:
     headers:
       Authorization: "Bearer ${GRANOLA_TOKEN}" # ${...} = a secret, injected at deploy
 
-  # 2. supplementary-image — a server served by a container image, on one path
+  # 2. local-tunnel — an MCP server on a machine you own, behind a tunnel it
+  #    dials out. Works while that machine is up; fails cleanly while it is not.
+  - slug: anki
+    kind: local-tunnel
+    url: https://your-tunnel-host.example/mcp
+    entitlements: [admin]
+
+  # 3. supplementary-image — a server served by a container image, on one path
   #    of it. strad deploys the image as an internal-only component and proxies.
   - slug: good-eggs
     kind: supplementary-image
@@ -69,7 +76,7 @@ servers:
     path: /good-eggs
     entitlements: [admin]
 
-  # 3. builtin — a module compiled into a strad image (for private/internal
+  # 4. builtin — a module compiled into a strad image (for private/internal
   #    servers). The same interface as the public kinds; nothing special.
   - slug: echo
     kind: builtin

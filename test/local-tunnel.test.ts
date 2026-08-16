@@ -1,4 +1,6 @@
 import express from "express";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server as HttpServer } from "node:http";
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -71,6 +73,25 @@ async function blackHole(): Promise<string> {
   const app = express();
   app.all(/.*/, () => {
     /* accept, and never respond */
+  });
+  const server = app.listen(0, "127.0.0.1");
+  servers.push(server);
+  await new Promise((resolve) => server.once("listening", resolve));
+  return `http://127.0.0.1:${(server.address() as { port: number }).port}/mcp`;
+}
+
+/**
+ * A host that ANSWERS, with the status you ask for.
+ *
+ * The machine is up: it accepted, routed and replied. Whatever went wrong is a
+ * config error or a crash, and calling it "your machine is off" both misnames
+ * it and — because an offline verdict is what `listToolsFor` may silently drop
+ * — makes it vanish from a listing that ought to have failed.
+ */
+async function answersWith(status: number): Promise<string> {
+  const app = express();
+  app.all(/.*/, (_req, res) => {
+    res.status(status).send(status === 404 ? "Cannot POST /wrong" : "boom");
   });
   const server = app.listen(0, "127.0.0.1");
   servers.push(server);
@@ -315,6 +336,192 @@ servers:
         onUnlistable: () => {},
       }),
     ).rejects.toThrow(/requested by name but its upstream could not be listed/);
+    await registry.close();
+  });
+});
+
+describe("a machine that is UP but wrong", () => {
+  // The distinction this whole predicate exists for. An offline verdict is not
+  // just a nicer error message — it is a licence for `listToolsFor` to drop the
+  // slug from an explicit listing without failing it. Handing that licence to
+  // every failure would reinstate exactly the bug the named-server rule fixed.
+
+  it("does not call a 404 an offline machine — that is a wrong path", async () => {
+    const adapter = tunnelAdapter(await answersWith(404));
+    const err = await adapter.listTools().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect(err).not.toBeInstanceOf(LocalMachineOfflineError);
+  });
+
+  it("does not call a 500 an offline machine — the server ran and threw", async () => {
+    const adapter = tunnelAdapter(await answersWith(500));
+    const err = await adapter.listTools().catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(LocalMachineOfflineError);
+  });
+
+  it("DOES call a tunnel-edge 502 offline — that is the commonest shape of all", async () => {
+    // Cloudflare answers 530 (and a plain proxy 502) when the hostname is still
+    // registered but the origin has gone. It is an HTTP response, and it means
+    // precisely "the machine is not there".
+    const adapter = tunnelAdapter(await answersWith(502));
+    const err = await adapter.listTools().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LocalMachineOfflineError);
+  });
+
+  it("claims no duration when no deadline expired", async () => {
+    // "no answer within 5000ms" about a connection refused in a millisecond
+    // sends someone looking for a slow network. Say nothing rather than that.
+    const adapter = tunnelAdapter(`http://127.0.0.1:${await deadPort()}/mcp`);
+    const err = await adapter.listTools().catch((e: unknown) => e);
+    expect((err as Error).message).not.toMatch(/within \d+ms/);
+    expect((err as Error).message).toMatch(/is not reachable/);
+  });
+
+  it("a wrong path still FAILS an explicit listing, taking its peers with it", async () => {
+    const url = await answersWith(404);
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+  - slug: anki
+    kind: local-tunnel
+    url: "${url}"
+    connectTimeoutMs: 750
+    entitlements: [admin]
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: new EnvSecretProvider({}),
+      mode: "core",
+      env: {},
+    });
+    const policies = compileToolPolicies(config);
+
+    await expect(
+      listToolsFor(["anki", "echo"], registry, policies, () => {}, {
+        onUnlistable: () => {},
+      }),
+    ).rejects.toThrow(/requested by name but its upstream could not be listed/);
+    await registry.close();
+  });
+});
+
+describe("a machine that goes away mid-session", () => {
+  it("reads as offline on the FIRST request, not the second", async () => {
+    // The connection is cached, so shutting a laptop is discovered by a request
+    // running on a socket that has just died — not by a fresh handshake. If the
+    // offline verdict were scoped to the handshake, the first request after
+    // someone closes their laptop (the commonest moment there is) would get a
+    // generic upstream error and only the retry would explain itself.
+    const app = express();
+    let alive = true;
+    const mcp = new McpServer(
+      { name: "standin", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    mcp.tool("ping", "ping", {}, async () => ({
+      content: [{ type: "text", text: "pong" }],
+    }));
+    app.post(/.*/, (req, res) => {
+      void (async () => {
+        if (!alive) {
+          req.socket.destroy();
+          return;
+        }
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+        });
+        res.on("close", () => void transport.close());
+        await mcp.server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      })();
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const adapter = tunnelAdapter(`http://127.0.0.1:${port}/mcp`);
+    expect((await adapter.listTools()).map((t) => t.name)).toEqual(["ping"]);
+
+    alive = false; // the lid closes, on a connection that is already open
+    const err = await adapter.listTools().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LocalMachineOfflineError);
+  });
+});
+
+describe("an empty result is never silently returned", () => {
+  it("throws when the only other named server serves nothing", async () => {
+    // The gap the failure COUNT missed: `?servers=anki,quiet` with the laptop
+    // asleep and `quiet` legitimately serving zero tools is not "1 of 2
+    // failed", so a count test lets it through and the caller gets
+    // `{"tools":[]}` with no idea a machine was skipped.
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: quiet
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    tools: { deny: [echo, whoami] }
+  - slug: anki
+    kind: local-tunnel
+    url: "http://127.0.0.1:${await deadPort()}/mcp"
+    connectTimeoutMs: 750
+    entitlements: [admin]
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: new EnvSecretProvider({}),
+      mode: "core",
+      env: {},
+    });
+    const policies = compileToolPolicies(config);
+
+    await expect(
+      listToolsFor(["anki", "quiet"], registry, policies, () => {}, {
+        onUnlistable: () => {},
+      }),
+    ).rejects.toThrow(/the machine hosting "anki" is not reachable/);
+    await registry.close();
+  });
+});
+
+describe("every failing slug is reported, not just the first", () => {
+  it("calls onUnlistable for each broken named server", async () => {
+    // `onUnlistable` drives a per-slug metric. Reporting only the first would
+    // make the second dead bundle in a two-bundle outage invisible to the
+    // counter that exists to find it.
+    const config = parseConfig(`${BASE}
+bundles:
+  - name: b1
+  - name: b2
+servers:
+  - { slug: broken-a, kind: supplementary-image, image: "ghcr.io/o/x:1", bundle: b1, path: /a, entitlements: [admin] }
+  - { slug: broken-b, kind: supplementary-image, image: "ghcr.io/o/y:1", bundle: b2, path: /b, entitlements: [admin] }
+`);
+    const dead = await deadPort();
+    const registry = await Registry.build({
+      config,
+      secrets: new EnvSecretProvider({}),
+      mode: "core",
+      env: {
+        STRAD_BUNDLE_URL_B1: `http://127.0.0.1:${dead}`,
+        STRAD_BUNDLE_URL_B2: `http://127.0.0.1:${dead}`,
+      },
+    });
+    const policies = compileToolPolicies(config);
+    const unlistable: string[] = [];
+
+    await expect(
+      listToolsFor(["broken-a", "broken-b"], registry, policies, () => {}, {
+        onUnlistable: (slug) => unlistable.push(slug),
+      }),
+    ).rejects.toThrow();
+    expect(unlistable.sort()).toEqual(["broken-a", "broken-b"]);
     await registry.close();
   });
 });
