@@ -15,7 +15,8 @@ import type { ClientCapabilities } from "../clientCapabilities.ts";
  */
 export interface ServerAdapter {
   readonly slug: string;
-  readonly kind: "remote-http" | "supplementary-image" | "builtin";
+  readonly kind:
+    "remote-http" | "local-tunnel" | "supplementary-image" | "builtin";
 
   /** Tools this server offers, WITHOUT the `<slug>__` prefix. */
   listTools(): Promise<Tool[]>;

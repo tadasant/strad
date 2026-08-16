@@ -569,8 +569,17 @@ jobs:
           echo "$health"
           # Not merely 200: the dev config exists to mount `echo`, so a healthy
           # gateway with an empty server list is the failure this catches.
-          case "$health" in
-            *'"servers":["echo"]'*) echo "OK: echo is mounted" ;;
+          #
+          # PRESENCE, not exclusivity. This used to match the whole array
+          # (`"servers":["echo"]`), which quietly asserted that echo was the
+          # ONLY server the dev config mounts — so adding a second entry failed
+          # a job whose message says the config "did not take", while the very
+          # output it printed showed echo mounted and serving. Slice the array
+          # out and look inside it.
+          servers=${health#*'"servers":['}
+          servers=${servers%%]*}
+          case "$servers" in
+            *'"echo"'*) echo "OK: echo is mounted (servers: [$servers])" ;;
             *)
               echo "::error::/healthz did not report the echo server; the dev config did not take"
               dc exec -T app tail -50 /app/.logs/app.log || true

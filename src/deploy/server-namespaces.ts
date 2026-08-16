@@ -1,3 +1,4 @@
+import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { ParameterMeta } from "../secrets/parameters/types.ts";
 import { staticNamespace } from "../secrets/parameters/namespace.ts";
@@ -198,14 +199,14 @@ export function unreadParameters(
       continue;
     }
 
-    if (server.kind === "remote-http") {
+    if (isUnhosted(server)) {
       out.push({
         slug,
         variables: [...variables],
         message:
           `${namespace} holds ${variables.length} parameter(s) ` +
-          `(${variables.join(", ")}) but "${slug}" is a remote-http server — it ` +
-          `runs in someone else's infrastructure and has no environment to ` +
+          `(${variables.join(", ")}) but "${slug}" is a ${server.kind} server — it ` +
+          `runs outside strad's infrastructure and has no environment to ` +
           `inject. Its \${NAME} refs resolve from the gateway namespace.`,
       });
       continue;

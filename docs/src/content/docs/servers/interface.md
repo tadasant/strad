@@ -7,7 +7,7 @@ sidebar:
 
 The core ships with **zero** MCP servers. Attaching one is a single entry under
 `servers:` in your config. That entry is a **discriminated union on `kind`**, and
-there are exactly three kinds. This is the whole extension surface of strad.
+there are exactly four kinds. This is the whole extension surface of strad.
 
 ## What every server shares
 
@@ -39,7 +39,7 @@ the server under `roles.<role>.servers`. Both directions must agree — see
 
 </aside>
 
-## The three kinds
+## The four kinds
 
 ```mermaid
 flowchart LR
@@ -47,6 +47,7 @@ flowchart LR
         G["core gateway"]
     end
     G -->|"remote-http:<br/>proxy over the internet,<br/>strad holds the credential"| RH["Existing MCP server<br/>on the internet"]
+    G -->|"local-tunnel:<br/>proxy to a machine you own,<br/>online only when it is"| LT["MCP server on your laptop,<br/>behind a tunnel it dials out"]
     G -->|"supplementary-image:<br/>deploy as internal-only<br/>component, proxy privately"| SI["A container image,<br/>one or more servers on it,<br/>each on its own path"]
     G -->|"builtin:<br/>module compiled into<br/>the strad image"| BI["In-process module<br/>(or a bundle component)"]
 ```
@@ -77,7 +78,52 @@ re-resolved on every operation, so rotating `GRANOLA_TOKEN` in a store-backed
 deployment takes effect on the running gateway: the adapter notices the endpoint
 changed and rebuilds its upstream connection.
 
-### 2. `supplementary-image`
+### 2. `local-tunnel`
+
+Proxy an MCP server running on **a machine you own** — a laptop, a desktop —
+reached over a tunnel that machine dials out to (Cloudflare Tunnel, ngrok,
+Tailscale Funnel). On the wire it is Streamable HTTP, exactly like
+`remote-http`; strad never dials in and holds no inbound route to your machine.
+
+Use it for servers that are machine-bound by nature: an application's own MCP
+add-on, computer use, browser automation driving a real logged-in profile.
+
+Fields: `url` (required), `headers`, `connectTimeoutMs` (default `5000`).
+
+```yaml
+servers:
+  # local-tunnel — an MCP server on a machine you own.
+  - slug: anki
+    kind: local-tunnel
+    url: https://your-tunnel-host.example/mcp
+    entitlements: [admin]
+```
+
+#### It is offline most of the time, and that is the point
+
+This is the only kind whose upstream is **expected to be absent**. A closed
+laptop is not an outage, so three things behave differently:
+
+- **The handshake is bounded** by `connectTimeoutMs` rather than by the MCP
+  SDK's 60-second default. An offline machine fails in about five seconds
+  instead of a minute. The bound is applied both as a request timeout and as an
+  abort on the underlying socket — only the second covers a host that accepts a
+  connection and then says nothing, which is how a dead tunnel usually presents.
+- **The failure names the machine.** A client gets `the machine hosting "anki"
+  is not reachable … it works only while that machine is running the server and
+  its tunnel is up`, rather than a generic upstream error.
+- **It does not take its neighbours down.** `?servers=anki,slack` with the
+  laptop asleep returns Slack's tools and no Anki. Every other kind fails the
+  whole listing when a *named* server cannot be listed — see
+  [architecture](/intro/architecture/) — and this is the one exception, because
+  for this kind there is no fault being hidden. Selecting it **alone** is still
+  an error: an empty toolset would read as "this server has no tools".
+
+strad deploys nothing for it — no component, no bundle, no `env:`. `${NAME}`
+references in `url` and `headers` resolve in strad's own process, so a tunnel
+hostname that rotates can live in the secret store instead of the config.
+
+### 3. `supplementary-image`
 
 A server **served by a container image**. strad deploys the image as an
 internal-only component and proxies to it over the private network.
@@ -173,7 +219,7 @@ At deploy time this component gets `internal_ports: [8080]` and **no**
 `http_port` — which is what keeps it off the public edge (see [Deploy
 model](/operate/deploy-model/) for why setting both is a hard API rejection).
 
-### 3. `builtin`
+### 4. `builtin`
 
 A module **compiled into a strad image**. This is how private / internal servers
 ship: `tadasant-internal` builds its own image with its modules and registers them

@@ -17,7 +17,7 @@ import type { ServerAdapter } from "./adapters/types.ts";
 /**
  * Config -> live adapters.
  *
- * This is where the three kinds are reconciled into one runtime surface. Built
+ * This is where the four kinds are reconciled into one runtime surface. Built
  * once at boot: an adapter is a long-lived upstream connection, not a
  * per-request object. (The *toolset* is still resolved per request — see
  * router.ts. Only the plumbing is shared.)
@@ -165,6 +165,31 @@ export class Registry {
                 headers: await resolveMapAsync(server.headers, secrets),
               }),
               timeoutMs: server.timeoutMs,
+            }),
+          );
+          slugs.push(server.slug);
+          break;
+        }
+
+        case "local-tunnel": {
+          // Same transport as remote-http, and the same per-operation endpoint
+          // thunk — a tunnel URL is exactly the kind of value that changes
+          // without a deploy (a Cloudflare quick tunnel mints a new hostname
+          // every restart), so resolving it per call is the point rather than
+          // an inherited detail.
+          adapters.set(
+            server.slug,
+            new HttpServerAdapter({
+              slug: server.slug,
+              kind: "local-tunnel",
+              endpoint: async () => ({
+                url: await resolveRefsAsync(server.url, secrets),
+                headers: await resolveMapAsync(server.headers, secrets),
+              }),
+              timeoutMs: server.timeoutMs,
+              // The one behavioural difference from remote-http: an absent
+              // machine must be a fast, legible failure rather than a hang.
+              connectTimeoutMs: server.connectTimeoutMs,
             }),
           );
           slugs.push(server.slug);

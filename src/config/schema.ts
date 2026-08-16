@@ -51,7 +51,7 @@ const Role = z
   .regex(/^[a-z0-9][a-z0-9_-]{0,62}$/, "role must be lowercase alphanumeric");
 
 // ---------------------------------------------------------------------------
-// Servers — the three kinds
+// Servers — the four kinds
 // ---------------------------------------------------------------------------
 
 /**
@@ -118,6 +118,60 @@ const RemoteHttpServer = ServerBase.extend({
   kind: z.literal("remote-http"),
   url: z.string().url(),
   headers: HeaderMap,
+});
+
+/**
+ * kind: local-tunnel
+ *
+ * Proxy an MCP server running on a machine a HUMAN owns — a laptop, a desktop —
+ * reached over a tunnel that machine dials out to (Cloudflare, ngrok, Tailscale
+ * Funnel). On the wire it is Streamable HTTP, exactly like `remote-http`.
+ *
+ *   - slug: anki
+ *     kind: local-tunnel
+ *     url: https://anki.example.trycloudflare.com/mcp
+ *
+ * WHY IT IS ITS OWN KIND, when the transport is identical to remote-http.
+ *
+ * Because the two differ on the only question anything downstream asks about a
+ * failure: WHOSE PROBLEM IS IT? A `remote-http` that stops answering is a third
+ * party's outage — rare, unplanned, worth a look. A `local-tunnel` that stops
+ * answering is a laptop that got closed, which is the NORMAL STATE of this kind
+ * and the entire point of it: reachable while the machine is up, cleanly gone
+ * while it is not.
+ *
+ * Encoding that as a flag on remote-http would leave every consumer — the
+ * reachability monitor, `/healthz`, the deploy gate, the console — unable to
+ * tell a broken vendor from a closed lid. As its own `kind` the distinction is
+ * carried, once, to all of them.
+ *
+ * The behavioural consequences live in three places:
+ *   - `connectTimeoutMs` below: a bounded handshake, so an offline machine is a
+ *     seconds-long failure rather than a minute-long hang.
+ *   - gateway/adapters/http.ts: an offline machine is reported as such, in
+ *     strad's own words, rather than as a generic upstream fault.
+ *   - gateway/mcpServer.ts: an offline machine does not fail a `?servers=`
+ *     listing that also named servers which ARE up.
+ */
+const LocalTunnelServer = ServerBase.extend({
+  kind: z.literal("local-tunnel"),
+  /** The tunnel's public URL. The machine dials out; strad never dials in. */
+  url: z.string().url(),
+  headers: HeaderMap,
+  /**
+   * How long to wait for the machine to complete an MCP handshake.
+   *
+   * SEPARATE from `timeoutMs`, and much shorter, because they bound different
+   * things. `timeoutMs` is how long a tool may take to RUN once the machine has
+   * answered — and for this kind of server that can be genuinely long (driving a
+   * browser, taking a screenshot). This is how long to wait to find out whether
+   * anyone is home at all, which should be fast whatever the answer.
+   *
+   * Without it the handshake inherits the MCP SDK's 60s default and a closed
+   * laptop costs a full minute per request. Five seconds is comfortably more
+   * than a tunnel's round trip and comfortably less than a human's patience.
+   */
+  connectTimeoutMs: z.number().int().positive().default(5_000),
 });
 
 /**
@@ -221,9 +275,27 @@ const BuiltinServer = ServerBase.extend({
 
 export const ServerConfig = z.discriminatedUnion("kind", [
   RemoteHttpServer,
+  LocalTunnelServer,
   SupplementaryImageServer,
   BuiltinServer,
 ]);
+
+/**
+ * The kinds strad runs no container for: somebody else's server, at a URL.
+ *
+ * `remote-http` is a third party's; `local-tunnel` is the operator's own
+ * machine. Neither gets a component, a bundle, an image or a deploy-time env,
+ * so every part of the deploy and console layer that asks "is this one of ours
+ * to run?" asks it here rather than naming a kind — which is what keeps a fifth
+ * kind from having to be added to a dozen scattered comparisons.
+ */
+export const UNHOSTED_KINDS = ["remote-http", "local-tunnel"] as const;
+
+export function isUnhosted(
+  server: ServerConfig,
+): server is Extract<ServerConfig, { kind: (typeof UNHOSTED_KINDS)[number] }> {
+  return (UNHOSTED_KINDS as readonly string[]).includes(server.kind);
+}
 
 // ---------------------------------------------------------------------------
 // Bundles — deployment groups
@@ -543,7 +615,10 @@ export const StradConfig = z
     // Bundle occupancy rules.
     const byBundle = new Map<string, typeof cfg.servers>();
     for (const s of cfg.servers) {
-      if (s.kind === "remote-http") continue;
+      // A server strad runs no container for occupies no bundle. Skipping it is
+      // not cosmetic: it has no `bundle` field at all, so counting it would key
+      // the map on `undefined` and invent a phantom component.
+      if (isUnhosted(s)) continue;
       const list = byBundle.get(s.bundle) ?? [];
       list.push(s);
       byBundle.set(s.bundle, list);
@@ -601,6 +676,7 @@ export const StradConfig = z
 export type StradConfig = z.infer<typeof StradConfig>;
 export type ServerConfig = z.infer<typeof ServerConfig>;
 export type RemoteHttpServer = z.infer<typeof RemoteHttpServer>;
+export type LocalTunnelServer = z.infer<typeof LocalTunnelServer>;
 export type SupplementaryImageServer = z.infer<typeof SupplementaryImageServer>;
 export type BuiltinServer = z.infer<typeof BuiltinServer>;
 export type BundleConfig = z.infer<typeof BundleConfig>;

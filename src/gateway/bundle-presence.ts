@@ -1,3 +1,4 @@
+import { isUnhosted } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import {
@@ -57,7 +58,8 @@ export interface BundlePresence {
 
 /** Which component holds a given server's `env:`-delivered secrets. */
 export function bundleOf(server: ServerConfig): string | null {
-  if (server.kind === "remote-http") return null;
+  // A server strad runs no container for holds no component env.
+  if (isUnhosted(server)) return null;
   return server.bundle;
 }
 

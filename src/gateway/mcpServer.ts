@@ -20,6 +20,7 @@ import {
   resultShape,
   tracer,
 } from "../telemetry/index.ts";
+import { LocalMachineOfflineError } from "./adapters/http.ts";
 import { denamespace, namespaced } from "./adapters/types.ts";
 import type { ClientCapabilities } from "./clientCapabilities.ts";
 import type { Mode, Registry } from "./registry.ts";
@@ -272,6 +273,21 @@ function elapsedSeconds(startedAt: bigint): number {
  * the multi-slug case is rare: the console hands out one `?servers=<slug>` per
  * server (src/ui/landing.ts).
  *
+ * ## The one exception: a `local-tunnel` whose machine is off
+ *
+ * The rule above exists because a silently smaller toolset HIDES a fault. For a
+ * `local-tunnel` there is no fault to hide: the server is a laptop, the laptop
+ * is off, and that is the advertised behaviour of the kind rather than a
+ * condition anyone needs to discover. So an offline machine does not take its
+ * co-selected servers down — `?servers=anki,slack` with the laptop asleep is a
+ * working Slack and no Anki.
+ *
+ * It is still a failure when it is the ONLY thing selected, and for the same
+ * reason the rule exists at all: `?servers=anki` returning `{"tools":[]}` reads
+ * as "Anki offers no tools", which is both false and unactionable. Then the
+ * client gets an error saying the machine is not reachable — strad's own words,
+ * so relaying them leaks no upstream prose.
+ *
  * NOTE the boundary. This fires when `listTools()` THROWS. A named server that
  * answers with an empty list is still an empty list — that is a server with no
  * tools, and it is `ToolSurfaceMonitor`'s job to notice, not this one's.
@@ -285,9 +301,9 @@ export async function listToolsFor(
   explicit?: { onUnlistable: (slug: string) => void },
 ): Promise<Tool[]> {
   const lists = await Promise.all(
-    selected.map(async (slug) => {
+    selected.map(async (slug): Promise<Listing> => {
       const adapter = registry.get(slug);
-      if (!adapter) return [];
+      if (!adapter) return { ok: true, tools: [] };
       try {
         const tools = await adapter.listTools();
         const policy = policies.get(slug);
@@ -302,9 +318,12 @@ export async function listToolsFor(
           log({ evt: "mcp.policy_unmatched_tools", slug, tools: unmatched });
         }
 
-        return tools
-          .filter((t) => toolAllowed(policy, t.name))
-          .map((t) => ({ ...t, name: namespaced(slug, t.name) }));
+        return {
+          ok: true,
+          tools: tools
+            .filter((t) => toolAllowed(policy, t.name))
+            .map((t) => ({ ...t, name: namespaced(slug, t.name) })),
+        };
       } catch (err) {
         event({
           evt: "mcp.list_tools_failed",
@@ -313,24 +332,82 @@ export async function listToolsFor(
           // Stays on stdout in full; the exporter substitutes `error.kind`.
           error: err instanceof Error ? err.message : String(err),
         });
-        if (explicit) {
-          explicit.onUnlistable(slug);
-          // The upstream's own message is NOT relayed. It is arbitrary text from
-          // someone else's server — the one that motivated this branch was a
-          // full HTML error page — and it would land in a client's error
-          // surface. The slug is ours and is the actionable half.
-          throw new McpError(
-            ErrorCode.InternalError,
-            `server "${slug}" was requested by name but its upstream could not be listed, ` +
-              `so it is serving no tools. This is a failure, not an empty toolset.`,
-          );
-        }
-        return [];
+        return {
+          ok: false,
+          slug,
+          offline: err instanceof LocalMachineOfflineError,
+          err,
+        };
       }
     }),
   );
-  return lists.flat();
+
+  const failures = lists.flatMap((l) => (l.ok ? [] : [l]));
+  const tools = lists.flatMap((l) => (l.ok ? l.tools : []));
+
+  // Not a named selection: one sick server contributes nothing and the rest of
+  // the fleet is unaffected. Unchanged, and it covers an offline machine too.
+  if (!explicit) return tools;
+
+  // A named server that is genuinely broken still fails the whole listing —
+  // see the header. An OFFLINE local-tunnel is the exception, and only the
+  // exception: it is excluded here and reconsidered below.
+  const broken = failures.filter((l) => !l.offline);
+  if (broken.length > 0) {
+    // EVERY broken slug, not just the one thrown about. `onUnlistable` drives a
+    // per-slug metric, and reporting only the first would make the second dead
+    // bundle in a two-bundle outage invisible to the counter that exists to
+    // find it.
+    for (const f of broken) explicit.onUnlistable(f.slug);
+    // The upstream's own message is NOT relayed. It is arbitrary text from
+    // someone else's server — the one that motivated this branch was a
+    // full HTML error page — and it would land in a client's error
+    // surface. The slug is ours and is the actionable half.
+    throw new McpError(
+      ErrorCode.InternalError,
+      `server "${broken[0]!.slug}" was requested by name but its upstream could not be listed, ` +
+        `so it is serving no tools. This is a failure, not an empty toolset.`,
+    );
+  }
+
+  // Offline machines, and NOTHING ELSE CAME BACK.
+  //
+  // The test is the resulting toolset rather than a count of failures, because
+  // the thing that must not happen is a caller receiving `{"tools":[]}` with no
+  // idea a machine was skipped — and that is reached both by naming one offline
+  // laptop and by naming it beside a server that legitimately serves nothing.
+  // Counting failures against `lists.length` misses the second, and misses a
+  // slug the registry never mounted, which contributes a successful empty
+  // listing and silently pads the denominator.
+  if (failures.length > 0 && tools.length === 0) {
+    for (const f of failures) explicit.onUnlistable(f.slug);
+    // Relayed VERBATIM, unlike the branch above, because this message is
+    // strad's own: LocalMachineOfflineError builds it from a slug and a
+    // duration and never quotes the upstream.
+    const first = failures[0]!;
+    throw new McpError(
+      ErrorCode.InternalError,
+      first.err instanceof LocalMachineOfflineError
+        ? first.err.message
+        : `the machine hosting "${first.slug}" is not reachable.`,
+    );
+  }
+
+  // At least one named server answered with tools. The offline machines drop
+  // out of the toolset rather than taking the healthy ones down with them —
+  // which is the whole reason this kind exists: selecting a laptop-backed
+  // server alongside a hosted one must not make the hosted one unusable when
+  // the laptop sleeps. See HACKS.md #60 for what this costs.
+  for (const f of failures) {
+    event({ evt: "mcp.local_machine_offline", slug: f.slug, listed: false });
+  }
+  return tools;
 }
+
+/** One selected server's contribution to a listing, or why it has none. */
+type Listing =
+  | { ok: true; tools: Tool[] }
+  | { ok: false; slug: string; offline: boolean; err: unknown };
 
 /**
  * Merge the selected servers' resources.

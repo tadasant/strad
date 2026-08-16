@@ -142,6 +142,42 @@ servers:
   #   headers:
   #     Authorization: "Bearer ${GRANOLA_TOKEN}"
 
+  # --- kind: local-tunnel ---------------------------------------------------
+  # An MCP server running on a machine YOU own — a laptop, a desktop — reached
+  # over a tunnel that machine dials out to. strad never dials in and holds no
+  # inbound route to it; the tunnel is the machine's business.
+  #
+  # Use it for servers that are machine-bound by nature: an app's own MCP
+  # add-on, computer use, browser automation driving a real logged-in profile.
+  #
+  # - slug: anki
+  #   kind: local-tunnel
+  #   url: https://<your-tunnel-host>/mcp
+  #   entitlements: [admin]
+  #
+  # The kind exists because such a server is OFFLINE MOST OF THE TIME, and that
+  # is not a fault. So, unlike every other kind:
+  #
+  #   - the handshake is bounded by `connectTimeoutMs` (default 5000), not by
+  #     the MCP SDK's 60s, so a closed laptop fails in seconds;
+  #   - the failure says the machine is unreachable, rather than reading as a
+  #     generic upstream error;
+  #   - an offline machine does NOT fail a `?servers=` listing that also named
+  #     servers which are up — `?servers=anki,slack` with the laptop asleep is
+  #     a working Slack and no Anki. Selecting it ALONE is still an error,
+  #     because an empty toolset would read as "this server has no tools".
+  #
+  # It gets no container, no bundle and no `env:` — like remote-http, strad
+  # runs nothing for it. `${NAME}` refs in `url`/`headers` resolve in strad's
+  # own process, so a tunnel URL that rotates can live in the secret store.
+  #
+  # - slug: computer-use
+  #   kind: local-tunnel
+  #   url: "${COMPUTER_USE_TUNNEL_URL}"
+  #   entitlements: [admin]
+  #   timeoutMs: 300000        # driving a real desktop is slow; the RUN budget
+  #   connectTimeoutMs: 5000   # is separate from "is anyone home"
+
   # --- kind: supplementary-image --------------------------------------------
   # A server published as its own container image. strad deploys it as an
   # internal-only component and proxies to it over the private network.

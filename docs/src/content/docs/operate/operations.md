@@ -809,12 +809,16 @@ actionlint and all. `test/workflow-buildx-builder.test.ts` is what covers it: no
 ## The staging config
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
-exercises all three server kinds so the deploy path is proven end-to-end. It
-declares thirty server slugs:
+exercises all four server kinds so the deploy path is proven end-to-end. It
+declares thirty-one server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
+- `anki` — a `local-tunnel`, shipped `enabled: false`. A quick tunnel mints a
+  new hostname per process, so there is no stable value to commit; it is turned
+  on by putting a hostname in `url` and flipping the flag. Like `deepwiki` it
+  costs no component.
 - twenty-seven `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on seventeen of the bundle image's
   eighteen mounts, because a read-only and a read-write variant of one upstream

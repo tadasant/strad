@@ -283,9 +283,20 @@ export class ToolSurfaceMonitor {
         // only consumer — it never reaches the snapshot or a page.
         reason:
           surface.state === "unreachable"
-            ? "this slug's upstream did not answer tools/list, so it serves NOTHING. " +
-              "A client selecting it sees an empty toolset. Check that the component " +
-              "is running an image that mounts the path this slug routes to."
+            ? surface.kind === "local-tunnel"
+              ? // NOT an incident, and the sentence has to say so. This kind is
+                // a server on a machine a human owns; the machine being off is
+                // its normal state and there is no component, image or path for
+                // anyone to go and check. Handing an operator the sentence
+                // below would send them looking for infrastructure that does
+                // not exist.
+                "this slug is a local-tunnel and its machine is not answering, which is " +
+                "expected whenever that machine is off. Nothing is deployed for it and " +
+                "nothing needs fixing here; it starts serving again when the machine and " +
+                "its tunnel come back."
+              : "this slug's upstream did not answer tools/list, so it serves NOTHING. " +
+                "A client selecting it sees an empty toolset. Check that the component " +
+                "is running an image that mounts the path this slug routes to."
             : "this slug answered tools/list with no tools, so it serves NOTHING. " +
               "Its upstream withheld every tool it has — on a server that derives " +
               "its surface from a live credential probe, that means the credential " +
@@ -348,7 +359,14 @@ export class ToolSurfaceMonitor {
    * a third, and 27 upstreams do not need asking every ten seconds about it.
    */
   private nextDelay(): number {
-    const degraded = (this.current?.degraded.length ?? 0) > 0;
+    // A local-tunnel does not drive the fast retry. The fast interval exists to
+    // catch a deploy converging, which finishes in a couple of minutes; a
+    // machine that is off is off for hours, and letting it hold the gateway at
+    // a ten-second cadence would mean re-probing 27 healthy upstreams six times
+    // a minute for as long as somebody's laptop is shut.
+    const degraded = (this.current?.surfaces ?? []).some(
+      (s) => s.state !== "ok" && s.kind !== "local-tunnel",
+    );
     const budget = this.opts.retryProbes ?? DEFAULT_RETRY_PROBES;
     return degraded && this.consecutiveDegraded < budget
       ? (this.opts.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS)
