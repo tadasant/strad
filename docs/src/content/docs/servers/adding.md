@@ -16,6 +16,11 @@ deployment you're changing — `infra/strad.staging.yaml` for staging, or
 
 - **`remote-http`** — set `url` and any `headers` (use `${SECRET}` for
   credentials).
+- **`local-tunnel`** — set `url` (your tunnel's hostname) and any `headers`.
+  For a server on a machine you own; it needs no bundle and no image, and it is
+  expected to be offline whenever that machine is. See
+  [the kind's section](/servers/interface/#2-local-tunnel) for what changes when
+  it is.
 - **`supplementary-image`** — set `image` and a `bundle`, plus optional `env` /
   `path` (and `consoleEnv` for a credential only the human console may hold — see
   step 4b). Servers that share an image share the bundle (one component runs one
@@ -251,7 +256,7 @@ does not surface them.
 
 ## The full worked example
 
-`infra/strad.staging.yaml` in the repo deliberately exercises all three kinds at
+`infra/strad.staging.yaml` in the repo deliberately exercises all four kinds at
 once. It declares thirty server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
 and twenty-eight `supplementary-image` entries — twenty-seven sharing ONE bundle

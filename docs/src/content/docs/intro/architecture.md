@@ -117,11 +117,12 @@ presence route does not share that exception — see below.
 
 ## Adapters
 
-All three server kinds are unified behind a single `ServerAdapter` interface
+All four server kinds are unified behind a single `ServerAdapter` interface
 (`listTools`, `callTool`, `close`):
 
-- **`HttpServerAdapter`** backs `remote-http`, `supplementary-image`, **and**
-  core→bundle builtin proxying — all of which are Streamable HTTP under the hood.
+- **`HttpServerAdapter`** backs `remote-http`, `local-tunnel`,
+  `supplementary-image`, **and** core→bundle builtin proxying — all of which are
+  Streamable HTTP under the hood.
 - **`BuiltinServerAdapter`** runs a builtin module in-process.
 
 Adapters are built **once at boot** — they hold long-lived upstream connections.
@@ -129,6 +130,13 @@ Only the _toolset_ is resolved per request, from the caller's entitlements
 intersected with `?servers=`. Per-hop upstream timeouts are set explicitly to
 `120_000` ms, because the MCP SDK defaults to 60s at every hop and would silently
 kill long tool calls.
+
+A `local-tunnel` adds one bound the others do not have: `connectTimeoutMs`
+(default 5s) caps the **handshake** specifically, as both a request timeout and
+an abort on the socket. Its upstream is a machine that is off much of the time,
+and without that cap a closed laptop costs a full minute per request — the run
+budget stays at `timeoutMs`, because driving a real desktop is legitimately
+slow. See [the kind's section](/servers/interface/#2-local-tunnel).
 
 ### One connection per slug, shared — so nothing closes it unilaterally
 
@@ -170,13 +178,23 @@ A failing upstream is handled differently depending on **who chose that server**
   — the failing server contributes **zero tools** and a log line, rather than
   taking the other twenty-nine down with it.
 
+There is exactly one exception, and it is `local-tunnel`. The rule above exists
+because a silently smaller toolset **hides a fault**; for a server on a machine
+you own there is no fault to hide, since being offline is the advertised
+behaviour of the kind. So an offline machine named alongside others contributes
+zero tools instead of failing the request — `?servers=anki,slack` with the
+laptop asleep is a working Slack and no Anki. Named **alone** it still fails,
+for the same reason the rule exists: `200 {"tools":[]}` would read as "this
+server has no tools".
+
 The trigger is a `tools/list` that **throws**. A server that answers with an
 empty list is a server with no tools, and no amount of error handling can tell
 those apart from the outside — which is why core also watches from the inside. A
 background **tool-surface monitor** (`src/gateway/reachability.ts`) probes every
 mounted slug on an interval and classifies it `ok`, `empty` (answered, offered
 nothing) or `unreachable` (refused, 404'd or timed out), tagged with the server
-`kind` so a third-party remote is not confused with a component we deploy. It
+`kind` so a third-party remote — or a laptop that is simply switched off — is
+not confused with a component we deploy. It
 logs `strad.tool_surface_degraded` when a slug's state changes, publishes the
 current answer on
 [`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`, and
@@ -184,7 +202,8 @@ records [`strad.mcp.tool_surface`](/operate/telemetry/#stradmcptool_surface--is-
 All three leave the container: the log line ships too, against the
 [event allowlist](/operate/telemetry/#logs--strads-own-events-and-only-those),
 because a stdout line on App Platform is a line nobody reads. The staging deploy
-fails when a slug we ship is `unreachable`.
+fails when a slug we ship is `unreachable` — which is neither a `remote-http`
+nor a `local-tunnel`, because neither is ours to run.
 
 The monitor issues `tools/list` and nothing else, so it sees a slug the way a
 single-method client does. A failure that only appears when a client mixes

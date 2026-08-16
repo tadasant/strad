@@ -2,7 +2,7 @@
 #
 # CI reads this, renders it into a DigitalOcean App Platform spec (see
 # src/deploy/appspec.ts) and injects the secret values from GCP Secret Manager
-# (strad-staging-*). It exercises all three server kinds on purpose — staging
+# (strad-staging-*). It exercises all four server kinds on purpose — staging
 # that only proves the easy path is not proving much.
 #
 # This file is CREDENTIAL-FREE: every secret is a ${NAME} reference resolved at
@@ -12,8 +12,9 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty server SLUGS: twenty-eight supplementary-image
-# entries, the `echo` builtin in core, and the `deepwiki` remote-http canary.
+# This file declares thirty-one server SLUGS: twenty-eight supplementary-image
+# entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
+# the `anki` local-tunnel, which ships disabled — see its entry below.
 # Twenty-seven of the twenty-eight land on seventeen upstream mounts inside the
 # one bundle image, because capability variants share a mount; the twenty-eighth
 # (`zimmer-secrets`) runs that same image on a component of its own.

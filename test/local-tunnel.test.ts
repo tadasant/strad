@@ -232,9 +232,7 @@ servers:
 
   it("does not take a healthy server down with it", async () => {
     const registry = await registryWithDeadTunnel();
-    const policies = compileToolPolicies(
-      parseConfig(`${BASE}\nservers: []\n`),
-    );
+    const policies = compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
 
     // The case the whole exemption exists for: one ?servers= naming a laptop
     // that is asleep AND a server that is up. Before this, the named-server rule
@@ -254,9 +252,7 @@ servers:
 
   it("still fails when the offline machine is the ONLY thing selected", async () => {
     const registry = await registryWithDeadTunnel();
-    const policies = compileToolPolicies(
-      parseConfig(`${BASE}\nservers: []\n`),
-    );
+    const policies = compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
 
     // An empty toolset here would read as "Anki offers no tools", which is both
     // false and unactionable — the exact confusion the named-server rule exists
@@ -271,9 +267,7 @@ servers:
 
   it("leaves an unnamed listing alone: contributes nothing, breaks nothing", async () => {
     const registry = await registryWithDeadTunnel();
-    const policies = compileToolPolicies(
-      parseConfig(`${BASE}\nservers: []\n`),
-    );
+    const policies = compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
 
     // No `explicit` — the "everything I'm entitled to" listing. Unchanged
     // behaviour, and it already did the right thing for a dead upstream.

@@ -213,6 +213,31 @@ it, the fix is to stop redirecting off-origin from a gated navigation — render
 in-scope interstitial that starts the trip from a user gesture, so the return
 lands in the window that began it.
 
+### 60. An offline local-tunnel drops out of a multi-slug listing silently
+
+[`local-tunnel`](/servers/interface/#2-local-tunnel) is the one kind exempt from
+the rule that a server **named** in `?servers=` fails the whole listing when its
+upstream cannot be listed. `?servers=anki,slack` with the laptop asleep returns
+Slack's tools and simply no Anki ones — `200`, a shorter list, and no in-band
+signal that a slug was dropped. The only record is a `mcp.local_machine_offline`
+event and `/healthz` reporting the slug `unreachable`.
+
+A client that lists tools, sees no `anki__*` and concludes "Anki has no tools" is
+drawing a wrong conclusion from a correct response — which is the exact
+distinction the fail-the-listing rule was written to protect.
+
+**Why anyway:** that rule exists so a silently smaller toolset cannot hide a
+_fault_. This kind has no fault to hide — the machine is off, which is its
+advertised behaviour and the reason someone chose it. Failing the listing would
+mean a closed laptop makes every server selected beside it unusable, which is
+precisely what the kind exists to avoid. Selecting it **alone** still errors,
+with a message naming the machine, so the common case (the console hands out one
+`?servers=<slug>` per server) stays fully legible.
+
+MCP has no in-band way to say "part of your selection is unavailable right now"
+in a successful `tools/list`. A `_meta` field on the result would be the place,
+and no client reads one today.
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth

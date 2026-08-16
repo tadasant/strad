@@ -10,10 +10,10 @@ thing in the code, not a metaphor.
 
 ## Server
 
-An upstream toolset strad brokers. A server is one of [three
-kinds](/servers/interface/) — `remote-http`, `supplementary-image`, or `builtin`
-— but downstream of the adapter layer they are indistinguishable: each exposes
-`listTools` / `callTool` / `close`.
+An upstream toolset strad brokers. A server is one of [four
+kinds](/servers/interface/) — `remote-http`, `local-tunnel`,
+`supplementary-image`, or `builtin` — but downstream of the adapter layer they
+are indistinguishable: each exposes `listTools` / `callTool` / `close`.
 
 ## Slug
 
@@ -43,6 +43,12 @@ Selection is a _hint_, never a grant. This is the one rule:
 `?servers=` can only narrow the token-derived entitled set — it can never widen
 it. See [Auth](/auth/overview/) for why (RFC 8707: a query string is not a
 resource, so it cannot scope a token).
+
+A named server whose upstream cannot be listed **fails the request** rather than
+quietly dropping out of the toolset. The single exception is a
+[`local-tunnel`](/servers/interface/#2-local-tunnel) whose machine is offline:
+it drops out, because for that kind being offline is expected rather than a
+fault. Named on its own it still fails.
 
 ## Entitlement
 

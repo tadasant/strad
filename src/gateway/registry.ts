@@ -17,7 +17,7 @@ import type { ServerAdapter } from "./adapters/types.ts";
 /**
  * Config -> live adapters.
  *
- * This is where the three kinds are reconciled into one runtime surface. Built
+ * This is where the four kinds are reconciled into one runtime surface. Built
  * once at boot: an adapter is a long-lived upstream connection, not a
  * per-request object. (The *toolset* is still resolved per request — see
  * router.ts. Only the plumbing is shared.)
