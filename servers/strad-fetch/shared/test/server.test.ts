@@ -228,6 +228,71 @@ describe('tools/call scrape', () => {
     expect(second.content[0].text).toContain('Served from cache');
   });
 
+  /**
+   * FORK DELTA 7. One scrape writes a raw entry and a cleaned entry with the SAME
+   * timestamp, so "newest for this URL" is a tie broken by insertion order — raw.
+   * Upstream took that, which made a second call to a URL answer with the raw HTML
+   * where the first answered with Markdown. Same tool, same arguments.
+   */
+  it('serves the CLEANED content on a cache hit, not the raw HTML underneath it', async () => {
+    const html = '<html><body><article><h1>Heading</h1><p>Prose.</p></article></body></html>';
+    const recorder = await register(stubClients(html));
+
+    // saveAndReturn (the default) is what populates the cache; returnOnly stores
+    // nothing, so the miss has to be the saving call.
+    const first = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://example.com/a' },
+    });
+    const second = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://example.com/a', resultHandling: 'returnOnly' },
+    });
+
+    expect(second.content[0].text).toContain('Served from cache');
+    // The hit is Markdown, exactly like the miss was — and carries no raw HTML.
+    expect(second.content[0].text).toContain('Heading');
+    expect(second.content[0].text).not.toContain('<article>');
+    expect(first.content[0].resource.text).not.toContain('<article>');
+  });
+
+  it('keeps the raw and cleaned caches apart, per cleanScrape', async () => {
+    const recorder = await register(stubClients('<html><body><p>Body.</p></body></html>'));
+
+    // Cache the cleaned form only…
+    await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://example.com/a', resultHandling: 'returnOnly' },
+    });
+    // …then ask for raw. A cleaned entry must NOT satisfy it.
+    const raw = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://example.com/a', resultHandling: 'returnOnly', cleanScrape: false },
+    });
+
+    expect(raw.content[0].text).toContain('<p>Body.</p>');
+    expect(raw.content[0].text).toContain('Scraped using: native');
+    expect(raw.content[0].text).not.toContain('Served from cache');
+  });
+
+  it('embeds the cleaned resource, with a markdown mime type, on a saveAndReturn cache hit', async () => {
+    const recorder = await register(stubClients('<html><body><h1>Title</h1></body></html>'));
+
+    await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://example.com/a' },
+    });
+    const hit = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://example.com/a' },
+    });
+
+    expect(hit.content[0].type).toBe('resource');
+    expect(hit.content[0].resource.uri).toContain('memory://cleaned/');
+    expect(hit.content[0].resource.mimeType).toBe('text/markdown');
+    expect(hit.content[0].resource.text).not.toContain('<h1>');
+  });
+
   it('rescrapes when told to', async () => {
     const recorder = await register(stubClients('fresh body'));
     await recorder.call('tools/call', {

@@ -119,11 +119,18 @@ export class MemoryResourceStorage implements ResourceStorage {
       timestamp,
     });
 
-    // Save cleaned content if provided
+    // Save cleaned content if provided.
+    //
+    // FORK DELTA — `contentType` is OVERRIDDEN here. The caller's metadata
+    // describes what was fetched, so passing it through unchanged stored the
+    // cleaned Markdown under the raw page's mime type (`text/html`): a
+    // `resources/read` then described Markdown as HTML, and a cache hit disagreed
+    // with the fresh scrape that produced it, which reports `text/markdown`.
     if (data.cleaned) {
       uris.cleaned = await this.write(data.url, data.cleaned, {
         ...data.metadata,
         resourceType: 'cleaned',
+        contentType: 'text/markdown',
         timestamp,
       });
     }

@@ -33,7 +33,9 @@ export function logWarning(context: string, message: string): void {
  * Log debug information (only in development)
  */
 export function logDebug(context: string, message: string): void {
-  if (process.env.NODE_ENV === 'development' || process.env.DEBUG) {
+  // STRAD_FETCH_DEBUG, not DEBUG: the bundle is one container, and `DEBUG` is a
+  // name half of npm claims. See ../../FORK.md delta 5.
+  if (process.env.NODE_ENV === 'development' || process.env.STRAD_FETCH_DEBUG) {
     console.error(`[DEBUG] ${context}: ${message}`);
   }
 }

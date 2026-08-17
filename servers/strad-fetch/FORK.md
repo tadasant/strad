@@ -108,6 +108,7 @@ in the image reads them — the same reasoning that leaves `SLACK_BOT_TOKEN` and
 | ------------------------------- | ----------------------------------- |
 | `OPTIMIZE_FOR`                  | `STRAD_FETCH_OPTIMIZE_FOR`          |
 | `STRATEGY_CONFIG_PATH`          | `STRAD_FETCH_STRATEGY_CONFIG_PATH`  |
+| `DEBUG`                         | `STRAD_FETCH_DEBUG`                 |
 | `MCP_RESOURCE_STORAGE`          | removed (see 6)                     |
 | `MCP_RESOURCE_FILESYSTEM_ROOT`  | removed (see 6)                     |
 | `LLM_*`                         | removed (see 4)                     |
@@ -131,7 +132,26 @@ around — an OOM kill takes all twenty mounts with it. The filesystem backend
 went with it because App Platform gives this container no persistent volume, so it
 was memory with extra steps and a slower way to fail.
 
-## 7. `strad-fetch`, not `pulse-fetch`
+## 7. A cache hit returns what the call would have produced
+
+**Upstream.** One scrape writes TWO resources — the raw bytes and, when cleaning
+succeeded, the Markdown — and `writeMulti` stamps both with the same timestamp.
+The cache lookup then takes the newest entry for the URL, which is a tie that a
+stable sort breaks by insertion order: raw is written first, so raw always wins.
+
+**Here.** The lookup filters by the resource KIND the caller's `cleanScrape` flag
+implies, so a default (cleaning) call matches the cleaned entry and a
+`cleanScrape: false` call matches the raw one. A kind that is not cached is a miss,
+and the scrape runs.
+
+**Why.** Otherwise the first call to a URL returns Markdown and the second returns
+raw HTML with a `text/html` mime type — same tool, same arguments, a different
+answer, and no error anywhere. Upstream reaches this through
+`findByUrlAndExtract(url, undefined)`, whose filter ("entries with no extraction
+prompt") excludes nothing when nothing writes extracted entries; dropping the
+extraction feature (delta 4) made that visible rather than causing it.
+
+## 8. `strad-fetch`, not `pulse-fetch`
 
 The MCP server name is `strad-fetch`, the slug and mount path are `/strad-fetch`,
 and the native fetcher's `User-Agent` is
@@ -139,7 +159,7 @@ and the native fetcher's `User-Agent` is
 operator who rate-limits this traffic should be able to tell whose it is. The tool
 is still called `scrape`.
 
-## 8. Dead code that could not have run
+## 9. Dead code that could not have run
 
 Four modules had no importer, and one of them could not have compiled: `validation.ts`
 imports `zod-to-json-schema`, which is not a dependency of the package. Removed
@@ -155,5 +175,5 @@ hard-coded fallback; the fallback is now the only path, written out plainly.
 
 `npm test` in this tree is what stops a re-vendor from silently reverting any of
 the above: the strategy-chain deltas (2, 3), the fixed tool schema (4), the cache
-bounds (6) and the server name (7) each have an assertion that fails if upstream's
-behaviour comes back. Read this file first, re-apply, run the suite.
+bounds (6), the cache-hit kind (7) and the server name (8) each have an assertion
+that fails if upstream's behaviour comes back. Read this file first, re-apply, run the suite.

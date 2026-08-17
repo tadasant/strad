@@ -2,7 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { IScrapingClients, StrategyConfigFactory } from '../server.js';
 import { scrapeWithStrategy } from '../scraping-strategies.js';
-import { ResourceStorageFactory } from '../storage/index.js';
+import { ResourceStorageFactory, type ResourceType } from '../storage/index.js';
 import { createCleaner } from '../clean/index.js';
 
 // Detect content type based on content
@@ -214,10 +214,24 @@ The tool automatically:
         if (!forceRescrape && resultHandling !== 'saveOnly') {
           try {
             const storage = await ResourceStorageFactory.create();
-            const cachedResources = await storage.findByUrl(url);
+            /**
+             * A cache hit must return what THIS call would have produced, which is
+             * why the kind is filtered rather than taking the newest entry.
+             *
+             * FORK DELTA — one scrape writes two entries (raw, and the cleaned
+             * Markdown) stamped with the SAME timestamp, so "most recent" is a tie
+             * that a stable sort breaks by insertion order: raw, always. Upstream
+             * took `[0]` off that list, so a second call to a URL returned the raw
+             * HTML — and a `text/html` mime type — where the first returned
+             * Markdown. Same tool, same arguments, different answer, no error.
+             */
+            const wantedType: ResourceType = cleanScrape ? 'cleaned' : 'raw';
+            const cachedResources = (await storage.findByUrl(url)).filter(
+              (resource) => resource.metadata.resourceType === wantedType
+            );
 
             if (cachedResources.length > 0) {
-              // Use the most recent cached resource (already sorted by timestamp desc)
+              // Most recent first, and every candidate is now the right kind.
               const cachedResource = cachedResources[0];
               const cachedContent = await storage.read(cachedResource.uri);
 
