@@ -188,8 +188,13 @@ for the same reason the rule exists: `200 {"tools":[]}` would read as "this
 server has no tools".
 
 Either way it reports as `mcp.local_machine_offline` rather than
-`mcp.list_tools_failed`, and classifies as `error.kind: local_machine_offline`.
-Failing a request and declaring a strad fault are different claims — see
+`mcp.list_tools_failed` — an Info-severity record, because nothing failed — and
+the hop's span and `strad.mcp.upstream.errors` label it
+`error.kind: local_machine_offline` rather than lumping it in with real faults.
+`resources/list` makes the same distinction, and has to: `resources` is
+advertised unconditionally, so a closed laptop throws there on every session
+that lists them. Failing a request and declaring a strad fault are different
+claims — see
 [an offline `local-tunnel` is not a fault](/operate/telemetry/#an-offline-local-tunnel-is-not-a-fault-and-does-not-export-as-one).
 
 The trigger is a `tools/list` that **throws**. A server that answers with an

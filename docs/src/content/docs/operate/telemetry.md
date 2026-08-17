@@ -335,16 +335,27 @@ laptop somebody had closed:
   by the SDK. But `LocalMachineOfflineError`'s message is strad's _own_ — it ends
   "Nothing is wrong with strad" — so it matched nothing and classified as
   `unknown`, the same word an unclassified fault gets. It now declares its kind
-  instead of being guessed at, and the classification is honoured only against
-  the closed set. The handshake counter asks the same question directly, because
-  the hop is instrumented inside the frame that later builds that error.
-- **It is reported as `mcp.local_machine_offline`, never `mcp.list_tools_failed`.**
-  An event whose name ends `_failed` exports at ERROR, which is what
-  `severity >= ERROR` — the first filter any operator writes — is for. Naming a
-  closed laptop a strad fault there is a false page, and it cannot be fixed from
-  the alert's side: excluding `error.kind:unknown` would silently stop alerting
-  on real unclassified faults, and naming slugs in the rule duplicates deployment
-  topology and fails silent for the next tunnel anyone adds.
+  instead of being guessed at, and a declared kind is honoured only against the
+  closed set, so declaring one can never widen what may be exported. This is the
+  label on the hop's **span** and on `strad.mcp.upstream.errors`, and the hop
+  asks the offline verdict directly rather than reading the declaration: it is
+  instrumented inside the frame that later builds that error, so it only ever
+  sees the raw `fetch` or SDK failure. Before this, one closed laptop was
+  scattered across `upstream_unavailable`, `timeout` and `unknown` by how the
+  tunnel happened to fail.
+- **It is reported as `mcp.local_machine_offline`, never `mcp.list_tools_failed`
+  or `mcp.list_resources_failed`.** An event whose name ends `_failed` exports at
+  ERROR, which is what `severity >= ERROR` — the first filter any operator writes
+  — is for. Naming a closed laptop a strad fault there is a false page, and it
+  cannot be fixed from the alert's side: excluding `error.kind:unknown` would
+  silently stop alerting on real unclassified faults, and naming slugs in the
+  rule duplicates deployment topology and fails silent for the next tunnel anyone
+  adds. **The event name is what carries the distinction in the log channel** —
+  `mcp.local_machine_offline` is not in `CLASSIFY_ERROR` and carries no
+  `error.kind` at all, because there is nothing left for one to say. The
+  resources path matters as much as the tools path here: `resources` is
+  advertised unconditionally, so an offline machine throws there on every session
+  that lists them, whether or not anyone asked for that slug.
 
 A client that names the slug still gets an **error** for the listing — the
 request genuinely could not be served, and `200 {"tools":[]}` would read as "this

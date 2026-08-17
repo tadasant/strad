@@ -520,18 +520,20 @@ export class HttpServerAdapter implements ServerAdapter {
       });
       return result;
     } catch (err) {
-      // The RAW failure, ahead of `wrap()` — this hop is inside the try that
-      // wraps it. So the offline verdict has to be asked for here rather than
-      // read off a `LocalMachineOfflineError` that does not exist yet: without
-      // it, every handshake against a switched-off laptop counted as
-      // `error.kind="unknown"`, indistinguishable from a genuine mystery, which
-      // is exactly the blind spot this classification exists to close.
-      const kind = this.offlineReason(
+      // The RAW failure, ahead of `wrap()` — this hop runs inside the try that
+      // wraps it, so the `LocalMachineOfflineError` built from this error does
+      // not exist yet and a kind it declares cannot reach here. The verdict has
+      // to be asked for directly, from the same predicate `wrap()` uses, or the
+      // counter and the error a caller receives disagree about the same failure:
+      // a switched-off laptop was scattered across `upstream_unavailable` (a
+      // refused connection), `timeout` (a black hole) and `unknown` (a tunnel
+      // edge answering 502/530, which is the commonest shape and the one prod
+      // logged 239 of), with no way to tell any of them from a real fault.
+      const offline = this.offlineReason(
         err,
         op === "connect" ? "connect" : "request",
-      )
-        ? "local_machine_offline"
-        : errorKind(err);
+      );
+      const kind = offline ? "local_machine_offline" : errorKind(err);
       span.setAttribute("error.kind", kind);
       // No recordException — an upstream's error message is not ours to export.
       // See src/telemetry/redact.ts.
@@ -542,7 +544,14 @@ export class HttpServerAdapter implements ServerAdapter {
         outcome: "error",
       });
       inst.upstreamErrors.add(1, { ...attrs, "error.kind": kind });
-      if (kind === "timeout") inst.upstreamTimeouts.add(1, attrs);
+      // A deadline expired is a deadline expired, whoever's machine it was. The
+      // offline verdict renames the ERROR KIND, and letting it also suppress
+      // this counter would quietly drop every handshake that blew
+      // `connectTimeoutMs` out of the one series that answers "how long are we
+      // waiting on people who are not there".
+      if (kind === "timeout" || offline === "timeout") {
+        inst.upstreamTimeouts.add(1, attrs);
+      }
 
       throw err;
     } finally {

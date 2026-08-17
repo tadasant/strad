@@ -39,25 +39,23 @@
  * asserting the canary appears nowhere in any exported span, metric or log record.
  */
 
-/** How an error is allowed to be described in telemetry: a fixed, closed set. */
-export type ErrorKind =
-  | "timeout"
-  | "upstream_unavailable"
-  | "upstream_error"
-  /**
-   * A `local-tunnel` server whose machine is not there. It is the ONE upstream
-   * failure this repo documents as expected rather than investigable — the
-   * server is a laptop and the laptop is off — so it must be separable from
-   * every other kind, and above all from `unknown`, which is where an
-   * unclassified fault lands.
-   */
-  | "local_machine_offline"
-  | "not_selected"
-  | "not_mounted"
-  | "tool_error"
-  | "unknown";
-
-const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
+/**
+ * How an error is allowed to be described in telemetry: a fixed, closed set.
+ *
+ * The array is the source and the union is derived from it, not the other way
+ * round. `errorKind()` checks membership at runtime, and a `new Set<ErrorKind>`
+ * written out by hand type-checks every element it HAS without requiring every
+ * element there is — so a member added to the union and forgotten in the set
+ * would fall silently back to message matching, which is this file's own bug
+ * reintroduced quietly.
+ *
+ * `local_machine_offline` is a `local-tunnel` server whose machine is not there.
+ * It is the ONE upstream failure this repo documents as expected rather than
+ * investigable — the server is a laptop and the laptop is off — so it must be
+ * separable from every other kind, and above all from `unknown`, which is where
+ * an unclassified fault lands.
+ */
+const ERROR_KINDS = [
   "timeout",
   "upstream_unavailable",
   "upstream_error",
@@ -66,7 +64,11 @@ const ERROR_KINDS: ReadonlySet<string> = new Set<ErrorKind>([
   "not_mounted",
   "tool_error",
   "unknown",
-]);
+] as const;
+
+export type ErrorKind = (typeof ERROR_KINDS)[number];
+
+const ERROR_KIND_SET: ReadonlySet<string> = new Set<string>(ERROR_KINDS);
 
 /**
  * An error that names its OWN kind instead of being pattern-matched.
@@ -91,7 +93,7 @@ export interface SelfClassifyingError {
 function declaredKind(err: unknown): ErrorKind | null {
   if (typeof err !== "object" || err === null) return null;
   const declared = (err as { telemetryKind?: unknown }).telemetryKind;
-  return typeof declared === "string" && ERROR_KINDS.has(declared)
+  return typeof declared === "string" && ERROR_KIND_SET.has(declared)
     ? (declared as ErrorKind)
     : null;
 }

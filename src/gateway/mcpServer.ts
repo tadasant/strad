@@ -415,8 +415,10 @@ export async function listToolsFor(
   //
   // Nothing is emitted here: the catch above already reported every one of
   // these as `mcp.local_machine_offline`, on every path rather than only this
-  // one, and a second record per slug would double the count of the question
-  // that event answers ("how often is the laptop actually there").
+  // one. A second emission wrote the same fact twice to the stream an operator
+  // reads — and only there, since the export throttles this event per slug, so
+  // the duplicate was invisible in the ingestor and any test that asserted on
+  // exported records would have passed with it still in place.
   return tools;
 }
 
@@ -432,6 +434,12 @@ type Listing =
  * unlike tools they are relayed verbatim — the URI a client sees is the one it
  * reads back. As with tools/list, one failing upstream contributes zero
  * resources and a log line rather than a 500.
+ *
+ * An offline machine reports the same way it does on the tools path, and for the
+ * same reason: `listResources()` reaches `connect()` before it can discover the
+ * upstream has no resources capability, so a closed laptop throws here on every
+ * client that lists resources — and a `_failed` event is an ERROR-severity
+ * record that pages. Nothing failed.
  */
 async function listResourcesFor(
   selected: string[],
@@ -444,11 +452,20 @@ async function listResourcesFor(
       try {
         return await adapter.listResources();
       } catch (err) {
-        event({
-          evt: "mcp.list_resources_failed",
-          slug,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        event(
+          err instanceof LocalMachineOfflineError
+            ? {
+                evt: "mcp.local_machine_offline",
+                slug,
+                listed: false,
+                error: err.message,
+              }
+            : {
+                evt: "mcp.list_resources_failed",
+                slug,
+                error: err instanceof Error ? err.message : String(err),
+              },
+        );
         return [];
       }
     }),

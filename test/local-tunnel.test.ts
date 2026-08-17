@@ -3,6 +3,8 @@ import {
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
 import express from "express";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { metrics } from "@opentelemetry/api";
@@ -22,7 +24,7 @@ import {
 } from "@opentelemetry/sdk-metrics";
 import type { Server as HttpServer } from "node:http";
 import { createServer } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
 import {
@@ -30,7 +32,7 @@ import {
   LocalMachineOfflineError,
   UpstreamError,
 } from "../src/gateway/adapters/http.ts";
-import { listToolsFor } from "../src/gateway/mcpServer.ts";
+import { buildGatewayServer, listToolsFor } from "../src/gateway/mcpServer.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { compileToolPolicies } from "../src/gateway/toolPolicy.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
@@ -608,8 +610,10 @@ servers:
     });
   }
 
-  /** Drive a named listing of the dead tunnel with the log export wired up. */
-  async function recordsFromNamedListing(): Promise<ReadableLogRecord[]> {
+  /** Run `drive` with the OTLP log export wired the way the process wires it. */
+  async function recordsFrom(
+    drive: () => Promise<void>,
+  ): Promise<ReadableLogRecord[]> {
     const exporter = new InMemoryLogRecordExporter();
     const provider = new LoggerProvider({
       processors: [new SimpleLogRecordProcessor({ exporter })],
@@ -619,21 +623,33 @@ servers:
     enableEventExport("strad-test", "0.0.0");
     resetEventThrottle();
 
-    const registry = await deadTunnelRegistry();
-    const policies = compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
     try {
-      await expect(
-        listToolsFor(["anki"], registry, policies, () => {}, {
-          onUnlistable: () => {},
-        }),
-      ).rejects.toThrow(/not reachable/);
+      await drive();
       return exporter.getFinishedLogRecords();
     } finally {
-      await registry.close();
       disableEventExport();
       await provider.shutdown().catch(() => {});
       logs.disable();
     }
+  }
+
+  const NO_POLICIES = () =>
+    compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
+
+  /** A named listing of the dead tunnel, alone: the shape that paged. */
+  async function recordsFromNamedListing(): Promise<ReadableLogRecord[]> {
+    const registry = await deadTunnelRegistry();
+    return recordsFrom(async () => {
+      try {
+        await expect(
+          listToolsFor(["anki"], registry, NO_POLICIES(), () => {}, {
+            onUnlistable: () => {},
+          }),
+        ).rejects.toThrow(/not reachable/);
+      } finally {
+        await registry.close();
+      }
+    });
   }
 
   it("exports no ERROR-severity record at all", async () => {
@@ -668,17 +684,107 @@ servers:
     expect(offline?.attributes).not.toHaveProperty("error");
   });
 
-  it("reports it exactly once, not once per code path", async () => {
-    const records = await recordsFromNamedListing();
-    // The partial-success path used to emit its own copy on top of the catch's.
-    // With both paths reporting, a second record would double the count of the
-    // only question this event answers: how often is the laptop actually there.
-    expect(
-      records.filter((r) => r.body === "mcp.local_machine_offline"),
-    ).toHaveLength(1);
+  it("reports it exactly once when a healthy peer carries the listing", async () => {
+    // THE path the removed loop was on, and the only one that reaches it: an
+    // offline machine named ALONGSIDE a server that answers. The catch reports
+    // it, and the partial-success return used to report it a second time.
+    //
+    // Asserted on STDOUT rather than on the export, because the export cannot
+    // see this: `mcp.local_machine_offline` is throttled to one record per slug
+    // per minute, so the duplicate was invisible in the ingestor and doubled
+    // only the stream an operator reads. An export-level assertion here passes
+    // with the loop restored, which makes it no assertion at all.
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+  - slug: anki
+    kind: local-tunnel
+    url: "http://127.0.0.1:${await deadPort()}/mcp"
+    connectTimeoutMs: 750
+    entitlements: [admin]
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+
+    const stdout = vi.spyOn(console, "log").mockImplementation(() => {});
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const tools = await listToolsFor(
+        ["anki", "echo"],
+        registry,
+        NO_POLICIES(),
+        () => {},
+        { onUnlistable: () => {} },
+      );
+      expect(tools.map((t) => t.name)).toContain("echo__echo");
+
+      const lines = stdout.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("mcp.local_machine_offline"));
+      expect(lines).toHaveLength(1);
+      // And the offline machine still writes nothing to the fault stream.
+      expect(stderr.mock.calls.map((c) => String(c[0]))).toEqual([]);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      await registry.close();
+    }
   });
 
-  it("labels the connect counter with the kind, not `unknown`", async () => {
+  it("makes the same distinction on resources/list, which any client drives", async () => {
+    // `resources` is advertised unconditionally, so every session that lists
+    // resources reaches `listResources()` — and that reaches `connect()` before
+    // it can discover the upstream has none. A closed laptop therefore throws
+    // here on a path nobody has to ask for, and `mcp.list_resources_failed` is
+    // an ERROR record exactly like the one that paged.
+    const registry = await deadTunnelRegistry();
+    const records = await recordsFrom(async () => {
+      const server = buildGatewayServer({
+        config: CONFIG("http://127.0.0.1:1/mcp"),
+        registry,
+        policies: NO_POLICIES(),
+        mode: "core",
+        selected: ["anki"],
+        principalId: "test",
+        log: () => {},
+      });
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "test", version: "0" });
+      try {
+        await Promise.all([
+          server.connect(serverSide),
+          client.connect(clientSide),
+        ]);
+        // An offline machine contributes no resources and does not fail the
+        // request — the tools rule does not apply here, and never did.
+        expect(await client.listResources()).toEqual({ resources: [] });
+      } finally {
+        await client.close().catch(() => {});
+        await server.close().catch(() => {});
+        await registry.close();
+      }
+    });
+
+    expect(
+      records.find((r) => r.body === "mcp.list_resources_failed"),
+    ).toBeUndefined();
+    expect(
+      records.filter((r) => r.severityNumber === SeverityNumber.ERROR),
+    ).toEqual([]);
+    const offline = records.find((r) => r.body === "mcp.local_machine_offline");
+    expect(offline?.severityNumber).toBe(SeverityNumber.INFO);
+    expect(offline?.attributes["slug"]).toBe("anki");
+  });
+
+  it("labels the connect counter with the kind, not the shape of the failure", async () => {
     const exporter = new InMemoryMetricExporter(
       AggregationTemporality.CUMULATIVE,
     );
@@ -705,9 +811,11 @@ servers:
 
       // The handshake is instrumented INSIDE the try that wraps its failure, so
       // this hop sees the raw fetch error and never the LocalMachineOfflineError
-      // built from it one frame out. That is why 239 samples of a switched-off
-      // laptop all carried `unknown`, and why the verdict has to be asked for at
-      // the hop rather than read off the wrapper.
+      // built from it one frame out. Classifying that raw error scattered one
+      // switched-off laptop across three kinds by how it happened to fail —
+      // `upstream_unavailable` for the refused connection this test drives,
+      // `timeout` for a black hole, `unknown` for a tunnel edge answering 502 —
+      // none of them distinguishable from a real fault.
       const connect = points.find(
         (p) => p.attributes["mcp.upstream.op"] === "connect",
       );

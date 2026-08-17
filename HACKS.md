@@ -2627,8 +2627,9 @@ NAMED in `?servers=` fails the whole listing when its upstream cannot be listed
 (#—, `src/gateway/mcpServer.ts`). `?servers=anki,slack` with the laptop asleep
 returns Slack's tools and simply no Anki ones. The client is told nothing: it
 gets `200` and a shorter list, and the only record that a slug was dropped is a
-`mcp.local_machine_offline` event and `/healthz` reporting the slug
-`unreachable`.
+`mcp.local_machine_offline` event — Info-severity, because nothing failed, and
+throttled to one exported record per slug per minute — and `/healthz` reporting
+the slug `unreachable`.
 
 So a client that lists tools, sees no `anki__*`, and concludes "Anki has no
 tools" is drawing a wrong conclusion from a correct response. The distinction it
