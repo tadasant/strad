@@ -78,13 +78,20 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "mcp.list_tools_failed": ["slug", "explicit"],
     "mcp.list_resources_failed": ["slug"],
     /**
-     * A `local-tunnel` slug dropped from a listing because its machine is off.
+     * A `local-tunnel` slug that served its troubleshooting tool instead of its
+     * own, because its machine was not answering.
      *
      * Deliberately NOT a `_failed` event: nothing failed. It answers "how often
      * is the laptop actually there", which is the only operational question
      * this kind of server raises, and it does so without implying an incident.
+     *
+     * `state` is a closed set of strad's own words — `offline` or `refused` —
+     * and it is the one field here worth alerting on: a machine that is off is
+     * somebody's laptop, and a machine that REFUSES is a credential that has
+     * gone stale and will not fix itself. `listed` says whether the slug's own
+     * tools made it into the listing, which for this event is always false.
      */
-    "mcp.local_machine_offline": ["slug", "listed"],
+    "mcp.local_machine_offline": ["slug", "listed", "state"],
     /** A slug that is mounted and serving nothing. */
     "strad.tool_surface_degraded": ["slug", "state", "reason"],
     "strad.tool_surface_recovered": ["slug", "tool_count"],

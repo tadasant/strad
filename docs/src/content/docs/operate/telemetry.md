@@ -267,6 +267,7 @@ the process, and for each one the exact fields that may go with it.
 | Event                                                  | Why it is exported                                 |
 | ------------------------------------------------------ | -------------------------------------------------- |
 | `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                  |
+| `mcp.local_machine_offline`                            | a local-tunnel host was `offline` or `refused`     |
 | `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                    |
 | `strad.tool_surface`                                   | the fleet summary, on change                       |
 | `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled |

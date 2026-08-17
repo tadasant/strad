@@ -162,10 +162,28 @@ servers:
   #     the MCP SDK's 60s, so a closed laptop fails in seconds;
   #   - the failure says the machine is unreachable, rather than reading as a
   #     generic upstream error;
-  #   - an offline machine does NOT fail a `?servers=` listing that also named
-  #     servers which are up — `?servers=anki,slack` with the laptop asleep is
-  #     a working Slack and no Anki. Selecting it ALONE is still an error,
-  #     because an empty toolset would read as "this server has no tools".
+  #   - a machine that is not answering does NOT fail a `?servers=` listing that
+  #     also named servers which are up. Instead the slug keeps its place and
+  #     serves ONE tool, `troubleshoot_host`, which says which machine is down
+  #     and what to run on it. `?servers=anki,slack` with the laptop asleep is a
+  #     working Slack plus that one tool; `?servers=anki` alone is that one tool
+  #     rather than an error.
+  #
+  # `recovery:` is what that tool says. All of it is optional — without it the
+  # tool falls back to generic guidance and a docs link, and it never GUESSES a
+  # command. It is returned to every client entitled to the slug, so it is for
+  # commands and machine names, never credentials; nothing in it is
+  # secret-resolved.
+  #
+  # - slug: anki
+  #   kind: local-tunnel
+  #   url: https://<your-tunnel-host>/mcp
+  #   entitlements: [admin]
+  #   recovery:
+  #     machine: "the MacBook"
+  #     commands:
+  #       - "launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"
+  #     notes: "Anki itself must be open — the MCP server lives inside the app."
   #
   # It gets no container, no bundle and no `env:` — like remote-http, strad
   # runs nothing for it. `${NAME}` refs in `url`/`headers` resolve in strad's

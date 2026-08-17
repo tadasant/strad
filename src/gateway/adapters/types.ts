@@ -5,6 +5,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
 import type { ClientCapabilities } from "../clientCapabilities.ts";
+import type { LocalHost } from "../troubleshoot.ts";
 
 /**
  * A mounted MCP server, from the gateway's point of view.
@@ -17,6 +18,17 @@ export interface ServerAdapter {
   readonly slug: string;
   readonly kind:
     "remote-http" | "local-tunnel" | "supplementary-image" | "builtin";
+
+  /**
+   * The machine this server runs on, when it runs on one somebody owns.
+   *
+   * Set for `local-tunnel` and for nothing else, which is what makes it the
+   * test for "may this slug degrade to a troubleshooting tool instead of
+   * failing a listing" (see gateway/troubleshoot.ts). A kind that strad
+   * deploys, or a third party's URL, has no machine anyone can go and switch
+   * on, so it has none of this.
+   */
+  readonly host?: LocalHost;
 
   /** Tools this server offers, WITHOUT the `<slug>__` prefix. */
   listTools(): Promise<Tool[]>;

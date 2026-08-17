@@ -61,11 +61,15 @@ servers:
       Authorization: "Bearer ${GRANOLA_TOKEN}" # ${...} = a secret, injected at deploy
 
   # 2. local-tunnel — an MCP server on a machine you own, behind a tunnel it
-  #    dials out. Works while that machine is up; fails cleanly while it is not.
+  #    dials out. While that machine is off it serves one tool that says so,
+  #    and says what to run there.
   - slug: anki
     kind: local-tunnel
     url: https://your-tunnel-host.example/mcp
     entitlements: [admin]
+    recovery:
+      commands:
+        ["launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"]
 
   # 3. supplementary-image — a server served by a container image, on one path
   #    of it. strad deploys the image as an internal-only component and proxies.

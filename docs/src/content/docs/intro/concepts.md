@@ -46,9 +46,11 @@ resource, so it cannot scope a token).
 
 A named server whose upstream cannot be listed **fails the request** rather than
 quietly dropping out of the toolset. The single exception is a
-[`local-tunnel`](/servers/interface/#2-local-tunnel) whose machine is offline:
-it drops out, because for that kind being offline is expected rather than a
-fault. Named on its own it still fails.
+[`local-tunnel`](/servers/interface/#2-local-tunnel) whose machine is not
+answering, because for that kind that is expected rather than a fault: it keeps
+its place in the listing and serves one tool, `<slug>__troubleshoot_host`, saying
+which machine is down and what to run on it. Named on its own it returns that
+tool rather than an error.
 
 ## Entitlement
 

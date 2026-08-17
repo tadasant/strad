@@ -172,6 +172,44 @@ const LocalTunnelServer = ServerBase.extend({
    * than a tunnel's round trip and comfortably less than a human's patience.
    */
   connectTimeoutMs: z.number().int().positive().default(5_000),
+  /**
+   * How to bring this machine back — the answer to the only question an
+   * unreachable local-tunnel raises.
+   *
+   * When the machine is not answering, strad replaces this slug's tools with a
+   * single `troubleshoot_host` tool (see gateway/troubleshoot.ts) and hands
+   * whatever is here to whoever calls it. It is also appended to the error a
+   * real tool call raises while the machine is down.
+   *
+   *   recovery:
+   *     machine: "Tadas's MacBook"
+   *     commands:
+   *       - "launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"
+   *     notes: "Anki itself must be open — the MCP server lives inside the app."
+   *
+   * OPTIONAL, and the surface exists without it: strad falls back to generic
+   * guidance built from what it knows (the slug, the tunnel hostname) plus a
+   * link to the docs. It will not GUESS a command — a tunnel name inferred from
+   * a hostname is right often enough to be trusted and wrong often enough to
+   * waste an afternoon — so an entry with no `commands:` gets an honest generic
+   * answer rather than a confident wrong one.
+   *
+   * WHAT NOT TO PUT HERE: this text is returned to every client entitled to the
+   * slug. It is for commands and machine names, not for credentials, internal
+   * hostnames, or anything a `${REF}` would be the right home for. Nothing here
+   * is secret-resolved, deliberately — a `${NAME}` written in this block reaches
+   * a caller verbatim as those six characters, not as a value.
+   */
+  recovery: z
+    .object({
+      /** Whose machine it is, for a human reading a tool result. */
+      machine: z.string().min(1).optional(),
+      /** Exact commands to run ON THAT MACHINE, in order. */
+      commands: z.array(z.string().min(1)).default([]),
+      /** Anything else its owner needs to know (a GUI app to open, ...). */
+      notes: z.string().min(1).optional(),
+    })
+    .default({}),
 });
 
 /**

@@ -2620,42 +2620,55 @@ email addressing are wanted) to the Slack app's bot token scopes, reinstall the
 app to the workspace, and rotate `SLACK_BOT_TOKEN` in the parameter store. No
 code changes: the fallback is a `missing_scope` retry, so it simply stops firing.
 
-## 60. An offline local-tunnel drops out of a multi-slug listing, and says so to nobody but the logs
+## 60. A local-tunnel that is not answering answers with a tool about itself
 
 **What.** `kind: local-tunnel` is the one kind exempt from the rule that a server
 NAMED in `?servers=` fails the whole listing when its upstream cannot be listed
-(#—, `src/gateway/mcpServer.ts`). `?servers=anki,slack` with the laptop asleep
-returns Slack's tools and simply no Anki ones. The client is told nothing: it
-gets `200` and a shorter list, and the only record that a slug was dropped is a
-`mcp.local_machine_offline` event and `/healthz` reporting the slug
-`unreachable`.
+(`src/gateway/mcpServer.ts`). Rather than failing, and rather than dropping out,
+the slug keeps its place and serves ONE tool that is not its own:
+`<slug>__troubleshoot_host` (`src/gateway/troubleshoot.ts`). Calling it re-probes
+the machine and returns the `recovery:` block from the config — which machine,
+which failure, what to run there.
 
-So a client that lists tools, sees no `anki__*`, and concludes "Anki has no
-tools" is drawing a wrong conclusion from a correct response. The distinction it
-cannot make from the outside is exactly the one that motivated the original
-fail-the-listing rule.
+So a listing contains a tool the upstream never offered, and a caller that lists
+`anki` while the laptop is shut gets one tool where forty-one used to be. That is
+a gateway inventing tool surface, which is a thing a proxy should be reluctant to
+do, and it is the cost here.
 
-**Why anyway.** Because the alternative is worse for this kind specifically. The
-rule exists so that a silently smaller toolset cannot HIDE A FAULT — a dead
-`secrets` slug answering `200 {"tools":[]}` went unnoticed on staging, and that
-is what it was written for. A `local-tunnel` has no fault to hide: the machine is
-off, which is the advertised behaviour of the kind and the reason someone chose
-it. Failing the listing would mean a closed laptop makes every server selected
-beside it unusable, which is the failure mode the kind exists to avoid.
+**Why anyway.** MCP has no in-band way to say "this part of your selection is
+unavailable right now" in a successful `tools/list`. A `_meta` field on the result
+would be the place and no client reads one. The three alternatives are all worse:
+a shorter list says nothing (a client concluding "Anki has no tools" is drawing a
+wrong conclusion from a correct response); an error takes the healthy servers
+named beside it down; and an empty list is indistinguishable from a server that
+genuinely has none. A tool is the one channel every client already renders and
+every agent already reads.
 
-Selecting it ALONE still errors, with a message naming the machine, so the
-single-slug case — by far the common one, since the console hands out one
-`?servers=<slug>` per server — is fully legible. What is lost is only the
-multi-slug case, where the caller has other tools to get on with.
+The invented tool is bounded in ways that matter. It appears ONLY while the host
+is unavailable, takes no arguments, reaches nothing but that slug's own upstream,
+and returns text strad and the operator wrote — never an upstream's prose. It is
+exempt from the `tools:` policy on purpose (an `allow:` list written for the real
+toolset would otherwise filter away the one tool explaining the outage), which is
+safe precisely because it is not one of the upstream's capabilities.
 
-MCP has no in-band way to say "this part of your selection is unavailable right
-now" in a successful `tools/list`; a `_meta` field on the result would be the
-place, and no client reads one today.
+**Two failures reach it, and a 403 is now one of them.** `LocalHostUnavailableError`
+has two subclasses: offline (502/503/504, 52x, refused connections, handshake
+timeouts) and refused (401/403). The refused case USED to fail the whole listing,
+deliberately, on the grounds that a broken credential silently removing one server
+from a fleet goes unnoticed for weeks. That reasoning was about silence, and this
+removes the silence — the slug says out loud that it was refused and that a
+credential rather than a laptop is the problem. Anything else a machine answers
+with (a 404 on a wrong path, a 500) is still an ordinary broken upstream and still
+fails a named listing: nobody at that machine can fix those.
 
-**Undo:** delete the `offline` branch in `listToolsFor` (`src/gateway/mcpServer.ts`)
-so an offline local-tunnel is treated like any other unlistable named server.
-One test in `test/local-tunnel.test.ts` ("does not take a healthy server down
-with it") then fails, which is the intended alarm.
+**What it does NOT do:** launder a machine being off into a healthy fleet.
+`probeToolSurfaces` calls the adapter directly, so `/healthz`, the reachability
+monitor and the staging deploy gate all still see `unreachable`.
+
+**Undo:** delete the degraded branch in `listToolsFor`'s catch
+(`src/gateway/mcpServer.ts`) so an unavailable local-tunnel host is treated like
+any other unlistable named server. Several tests in `test/local-tunnel.test.ts`
+then fail, which is the intended alarm.
 
 ## 61. A server's own namespace is read at runtime, so one bad parameter in it takes that slug down
 

@@ -88,7 +88,8 @@ Tailscale Funnel). On the wire it is Streamable HTTP, exactly like
 Use it for servers that are machine-bound by nature: an application's own MCP
 add-on, computer use, browser automation driving a real logged-in profile.
 
-Fields: `url` (required), `headers`, `connectTimeoutMs` (default `5000`).
+Fields: `url` (required), `headers`, `connectTimeoutMs` (default `5000`),
+`recovery`.
 
 ```yaml
 servers:
@@ -97,6 +98,11 @@ servers:
     kind: local-tunnel
     url: https://your-tunnel-host.example/mcp
     entitlements: [admin]
+    recovery:
+      machine: "the MacBook"
+      commands:
+        - "launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"
+      notes: "Anki itself must be open — the MCP server lives inside the app."
 ```
 
 #### It is offline most of the time, and that is the point
@@ -111,13 +117,65 @@ laptop is not an outage, so three things behave differently:
   connection and then says nothing, which is how a dead tunnel usually presents.
 - **The failure names the machine.** A client gets `the machine hosting "anki"
   is not reachable … it works only while that machine is running the server and
-  its tunnel is up`, rather than a generic upstream error.
-- **It does not take its neighbours down.** `?servers=anki,slack` with the
-  laptop asleep returns Slack's tools and no Anki. Every other kind fails the
-  whole listing when a *named* server cannot be listed — see
+  its tunnel is up`, rather than a generic upstream error — followed by your
+  `recovery:` block, so the commands are in the error too.
+- **It does not take its neighbours down, and it does not vanish either.**
+  `?servers=anki,slack` with the laptop asleep returns Slack's tools, none of
+  Anki's, and one tool called `anki__troubleshoot_host` explaining the gap. Every
+  other kind fails the whole listing when a *named* server cannot be listed — see
   [architecture](/intro/architecture/) — and this is the one exception, because
-  for this kind there is no fault being hidden. Selecting it **alone** is still
-  an error: an empty toolset would read as "this server has no tools".
+  for this kind there is no fault being hidden. Selecting it **alone** returns
+  that one tool rather than an error.
+
+#### `troubleshoot_host`: the tool a machine that is off still serves
+
+When the machine behind a `local-tunnel` is not answering, strad replaces that
+slug's tools with exactly one of its own:
+
+```
+anki__troubleshoot_host   (no arguments)
+```
+
+Calling it re-checks the machine and answers with which machine is down, which
+of the two failures it is, and the commands to run there. `recovery:` is what
+fills that in:
+
+| Field      | What it is                                                        |
+| ---------- | ----------------------------------------------------------------- |
+| `machine`  | Whose machine, for a human reading the result — `"the MacBook"`.   |
+| `commands` | Exact commands to run **on that machine**, in order.              |
+| `notes`    | Anything else its owner needs to know (a GUI app to open, …).     |
+
+All of it is optional, and the tool exists without it: with no `recovery:` block
+strad falls back to generic guidance built from the slug and the tunnel hostname,
+plus a link to [Running a local-tunnel host](/servers/local-tunnel-host/). It
+will **not** guess a command — a tunnel name inferred from a hostname is right
+often enough to be trusted and wrong often enough to waste an afternoon.
+
+`recovery:` is returned verbatim to every client entitled to the slug, so it is
+for commands and machine names — not credentials. Nothing in it is
+secret-resolved, deliberately: a `${NAME}` written there reaches a caller as
+those six characters, not as a value.
+
+Two failures reach this surface, and the tool tells them apart because their
+remedies have nothing in common:
+
+- **offline** — `502/503/504`, Cloudflare's `52x`, a refused connection, or a
+  handshake that does not finish inside `connectTimeoutMs`. The machine is not
+  there. Go and start it.
+- **refused** — a `401` or `403` from the far side. The machine **is** there and
+  said no, which means a credential went stale: an access service token, or the
+  bearer the server on that machine checks. Restarting the tunnel does nothing.
+
+Anything else a machine answers with — a `404` on a wrong path, a `500` from a
+server that ran and threw — is an ordinary broken upstream and still fails a
+named listing. Nobody at that machine can fix those, so sending them there would
+be a lie.
+
+`/healthz`, the reachability monitor and the deploy gate are untouched by any of
+this: they probe the adapter directly, so an unreachable slug still reads
+`unreachable`. The tool is a courtesy to clients, not a way for a machine being
+off to look healthy.
 
 strad deploys nothing for it — no component, no bundle, no `env:`. `${NAME}`
 references in `url` and `headers` resolve in strad's own process, so a tunnel

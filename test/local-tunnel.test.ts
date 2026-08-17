@@ -8,14 +8,20 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Server as HttpServer } from "node:http";
 import { createServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { parseConfig } from "../src/config/load.ts";
+import type { StradConfig } from "../src/config/schema.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
 import {
   HttpServerAdapter,
+  LocalHostRefusedError,
+  LocalHostUnavailableError,
   LocalMachineOfflineError,
   UpstreamError,
 } from "../src/gateway/adapters/http.ts";
-import { listToolsFor } from "../src/gateway/mcpServer.ts";
+import { buildGatewayServer, listToolsFor } from "../src/gateway/mcpServer.ts";
+import { probeToolSurfaces } from "../src/gateway/reachability.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { compileToolPolicies } from "../src/gateway/toolPolicy.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
@@ -271,22 +277,29 @@ servers:
     );
 
     expect(tools.map((t) => t.name)).toContain("echo__echo");
-    expect(tools.some((t) => t.name.startsWith("anki__"))).toBe(false);
+    // The laptop contributes its troubleshooting tool and NONE of its own.
+    expect(tools.filter((t) => t.name.startsWith("anki__")).map((t) => t.name)) //
+      .toEqual(["anki__troubleshoot_host"]);
     await registry.close();
   });
 
-  it("still fails when the offline machine is the ONLY thing selected", async () => {
+  it("answers with the troubleshooting tool when the offline machine is the ONLY thing selected", async () => {
     const registry = await registryWithDeadTunnel();
     const policies = compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
 
-    // An empty toolset here would read as "Anki offers no tools", which is both
-    // false and unactionable — the exact confusion the named-server rule exists
-    // to prevent. So this one still throws, and says why.
-    await expect(
-      listToolsFor(["anki"], registry, policies, () => {}, {
-        onUnlistable: () => {},
-      }),
-    ).rejects.toThrow(/the machine hosting "anki" is not reachable/);
+    // The case a human actually hits — the console hands out one
+    // ?servers=<slug> per server, so this is the playground with the laptop
+    // asleep. An empty toolset would read as "Anki offers no tools" and an
+    // error gives a client nothing to do; one tool that says what to run is
+    // both honest and actionable.
+    const tools = await listToolsFor(["anki"], registry, policies, () => {}, {
+      onUnlistable: () => {},
+    });
+
+    expect(tools.map((t) => t.name)).toEqual(["anki__troubleshoot_host"]);
+    expect(tools[0]?.description).toMatch(
+      /THIS SERVER'S OWN TOOLS ARE NOT AVAILABLE/,
+    );
     await registry.close();
   });
 
@@ -294,8 +307,9 @@ servers:
     const registry = await registryWithDeadTunnel();
     const policies = compileToolPolicies(parseConfig(`${BASE}\nservers: []\n`));
 
-    // No `explicit` — the "everything I'm entitled to" listing. Unchanged
-    // behaviour, and it already did the right thing for a dead upstream.
+    // No `explicit` — the "everything I'm entitled to" listing. One sick server
+    // has never broken this one; what is new is that it now says so instead of
+    // leaving a gap.
     const tools = await listToolsFor(
       ["anki", "echo"],
       registry,
@@ -303,6 +317,7 @@ servers:
       () => {},
     );
     expect(tools.map((t) => t.name)).toContain("echo__echo");
+    expect(tools.map((t) => t.name)).toContain("anki__troubleshoot_host");
     await registry.close();
   });
 
@@ -458,11 +473,11 @@ describe("a machine that goes away mid-session", () => {
 });
 
 describe("an empty result is never silently returned", () => {
-  it("throws when the only other named server serves nothing", async () => {
-    // The gap the failure COUNT missed: `?servers=anki,quiet` with the laptop
-    // asleep and `quiet` legitimately serving zero tools is not "1 of 2
-    // failed", so a count test lets it through and the caller gets
-    // `{"tools":[]}` with no idea a machine was skipped.
+  it("still says something when the only other named server serves nothing", async () => {
+    // `?servers=anki,quiet` with the laptop asleep and `quiet` legitimately
+    // serving zero tools. The failure mode to avoid is `{"tools":[]}` with no
+    // hint that a machine was skipped — which is now impossible, because the
+    // skipped machine leaves a tool behind rather than a gap.
     const config = parseConfig(`${BASE}
 servers:
   - slug: quiet
@@ -485,11 +500,14 @@ servers:
     });
     const policies = compileToolPolicies(config);
 
-    await expect(
-      listToolsFor(["anki", "quiet"], registry, policies, () => {}, {
-        onUnlistable: () => {},
-      }),
-    ).rejects.toThrow(/the machine hosting "anki" is not reachable/);
+    const tools = await listToolsFor(
+      ["anki", "quiet"],
+      registry,
+      policies,
+      () => {},
+      { onUnlistable: () => {} },
+    );
+    expect(tools.map((t) => t.name)).toEqual(["anki__troubleshoot_host"]);
     await registry.close();
   });
 });
@@ -526,6 +544,426 @@ servers:
       }),
     ).rejects.toThrow();
     expect(unlistable.sort()).toEqual(["broken-a", "broken-b"]);
+    await registry.close();
+  });
+});
+
+describe("the troubleshooting surface", () => {
+  /**
+   * A machine that is off is not an outage, it is a person's laptop — and the
+   * only useful thing to say about it is what to run on it. These cover the
+   * whole path: config -> listing -> a real MCP client calling the tool.
+   */
+
+  const RECOVERY = `
+    recovery:
+      machine: "Tadas's MacBook"
+      commands:
+        - "launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"
+        - "open -a Anki"
+      notes: "Anki itself must be open — the MCP server lives inside the app."
+`;
+
+  async function tunnelRegistry(
+    url: string,
+    extra = RECOVERY,
+  ): Promise<{ registry: Registry; config: StradConfig }> {
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+  - slug: anki
+    kind: local-tunnel
+    url: "${url}"
+    connectTimeoutMs: 750
+    entitlements: [admin]${extra}
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+    return { registry, config };
+  }
+
+  /** A real MCP client over the gateway server, as `/mcp` and the console build it. */
+  async function connect(
+    registry: Registry,
+    config: StradConfig,
+    selected: string[],
+  ): Promise<Client> {
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const server = buildGatewayServer({
+      config,
+      registry,
+      policies: compileToolPolicies(config),
+      mode: "core",
+      selected,
+      principalId: "test",
+      log: () => {},
+      explicit: { onUnlistable: () => {} },
+    });
+    const client = new Client({ name: "test", version: "1" }, {});
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    return client;
+  }
+
+  it("names the machine in the tool it offers", async () => {
+    const { registry, config } = await tunnelRegistry(
+      `http://127.0.0.1:${await deadPort()}/mcp`,
+    );
+    const client = await connect(registry, config, ["anki"]);
+
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toEqual(["anki__troubleshoot_host"]);
+    // The description carries the outage, because a name cannot: a client that
+    // renders nothing but names and descriptions still communicates it.
+    expect(tools[0]?.description).toMatch(/Tadas's MacBook/);
+    expect(tools[0]?.description).toMatch(/not answering/);
+    // No arguments to get wrong.
+    expect(tools[0]?.inputSchema.properties).toEqual({});
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("returns the exact commands to run on that machine", async () => {
+    const { registry, config } = await tunnelRegistry(
+      `http://127.0.0.1:${await deadPort()}/mcp`,
+    );
+    const client = await connect(registry, config, ["anki"]);
+
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[]; isError?: boolean };
+    const text = res.content[0]!.text;
+
+    // The whole point of the feature, asserted literally.
+    expect(text).toMatch(/launchctl kickstart -k gui\/\$\(id -u\)/);
+    expect(text).toMatch(/open -a Anki/);
+    expect(text).toMatch(/Tadas's MacBook/);
+    expect(text).toMatch(/the MCP server lives inside the app/);
+    // Diagnosing a failure is not itself a failure.
+    expect(res.isError).toBeFalsy();
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("says so when the machine has come back since the listing", async () => {
+    // The gap between listing and call is exactly when somebody is running the
+    // commands, so the tool re-checks rather than replaying a stale verdict.
+    const app = express();
+    const mcp = new McpServer(
+      { name: "standin", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    mcp.tool("ping", "ping", {}, async () => ({
+      content: [{ type: "text", text: "pong" }],
+    }));
+    app.post(/.*/, (req, res) => {
+      void (async () => {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+        });
+        res.on("close", () => void transport.close());
+        await mcp.server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      })();
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const { registry, config } = await tunnelRegistry(
+      `http://127.0.0.1:${port}/mcp`,
+    );
+    const client = await connect(registry, config, ["anki"]);
+
+    // The machine is up, so the listing is the real toolset — and the tool is
+    // still answerable, which is what someone who just ran the commands does.
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual([
+      "anki__ping",
+    ]);
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[] };
+    expect(res.content[0]!.text).toMatch(/answering again/);
+    expect(res.content[0]!.text).toMatch(/serving 1 tool/);
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("falls back to generic guidance, and invents no commands", async () => {
+    // No `recovery:` block. A tunnel name guessed from a hostname is right often
+    // enough to be trusted and wrong often enough to waste an afternoon, so the
+    // honest generic answer is the one that ships.
+    const { registry, config } = await tunnelRegistry(
+      `http://127.0.0.1:${await deadPort()}/mcp`,
+      "",
+    );
+    const client = await connect(registry, config, ["anki"]);
+
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[] };
+    const text = res.content[0]!.text;
+    expect(text).toMatch(/No recovery commands are configured/);
+    expect(text).toMatch(/local-tunnel-host/);
+    expect(text).not.toMatch(/cloudflared tunnel run/);
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("does not resolve a ${REF} url to put a hostname in a tool result", async () => {
+    // `url:` may be a secret ref, and this text goes to every entitled client.
+    // "which laptop is this" is worth a sentence and is not worth reading a
+    // secret to answer.
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: anki
+    kind: local-tunnel
+    url: "https://\${ANKI_TUNNEL_HOST}/mcp"
+    entitlements: [admin]
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(
+        new EnvSecretProvider({ ANKI_TUNNEL_HOST: "secret.example" }),
+      ),
+      mode: "core",
+      env: {},
+    });
+    // Neither the ref nor the value it resolves to. A hostname is worth a
+    // sentence, and is not worth reading a secret to write it.
+    expect(registry.get("anki")?.host?.hostname).toBeUndefined();
+    await registry.close();
+  });
+
+  it("keeps /healthz honest: an offline machine is still unreachable", async () => {
+    // The tool is a courtesy to CLIENTS. If it also made the reachability
+    // monitor read `ok`, a laptop being shut would look like a healthy fleet
+    // and the deploy gate would lose a signal it is built on.
+    const { registry } = await tunnelRegistry(
+      `http://127.0.0.1:${await deadPort()}/mcp`,
+    );
+    const { snapshot } = await probeToolSurfaces({
+      registry,
+      slugs: ["anki"],
+      timeoutMs: 3_000,
+    });
+    expect(snapshot.surfaces[0]).toMatchObject({
+      slug: "anki",
+      state: "unreachable",
+      tools: 0,
+      kind: "local-tunnel",
+    });
+    await registry.close();
+  });
+
+  it("survives a tools: allow list written for the real toolset", async () => {
+    // The trap this exists to avoid: an `allow:` list names the machine's real
+    // tools, the machine goes off, and the policy filters away the one tool
+    // that would have explained it — reinstating the silence exactly.
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: anki
+    kind: local-tunnel
+    url: "http://127.0.0.1:${await deadPort()}/mcp"
+    connectTimeoutMs: 750
+    entitlements: [admin]
+    tools: { allow: [list_decks] }
+    recovery:
+      commands: ["launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"]
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+    const client = await connect(registry, config, ["anki"]);
+
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual([
+      "anki__troubleshoot_host",
+    ]);
+    // ...and it must be CALLABLE too. Listing a tool and then refusing it is
+    // the worst of both.
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[] };
+    expect(res.content[0]!.text).toMatch(/launchctl kickstart/);
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("offers nothing of the sort for a kind strad deploys", async () => {
+    // The licence is scoped to a machine somebody owns. A supplementary image
+    // that cannot be listed is a deploy failure, and there is no laptop to go
+    // and switch on.
+    const config = parseConfig(`${BASE}
+bundles:
+  - name: bundle
+servers:
+  - { slug: broken, kind: supplementary-image, image: "ghcr.io/o/x:1", bundle: bundle, path: /nope, entitlements: [admin] }
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: { STRAD_BUNDLE_URL_BUNDLE: `http://127.0.0.1:${await deadPort()}` },
+    });
+    expect(registry.get("broken")?.host).toBeUndefined();
+    await expect(
+      listToolsFor(
+        ["broken"],
+        registry,
+        compileToolPolicies(config),
+        () => {},
+        { onUnlistable: () => {} },
+      ),
+    ).rejects.toThrow(/requested by name but its upstream could not be listed/);
+    await registry.close();
+  });
+});
+
+describe("a host that REFUSES, which is not a host that is off", () => {
+  /**
+   * The asymmetry this closes. A 403 used to fail the entire `?servers=`
+   * listing, taking healthy servers with it — on the reasoning that a broken
+   * credential which silently removes one server from a fleet goes unnoticed for
+   * weeks. That reasoning was about SILENCE, and there is none left: the slug
+   * now says out loud that it was refused, and says it is a credential rather
+   * than a laptop. So it degrades like an offline machine, with a different
+   * remedy.
+   */
+
+  const CONFIG = (url: string) =>
+    parseConfig(`${BASE}
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+  - slug: anki
+    kind: local-tunnel
+    url: "${url}"
+    connectTimeoutMs: 750
+    entitlements: [admin]
+    recovery:
+      machine: "Tadas's MacBook"
+      commands: ["cloudflared tunnel info anki"]
+`);
+
+  it("is its own error, and says the machine is answering", async () => {
+    const adapter = tunnelAdapter(await answersWith(403));
+    const err = await adapter.listTools().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LocalHostRefusedError);
+    expect(err).toBeInstanceOf(LocalHostUnavailableError);
+    // NOT the offline verdict. Telling someone to restart a tunnel that is
+    // working is how an afternoon disappears.
+    expect(err).not.toBeInstanceOf(LocalMachineOfflineError);
+    expect((err as Error).message).toMatch(/refused strad's credentials/);
+    expect((err as Error).message).toMatch(/It is ANSWERING/);
+  });
+
+  it("no longer takes the whole listing down with it", async () => {
+    const config = CONFIG(await answersWith(403));
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+
+    const tools = await listToolsFor(
+      ["anki", "echo"],
+      registry,
+      compileToolPolicies(config),
+      () => {},
+      { onUnlistable: () => {} },
+    );
+    expect(tools.map((t) => t.name)).toContain("echo__echo");
+    expect(tools.map((t) => t.name)).toContain("anki__troubleshoot_host");
+    await registry.close();
+  });
+
+  it("prescribes the credential, not the tunnel", async () => {
+    const config = CONFIG(await answersWith(403));
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const server = buildGatewayServer({
+      config,
+      registry,
+      policies: compileToolPolicies(config),
+      mode: "core",
+      selected: ["anki"],
+      principalId: "test",
+      log: () => {},
+      explicit: { onUnlistable: () => {} },
+    });
+    const client = new Client({ name: "test", version: "1" }, {});
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[] };
+    const text = res.content[0]!.text;
+    expect(text).toMatch(/REFUSED strad's credentials/);
+    expect(text).toMatch(/It is not off/);
+    expect(text).toMatch(/token/);
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("still hard-fails a 404, which no command on that machine fixes", async () => {
+    // The boundary of the licence. A wrong path is strad's own config error,
+    // and a machine's owner cannot fix it — so it stays a failure.
+    const config = CONFIG(await answersWith(404));
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+    await expect(
+      listToolsFor(
+        ["anki", "echo"],
+        registry,
+        compileToolPolicies(config),
+        () => {},
+        { onUnlistable: () => {} },
+      ),
+    ).rejects.toThrow(/requested by name but its upstream could not be listed/);
     await registry.close();
   });
 });

@@ -63,10 +63,10 @@ On macOS, `cloudflared service install` installs **two different things** depend
 on whether you use `sudo`, and the difference decides whether the tunnel works at
 all:
 
-| Command                          | Installs       | Starts at | Reads              |
-| -------------------------------- | -------------- | --------- | ------------------ |
-| `cloudflared service install`    | a LaunchAgent  | login     | `~/.cloudflared/`  |
-| `sudo cloudflared service install` | a LaunchDaemon | boot      | `/etc/cloudflared` |
+| Command                            | Installs       | Starts at | Reads              | Logs to          |
+| ---------------------------------- | -------------- | --------- | ------------------ | ---------------- |
+| `cloudflared service install`      | a LaunchAgent  | login     | `~/.cloudflared/`  | `~/Library/Logs` |
+| `sudo cloudflared service install` | a LaunchDaemon | boot      | `/etc/cloudflared` | `/Library/Logs`  |
 
 **Without `sudo` is the right one for this.** A LaunchDaemon starts before anyone
 logs in, which is exactly when the thing it is meant to reach does not exist yet —
@@ -77,6 +77,81 @@ under `~/.cloudflared/`.
 The service is a single launchd job named `com.cloudflare.cloudflared`, so a machine
 has one of them: installing a second replaces the first. One machine, one
 `cloudflared` service, however many hostnames its `ingress:` list routes.
+
+:::danger[On macOS, `service install` alone does not run your tunnel]
+The plist it writes runs `cloudflared` with **no arguments**, and bare
+`cloudflared` does not start a named tunnel. With a `config.yml` that names one it
+exits immediately:
+
+```
+$ cloudflared
+use `cloudflared tunnel run` to start tunnel 3aa1f5db-…
+$ echo $?
+1
+```
+
+The plist sets `KeepAlive` and `ThrottleInterval 5`, so launchd restarts it every
+five seconds, forever, failing every time — while `service install` reports
+success and `launchctl list` shows the job. The tunnel never comes up.
+
+This is macOS-specific. On Linux the same command builds
+`--config /etc/cloudflared/config.yml tunnel run` and refuses to install at all if
+the config lacks `tunnel:` and `credentials-file:`.
+
+**The fix is to write the plist yourself**, with `tunnel run` in it:
+
+```bash
+PLIST=~/Library/LaunchAgents/com.cloudflare.cloudflared.plist
+launchctl unload "$PLIST" 2>/dev/null
+mkdir -p ~/Library/LaunchAgents ~/Library/Logs
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key><string>com.cloudflare.cloudflared</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>$(command -v cloudflared)</string>
+      <string>--no-autoupdate</string>
+      <string>tunnel</string>
+      <string>run</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>5</integer>
+    <key>StandardOutPath</key><string>$HOME/Library/Logs/com.cloudflare.cloudflared.out.log</string>
+    <key>StandardErrorPath</key><string>$HOME/Library/Logs/com.cloudflare.cloudflared.err.log</string>
+  </dict>
+</plist>
+EOF
+launchctl load "$PLIST"
+```
+
+`tunnel run` with no name is deliberate: it takes the UUID from `config.yml`, so
+the tunnel is named in one place rather than two.
+:::
+
+### Prove autostart is armed, not just running
+
+"It works right now" is what you get after starting a tunnel by hand, and it says
+nothing about tomorrow morning. This does:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared && sleep 8
+cloudflared tunnel info <name>
+```
+
+`kickstart -k` kills the job and lets **launchd** start it from nothing, with no
+terminal attached — the same thing that happens at login. Connections in
+`tunnel info` afterwards mean autostart is real. `launchctl list | grep
+cloudflared` should show a PID and `0` in the exit-status column; a `-` and a `1`
+is the failure above.
+
+Sleep and wake need none of this. Sleeping does not kill the process; its
+connections drop and `cloudflared` re-establishes them on wake. What kills a
+hand-started tunnel is closing the terminal it ran in, and what a LaunchAgent
+adds is surviving that and a reboot.
 
 ## The GUI-app constraint
 
@@ -171,26 +246,48 @@ cloudflared tunnel info <name>       # this tunnel's active connector(s) and edg
 it — the machine is off, asleep, or the service is stopped. That is the same thing
 strad sees.
 
-Logs, for a LaunchAgent or LaunchDaemon installed by `cloudflared service install`:
+Logs — and the path depends on which of the two you installed, because a
+LaunchAgent runs as you and writes under your home directory:
 
 ```
-/Library/Logs/com.cloudflare.cloudflared.out.log
-/Library/Logs/com.cloudflare.cloudflared.err.log
+~/Library/Logs/com.cloudflare.cloudflared.{out,err}.log   # LaunchAgent (no sudo)
+/Library/Logs/com.cloudflare.cloudflared.{out,err}.log    # LaunchDaemon (sudo)
 ```
 
-Stopping and starting the service:
+Restarting the service. A LaunchAgent is yours, so no `sudo`:
 
 ```bash
-sudo launchctl stop  com.cloudflare.cloudflared
-sudo launchctl start com.cloudflare.cloudflared
+launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared   # LaunchAgent
+sudo launchctl kickstart -k system/com.cloudflare.cloudflared    # LaunchDaemon
 ```
 
 ## What strad sees when it fails
 
-This is the part worth internalising, because the two failure shapes are treated
-very differently and only one of them is graceful.
+The slug does not disappear and does not fail the request. It keeps its place in
+the listing and serves exactly one tool — `<slug>__troubleshoot_host` — whose
+result says which machine is down, which of the two failures it is, and what to
+run there. Calling it re-checks the machine first, so somebody who has just run
+the commands is told so rather than being handed a stale verdict.
 
-### The machine is offline — the slug drops out
+What that tool says comes from the `recovery:` block on the server entry, which
+is where the commands for **your** machine belong:
+
+```yaml
+- slug: anki
+  kind: local-tunnel
+  url: https://mcp.example.com/mcp
+  recovery:
+    machine: "the MacBook"
+    commands:
+      - "launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"
+    notes: "Anki itself must be open — the MCP server lives inside the app."
+```
+
+Without it the tool still exists and falls back to generic guidance; it will not
+invent a command. See [the kind's
+fields](/servers/interface/#2-local-tunnel).
+
+### The machine is offline
 
 strad reads these as "that machine is not there":
 
@@ -203,38 +300,47 @@ The tunnel edge stays up and answers on the machine's behalf, which is why this
 comes back as an HTTP response rather than a dead socket, and why it has to be
 recognised by status.
 
-When it happens, the slug **degrades cleanly**: it drops out of a multi-server
-`?servers=` listing and the servers that _are_ up keep working. `/healthz` reports
-it as degraded, and the reachability monitor logs the change. A request naming
-_only_ the offline slug still fails, with strad's own sentence — an empty toolset
-would be indistinguishable from a server that legitimately has no tools.
+The servers named alongside it keep working. `/healthz` still reports the slug
+`unreachable` and the reachability monitor still logs the change — the
+troubleshooting tool is for clients and does not launder a machine being off into
+a healthy fleet.
 
-### A 403 from the origin fails the whole listing
+### The machine refuses — a `401` or `403`
 
-**A `403` is not an offline verdict, and this asymmetry is deliberate.** Any 4xx
-means something answered and said no: a `404` is a wrong path, a `500` is the
-server running and throwing, and a `403` is Cloudflare Access rejecting your
-credentials. None of those is a closed lid, and calling them one would send someone
-to check a laptop that was never the problem.
+**A refusal is not an offline verdict**, and the tool says so in as many words:
+the machine answered, so it is up, and what is stale is a credential — an Access
+service token that expired, or the app-level bearer no longer matching. Telling
+its owner to restart a tunnel that is working would waste their afternoon.
 
-The consequence is worth stating plainly: **a 403 fails the entire `?servers=`
-listing**, taking the healthy servers named alongside it down with it — where an
-offline machine would only have removed itself.
+It degrades the same way an offline machine does. That is a deliberate change of
+mind: a refusal used to fail the whole `?servers=` listing, on the reasoning that
+a broken credential silently removing one server from a fleet goes unnoticed for
+weeks. The objection was to the SILENCE, and there is none left — the slug now
+says out loud that it was refused and why. Taking twenty-nine healthy servers
+down to make that point is no longer the only way to make it.
 
-That is the right trade, because a 403 here almost always means a **broken or
-expired service token**, and a broken credential that silently removed one server
-from a fleet is exactly the failure that goes unnoticed for weeks. But it does mean
-that rotating an Access service token badly is a fleet-wide outage rather than a
-one-slug one. Rotate the parameter first, confirm the slug lists, and only then
-revoke the old token.
+Rotating an access token badly is therefore a one-slug problem again. Rotate the
+parameter first, confirm the slug lists its real tools, then revoke the old token.
+
+### The machine answers, and something else is wrong
+
+A `404` (a wrong path in the slug's `url`) or a `500` (a server that ran and
+threw) is an ordinary broken upstream: it still fails a listing that named the
+slug, and it does not get a troubleshooting tool. Nobody at that machine can fix
+either one, so sending them there would be a lie.
 
 ## Checklist for a new host
 
 - [ ] `brew install cloudflared`
 - [ ] Copy `~/.cloudflared/config.yml` and `~/.cloudflared/<UUID>.json` from the
       old machine; `chmod 600` the credentials file
-- [ ] `cloudflared service install` — **no `sudo`**
+- [ ] `cloudflared tunnel ingress validate` prints `OK`
+- [ ] Install the LaunchAgent — **no `sudo`**, and with `tunnel run` in its
+      `ProgramArguments` (see the warning above; `cloudflared service install`
+      does not put it there)
 - [ ] Add the desktop application to Login Items
-- [ ] `cloudflared tunnel info <name>` shows an active connection
+- [ ] `launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared`, then
+      `cloudflared tunnel info <name>` shows an active connection — this is the
+      check that proves autostart rather than a terminal
 - [ ] The Access application still has a **Service Auth** policy for the hostname
-- [ ] The slug lists its tools through strad
+- [ ] The slug lists its tools through strad, and not `troubleshoot_host`
