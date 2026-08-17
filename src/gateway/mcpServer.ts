@@ -325,19 +325,33 @@ export async function listToolsFor(
             .map((t) => ({ ...t, name: namespaced(slug, t.name) })),
         };
       } catch (err) {
-        event({
-          evt: "mcp.list_tools_failed",
-          slug,
-          explicit: Boolean(explicit),
-          // Stays on stdout in full; the exporter substitutes `error.kind`.
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return {
-          ok: false,
-          slug,
-          offline: err instanceof LocalMachineOfflineError,
-          err,
-        };
+        const offline = err instanceof LocalMachineOfflineError;
+        // The distinction is made HERE, at the emit, and not two lines later
+        // for the return value only. `_failed` is a fault: the exporter ships
+        // it at ERROR severity and an alert rule keyed on `severity >= ERROR`
+        // pages on it. A laptop being off is not a fault — it is the advertised
+        // behaviour of the kind — and reporting it as one paged a production
+        // channel over a machine somebody had switched off. So an offline
+        // machine gets the event that already exists to say exactly that, at
+        // Info, and `mcp.list_tools_failed` keeps meaning what it says.
+        event(
+          offline
+            ? {
+                evt: "mcp.local_machine_offline",
+                slug,
+                listed: false,
+                explicit: Boolean(explicit),
+                error: err.message,
+              }
+            : {
+                evt: "mcp.list_tools_failed",
+                slug,
+                explicit: Boolean(explicit),
+                // Stays on stdout in full; the exporter substitutes `error.kind`.
+                error: err instanceof Error ? err.message : String(err),
+              },
+        );
+        return { ok: false, slug, offline, err };
       }
     }),
   );
@@ -398,9 +412,11 @@ export async function listToolsFor(
   // which is the whole reason this kind exists: selecting a laptop-backed
   // server alongside a hosted one must not make the hosted one unusable when
   // the laptop sleeps. See HACKS.md #60 for what this costs.
-  for (const f of failures) {
-    event({ evt: "mcp.local_machine_offline", slug: f.slug, listed: false });
-  }
+  //
+  // Nothing is emitted here: the catch above already reported every one of
+  // these as `mcp.local_machine_offline`, on every path rather than only this
+  // one, and a second record per slug would double the count of the question
+  // that event answers ("how often is the laptop actually there").
   return tools;
 }
 

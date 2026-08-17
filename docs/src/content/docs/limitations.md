@@ -220,7 +220,8 @@ the rule that a server **named** in `?servers=` fails the whole listing when its
 upstream cannot be listed. `?servers=anki,slack` with the laptop asleep returns
 Slack's tools and simply no Anki ones — `200`, a shorter list, and no in-band
 signal that a slug was dropped. The only record is a `mcp.local_machine_offline`
-event and `/healthz` reporting the slug `unreachable`.
+event — exported at Info, because nothing failed — and `/healthz` reporting the
+slug `unreachable`.
 
 A client that lists tools, sees no `anki__*` and concludes "Anki has no tools" is
 drawing a wrong conclusion from a correct response — which is the exact

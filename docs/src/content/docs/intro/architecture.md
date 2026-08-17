@@ -187,6 +187,11 @@ laptop asleep is a working Slack and no Anki. Named **alone** it still fails,
 for the same reason the rule exists: `200 {"tools":[]}` would read as "this
 server has no tools".
 
+Either way it reports as `mcp.local_machine_offline` rather than
+`mcp.list_tools_failed`, and classifies as `error.kind: local_machine_offline`.
+Failing a request and declaring a strad fault are different claims — see
+[an offline `local-tunnel` is not a fault](/operate/telemetry/#an-offline-local-tunnel-is-not-a-fault-and-does-not-export-as-one).
+
 The trigger is a `tools/list` that **throws**. A server that answers with an
 empty list is a server with no tools, and no amount of error handling can tell
 those apart from the outside — which is why core also watches from the inside. A

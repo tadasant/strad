@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  LocalMachineOfflineError,
+  UpstreamError,
+} from "../src/gateway/adapters/http.ts";
+import {
   argShape,
   byteSize,
   errorKind,
@@ -173,11 +177,45 @@ describe("error classification records a KIND, never a message", () => {
       "timeout",
       "upstream_unavailable",
       "upstream_error",
+      "local_machine_offline",
       "not_selected",
       "not_mounted",
       "tool_error",
       "unknown",
     ]).toContain(kind);
+  });
+
+  it("gives an offline local-tunnel its own kind, not the catch-all", () => {
+    // The bug this member exists for: the message is strad's OWN reassurance,
+    // so it matched no pattern and landed in `unknown` — the same word a real
+    // mystery gets. 239 samples of a switched-off laptop, indistinguishable
+    // from 239 unclassified faults.
+    const offline = new LocalMachineOfflineError(
+      "anki",
+      new Error("boom"),
+      5000,
+    );
+    expect(errorKind(offline)).toBe("local_machine_offline");
+    // Not because of anything in the text — the class declares it.
+    expect(offline.message).toMatch(/Nothing is wrong with strad/);
+  });
+
+  it("keeps a plain UpstreamError on the message path", () => {
+    // The declaration is per-class, not inherited-by-accident: the parent has no
+    // `telemetryKind`, so it still classifies as it always did.
+    expect(errorKind(new UpstreamError("beta", new Error("boom")))).toBe(
+      "upstream_error",
+    );
+  });
+
+  it("ignores a declared kind that is not a member of the set", () => {
+    // `telemetryKind` is honoured only against the closed set. Otherwise any
+    // object reaching `errorKind()` could write its own label into the
+    // ingestor, which is the boundary this module exists to hold.
+    const forged = Object.assign(new Error("boom"), {
+      telemetryKind: "password=hunter2",
+    });
+    expect(errorKind(forged)).toBe("unknown");
   });
 });
 

@@ -21,7 +21,12 @@ import {
   trace,
 } from "@opentelemetry/api";
 import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
-import { errorKind, instruments, tracer } from "../../telemetry/index.ts";
+import {
+  errorKind,
+  instruments,
+  tracer,
+  type SelfClassifyingError,
+} from "../../telemetry/index.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 
 /** Where this adapter connects, and with what credential. */
@@ -451,8 +456,7 @@ export class HttpServerAdapter implements ServerAdapter {
    * it is unsure about stays an ordinary upstream error.
    */
   private wrap(err: unknown, phase: "connect" | "request"): UpstreamError {
-    if (this.kind !== "local-tunnel") return new UpstreamError(this.slug, err);
-    const verdict = offlineVerdict(err, phase);
+    const verdict = this.offlineReason(err, phase);
     if (!verdict) return new UpstreamError(this.slug, err);
     return new LocalMachineOfflineError(
       this.slug,
@@ -463,6 +467,20 @@ export class HttpServerAdapter implements ServerAdapter {
       // someone to go looking for a slow network.
       verdict === "timeout" ? this.opts.connectTimeoutMs : undefined,
     );
+  }
+
+  /**
+   * Is this failure, on this adapter, a machine that is not there?
+   *
+   * The kind check belongs with the verdict rather than at each caller: only a
+   * `local-tunnel` HAS a machine to be off, and every other kind's unreachable
+   * upstream is a hosted component that should be investigated.
+   */
+  private offlineReason(
+    err: unknown,
+    phase: "connect" | "request",
+  ): "timeout" | "unreachable" | null {
+    return this.kind === "local-tunnel" ? offlineVerdict(err, phase) : null;
   }
 
   /**
@@ -502,7 +520,18 @@ export class HttpServerAdapter implements ServerAdapter {
       });
       return result;
     } catch (err) {
-      const kind = errorKind(err);
+      // The RAW failure, ahead of `wrap()` — this hop is inside the try that
+      // wraps it. So the offline verdict has to be asked for here rather than
+      // read off a `LocalMachineOfflineError` that does not exist yet: without
+      // it, every handshake against a switched-off laptop counted as
+      // `error.kind="unknown"`, indistinguishable from a genuine mystery, which
+      // is exactly the blind spot this classification exists to close.
+      const kind = this.offlineReason(
+        err,
+        op === "connect" ? "connect" : "request",
+      )
+        ? "local_machine_offline"
+        : errorKind(err);
       span.setAttribute("error.kind", kind);
       // No recordException — an upstream's error message is not ours to export.
       // See src/telemetry/redact.ts.
@@ -901,14 +930,26 @@ export class UpstreamError extends Error {
  * other kind, "the upstream did not answer" is a fault worth investigating; for
  * this one it is the expected condition whenever the machine is off, and the
  * only useful thing to tell anyone is WHICH machine and that it is offline. It
- * subclasses `UpstreamError` so that every existing catch, retire and telemetry
- * path treats it identically — only the words differ.
+ * subclasses `UpstreamError` so that every existing catch and retire path treats
+ * it identically — only the words differ.
+ *
+ * TELEMETRY is the one place it must NOT be identical, and for a while it was.
+ * `errorKind()` reads a message when it has nothing better, and this message is
+ * strad's own reassurance rather than an upstream's stack, so it matched nothing
+ * and exported as `unknown` — the same word an unclassified fault gets. Hence
+ * `telemetryKind`: the constructor knows what this is, so it says so instead of
+ * leaving the exporter to guess. See `SelfClassifyingError` in redact.ts.
  *
  * The message is strad's OWN, built from the slug and a duration. It relays no
  * upstream prose, which is what makes it safe to hand to a client verbatim —
  * see the note in gateway/mcpServer.ts about not echoing an upstream's text.
  */
-export class LocalMachineOfflineError extends UpstreamError {
+export class LocalMachineOfflineError
+  extends UpstreamError
+  implements SelfClassifyingError
+{
+  readonly telemetryKind = "local_machine_offline" as const;
+
   constructor(slug: string, cause: unknown, waitedMs: number | undefined) {
     super(
       slug,
