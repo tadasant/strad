@@ -325,19 +325,33 @@ export async function listToolsFor(
             .map((t) => ({ ...t, name: namespaced(slug, t.name) })),
         };
       } catch (err) {
-        event({
-          evt: "mcp.list_tools_failed",
-          slug,
-          explicit: Boolean(explicit),
-          // Stays on stdout in full; the exporter substitutes `error.kind`.
-          error: err instanceof Error ? err.message : String(err),
-        });
-        return {
-          ok: false,
-          slug,
-          offline: err instanceof LocalMachineOfflineError,
-          err,
-        };
+        const offline = err instanceof LocalMachineOfflineError;
+        // The distinction is made HERE, at the emit, and not two lines later
+        // for the return value only. `_failed` is a fault: the exporter ships
+        // it at ERROR severity and an alert rule keyed on `severity >= ERROR`
+        // pages on it. A laptop being off is not a fault — it is the advertised
+        // behaviour of the kind — and reporting it as one paged a production
+        // channel over a machine somebody had switched off. So an offline
+        // machine gets the event that already exists to say exactly that, at
+        // Info, and `mcp.list_tools_failed` keeps meaning what it says.
+        event(
+          offline
+            ? {
+                evt: "mcp.local_machine_offline",
+                slug,
+                listed: false,
+                explicit: Boolean(explicit),
+                error: err.message,
+              }
+            : {
+                evt: "mcp.list_tools_failed",
+                slug,
+                explicit: Boolean(explicit),
+                // Stays on stdout in full; the exporter substitutes `error.kind`.
+                error: err instanceof Error ? err.message : String(err),
+              },
+        );
+        return { ok: false, slug, offline, err };
       }
     }),
   );
@@ -398,9 +412,13 @@ export async function listToolsFor(
   // which is the whole reason this kind exists: selecting a laptop-backed
   // server alongside a hosted one must not make the hosted one unusable when
   // the laptop sleeps. See HACKS.md #60 for what this costs.
-  for (const f of failures) {
-    event({ evt: "mcp.local_machine_offline", slug: f.slug, listed: false });
-  }
+  //
+  // Nothing is emitted here: the catch above already reported every one of
+  // these as `mcp.local_machine_offline`, on every path rather than only this
+  // one. A second emission wrote the same fact twice to the stream an operator
+  // reads — and only there, since the export throttles this event per slug, so
+  // the duplicate was invisible in the ingestor and any test that asserted on
+  // exported records would have passed with it still in place.
   return tools;
 }
 
@@ -416,6 +434,12 @@ type Listing =
  * unlike tools they are relayed verbatim — the URI a client sees is the one it
  * reads back. As with tools/list, one failing upstream contributes zero
  * resources and a log line rather than a 500.
+ *
+ * An offline machine reports the same way it does on the tools path, and for the
+ * same reason: `listResources()` reaches `connect()` before it can discover the
+ * upstream has no resources capability, so a closed laptop throws here on every
+ * client that lists resources — and a `_failed` event is an ERROR-severity
+ * record that pages. Nothing failed.
  */
 async function listResourcesFor(
   selected: string[],
@@ -428,11 +452,20 @@ async function listResourcesFor(
       try {
         return await adapter.listResources();
       } catch (err) {
-        event({
-          evt: "mcp.list_resources_failed",
-          slug,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        event(
+          err instanceof LocalMachineOfflineError
+            ? {
+                evt: "mcp.local_machine_offline",
+                slug,
+                listed: false,
+                error: err.message,
+              }
+            : {
+                evt: "mcp.list_resources_failed",
+                slug,
+                error: err instanceof Error ? err.message : String(err),
+              },
+        );
         return [];
       }
     }),

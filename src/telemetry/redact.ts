@@ -39,15 +39,64 @@
  * asserting the canary appears nowhere in any exported span, metric or log record.
  */
 
-/** How an error is allowed to be described in telemetry: a fixed, closed set. */
-export type ErrorKind =
-  | "timeout"
-  | "upstream_unavailable"
-  | "upstream_error"
-  | "not_selected"
-  | "not_mounted"
-  | "tool_error"
-  | "unknown";
+/**
+ * How an error is allowed to be described in telemetry: a fixed, closed set.
+ *
+ * The array is the source and the union is derived from it, not the other way
+ * round. `errorKind()` checks membership at runtime, and a `new Set<ErrorKind>`
+ * written out by hand type-checks every element it HAS without requiring every
+ * element there is — so a member added to the union and forgotten in the set
+ * would fall silently back to message matching, which is this file's own bug
+ * reintroduced quietly.
+ *
+ * `local_machine_offline` is a `local-tunnel` server whose machine is not there.
+ * It is the ONE upstream failure this repo documents as expected rather than
+ * investigable — the server is a laptop and the laptop is off — so it must be
+ * separable from every other kind, and above all from `unknown`, which is where
+ * an unclassified fault lands.
+ */
+const ERROR_KINDS = [
+  "timeout",
+  "upstream_unavailable",
+  "upstream_error",
+  "local_machine_offline",
+  "not_selected",
+  "not_mounted",
+  "tool_error",
+  "unknown",
+] as const;
+
+export type ErrorKind = (typeof ERROR_KINDS)[number];
+
+const ERROR_KIND_SET: ReadonlySet<string> = new Set<string>(ERROR_KINDS);
+
+/**
+ * An error that names its OWN kind instead of being pattern-matched.
+ *
+ * Message matching is a guess about someone else's prose. It is safe (we read
+ * the message, we never emit it) and it is all we have for an error thrown by
+ * the SDK or by `fetch` — but for an error strad CONSTRUCTS, guessing is
+ * absurd: the constructor already knows. `LocalMachineOfflineError` is the case
+ * that proved it. Its message is strad's own and deliberately reassuring
+ * ("Nothing is wrong with strad."), which matches none of the patterns below,
+ * so the one condition documented as expected exported as `unknown` — and paged
+ * a production alert channel.
+ *
+ * An error declares its kind by carrying this field. `errorKind()` honours it
+ * only when the value is a member of the closed set, so declaring one can never
+ * widen what may be exported.
+ */
+export interface SelfClassifyingError {
+  readonly telemetryKind: ErrorKind;
+}
+
+function declaredKind(err: unknown): ErrorKind | null {
+  if (typeof err !== "object" || err === null) return null;
+  const declared = (err as { telemetryKind?: unknown }).telemetryKind;
+  return typeof declared === "string" && ERROR_KIND_SET.has(declared)
+    ? (declared as ErrorKind)
+    : null;
+}
 
 /**
  * Classify an error into one of a FIXED set of kinds.
@@ -58,9 +107,13 @@ export type ErrorKind =
  * text, and it must not reach a span.
  *
  * Matching on the message to CHOOSE a kind is safe — we read it, we do not
- * emit it.
+ * emit it. An error that declares its own kind skips the matching entirely; see
+ * `SelfClassifyingError`.
  */
 export function errorKind(err: unknown): ErrorKind {
+  const declared = declaredKind(err);
+  if (declared) return declared;
+
   const message = err instanceof Error ? err.message : String(err);
 
   // The MCP SDK's request timeout. It defaults to 60s and fires at EVERY hop,

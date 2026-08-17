@@ -25,6 +25,7 @@ export {
   scrubText,
   REDACTED,
   type ErrorKind,
+  type SelfClassifyingError,
 } from "./redact.ts";
 export {
   errorReporterOptions,

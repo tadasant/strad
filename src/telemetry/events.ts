@@ -83,8 +83,15 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * Deliberately NOT a `_failed` event: nothing failed. It answers "how often
      * is the laptop actually there", which is the only operational question
      * this kind of server raises, and it does so without implying an incident.
+     * That is load-bearing rather than tidy — the same condition reported as
+     * `mcp.list_tools_failed` ships at ERROR severity and pages an alert rule
+     * keyed on it, which is what happened before this event covered every path.
+     *
+     * `explicit` says whether a client named the slug, and is the one field the
+     * older `_failed` record carried that would otherwise be lost. It is a
+     * boolean strad computes, not a value from the wire.
      */
-    "mcp.local_machine_offline": ["slug", "listed"],
+    "mcp.local_machine_offline": ["slug", "listed", "explicit"],
     /** A slug that is mounted and serving nothing. */
     "strad.tool_surface_degraded": ["slug", "state", "reason"],
     "strad.tool_surface_recovered": ["slug", "tool_count"],
