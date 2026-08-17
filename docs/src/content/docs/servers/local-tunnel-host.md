@@ -300,10 +300,11 @@ The tunnel edge stays up and answers on the machine's behalf, which is why this
 comes back as an HTTP response rather than a dead socket, and why it has to be
 recognised by status.
 
-The servers named alongside it keep working. `/healthz` still reports the slug
-`unreachable` and the reachability monitor still logs the change — the
-troubleshooting tool is for clients and does not launder a machine being off into
-a healthy fleet.
+The servers named alongside it keep working, and the slug stays connectable —
+it serves `troubleshoot_host` rather than nothing. `/healthz` reports it as
+`offline` rather than `unreachable` and leaves it out of `degraded`, because a
+machine somebody switched off is this kind's normal state and there is no
+component, image or path for anyone to go and check.
 
 ### The machine refuses — a `401` or `403`
 

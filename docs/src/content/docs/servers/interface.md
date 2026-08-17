@@ -178,10 +178,15 @@ server that ran and threw — is an ordinary broken upstream and still fails a
 named listing. Nobody at that machine can fix those, so sending them there would
 be a lie.
 
-`/healthz`, the reachability monitor and the deploy gate are untouched by any of
-this: they probe the adapter directly, so an unreachable slug still reads
-`unreachable`. The tool is a courtesy to clients, not a way for a machine being
-off to look healthy.
+A machine that is off does **not** read as a broken deployment. On `/healthz`
+that slug's state is `offline` — its own word, not `unreachable` — and it is left
+out of the `degraded` list, so a fleet with a sleeping laptop in it still reports
+nothing to go and look at. The state is still there to read; it has simply
+stopped being filed as a problem.
+
+A host that **refuses** is filed as a problem, deliberately: it is answering, a
+credential has gone stale, and it will not clear until somebody rotates it. Same
+for a `404` or a `500`. Only "the machine is off" is exempt.
 
 strad deploys nothing for it — no component, no bundle, no `env:`. `${NAME}`
 references in `url` and `headers` resolve in strad's own process, so a tunnel

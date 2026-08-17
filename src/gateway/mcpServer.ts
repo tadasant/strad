@@ -20,7 +20,10 @@ import {
   resultShape,
   tracer,
 } from "../telemetry/index.ts";
-import { LocalHostUnavailableError } from "./adapters/http.ts";
+import {
+  LocalHostUnavailableError,
+  LocalMachineOfflineError,
+} from "./adapters/http.ts";
 import {
   denamespace,
   namespaced,
@@ -458,13 +461,34 @@ export async function listToolsFor(
             .map((t) => ({ ...t, name: namespaced(slug, t.name) })),
         };
       } catch (err) {
-        event({
-          evt: "mcp.list_tools_failed",
-          slug,
-          explicit: Boolean(explicit),
-          // Stays on stdout in full; the exporter substitutes `error.kind`.
-          error: err instanceof Error ? err.message : String(err),
-        });
+        // The distinction is made HERE, at the emit, and not later for the
+        // return value only. `_failed` is a fault: the exporter ships it at
+        // ERROR severity and an alert rule keyed on `severity >= ERROR` pages
+        // on it. A laptop being off is not a fault — it is the advertised
+        // behaviour of the kind — and reporting it as one paged a production
+        // channel over a machine somebody had switched off. So an unavailable
+        // host gets the event that already exists to say exactly that, at Info,
+        // and `mcp.list_tools_failed` keeps meaning what it says.
+        const unavailable =
+          adapter.host && err instanceof LocalHostUnavailableError ? err : null;
+        event(
+          unavailable
+            ? {
+                evt: "mcp.local_machine_offline",
+                slug,
+                listed: false,
+                explicit: Boolean(explicit),
+                state: unavailable.state,
+                error: unavailable.message,
+              }
+            : {
+                evt: "mcp.list_tools_failed",
+                slug,
+                explicit: Boolean(explicit),
+                // Stays on stdout in full; the exporter substitutes `error.kind`.
+                error: err instanceof Error ? err.message : String(err),
+              },
+        );
 
         // THE DEGRADED SURFACE. A local-tunnel whose machine is not answering
         // keeps its place in the listing and offers one tool: how to bring that
@@ -477,14 +501,8 @@ export async function listToolsFor(
         // and it is the only thing standing between a caller and an unexplained
         // gap. An `allow:` list written for the real toolset would otherwise
         // filter it away and reinstate exactly the silence this replaces.
-        if (adapter.host && err instanceof LocalHostUnavailableError) {
-          event({
-            evt: "mcp.local_machine_offline",
-            slug,
-            listed: false,
-            state: err.state,
-          });
-          const tool = troubleshootTool(adapter.host, err.state);
+        if (unavailable) {
+          const tool = troubleshootTool(adapter.host!, unavailable.state);
           return {
             ok: true,
             tools: [{ ...tool, name: namespaced(slug, tool.name) }],
@@ -543,6 +561,12 @@ type Listing =
  * unlike tools they are relayed verbatim — the URI a client sees is the one it
  * reads back. As with tools/list, one failing upstream contributes zero
  * resources and a log line rather than a 500.
+ *
+ * An offline machine reports the same way it does on the tools path, and for the
+ * same reason: `listResources()` reaches `connect()` before it can discover the
+ * upstream has no resources capability, so a closed laptop throws here on every
+ * client that lists resources — and a `_failed` event is an ERROR-severity
+ * record that pages. Nothing failed.
  */
 async function listResourcesFor(
   selected: string[],
@@ -555,11 +579,24 @@ async function listResourcesFor(
       try {
         return await adapter.listResources();
       } catch (err) {
-        event({
-          evt: "mcp.list_resources_failed",
-          slug,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        event(
+          // `LocalMachineOfflineError` and NOT the `LocalHostUnavailableError`
+          // base: a host that REFUSES is answering, and a stale credential is a
+          // fault that should keep paging. Only a machine that is off is exempt.
+          err instanceof LocalMachineOfflineError
+            ? {
+                evt: "mcp.local_machine_offline",
+                slug,
+                listed: false,
+                state: err.state,
+                error: err.message,
+              }
+            : {
+                evt: "mcp.list_resources_failed",
+                slug,
+                error: err instanceof Error ? err.message : String(err),
+              },
+        );
         return [];
       }
     }),

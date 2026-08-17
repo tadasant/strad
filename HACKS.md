@@ -2628,7 +2628,9 @@ NAMED in `?servers=` fails the whole listing when its upstream cannot be listed
 the slug keeps its place and serves ONE tool that is not its own:
 `<slug>__troubleshoot_host` (`src/gateway/troubleshoot.ts`). Calling it re-probes
 the machine and returns the `recovery:` block from the config — which machine,
-which failure, what to run there.
+which failure, what to run there. The only other record is a
+`mcp.local_machine_offline` event — Info-severity, because nothing failed, and
+throttled to one exported record per slug per minute.
 
 So a listing contains a tool the upstream never offered, and a caller that lists
 `anki` while the laptop is shut gets one tool where forty-one used to be. That is

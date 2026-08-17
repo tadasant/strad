@@ -84,17 +84,34 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * Deliberately NOT a `_failed` event: nothing failed. It answers "how often
      * is the laptop actually there", which is the only operational question
      * this kind of server raises, and it does so without implying an incident.
+     * That is load-bearing rather than tidy — the same condition reported as
+     * `mcp.list_tools_failed` ships at ERROR severity and pages an alert rule
+     * keyed on it, which is what happened before this event covered every path.
      *
-     * `state` is a closed set of strad's own words — `offline` or `refused` —
-     * and it is the one field here worth alerting on: a machine that is off is
-     * somebody's laptop, and a machine that REFUSES is a credential that has
-     * gone stale and will not fix itself. `listed` says whether the slug's own
-     * tools made it into the listing, which for this event is always false.
+     * `explicit` says whether a client named the slug, and is the one field the
+     * older `_failed` record carried that would otherwise be lost. It is a
+     * boolean strad computes, not a value from the wire. `state` is a closed
+     * set of strad's own words — `offline` or `refused` — and it is the one
+     * field here worth alerting on: a machine that is off is somebody's laptop,
+     * and one that REFUSES is a credential that has gone stale and will not fix
+     * itself. `listed` says whether the slug's own tools made it into the
+     * listing, which for this event is always false.
      */
-    "mcp.local_machine_offline": ["slug", "listed", "state"],
+    "mcp.local_machine_offline": ["slug", "listed", "explicit", "state"],
     /** A slug that is mounted and serving nothing. */
     "strad.tool_surface_degraded": ["slug", "state", "reason"],
     "strad.tool_surface_recovered": ["slug", "tool_count"],
+    /**
+     * A `local-tunnel` slug whose machine is switched off.
+     *
+     * Its own event rather than a `_degraded` one with a gentler `state`, and
+     * the split is the point: `_degraded` is what an alert rule keys on and what
+     * a human reads as "go and look at this". A laptop being off is neither, so
+     * it ships at Info under a name nothing pages on — while still answering
+     * "how often is that machine actually there", which is the only operational
+     * question this kind raises.
+     */
+    "strad.tool_surface_offline": ["slug", "kind"],
     "strad.tool_surface": ["server_count", "serving_count", "degraded"],
     /**
      * 424 fail-closed. `requested` and the raw `unavailable` list are NOT here:

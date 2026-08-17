@@ -220,7 +220,8 @@ the rule that a server **named** in `?servers=` fails the whole listing when its
 upstream cannot be listed. Instead of failing, and instead of dropping out, the
 slug keeps its place and serves one tool that is not its own —
 `<slug>__troubleshoot_host`, which names the machine, the failure and the
-commands to bring it back.
+commands to bring it back. The only other record is a `mcp.local_machine_offline`
+event, exported at Info because nothing failed.
 
 So a listing contains a tool the upstream never offered: a gateway inventing tool
 surface, which a proxy should be reluctant to do. That is the cost.
@@ -249,9 +250,12 @@ slug: such a tool is unreachable through strad, and the caller gets strad's
 answer rather than an error. The name is specific enough that no MCP server on a
 laptop is likely to have chosen it, which is the whole mitigation.
 
-It does **not** make a machine being off look healthy: `/healthz`, the
-reachability monitor and the staging deploy gate probe the adapter directly and
-still report `unreachable`.
+On `/healthz` such a slug reads `offline` rather than `unreachable` and stays
+out of `degraded`: a machine somebody switched off is this kind's normal state,
+the slug is still connectable, and filing it beside a bundle that will not start
+meant a fleet with one sleeping laptop never read as healthy. A host that
+**refuses** still counts as degraded — it is answering, and a stale credential
+will not clear on its own.
 
 ## Auth and identity
 

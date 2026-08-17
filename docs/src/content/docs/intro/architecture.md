@@ -195,12 +195,25 @@ else from a local-tunnel, a `404` on a wrong path or a `500`, is an ordinary
 broken upstream and fails a named listing like any other kind. The exception is
 about machines somebody can go and switch on, not about the kind in general.
 
+Either way it reports as `mcp.local_machine_offline` rather than
+`mcp.list_tools_failed` — an Info-severity record, because nothing failed — and
+the hop's span and `strad.mcp.upstream.errors` label it
+`error.kind: local_machine_offline` rather than lumping it in with real faults.
+`resources/list` makes the same distinction, and has to: `resources` is
+advertised unconditionally, so a closed laptop throws there on every session
+that lists them. Failing a request and declaring a strad fault are different
+claims — see
+[an offline `local-tunnel` is not a fault](/operate/telemetry/#an-offline-local-tunnel-is-not-a-fault-and-does-not-export-as-one).
+
 The trigger is a `tools/list` that **throws**. A server that answers with an
 empty list is a server with no tools, and no amount of error handling can tell
 those apart from the outside — which is why core also watches from the inside. A
 background **tool-surface monitor** (`src/gateway/reachability.ts`) probes every
 mounted slug on an interval and classifies it `ok`, `empty` (answered, offered
-nothing) or `unreachable` (refused, 404'd or timed out), tagged with the server
+nothing), `unreachable` (refused, 404'd or timed out) or `offline` — the last
+being a `local-tunnel` whose machine is simply switched off, which is that
+kind's normal state, stays out of the `degraded` list and pages nobody. It is
+tagged with the server
 `kind` so a third-party remote — or a laptop that is simply switched off — is
 not confused with a component we deploy. It
 logs `strad.tool_surface_degraded` when a slug's state changes, publishes the

@@ -929,7 +929,9 @@ fails CI on the PR rather than the deploy after it.
   `servers` — used by the App Platform health check and the deploy smoke test. It
   also carries `toolSurfaces` and `degraded`: the last observation from the
   background tool-surface monitor, naming the slugs that are mounted but serving
-  **no tools**, each with its `state` (`ok` / `empty` / `unreachable`), its tool
+  **no tools**, each with its `state` (`ok` / `empty` / `unreachable` / `offline`
+  — the last being a `local-tunnel` whose machine is switched off, which is that
+  kind's normal state and is left out of `degraded`), its tool
   count and its `kind`. Listing the slugs and stopping there was compatible with
   three of them being dead, which is exactly what happened. `ok` stays `true`
   regardless — this route is liveness, and a sick upstream is not a reason for

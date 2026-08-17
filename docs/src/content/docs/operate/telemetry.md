@@ -228,7 +228,8 @@ the telemetry exists to diagnose.
 
 What _is_ recorded is **shape and identity**: which server, which tool, how many
 arguments, how many bytes, how long, and whether it failed — in one of a **fixed,
-closed set** of error kinds (`timeout`, `upstream_unavailable`, `not_selected`, …).
+closed set** of error kinds (`timeout`, `upstream_unavailable`,
+`local_machine_offline`, `not_selected`, …).
 
 Two things that look like omissions and are not:
 
@@ -264,17 +265,18 @@ reads. The boundary held perfectly while the deployment was silently broken.
 So `src/telemetry/events.ts` carries an **allowlist**: every event that may leave
 the process, and for each one the exact fields that may go with it.
 
-| Event                                                  | Why it is exported                                 |
-| ------------------------------------------------------ | -------------------------------------------------- |
-| `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                  |
-| `mcp.local_machine_offline`                            | a local-tunnel host was `offline` or `refused`     |
-| `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                    |
-| `strad.tool_surface`                                   | the fleet summary, on change                       |
-| `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled |
-| `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset       |
-| `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing      |
-| `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved   |
-| `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill    |
+| Event                                                  | Why it is exported                                     |
+| ------------------------------------------------------ | ------------------------------------------------------ |
+| `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                      |
+| `mcp.local_machine_offline`                            | a `local-tunnel` host is off or refusing — not a fault |
+| `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                        |
+| `strad.tool_surface_offline`                           | a local-tunnel's machine is off — not degraded         |
+| `strad.tool_surface`                                   | the fleet summary, on change                           |
+| `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled     |
+| `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset           |
+| `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing          |
+| `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved       |
+| `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill        |
 
 Three rules make it safe, and they are worth stating because the boundary is the
 reason this exists at all rather than a `pino` transport:
@@ -313,12 +315,55 @@ writes free text into strad's own vocabulary. The same filtering applies to the
 would let any token holder mint metric series at will.
 
 Every exportable event a client can drive — `mcp.list_tools_failed`,
-`mcp.list_resources_failed`, `mcp.policy_unmatched_tools` and `mcp.unavailable` —
-is throttled to one exported record per slug per minute, for the same
-queue-starvation reason. A repeated fault is therefore under-reported by up to a
-minute in the ingestor; the streams are never throttled, and
-`strad.mcp.tool_surface` carries the same fact continuously. Fault events export
-at `SeverityNumber.ERROR`, so `severity >= ERROR` finds them.
+`mcp.list_resources_failed`, `mcp.local_machine_offline`,
+`mcp.policy_unmatched_tools` and `mcp.unavailable` — is throttled to one exported
+record per slug per minute, for the same queue-starvation reason. A repeated
+fault is therefore under-reported by up to a minute in the ingestor; the streams
+are never throttled, and `strad.mcp.tool_surface` carries the same fact
+continuously. Fault events export at `SeverityNumber.ERROR`, so
+`severity >= ERROR` finds them.
+
+### An offline `local-tunnel` is not a fault, and does not export as one
+
+A machine you own being switched off is the advertised behaviour of
+[`local-tunnel`](/servers/interface/#2-local-tunnel), not an incident. Two
+things follow, and both were learned by paging a production alert channel over a
+laptop somebody had closed:
+
+- **`error.kind` has a member for it: `local_machine_offline`.** The other kinds
+  are chosen by matching the error's message, which is safe (strad reads the
+  text, never exports it) and is all there is for an error thrown by `fetch` or
+  by the SDK. But `LocalMachineOfflineError`'s message is strad's _own_ — it ends
+  "Nothing is wrong with strad" — so it matched nothing and classified as
+  `unknown`, the same word an unclassified fault gets. It now declares its kind
+  instead of being guessed at, and a declared kind is honoured only against the
+  closed set, so declaring one can never widen what may be exported. This is the
+  label on the hop's **span** and on `strad.mcp.upstream.errors`, and the hop
+  asks the offline verdict directly rather than reading the declaration: it is
+  instrumented inside the frame that later builds that error, so it only ever
+  sees the raw `fetch` or SDK failure. Before this, one closed laptop was
+  scattered across `upstream_unavailable`, `timeout` and `unknown` by how the
+  tunnel happened to fail.
+- **It is reported as `mcp.local_machine_offline`, never `mcp.list_tools_failed`
+  or `mcp.list_resources_failed`.** An event whose name ends `_failed` exports at
+  ERROR, which is what `severity >= ERROR` — the first filter any operator writes
+  — is for. Naming a closed laptop a strad fault there is a false page, and it
+  cannot be fixed from the alert's side: excluding `error.kind:unknown` would
+  silently stop alerting on real unclassified faults, and naming slugs in the
+  rule duplicates deployment topology and fails silent for the next tunnel anyone
+  adds. **The event name is what carries the distinction in the log channel** —
+  `mcp.local_machine_offline` is not in `CLASSIFY_ERROR` and carries no
+  `error.kind` at all, because there is nothing left for one to say. The
+  resources path matters as much as the tools path here: `resources` is
+  advertised unconditionally, so an offline machine throws there on every session
+  that lists them, whether or not anyone asked for that slug.
+
+A client that names the slug still gets an **error** for the listing — the
+request genuinely could not be served, and `200 {"tools":[]}` would read as "this
+server has no tools". Failing a request and declaring a strad fault are different
+claims, and only the first one is true. `explicit` on the record says which
+happened: `true` when a client asked for the slug by name, `false` when it simply
+dropped out of a fleet-wide listing.
 
 Records are batched, not sent per-record: these are diagnostics, and a synchronous
 round trip on the failure path would add latency to exactly the requests already

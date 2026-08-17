@@ -21,7 +21,13 @@ import {
   trace,
 } from "@opentelemetry/api";
 import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
-import { errorKind, instruments, tracer } from "../../telemetry/index.ts";
+import {
+  errorKind,
+  instruments,
+  tracer,
+  type ErrorKind,
+  type SelfClassifyingError,
+} from "../../telemetry/index.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 
@@ -484,7 +490,7 @@ export class HttpServerAdapter implements ServerAdapter {
       );
     }
 
-    const verdict = offlineVerdict(err, phase);
+    const verdict = this.offlineReason(err, phase);
     if (!verdict) return new UpstreamError(this.slug, err);
     return new LocalMachineOfflineError(
       this.slug,
@@ -496,6 +502,20 @@ export class HttpServerAdapter implements ServerAdapter {
       verdict === "timeout" ? this.opts.connectTimeoutMs : undefined,
       host && remedyText(host, "offline"),
     );
+  }
+
+  /**
+   * Is this failure, on this adapter, a machine that is not there?
+   *
+   * The kind check belongs with the verdict rather than at each caller: only a
+   * `local-tunnel` HAS a machine to be off, and every other kind's unreachable
+   * upstream is a hosted component that should be investigated.
+   */
+  private offlineReason(
+    err: unknown,
+    phase: "connect" | "request",
+  ): "timeout" | "unreachable" | null {
+    return this.kind === "local-tunnel" ? offlineVerdict(err, phase) : null;
   }
 
   /**
@@ -535,7 +555,20 @@ export class HttpServerAdapter implements ServerAdapter {
       });
       return result;
     } catch (err) {
-      const kind = errorKind(err);
+      // The RAW failure, ahead of `wrap()` — this hop runs inside the try that
+      // wraps it, so the `LocalMachineOfflineError` built from this error does
+      // not exist yet and a kind it declares cannot reach here. The verdict has
+      // to be asked for directly, from the same predicate `wrap()` uses, or the
+      // counter and the error a caller receives disagree about the same failure:
+      // a switched-off laptop was scattered across `upstream_unavailable` (a
+      // refused connection), `timeout` (a black hole) and `unknown` (a tunnel
+      // edge answering 502/530, which is the commonest shape and the one prod
+      // logged 239 of), with no way to tell any of them from a real fault.
+      const offline = this.offlineReason(
+        err,
+        op === "connect" ? "connect" : "request",
+      );
+      const kind = offline ? "local_machine_offline" : errorKind(err);
       span.setAttribute("error.kind", kind);
       // No recordException — an upstream's error message is not ours to export.
       // See src/telemetry/redact.ts.
@@ -546,7 +579,14 @@ export class HttpServerAdapter implements ServerAdapter {
         outcome: "error",
       });
       inst.upstreamErrors.add(1, { ...attrs, "error.kind": kind });
-      if (kind === "timeout") inst.upstreamTimeouts.add(1, attrs);
+      // A deadline expired is a deadline expired, whoever's machine it was. The
+      // offline verdict renames the ERROR KIND, and letting it also suppress
+      // this counter would quietly drop every handshake that blew
+      // `connectTimeoutMs` out of the one series that answers "how long are we
+      // waiting on people who are not there".
+      if (kind === "timeout" || offline === "timeout") {
+        inst.upstreamTimeouts.add(1, attrs);
+      }
 
       throw err;
     } finally {
@@ -938,6 +978,20 @@ export class UpstreamError extends Error {
  * subclasses `UpstreamError` so that every existing catch, retire and telemetry
  * path treats it identically — only the words differ.
  *
+ * TELEMETRY is the one place it must NOT be identical, and for a while it was.
+ * `errorKind()` reads a message when it has nothing better, and these messages
+ * are strad's own reassurance rather than an upstream's stack, so they matched
+ * nothing and exported as `unknown` — the same word an unclassified fault gets.
+ * Hence `telemetryKind`: the constructor knows what this is, so it says so
+ * instead of leaving the exporter to guess. See `SelfClassifyingError` in
+ * redact.ts.
+ *
+ * The two subclasses declare DIFFERENT kinds, and that is the point. A machine
+ * that is off is the one upstream failure this repo documents as expected. A
+ * machine that REFUSES is an ordinary fault that happens to have a friendly
+ * remedy attached — a credential has gone stale and somebody must act — so it
+ * keeps `upstream_error` and keeps paging.
+ *
  * It is also the licence `listToolsFor` needs: an error of this class is what
  * lets a slug be replaced by its troubleshooting tool rather than failing a
  * listing. That is why the two subclasses below are the ONLY things that may
@@ -947,14 +1001,19 @@ export class UpstreamError extends Error {
  * `recovery:` block. It relays no upstream prose, which is what makes it safe to
  * hand to a client verbatim — see the note in gateway/mcpServer.ts.
  */
-export abstract class LocalHostUnavailableError extends UpstreamError {
+export abstract class LocalHostUnavailableError
+  extends UpstreamError
+  implements SelfClassifyingError
+{
   /** Which shape of unavailable, for the troubleshooting surface. */
   abstract readonly state: HostState;
+  abstract readonly telemetryKind: ErrorKind;
 }
 
 /** The machine is not there: asleep, shut down, or its tunnel is stopped. */
 export class LocalMachineOfflineError extends LocalHostUnavailableError {
   readonly state = "offline" as const;
+  readonly telemetryKind = "local_machine_offline" as const;
 
   constructor(
     slug: string,
@@ -984,6 +1043,11 @@ export class LocalMachineOfflineError extends LocalHostUnavailableError {
  */
 export class LocalHostRefusedError extends LocalHostUnavailableError {
   readonly state = "refused" as const;
+  // NOT `local_machine_offline`. That kind exempts one condition from being a
+  // fault — a laptop that is switched off — and this is not it: the machine is
+  // answering, a credential has gone stale, and it will not clear until
+  // somebody rotates it. It should page like any other upstream error.
+  readonly telemetryKind = "upstream_error" as const;
 
   constructor(slug: string, cause: unknown, remedy?: string) {
     super(

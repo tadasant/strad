@@ -1,6 +1,9 @@
 import { event } from "../telemetry/events.ts";
 import { instruments } from "../telemetry/instruments.ts";
-import { LocalHostRefusedError } from "./adapters/http.ts";
+import {
+  LocalHostRefusedError,
+  LocalMachineOfflineError,
+} from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
@@ -20,7 +23,7 @@ import type { Registry } from "./registry.ts";
  * that is loudly wrong, so this turns "the slug serves nothing" into an
  * observation an operator, a health check and a deploy job can all read.
  *
- * ## Three states, because they call for different actions
+ * ## Four states, because they call for different actions
  *
  * `unreachable` is an outage or a routing fault — the upstream refused, 404'd or
  * timed out. `empty` is a server that answered and offered no tools, which is
@@ -28,6 +31,19 @@ import type { Registry } from "./registry.ts";
  * server that derives its tool surface from a live IAM probe (see
  * servers/secrets/shared/src/capabilities.ts). `ok` is a slug with a tool on it.
  * Collapsing the first two into "unhealthy" would send someone to the wrong page.
+ *
+ * `offline` is the fourth, and it is NOT a degraded state. A `local-tunnel`'s
+ * machine being switched off is the advertised behaviour of that kind rather
+ * than a fault, the slug stays connectable while it lasts (it serves
+ * `troubleshoot_host` — see gateway/troubleshoot.ts), and there is no component,
+ * image or path for anyone to go and check. Reporting it as `unreachable`
+ * answered a question nobody asked: it put a laptop somebody had shut into the
+ * same bucket as a bundle that will not start, so a fleet with one sleeping
+ * machine in it never read as healthy. It therefore stays OUT of `degraded`.
+ *
+ * A host that REFUSES is not this. It is answering, a credential has gone stale,
+ * and it will not clear until somebody rotates it — so it keeps `unreachable`
+ * and keeps counting as degraded.
  *
  * `kind` rides along because the three are not equally actionable: a
  * `supplementary-image` that cannot be reached is a component WE deploy and is a
@@ -56,7 +72,7 @@ import type { Registry } from "./registry.ts";
  * would make one number answer two questions.
  */
 
-export type SurfaceState = "ok" | "empty" | "unreachable";
+export type SurfaceState = "ok" | "empty" | "unreachable" | "offline";
 
 export interface ToolSurface {
   slug: string;
@@ -70,7 +86,16 @@ export interface ToolSurface {
 export interface ToolSurfaceSnapshot {
   observedAt: string;
   surfaces: ToolSurface[];
-  /** The slugs that are not `ok`, for a caller that wants one field to test. */
+  /**
+   * The slugs something is WRONG with, for a caller that wants one field to
+   * test.
+   *
+   * Not simply "everything that is not `ok`": an `offline` local-tunnel is
+   * excluded, because its machine being off is that kind's normal state and the
+   * slug is still connectable. Anything in this list is a thing to go and look
+   * at; a sleeping laptop is not. The per-slug `state` still says what is true,
+   * so nothing is hidden — it just stops being reported as a problem.
+   */
   degraded: string[];
 }
 
@@ -130,7 +155,17 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
       } catch (err) {
         failures.set(slug, err instanceof Error ? err.message : String(err));
         if (err instanceof LocalHostRefusedError) refused.add(slug);
-        return { slug, state: "unreachable", tools: 0, kind: adapter.kind };
+        // A machine somebody switched off gets its own state and is NOT
+        // degraded — see the header. Narrowed to the OFFLINE error rather than
+        // to the kind: a local-tunnel that 404s or refuses is a real fault on a
+        // machine that is answering, and calling that "offline" would hide it.
+        const offline = err instanceof LocalMachineOfflineError;
+        return {
+          slug,
+          state: offline ? "offline" : "unreachable",
+          tools: 0,
+          kind: adapter.kind,
+        };
       }
     }),
   );
@@ -139,7 +174,9 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
     snapshot: {
       observedAt: (opts.now?.() ?? new Date()).toISOString(),
       surfaces,
-      degraded: surfaces.filter((s) => s.state !== "ok").map((s) => s.slug),
+      degraded: surfaces
+        .filter((s) => s.state !== "ok" && s.state !== "offline")
+        .map((s) => s.slug),
     },
     failures,
     refused,
@@ -290,6 +327,20 @@ export class ToolSurfaceMonitor {
         continue;
       }
 
+      if (surface.state === "offline") {
+        // A machine somebody switched off, which is this kind's normal state.
+        // It gets a line, because "when is that laptop actually up" is a real
+        // operational question — but `log`, not `warn`, and NOT the `_degraded`
+        // event, which is what an alert rule keys on and what the deploy gate
+        // reads. There is nothing here for anyone to fix.
+        this.log({
+          evt: "strad.tool_surface_offline",
+          slug: surface.slug,
+          kind: surface.kind,
+        });
+        continue;
+      }
+
       this.warn({
         evt: "strad.tool_surface_degraded",
         slug: surface.slug,
@@ -301,26 +352,23 @@ export class ToolSurfaceMonitor {
           surface.state === "unreachable"
             ? surface.kind === "local-tunnel"
               ? refused.has(surface.slug)
-                ? // The one local-tunnel failure that will NOT fix itself. The
-                  // machine answered, so it is not off, and "wait for the laptop
-                  // to come back" — the sentence below — is exactly the wrong
-                  // advice: a stale credential stays stale. This is also the
-                  // only operator-facing signal for it, since a refusal no
-                  // longer fails a listing (see HACKS.md #60).
+                ? // A local-tunnel reaching this warning is NOT a laptop that is
+                  // off — that is `offline`, and it is logged above without ever
+                  // getting here. This is a machine that ANSWERED and said no,
+                  // which will not clear on its own, and it is the only
+                  // operator-facing signal for it since a refusal no longer
+                  // fails a listing (see HACKS.md #60).
                   "this slug is a local-tunnel and its machine REFUSED strad's credentials. " +
                   "The machine is answering, so this is not a laptop that is off and it will " +
                   "not clear on its own: a credential has gone stale — the access token in " +
                   "front of the tunnel, or the bearer the server on that machine checks."
-                : // NOT an incident, and the sentence has to say so. This kind
-                  // is a server on a machine a human owns; the machine being off
-                  // is its normal state and there is no component, image or path
-                  // for anyone to go and check. Handing an operator the sentence
-                  // below would send them looking for infrastructure that does
-                  // not exist.
-                  "this slug is a local-tunnel and its machine is not answering, which is " +
-                  "expected whenever that machine is off. Nothing is deployed for it and " +
-                  "nothing needs fixing here; it starts serving again when the machine and " +
-                  "its tunnel come back."
+                : // Answering, and not refusing: a wrong path in this slug's own
+                  // `url`, or a server on that machine running and erroring.
+                  // Also not a laptop that is off, and also not fixed by
+                  // restarting a tunnel.
+                  "this slug is a local-tunnel and its machine ANSWERED, but not as an MCP " +
+                  "server — so this is not a machine that is off. Check this slug's `url` " +
+                  "against what that machine actually serves."
               : "this slug's upstream did not answer tools/list, so it serves NOTHING. " +
                 "A client selecting it sees an empty toolset. Check that the component " +
                 "is running an image that mounts the path this slug routes to."
