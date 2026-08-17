@@ -118,6 +118,14 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "strad.param_written": ["slug", "variable"],
     "strad.param_write_failed": ["slug", "variable"],
+    /**
+     * THE EVENT NAME AND NOTHING ELSE, for the same reason the two above carry
+     * config strings only: this one fires when the lookup FAILED, so the only
+     * slug and variable in scope are the caller's own bytes. A refusal is
+     * usually a typo'd `paramsWritable:` entry, and "this is happening at all"
+     * is the operational fact; core's stderr carries which name.
+     */
+    "strad.param_refused": [],
     /** Clean SIGTERM or an OOM kill — the difference is one line, or its absence. */
     "strad.shutdown": ["signal"],
     /**

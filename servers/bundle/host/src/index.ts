@@ -476,6 +476,61 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * missing bucket is one server's error, not a boot failure for the other
  * fifteen — the same posture as secrets and 1Password.
  */
+const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
+
+/**
+ * The names that make a per-slug instance of this server worth building.
+ *
+ * NOTE THE DOUBLE PREFIX a second slug produces:
+ * `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. It reads badly and
+ * it is still correct — the two prefixes do different jobs. The inner one keeps
+ * this server off the bare `GCS_*` names, which belong to the `gcs` server in the
+ * same container; the outer one separates two instances of THIS server. Collapsing
+ * them by dropping the inner prefix would make the bare-name fallback resolve
+ * `GCS_BUCKET` to the gcs server's bucket, which is the exact bug config.ts exists
+ * to prevent.
+ */
+const REMOTE_FS_MARKER_NAMES = [`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
+
+async function loadRemoteFilesystem(slug: string): Promise<Mount> {
+  const mod = (await loadFromTree(
+    "remote-filesystem",
+    "shared/build/index.js",
+  )) as { createMCPServer: Factory };
+
+  const env = slugEnvView(process.env, slug);
+
+  const created = mod.createMCPServer({
+    version: VERSION,
+    envPrefix: REMOTE_FS_ENV_PREFIX,
+    // The instance reads THIS view, not the process environment. Two instances
+    // in one process is the whole point, and it only works because nothing below
+    // reaches back to a global.
+    env,
+    // Signed upload URLs carry the slug, and the route below is per-mount.
+    uploadSlug: slug,
+  });
+
+  const bucket = env[`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
+  const viewerDomain = env[`${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN`];
+
+  return {
+    slug,
+    tree: "remote-filesystem",
+    serverName: "strad-remote-filesystem",
+    capabilities: { tools: {} },
+    // Degraded, not unmounted: the tools must still LIST so an agent can see
+    // what this deployment would offer, and so the console shows the slug at all.
+    degraded: !bucket
+      ? `${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET is not set; every tool will fail`
+      : !viewerDomain
+        ? `${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN is not set; is_sensitive=true uploads will be refused`
+        : null,
+    register: (s) => created.registerHandlers(s),
+    upload: created.handleUpload,
+  };
+}
+
 /**
  * The strad slug this mount is served under, and therefore the parameter
  * namespace it reads and writes: `/strad/{env}/mcp/x-twitter/static/`.
@@ -571,61 +626,6 @@ async function loadXTwitter(): Promise<Mount> {
       ),
   };
   return mount;
-}
-
-const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
-
-/**
- * The names that make a per-slug instance of this server worth building.
- *
- * NOTE THE DOUBLE PREFIX a second slug produces:
- * `REMOTE_FS_ARCHIVE__REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET`. It reads badly and
- * it is still correct — the two prefixes do different jobs. The inner one keeps
- * this server off the bare `GCS_*` names, which belong to the `gcs` server in the
- * same container; the outer one separates two instances of THIS server. Collapsing
- * them by dropping the inner prefix would make the bare-name fallback resolve
- * `GCS_BUCKET` to the gcs server's bucket, which is the exact bug config.ts exists
- * to prevent.
- */
-const REMOTE_FS_MARKER_NAMES = [`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
-
-async function loadRemoteFilesystem(slug: string): Promise<Mount> {
-  const mod = (await loadFromTree(
-    "remote-filesystem",
-    "shared/build/index.js",
-  )) as { createMCPServer: Factory };
-
-  const env = slugEnvView(process.env, slug);
-
-  const created = mod.createMCPServer({
-    version: VERSION,
-    envPrefix: REMOTE_FS_ENV_PREFIX,
-    // The instance reads THIS view, not the process environment. Two instances
-    // in one process is the whole point, and it only works because nothing below
-    // reaches back to a global.
-    env,
-    // Signed upload URLs carry the slug, and the route below is per-mount.
-    uploadSlug: slug,
-  });
-
-  const bucket = env[`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
-  const viewerDomain = env[`${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN`];
-
-  return {
-    slug,
-    tree: "remote-filesystem",
-    serverName: "strad-remote-filesystem",
-    capabilities: { tools: {} },
-    // Degraded, not unmounted: the tools must still LIST so an agent can see
-    // what this deployment would offer, and so the console shows the slug at all.
-    degraded: !bucket
-      ? `${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET is not set; every tool will fail`
-      : !viewerDomain
-        ? `${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN is not set; is_sensitive=true uploads will be refused`
-        : null,
-    register: (s) => created.registerHandlers(s),
-    upload: created.handleUpload,
-  };
 }
 
 /**

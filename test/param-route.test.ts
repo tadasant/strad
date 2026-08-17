@@ -13,6 +13,7 @@ import {
   paramRoutePath,
   PARAM_PROTOCOL,
 } from "../src/secrets/param-route.ts";
+import { storeForPath, writableTarget } from "../src/http/params.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import { parameterPath } from "../src/secrets/parameters/namespace.ts";
 
@@ -196,6 +197,26 @@ describe("a write the config did not allow", () => {
     await expect(
       client({ slug: "slack" }).put("SLACK_BOT_TOKEN", "nope"),
     ).rejects.toThrow(/HTTP 403/);
+  });
+
+  it("is refused for a server that is disabled", async () => {
+    // A server strad does not mount writes nothing. The allowlist on a disabled
+    // entry is inert — which is also what the render check assumes when it lets
+    // such a bundle scale out.
+    const disabled = parseConfig(
+      YAML.replace(
+        "    entitlements: [admin]\n    params: true\n    paramsWritable:",
+        "    entitlements: [admin]\n    enabled: false\n    params: true\n    paramsWritable:",
+      ),
+    );
+    expect(disabled.servers[0]?.enabled).toBe(false);
+    expect(writableTarget(disabled, "x-twitter", VARIABLE)).toBeNull();
+    // And the enabled config this app runs still resolves it, so the assertion
+    // above is about `enabled` and not about a typo in the replacement.
+    expect(writableTarget(CONFIG, "x-twitter", VARIABLE)).toEqual({
+      slug: "x-twitter",
+      variable: VARIABLE,
+    });
   });
 
   it("is refused for a slug no config names", async () => {
@@ -392,6 +413,61 @@ describe("the boot read", () => {
       fetchImpl: async () => new Response("{}", { status: 404 }),
     });
     expect(await missing.get(VARIABLE)).toBeUndefined();
+  });
+});
+
+describe("choosing which store owns a path", () => {
+  // A deployment can front more than one parameter store — strad's own and, in
+  // the Tadasant deployment, a second one over a different GCP project. Writing
+  // a credential into the wrong one succeeds and lands where the reader does not
+  // read, so the selection is asserted directly rather than inferred.
+  const withSecond = (namespace: string) =>
+    parseConfig(
+      YAML.replace("bundles:\n", "bundles:\n  - name: bundle-secrets-two\n") +
+        `  - slug: zimmer-secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-secrets-two
+    path: /zimmer-secrets
+    entitlements: [admin]
+    env:
+      SECRETS_PROJECT_ID: "zimmer-secrets-test"
+      SECRETS_NAMESPACES: "${namespace}"
+    consoleEnv:
+      ZIMMER_SECRETS_SECRETS_PROJECT_ID: "zimmer-secrets-test"
+      ZIMMER_SECRETS_SECRETS_NAMESPACES: "${namespace}"
+      ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${SECRETS_ADMIN_KEY_JSON}"
+`,
+    );
+
+  const BAG = { SECRETS_ADMIN_KEY_JSON: fake.endpoints.keyJson };
+  const seam = { parametersStore: () => fake.store };
+
+  it("picks the store whose namespace covers the path", () => {
+    const cfg = withSecond("/zimmer/test/mcp/");
+    const chosen = storeForPath(cfg, BAG, PATH, seam);
+    expect(chosen.store).not.toBeNull();
+  });
+
+  it("refuses when two stores both claim the path", () => {
+    // First-wins here would write the credential into whichever store happened
+    // to be declared first, and the write would report success.
+    const cfg = withSecond("/strad/test/mcp/");
+    const chosen = storeForPath(cfg, BAG, PATH, seam);
+    expect(chosen.store).toBeNull();
+    expect((chosen as { reason: string }).reason).toMatch(/ambiguous/);
+  });
+
+  it("refuses when a deployment declares no secrets server at all", () => {
+    const bare = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+`);
+    const chosen = storeForPath(bare, {}, PATH, {});
+    expect(chosen.store).toBeNull();
+    expect((chosen as { reason: string }).reason).toMatch(/no secrets/);
   });
 });
 

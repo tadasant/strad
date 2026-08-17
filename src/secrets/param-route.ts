@@ -284,12 +284,23 @@ export function createParamClient(opts: ParamClientOptions): ParamClient {
       try {
         const res = await call(variable, { method: "GET" });
         if (!res.ok) {
-          // A 404 is a parameter nobody has seeded, which is every deployment
-          // before its first rotation — not a fault, and not worth a warning
-          // that would cry wolf on every cold start.
+          // TWO STATUSES ARE THE NORMAL CASE, not faults, and warning on either
+          // would cry wolf on every cold start of every container.
+          //
+          //   404 — the parameter exists in no store yet: every deployment
+          //         before its first rotation.
+          //   403 — this deployment does not list the name under
+          //         `paramsWritable:`. The read is unconditional (the container
+          //         cannot see strad's config), so the overwhelmingly common
+          //         answer, on every image that ships this mount and every
+          //         deployment that has not opted in, is exactly this.
+          //
+          // Anything else is a fault worth saying out loud.
+          const expected = res.status === 404 || res.status === 403;
           note(
-            res.status === 404 ? "info" : "warn",
-            `core has no current ${variable} (HTTP ${res.status}); ${baked}`,
+            expected ? "info" : "warn",
+            `core has no current ${variable} for this deployment ` +
+              `(HTTP ${res.status}); ${baked}`,
           );
           return undefined;
         }

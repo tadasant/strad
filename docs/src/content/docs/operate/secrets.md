@@ -674,6 +674,12 @@ and writing a namespace nothing injects would be a credential going nowhere. Eac
 entry is a **variable name**, never a path, so there is no spelling of one that
 addresses another server's namespace or the gateway's.
 
+**Seed the parameter first.** The write is a `rotate()`, which needs a parameter
+to rotate: create the name in `/ui/secrets` (or with `store:seed`) under that
+server's namespace before the first deploy. Until it exists the boot read gets a
+404 and the container falls back to its baked value — which works, and quietly
+keeps working, right up until the first rotation has nowhere to land.
+
 ### The write goes through core, not through a new credential
 
 The container answering `/mcp` holds no cloud credential, and that is the point
@@ -744,15 +750,33 @@ relaxed after, not the other way round.
 
 ### What this grants, stated plainly
 
-A compromised bundle server can **overwrite its own credential** — the names on
-its own allowlist, and nothing else. It cannot read or write another server's, it
-cannot reach any parameter outside its `paramsWritable:` list, and it cannot read
-a secret value it does not already hold: `paramsWritable` requires `params: true`,
-which bakes that whole namespace onto that same container, so the `GET` returns
-something the caller already has. What it adds is freshness.
+The allowlist bounds **which names** are reachable. It does not bound **which
+caller**, and the difference matters enough to say first.
 
-That is a denial of service against itself, not an escalation, and it is a
-materially smaller grant than putting a Secret Manager credential on the bundle.
+`STRAD_INTERNAL_TOKEN` is one token, broadcast to every supplementary component —
+it is the same token core presents when it proxies `/mcp` to them. A caller
+presents nothing else, so the route cannot tell one container from another. The
+reachable set is therefore the **union** of every enabled server's
+`paramsWritable:`, for any container holding the token: a compromised container
+on one bundle can read and overwrite the rotating credential of a server on
+another. The `GET` is also a value read on the public component, so that token is
+now a read credential for the names on that union — which belongs in how often
+you rotate it. Both are recorded as
+[limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter);
+per-component tokens are the fix.
+
+What the allowlist does bound is real and is most of the value. The union is
+**opt-in and empty by default** — a name is on it because a human wrote it in the
+config. Nothing outside it is reachable at all: not another server's ordinary
+parameters, not the gateway namespace, not a secret this deployment has not
+deliberately marked as rotating. And every name on it is by construction a
+credential that **rotates**, so losing one costs a re-seed rather than a durable
+secret.
+
+Against the alternative — a Secret Manager credential on the container answering
+`/mcp` — this is a materially smaller grant, and it keeps the property the
+three-role split exists for: the box on the public path holds no cloud
+credential.
 
 ### What it does not do
 

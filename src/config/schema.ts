@@ -573,28 +573,49 @@ export const StradConfig = z
           path: ["servers"],
         });
       }
-      const seenVars = new Set<string>();
+      const seenVars = new Map<string, string>();
       for (const variable of s.paramsWritable) {
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)) {
+        // The same two rules `validateVariableName` applies when a human creates
+        // a parameter in the console, restated as code so this file stays
+        // dependency-free. The length cap is Parameter Manager's, and a name past
+        // it is a write that cannot land.
+        if (
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
+          variable.length > 200
+        ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message:
               `server "${s.slug}" lists "${variable}" under paramsWritable:, ` +
               `which is not a legal environment variable name (letters, digits ` +
-              `and underscores; not starting with a digit). A paramsWritable ` +
-              `entry is a VARIABLE, not a path — it addresses ` +
-              `/strad/{env}/mcp/${s.slug}/static/{VARIABLE} and nothing else.`,
+              `and underscores; not starting with a digit; at most 200 ` +
+              `characters). A paramsWritable entry is a VARIABLE, not a path — ` +
+              `it addresses /strad/{env}/mcp/${s.slug}/static/{VARIABLE} and ` +
+              `nothing else.`,
             path: ["servers"],
           });
         }
-        if (seenVars.has(variable)) {
+        // DUPLICATES ARE COMPARED CASE-INSENSITIVELY, because `parameterId`
+        // folds case before it hashes: `X_TOKEN` and `x_token` name ONE resource
+        // in the store but two different environment variables in the container.
+        // Listing both is a config where one name works and its twin 404s
+        // forever, which is the least diagnosable outcome available here.
+        const fold = variable.toLowerCase();
+        const first = seenVars.get(fold);
+        if (first !== undefined) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: `server "${s.slug}" lists "${variable}" twice under paramsWritable:`,
+            message:
+              first === variable
+                ? `server "${s.slug}" lists "${variable}" twice under paramsWritable:`
+                : `server "${s.slug}" lists both "${first}" and "${variable}" ` +
+                  `under paramsWritable:. A parameter path folds case, so those ` +
+                  `are ONE parameter under two variable names — one of them ` +
+                  `would resolve and the other would never be found.`,
             path: ["servers"],
           });
         }
-        seenVars.add(variable);
+        seenVars.set(fold, variable);
       }
     }
 

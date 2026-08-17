@@ -94,6 +94,24 @@ describe("the paramsWritable schema rule", () => {
       ),
     ).toThrow(/twice/);
   });
+
+  it("refuses two entries that differ only in case", () => {
+    // `parameterId` folds case before it hashes, so these name ONE parameter in
+    // the store and TWO environment variables in the container: one would
+    // resolve and its twin would 404 forever.
+    expect(() =>
+      parseConfig(
+        X("    params: true\n    paramsWritable: [X_TOKEN, x_token]\n"),
+      ),
+    ).toThrow(/ONE parameter under two variable names/);
+  });
+
+  it("refuses a name past the store's length cap", () => {
+    const long = `X_${"A".repeat(200)}`;
+    expect(() =>
+      parseConfig(X(`    params: true\n    paramsWritable: [${long}]\n`)),
+    ).toThrow(/at most 200/);
+  });
 });
 
 describe("the single-writer render check", () => {

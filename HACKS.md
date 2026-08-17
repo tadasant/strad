@@ -2764,6 +2764,44 @@ any credential that is not single-use at the upstream. Worth doing when a second
 consumer appears; not worth doing for a token whose upstream has already made the
 concurrency decision for us.
 
+## 63. One internal token means any container can reach any writable parameter
+
+**What.** The parameter write-back routes (`/_strad/params/{slug}/{VARIABLE}`,
+#62) authenticate with `STRAD_INTERNAL_TOKEN`. That is ONE token, and
+`BUNDLE_BOOT_ENV_KEYS` broadcasts it to every supplementary component, because it
+is the same token core presents to proxy `/mcp` to each of them. Nothing binds a
+caller to the slug it addresses.
+
+So the reachable set is not "this server's allowlist" — it is the UNION of every
+enabled server's `paramsWritable:`, for any container holding the token. Two
+concrete consequences, and the docs must not claim otherwise:
+
+- A compromised container on bundle A can READ and OVERWRITE the rotating
+  credential of a server on bundle B, which it could not do before.
+- The `GET` is a value read on the PUBLIC component. Before this, reading a
+  stored value took the console admin key behind Google SSO. `STRAD_INTERNAL_TOKEN`
+  is now also a read credential for the names on that union, which belongs in how
+  often it is rotated.
+
+**Why anyway.** The union is opt-in, empty by default, and every name in it is by
+construction a credential that ROTATES — the thing `paramsWritable` exists for.
+Losing one costs a re-seed, not a durable secret. Against that, the alternative
+designs are worse: a per-container cloud credential is the thing the
+viewer/admin/resolver split exists to prevent, and it would be strictly stronger
+than this.
+
+**What does NOT fix it.** A component-identity header checked against
+`server.bundle`. The caller would be choosing its own identity, so it narrows the
+ACCIDENT (a mount asking for the wrong name) and not the ATTACK, while reading in
+the code like a boundary. Shipping a check that looks stronger than it is would be
+worse than the honest statement.
+
+**Exit.** Per-component internal tokens: core mints one per bundle, presents the
+matching one when it proxies, and each component holds only its own. That makes
+the caller's identity a property of the credential rather than a claim, and it
+narrows the presence route by the same stroke. It is a change to the boot-env
+plumbing, not to this route, which is why it is not in #62's PR.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

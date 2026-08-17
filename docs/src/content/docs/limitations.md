@@ -1671,6 +1671,39 @@ credential that is not single-use at the upstream. Worth doing when a second
 consumer appears; not for a token whose upstream has already made the concurrency
 decision for us.
 
+### 63. One internal token means any container can reach any writable parameter
+
+The [parameter write-back routes](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+authenticate with `STRAD_INTERNAL_TOKEN` — one token, broadcast to every
+supplementary component, because it is the same token core presents when it
+proxies `/mcp` to them. Nothing binds a caller to the slug it addresses.
+
+So the reachable set is not "this server's allowlist"; it is the **union** of
+every enabled server's `paramsWritable:`, for any container holding the token.
+Two consequences worth stating plainly:
+
+- A compromised container on one bundle can read and overwrite the rotating
+  credential of a server on another.
+- The `GET` is a value read on the **public** component. Before this, reading a
+  stored value took the console admin key behind Google SSO — so
+  `STRAD_INTERNAL_TOKEN` is now also a read credential for the names on that
+  union, which belongs in how often you rotate it.
+
+The union is opt-in and empty by default, and every name in it is by construction
+a credential that rotates, so losing one costs a re-seed rather than a durable
+secret. Against that, the alternative — a cloud credential on each container — is
+the thing strad's three-role split exists to prevent, and is strictly stronger
+than this.
+
+A component-identity header would **not** fix it: the caller would be choosing
+its own identity, so it narrows the accident and not the attack while reading like
+a boundary.
+
+**Exit.** Per-component internal tokens — core mints one per bundle and presents
+the matching one when it proxies, so each component holds only its own. That makes
+the caller's identity a property of the credential rather than a claim, and
+narrows the presence route by the same stroke.
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

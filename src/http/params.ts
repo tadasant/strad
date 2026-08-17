@@ -42,6 +42,23 @@ import { event } from "../telemetry/index.ts";
  * variable not on the list. They are the same answer to the caller and telling
  * them apart would turn the route into a config-enumeration oracle for a
  * credential that is otherwise only good for the thing it is scoped to.
+ *
+ * ## WHAT THE ALLOWLIST DOES NOT BOUND: which caller
+ *
+ * `STRAD_INTERNAL_TOKEN` is ONE token, broadcast to every supplementary
+ * component (`BUNDLE_BOOT_ENV_KEYS` in appspec.ts). Nothing here binds a caller
+ * to the slug it addresses, and nothing can: the token is the only thing the
+ * caller presents, and every container holds the same one. So the union of every
+ * server's `paramsWritable:` is reachable by any container that holds it, not
+ * just by the server that owns the name.
+ *
+ * That is a real widening and it is stated in the docs rather than papered over
+ * — see HACKS.md #63. What bounds it is that the union is an OPT-IN list of
+ * names a human wrote in the config, empty by default, and that every one of
+ * them is a rotating credential rather than a durable one. A component-identity
+ * header would narrow the accident and not the attack, because the caller would
+ * be choosing its own identity; per-component tokens are the fix, and they are a
+ * change to the presence route as much as to this one.
  */
 
 export interface ParamsHandlerOptions {
@@ -132,6 +149,24 @@ export function storeForPath(
   const covering = candidates.filter((view) =>
     view.namespaces.some((ns) => path.startsWith(normaliseNamespace(ns))),
   );
+
+  // TWO COVERING STORES IS A REFUSAL, not a first-wins pick. Overlapping
+  // namespaces mean two projects both claim this path, and writing a credential
+  // into whichever one happened to be declared first is the shape of mistake
+  // nobody would ever diagnose — the write succeeds, and the value lands in a
+  // store the reader does not read.
+  if (covering.length > 1) {
+    return {
+      store: null,
+      reason:
+        `${covering.length} secrets servers (${covering
+          .map((v) => v.server.slug)
+          .sort()
+          .join(", ")}) declare a SECRETS_NAMESPACES that covers ${path}, so ` +
+        `which store owns it is ambiguous. Narrow one of them.`,
+    };
+  }
+
   const chosen =
     covering[0] ?? (candidates.length === 1 ? candidates[0] : undefined);
 
@@ -181,6 +216,21 @@ function target(
   );
   if (!found) {
     // ONE answer for every shape of "no". See the header.
+    //
+    // Evented WITH NO FIELDS, and that is the most this can safely say. The
+    // likeliest cause is a typo'd or missing `paramsWritable:` entry, and the
+    // symptom of that is otherwise invisible from core: the caller degrades its
+    // own mount on the BUNDLE's /healthz, which nothing scrapes, and logs to a
+    // stdout stream that is never shipped. Naming the slug or the variable here
+    // would put a caller-chosen string in the ingestor, which telemetry/events.ts
+    // refuses on principle — so the event carries the fact and the operator
+    // reads core's stderr for the rest.
+    event({ evt: "strad.param_refused" });
+    console.warn(
+      `[strad] refused a parameter write-back for ` +
+        `${req.params.slug}/${req.params.variable}: no enabled ` +
+        `supplementary-image server names it under paramsWritable:`,
+    );
     res.status(403).json({ error: "parameter_not_writable" });
     return null;
   }
