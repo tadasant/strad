@@ -423,10 +423,12 @@ function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
  * list — that is a server with no tools, and it is `ToolSurfaceMonitor`'s job to
  * notice, not this one's.
  *
- * NOTE ALSO what does not change: `probeToolSurfaces` calls the adapter
- * directly, so `/healthz`, the reachability monitor and the deploy gate keep
- * seeing an unreachable slug as unreachable. The troubleshooting tool is a
- * courtesy to CLIENTS, not a way for a machine being off to read as healthy.
+ * NOTE ALSO how this reads to an OPERATOR, which is a separate question:
+ * `probeToolSurfaces` calls the adapter directly and reports a switched-off
+ * machine as `offline`, out of `/healthz`'s `degraded` list, because the slug is
+ * still connectable and there is nothing to go and fix. A host that REFUSES, a
+ * 404 and a 500 all stay `unreachable` and stay degraded. See
+ * gateway/reachability.ts.
  */
 export async function listToolsFor(
   selected: string[],
@@ -471,15 +473,24 @@ export async function listToolsFor(
         // and `mcp.list_tools_failed` keeps meaning what it says.
         const unavailable =
           adapter.host && err instanceof LocalHostUnavailableError ? err : null;
+        // TWO decisions, and they are not the same predicate. The DEGRADED
+        // SURFACE is offered for either shape of unavailable host, because both
+        // have a machine somebody owns and a remedy to hand them. The EVENT is
+        // narrower: only a machine that is off is exempt from being a fault. A
+        // host that REFUSES is answering, a credential has gone stale, and it
+        // will not clear until somebody rotates it — so it keeps the
+        // ERROR-severity `_failed` record and keeps paging. `listResourcesFor`
+        // below draws the same line.
+        const offline = err instanceof LocalMachineOfflineError;
         event(
-          unavailable
+          offline
             ? {
                 evt: "mcp.local_machine_offline",
                 slug,
                 listed: false,
                 explicit: Boolean(explicit),
-                state: unavailable.state,
-                error: unavailable.message,
+                state: err.state,
+                error: err.message,
               }
             : {
                 evt: "mcp.list_tools_failed",

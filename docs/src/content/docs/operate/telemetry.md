@@ -358,12 +358,11 @@ laptop somebody had closed:
   advertised unconditionally, so an offline machine throws there on every session
   that lists them, whether or not anyone asked for that slug.
 
-A client that names the slug still gets an **error** for the listing — the
-request genuinely could not be served, and `200 {"tools":[]}` would read as "this
-server has no tools". Failing a request and declaring a strad fault are different
-claims, and only the first one is true. `explicit` on the record says which
-happened: `true` when a client asked for the slug by name, `false` when it simply
-dropped out of a fleet-wide listing.
+A client that names the slug gets a **successful** listing carrying one tool,
+`<slug>__troubleshoot_host` — the slug stays connectable and says what to run on
+the machine, rather than returning `200 {"tools":[]}`, which would read as "this
+server has no tools". `explicit` on the record says who was asking: `true` when a
+client named the slug, `false` when it was a fleet-wide listing.
 
 Records are batched, not sent per-record: these are diagnostics, and a synchronous
 round trip on the failure path would add latency to exactly the requests already

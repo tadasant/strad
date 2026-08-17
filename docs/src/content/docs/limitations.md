@@ -257,6 +257,15 @@ meant a fleet with one sleeping laptop never read as healthy. A host that
 **refuses** still counts as degraded — it is answering, and a stale credential
 will not clear on its own.
 
+The exemption is as narrow as the offline verdict, and that verdict is not
+perfectly sharp: a `502` from the tunnel edge is what you get both when the
+machine is off and when the machine is **up** and the MCP server process on it
+has died. The second case therefore drops out of `degraded` too, and its
+remedy text tells its owner to wake a machine that is already awake. That
+ambiguity is inherent — the edge answers on the origin's behalf and says the
+same thing either way — and it is the one way a broken thing goes unreported
+here.
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth

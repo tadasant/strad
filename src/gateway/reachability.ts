@@ -159,7 +159,17 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
         // degraded — see the header. Narrowed to the OFFLINE error rather than
         // to the kind: a local-tunnel that 404s or refuses is a real fault on a
         // machine that is answering, and calling that "offline" would hide it.
-        const offline = err instanceof LocalMachineOfflineError;
+        //
+        // `withDeadline` expiring on a local-tunnel counts as offline too, and
+        // has to: that deadline and the adapter's `connectTimeoutMs` are set
+        // independently, so a config raising the second above the first makes
+        // OURS fire first — with a plain Error, on exactly the switched-off
+        // laptop the adapter was about to describe properly. Without this the
+        // verdict would silently depend on which of two unrelated numbers is
+        // larger.
+        const offline =
+          err instanceof LocalMachineOfflineError ||
+          (adapter.kind === "local-tunnel" && err instanceof DeadlineError);
         return {
           slug,
           state: offline ? "offline" : "unreachable",
@@ -191,6 +201,8 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
  * monitor that can hang is a monitor that stops reporting, which is the failure
  * mode it exists to catch.
  */
+class DeadlineError extends Error {}
+
 function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout;
   return Promise.race([
@@ -198,7 +210,11 @@ function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
     new Promise<never>((_, reject) => {
       timer = setTimeout(
         () =>
-          reject(new Error(`tools/list did not answer within ${timeoutMs}ms`)),
+          reject(
+            new DeadlineError(
+              `tools/list did not answer within ${timeoutMs}ms`,
+            ),
+          ),
         timeoutMs,
       );
       timer.unref?.();
@@ -396,8 +412,15 @@ export class ToolSurfaceMonitor {
       });
     }
 
-    this.consecutiveDegraded =
-      snapshot.degraded.length > 0 ? this.consecutiveDegraded + 1 : 0;
+    // Counted off the SAME question `nextDelay()` asks, or the two disagree:
+    // `degraded` no longer contains an offline laptop, but a refused or 404ing
+    // tunnel is still in it — and if that fed the counter while `nextDelay()`
+    // excluded it by kind, one permanently broken tunnel would hold the budget
+    // spent forever and the fast retry would never engage for the bundle that
+    // needed it during a deploy.
+    this.consecutiveDegraded = this.needsFastRetry()
+      ? this.consecutiveDegraded + 1
+      : 0;
 
     return snapshot;
   }
@@ -439,13 +462,24 @@ export class ToolSurfaceMonitor {
     // machine that is off is off for hours, and letting it hold the gateway at
     // a ten-second cadence would mean re-probing 27 healthy upstreams six times
     // a minute for as long as somebody's laptop is shut.
-    const degraded = (this.current?.surfaces ?? []).some(
-      (s) => s.state !== "ok" && s.kind !== "local-tunnel",
-    );
     const budget = this.opts.retryProbes ?? DEFAULT_RETRY_PROBES;
-    return degraded && this.consecutiveDegraded < budget
+    return this.needsFastRetry() && this.consecutiveDegraded < budget
       ? (this.opts.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS)
       : (this.opts.intervalMs ?? DEFAULT_INTERVAL_MS);
+  }
+
+  /**
+   * Is anything wrong that a re-probe in ten seconds might see fixed?
+   *
+   * Every `local-tunnel` is excluded, not just the `offline` ones: a machine
+   * that is off is off for hours, and a tunnel that refuses stays refused until
+   * somebody rotates a credential. Neither is a deploy converging, which is the
+   * only thing the fast interval exists to catch.
+   */
+  private needsFastRetry(): boolean {
+    return (this.current?.surfaces ?? []).some(
+      (s) => s.state !== "ok" && s.kind !== "local-tunnel",
+    );
   }
 
   stop(): void {

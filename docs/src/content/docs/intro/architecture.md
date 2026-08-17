@@ -216,8 +216,9 @@ kind's normal state, stays out of the `degraded` list and pages nobody. It is
 tagged with the server
 `kind` so a third-party remote — or a laptop that is simply switched off — is
 not confused with a component we deploy. It
-logs `strad.tool_surface_degraded` when a slug's state changes, publishes the
-current answer on
+logs `strad.tool_surface_degraded` when a slug's state changes — or
+`strad.tool_surface_offline`, at Info and pageable by nothing, for the switched-off
+case — publishes the current answer on
 [`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`, and
 records [`strad.mcp.tool_surface`](/operate/telemetry/#stradmcptool_surface--is-a-slug-serving-anything-at-all).
 All three leave the container: the log line ships too, against the

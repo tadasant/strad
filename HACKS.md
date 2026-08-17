@@ -2674,9 +2674,18 @@ credential rather than a laptop is the problem. Anything else a machine answers
 with (a 404 on a wrong path, a 500) is still an ordinary broken upstream and still
 fails a named listing: nobody at that machine can fix those.
 
-**What it does NOT do:** launder a machine being off into a healthy fleet.
-`probeToolSurfaces` calls the adapter directly, so `/healthz`, the reachability
-monitor and the staging deploy gate all still see `unreachable`.
+**What it reports.** A machine that is off is `offline` on `/healthz` — its own
+state word — and is left OUT of the snapshot's `degraded` list, so the one field
+a caller tests says there is nothing to go and look at. That is deliberate and
+was asked for: the slug is still connectable, and filing a laptop somebody shut
+beside a bundle that will not start meant a fleet with one sleeping machine never
+read as healthy. The per-slug state still says what is true.
+
+The exemption is narrow. A host that REFUSES stays `unreachable` and stays
+degraded — it is answering, a credential has gone stale, and it will not clear
+until somebody rotates it — as do a 404 and a 500 from that machine. The staging
+deploy gate is unaffected either way: it filters on `kind` and never counted a
+local-tunnel.
 
 **Undo:** delete the degraded branch in `listToolsFor`'s catch
 (`src/gateway/mcpServer.ts`) so an unavailable local-tunnel host is treated like

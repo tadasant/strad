@@ -36,6 +36,7 @@ import {
   UpstreamError,
 } from "../src/gateway/adapters/http.ts";
 import { buildGatewayServer, listToolsFor } from "../src/gateway/mcpServer.ts";
+import { errorKind } from "../src/telemetry/index.ts";
 import {
   probeToolSurfaces,
   ToolSurfaceMonitor,
@@ -1127,6 +1128,38 @@ servers:
     expect(warned[0]?.reason).toMatch(/will not clear on its own/);
     expect(warned[0]?.reason).not.toMatch(/nothing needs fixing here/);
     await registry.close();
+  });
+
+  it("IS degraded on /healthz, unlike a machine that is off", async () => {
+    // The exemption must not leak. A stale credential will not clear on its
+    // own, so it belongs in the one field an operator tests.
+    const config = CONFIG(await answersWith(403));
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+    const { snapshot } = await probeToolSurfaces({
+      registry,
+      slugs: ["anki"],
+      timeoutMs: 3_000,
+    });
+    expect(snapshot.surfaces[0]?.state).toBe("unreachable");
+    expect(snapshot.degraded).toEqual(["anki"]);
+    await registry.close();
+  });
+
+  it("classifies as an ordinary upstream error, not as an absent machine", async () => {
+    // `local_machine_offline` is the ONE error kind this repo exempts from
+    // being a fault. Borrowing it here would put a stale credential in the
+    // bucket that exists for switched-off laptops.
+    expect(errorKind(new LocalHostRefusedError("anki", new Error("403")))).toBe(
+      "upstream_error",
+    );
+    expect(
+      errorKind(new LocalMachineOfflineError("anki", new Error("down"), 5_000)),
+    ).toBe("local_machine_offline");
   });
 
   it("still hard-fails a 404, which no command on that machine fixes", async () => {
