@@ -590,20 +590,31 @@ servers:
       # A server that declares `paramsWritable:` can POST a rotated credential to
       # core, which performs the write with the ADMIN key below — the container
       # never holds a cloud credential, which is the whole point of the split
-      # above. What a compromised bundle server can do with that is overwrite ITS
-      # OWN credential, on ITS OWN allowlist: it cannot reach another server's
-      # namespace, cannot reach the gateway namespace, and cannot read a secret
-      # value it does not already hold, because `paramsWritable` requires
-      # `params: true` and that flag bakes the whole namespace onto that same
-      # container. It is a denial of service against itself, not an escalation,
-      # and a materially smaller grant than putting a Secret Manager credential
-      # on the bundle.
+      # above.
+      #
+      # WHAT IT BOUNDS IS THE NAMES, NOT THE CALLER, and read that before opting
+      # a server in. `STRAD_INTERNAL_TOKEN` is ONE token, on every supplementary
+      # component — it is the token core presents when it proxies /mcp to them —
+      # and nothing binds a caller to the slug it addresses. So the reachable set
+      # is the UNION of every enabled server's `paramsWritable:`: a compromised
+      # container on one bundle can read and overwrite the rotating credential of
+      # a server on another. The GET is a value read, on the component with the
+      # public route, which is a thing only the console admin key behind Google
+      # SSO could do before. Factor that into how often this token is rotated.
+      # Recorded as limitation #63; per-component tokens are the exit.
+      #
+      # What it DOES bound is real and is most of the value: the union is opt-in
+      # and empty by default, nothing outside it is reachable at all (not another
+      # server's ordinary parameters, not the gateway namespace), and every name
+      # on it is by construction a credential that ROTATES — so losing one costs
+      # a re-seed rather than a durable secret. Against the alternative, a Secret
+      # Manager credential on the container answering /mcp, this is a materially
+      # smaller grant.
       #
       # Note this is a DIFFERENT fence from the one above. The `zimmer` role's
       # reach is bounded by SECRETS_NAMESPACES; a write-back's reach is bounded by
-      # the allowlist on the writing server's own config entry, and the name in
-      # the URL is checked against that config rather than trusted. See docs:
-      # /operate/secrets/.
+      # the allowlists in the config, and the name in the URL is checked against
+      # that config rather than trusted. See docs: /operate/secrets/.
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
       # REVEAL, opted in for staging and absent in prod. Two independent layers:

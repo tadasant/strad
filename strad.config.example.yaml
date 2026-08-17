@@ -394,15 +394,17 @@ servers:
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
       # WRITE-BACK, and what it does and does not grant. A server that declares
       # `paramsWritable:` can POST a rotated credential to core, which performs
-      # the write with the ADMIN key below — the container never holds one. What
-      # a compromised bundle server can do with that is overwrite ITS OWN
-      # credential, on ITS OWN allowlist: it cannot reach another server's
-      # namespace, cannot reach the gateway namespace, and cannot read a secret
-      # value it does not already hold (paramsWritable requires params: true,
-      # which bakes that whole namespace onto that same container). That is a
-      # denial of service against itself, not an escalation, and it is a
-      # materially smaller grant than putting a Secret Manager credential on the
-      # bundle. See docs: /operate/secrets/.
+      # the write with the ADMIN key below — the container never holds one.
+      #
+      # IT BOUNDS THE NAMES, NOT THE CALLER. `STRAD_INTERNAL_TOKEN` is one token,
+      # on every supplementary component, and nothing binds a caller to the slug
+      # it addresses — so the reachable set is the UNION of every enabled
+      # server's `paramsWritable:`, and the GET is a value read on the component
+      # with the public route. Factor that into how often this token is rotated.
+      # What it does bound: the union is opt-in and empty by default, nothing
+      # outside it is reachable, and every name on it is a credential that
+      # ROTATES, so losing one costs a re-seed. See docs: /operate/secrets/ and
+      # limitation #63.
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       # A LIST, and the console's may be wider than the container's above. The
