@@ -341,9 +341,9 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Nineteen servers share one process and one CPU
+### 24. Twenty servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts nineteen MCP servers and
+The `bundle` component runs one Node process that mounts twenty MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
 nineteen down together, and Chromium contends with every other server for the single
 vCPU.
@@ -1473,7 +1473,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is eleven dependency trees. Isolation costs a
+than the longest — the bundle alone is twelve dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -1570,7 +1570,7 @@ for the telegram pair, `PULSEMCP_SUBREGISTRY_API_KEY` for `pulse-subregistry` �
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only two of the eleven trees can read one
+### 56. Per-slug variable names are emitted for every server; only two of the twelve trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -1747,6 +1747,34 @@ a boundary.
 the matching one when it proxies, so each component holds only its own. That makes
 the caller's identity a property of the credential rather than a claim, and
 narrows the presence route by the same stroke.
+
+### 65. strad-fetch's scraped-page cache is shared by every caller of the slug
+
+`strad-fetch` (strad's fork of `@pulsemcp/pulse-fetch`) saves each page it fetches
+as an MCP resource, and the bundle host builds its factory once. The cache is
+therefore one cache for the container: any client entitled to the slug can
+`resources/list` the URLs every other client scraped, and `resources/read` their
+content, until an entry is evicted.
+
+**Why it is like that.** Upstream got privacy for free — it runs as one stdio
+subprocess per client session, so a process-level cache _was_ a session-private
+cache. Behind a gateway it is not. Keeping the cache is what makes a repeated
+fetch cheap; a cache keyed per identity is real work for a property nothing has
+asked for yet.
+
+**Cost:** scraped pages, and more tellingly their URLs, are visible across the
+agent sessions that share the token. In this deployment that is one person's own
+sessions — the slug is admin-entitled in staging, and prod's `zimmer` role
+authenticates every session as the same principal — so it is not a cross-tenant
+leak. Nothing in the cache is a credential; it is public pages someone fetched.
+
+**What the fork DID bound is the memory.** Upstream's store grows for the life of
+the process, which is fine for a subprocess the OS reclaims and an out-of-memory
+kill in a container that hosts twenty mounts. The cache is LRU-bounded on both
+entry count and bytes, and the filesystem backend is gone (App Platform gives the
+container no persistent volume, so it was memory with extra steps).
+
+**Undo:** `HACKS.md` #65.
 
 ## What the human still needs to provision
 

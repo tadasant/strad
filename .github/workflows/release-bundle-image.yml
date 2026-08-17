@@ -1,6 +1,6 @@
 name: Release bundle image
 
-# Build THE strad bundle image — all eighteen MCP servers in one container — and
+# Build THE strad bundle image — all twenty MCP servers in one container — and
 # push it to ghcr.
 #
 # It does not deploy. The next `deploy-staging.yml` run resolves the newest
@@ -9,12 +9,11 @@ name: Release bundle image
 # (`--wait-for-image`). See "which image a deploy ships" in
 # docs/operate/operations.md.
 #
-# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from eleven projects that
+# BUILD CONTEXT IS THE REPO ROOT. This image is assembled from twelve projects that
 # live in different directories (servers/bundle-api, images/bundle-google,
 # servers/onepassword, servers/remote-filesystem, servers/pulse-subregistry,
-# servers/{good-eggs,fetchpet,pointsyeah,x-twitter,telegram}),
-# each built in its
-# own stage with its own lockfile. So `paths:` below has to watch all of them: a
+# servers/strad-fetch, servers/{good-eggs,fetchpet,pointsyeah,x-twitter,telegram}),
+# each built in its own stage with its own lockfile. So `paths:` below has to watch all of them: a
 # change to any one of those servers changes this image.
 #
 # The per-server images (release-bundle-api-image.yml, release-goodeggs-image.yml,
@@ -45,6 +44,7 @@ on:
       - "servers/pointsyeah/**"
       - "servers/x-twitter/**"
       - "servers/pulse-subregistry/**"
+      - "servers/strad-fetch/**"
       - "servers/telegram/**"
       - "images/bundle-google/**"
       - ".github/workflows/release-bundle-image.yml"

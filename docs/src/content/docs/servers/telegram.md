@@ -114,7 +114,7 @@ The image ships no credentials; strad injects them at deploy time. Until it does
 the mount is up and **degraded**: `tools/list` answers with the full surface, so
 an agent and the console can see what this deployment would offer, and every call
 fails with an error naming the three missing variables. One server's missing
-config never costs the other sixteen mounts their boot.
+config never costs the other nineteen mounts their boot.
 
 In `infra/strad.staging.yaml` both slugs currently ship `enabled: false`, because
 an unresolved `${REF}` fails the render on purpose. Seeding the three staging

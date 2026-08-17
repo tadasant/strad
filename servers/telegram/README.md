@@ -132,7 +132,7 @@ The bundle host mounts this server at `/telegram` from
 marked `degraded` on `/healthz`: the tool surface still lists, so the console and
 an agent can see what the deployment would offer, and every call fails with an
 error naming the three variables. One server's missing config must not cost the
-other sixteen their boot.
+other nineteen their boot.
 
 In `infra/strad.staging.yaml` both slugs ship `enabled: false` until the three
 secrets are seeded — an unresolved `${REF}` fails the render, deliberately.

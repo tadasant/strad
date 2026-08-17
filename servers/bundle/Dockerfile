@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Seventeen MCP servers, one container.
+# bundle — THE strad supplementary image. Twenty MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from ten existing projects that live in different places:
+# assembled from twelve existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -17,10 +17,11 @@
 #   servers/x-twitter       X
 #   servers/telegram        telegram               (MTProto, USER session)
 #   servers/pulse-subregistry  pulse-subregistry
+#   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging eleven dependency trees is how you
+# Nothing is merged. That is on purpose: merging twelve dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -132,6 +133,18 @@ RUN npm ci --no-audit --no-fund
 COPY servers/pulse-subregistry/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- strad-fetch -------------------------------------------------------------
+# strad's own web-fetching server, forked from @pulsemcp/pulse-fetch. It is a
+# pure-HTTP server despite the company it keeps below: jsdom parses the page,
+# nothing launches a browser. See servers/strad-fetch/FORK.md.
+FROM ${PW} AS build-strad-fetch
+WORKDIR /src
+COPY servers/strad-fetch/package.json servers/strad-fetch/package-lock.json ./
+COPY servers/strad-fetch/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/strad-fetch/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
 FROM ${PW} AS build-goodeggs
 WORKDIR /src
 COPY servers/good-eggs/package.json servers/good-eggs/package-lock.json ./
@@ -175,7 +188,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 17 MCP servers (API, Google, X.com, Telegram, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 20 MCP servers (API, Google, X.com, Telegram, web fetching, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -207,7 +220,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The eleven trees, each with the node_modules it was built against.
+# The twelve trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -219,6 +232,7 @@ COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
+COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 
 # The host: the only new code in this image.
 COPY --from=build-host /src/node_modules /app/host/node_modules

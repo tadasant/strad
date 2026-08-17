@@ -160,7 +160,7 @@ export async function readSource(source: string): Promise<Buffer> {
     const { fileURLToPath } = await import("node:url");
     const path = fileURLToPath(source);
 
-    // This server shares a container with sixteen others, so its process
+    // This server shares a container with nineteen others, so its process
     // environment holds their credentials — a Slack token, GCS private keys, the
     // secrets resolver key. `upload_file` takes an arbitrary local path and
     // returns a public link to whatever it read, which makes

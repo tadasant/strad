@@ -203,7 +203,7 @@ servers:
   # ONE image backs MANY servers: give each entry the SAME `image` and `bundle`
   # but a distinct `path`, and they all run in that one component (a component
   # still runs exactly one image). That is `ghcr.io/tadasant/strad-bundle:latest`
-  # — 19 MCP servers in one Node process, one shared Chromium, served at /slack,
+  # — 20 MCP servers in one Node process, one shared Chromium, served at /slack,
   # /gmail, /onepassword, /secrets and so on. Every entry below points at it.
   #
   # `env:` maps a container env var to a `${NAME}` ref, and those values resolve

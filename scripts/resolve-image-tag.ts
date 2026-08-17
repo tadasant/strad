@@ -13,7 +13,7 @@
  *           walk steps past `**\/*.md` and `docs/**` and stops hard anywhere
  *           else.
  *   bundle  release-bundle-image.yml is `paths:`-filtered — twelve entries: the
- *           ten trees the Dockerfile bakes, the bundle host, and the workflow
+ *           twelve trees the Dockerfile bakes, the bundle host, and the workflow
  *           itself — so most commits cut no bundle image and stepping past them
  *           is the normal case. That filter is READ from the workflow, not
  *           copied here.

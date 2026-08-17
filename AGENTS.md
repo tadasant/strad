@@ -113,6 +113,7 @@ not a confession.
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                                                                             |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                                                                            |
 | `servers/telegram/**` — a tool, the credential model, the read/write split          | `servers/telegram.md`, `limitations.md`                                                                                  |
+| `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool      | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md` |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                                                                        |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                                                                          |
 | `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                                                                                   |
@@ -145,8 +146,8 @@ numbers describe "how many servers," and they count different things:
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
 | **11**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **19**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **28**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **20**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **29**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
 | **31**     | total server slugs in staging (28 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
@@ -189,11 +190,17 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 19 mounted MCP servers, one shared Chromium,
-  assembled from ELEVEN independently-built dependency trees.
+- `servers/bundle/` — one image, 20 mounted MCP servers, one shared Chromium,
+  assembled from TWELVE independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
+- `servers/strad-fetch/` — strad's own web-fetching server, behind the
+  `strad-fetch` slug. A fork of `@pulsemcp/pulse-fetch` whose point is what
+  happens when a credential is absent or rejected: native HTTP always stays in
+  the strategy chain, so a bad BrightData key costs coverage rather than the
+  fetch. `servers/strad-fetch/FORK.md` has the deltas and the incident behind
+  each.
 - `servers/telegram/` — strad's own Telegram server, behind `telegram-ro` and
   `telegram-rw`. MTProto with a USER session, because the Bot API cannot read the
   history of a group its account does not administer. The credential is a

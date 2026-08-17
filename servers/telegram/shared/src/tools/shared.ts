@@ -31,7 +31,7 @@ export interface ToolDefinition {
 /**
  * Built on the first tool call, not at boot.
  *
- * This server shares a process with sixteen others. Connecting to Telegram at
+ * This server shares a process with nineteen others. Connecting to Telegram at
  * import time would make a missing credential — or a Telegram outage — a boot
  * failure for all of them.
  */

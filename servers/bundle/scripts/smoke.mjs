@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that nineteen servers, eleven dependency trees and
+ * What it is really checking is that twenty servers, twelve dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -66,6 +66,10 @@ const EXPECT = {
   pointsyeah: null,
   "x-twitter": 9,
   "pulse-subregistry": 2,
+  // One tool, `scrape`, and the count is a FORK assertion: upstream grows an
+  // `extract` parameter when LLM credentials are present, and strad removed that
+  // feature so the surface cannot vary with the environment.
+  "strad-fetch": 1,
   // get_me, list_chats, get_chat, get_chat_history, search_messages, and the one
   // write tool, send_message — which `telegram-ro` is the allow-list without.
   telegram: 6,
@@ -177,7 +181,7 @@ let failed = 0;
 // buildMounts() and left out of EXPECT ships with no tool-count coverage and no
 // complaint — the loop below only walks what EXPECT already names. Each side is
 // named rather than counted, because a rename moves a mount without moving the
-// count, and "17 mounted, 17 in EXPECT" would otherwise read like a pass.
+// count, and "20 mounted, 20 in EXPECT" would otherwise read like a pass.
 const mounted = new Set(health.servers.map((s) => s.slug));
 const expectedSlugs = new Set(Object.keys(EXPECT));
 const unchecked = [...mounted].filter((s) => !expectedSlugs.has(s));
@@ -192,9 +196,9 @@ if (unchecked.length || absent.length) {
   );
 }
 
-// Two trees registering the SAME slug is the collision a ten-tree single process
+// Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 18 mounts' slugs is 17 entries wide and matches EXPECT exactly.
+// Set of 20 mounts' slugs is 19 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

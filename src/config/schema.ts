@@ -375,16 +375,16 @@ export function isUnhosted(
  * the gateway, they could not even share a container — each needed its own
  * `*_ENABLED_TOOLGROUPS` value, and a component's env is the union of its
  * servers' env maps. That constraint is what made the fleet cost 12 bundles for
- * its 26 slugs. The staging fleet is 27 slugs in ONE bundle; the two other
+ * its 26 slugs. The staging fleet is 28 slugs in ONE bundle; the two other
  * non-core slugs are the `echo` builtin and the `deepwiki` remote-http, which
- * need no container of their own. A 28th supplementary slug, `zimmer-secrets`,
+ * need no container of their own. A 29th supplementary slug, `zimmer-secrets`,
  * has its own bundle — for a reason capability cannot cause: it fronts a second
  * parameter store, and a store is `process.env`.)
  *
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
  * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and 17 other upstream servers (which the config names as 27 slugs), so
+ * also runs `op` and 18 other upstream servers (which the config names as 28 slugs), so
  * size it up, not down.
  */
 const BundleConfig = z.object({

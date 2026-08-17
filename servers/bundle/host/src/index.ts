@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 19 upstream MCP servers (19
+ * bundle — THE strad supplementary image. All 20 upstream MCP servers (20
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 28 supplementary-image entries
+ * gateway's config names more SLUGS than that — 29 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
@@ -15,7 +15,7 @@
  * accounts are three more mounts here. The conventional path is always mounted,
  * so a config that asks for none of this sees exactly the nineteen it saw before.
  *
- * TWENTY-SEVEN of those are on one component. The other one, `zimmer-secrets`,
+ * TWENTY-EIGHT of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
  * parameter store and `loadSecrets()` below reads `process.env` — one container,
  * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
@@ -36,7 +36,7 @@
  * boot (see `scrubCapabilityEnv`): a stale one would silently strip write tools
  * from the read-WRITE slugs too, and the failure would look like an upstream bug.
  *
- * MOUNTS. Each server is served at its own path — /slack, /gmail, /onepassword,
+ * MOUNTS. Each server is served at its own path — /slack, /gmail, /strad-fetch,
  * … — which is exactly what a strad `supplementary-image` server's `path:` names.
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
@@ -257,6 +257,8 @@ async function buildMounts(): Promise<Mount[]> {
 
   mounts.push(await loadPulseSubregistry());
 
+  mounts.push(await loadStradFetch());
+
   mounts.push(await loadTelegram("telegram"));
   for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
     deferred.push({ slug, load: () => loadTelegram(slug) });
@@ -399,7 +401,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other sixteen servers' readiness.
+  // login, and a slow login must not delay the other nineteen servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -452,6 +454,35 @@ interface GoogleSheetsModule {
   missingCredentials: (env: Record<string, string | undefined>) => string[];
   /** The variables ONE account's credential is made of. Owned by the tree. */
   GOOGLE_SHEETS_ENV_NAMES: readonly string[];
+}
+
+/**
+ * strad-fetch — web page retrieval, strad's fork of @pulsemcp/pulse-fetch.
+ *
+ * NOT DEGRADED WITHOUT A CREDENTIAL, and that is the point of the fork. The
+ * native HTTP strategy needs no key and serves most public pages; BrightData and
+ * Firecrawl buy coverage on sites that block a bare fetch. So an absent or
+ * rejected key narrows what this mount can reach and never stops it serving —
+ * which is why there is no `degraded` line here, unlike pulse-subregistry above.
+ * servers/strad-fetch/FORK.md has the evidence for each delta.
+ *
+ * The factory is created ONCE: its resource cache is process-level and bounded,
+ * so a URL one request scraped is a cache hit for the next.
+ */
+async function loadStradFetch(): Promise<Mount> {
+  const mod = (await loadFromTree("strad-fetch", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+  };
+
+  const created = mod.createMCPServer({ version: VERSION });
+
+  return {
+    slug: "strad-fetch",
+    tree: "strad-fetch",
+    serverName: "strad-fetch",
+    capabilities: { resources: {}, tools: {} },
+    register: (s) => created.registerHandlers(s),
+  };
 }
 
 interface GoogleTree {
@@ -547,7 +578,7 @@ function loadGoogleSheets(sheets: GoogleSheetsModule, slug: string): Mount {
  *
  * Config is resolved LAZILY inside the server (on the first tool call), so a
  * missing bucket is one server's error, not a boot failure for the other
- * fifteen — the same posture as secrets and 1Password.
+ * eighteen — the same posture as secrets and 1Password.
  */
 const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
 
@@ -663,7 +694,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all eighteen mounts down
+    // configured at all, and a throw at boot would take all nineteen mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -710,7 +741,7 @@ async function loadXTwitter(): Promise<Mount> {
  * agent's tools/list — rather than lose the slug entirely. Every call then fails
  * with an error naming the three variables. Same posture as remote-filesystem,
  * and for the same reason: one server's missing config must not cost the other
- * sixteen their boot.
+ * eighteen their boot.
  *
  * ONE INSTANCE PER SLUG. `telegram-ro` and `telegram-rw` are two strad slugs, and
  * for as long as they were two names for one mount they were also one MTProto
@@ -750,7 +781,7 @@ async function loadTelegram(slug: string): Promise<Mount> {
 
 /**
  * secrets. Not mounted when it is not configured — the same posture as
- * 1Password: one server's missing config must not take the other sixteen down.
+ * 1Password: one server's missing config must not take the other nineteen down.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
@@ -840,7 +871,7 @@ async function loadOnePassword(): Promise<Mount | null> {
  * Each keeps its own login, its own context and its own cookies; only the
  * browser PROCESS is shared (browser.ts). And unlike their standalone images,
  * a login failure here degrades the one mount instead of exiting the process:
- * with fifteen other servers on board, `process.exit(1)` is no longer a
+ * with nineteen other servers on board, `process.exit(1)` is no longer a
  * proportionate response to Good Eggs changing a form field.
  */
 async function loadBrowserMounts(): Promise<Mount[]> {
@@ -1259,8 +1290,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of eighteen servers must not kill the other
-  // fifteen. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of nineteen servers must not kill the other
+  // eighteen. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);
