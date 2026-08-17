@@ -1,5 +1,6 @@
 import { event } from "../telemetry/events.ts";
 import { instruments } from "../telemetry/instruments.ts";
+import { LocalHostRefusedError } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
@@ -91,12 +92,25 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * whole point is that the caller gets an answer it can report rather than a
  * failure it has to swallow.
  */
-export async function probeToolSurfaces(
-  opts: ProbeOptions,
-): Promise<{ snapshot: ToolSurfaceSnapshot; failures: Map<string, string> }> {
+export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
+  snapshot: ToolSurfaceSnapshot;
+  failures: Map<string, string>;
+  /**
+   * The slugs whose machine ANSWERED and refused strad's credentials.
+   *
+   * Kept apart from `failures` because the two lead an operator to different
+   * places, and this one is the only local-tunnel failure that will not fix
+   * itself: an offline laptop comes back when somebody opens it, and a stale
+   * access token stays stale. It is not on the snapshot — that is served
+   * unauthenticated on `/healthz`, and `unreachable` is all a public reader
+   * needs. See the reason text in `refresh()`.
+   */
+  refused: Set<string>;
+}> {
   const slugs = opts.slugs ?? opts.registry.slugs;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const failures = new Map<string, string>();
+  const refused = new Set<string>();
 
   const surfaces = await Promise.all(
     slugs.map(async (slug): Promise<ToolSurface> => {
@@ -115,6 +129,7 @@ export async function probeToolSurfaces(
         };
       } catch (err) {
         failures.set(slug, err instanceof Error ? err.message : String(err));
+        if (err instanceof LocalHostRefusedError) refused.add(slug);
         return { slug, state: "unreachable", tools: 0, kind: adapter.kind };
       }
     }),
@@ -127,6 +142,7 @@ export async function probeToolSurfaces(
       degraded: surfaces.filter((s) => s.state !== "ok").map((s) => s.slug),
     },
     failures,
+    refused,
   };
 }
 
@@ -228,7 +244,7 @@ export class ToolSurfaceMonitor {
   }
 
   async refresh(): Promise<ToolSurfaceSnapshot> {
-    const { snapshot, failures } = await probeToolSurfaces(this.opts);
+    const { snapshot, failures, refused } = await probeToolSurfaces(this.opts);
     const first = this.current === null;
     this.current = snapshot;
 
@@ -284,16 +300,27 @@ export class ToolSurfaceMonitor {
         reason:
           surface.state === "unreachable"
             ? surface.kind === "local-tunnel"
-              ? // NOT an incident, and the sentence has to say so. This kind is
-                // a server on a machine a human owns; the machine being off is
-                // its normal state and there is no component, image or path for
-                // anyone to go and check. Handing an operator the sentence
-                // below would send them looking for infrastructure that does
-                // not exist.
-                "this slug is a local-tunnel and its machine is not answering, which is " +
-                "expected whenever that machine is off. Nothing is deployed for it and " +
-                "nothing needs fixing here; it starts serving again when the machine and " +
-                "its tunnel come back."
+              ? refused.has(surface.slug)
+                ? // The one local-tunnel failure that will NOT fix itself. The
+                  // machine answered, so it is not off, and "wait for the laptop
+                  // to come back" — the sentence below — is exactly the wrong
+                  // advice: a stale credential stays stale. This is also the
+                  // only operator-facing signal for it, since a refusal no
+                  // longer fails a listing (see HACKS.md #60).
+                  "this slug is a local-tunnel and its machine REFUSED strad's credentials. " +
+                  "The machine is answering, so this is not a laptop that is off and it will " +
+                  "not clear on its own: a credential has gone stale — the access token in " +
+                  "front of the tunnel, or the bearer the server on that machine checks."
+                : // NOT an incident, and the sentence has to say so. This kind
+                  // is a server on a machine a human owns; the machine being off
+                  // is its normal state and there is no component, image or path
+                  // for anyone to go and check. Handing an operator the sentence
+                  // below would send them looking for infrastructure that does
+                  // not exist.
+                  "this slug is a local-tunnel and its machine is not answering, which is " +
+                  "expected whenever that machine is off. Nothing is deployed for it and " +
+                  "nothing needs fixing here; it starts serving again when the machine and " +
+                  "its tunnel come back."
               : "this slug's upstream did not answer tools/list, so it serves NOTHING. " +
                 "A client selecting it sees an empty toolset. Check that the component " +
                 "is running an image that mounts the path this slug routes to."

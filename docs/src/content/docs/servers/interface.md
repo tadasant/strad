@@ -137,8 +137,14 @@ anki__troubleshoot_host   (no arguments)
 ```
 
 Calling it re-checks the machine and answers with which machine is down, which
-of the two failures it is, and the commands to run there. `recovery:` is what
-fills that in:
+of the two failures it is, and the commands to run there. It is **listed** only
+while the host is unavailable — in a `?servers=` listing and in an unfiltered
+"everything I'm entitled to" one alike — but it is **answerable** whenever, so
+somebody who has just run the commands can ask again and be told the machine is
+back. On a `local-tunnel` slug it therefore shadows an upstream tool of the same
+name; see [limitations](/limitations/#60-a-local-tunnel-that-is-not-answering-answers-with-a-tool-about-itself).
+
+`recovery:` is what fills the answer in:
 
 | Field      | What it is                                                        |
 | ---------- | ----------------------------------------------------------------- |

@@ -2644,12 +2644,23 @@ named beside it down; and an empty list is indistinguishable from a server that
 genuinely has none. A tool is the one channel every client already renders and
 every agent already reads.
 
-The invented tool is bounded in ways that matter. It appears ONLY while the host
+The invented tool is bounded in ways that matter. It is LISTED only while the host
 is unavailable, takes no arguments, reaches nothing but that slug's own upstream,
 and returns text strad and the operator wrote — never an upstream's prose. It is
 exempt from the `tools:` policy on purpose (an `allow:` list written for the real
 toolset would otherwise filter away the one tool explaining the outage), which is
 safe precisely because it is not one of the upstream's capabilities.
+
+**Two consequences of that exemption, both deliberate and both costs.** The tool
+is ANSWERABLE on a local-tunnel slug at any time, not only while its host is down
+— the listing decides when to offer it, the call path decides who answers it, and
+tying the second to the first would need state this stateless endpoint has no way
+to carry. That is also what lets somebody who has just run the commands ask again
+and be told the machine is back. And because it is answered rather than forwarded,
+it permanently SHADOWS an upstream tool of the same name on a local-tunnel slug:
+such a tool is unreachable through strad, and the caller gets strad's answer
+instead of an error. The name is specific enough that no MCP server on a laptop is
+likely to have chosen it, which is the whole mitigation.
 
 **Two failures reach it, and a 403 is now one of them.** `LocalHostUnavailableError`
 has two subclasses: offline (502/503/504, 52x, refused connections, handshake

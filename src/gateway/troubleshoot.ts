@@ -113,11 +113,13 @@ export function troubleshootTool(host: LocalHost, state: HostState): Tool {
       `Call this tool (it takes no arguments) to get the diagnosis and the exact commands to ` +
       `run ON THAT MACHINE to bring it back. It re-checks the machine when you call it, so it ` +
       `also tells you if the machine has recovered since this list was built.\n\n` +
-      `Example response:\n` +
-      `  "anki" is not serving tools: the machine hosting it is offline.\n` +
-      `  Machine: Tadas's MacBook (anki.example.com).\n` +
-      `  Run this on that machine:\n` +
-      `    launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared`,
+      // The real answer, for this slug, rather than a worked example about some
+      // other one — a description that names a machine nobody in this
+      // deployment owns is worse than no example. It also means a client that
+      // renders descriptions but will not call an unfamiliar tool still puts
+      // the commands in front of a human.
+      `What it will tell you, as of when this list was built:\n` +
+      indent(remedyText(host, state)),
     inputSchema: {
       type: "object",
       properties: {},
@@ -146,22 +148,33 @@ export function troubleshootTool(host: LocalHost, state: HostState): Tool {
  * Every part is ours: the slug and hostname come from the config, the commands
  * and notes were written by whoever operates the deployment, and the sentences
  * are strad's. Nothing an upstream said appears here.
+ *
+ * `undiagnosed` emits the machine and the commands with NO diagnosis line,
+ * because its caller has already written a different one — and two contradictory
+ * diagnoses in one result is worse than none.
  */
-export function remedyText(host: LocalHost, state: HostState): string {
+export function remedyText(
+  host: LocalHost,
+  state: HostState | "undiagnosed",
+): string {
   const lines: string[] = [];
 
   const where = [host.machine, host.hostname].filter(Boolean).join(" — ");
   if (where) lines.push(`Machine: ${where}.`);
 
-  lines.push(
-    state === "refused"
-      ? `Diagnosis: the machine answered and REFUSED strad's credentials. It is not off. ` +
-          `Restarting the tunnel will not help — the credential is what to look at: an ` +
-          `expired access-service token, or an app-level bearer that no longer matches ` +
-          `what the server on that machine expects.`
-      : `Diagnosis: the machine is not answering. It is asleep, shut down, not running ` +
-          `the server, or not running its tunnel.`,
-  );
+  if (state === "refused") {
+    lines.push(
+      `Diagnosis: the machine answered and REFUSED strad's credentials. It is not off. ` +
+        `Restarting the tunnel will not help — the credential is what to look at: an ` +
+        `expired access-service token, or an app-level bearer that no longer matches ` +
+        `what the server on that machine expects.`,
+    );
+  } else if (state === "offline") {
+    lines.push(
+      `Diagnosis: the machine is not answering. It is asleep, shut down, not running ` +
+        `the server, or not running its tunnel.`,
+    );
+  }
 
   if (host.commands.length > 0) {
     lines.push(
@@ -199,15 +212,30 @@ export function troubleshootResult(
 /**
  * The result when the machine turns out to be answering after all.
  *
- * Worth its own sentence rather than a shrug: the tool only appears when a
- * listing found the host down, so reaching this means it recovered in between —
- * which is exactly what somebody who just ran the commands wants to be told.
- * `isError` stays unset: the tool did its job, and the news is good.
+ * Worth its own sentence rather than a shrug: the tool is listed only while a
+ * listing found the host down, so reaching this usually means it recovered in
+ * between — which is exactly what somebody who just ran the commands wants to be
+ * told. `isError` stays unset: the tool did its job, and the news is good.
+ *
+ * `tools` is the count AFTER this slug's `tools:` policy, not the upstream's
+ * raw total. The two differ on a slug with an allow-list, and reporting the raw
+ * one would answer "how many tools does your policy withhold" to anyone who
+ * asked this question.
  */
 export function recoveredResult(
   host: LocalHost,
   tools: number,
 ): CallToolResult {
+  // Answering with nothing is a real state — `ToolSurfaceMonitor` calls it
+  // `empty` — and "serving 0 tools, list again to see them" would be nonsense.
+  if (tools === 0) {
+    return text(
+      `"${host.slug}" is answering again — its machine is up — but it is serving NO tools. ` +
+        `That is not a machine that is off, so nothing in this server's recovery steps will ` +
+        `change it: the server on that machine is running and offering an empty toolset, ` +
+        `or this slug's tool policy withholds everything it offers.`,
+    );
+  }
   return text(
     `"${host.slug}" is answering again — its machine is up and serving ${tools} ` +
       `${tools === 1 ? "tool" : "tools"}. List tools again to see them; the ` +
@@ -225,16 +253,35 @@ export function recoveredResult(
  * that motivated the rule was a whole HTML error page.
  */
 export function undiagnosedResult(host: LocalHost): CallToolResult {
-  return text(
-    `"${host.slug}" is not serving its tools, and this is NOT the usual case of a machine ` +
-      `being off. Its machine answered, and strad still could not list its tools — so the ` +
-      `server on that machine is reachable but not behaving as an MCP server: a wrong path ` +
-      `in this slug's \`url\`, or a server that is running and erroring. Check strad's logs ` +
-      `for this slug; the commands below are unlikely to be the fix.\n\n` +
-      remedyText(host, "offline"),
-  );
+  return {
+    // The one branch that IS an error: something is wrong that strad cannot
+    // name, so the tool-call metrics should say so rather than record a
+    // successful diagnosis.
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text:
+          `"${host.slug}" is not serving its tools, and this is NOT the usual case of a machine ` +
+          `being off. Its machine answered, and strad still could not list its tools — so the ` +
+          `server on that machine is reachable but not behaving as an MCP server: a wrong path ` +
+          `in this slug's \`url\`, or a server that is running and erroring. Check strad's logs ` +
+          `for this slug. The recovery steps below are this server's usual ones and are ` +
+          `unlikely to be the fix here.\n\n` +
+          remedyText(host, "undiagnosed"),
+      },
+    ],
+  };
 }
 
 function text(body: string): CallToolResult {
   return { content: [{ type: "text", text: body }] };
+}
+
+/** Indent a block, for quoting one piece of prose inside another. */
+function indent(body: string): string {
+  return body
+    .split("\n")
+    .map((line) => `  ${line}`)
+    .join("\n");
 }

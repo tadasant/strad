@@ -467,10 +467,10 @@ export class HttpServerAdapter implements ServerAdapter {
     // The remedy rides on the error, not just on the troubleshooting tool: a
     // client calling a REAL tool on a sleeping laptop gets this message, and
     // there is no version of this where that caller deserves less help than one
-    // who happened to list tools first.
-    const remedy = this.opts.host
-      ? remedyText(this.opts.host, "offline")
-      : undefined;
+    // who happened to list tools first. Built per branch rather than up front —
+    // an ordinary 404 from this kind is a failure like any other and should not
+    // pay for prose nobody will read.
+    const host = this.opts.host;
 
     // A door that said no. Narrow on purpose — 401/403 only, and only for this
     // kind — because it is the one 4xx whose fix is a credential somebody owns
@@ -480,7 +480,7 @@ export class HttpServerAdapter implements ServerAdapter {
       return new LocalHostRefusedError(
         this.slug,
         err,
-        this.opts.host ? remedyText(this.opts.host, "refused") : undefined,
+        host && remedyText(host, "refused"),
       );
     }
 
@@ -494,7 +494,7 @@ export class HttpServerAdapter implements ServerAdapter {
       // millisecond, and saying "no answer within 5000ms" about it invites
       // someone to go looking for a slow network.
       verdict === "timeout" ? this.opts.connectTimeoutMs : undefined,
-      remedy,
+      host && remedyText(host, "offline"),
     );
   }
 

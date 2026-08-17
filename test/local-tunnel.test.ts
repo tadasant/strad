@@ -21,7 +21,10 @@ import {
   UpstreamError,
 } from "../src/gateway/adapters/http.ts";
 import { buildGatewayServer, listToolsFor } from "../src/gateway/mcpServer.ts";
-import { probeToolSurfaces } from "../src/gateway/reachability.ts";
+import {
+  probeToolSurfaces,
+  ToolSurfaceMonitor,
+} from "../src/gateway/reachability.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { compileToolPolicies } from "../src/gateway/toolPolicy.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
@@ -813,6 +816,105 @@ servers:
     await registry.close();
   });
 
+  it("is refused on a slug that has no machine, like any other unknown tool", async () => {
+    // The scope of the policy exemption. `troubleshoot_host` bypasses `tools:`
+    // BECAUSE it is strad's tool on a slug with a machine behind it; on a slug
+    // with no machine there is nothing to exempt, and the name must be treated
+    // like any other tool the policy does not allow.
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    tools: { allow: [echo] }
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+    const client = await connect(registry, config, ["echo"]);
+
+    await expect(
+      client.callTool({ name: "echo__troubleshoot_host", arguments: {} }),
+    ).rejects.toThrow(/capability policy withholds it/);
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("says it cannot diagnose, rather than blaming a machine that answered", async () => {
+    // A 404 at CALL time. The machine is up and the fault is a wrong path in
+    // this slug's own `url` — so the one thing the result must not do is repeat
+    // the offline diagnosis and send its owner to restart a working tunnel.
+    const { registry, config } = await tunnelRegistry(await answersWith(404));
+    const client = await connect(registry, config, ["anki"]);
+
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[]; isError?: boolean };
+    const text = res.content[0]!.text;
+
+    expect(text).toMatch(/NOT the usual case of a machine being off/);
+    expect(text).not.toMatch(/Diagnosis: the machine is not answering/);
+    // The recovery steps still ride along — they are this server's usual ones
+    // and are cheap to try — but labelled as unlikely rather than prescribed.
+    expect(text).toMatch(/unlikely to be the fix/);
+    // The one branch that IS a fault, so the metrics should say so.
+    expect(res.isError).toBe(true);
+
+    await client.close();
+    await registry.close();
+  });
+
+  it("counts the tools a caller would SEE, not the ones the upstream has", async () => {
+    // The machine came back, and this slug's policy withholds everything it
+    // offers. Reporting the upstream's raw total would answer a question nobody
+    // asked — how much the allow-list is hiding.
+    const app = express();
+    const mcp = new McpServer(
+      { name: "standin", version: "0.0.1" },
+      { capabilities: { tools: {} } },
+    );
+    mcp.tool("ping", "ping", {}, async () => ({
+      content: [{ type: "text", text: "pong" }],
+    }));
+    app.post(/.*/, (req, res) => {
+      void (async () => {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+        });
+        res.on("close", () => void transport.close());
+        await mcp.server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      })();
+    });
+    const server = app.listen(0, "127.0.0.1");
+    servers.push(server);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const { registry, config } = await tunnelRegistry(
+      `http://127.0.0.1:${port}/mcp`,
+      `${RECOVERY}    tools: { deny: [ping] }\n`,
+    );
+    const client = await connect(registry, config, ["anki"]);
+
+    const res = (await client.callTool({
+      name: "anki__troubleshoot_host",
+      arguments: {},
+    })) as { content: { text: string }[] };
+    expect(res.content[0]!.text).toMatch(/serving NO tools/);
+    expect(res.content[0]!.text).not.toMatch(/serving 1 tool/);
+
+    await client.close();
+    await registry.close();
+  });
+
   it("offers nothing of the sort for a kind strad deploys", async () => {
     // The licence is scoped to a machine somebody owns. A supplementary image
     // that cannot be listed is a deploy failure, and there is no laptop to go
@@ -942,6 +1044,43 @@ servers:
     expect(text).toMatch(/token/);
 
     await client.close();
+    await registry.close();
+  });
+
+  it("tells an operator it is a credential, not a laptop to wait for", async () => {
+    // A refusal no longer fails a listing, so this log line is the only
+    // operator-facing signal it has left. The default local-tunnel sentence —
+    // "nothing needs fixing here; it starts serving again when the machine
+    // comes back" — would be exactly wrong advice: a stale token stays stale.
+    const config = CONFIG(await answersWith(403));
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+
+    const { refused } = await probeToolSurfaces({
+      registry,
+      slugs: ["anki"],
+      timeoutMs: 3_000,
+    });
+    expect([...refused]).toEqual(["anki"]);
+
+    const warned: Record<string, unknown>[] = [];
+    const monitor = new ToolSurfaceMonitor({
+      registry,
+      slugs: ["anki"],
+      timeoutMs: 3_000,
+      log: () => {},
+      warn: (e) => warned.push(e),
+    });
+    await monitor.refresh();
+    monitor.stop();
+
+    expect(warned[0]?.reason).toMatch(/REFUSED strad's credentials/);
+    expect(warned[0]?.reason).toMatch(/will not clear on its own/);
+    expect(warned[0]?.reason).not.toMatch(/nothing needs fixing here/);
     await registry.close();
   });
 

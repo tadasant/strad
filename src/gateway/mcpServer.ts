@@ -158,6 +158,18 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     // call, which is the worst of both. It is safe to exempt because it takes no
     // arguments, reaches nothing but this slug's own upstream, and returns text
     // strad and the operator wrote.
+    //
+    // NOTE the condition: it is answerable on a local-tunnel slug WHENEVER, not
+    // only while that slug's host is down — the listing decides when to OFFER
+    // it, and this decides who answers it. Two consequences, both wanted. A
+    // caller who has just run the commands can ask again and be told the machine
+    // is back, without a listing round trip. And the answer never depends on
+    // state carried between two stateless requests, which this endpoint has no
+    // way to carry anyway.
+    //
+    // It therefore SHADOWS an upstream tool of this name on a local-tunnel slug,
+    // permanently. See the note on TROUBLESHOOT_TOOL, HACKS.md #60, and the
+    // limitations page.
     const isTroubleshoot =
       parsed.tool === TROUBLESHOOT_TOOL && adapter.host !== undefined;
 
@@ -209,7 +221,7 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
         trace.setSpan(context.active(), callSpan),
         () =>
           isTroubleshoot
-            ? troubleshoot(adapter)
+            ? troubleshoot(adapter, policies.get(parsed.slug))
             : adapter.callTool(parsed.tool, args, { clientCapabilities }),
       );
 
@@ -270,31 +282,77 @@ function elapsedSeconds(startedAt: bigint): number {
 }
 
 /**
+ * How long `troubleshoot_host` will wait for the machine before answering.
+ *
+ * The adapter's own bounds are wrong for this one question. `connectTimeoutMs`
+ * (5s) covers only the handshake, and the REQUEST hop that follows it inherits
+ * `timeoutMs` — two minutes by default, because a tool driving a browser on
+ * somebody's desktop is legitimately slow. A half-open host, which accepts a
+ * connection and then never answers, would therefore hang this tool for the
+ * full two minutes. That is absurd for a tool whose entire job is a fast
+ * re-check, and it is longer than most clients will wait, so the answer would
+ * be lost anyway.
+ */
+const TROUBLESHOOT_PROBE_MS = 10_000;
+
+/**
  * Answer `troubleshoot_host`: re-check the machine, then say what to do.
  *
  * It PROBES rather than replaying whatever the listing found, because the gap
  * between the two is exactly when somebody is running the commands. Being told
  * "it is back, list again" the moment it is back is most of this tool's value;
  * a cached verdict would tell them it is still down while they watch it come up.
- * The probe is a `tools/list`, so it costs one bounded handshake
- * (`connectTimeoutMs`, five seconds by default) and nothing on the machine.
  *
  * Never throws. Everything it can find out is an answer worth returning, and a
  * tool whose job is to explain a failure has no business failing.
  */
-async function troubleshoot(adapter: ServerAdapter): Promise<CallToolResult> {
+async function troubleshoot(
+  adapter: ServerAdapter,
+  policy: ReturnType<ToolPolicies["get"]>,
+): Promise<CallToolResult> {
   const host = adapter.host!;
   try {
-    const tools = await adapter.listTools();
-    return recoveredResult(host, tools.length);
+    const tools = await withDeadline(
+      adapter.listTools(),
+      TROUBLESHOOT_PROBE_MS,
+    );
+    // The count this slug's clients would actually see. The raw upstream total
+    // would answer a question nobody asked — how much an allow-list withholds.
+    return recoveredResult(
+      host,
+      tools.filter((t) => toolAllowed(policy, t.name)).length,
+    );
   } catch (err) {
     if (err instanceof LocalHostUnavailableError) {
       return troubleshootResult(host, err.state);
     }
-    // The machine answered and something else is wrong. Saying "it is offline"
-    // here would send its owner to restart a tunnel that is working fine.
+    // The machine answered and something else is wrong — including our own
+    // deadline above, which only fires on a host that accepted a connection and
+    // then went quiet. Saying "it is offline" here would send its owner to
+    // restart a tunnel that is working fine.
     return undiagnosedResult(host);
   }
+}
+
+/**
+ * A deadline the adapter does not impose on itself.
+ *
+ * The timer is unref'd: a probe in flight must never be the reason the process
+ * stays alive.
+ */
+function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(new Error(`the machine did not answer within ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -442,7 +500,12 @@ export async function listToolsFor(
   const tools = lists.flatMap((l) => (l.ok ? l.tools : []));
 
   // Not a named selection: one sick server contributes nothing and the rest of
-  // the fleet is unaffected.
+  // the fleet is unaffected. A local-tunnel host that is not answering is the
+  // exception here too — the substitution above runs before this line, so an
+  // "everything I'm entitled to" listing carries one troubleshooting tool per
+  // sleeping laptop rather than a silent gap. That is deliberate: it is the same
+  // question ("where did those tools go?") asked by a caller who did not name
+  // anything, and it deserves the same answer.
   if (!explicit) return tools;
 
   // A named server that is genuinely broken fails the whole listing — see the

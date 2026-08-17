@@ -234,11 +234,20 @@ takes the healthy servers named beside it down. An empty list is
 indistinguishable from a server that genuinely has none. A tool is the one
 channel every client already renders.
 
-It is bounded: it exists only while the host is unavailable, takes no arguments,
-reaches nothing but that slug's own upstream, and returns only text strad and the
-operator wrote. It is exempt from the [`tools:`
+It is bounded: it is **listed** only while the host is unavailable, takes no
+arguments, reaches nothing but that slug's own upstream, and returns only text
+strad and the operator wrote. It is exempt from the [`tools:`
 policy](/intro/concepts/#capability) on purpose — an `allow:` list written for
 the real toolset would otherwise filter away the one tool explaining the outage.
+
+Two consequences of that, both deliberate. It is **answerable** on a
+`local-tunnel` slug at any time rather than only while the host is down, which is
+what lets somebody who has just run the commands ask again and be told the
+machine is back. And because strad answers it rather than forwarding it, it
+permanently **shadows** an upstream tool of the same name on a `local-tunnel`
+slug: such a tool is unreachable through strad, and the caller gets strad's
+answer rather than an error. The name is specific enough that no MCP server on a
+laptop is likely to have chosen it, which is the whole mitigation.
 
 It does **not** make a machine being off look healthy: `/healthz`, the
 reachability monitor and the staging deploy gate probe the adapter directly and
