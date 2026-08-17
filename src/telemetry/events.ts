@@ -106,6 +106,18 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "mcp.policy_unmatched_tools": ["slug", "tools"],
     /** Secrets plumbing, where a silent failure has the same shape as this one. */
     "strad.secrets_hydrated": ["provider", "keys"],
+    /**
+     * A server persisted a rotated credential, or failed to.
+     *
+     * Both fields come from the CONFIG — `writableTarget` returns the config's
+     * own strings for exactly this reason, so a caller cannot write a slug or a
+     * variable name of its choosing into the ingestor by spelling a URL. The
+     * failure event carries no `error`: what an operator needs is that this
+     * server's next restart is now holding a dead credential, and the store
+     * client's exception can quote a rendered value.
+     */
+    "strad.param_written": ["slug", "variable"],
+    "strad.param_write_failed": ["slug", "variable"],
     /** Clean SIGTERM or an OOM kill — the difference is one line, or its absence. */
     "strad.shutdown": ["signal"],
     /**

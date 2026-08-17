@@ -33,6 +33,8 @@ import type { ConsoleUiOptions } from "../ui/index.ts";
 import { createReadinessHandler } from "./readiness.ts";
 import { createPresenceHandler } from "./presence.ts";
 import { PRESENCE_ROUTE } from "../secrets/presence.ts";
+import { createParamReadHandler, createParamWriteHandler } from "./params.ts";
+import { PARAM_ROUTE_PREFIX } from "../secrets/param-route.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -190,6 +192,24 @@ export function createApp(opts: AppOptions): Express {
         diagnosticStore: opts.diagnosticStore,
       }),
     );
+
+    // The parameter write-back pair — the FIRST bundle → core call in strad.
+    //
+    // CORE ONLY, and for the mirror image of the presence route's reason: core
+    // is the component that holds the store-admin credential, and the caller is
+    // a bundle that holds none. Authenticated with the shared
+    // STRAD_INTERNAL_TOKEN, and bounded — on every call, from the config rather
+    // than from the URL — to the names that server's own `paramsWritable:`
+    // allowlist names. See src/http/params.ts.
+    const paramsOptions = {
+      config: opts.config,
+      env,
+      secrets: opts.secrets ?? {},
+      parametersStore: opts.parametersStore,
+    };
+    const paramRoute = `${PARAM_ROUTE_PREFIX}/:slug/:variable`;
+    app.get(paramRoute, createParamReadHandler(paramsOptions));
+    app.post(paramRoute, createParamWriteHandler(paramsOptions));
 
     // Resolved ONCE and shared: /console begins the login and mints the session,
     // /ui verifies it. Two independent readings of "is Google usable?" is how

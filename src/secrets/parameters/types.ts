@@ -64,8 +64,14 @@ export interface ParameterAdmin {
   setNote(path: string, note: string): Promise<void>;
   /**
    * The reveal. Returns the current value of ANY parameter — the admin credential
-   * can read Secret Manager. This is a human, behind SSO, having clicked reveal;
-   * it is never reachable from /mcp.
+   * can read Secret Manager. It is never reachable from /mcp.
+   *
+   * Two callers, both on core. A human behind SSO having clicked reveal, and the
+   * parameter write-back route (src/http/params.ts), which reads ONE name for a
+   * booting container — a name that server's own `paramsWritable:` allowlist
+   * names, in a namespace `params: true` already bakes onto that same container.
+   * The second caller learns nothing it did not already hold; what it gains is
+   * the value as of NOW rather than as of the last render.
    */
   reveal(path: string): Promise<string>;
   destroy(path: string): Promise<void>;

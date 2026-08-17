@@ -1,3 +1,4 @@
+import { CORE_URL_ENV } from "../src/secrets/param-route.ts";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
@@ -80,8 +81,14 @@ describe("renderAppSpec: supplementary-image (onepassword)", () => {
     // The read-only lever is a literal in the same env map; it must survive
     // verbatim so downstream can ship one image as onepassword-ro / -rw.
     expect(byKey.ENABLED_TOOLGROUPS).toMatchObject({ value: "readonly" });
-    // The literal ref must NOT survive into the spec.
-    expect(bundle.envs.some((e) => e.value.includes("${"))).toBe(false);
+    // The literal ref must NOT survive into the spec. ${core.PRIVATE_URL} is
+    // excluded: it is an App Platform component binding, not a strad secret ref,
+    // and App Platform substitutes it at deploy time (see appspec.ts).
+    expect(
+      bundle.envs
+        .filter((e) => e.key !== CORE_URL_ENV)
+        .some((e) => e.value.includes("${")),
+    ).toBe(false);
 
     // And the credential must not have leaked onto the public core component.
     const core = spec.services.find((s) => s.name === "core")!;

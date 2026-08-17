@@ -114,8 +114,18 @@ Unlike Google, **X refresh tokens rotate on every use**: each token refresh retu
 
 Implications:
 
-- **Refresh-token mode** keeps the rotated token in memory for the life of the process. It is fine for local use and short-lived runs, but it is not restart-safe after the first successful refresh: a restarted process reads the originally configured `X_OAUTH_REFRESH_TOKEN`, which X has already invalidated. Recover by minting and storing a fresh refresh token, or by running static access-token mode from a central refresher that persists the rotation.
-- For always-on deployments, **static access-token mode** with a central refresher that durably stores the rotating refresh token is the robust choice. strad does not include that refresher.
+- **Refresh-token mode** keeps the rotated token in memory for the life of the process. On its own that is not restart-safe after the first successful refresh: a restarted process reads the originally configured `X_OAUTH_REFRESH_TOKEN`, which X has already invalidated.
+- **A host can make it restart-safe** by supplying `XTokenPersistence` to `createTokenProviderFromEnv` / `createXClientFromEnv` — the current token to start from, and an `onRefreshToken` hook that stores each new one. Without it the behaviour is unchanged, which is the right default for a standalone run with nowhere to store anything.
+- **On strad, that host is the bundle**, and the store is strad's parameter store. Declare the variable writable and the credential survives restarts with no re-seeding:
+
+  ```yaml
+  params: true
+  paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  ```
+
+  The container holds no cloud credential: it persists through core, which owns the store-admin key. See strad's docs, [a credential that rotates on use](https://strad.tadasant.com/operate/secrets/#paramswritable-a-credential-that-rotates-on-use).
+
+- **Static access-token mode** remains the option for a deployment with its own central refresher. strad does not include one.
 
 ## strad configuration
 

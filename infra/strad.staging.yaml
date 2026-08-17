@@ -584,6 +584,26 @@ servers:
       # strad-staging-* secrets. That project does hold per-server credentials —
       # see issue #59; the fence is separation, not harmlessness.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+      #
+      # WRITE-BACK (`paramsWritable:`), and what it does and does not grant.
+      #
+      # A server that declares `paramsWritable:` can POST a rotated credential to
+      # core, which performs the write with the ADMIN key below — the container
+      # never holds a cloud credential, which is the whole point of the split
+      # above. What a compromised bundle server can do with that is overwrite ITS
+      # OWN credential, on ITS OWN allowlist: it cannot reach another server's
+      # namespace, cannot reach the gateway namespace, and cannot read a secret
+      # value it does not already hold, because `paramsWritable` requires
+      # `params: true` and that flag bakes the whole namespace onto that same
+      # container. It is a denial of service against itself, not an escalation,
+      # and a materially smaller grant than putting a Secret Manager credential
+      # on the bundle.
+      #
+      # Note this is a DIFFERENT fence from the one above. The `zimmer` role's
+      # reach is bounded by SECRETS_NAMESPACES; a write-back's reach is bounded by
+      # the allowlist on the writing server's own config entry, and the name in
+      # the URL is checked against that config rather than trusted. See docs:
+      # /operate/secrets/.
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging"
       # REVEAL, opted in for staging and absent in prod. Two independent layers:

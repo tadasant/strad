@@ -62,6 +62,7 @@ import {
   parsePresenceRequest,
   PRESENCE_ROUTE,
 } from "./presence.js";
+import { paramStoreFor } from "./param-store.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -250,20 +251,7 @@ async function buildMounts(): Promise<Mount[]> {
     register: (s) => api.flights.registerHandlers(s),
   });
 
-  // --- X -------------------------------------------------------------------
-  // The client caches its OAuth provider for the host process, so create its
-  // factory once and register it against each fresh request server.
-  const x = (await loadFromTree("x-twitter", "shared/build/index.js")) as {
-    createMCPServer: Factory;
-  };
-  const xCreated = x.createMCPServer({ version: "0.0.1" });
-  mounts.push({
-    slug: "x-twitter",
-    tree: "x-twitter",
-    serverName: "pulsemcp-x-twitter-mcp-server",
-    capabilities: { tools: {} },
-    register: (s) => xCreated.registerHandlers(s),
-  });
+  mounts.push(await loadXTwitter());
 
   mounts.push(await loadPulseSubregistry());
 
@@ -488,6 +476,103 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * missing bucket is one server's error, not a boot failure for the other
  * fifteen — the same posture as secrets and 1Password.
  */
+/**
+ * The strad slug this mount is served under, and therefore the parameter
+ * namespace it reads and writes: `/strad/{env}/mcp/x-twitter/static/`.
+ *
+ * A CONSTANT, not `mount.slug` threaded through, because the two are the same
+ * string for a reason: a strad `supplementary-image` server's `path:` is what
+ * selects a mount in this image, and `paramsWritable:` is declared on that same
+ * config entry. If x-twitter ever grows per-slug instances (as telegram and
+ * remote-filesystem have), each instance's store handle has to be built from its
+ * own slug — the write-back is per SERVER, and two X accounts are two
+ * credentials.
+ */
+const X_SLUG = "x-twitter";
+
+/** The variable a strad config must list under `paramsWritable:` for the below. */
+const X_REFRESH_TOKEN_VAR = "X_OAUTH_REFRESH_TOKEN";
+
+/**
+ * X, with a refresh token that survives a restart.
+ *
+ * X's OAuth 2.0 refresh tokens are SINGLE-USE and ROTATING: every refresh
+ * returns a new one and kills the one just spent. Without the two calls below,
+ * this process rotates in memory, the container restarts, and it comes back
+ * holding the value the deploy baked — which the previous process already spent
+ * hours ago. Nothing looks wrong until the restart, and then every call 401s
+ * until a human re-seeds by hand.
+ *
+ * So: read the current token from core at mount time (falling back to the baked
+ * one when core cannot answer), and persist every rotation back. See
+ * param-store.ts for which of those two is allowed to fail quietly.
+ */
+async function loadXTwitter(): Promise<Mount> {
+  const x = (await loadFromTree("x-twitter", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+    createXClientFromEnv: (
+      env: NodeJS.ProcessEnv,
+      persistence: {
+        refreshToken?: string;
+        onRefreshToken?: (token: string) => void | Promise<void>;
+      },
+    ) => unknown;
+  };
+  const created = x.createMCPServer({ version: VERSION });
+  const params = paramStoreFor(X_SLUG);
+
+  // AT MOUNT TIME, once. Not per request: this read is what the process starts
+  // from, and re-reading it later would fight the in-memory rotation rather than
+  // follow it.
+  const stored = await params.get(X_REFRESH_TOKEN_VAR);
+
+  const mount: Mount = {
+    slug: X_SLUG,
+    tree: "x-twitter",
+    serverName: "pulsemcp-x-twitter-mcp-server",
+    capabilities: { tools: {} },
+    degraded: null,
+    // The client caches its OAuth provider for the host process, so the factory
+    // is built once here and memoised inside registerHandlers. Building it
+    // LAZILY matters: `createXClientFromEnv` throws when no X credential is
+    // configured at all, and a throw at boot would take all eighteen mounts down
+    // over one unconfigured server.
+    register: (s) =>
+      created.registerHandlers(s, () =>
+        x.createXClientFromEnv(process.env, {
+          refreshToken: stored,
+          onRefreshToken: async (token: string) => {
+            try {
+              await params.put(X_REFRESH_TOKEN_VAR, token);
+              if (mount.degraded) {
+                mount.degraded = null;
+                log(
+                  `${X_SLUG}: refresh-token persistence recovered (mount is no longer degraded)`,
+                );
+              }
+            } catch (err) {
+              // LOUD, AND STILL SERVING. The token in memory is good for the
+              // life of this process, so refusing to serve would be a
+              // self-inflicted outage — but the NEXT restart now comes back
+              // holding a credential X has already invalidated, and that is
+              // exactly the thing nothing would otherwise notice until it broke.
+              mount.degraded =
+                `${X_REFRESH_TOKEN_VAR} could not be persisted: ${errMessage(err)} ` +
+                `— this process is fine, the next restart will not be`;
+              logError(
+                X_SLUG,
+                `${mount.degraded}. Check that the strad config lists ` +
+                  `${X_REFRESH_TOKEN_VAR} under paramsWritable: for this server, ` +
+                  `and that core can reach its parameter store.`,
+              );
+            }
+          },
+        }),
+      ),
+  };
+  return mount;
+}
+
 const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
 
 /**

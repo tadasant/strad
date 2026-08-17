@@ -587,14 +587,14 @@ secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-
 into is decided by _who reads it_, and that is a property of the name rather than
 of the store:
 
-| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                  |
-| A `params: true` server's managed parameters                                                                                                     | on the next **deploy**   | Resolved at render time onto that server's own component.                                                                                                  |
-| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                  |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree. |
-| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                   |
-| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                      |
+| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                      |
+| A `params: true` server's managed parameters                                                                                                     | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list, in which case the container re-reads it at **boot**. |
+| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                      |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                     |
+| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                       |
+| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                          |
 
 So `ttlSeconds` is the answer for **request-path references and nothing else** —
 plus one thing that is not a rotation at all: it also bounds how stale the
@@ -635,7 +635,9 @@ nor the credential to fetch it:
   it refused the internal token.
 
 A supplementary server that wants genuinely live rotation should read the store
-itself, the way `servers/secrets` does.
+itself, the way `servers/secrets` does — or, for the specific case of a
+credential that rotates on use, declare it under
+[`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use).
 
 A server's `consoleEnv:` is **never** hydrated. It carries the console's
 store-_admin_ credential, which can write and reveal, and two things depend on it
@@ -643,6 +645,121 @@ staying out of the store: hydration runs in every process running the strad
 image, bundles included, and filing an admin credential inside the store would
 let the weaker resolver credential read the stronger one. It stays deploy-time
 baked, onto core alone.
+
+## `paramsWritable:` — a credential that rotates on use
+
+Some credentials are invalidated by being used. X's OAuth 2.0 refresh tokens are
+the shape: every refresh returns a brand-new refresh token and kills the one you
+just spent. Nothing above covers that, and the gap is worse than it looks:
+
+1. The process refreshes, gets a new token, holds it in memory. Everything works.
+2. The container restarts — a deploy, a platform move, an OOM.
+3. It comes back holding the value the last render baked, which the previous
+   process spent hours ago. Every call 401s, forever, until a human re-seeds by
+   hand.
+
+`paramsWritable:` closes that. It is an allowlist, per server, of variables that
+server may write back to its own namespace:
+
+```yaml
+- slug: x-twitter
+  kind: supplementary-image
+  params: true
+  paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+```
+
+It requires `params: true` — that flag is what makes
+`/strad/{env}/mcp/{slug}/static/` this server's environment in the first place,
+and writing a namespace nothing injects would be a credential going nowhere. Each
+entry is a **variable name**, never a path, so there is no spelling of one that
+addresses another server's namespace or the gateway's.
+
+### The write goes through core, not through a new credential
+
+The container answering `/mcp` holds no cloud credential, and that is the point
+of the whole [three-role split](#gcp-parameter-store--runtime-resolution).
+Handing it `secretmanager.versions.add`, even scoped to one secret, would add a
+fourth credential class to exactly the box the split exists to keep weak.
+
+So the server calls **core**, which already holds the store-admin credential and
+already owns a write path that does the hard parts correctly — the base64url
+envelope and the per-parameter `secretAccessor` grant. Two routes, both
+authenticated with the shared `STRAD_INTERNAL_TOKEN`:
+
+```
+POST /_strad/params/{slug}/{VARIABLE}   body: { value }   -> rotate
+GET  /_strad/params/{slug}/{VARIABLE}                     -> current value
+```
+
+No new credential, no new IAM, no new encoding path.
+
+This is the **first bundle → core call** in strad; every other authenticated call
+runs the other way. So every non-core component now gets `STRAD_CORE_URL`, bound
+to `${core.PRIVATE_URL}` by the renderer, alongside the `STRAD_BUNDLE_URL_*`
+bindings core has always had for the reverse direction.
+
+The name in the URL is **not trusted**. Core looks the `{slug}`/`{VARIABLE}` pair
+up in that server's own `paramsWritable:` list and builds the store path out of
+the config's strings; the request's bytes are used for one thing, an equality
+test. Anything that does not match — an unknown slug, a disabled server, a
+variable that is not on the list — is the same 403, so the route cannot be used
+to enumerate the config either.
+
+### The boot read is not optional
+
+Without the `GET` there is a window that silently bricks the credential:
+
+1. Container A refreshes at T, persists R2, holds R2.
+2. A deploy starts at T+1; `render-spec` reads R2 and bakes it.
+3. Container A refreshes again at T+1.5 and persists R3. R2 is now dead.
+4. Container B boots with the baked R2 and 401s on its first call.
+
+Reading the writable names from core **at boot** rather than trusting the baked
+env removes it. The baked value stays the fallback: if core is unreachable, the
+parameter has never been seeded, or the answer is a shape the caller does not
+understand, the container uses what the deploy gave it. A core outage degrades
+this; it does not break it.
+
+### A failed write is loud
+
+The other direction is the opposite. A `put()` that fails means the **next
+restart** comes back holding a dead credential, while everything looks fine right
+now — the worst failure available here, because nothing points at when it broke.
+So it is never swallowed: the mount is marked **degraded** in the bundle's
+`/healthz`, the reason is logged at error, and the server **keeps serving**,
+because the in-memory token is still good for the life of this process.
+
+### One writer, enforced at render
+
+A credential that is single-use has exactly one valid value at a time. Two
+replicas do not merely race to write it — each refresh **invalidates the other's
+token at the upstream**, and no retry recovers it. `renderAppSpec` therefore
+refuses to render a component with `instance_count > 1` that hosts a server with
+a non-empty `paramsWritable:`.
+
+That refusal is load-bearing: it is what makes a plain write correct instead of
+needing a compare-and-set on the parameter version. If a `paramsWritable`
+component ever has to scale out, the CAS comes first and the render check is
+relaxed after, not the other way round.
+
+### What this grants, stated plainly
+
+A compromised bundle server can **overwrite its own credential** — the names on
+its own allowlist, and nothing else. It cannot read or write another server's, it
+cannot reach any parameter outside its `paramsWritable:` list, and it cannot read
+a secret value it does not already hold: `paramsWritable` requires `params: true`,
+which bakes that whole namespace onto that same container, so the `GET` returns
+something the caller already has. What it adds is freshness.
+
+That is a denial of service against itself, not an escalation, and it is a
+materially smaller grant than putting a Secret Manager credential on the bundle.
+
+### What it does not do
+
+It is `supplementary-image` only. A `builtin` on the core bundle runs inside
+strad's own process and has the resolver in scope already; a builtin on another
+bundle has no consumer for this today, and an unused capability on a write path
+is not a thing to ship speculatively.
 
 ## Migrating
 

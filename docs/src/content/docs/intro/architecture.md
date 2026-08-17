@@ -53,6 +53,13 @@ network and is never reachable from the internet. The core reaches a bundle at
 `${bundle.PRIVATE_URL}`, which resolves to `http://bundle-name:8080` — a private,
 in-VPC hop (~4ms) with no public-edge hairpin.
 
+Traffic runs core → bundle with one exception. A server that declares
+[`paramsWritable:`](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+calls **back** to core to persist a credential that rotated under it, over the
+same private network and the same `STRAD_INTERNAL_TOKEN`, because core is the
+component that holds the store-admin credential and the bundle deliberately holds
+none. Every non-core component gets `STRAD_CORE_URL` for it.
+
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
 `ghcr.io/tadasant/strad-bundle` container that mounts eighteen MCP servers in one

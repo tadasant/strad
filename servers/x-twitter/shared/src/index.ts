@@ -25,6 +25,7 @@ export {
   type ITokenProvider,
   type TokenResponse,
   type XClientEnv,
+  type XTokenPersistence,
 } from "./x-client/index.js";
 
 // Logging

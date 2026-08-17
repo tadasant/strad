@@ -1,3 +1,4 @@
+import { CORE_URL_ENV } from "../src/secrets/param-route.ts";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
@@ -107,11 +108,21 @@ describe("renderAppSpec: browser supplementary images (fetchpet + pointsyeah)", 
       type: "SECRET",
     });
 
-    // No literal secret ref survives into a bundle's env. (The core legitimately
-    // carries ${bundle-*.PRIVATE_URL} refs, which App Platform substitutes — so
-    // this check is scoped to the credential-bearing bundle components.)
+    // No literal secret ref survives into a bundle's env.
+    //
+    // APP PLATFORM COMPONENT BINDINGS ARE NOT SECRET REFS and both directions
+    // of them are legitimate: core carries ${bundle-*.PRIVATE_URL} to proxy
+    // /mcp, and every non-core component carries ${core.PRIVATE_URL} for the
+    // parameter write-back route. App Platform substitutes both at deploy time.
+    // What must never survive is a strad `${SECRET}` the RENDERER was supposed
+    // to resolve, so the check excludes the one key that is a binding by
+    // construction.
     for (const bundle of [fetchpet, pointsyeah]) {
-      expect(bundle.envs.some((e) => e.value.includes("${"))).toBe(false);
+      expect(
+        bundle.envs
+          .filter((e) => e.key !== CORE_URL_ENV)
+          .some((e) => e.value.includes("${")),
+      ).toBe(false);
     }
     expect(
       fetchpet.envs.some((e) => e.key === "POINTSYEAH_REFRESH_TOKEN"),

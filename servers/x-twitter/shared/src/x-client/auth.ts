@@ -106,6 +106,21 @@ export interface RefreshTokenProviderConfig {
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
   tokenUrl?: string;
+  /**
+   * Called with the NEW refresh token every time X rotates one, before
+   * `fetchToken()` returns.
+   *
+   * This is the persistence hook the `refreshToken` getter was always waiting
+   * for. A host that can store the value durably (strad's bundle host writes it
+   * back to the parameter store) supplies this; a host that cannot omits it and
+   * keeps today's in-memory-only behaviour.
+   *
+   * It is AWAITED, which is deliberate: two refreshes cannot then interleave
+   * their writes, and the second one always persists after the first. It is also
+   * expected to REPORT ITS OWN FAILURES — see the call site for why a rejection
+   * cannot be allowed to fail the refresh.
+   */
+  onRefreshToken?: (token: string) => void | Promise<void>;
 }
 
 /**
@@ -119,6 +134,7 @@ export class RefreshTokenProvider extends BaseTokenProvider {
   private currentRefreshToken: string;
   private readonly fetchImpl: typeof fetch;
   private readonly tokenUrl: string;
+  private readonly onRefreshToken?: (token: string) => void | Promise<void>;
 
   constructor(config: RefreshTokenProviderConfig) {
     super();
@@ -127,6 +143,7 @@ export class RefreshTokenProvider extends BaseTokenProvider {
     this.currentRefreshToken = config.refreshToken;
     this.fetchImpl = config.fetchImpl ?? fetch;
     this.tokenUrl = config.tokenUrl ?? X_TOKEN_URL;
+    this.onRefreshToken = config.onRefreshToken;
   }
 
   /**
@@ -179,9 +196,22 @@ export class RefreshTokenProvider extends BaseTokenProvider {
     }
 
     // X rotates the refresh token on every refresh — retain the new one so the
-    // next refresh (or a persistence hook) uses the valid token.
+    // next refresh uses the valid token.
     if (parsed.refresh_token) {
       this.currentRefreshToken = parsed.refresh_token;
+      if (this.onRefreshToken) {
+        try {
+          await this.onRefreshToken(parsed.refresh_token);
+        } catch {
+          // SWALLOWED HERE, AND ONLY HERE. The token is already rotated in
+          // memory and is valid for the life of this process, so failing the
+          // refresh would turn "the next restart is dead" into "this call is
+          // dead too" — strictly worse, and it would take down a server that is
+          // working. The hook owns reporting its own failure: strad's bundle
+          // host marks the mount degraded and logs at error, which is what
+          // makes the loss visible on /healthz rather than only at the restart.
+        }
+      }
     }
 
     return parsed;

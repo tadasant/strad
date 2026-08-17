@@ -250,6 +250,25 @@ servers:
   # X is deliberately read-only by default. Add create_bookmark and
   # remove_bookmark to this allow-list only when private bookmark changes are
   # intended. OAuth credentials come from an X Developer Console app.
+  #
+  # TWO WAYS TO CREDENTIAL THIS SERVER, and the second is the durable one.
+  #
+  # As written below it runs in STATIC-ACCESS-TOKEN mode: something outside strad
+  # mints a short-lived access token and this deployment injects it. Simple, and
+  # it goes stale between deploys — a supplementary image's env: is baked at
+  # render time.
+  #
+  # The alternative is REFRESH-TOKEN mode, seeded once in /ui/secrets under
+  # /strad/{env}/mcp/x-twitter/static/ and left alone:
+  #
+  #     params: true
+  #     paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  #
+  # X's refresh tokens are SINGLE-USE: every refresh mints a new one and kills the
+  # previous. `paramsWritable` is what lets the server persist each new value back
+  # through core, and re-read the live one at boot instead of the value the last
+  # deploy baked — which is what makes "set it once and it keeps working" true
+  # across restarts. See docs: /operate/secrets/.
   - slug: x-twitter
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -373,6 +392,17 @@ servers:
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
       # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+      # WRITE-BACK, and what it does and does not grant. A server that declares
+      # `paramsWritable:` can POST a rotated credential to core, which performs
+      # the write with the ADMIN key below — the container never holds one. What
+      # a compromised bundle server can do with that is overwrite ITS OWN
+      # credential, on ITS OWN allowlist: it cannot reach another server's
+      # namespace, cannot reach the gateway namespace, and cannot read a secret
+      # value it does not already hold (paramsWritable requires params: true,
+      # which bakes that whole namespace onto that same container). That is a
+      # denial of service against itself, not an escalation, and it is a
+      # materially smaller grant than putting a Secret Manager credential on the
+      # bundle. See docs: /operate/secrets/.
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       # A LIST, and the console's may be wider than the container's above. The
