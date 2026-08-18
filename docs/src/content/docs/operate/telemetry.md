@@ -265,17 +265,18 @@ reads. The boundary held perfectly while the deployment was silently broken.
 So `src/telemetry/events.ts` carries an **allowlist**: every event that may leave
 the process, and for each one the exact fields that may go with it.
 
-| Event                                                  | Why it is exported                                 |
-| ------------------------------------------------------ | -------------------------------------------------- |
-| `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                  |
-| `mcp.local_machine_offline`                            | a `local-tunnel`'s machine is off — not a fault    |
-| `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                    |
-| `strad.tool_surface`                                   | the fleet summary, on change                       |
-| `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled |
-| `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset       |
-| `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing      |
-| `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved   |
-| `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill    |
+| Event                                                  | Why it is exported                                     |
+| ------------------------------------------------------ | ------------------------------------------------------ |
+| `mcp.list_tools_failed` / `mcp.list_resources_failed`  | a mounted slug is serving nothing                      |
+| `mcp.local_machine_offline`                            | a `local-tunnel` host is off or refusing — not a fault |
+| `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                        |
+| `strad.tool_surface_offline`                           | a local-tunnel's machine is off — not degraded         |
+| `strad.tool_surface`                                   | the fleet summary, on change                           |
+| `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled     |
+| `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset           |
+| `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing          |
+| `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved       |
+| `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill        |
 
 Three rules make it safe, and they are worth stating because the boundary is the
 reason this exists at all rather than a `pino` transport:
@@ -357,12 +358,11 @@ laptop somebody had closed:
   advertised unconditionally, so an offline machine throws there on every session
   that lists them, whether or not anyone asked for that slug.
 
-A client that names the slug still gets an **error** for the listing — the
-request genuinely could not be served, and `200 {"tools":[]}` would read as "this
-server has no tools". Failing a request and declaring a strad fault are different
-claims, and only the first one is true. `explicit` on the record says which
-happened: `true` when a client asked for the slug by name, `false` when it simply
-dropped out of a fleet-wide listing.
+A client that names the slug gets a **successful** listing carrying one tool,
+`<slug>__troubleshoot_host` — the slug stays connectable and says what to run on
+the machine, rather than returning `200 {"tools":[]}`, which would read as "this
+server has no tools". `explicit` on the record says who was asking: `true` when a
+client named the slug, `false` when it was a fleet-wide listing.
 
 Records are batched, not sent per-record: these are diagnostics, and a synchronous
 round trip on the failure path would add latency to exactly the requests already

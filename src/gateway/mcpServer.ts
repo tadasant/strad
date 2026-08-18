@@ -20,8 +20,23 @@ import {
   resultShape,
   tracer,
 } from "../telemetry/index.ts";
-import { LocalMachineOfflineError } from "./adapters/http.ts";
-import { denamespace, namespaced } from "./adapters/types.ts";
+import {
+  LocalHostUnavailableError,
+  LocalMachineOfflineError,
+} from "./adapters/http.ts";
+import {
+  denamespace,
+  namespaced,
+  type CallToolResult,
+  type ServerAdapter,
+} from "./adapters/types.ts";
+import {
+  recoveredResult,
+  troubleshootResult,
+  troubleshootTool,
+  undiagnosedResult,
+  TROUBLESHOOT_TOOL,
+} from "./troubleshoot.ts";
 import type { ClientCapabilities } from "./clientCapabilities.ts";
 import type { Mode, Registry } from "./registry.ts";
 import {
@@ -132,11 +147,43 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       );
     }
 
+    const adapter = registry.get(parsed.slug);
+    if (!adapter) throw new Error(`server "${parsed.slug}" is not mounted`);
+
+    // strad's OWN tool on a local-tunnel slug, offered while that slug's machine
+    // is not answering (see gateway/troubleshoot.ts). It is answered here rather
+    // than forwarded, because there is nothing to forward it to.
+    //
+    // It sits ahead of the capability check on purpose, and for the same reason
+    // the listing does not filter it: `tools:` describes which of the UPSTREAM's
+    // tools this slug may serve, and this is not one of them. A slug with an
+    // `allow:` list would otherwise offer a tool in its listing and refuse it on
+    // call, which is the worst of both. It is safe to exempt because it takes no
+    // arguments, reaches nothing but this slug's own upstream, and returns text
+    // strad and the operator wrote.
+    //
+    // NOTE the condition: it is answerable on a local-tunnel slug WHENEVER, not
+    // only while that slug's host is down — the listing decides when to OFFER
+    // it, and this decides who answers it. Two consequences, both wanted. A
+    // caller who has just run the commands can ask again and be told the machine
+    // is back, without a listing round trip. And the answer never depends on
+    // state carried between two stateless requests, which this endpoint has no
+    // way to carry anyway.
+    //
+    // It therefore SHADOWS an upstream tool of this name on a local-tunnel slug,
+    // permanently. See the note on TROUBLESHOOT_TOOL, HACKS.md #60, and the
+    // limitations page.
+    const isTroubleshoot =
+      parsed.tool === TROUBLESHOOT_TOOL && adapter.host !== undefined;
+
     // CAPABILITY. The upstream container holds every tool the server has —
     // read-only is this check, and nothing else. It runs BEFORE the adapter, so
     // a withheld tool never reaches the upstream at all: no API call, no side
     // effect, no "we only sent the write to Gmail, we didn't mean it".
-    if (!toolAllowed(policies.get(parsed.slug), parsed.tool)) {
+    if (
+      !isTroubleshoot &&
+      !toolAllowed(policies.get(parsed.slug), parsed.tool)
+    ) {
       log({
         evt: "mcp.tool_denied",
         principal: principalId,
@@ -149,9 +196,6 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
           `this server's capability policy withholds it.`,
       );
     }
-
-    const adapter = registry.get(parsed.slug);
-    if (!adapter) throw new Error(`server "${parsed.slug}" is not mounted`);
 
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
 
@@ -178,7 +222,10 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     try {
       const result = await context.with(
         trace.setSpan(context.active(), callSpan),
-        () => adapter.callTool(parsed.tool, args, { clientCapabilities }),
+        () =>
+          isTroubleshoot
+            ? troubleshoot(adapter, policies.get(parsed.slug))
+            : adapter.callTool(parsed.tool, args, { clientCapabilities }),
       );
 
       const shape = resultShape(result);
@@ -238,6 +285,80 @@ function elapsedSeconds(startedAt: bigint): number {
 }
 
 /**
+ * How long `troubleshoot_host` will wait for the machine before answering.
+ *
+ * The adapter's own bounds are wrong for this one question. `connectTimeoutMs`
+ * (5s) covers only the handshake, and the REQUEST hop that follows it inherits
+ * `timeoutMs` — two minutes by default, because a tool driving a browser on
+ * somebody's desktop is legitimately slow. A half-open host, which accepts a
+ * connection and then never answers, would therefore hang this tool for the
+ * full two minutes. That is absurd for a tool whose entire job is a fast
+ * re-check, and it is longer than most clients will wait, so the answer would
+ * be lost anyway.
+ */
+const TROUBLESHOOT_PROBE_MS = 10_000;
+
+/**
+ * Answer `troubleshoot_host`: re-check the machine, then say what to do.
+ *
+ * It PROBES rather than replaying whatever the listing found, because the gap
+ * between the two is exactly when somebody is running the commands. Being told
+ * "it is back, list again" the moment it is back is most of this tool's value;
+ * a cached verdict would tell them it is still down while they watch it come up.
+ *
+ * Never throws. Everything it can find out is an answer worth returning, and a
+ * tool whose job is to explain a failure has no business failing.
+ */
+async function troubleshoot(
+  adapter: ServerAdapter,
+  policy: ReturnType<ToolPolicies["get"]>,
+): Promise<CallToolResult> {
+  const host = adapter.host!;
+  try {
+    const tools = await withDeadline(
+      adapter.listTools(),
+      TROUBLESHOOT_PROBE_MS,
+    );
+    // The count this slug's clients would actually see. The raw upstream total
+    // would answer a question nobody asked — how much an allow-list withholds.
+    return recoveredResult(
+      host,
+      tools.filter((t) => toolAllowed(policy, t.name)).length,
+    );
+  } catch (err) {
+    if (err instanceof LocalHostUnavailableError) {
+      return troubleshootResult(host, err.state);
+    }
+    // The machine answered and something else is wrong — including our own
+    // deadline above, which only fires on a host that accepted a connection and
+    // then went quiet. Saying "it is offline" here would send its owner to
+    // restart a tunnel that is working fine.
+    return undiagnosedResult(host);
+  }
+}
+
+/**
+ * A deadline the adapter does not impose on itself.
+ *
+ * The timer is unref'd: a probe in flight must never be the reason the process
+ * stays alive.
+ */
+function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(new Error(`the machine did not answer within ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      timer.unref?.();
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Merge the selected servers' tools, namespaced, and filtered by capability.
  *
  * The upstream hands back everything it has — a single container now serves the
@@ -273,24 +394,41 @@ function elapsedSeconds(startedAt: bigint): number {
  * the multi-slug case is rare: the console hands out one `?servers=<slug>` per
  * server (src/ui/landing.ts).
  *
- * ## The one exception: a `local-tunnel` whose machine is off
+ * ## The one exception: a `local-tunnel` whose machine is not answering
  *
  * The rule above exists because a silently smaller toolset HIDES a fault. For a
  * `local-tunnel` there is no fault to hide: the server is a laptop, the laptop
  * is off, and that is the advertised behaviour of the kind rather than a
- * condition anyone needs to discover. So an offline machine does not take its
- * co-selected servers down — `?servers=anki,slack` with the laptop asleep is a
- * working Slack and no Anki.
+ * condition anyone needs to discover.
  *
- * It is still a failure when it is the ONLY thing selected, and for the same
- * reason the rule exists at all: `?servers=anki` returning `{"tools":[]}` reads
- * as "Anki offers no tools", which is both false and unactionable. Then the
- * client gets an error saying the machine is not reachable — strad's own words,
- * so relaying them leaks no upstream prose.
+ * So it neither fails the listing nor vanishes from it. The slug KEEPS ITS PLACE
+ * and contributes one tool — `troubleshoot_host`, which says which machine is
+ * down and what to run on it (gateway/troubleshoot.ts). `?servers=anki,slack`
+ * with the laptop asleep is a working Slack, no Anki tools, and one tool
+ * explaining the gap; `?servers=anki` alone is that one tool rather than an
+ * error, which is the case a human actually hits — the console hands out one
+ * `?servers=<slug>` per server.
  *
- * NOTE the boundary. This fires when `listTools()` THROWS. A named server that
- * answers with an empty list is still an empty list — that is a server with no
- * tools, and it is `ToolSurfaceMonitor`'s job to notice, not this one's.
+ * That covers what the old shape could not. A shorter list said nothing, so
+ * "Anki is off" and "Anki has no tools" were indistinguishable from outside; and
+ * an error on the single-slug case gave a client no way forward at all. Both are
+ * now a tool that anything speaking MCP can already read.
+ *
+ * NOTE the boundary. This fires when `listTools()` THROWS a
+ * `LocalHostUnavailableError` — a machine that is off, or one that refused
+ * strad's credentials. Any OTHER failure from a local-tunnel (a 404 on a wrong
+ * path, a 500) is an ordinary broken upstream and fails a named listing like
+ * anything else: nobody at that machine can fix it, so sending them there would
+ * be a lie. A named server that ANSWERS with an empty list is still an empty
+ * list — that is a server with no tools, and it is `ToolSurfaceMonitor`'s job to
+ * notice, not this one's.
+ *
+ * NOTE ALSO how this reads to an OPERATOR, which is a separate question:
+ * `probeToolSurfaces` calls the adapter directly and reports a switched-off
+ * machine as `offline`, out of `/healthz`'s `degraded` list, because the slug is
+ * still connectable and there is nothing to go and fix. A host that REFUSES, a
+ * 404 and a 500 all stay `unreachable` and stay degraded. See
+ * gateway/reachability.ts.
  */
 export async function listToolsFor(
   selected: string[],
@@ -325,15 +463,25 @@ export async function listToolsFor(
             .map((t) => ({ ...t, name: namespaced(slug, t.name) })),
         };
       } catch (err) {
-        const offline = err instanceof LocalMachineOfflineError;
-        // The distinction is made HERE, at the emit, and not two lines later
-        // for the return value only. `_failed` is a fault: the exporter ships
-        // it at ERROR severity and an alert rule keyed on `severity >= ERROR`
-        // pages on it. A laptop being off is not a fault — it is the advertised
+        // The distinction is made HERE, at the emit, and not later for the
+        // return value only. `_failed` is a fault: the exporter ships it at
+        // ERROR severity and an alert rule keyed on `severity >= ERROR` pages
+        // on it. A laptop being off is not a fault — it is the advertised
         // behaviour of the kind — and reporting it as one paged a production
-        // channel over a machine somebody had switched off. So an offline
-        // machine gets the event that already exists to say exactly that, at
-        // Info, and `mcp.list_tools_failed` keeps meaning what it says.
+        // channel over a machine somebody had switched off. So an unavailable
+        // host gets the event that already exists to say exactly that, at Info,
+        // and `mcp.list_tools_failed` keeps meaning what it says.
+        const unavailable =
+          adapter.host && err instanceof LocalHostUnavailableError ? err : null;
+        // TWO decisions, and they are not the same predicate. The DEGRADED
+        // SURFACE is offered for either shape of unavailable host, because both
+        // have a machine somebody owns and a remedy to hand them. The EVENT is
+        // narrower: only a machine that is off is exempt from being a fault. A
+        // host that REFUSES is answering, a credential has gone stale, and it
+        // will not clear until somebody rotates it — so it keeps the
+        // ERROR-severity `_failed` record and keeps paging. `listResourcesFor`
+        // below draws the same line.
+        const offline = err instanceof LocalMachineOfflineError;
         event(
           offline
             ? {
@@ -341,6 +489,7 @@ export async function listToolsFor(
                 slug,
                 listed: false,
                 explicit: Boolean(explicit),
+                state: err.state,
                 error: err.message,
               }
             : {
@@ -351,7 +500,27 @@ export async function listToolsFor(
                 error: err instanceof Error ? err.message : String(err),
               },
         );
-        return { ok: false, slug, offline, err };
+
+        // THE DEGRADED SURFACE. A local-tunnel whose machine is not answering
+        // keeps its place in the listing and offers one tool: how to bring that
+        // machine back. See gateway/troubleshoot.ts for why a tool rather than
+        // an empty list, a `_meta` field or an error.
+        //
+        // NOT filtered by the `tools:` policy, deliberately. That policy is a
+        // statement about the UPSTREAM's capabilities — which tools of its own
+        // this slug may serve — and this tool is not one of them; it is strad's,
+        // and it is the only thing standing between a caller and an unexplained
+        // gap. An `allow:` list written for the real toolset would otherwise
+        // filter it away and reinstate exactly the silence this replaces.
+        if (unavailable) {
+          const tool = troubleshootTool(adapter.host!, unavailable.state);
+          return {
+            ok: true,
+            tools: [{ ...tool, name: namespaced(slug, tool.name) }],
+          };
+        }
+
+        return { ok: false, slug, err };
       }
     }),
   );
@@ -360,72 +529,41 @@ export async function listToolsFor(
   const tools = lists.flatMap((l) => (l.ok ? l.tools : []));
 
   // Not a named selection: one sick server contributes nothing and the rest of
-  // the fleet is unaffected. Unchanged, and it covers an offline machine too.
+  // the fleet is unaffected. A local-tunnel host that is not answering is the
+  // exception here too — the substitution above runs before this line, so an
+  // "everything I'm entitled to" listing carries one troubleshooting tool per
+  // sleeping laptop rather than a silent gap. That is deliberate: it is the same
+  // question ("where did those tools go?") asked by a caller who did not name
+  // anything, and it deserves the same answer.
   if (!explicit) return tools;
 
-  // A named server that is genuinely broken still fails the whole listing —
-  // see the header. An OFFLINE local-tunnel is the exception, and only the
-  // exception: it is excluded here and reconsidered below.
-  const broken = failures.filter((l) => !l.offline);
-  if (broken.length > 0) {
+  // A named server that is genuinely broken fails the whole listing — see the
+  // header. An unavailable local-tunnel host never reaches here: it was turned
+  // into a troubleshooting tool above, so it is a successful listing with one
+  // unusual tool in it rather than a failure to arbitrate.
+  if (failures.length > 0) {
     // EVERY broken slug, not just the one thrown about. `onUnlistable` drives a
     // per-slug metric, and reporting only the first would make the second dead
     // bundle in a two-bundle outage invisible to the counter that exists to
     // find it.
-    for (const f of broken) explicit.onUnlistable(f.slug);
+    for (const f of failures) explicit.onUnlistable(f.slug);
     // The upstream's own message is NOT relayed. It is arbitrary text from
     // someone else's server — the one that motivated this branch was a
     // full HTML error page — and it would land in a client's error
     // surface. The slug is ours and is the actionable half.
     throw new McpError(
       ErrorCode.InternalError,
-      `server "${broken[0]!.slug}" was requested by name but its upstream could not be listed, ` +
+      `server "${failures[0]!.slug}" was requested by name but its upstream could not be listed, ` +
         `so it is serving no tools. This is a failure, not an empty toolset.`,
     );
   }
 
-  // Offline machines, and NOTHING ELSE CAME BACK.
-  //
-  // The test is the resulting toolset rather than a count of failures, because
-  // the thing that must not happen is a caller receiving `{"tools":[]}` with no
-  // idea a machine was skipped — and that is reached both by naming one offline
-  // laptop and by naming it beside a server that legitimately serves nothing.
-  // Counting failures against `lists.length` misses the second, and misses a
-  // slug the registry never mounted, which contributes a successful empty
-  // listing and silently pads the denominator.
-  if (failures.length > 0 && tools.length === 0) {
-    for (const f of failures) explicit.onUnlistable(f.slug);
-    // Relayed VERBATIM, unlike the branch above, because this message is
-    // strad's own: LocalMachineOfflineError builds it from a slug and a
-    // duration and never quotes the upstream.
-    const first = failures[0]!;
-    throw new McpError(
-      ErrorCode.InternalError,
-      first.err instanceof LocalMachineOfflineError
-        ? first.err.message
-        : `the machine hosting "${first.slug}" is not reachable.`,
-    );
-  }
-
-  // At least one named server answered with tools. The offline machines drop
-  // out of the toolset rather than taking the healthy ones down with them —
-  // which is the whole reason this kind exists: selecting a laptop-backed
-  // server alongside a hosted one must not make the hosted one unusable when
-  // the laptop sleeps. See HACKS.md #60 for what this costs.
-  //
-  // Nothing is emitted here: the catch above already reported every one of
-  // these as `mcp.local_machine_offline`, on every path rather than only this
-  // one. A second emission wrote the same fact twice to the stream an operator
-  // reads — and only there, since the export throttles this event per slug, so
-  // the duplicate was invisible in the ingestor and any test that asserted on
-  // exported records would have passed with it still in place.
   return tools;
 }
 
 /** One selected server's contribution to a listing, or why it has none. */
 type Listing =
-  | { ok: true; tools: Tool[] }
-  | { ok: false; slug: string; offline: boolean; err: unknown };
+  { ok: true; tools: Tool[] } | { ok: false; slug: string; err: unknown };
 
 /**
  * Merge the selected servers' resources.
@@ -453,11 +591,15 @@ async function listResourcesFor(
         return await adapter.listResources();
       } catch (err) {
         event(
+          // `LocalMachineOfflineError` and NOT the `LocalHostUnavailableError`
+          // base: a host that REFUSES is answering, and a stale credential is a
+          // fault that should keep paging. Only a machine that is off is exempt.
           err instanceof LocalMachineOfflineError
             ? {
                 evt: "mcp.local_machine_offline",
                 slug,
                 listed: false,
+                state: err.state,
                 error: err.message,
               }
             : {

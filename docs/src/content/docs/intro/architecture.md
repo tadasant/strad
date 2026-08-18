@@ -181,11 +181,19 @@ A failing upstream is handled differently depending on **who chose that server**
 There is exactly one exception, and it is `local-tunnel`. The rule above exists
 because a silently smaller toolset **hides a fault**; for a server on a machine
 you own there is no fault to hide, since being offline is the advertised
-behaviour of the kind. So an offline machine named alongside others contributes
-zero tools instead of failing the request — `?servers=anki,slack` with the
-laptop asleep is a working Slack and no Anki. Named **alone** it still fails,
-for the same reason the rule exists: `200 {"tools":[]}` would read as "this
-server has no tools".
+behaviour of the kind. So a machine that is not answering neither fails the
+listing nor vanishes from it: the slug keeps its place and contributes **one
+tool**, `<slug>__troubleshoot_host`, which names the machine and the commands to
+bring it back. `?servers=anki,slack` with the laptop asleep is a working Slack
+plus that tool; `?servers=anki` alone is that tool rather than an error, which
+matters because the console hands out one `?servers=<slug>` per server. See
+[the kind's page](/servers/interface/#2-local-tunnel).
+
+Two failures qualify — a machine that is **offline** and one that **refuses**
+(`401`/`403`, a credential gone stale) — and the tool tells them apart. Anything
+else from a local-tunnel, a `404` on a wrong path or a `500`, is an ordinary
+broken upstream and fails a named listing like any other kind. The exception is
+about machines somebody can go and switch on, not about the kind in general.
 
 Either way it reports as `mcp.local_machine_offline` rather than
 `mcp.list_tools_failed` — an Info-severity record, because nothing failed — and
@@ -202,11 +210,15 @@ empty list is a server with no tools, and no amount of error handling can tell
 those apart from the outside — which is why core also watches from the inside. A
 background **tool-surface monitor** (`src/gateway/reachability.ts`) probes every
 mounted slug on an interval and classifies it `ok`, `empty` (answered, offered
-nothing) or `unreachable` (refused, 404'd or timed out), tagged with the server
+nothing), `unreachable` (refused, 404'd or timed out) or `offline` — the last
+being a `local-tunnel` whose machine is simply switched off, which is that
+kind's normal state, stays out of the `degraded` list and pages nobody. It is
+tagged with the server
 `kind` so a third-party remote — or a laptop that is simply switched off — is
 not confused with a component we deploy. It
-logs `strad.tool_surface_degraded` when a slug's state changes, publishes the
-current answer on
+logs `strad.tool_surface_degraded` when a slug's state changes — or
+`strad.tool_surface_offline`, at Info and pageable by nothing, for the switched-off
+case — publishes the current answer on
 [`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`, and
 records [`strad.mcp.tool_surface`](/operate/telemetry/#stradmcptool_surface--is-a-slug-serving-anything-at-all).
 All three leave the container: the log line ships too, against the

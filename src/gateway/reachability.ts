@@ -1,5 +1,9 @@
 import { event } from "../telemetry/events.ts";
 import { instruments } from "../telemetry/instruments.ts";
+import {
+  LocalHostRefusedError,
+  LocalMachineOfflineError,
+} from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 
@@ -19,7 +23,7 @@ import type { Registry } from "./registry.ts";
  * that is loudly wrong, so this turns "the slug serves nothing" into an
  * observation an operator, a health check and a deploy job can all read.
  *
- * ## Three states, because they call for different actions
+ * ## Four states, because they call for different actions
  *
  * `unreachable` is an outage or a routing fault — the upstream refused, 404'd or
  * timed out. `empty` is a server that answered and offered no tools, which is
@@ -27,6 +31,19 @@ import type { Registry } from "./registry.ts";
  * server that derives its tool surface from a live IAM probe (see
  * servers/secrets/shared/src/capabilities.ts). `ok` is a slug with a tool on it.
  * Collapsing the first two into "unhealthy" would send someone to the wrong page.
+ *
+ * `offline` is the fourth, and it is NOT a degraded state. A `local-tunnel`'s
+ * machine being switched off is the advertised behaviour of that kind rather
+ * than a fault, the slug stays connectable while it lasts (it serves
+ * `troubleshoot_host` — see gateway/troubleshoot.ts), and there is no component,
+ * image or path for anyone to go and check. Reporting it as `unreachable`
+ * answered a question nobody asked: it put a laptop somebody had shut into the
+ * same bucket as a bundle that will not start, so a fleet with one sleeping
+ * machine in it never read as healthy. It therefore stays OUT of `degraded`.
+ *
+ * A host that REFUSES is not this. It is answering, a credential has gone stale,
+ * and it will not clear until somebody rotates it — so it keeps `unreachable`
+ * and keeps counting as degraded.
  *
  * `kind` rides along because the three are not equally actionable: a
  * `supplementary-image` that cannot be reached is a component WE deploy and is a
@@ -55,7 +72,7 @@ import type { Registry } from "./registry.ts";
  * would make one number answer two questions.
  */
 
-export type SurfaceState = "ok" | "empty" | "unreachable";
+export type SurfaceState = "ok" | "empty" | "unreachable" | "offline";
 
 export interface ToolSurface {
   slug: string;
@@ -69,7 +86,16 @@ export interface ToolSurface {
 export interface ToolSurfaceSnapshot {
   observedAt: string;
   surfaces: ToolSurface[];
-  /** The slugs that are not `ok`, for a caller that wants one field to test. */
+  /**
+   * The slugs something is WRONG with, for a caller that wants one field to
+   * test.
+   *
+   * Not simply "everything that is not `ok`": an `offline` local-tunnel is
+   * excluded, because its machine being off is that kind's normal state and the
+   * slug is still connectable. Anything in this list is a thing to go and look
+   * at; a sleeping laptop is not. The per-slug `state` still says what is true,
+   * so nothing is hidden — it just stops being reported as a problem.
+   */
   degraded: string[];
 }
 
@@ -91,12 +117,25 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * whole point is that the caller gets an answer it can report rather than a
  * failure it has to swallow.
  */
-export async function probeToolSurfaces(
-  opts: ProbeOptions,
-): Promise<{ snapshot: ToolSurfaceSnapshot; failures: Map<string, string> }> {
+export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
+  snapshot: ToolSurfaceSnapshot;
+  failures: Map<string, string>;
+  /**
+   * The slugs whose machine ANSWERED and refused strad's credentials.
+   *
+   * Kept apart from `failures` because the two lead an operator to different
+   * places, and this one is the only local-tunnel failure that will not fix
+   * itself: an offline laptop comes back when somebody opens it, and a stale
+   * access token stays stale. It is not on the snapshot — that is served
+   * unauthenticated on `/healthz`, and `unreachable` is all a public reader
+   * needs. See the reason text in `refresh()`.
+   */
+  refused: Set<string>;
+}> {
   const slugs = opts.slugs ?? opts.registry.slugs;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const failures = new Map<string, string>();
+  const refused = new Set<string>();
 
   const surfaces = await Promise.all(
     slugs.map(async (slug): Promise<ToolSurface> => {
@@ -115,7 +154,28 @@ export async function probeToolSurfaces(
         };
       } catch (err) {
         failures.set(slug, err instanceof Error ? err.message : String(err));
-        return { slug, state: "unreachable", tools: 0, kind: adapter.kind };
+        if (err instanceof LocalHostRefusedError) refused.add(slug);
+        // A machine somebody switched off gets its own state and is NOT
+        // degraded — see the header. Narrowed to the OFFLINE error rather than
+        // to the kind: a local-tunnel that 404s or refuses is a real fault on a
+        // machine that is answering, and calling that "offline" would hide it.
+        //
+        // `withDeadline` expiring on a local-tunnel counts as offline too, and
+        // has to: that deadline and the adapter's `connectTimeoutMs` are set
+        // independently, so a config raising the second above the first makes
+        // OURS fire first — with a plain Error, on exactly the switched-off
+        // laptop the adapter was about to describe properly. Without this the
+        // verdict would silently depend on which of two unrelated numbers is
+        // larger.
+        const offline =
+          err instanceof LocalMachineOfflineError ||
+          (adapter.kind === "local-tunnel" && err instanceof DeadlineError);
+        return {
+          slug,
+          state: offline ? "offline" : "unreachable",
+          tools: 0,
+          kind: adapter.kind,
+        };
       }
     }),
   );
@@ -124,9 +184,12 @@ export async function probeToolSurfaces(
     snapshot: {
       observedAt: (opts.now?.() ?? new Date()).toISOString(),
       surfaces,
-      degraded: surfaces.filter((s) => s.state !== "ok").map((s) => s.slug),
+      degraded: surfaces
+        .filter((s) => s.state !== "ok" && s.state !== "offline")
+        .map((s) => s.slug),
     },
     failures,
+    refused,
   };
 }
 
@@ -138,6 +201,8 @@ export async function probeToolSurfaces(
  * monitor that can hang is a monitor that stops reporting, which is the failure
  * mode it exists to catch.
  */
+class DeadlineError extends Error {}
+
 function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout;
   return Promise.race([
@@ -145,7 +210,11 @@ function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
     new Promise<never>((_, reject) => {
       timer = setTimeout(
         () =>
-          reject(new Error(`tools/list did not answer within ${timeoutMs}ms`)),
+          reject(
+            new DeadlineError(
+              `tools/list did not answer within ${timeoutMs}ms`,
+            ),
+          ),
         timeoutMs,
       );
       timer.unref?.();
@@ -228,7 +297,7 @@ export class ToolSurfaceMonitor {
   }
 
   async refresh(): Promise<ToolSurfaceSnapshot> {
-    const { snapshot, failures } = await probeToolSurfaces(this.opts);
+    const { snapshot, failures, refused } = await probeToolSurfaces(this.opts);
     const first = this.current === null;
     this.current = snapshot;
 
@@ -274,6 +343,20 @@ export class ToolSurfaceMonitor {
         continue;
       }
 
+      if (surface.state === "offline") {
+        // A machine somebody switched off, which is this kind's normal state.
+        // It gets a line, because "when is that laptop actually up" is a real
+        // operational question — but `log`, not `warn`, and NOT the `_degraded`
+        // event, which is what an alert rule keys on and what the deploy gate
+        // reads. There is nothing here for anyone to fix.
+        this.log({
+          evt: "strad.tool_surface_offline",
+          slug: surface.slug,
+          kind: surface.kind,
+        });
+        continue;
+      }
+
       this.warn({
         evt: "strad.tool_surface_degraded",
         slug: surface.slug,
@@ -284,16 +367,24 @@ export class ToolSurfaceMonitor {
         reason:
           surface.state === "unreachable"
             ? surface.kind === "local-tunnel"
-              ? // NOT an incident, and the sentence has to say so. This kind is
-                // a server on a machine a human owns; the machine being off is
-                // its normal state and there is no component, image or path for
-                // anyone to go and check. Handing an operator the sentence
-                // below would send them looking for infrastructure that does
-                // not exist.
-                "this slug is a local-tunnel and its machine is not answering, which is " +
-                "expected whenever that machine is off. Nothing is deployed for it and " +
-                "nothing needs fixing here; it starts serving again when the machine and " +
-                "its tunnel come back."
+              ? refused.has(surface.slug)
+                ? // A local-tunnel reaching this warning is NOT a laptop that is
+                  // off — that is `offline`, and it is logged above without ever
+                  // getting here. This is a machine that ANSWERED and said no,
+                  // which will not clear on its own, and it is the only
+                  // operator-facing signal for it since a refusal no longer
+                  // fails a listing (see HACKS.md #60).
+                  "this slug is a local-tunnel and its machine REFUSED strad's credentials. " +
+                  "The machine is answering, so this is not a laptop that is off and it will " +
+                  "not clear on its own: a credential has gone stale — the access token in " +
+                  "front of the tunnel, or the bearer the server on that machine checks."
+                : // Answering, and not refusing: a wrong path in this slug's own
+                  // `url`, or a server on that machine running and erroring.
+                  // Also not a laptop that is off, and also not fixed by
+                  // restarting a tunnel.
+                  "this slug is a local-tunnel and its machine ANSWERED, but not as an MCP " +
+                  "server — so this is not a machine that is off. Check this slug's `url` " +
+                  "against what that machine actually serves."
               : "this slug's upstream did not answer tools/list, so it serves NOTHING. " +
                 "A client selecting it sees an empty toolset. Check that the component " +
                 "is running an image that mounts the path this slug routes to."
@@ -321,8 +412,15 @@ export class ToolSurfaceMonitor {
       });
     }
 
-    this.consecutiveDegraded =
-      snapshot.degraded.length > 0 ? this.consecutiveDegraded + 1 : 0;
+    // Counted off the SAME question `nextDelay()` asks, or the two disagree:
+    // `degraded` no longer contains an offline laptop, but a refused or 404ing
+    // tunnel is still in it — and if that fed the counter while `nextDelay()`
+    // excluded it by kind, one permanently broken tunnel would hold the budget
+    // spent forever and the fast retry would never engage for the bundle that
+    // needed it during a deploy.
+    this.consecutiveDegraded = this.needsFastRetry()
+      ? this.consecutiveDegraded + 1
+      : 0;
 
     return snapshot;
   }
@@ -364,13 +462,24 @@ export class ToolSurfaceMonitor {
     // machine that is off is off for hours, and letting it hold the gateway at
     // a ten-second cadence would mean re-probing 27 healthy upstreams six times
     // a minute for as long as somebody's laptop is shut.
-    const degraded = (this.current?.surfaces ?? []).some(
-      (s) => s.state !== "ok" && s.kind !== "local-tunnel",
-    );
     const budget = this.opts.retryProbes ?? DEFAULT_RETRY_PROBES;
-    return degraded && this.consecutiveDegraded < budget
+    return this.needsFastRetry() && this.consecutiveDegraded < budget
       ? (this.opts.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS)
       : (this.opts.intervalMs ?? DEFAULT_INTERVAL_MS);
+  }
+
+  /**
+   * Is anything wrong that a re-probe in ten seconds might see fixed?
+   *
+   * Every `local-tunnel` is excluded, not just the `offline` ones: a machine
+   * that is off is off for hours, and a tunnel that refuses stays refused until
+   * somebody rotates a credential. Neither is a deploy converging, which is the
+   * only thing the fast interval exists to catch.
+   */
+  private needsFastRetry(): boolean {
+    return (this.current?.surfaces ?? []).some(
+      (s) => s.state !== "ok" && s.kind !== "local-tunnel",
+    );
   }
 
   stop(): void {

@@ -211,6 +211,18 @@ export class Registry {
               // The one behavioural difference from remote-http: an absent
               // machine must be a fast, legible failure rather than a hang.
               connectTimeoutMs: server.connectTimeoutMs,
+              // ...and what to tell a caller when it IS absent. Built here, from
+              // config alone, because this is the only place that has both the
+              // entry and the adapter — and because everything downstream of it
+              // (the troubleshooting tool, the error message) must be strad's
+              // own words rather than an upstream's.
+              host: {
+                slug: server.slug,
+                hostname: plainHostname(server.url),
+                machine: server.recovery.machine,
+                commands: server.recovery.commands,
+                notes: server.recovery.notes,
+              },
             }),
           );
           slugs.push(server.slug);
@@ -320,6 +332,24 @@ export function internalHeaders(
 ): Record<string, string> {
   const token = env.STRAD_INTERNAL_TOKEN;
   return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * The hostname of a configured URL, when there is one to be had.
+ *
+ * Returns undefined for a `url:` that contains a `${REF}`, and does so WITHOUT
+ * resolving it. The resolved value can only exist inside the secrets store, and
+ * this hostname is destined for a tool result that any entitled client reads:
+ * "which laptop is this" is worth a sentence, and is not worth reading a secret
+ * to answer.
+ */
+function plainHostname(url: string): string | undefined {
+  if (url.includes("${")) return undefined;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
 }
 
 function joinUrl(base: string, path: string): string {

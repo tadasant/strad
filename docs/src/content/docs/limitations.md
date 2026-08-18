@@ -213,31 +213,58 @@ it, the fix is to stop redirecting off-origin from a gated navigation — render
 in-scope interstitial that starts the trip from a user gesture, so the return
 lands in the window that began it.
 
-### 60. An offline local-tunnel drops out of a multi-slug listing silently
+### 60. A local-tunnel that is not answering answers with a tool about itself
 
 [`local-tunnel`](/servers/interface/#2-local-tunnel) is the one kind exempt from
 the rule that a server **named** in `?servers=` fails the whole listing when its
-upstream cannot be listed. `?servers=anki,slack` with the laptop asleep returns
-Slack's tools and simply no Anki ones — `200`, a shorter list, and no in-band
-signal that a slug was dropped. The only record is a `mcp.local_machine_offline`
-event — exported at Info, because nothing failed — and `/healthz` reporting the
-slug `unreachable`.
+upstream cannot be listed. Instead of failing, and instead of dropping out, the
+slug keeps its place and serves one tool that is not its own —
+`<slug>__troubleshoot_host`, which names the machine, the failure and the
+commands to bring it back. The only other record is a `mcp.local_machine_offline`
+event, exported at Info because nothing failed.
 
-A client that lists tools, sees no `anki__*` and concludes "Anki has no tools" is
-drawing a wrong conclusion from a correct response — which is the exact
-distinction the fail-the-listing rule was written to protect.
+So a listing contains a tool the upstream never offered: a gateway inventing tool
+surface, which a proxy should be reluctant to do. That is the cost.
 
-**Why anyway:** that rule exists so a silently smaller toolset cannot hide a
-_fault_. This kind has no fault to hide — the machine is off, which is its
-advertised behaviour and the reason someone chose it. Failing the listing would
-mean a closed laptop makes every server selected beside it unusable, which is
-precisely what the kind exists to avoid. Selecting it **alone** still errors,
-with a message naming the machine, so the common case (the console hands out one
-`?servers=<slug>` per server) stays fully legible.
+**Why anyway:** MCP has no in-band way to say "part of your selection is
+unavailable right now" in a successful `tools/list` — a `_meta` field on the
+result would be the place, and no client reads one. Every alternative is worse. A
+shorter list says nothing, so a client that sees no `anki__*` and concludes "Anki
+has no tools" is drawing a wrong conclusion from a correct response. An error
+takes the healthy servers named beside it down. An empty list is
+indistinguishable from a server that genuinely has none. A tool is the one
+channel every client already renders.
 
-MCP has no in-band way to say "part of your selection is unavailable right now"
-in a successful `tools/list`. A `_meta` field on the result would be the place,
-and no client reads one today.
+It is bounded: it is **listed** only while the host is unavailable, takes no
+arguments, reaches nothing but that slug's own upstream, and returns only text
+strad and the operator wrote. It is exempt from the [`tools:`
+policy](/intro/concepts/#capability) on purpose — an `allow:` list written for
+the real toolset would otherwise filter away the one tool explaining the outage.
+
+Two consequences of that, both deliberate. It is **answerable** on a
+`local-tunnel` slug at any time rather than only while the host is down, which is
+what lets somebody who has just run the commands ask again and be told the
+machine is back. And because strad answers it rather than forwarding it, it
+permanently **shadows** an upstream tool of the same name on a `local-tunnel`
+slug: such a tool is unreachable through strad, and the caller gets strad's
+answer rather than an error. The name is specific enough that no MCP server on a
+laptop is likely to have chosen it, which is the whole mitigation.
+
+On `/healthz` such a slug reads `offline` rather than `unreachable` and stays
+out of `degraded`: a machine somebody switched off is this kind's normal state,
+the slug is still connectable, and filing it beside a bundle that will not start
+meant a fleet with one sleeping laptop never read as healthy. A host that
+**refuses** still counts as degraded — it is answering, and a stale credential
+will not clear on its own.
+
+The exemption is as narrow as the offline verdict, and that verdict is not
+perfectly sharp: a `502` from the tunnel edge is what you get both when the
+machine is off and when the machine is **up** and the MCP server process on it
+has died. The second case therefore drops out of `degraded` too, and its
+remedy text tells its owner to wake a machine that is already awake. That
+ambiguity is inherent — the edge answers on the origin's behalf and says the
+same thing either way — and it is the one way a broken thing goes unreported
+here.
 
 ## Auth and identity
 

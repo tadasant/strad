@@ -25,8 +25,10 @@ import {
   errorKind,
   instruments,
   tracer,
+  type ErrorKind,
   type SelfClassifyingError,
 } from "../../telemetry/index.ts";
+import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
 
 /** Where this adapter connects, and with what credential. */
@@ -165,6 +167,8 @@ class Conn {
 export class HttpServerAdapter implements ServerAdapter {
   readonly slug: string;
   readonly kind: "remote-http" | "local-tunnel" | "supplementary-image";
+  /** See `ServerAdapter.host`. Set for `local-tunnel` and nothing else. */
+  readonly host?: LocalHost;
 
   private conn: Conn | null = null;
   private connecting: Promise<Conn> | null = null;
@@ -236,10 +240,19 @@ export class HttpServerAdapter implements ServerAdapter {
        * don't know what a strad slug is and name their tools plainly.
        */
       innerPrefix?: string;
+      /**
+       * The machine behind a `local-tunnel`, as the config describes it.
+       *
+       * Present for that kind alone. It is what turns "this upstream failed"
+       * into "go and run these two commands on that laptop" — both in the error
+       * a tool call raises and in the troubleshooting tool the listing offers.
+       */
+      host?: LocalHost;
     },
   ) {
     this.slug = opts.slug;
     this.kind = opts.kind;
+    this.host = opts.host;
   }
 
   /**
@@ -456,6 +469,27 @@ export class HttpServerAdapter implements ServerAdapter {
    * it is unsure about stays an ordinary upstream error.
    */
   private wrap(err: unknown, phase: "connect" | "request"): UpstreamError {
+    if (this.kind !== "local-tunnel") return new UpstreamError(this.slug, err);
+    // The remedy rides on the error, not just on the troubleshooting tool: a
+    // client calling a REAL tool on a sleeping laptop gets this message, and
+    // there is no version of this where that caller deserves less help than one
+    // who happened to list tools first. Built per branch rather than up front —
+    // an ordinary 404 from this kind is a failure like any other and should not
+    // pay for prose nobody will read.
+    const host = this.opts.host;
+
+    // A door that said no. Narrow on purpose — 401/403 only, and only for this
+    // kind — because it is the one 4xx whose fix is a credential somebody owns
+    // rather than a strad config error. A 404 (wrong path) and a 500 (the
+    // server ran and threw) stay ordinary upstream failures.
+    if (refusedByHost(err)) {
+      return new LocalHostRefusedError(
+        this.slug,
+        err,
+        host && remedyText(host, "refused"),
+      );
+    }
+
     const verdict = this.offlineReason(err, phase);
     if (!verdict) return new UpstreamError(this.slug, err);
     return new LocalMachineOfflineError(
@@ -466,6 +500,7 @@ export class HttpServerAdapter implements ServerAdapter {
       // millisecond, and saying "no answer within 5000ms" about it invites
       // someone to go looking for a slow network.
       verdict === "timeout" ? this.opts.connectTimeoutMs : undefined,
+      host && remedyText(host, "offline"),
     );
   }
 
@@ -933,40 +968,108 @@ export class UpstreamError extends Error {
 }
 
 /**
- * A `local-tunnel` server whose machine did not answer.
+ * A `local-tunnel` server that is not serving because of its HOST — the machine
+ * is not there, or it is there and said no.
  *
  * The distinction from a plain `UpstreamError` is not decoration. For every
  * other kind, "the upstream did not answer" is a fault worth investigating; for
- * this one it is the expected condition whenever the machine is off, and the
- * only useful thing to tell anyone is WHICH machine and that it is offline. It
- * subclasses `UpstreamError` so that every existing catch and retire path treats
- * it identically — only the words differ.
+ * this one it is a condition with a named owner and a known remedy, and the only
+ * useful thing to tell anyone is WHICH machine and WHAT TO RUN ON IT. It
+ * subclasses `UpstreamError` so that every existing catch, retire and telemetry
+ * path treats it identically — only the words differ.
  *
  * TELEMETRY is the one place it must NOT be identical, and for a while it was.
- * `errorKind()` reads a message when it has nothing better, and this message is
- * strad's own reassurance rather than an upstream's stack, so it matched nothing
- * and exported as `unknown` — the same word an unclassified fault gets. Hence
- * `telemetryKind`: the constructor knows what this is, so it says so instead of
- * leaving the exporter to guess. See `SelfClassifyingError` in redact.ts.
+ * `errorKind()` reads a message when it has nothing better, and these messages
+ * are strad's own reassurance rather than an upstream's stack, so they matched
+ * nothing and exported as `unknown` — the same word an unclassified fault gets.
+ * Hence `telemetryKind`: the constructor knows what this is, so it says so
+ * instead of leaving the exporter to guess. See `SelfClassifyingError` in
+ * redact.ts.
  *
- * The message is strad's OWN, built from the slug and a duration. It relays no
- * upstream prose, which is what makes it safe to hand to a client verbatim —
- * see the note in gateway/mcpServer.ts about not echoing an upstream's text.
+ * The two subclasses declare DIFFERENT kinds, and that is the point. A machine
+ * that is off is the one upstream failure this repo documents as expected. A
+ * machine that REFUSES is an ordinary fault that happens to have a friendly
+ * remedy attached — a credential has gone stale and somebody must act — so it
+ * keeps `upstream_error` and keeps paging.
+ *
+ * It is also the licence `listToolsFor` needs: an error of this class is what
+ * lets a slug be replaced by its troubleshooting tool rather than failing a
+ * listing. That is why the two subclasses below are the ONLY things that may
+ * produce it, and why both are narrow.
+ *
+ * The message is strad's OWN, built from the slug, a duration and the config's
+ * `recovery:` block. It relays no upstream prose, which is what makes it safe to
+ * hand to a client verbatim — see the note in gateway/mcpServer.ts.
  */
-export class LocalMachineOfflineError
+export abstract class LocalHostUnavailableError
   extends UpstreamError
   implements SelfClassifyingError
 {
+  /** Which shape of unavailable, for the troubleshooting surface. */
+  abstract readonly state: HostState;
+  abstract readonly telemetryKind: ErrorKind;
+}
+
+/** The machine is not there: asleep, shut down, or its tunnel is stopped. */
+export class LocalMachineOfflineError extends LocalHostUnavailableError {
+  readonly state = "offline" as const;
   readonly telemetryKind = "local_machine_offline" as const;
 
-  constructor(slug: string, cause: unknown, waitedMs: number | undefined) {
+  constructor(
+    slug: string,
+    cause: unknown,
+    waitedMs: number | undefined,
+    remedy?: string,
+  ) {
     super(
       slug,
       cause,
       `the machine hosting "${slug}" is not reachable` +
         (waitedMs === undefined ? "" : ` (no answer within ${waitedMs}ms)`) +
         `. "${slug}" is a local-tunnel server: it works only while that machine ` +
-        `is running the server and its tunnel is up. Nothing is wrong with strad.`,
+        `is running the server and its tunnel is up. Nothing is wrong with strad.` +
+        (remedy ? `\n\n${remedy}` : ""),
     );
   }
+}
+
+/**
+ * The machine is there and refused strad: a `401` or a `403`.
+ *
+ * Deliberately NOT an "offline" verdict, however similar the symptom looks from
+ * a listing. The machine is up, so telling its owner to restart a tunnel wastes
+ * their time — an access token expired, or an app bearer stopped matching. The
+ * two states exist to carry exactly that difference into the remedy.
+ */
+export class LocalHostRefusedError extends LocalHostUnavailableError {
+  readonly state = "refused" as const;
+  // NOT `local_machine_offline`. That kind exempts one condition from being a
+  // fault — a laptop that is switched off — and this is not it: the machine is
+  // answering, a credential has gone stale, and it will not clear until
+  // somebody rotates it. It should page like any other upstream error.
+  readonly telemetryKind = "upstream_error" as const;
+
+  constructor(slug: string, cause: unknown, remedy?: string) {
+    super(
+      slug,
+      cause,
+      `the machine hosting "${slug}" refused strad's credentials. It is ANSWERING — ` +
+        `this is not a machine that is switched off — so what is stale is a credential: ` +
+        `the access token in front of the tunnel, or the server's own bearer.` +
+        (remedy ? `\n\n${remedy}` : ""),
+    );
+  }
+}
+
+/**
+ * A `401`/`403` from the far side of a tunnel.
+ *
+ * `StreamableHTTPError.code` is the HTTP status. Only these two: a `404` is a
+ * wrong path in strad's own config and a `500` is the server running and
+ * throwing, and neither is fixed by anyone at the machine.
+ */
+function refusedByHost(err: unknown): boolean {
+  return (
+    err instanceof StreamableHTTPError && (err.code === 401 || err.code === 403)
+  );
 }
