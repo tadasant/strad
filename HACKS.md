@@ -2752,6 +2752,91 @@ will not render passes every gate and fails on the request path. Extending
 `--resolve` to the per-server namespaces it already enumerates is the cheap half
 of the exit, and is worth doing before the deep fix.
 
+## 62. A `paramsWritable` write is single-writer only because the render says so
+
+**What.** `paramsWritable:` lets a supplementary server persist a credential that
+rotated under it, by POSTing to core (`/_strad/params/{slug}/{VARIABLE}`), which
+performs the write with the store-admin credential it already holds. The write is
+a plain `store.rotate()`. There is no compare-and-set on the parameter's version,
+so two processes writing the same variable are last-write-wins.
+
+What keeps that from mattering is a check in `renderAppSpec`: a component hosting
+a server with a non-empty `paramsWritable:` may not have `instance_count > 1`. The
+correctness of the whole mechanism rests on that one refusal.
+
+**Why anyway.** For the credentials this exists for, CAS would not help. X's
+refresh tokens are SINGLE-USE: replica A spending the token invalidates it at X,
+so replica B is already holding a dead value before any write happens. There is no
+merge, and no version check recovers it — the damage is at the upstream, not in
+the store. The useful thing to do with that topology is refuse it, at render, where
+it costs a deploy rather than a silent outage.
+
+**What it costs.** A server that persists a credential cannot scale horizontally.
+For the current fleet that is free — every bundle runs `instance_count: 1` — but it
+is a real constraint written into the config schema's blast radius, and the render
+error is the only place it is enforced. A deployment that grows a genuinely
+concurrent write-back need (a credential that is NOT single-use, several replicas)
+has to implement the CAS first.
+
+**Two smaller edges of the same path:**
+
+- **The boot read makes the store authoritative at boot, which is a behaviour
+  change for the names on the list.** A container that previously always started
+  from its baked environment now starts from whatever the store holds for those
+  names. That is the point — it is what closes the render/rotate race — but it
+  means a bad value written to a `paramsWritable` name takes effect on the next
+  restart with no deploy in between. The fallback only covers the store failing to
+  ANSWER, not the store answering with something wrong.
+- **A failed write degrades a mount that is still fully working.** The mount's
+  `degraded` string on `/healthz` is a statement about the NEXT restart, not about
+  this process, and it is the only shape available: the alternative is a silent
+  loss that surfaces hours later as a total outage. Read a degraded x-twitter as
+  "re-seed before this restarts", not as "it is down".
+
+**Exit.** A compare-and-set `put()` — read the parameter's latest version id,
+write conditional on it, re-read on conflict — plus dropping the render check, for
+any credential that is not single-use at the upstream. Worth doing when a second
+consumer appears; not worth doing for a token whose upstream has already made the
+concurrency decision for us.
+
+## 63. One internal token means any container can reach any writable parameter
+
+**What.** The parameter write-back routes (`/_strad/params/{slug}/{VARIABLE}`,
+#62) authenticate with `STRAD_INTERNAL_TOKEN`. That is ONE token, and
+`BUNDLE_BOOT_ENV_KEYS` broadcasts it to every supplementary component, because it
+is the same token core presents to proxy `/mcp` to each of them. Nothing binds a
+caller to the slug it addresses.
+
+So the reachable set is not "this server's allowlist" — it is the UNION of every
+enabled server's `paramsWritable:`, for any container holding the token. Two
+concrete consequences, and the docs must not claim otherwise:
+
+- A compromised container on bundle A can READ and OVERWRITE the rotating
+  credential of a server on bundle B, which it could not do before.
+- The `GET` is a value read on the PUBLIC component. Before this, reading a
+  stored value took the console admin key behind Google SSO. `STRAD_INTERNAL_TOKEN`
+  is now also a read credential for the names on that union, which belongs in how
+  often it is rotated.
+
+**Why anyway.** The union is opt-in, empty by default, and every name in it is by
+construction a credential that ROTATES — the thing `paramsWritable` exists for.
+Losing one costs a re-seed, not a durable secret. Against that, the alternative
+designs are worse: a per-container cloud credential is the thing the
+viewer/admin/resolver split exists to prevent, and it would be strictly stronger
+than this.
+
+**What does NOT fix it.** A component-identity header checked against
+`server.bundle`. The caller would be choosing its own identity, so it narrows the
+ACCIDENT (a mount asking for the wrong name) and not the ATTACK, while reading in
+the code like a boundary. Shipping a check that looks stronger than it is would be
+worse than the honest statement.
+
+**Exit.** Per-component internal tokens: core mints one per bundle, presents the
+matching one when it proxies, and each component holds only its own. That makes
+the caller's identity a property of the credential rather than a claim, and it
+narrows the presence route by the same stroke. It is a change to the boot-env
+plumbing, not to this route, which is why it is not in #62's PR.
+
 ## What the human still needs to provision
 
 A consolidated checklist, cross-referenced above. A checked box is kept rather

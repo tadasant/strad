@@ -1,3 +1,4 @@
+import { CORE_URL_ENV } from "../src/secrets/param-route.ts";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import {
@@ -162,8 +163,14 @@ describe("renderAppSpec: supplementary-image (good-eggs)", () => {
       value: "s3cr3t",
       type: "SECRET",
     });
-    // The literal ref must NOT survive into the spec.
-    expect(bundle.envs.some((e) => e.value.includes("${"))).toBe(false);
+    // The literal ref must NOT survive into the spec. ${core.PRIVATE_URL} is
+    // excluded: it is an App Platform component binding, not a strad secret ref,
+    // and App Platform substitutes it at deploy time (see appspec.ts).
+    expect(
+      bundle.envs
+        .filter((e) => e.key !== CORE_URL_ENV)
+        .some((e) => e.value.includes("${")),
+    ).toBe(false);
 
     // And the credential must not have leaked onto the public core component.
     const core = spec.services.find((s) => s.name === "core")!;

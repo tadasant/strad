@@ -279,6 +279,34 @@ plus two that shape how this server gets its values:
   reads its own names; two slugs on one path are one instance, and the render
   fails rather than pick a winner.
 
+- **`paramsWritable`** (default `[]`) — the variables this server may **write
+  back** to its own `/strad/{env}/mcp/{slug}/static/` namespace, and read fresh at
+  boot rather than trusting the value the deploy baked.
+
+  For credentials that rotate **on use** — an OAuth refresh token that is
+  single-use, a session token the upstream reissues — where holding the baked
+  value across a restart means holding one the upstream has already invalidated.
+  The server persists each new value through core, which owns the store-admin
+  credential; the container itself still holds none.
+
+  It requires `params: true`, and each entry is a **variable name**, never a path:
+  core composes the store path from the config's own slug and name, so there is no
+  spelling of one that reaches another server's namespace. A component hosting a
+  server with a non-empty list may not have `instanceCount` above 1 — a rotating
+  credential has one valid value at a time, and the render refuses the topology
+  rather than let two replicas invalidate each other. `supplementary-image` only.
+
+  ```yaml
+  - slug: x-twitter
+    kind: supplementary-image
+    params: true
+    paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  ```
+
+  See [a credential that rotates on
+  use](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use) for the
+  transport, the failure modes and what the grant actually is.
+
 ```yaml
 servers:
   # supplementary-image — a server served by a container image, on one path of it.

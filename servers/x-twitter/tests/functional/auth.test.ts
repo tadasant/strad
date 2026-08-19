@@ -4,6 +4,7 @@ import {
   StaticAccessTokenProvider,
 } from "../../shared/src/x-client/auth.js";
 import { XAuthError } from "../../shared/src/x-client/api-errors.js";
+import { createTokenProviderFromEnv } from "../../shared/src/x-client/index.js";
 
 /**
  * Builds a fake `fetch` that returns the given sequence of token responses,
@@ -91,6 +92,54 @@ describe("RefreshTokenProvider", () => {
 
     const secondBody = new URLSearchParams(calls[1].init.body as string);
     expect(secondBody.get("refresh_token")).toBe("refresh-2");
+  });
+
+  it("hands every rotated token to onRefreshToken, in order", async () => {
+    // The persistence hook is what makes a restart survivable: a host that can
+    // store the value durably (strad's bundle host writes it to the parameter
+    // store) sees each new token as it is minted, not only the last one.
+    const { impl } = tokenFetchSequence([
+      { access_token: "access-1", refresh_token: "refresh-2", expires_in: 1 },
+      { access_token: "access-2", refresh_token: "refresh-3", expires_in: 1 },
+    ]);
+    const persisted: string[] = [];
+    const provider = new RefreshTokenProvider({
+      clientId: "c",
+      clientSecret: "s",
+      refreshToken: "refresh-1",
+      fetchImpl: impl,
+      onRefreshToken: async (token) => {
+        persisted.push(token);
+      },
+    });
+
+    await provider.getAccessToken();
+    await provider.getAccessToken();
+
+    expect(persisted).toEqual(["refresh-2", "refresh-3"]);
+  });
+
+  it("keeps serving when onRefreshToken fails", async () => {
+    // A failed write means the NEXT restart is dead — it does not mean this
+    // process is. Failing the refresh would turn a durable-storage outage into
+    // an immediate one, so the rejection is swallowed here and reported by the
+    // hook's owner (the strad mount marks itself degraded).
+    const { impl } = tokenFetchSequence([
+      { access_token: "access-1", refresh_token: "refresh-2", expires_in: 1 },
+    ]);
+    const provider = new RefreshTokenProvider({
+      clientId: "c",
+      clientSecret: "s",
+      refreshToken: "refresh-1",
+      fetchImpl: impl,
+      onRefreshToken: () => {
+        throw new Error("the store said no");
+      },
+    });
+
+    await expect(provider.getAccessToken()).resolves.toBe("access-1");
+    // And the token still rotated in memory, so this process keeps working.
+    expect(provider.refreshToken).toBe("refresh-2");
   });
 
   it("caches the access token within the expiry buffer window", async () => {
@@ -186,5 +235,53 @@ describe("StaticAccessTokenProvider", () => {
     expect(await provider.getAccessToken()).toBe("injected-token");
     provider.invalidate();
     expect(await provider.getAccessToken()).toBe("injected-token");
+  });
+});
+
+describe("createTokenProviderFromEnv with durable persistence", () => {
+  const ENV = {
+    X_OAUTH_CLIENT_ID: "c",
+    X_OAUTH_CLIENT_SECRET: "s",
+    X_OAUTH_REFRESH_TOKEN: "baked-into-the-deploy",
+  };
+
+  it("prefers the host's stored token over the one the deploy baked", () => {
+    // THE RACE THIS CLOSES. A sibling process can rotate the token after the
+    // render read it, which makes the baked value already dead by the time this
+    // container boots. The stored one is the live one.
+    const provider = createTokenProviderFromEnv(ENV, {
+      refreshToken: "read-from-the-store",
+    });
+    expect(provider).toBeInstanceOf(RefreshTokenProvider);
+    expect((provider as RefreshTokenProvider).refreshToken).toBe(
+      "read-from-the-store",
+    );
+  });
+
+  it("falls back to the baked token when the host could not read one", () => {
+    // Undefined means "I could not read one", not "use nothing" — a store that
+    // is briefly unreachable must degrade to the previous behaviour rather than
+    // leave the server with no credential at all.
+    const provider = createTokenProviderFromEnv(ENV, {
+      refreshToken: undefined,
+    });
+    expect((provider as RefreshTokenProvider).refreshToken).toBe(
+      "baked-into-the-deploy",
+    );
+  });
+
+  it("is unchanged when no persistence is supplied", () => {
+    const provider = createTokenProviderFromEnv(ENV);
+    expect((provider as RefreshTokenProvider).refreshToken).toBe(
+      "baked-into-the-deploy",
+    );
+  });
+
+  it("still reaches static-token mode when only a stored token is missing", () => {
+    const provider = createTokenProviderFromEnv(
+      { X_OAUTH_ACCESS_TOKEN: "direct" },
+      {},
+    );
+    expect(provider).toBeInstanceOf(StaticAccessTokenProvider);
   });
 });

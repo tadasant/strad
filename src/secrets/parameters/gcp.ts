@@ -537,8 +537,10 @@ export function createGcpParameterStore(
     assertSamePath(cur.envelope, path);
     if (!cur.envelope.secret) return cur.envelope.value;
     // Secret: read the value from Secret Manager directly (the admin credential
-    // can). This is the only place a secret value is read for DISPLAY, and it is
-    // a human behind the SSO gate.
+    // can). Two callers, both on core and neither on /mcp: the console's reveal
+    // button (a human, behind the SSO gate) and the parameter write-back route's
+    // boot read (src/http/params.ts), which is bounded to the names a server's
+    // own `paramsWritable:` allowlist already puts in that server's container.
     const res = (await sm(
       "GET",
       `${smParent}/secrets/${id}/versions/latest:access`,

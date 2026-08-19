@@ -796,9 +796,9 @@ async function capabilitiesFor(
  */
 const storeCache = new Map<string, ParameterStore>();
 
-function storeFor(
+export function storeFor(
   view: Extract<ServerView, { kind: "secrets" }>,
-  opts: ConsoleUiOptions,
+  opts: Pick<ConsoleUiOptions, "parametersStore">,
 ): ParameterStore | null {
   if (opts.parametersStore) return opts.parametersStore(view);
   if (!view.account) return null;

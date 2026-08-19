@@ -1654,6 +1654,84 @@ lines and `loadApiTree`'s path, and drop `fork/google-flights` from the
 `bundle-api` workspaces, build and test scripts. Tool names and tool count are
 unchanged by the fork.
 
+### 62. A `paramsWritable` write is single-writer only because the render says so
+
+[`paramsWritable:`](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+lets a supplementary server persist a credential that rotated under it: it POSTs
+to core, which performs the write with the store-admin credential it already
+holds. The write is a plain `rotate()` — there is no compare-and-set on the
+parameter's version, so two processes writing the same variable are
+last-write-wins.
+
+What keeps that from mattering is one check in `renderAppSpec`: a component
+hosting a server with a non-empty `paramsWritable:` may not have
+`instance_count > 1`. The correctness of the whole mechanism rests on that
+refusal.
+
+For the credentials this exists for, a CAS would not help anyway. X's refresh
+tokens are single-use: replica A spending one invalidates it at X, so replica B
+is holding a dead value before any write happens. There is no merge and no
+version check that recovers it — the damage is at the upstream, not in the store.
+The useful response to that topology is to refuse it at render, where it costs a
+deploy rather than a silent outage.
+
+**What it costs.** A server that persists a credential cannot scale horizontally.
+For the current fleet that is free — every bundle runs one instance — but it is a
+real constraint, and the render error is the only place it is enforced.
+
+Two smaller edges of the same path:
+
+- **The boot read makes the store authoritative at boot** for the names on the
+  list. That is the point: it is what closes the race where a deploy bakes a value
+  a sibling process has since spent. It also means a bad value written to a
+  `paramsWritable` name takes effect on the next restart with no deploy in
+  between. The fallback to the baked environment covers the store failing to
+  _answer_, not the store answering with something wrong.
+- **A failed write degrades a mount that is still fully working.** The `degraded`
+  string on the bundle's `/healthz` is a statement about the _next restart_, not
+  about this process. Read a degraded x-twitter as "re-seed before this restarts",
+  not as "it is down". The alternative is a silent loss that surfaces hours later
+  as a total outage.
+
+**Exit.** A compare-and-set `put()` — read the latest version id, write
+conditional on it, re-read on conflict — plus dropping the render check, for any
+credential that is not single-use at the upstream. Worth doing when a second
+consumer appears; not for a token whose upstream has already made the concurrency
+decision for us.
+
+### 63. One internal token means any container can reach any writable parameter
+
+The [parameter write-back routes](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+authenticate with `STRAD_INTERNAL_TOKEN` — one token, broadcast to every
+supplementary component, because it is the same token core presents when it
+proxies `/mcp` to them. Nothing binds a caller to the slug it addresses.
+
+So the reachable set is not "this server's allowlist"; it is the **union** of
+every enabled server's `paramsWritable:`, for any container holding the token.
+Two consequences worth stating plainly:
+
+- A compromised container on one bundle can read and overwrite the rotating
+  credential of a server on another.
+- The `GET` is a value read on the **public** component. Before this, reading a
+  stored value took the console admin key behind Google SSO — so
+  `STRAD_INTERNAL_TOKEN` is now also a read credential for the names on that
+  union, which belongs in how often you rotate it.
+
+The union is opt-in and empty by default, and every name in it is by construction
+a credential that rotates, so losing one costs a re-seed rather than a durable
+secret. Against that, the alternative — a cloud credential on each container — is
+the thing strad's three-role split exists to prevent, and is strictly stronger
+than this.
+
+A component-identity header would **not** fix it: the caller would be choosing
+its own identity, so it narrows the accident and not the attack while reading like
+a boundary.
+
+**Exit.** Per-component internal tokens — core mints one per bundle and presents
+the matching one when it proxies, so each component holds only its own. That makes
+the caller's identity a property of the credential rather than a claim, and
+narrows the presence route by the same stroke.
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

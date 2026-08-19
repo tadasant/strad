@@ -268,6 +268,25 @@ servers:
   # X is deliberately read-only by default. Add create_bookmark and
   # remove_bookmark to this allow-list only when private bookmark changes are
   # intended. OAuth credentials come from an X Developer Console app.
+  #
+  # TWO WAYS TO CREDENTIAL THIS SERVER, and the second is the durable one.
+  #
+  # As written below it runs in STATIC-ACCESS-TOKEN mode: something outside strad
+  # mints a short-lived access token and this deployment injects it. Simple, and
+  # it goes stale between deploys — a supplementary image's env: is baked at
+  # render time.
+  #
+  # The alternative is REFRESH-TOKEN mode, seeded once in /ui/secrets under
+  # /strad/{env}/mcp/x-twitter/static/ and left alone:
+  #
+  #     params: true
+  #     paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  #
+  # X's refresh tokens are SINGLE-USE: every refresh mints a new one and kills the
+  # previous. `paramsWritable` is what lets the server persist each new value back
+  # through core, and re-read the live one at boot instead of the value the last
+  # deploy baked — which is what makes "set it once and it keeps working" true
+  # across restarts. See docs: /operate/secrets/.
   - slug: x-twitter
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -391,6 +410,19 @@ servers:
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
       # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+      # WRITE-BACK, and what it does and does not grant. A server that declares
+      # `paramsWritable:` can POST a rotated credential to core, which performs
+      # the write with the ADMIN key below — the container never holds one.
+      #
+      # IT BOUNDS THE NAMES, NOT THE CALLER. `STRAD_INTERNAL_TOKEN` is one token,
+      # on every supplementary component, and nothing binds a caller to the slug
+      # it addresses — so the reachable set is the UNION of every enabled
+      # server's `paramsWritable:`, and the GET is a value read on the component
+      # with the public route. Factor that into how often this token is rotated.
+      # What it does bound: the union is opt-in and empty by default, nothing
+      # outside it is reachable, and every name on it is a credential that
+      # ROTATES, so losing one costs a re-seed. See docs: /operate/secrets/ and
+      # limitation #63.
     consoleEnv:
       SECRETS_PROJECT_ID: "strad-secrets-staging" # non-secret: a literal, not a ${ref}
       # A LIST, and the console's may be wider than the container's above. The

@@ -24,12 +24,40 @@ export interface XClientEnv {
 }
 
 /**
+ * What a DURABLE host supplies on top of the environment.
+ *
+ * The environment is a snapshot taken when the container was deployed, and for a
+ * single-use rotating refresh token that is not good enough: by the time a
+ * process restarts, the baked value may already have been spent and invalidated
+ * by the process it is replacing. A host that can store the token durably
+ * supplies the current one here and takes each rotation back through
+ * `onRefreshToken`.
+ *
+ * Both are optional and both default to today's behaviour, so a standalone
+ * deployment with nowhere to store anything is unchanged.
+ */
+export interface XTokenPersistence {
+  /**
+   * The refresh token to start from, overriding `X_OAUTH_REFRESH_TOKEN`.
+   *
+   * Undefined means "I could not read one" — not "use nothing". The env value is
+   * then the fallback, which is the right answer for a first boot and for a host
+   * whose store was briefly unreachable.
+   */
+  refreshToken?: string;
+  /** Called with each newly rotated refresh token. See RefreshTokenProviderConfig. */
+  onRefreshToken?: (token: string) => void | Promise<void>;
+}
+
+/**
  * Builds an `ITokenProvider` from environment variables.
  *
  * Two supported modes (checked in this order):
  *   1. Refresh-token mode: X_OAUTH_CLIENT_ID + X_OAUTH_CLIENT_SECRET +
  *      X_OAUTH_REFRESH_TOKEN. The provider refreshes access tokens on demand
- *      and rotates the single-use refresh token in memory.
+ *      and rotates the single-use refresh token in memory — and, when the host
+ *      supplies `onRefreshToken`, persists each rotation so a restart resumes
+ *      from the live token rather than the one the deploy baked.
  *   2. Static-access-token mode: X_OAUTH_ACCESS_TOKEN alone. Used when a
  *      central refresher injects a fresh short-lived access token.
  *
@@ -37,6 +65,7 @@ export interface XClientEnv {
  */
 export function createTokenProviderFromEnv(
   env: XClientEnv = process.env,
+  persistence: XTokenPersistence = {},
 ): ITokenProvider {
   const {
     X_OAUTH_CLIENT_ID,
@@ -45,11 +74,17 @@ export function createTokenProviderFromEnv(
     X_OAUTH_ACCESS_TOKEN,
   } = env;
 
-  if (X_OAUTH_CLIENT_ID && X_OAUTH_CLIENT_SECRET && X_OAUTH_REFRESH_TOKEN) {
+  // The stored token WINS over the baked one, and only falls back when the host
+  // could not read a stored one at all. Preferring the environment would leave
+  // the race this parameter exists to close exactly where it was.
+  const refreshToken = persistence.refreshToken || X_OAUTH_REFRESH_TOKEN;
+
+  if (X_OAUTH_CLIENT_ID && X_OAUTH_CLIENT_SECRET && refreshToken) {
     return new RefreshTokenProvider({
       clientId: X_OAUTH_CLIENT_ID,
       clientSecret: X_OAUTH_CLIENT_SECRET,
-      refreshToken: X_OAUTH_REFRESH_TOKEN,
+      refreshToken,
+      onRefreshToken: persistence.onRefreshToken,
     });
   }
 
@@ -65,6 +100,11 @@ export function createTokenProviderFromEnv(
 }
 
 /** Builds a ready-to-use read-only X client from environment variables. */
-export function createXClientFromEnv(env: XClientEnv = process.env): IXClient {
-  return new XApiClient({ tokenProvider: createTokenProviderFromEnv(env) });
+export function createXClientFromEnv(
+  env: XClientEnv = process.env,
+  persistence: XTokenPersistence = {},
+): IXClient {
+  return new XApiClient({
+    tokenProvider: createTokenProviderFromEnv(env, persistence),
+  });
 }

@@ -5,6 +5,7 @@ import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
 import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
 import { BUNDLE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
+import { CORE_URL_ENV } from "../secrets/param-route.ts";
 
 /**
  * Render a DigitalOcean App Platform spec from strad.config.yaml.
@@ -860,6 +861,29 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     type: "GENERAL",
   }));
 
+  /**
+   * The binding in the OTHER direction: every non-core component gets core's
+   * private URL.
+   *
+   * Core has always needed a URL per bundle because it proxies `/mcp` to them.
+   * Nothing needed core's until the parameter write-back route
+   * (src/secrets/param-route.ts), which is the first call a bundle makes TO core
+   * — a hosted server persisting a credential that rotated under it.
+   *
+   * Unconditional rather than only where `paramsWritable:` appears. It is a
+   * private hostname, not a credential; a component that never calls it never
+   * reads it; and making it conditional would mean adding the flag to a server
+   * silently requires a redeploy of its component before the flag can work,
+   * which is exactly the class of "green deploy, feature does nothing" this
+   * repo keeps having to fix.
+   */
+  const coreUrlEnv: EnvVar = {
+    key: CORE_URL_ENV,
+    value: "${core.PRIVATE_URL}",
+    scope: "RUN_TIME",
+    type: "GENERAL",
+  };
+
   const services: ServiceSpec[] = [
     {
       name: "core",
@@ -943,6 +967,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         componentImage.tag,
         config.gateway.publicUrl,
       ),
+      coreUrlEnv,
       ...paramKeysEnv(supplementary.paramKeys),
       ...opts.env.filter(
         (e) =>
@@ -974,6 +999,46 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       overrideApplied = true;
     }
 
+    const instanceCount = declared?.instanceCount ?? 1;
+
+    // SINGLE WRITER, enforced at render.
+    //
+    // `paramsWritable:` is what lets a process persist a credential that rotated
+    // under it, and the credentials that rotate are the single-use kind: X's
+    // refresh token is dead the moment it is spent. Two replicas therefore do not
+    // merely race to write — they INVALIDATE EACH OTHER. Replica A spends the
+    // token and stores R2; replica B, still holding R1, spends it, fails, and
+    // either replica's next boot reads whatever landed last.
+    //
+    // The alternative is a compare-and-set on the parameter's version id with a
+    // re-read on conflict, which is the right answer for a value two writers may
+    // legitimately hold — and this is not one. There is no merge: the losing
+    // replica's token is already invalid at the upstream and no amount of
+    // retrying makes it valid again. So the useful thing to do is refuse the
+    // topology, here, where it costs a render rather than a silent outage.
+    //
+    // THIS IS THE ASSUMPTION THE WHOLE MECHANISM RESTS ON. If a future change
+    // makes a `paramsWritable` component scale out, the write-back path needs a
+    // CAS before this check is relaxed, not after.
+    const writableHere = config.servers.filter(
+      (s) =>
+        s.enabled &&
+        s.kind === "supplementary-image" &&
+        s.bundle === name &&
+        s.paramsWritable.length > 0,
+    );
+    if (writableHere.length > 0 && instanceCount > 1) {
+      throw new Error(
+        `bundle "${name}" has instance_count ${instanceCount} and hosts ` +
+          `${writableHere.length} server(s) with paramsWritable: ` +
+          `(${writableHere.map((s) => s.slug).join(", ")}). A rotating ` +
+          `credential has exactly one valid value at a time, so two replicas ` +
+          `refreshing it invalidate each other and the last write wins the next ` +
+          `boot. Set instanceCount: 1 for this bundle, or move the server with ` +
+          `paramsWritable: to its own bundle.`,
+      );
+    }
+
     services.push({
       name,
       image: componentImage, // a builtin bundle runs the strad image in bundle mode
@@ -982,12 +1047,13 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         // Chromium peaks around 545MB RSS. 1GB is the floor for a browser
         // bundle; CPU, not RAM, is what actually binds (1 vCPU serialises it).
         "apps-s-1vcpu-1gb",
-      instance_count: declared?.instanceCount ?? 1,
+      instance_count: instanceCount,
       // Internal-only: internal_ports, and NO http_port. Both is an API error.
       internal_ports: [PORT],
       envs: supplementary
         ? supplementaryEnvs(name, supplementary, componentImage)
         : [
+            coreUrlEnv,
             {
               key: "STRAD_MODE",
               value: "bundle",

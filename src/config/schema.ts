@@ -253,6 +253,24 @@ const SupplementaryImageServer = ServerBase.extend({
    */
   params: z.boolean().default(false),
   /**
+   * Variables this server may WRITE BACK to its own managed parameter.
+   *
+   * The case is a credential that rotates ON USE — X's OAuth refresh tokens are
+   * the shape: every refresh returns a new one and kills the previous. Without
+   * this the process rotates in memory, the container restarts, and it comes
+   * back holding a value the upstream invalidated. See src/secrets/param-route.ts
+   * for the mechanism and src/http/params.ts for the routes.
+   *
+   * An ALLOWLIST BY NAME, never a blanket write: a server may rewrite only names
+   * it already holds. Enforced in the `superRefine` below — it requires
+   * `params: true` (the flag that injects the namespace this writes into) and a
+   * legal environment-variable name, which is what confines the write to this
+   * server's own `/{slug}/static/` namespace. A name is a variable, not a path:
+   * there is no spelling of one that escapes the namespace, because core
+   * composes the path from the slug and the name and never from a URL.
+   */
+  paramsWritable: z.array(z.string().min(1)).default([]),
+  /**
    * Env for the CORE gateway only — the human console's half of this server.
    * It is NOT injected into the server's container, and that asymmetry is the
    * whole point.
@@ -560,6 +578,82 @@ export const StradConfig = z
             path: ["servers"],
           });
         }
+      }
+    }
+
+    // PARAMS-WRITABLE.
+    //
+    // The allowlist is the fence around a route that WRITES to the parameter
+    // store, so what it may contain is checked here rather than at the route:
+    // core builds the store path out of these strings and the server's slug, and
+    // a name that is not a legal variable would compose a path pointing
+    // somewhere else entirely. `validateVariableName` is the same rule the
+    // console applies when a human creates a parameter, restated as a regex so
+    // this file stays dependency-free.
+    //
+    // `params: true` is REQUIRED, and not merely for tidiness. That flag is what
+    // injects `/strad/{env}/mcp/{slug}/static/` onto this component in the first
+    // place; without it the server would be writing a namespace it does not
+    // read, which is a credential going nowhere — the silent no-op
+    // src/deploy/server-namespaces.ts exists to stop shipping.
+    for (const s of cfg.servers) {
+      if (s.kind !== "supplementary-image") continue;
+      if (s.paramsWritable.length === 0) continue;
+      if (!s.params) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" sets paramsWritable: but not params: true. ` +
+            `paramsWritable names variables in this server's own ` +
+            `/strad/{env}/mcp/${s.slug}/static/ namespace, and params: true is ` +
+            `what makes that namespace this server's environment. Without it ` +
+            `the server would write values nothing injects.`,
+          path: ["servers"],
+        });
+      }
+      const seenVars = new Map<string, string>();
+      for (const variable of s.paramsWritable) {
+        // The same two rules `validateVariableName` applies when a human creates
+        // a parameter in the console, restated as code so this file stays
+        // dependency-free. The length cap is Parameter Manager's, and a name past
+        // it is a write that cannot land.
+        if (
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
+          variable.length > 200
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" lists "${variable}" under paramsWritable:, ` +
+              `which is not a legal environment variable name (letters, digits ` +
+              `and underscores; not starting with a digit; at most 200 ` +
+              `characters). A paramsWritable entry is a VARIABLE, not a path — ` +
+              `it addresses /strad/{env}/mcp/${s.slug}/static/{VARIABLE} and ` +
+              `nothing else.`,
+            path: ["servers"],
+          });
+        }
+        // DUPLICATES ARE COMPARED CASE-INSENSITIVELY, because `parameterId`
+        // folds case before it hashes: `X_TOKEN` and `x_token` name ONE resource
+        // in the store but two different environment variables in the container.
+        // Listing both is a config where one name works and its twin 404s
+        // forever, which is the least diagnosable outcome available here.
+        const fold = variable.toLowerCase();
+        const first = seenVars.get(fold);
+        if (first !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              first === variable
+                ? `server "${s.slug}" lists "${variable}" twice under paramsWritable:`
+                : `server "${s.slug}" lists both "${first}" and "${variable}" ` +
+                  `under paramsWritable:. A parameter path folds case, so those ` +
+                  `are ONE parameter under two variable names — one of them ` +
+                  `would resolve and the other would never be found.`,
+            path: ["servers"],
+          });
+        }
+        seenVars.set(fold, variable);
       }
     }
 

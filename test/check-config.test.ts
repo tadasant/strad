@@ -323,6 +323,7 @@ describe("consoleScopeProblems", () => {
       enabled: true,
       timeoutMs: 120_000,
       params: false,
+      paramsWritable: [],
       env: {},
       headers: {},
       consoleEnv: {

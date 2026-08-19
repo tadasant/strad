@@ -269,7 +269,15 @@ learn:
   API rejection. Omitting it is what keeps a bundle private.
 - **Don't hand-write `ingress` rules** — let App Platform derive them.
 - **`${bundle.PRIVATE_URL}` → `http://bundle-name:8080`** — a private in-VPC hop
-  (~3.9ms) with no public-edge hairpin (~58ms).
+  (~3.9ms) with no public-edge hairpin (~58ms). It binds in both directions: core
+  gets one per bundle it proxies to, and every non-core component gets
+  `STRAD_CORE_URL` = `${core.PRIVATE_URL}` for the
+  [parameter write-back route](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use),
+  which is the one call that runs bundle → core.
+- **A component that hosts a `paramsWritable:` server may not have
+  `instanceCount` above 1.** The render throws rather than emit it: a credential
+  that rotates on use has exactly one valid value at a time, so two replicas
+  refreshing it invalidate each other at the upstream.
 - **Deploy from a registry image, not a GitHub source.** App Platform's GitHub
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.
@@ -282,8 +290,9 @@ learn:
   image and gets only its own resolved `env:` map (SECRET-typed), any
   `params: true`-resolved parameters (also SECRET-typed), the identity vars
   (`STRAD_COMPONENT`, `STRAD_ENV`, `STRAD_VERSION`, and `STRAD_PUBLIC_URL` when
-  `gateway.publicUrl` is set), and the telemetry vars — never `STRAD_MODE`, never
-  the config, never the token secrets it has no use for. `STRAD_PUBLIC_URL` is
+  `gateway.publicUrl` is set), `STRAD_CORE_URL`, and the telemetry vars — never
+  `STRAD_MODE`, never the config, never the token secrets it has no use for.
+  `STRAD_PUBLIC_URL` is
   non-secret and lets strad-owned bundle code mint absolute URLs for routes that
   core publicly proxies, such as remote-filesystem upload leases. A server's
   `consoleEnv:` is pointedly **not** here — it lands on core alone. The blast
