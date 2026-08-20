@@ -56,7 +56,9 @@ export function renderValueRange(valueRange: ValueRange): RenderedValues {
   let truncated = false;
 
   for (const [index, row] of rows.entries()) {
-    if (cells + width > MAX_CELLS || chars > MAX_CHARS) {
+    // `emitted > 0` so a range WIDER than the whole cap still shows its first
+    // row. Reporting "showing 0 of 12 rows" would be true and useless.
+    if (emitted > 0 && (cells + width > MAX_CELLS || chars > MAX_CHARS)) {
       truncated = true;
       break;
     }

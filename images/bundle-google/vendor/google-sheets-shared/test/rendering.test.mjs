@@ -79,3 +79,12 @@ test("findCells honours case, exactness and the result cap", () => {
   assert.equal(capped.hits.length, 2);
   assert.equal(capped.truncated, true);
 });
+
+test("a range wider than the whole cap still shows its first row", () => {
+  // 6000 columns is a legal Sheets range and more than MAX_CELLS by itself.
+  // "showing 0 of 3 rows" would be true and useless.
+  const wide = Array.from({ length: 3 }, () => Array.from({ length: 6000 }, () => "x"));
+  const rendered = renderValueRange({ range: "'Wide'!A1", values: wide });
+  assert.equal(rendered.rows, 1);
+  assert.equal(rendered.truncated, true);
+});

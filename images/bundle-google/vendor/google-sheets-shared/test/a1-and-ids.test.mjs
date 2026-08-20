@@ -70,3 +70,8 @@ test("parseSheetGid reads the tab out of a pasted URL", () => {
   assert.equal(parseSheetGid("https://docs.google.com/spreadsheets/d/abc/edit?gid=42#gid=42"), 42);
   assert.equal(parseSheetGid("https://docs.google.com/spreadsheets/d/abc/edit"), undefined);
 });
+
+test("rangeOrigin survives a range that names no cell at all", () => {
+  assert.deepEqual(rangeOrigin(""), { row: 0, column: 0 });
+  assert.deepEqual(rangeOrigin("'Tab'!"), { row: 0, column: 0 });
+});

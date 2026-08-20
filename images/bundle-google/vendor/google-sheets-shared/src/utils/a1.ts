@@ -52,9 +52,9 @@ export function columnLetter(index: number): string {
  */
 export function rangeOrigin(range: string): { row: number; column: number } {
   const cells = range.includes('!') ? range.slice(range.lastIndexOf('!') + 1) : range;
-  const match = cells.match(/^\$?([A-Za-z]*)\$?(\d*)/);
-  if (!match) return { row: 0, column: 0 };
-  const [, letters, digits] = match;
+  // Every part is optional, so this matches anything — including a whole-tab
+  // range, which names no cell and correctly yields A1.
+  const [, letters, digits] = cells.match(/^\$?([A-Za-z]*)\$?(\d*)/)!;
   let column = 0;
   if (letters) {
     for (const ch of letters.toUpperCase()) {

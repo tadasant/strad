@@ -83,8 +83,13 @@ export function getSheetValuesTool(_server: Server, clientFactory: ClientFactory
         const spreadsheetId = parseSpreadsheetId(parsed.spreadsheet_id);
         const client = clientFactory();
 
-        // A pasted URL names a tab too. An explicit sheet_gid still wins.
-        const sheetGid = parsed.sheet_gid ?? parseSheetGid(parsed.spreadsheet_id);
+        // A pasted URL names a tab too (`#gid=…`), so it can stand in for
+        // sheet_gid — but only when the caller did not name a tab in `range`.
+        // A URL-derived gid is an inference, and an explicit range outranks it;
+        // treating them as a conflict would reject an ordinary call.
+        const sheetGid =
+          parsed.sheet_gid ??
+          (parsed.range?.includes('!') ? undefined : parseSheetGid(parsed.spreadsheet_id));
         const range = await resolveRange(client, spreadsheetId, { range: parsed.range, sheetGid });
 
         const valueRange = await client.getValues(spreadsheetId, range, {
