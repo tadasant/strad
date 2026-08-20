@@ -27,11 +27,12 @@
     "policy:check": "node --experimental-transform-types scripts/check-tool-policy.ts",
     "store:check": "node --experimental-transform-types scripts/check-store.ts",
     "store:seed": "node --experimental-transform-types scripts/seed-store.ts",
-    "telemetry:sync": "node scripts/sync-telemetry.mjs",
-    "presence:sync": "node scripts/sync-presence.mjs",
-    "wire:sync": "node scripts/sync-parameter-wire.mjs",
-    "paramroute:sync": "node scripts/sync-param-route.mjs",
-    "envprefix:sync": "node scripts/sync-env-prefix.mjs"
+    "vendor:sync": "node scripts/sync-vendored.mjs",
+    "telemetry:sync": "node scripts/sync-vendored.mjs --only telemetry",
+    "presence:sync": "node scripts/sync-vendored.mjs --only presence",
+    "wire:sync": "node scripts/sync-vendored.mjs --only wire",
+    "paramroute:sync": "node scripts/sync-vendored.mjs --only paramroute",
+    "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

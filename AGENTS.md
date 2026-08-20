@@ -34,33 +34,45 @@ toward them, not away. If a change moves away from one, say so.
   the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
   typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
   Anything CI cannot enumerate is skipped WITH A REASON, never failed.
-- Four modules are VENDORED across an npm-tree boundary, and each has a sync
-  script and a drift test. Edit the source, never the copy; run the sync and
-  commit both halves.
-  - `npm run presence:sync` re-vendors `src/secrets/presence.ts` into the bundle
-    host tree. `test/presence.sync.test.ts` fails CI on drift, and a drifted copy
-    means one component calls `change-me` filler and the other calls it a
-    credential, on the same console row.
-  - `npm run wire:sync` re-vendors `src/secrets/parameters/wire.ts` — the id
-    fold, the value encoding, the envelope shape — into `servers/secrets`.
-    `test/parameter-wire.sync.test.ts` fails CI on drift, and also fails if that
-    tree grows a second implementation of a name the wire owns. Both halves
-    address the SAME GCP parameter, and a drift here is the one failure in this
-    subsystem that is silent (`HACKS.md` #33).
-  - `npm run paramroute:sync` re-vendors `src/secrets/param-route.ts` — the
-    parameter write-back wire, BOTH ends of it: the route shape and body core
-    validates, and the client the host calls with. `test/param-route.sync.test.ts`
-    fails CI on drift. Core serves the route and the host is its only caller, so a
-    drift is a container persisting a rotated credential to a URL core does not
-    serve — loud on the write (the mount degrades), silent on the boot read, which
-    falls back to the baked env and looks exactly like a deployment nobody has
-    rotated yet.
-  - `npm run envprefix:sync` re-vendors `src/secrets/env-prefix.ts` — the slug →
-    box-variable-name mangling — into the bundle host tree.
-    `test/env-prefix.sync.test.ts` fails CI on drift. The renderer NAMES a
-    variable and the host is the only thing that reads it back, so a drift puts
-    the credential on the container under a name nothing looks for: green deploy,
-    clean boot log, every call failing on a variable that is right there.
+- FIVE modules are VENDORED across an npm-tree boundary, and ONE manifest owns
+  all of them: the `VENDORED` array in `scripts/sync-vendored.mjs`. Edit the
+  source, never the copy; run the sync and commit both halves.
+  `npm run vendor:sync` writes every copy, `-- --check` fails if any has drifted,
+  `-- --only <id>` does one seam, and `test/vendored.sync.test.ts` runs the check
+  over the whole manifest in CI. The per-seam aliases below are thin wrappers on
+  `--only <id>`; adding a sixth seam is one entry in the manifest, not a sixth
+  copy of the script.
+  - `npm run telemetry:sync` (`--only telemetry`) re-vendors
+    `telemetry/bundle/instrument.mjs` into the seven supplementary images that
+    boot through it. Each image is its own Docker build context and cannot COPY
+    from the repo root, so an image whose copy rots is a dashboard quietly
+    missing a container.
+  - `npm run presence:sync` (`--only presence`) re-vendors
+    `src/secrets/presence.ts` into the bundle host tree. A drifted copy means one
+    component calls `change-me` filler and the other calls it a credential, on
+    the same console row.
+  - `npm run wire:sync` (`--only wire`) re-vendors
+    `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the
+    envelope shape — into `servers/secrets`. Both halves address the SAME GCP
+    parameter, and a drift here is the one failure in this subsystem that is
+    silent (`HACKS.md` #33). `test/parameter-wire.ownership.test.ts` is the
+    seam's other half: it fails if that tree grows a second implementation of a
+    name the wire owns, which byte-identity alone cannot see.
+  - `npm run paramroute:sync` (`--only paramroute`) re-vendors
+    `src/secrets/param-route.ts` — the parameter write-back wire, BOTH ends of
+    it: the route shape and body core validates, and the client the host calls
+    with. Core serves the route and the host is its only caller, so a drift is a
+    container persisting a rotated credential to a URL core does not serve — loud
+    on the write (the mount degrades), silent on the boot read, which falls back
+    to the baked env and looks exactly like a deployment nobody has rotated yet.
+  - `npm run envprefix:sync` (`--only envprefix`) re-vendors
+    `src/secrets/env-prefix.ts` — the slug → box-variable-name mangling — into
+    the bundle host tree. The renderer NAMES a variable and the host is the only
+    thing that reads it back, so a drift puts the credential on the container
+    under a name nothing looks for: green deploy, clean boot log, every call
+    failing on a variable that is right there.
+    `test/env-prefix.markers.test.ts` is the seam's other half: it greps both
+    trees for the marker variables discovery actually looks for.
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml` — the
   stock config, which has zero servers and a console nobody can enter.
 - `npm run dev:agent` (`scripts/agent-dev.sh`) is the one to reach for instead:
@@ -106,6 +118,7 @@ not a confession.
 | `src/deploy/preflight.ts` — what a deploy demands of the store                      | `operate/secrets.md`, `limitations.md`                                                                                   |
 | `src/deploy/server-namespaces.ts` — the per-server/gateway resolution order         | `operate/secrets.md`, `operate/deploy-model.md`, `servers/interface.md`                                                  |
 | `src/secrets/env-prefix.ts` — the slug → box-variable-name mangling                 | `operate/secrets.md`, `limitations.md`, and `npm run envprefix:sync`                                                     |
+| `scripts/sync-vendored.mjs` — a seam added to `VENDORED`, or the mechanism itself   | this file's vendored-modules bullet, and `operate/telemetry.md` if the telemetry entry moved                             |
 | `src/secrets/param-route.ts`, `src/http/params.ts` — the credential write-back path | `operate/secrets.md`, `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`, and `npm run paramroute:sync` |
 | `scripts/resolve-image-tag.ts`, `src/deploy/imageTag.ts`                            | `operate/operations.md`                                                                                                  |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                               | `operate/telemetry.md`                                                                                                   |

@@ -22,7 +22,7 @@ import {
  *
  * The route is mounted here on the strad image in BUNDLE mode. The bundle host
  * image serves the identical route from the vendored copy of the same module —
- * see test/presence.sync.test.ts, which is what keeps them the same.
+ * see test/vendored.sync.test.ts, which is what keeps them the same.
  */
 
 const YAML = `

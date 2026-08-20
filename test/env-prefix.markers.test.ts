@@ -1,32 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error — a plain .mjs script, deliberately not part of the TS program.
-import { drifted, TARGETS } from "../scripts/sync-env-prefix.mjs";
 
 /**
  * The renderer names a variable; the bundle host is the only thing that reads it
  * back. Nothing else in the system sees both halves.
  *
- * `servers/bundle/host` is its own npm project with its own lockfile, so it
- * cannot import `src/secrets/env-prefix.ts` — the rule has to exist twice. Drift
- * between the two copies is the quietest failure in this subsystem: the value is
- * on the container, under a name the server does not look for, and the deploy is
- * green.
+ * That the RULE is byte-identical in both trees is one entry in the vendoring
+ * manifest and is checked in `test/vendored.sync.test.ts`. This file owns the
+ * other half, which no manifest can see: that the NAMES the rule is applied to
+ * are still the names the two trees really use.
  *
- * If it fails: edit `src/secrets/env-prefix.ts` (never the copy), run
- * `npm run envprefix:sync`, and commit both.
- */
-describe("the vendored env-prefix rule", () => {
-  it("is byte-identical in every tree that speaks it", () => {
-    expect(drifted()).toEqual([]);
-  });
-
-  it("covers every tree that reads a per-slug variable", () => {
-    expect(TARGETS).toEqual(["servers/bundle/host/src/env-prefix.ts"]);
-  });
-});
-
-/**
  * The host discovers a second instance of a tree by looking for that tree's
  * variables under a slug prefix. Rename a variable in the tree and say nothing
  * here, and discovery stops finding anything — silently, because "no per-slug
