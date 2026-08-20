@@ -20,6 +20,9 @@ const EXPECTED = {
   "/gmail": 8,
   "/google-calendar": 7,
   "/google-docs": 11,
+  // Four read tools and four write tools. A strad `-ro` slug is this same mount
+  // with the write four withheld by the gateway's tools.allow.
+  "/google-sheets": 8,
 };
 
 // The MCP SDK's per-request timeout defaults to 60s at every hop; be explicit.
@@ -57,5 +60,5 @@ if (failed) {
   process.exit(1);
 }
 console.log(
-  "\nsmoke test PASSED — all 3 servers list tools with no credentials present",
+  "\nsmoke test PASSED — all 4 servers list tools with no credentials present",
 );

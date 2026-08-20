@@ -62,13 +62,19 @@ none. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts eighteen MCP servers in one
+`ghcr.io/tadasant/strad-bundle` container that mounts nineteen MCP servers in one
 Node process, assembled from eleven independently-built dependency trees. The
 staging config maps twenty-seven of its twenty-eight `supplementary-image`
 entries onto seventeen of those mounts, because capability variants of one
-upstream are two entries pointing at the same path — `/x-twitter` is the
-eighteenth mount and has no staging slug. The twenty-eighth entry runs on the
-second bundle, below.
+upstream are two entries pointing at the same path — `/x-twitter` and
+`/google-sheets` are in the image with no staging slug. The twenty-eighth entry
+runs on the second bundle, below.
+
+Three of those mounts are also mounted again, once per slug, when a deployment
+gives a slug its own credential rather than sharing the container's: `/telegram`,
+`/remote-filesystem-tmp-public` and `/google-sheets`. That is what makes six
+`google-sheets-*` slugs over three Google accounts one server rather than three —
+see [Google Sheets](/servers/google-sheets/).
 
 It has a **second** bundle, `bundle-zimmer-secrets`, and the reason is worth
 stating because it is the one thing a bundle cannot share: `process.env`. That
@@ -328,7 +334,7 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (17 mounted servers,
+  serialises rendering. strad's own deployment puts everything (19 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -336,8 +342,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, eighteen servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all eighteen down together, and the
+**One process, one core, nineteen servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all nineteen down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

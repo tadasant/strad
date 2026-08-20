@@ -654,10 +654,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Eighteen servers now share one process, and one Chromium
+## 24. Nineteen servers now share one process, and one Chromium
 
-The collapsed bundle is one container running eighteen MCP servers and one
-headless Chromium. An OOM there is an eighteen-server outage; it used to be a
+The collapsed bundle is one container running nineteen MCP servers and one
+headless Chromium. An OOM there is a nineteen-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -2939,3 +2939,30 @@ because each one names the evidence that closed it.
 - [x] **fetchpet / pointsyeah are activated** — both carry real credentials and
       neither is `enabled: false` in `infra/strad.staging.yaml`, proven with live
       tool calls (hack #19).
+
+## 64. A google-sheets credential is a human-minted refresh token, and in testing mode it expires in 7 days
+
+**What.** `google-sheets` is the one server in the bundle that authenticates as a
+PERSON rather than as a service account: an OAuth refresh token for one Google
+account, minted once by that person in a browser and seeded into the parameter
+store. Nothing in strad can mint one, refresh a revoked one, or notice in advance
+that one is about to stop working.
+
+**Why it is this way.** The three accounts Tadas wants served include a consumer
+`gmail.com` account, which domain-wide delegation cannot reach at all — a DWD
+credential is scoped to a Workspace domain. Per-account OAuth is the only model
+that covers all three, and it has the side benefit of being the narrowest
+credential available: one account, not "impersonate anyone in the domain".
+
+**The sharp edge.** While the OAuth app is in **testing** mode — which is what
+whitelisting a handful of accounts as test users means — Google expires refresh
+tokens after **seven days**. Every tool call then fails with `invalid_grant`, and
+the only fix is a human re-running consent and re-seeding the value. The failure
+is loud and self-describing (the server appends that instruction to the error),
+but it is not automatic, and the seven-day clock is not visible from anywhere in
+strad. Publishing the OAuth app removes the expiry; nothing else does.
+
+**Also.** A refresh token carries the scopes it was consented for, so an `-ro`
+slug seeded with a `spreadsheets.readonly` token is read-only in Google as well as
+in the gateway — which is strictly better than hack #22's position. Whether that
+is true depends on which token a human pasted where, and nothing verifies it.

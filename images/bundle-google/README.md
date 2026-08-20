@@ -1,16 +1,17 @@
 # bundle-google
 
-A strad **supplementary image**: the `gmail`, `google-calendar` and
-`google-docs` MCP servers packaged into **one** container and served over
+A strad **supplementary image**: the `gmail`, `google-calendar`, `google-docs`
+and `google-sheets` MCP servers packaged into **one** container and served over
 Streamable HTTP, each on its own path.
 
 ```
 /gmail             -> gmail-workspace-mcp-server        (8 tools)
 /google-calendar   -> google-calendar-workspace-mcp-server (7 tools)
 /google-docs       -> google-docs-workspace-mcp-server   (11 tools)
+/google-sheets     -> google-sheets-workspace-mcp-server  (8 tools)
 ```
 
-All three are **pure Google API** servers — no browser, no subprocess — so they
+All four are **pure Google API** servers — no browser, no subprocess — so they
 colocate happily in one process. strad registers each as a `supplementary-image`
 server sharing this one `image` + `bundle` and differing only by `path`; the
 gateway proxies `?servers=gmail` to `${bundle-google.PRIVATE_URL}/gmail`.
@@ -30,7 +31,11 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   plus `@pulsemcp/mcp-elicitation`. Wired as npm workspaces. The only edit to
   vendored code is one dependency line (gmail's elicitation dep → the vendored
   workspace) and a `types` field so the entrypoint typechecks.
-- `scripts/smoke.mjs` — connects a real MCP client to all three paths and lists
+- `vendor/google-sheets-shared/` — **not** vendored from anywhere. It is strad's
+  own server, written here, following the same shape as its neighbours so this
+  entrypoint and the collapsed bundle host can load all four identically. It has
+  unit tests (`npm test`), which the others do not.
+- `scripts/smoke.mjs` — connects a real MCP client to all four paths and lists
   tools; the credential-free boot test used by CI and `npm run smoke`.
 
 ## Develop
@@ -38,8 +43,9 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
 ```bash
 npm install
 npm run build          # builds vendored shared packages, then the entrypoint
+npm test               # the google-sheets unit suite (builds first)
 node dist/index.js &   # serves on :8080
-npm run smoke          # asserts all three servers list their tools
+npm run smoke          # asserts all four servers list their tools
 ```
 
 ## Environment variables
@@ -90,6 +96,20 @@ docs the app did not create — `drive.file` is not enough).
 - `BUNDLE_GOOGLE_VERSION` — baked by the release workflow; reported in
   `serverInfo` / `/healthz`.
 
+### google-sheets (`/google-sheets`)
+
+| Purpose | Variables |
+| --- | --- |
+| **OAuth2 (refresh token)** — the ONLY mode; no service-account path | `GOOGLE_SHEETS_OAUTH_CLIENT_ID`, `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`, `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` |
+
+Scope: `https://www.googleapis.com/auth/spreadsheets` for the write tools,
+`…/spreadsheets.readonly` for a token that must not be able to write.
+
+A refresh token is ONE Google account, which is why this server reads an injected
+env rather than `process.env`: the collapsed bundle mounts it once per strad slug,
+each with its own account. This image keeps the single conventional mount. See
+`docs/src/content/docs/servers/google-sheets.md`.
+
 ## ⚠️ Domain-wide delegation is a human/admin dependency
 
 Service-account mode does not work until a **Google Workspace admin** authorizes
@@ -102,6 +122,6 @@ something this image can satisfy on its own.
 ## Registration in strad
 
 See the commented block in [`strad.config.example.yaml`](../../strad.config.example.yaml).
-Three `supplementary-image` entries share `image` + `bundle: bundle-google`,
+Four `supplementary-image` entries share `image` + `bundle: bundle-google`,
 differing by `path`. The real credential wiring (and the readonly/readwrite/
 readwrite_external split) lives in tadasant-internal.

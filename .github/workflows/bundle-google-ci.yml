@@ -21,6 +21,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # google-sheets is the one server in this image strad WROTE rather than
+  # vendored, and the only one whose bugs would be silent: its A1 arithmetic
+  # decides which cell a write lands in, and a credential-free smoke test never
+  # addresses a cell. These are the tests for that, plus the tier lists a
+  # read-only slug's `tools: allow:` is copied from in another repository.
+  google_sheets_unit:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: images/bundle-google
+        run: npm ci
+      - name: Test (build + the A1, rendering and tool-tier suite)
+        working-directory: images/bundle-google
+        run: npm test
+
   build_and_smoke:
     runs-on: self-hosted
     # The concurrency group above is per-REF, so two PRs run this job at the same
@@ -93,12 +112,12 @@ jobs:
           cache-from: type=gha,scope=bundle-google
           cache-to: type=gha,mode=max,scope=bundle-google
 
-      - name: Boot the image and smoke-test all three servers
+      - name: Boot the image and smoke-test all four servers
         # Credential-free contract: with NO Google secrets set, every server must
         # still boot, handshake over Streamable HTTP, and enumerate its tools.
         # Everything runs INSIDE the container (node is there; curl is not, and no
         # host port publishing is needed): the health probe uses node's fetch and
-        # the baked-in smoke test connects a real MCP client to all three paths.
+        # the baked-in smoke test connects a real MCP client to all four paths.
         run: |
           set -euo pipefail
           echo "image=$BUNDLE_GOOGLE_IMAGE container=$BUNDLE_GOOGLE_CONTAINER"
@@ -110,7 +129,7 @@ jobs:
             sleep 1
           done
 
-          echo "--- smoke: list tools on /gmail, /google-calendar, /google-docs"
+          echo "--- smoke: list tools on /gmail, /google-calendar, /google-docs, /google-sheets"
           docker exec "$BUNDLE_GOOGLE_CONTAINER" node scripts/smoke.mjs
 
       # Names only this run's container and image, so it cannot reap a concurrent

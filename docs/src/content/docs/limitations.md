@@ -324,13 +324,28 @@ shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. The `store`
 enum grows its second value there. See
 [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
+### 64. A Google Sheets credential is minted by a human, and expires in 7 days in testing mode
+
+[Google Sheets](/servers/google-sheets/) is the one bundled server that
+authenticates as a **person** — an OAuth refresh token for one Google account —
+rather than as a service account with domain-wide delegation. That is what lets it
+serve a consumer `gmail.com` account, which delegation cannot reach, and it makes
+each slug's credential the narrowest one available.
+
+The cost is lifecycle. strad cannot mint a refresh token, cannot replace a revoked
+one, and cannot see one expiring. While the OAuth app is in **testing** mode —
+which is what whitelisting a few accounts as test users means — Google expires
+refresh tokens after **seven days**; every call then fails `invalid_grant` until a
+human re-consents and re-seeds the value. The error says so in as many words, but
+nothing warns beforehand. Publishing the OAuth app removes the expiry.
+
 ## The deployment
 
-### 24. Eighteen servers share one process and one CPU
+### 24. Nineteen servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts eighteen MCP servers and
+The `bundle` component runs one Node process that mounts nineteen MCP servers and
 launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-eighteen down together, and Chromium contends with every other server for the single
+nineteen down together, and Chromium contends with every other server for the single
 vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against

@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that eighteen servers, eleven dependency trees and
+ * What it is really checking is that nineteen servers, eleven dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -51,6 +51,9 @@ const EXPECT = {
   gmail: 8,
   "google-calendar": 7,
   "google-docs": 11,
+  // Four read tools and four write tools. A strad `google-sheets-*-ro` slug is
+  // this same mount with the write four withheld by the gateway.
+  "google-sheets": 8,
   onepassword: 9,
   // Four tools, and not one of them can return a SECRET value. This is the
   // CREDENTIAL-FREE count: the probe fails closed here, so it is the floor of

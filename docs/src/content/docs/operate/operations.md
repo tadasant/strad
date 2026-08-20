@@ -821,7 +821,7 @@ declares thirty-one server slugs:
   costs no component.
 - twenty-seven `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on seventeen of the bundle image's
-  eighteen mounts, because a read-only and a read-write variant of one upstream
+  nineteen mounts, because a read-only and a read-write variant of one upstream
   are two entries sharing one `path`. Three of them — `telegram-ro`,
   `telegram-rw` and `pulse-subregistry` — carry `enabled: false` until their
   secrets are seeded, so they are skipped at render; see
