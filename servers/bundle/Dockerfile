@@ -8,7 +8,7 @@
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
 #   servers/remote-filesystem  remote-filesystem-tmp-public (strad's artifact store)
-#   images/bundle-google    gmail, google-calendar, google-docs
+#   images/bundle-google    gmail, google-calendar, google-docs, google-sheets
 #   servers/onepassword     onepassword            (+ the `op` CLI, baked below)
 #   servers/secrets         secrets                (Parameter + Secret Manager viewer)
 #   servers/good-eggs       good-eggs              ┐
@@ -51,7 +51,7 @@ COPY servers/bundle-api/upstream ./upstream
 COPY servers/bundle-api/remote ./remote
 RUN npm run build && npm prune --omit=dev
 
-# ---- bundle-google: gmail / calendar / docs ---------------------------------
+# ---- bundle-google: gmail / calendar / docs / sheets -------------------------
 FROM ${PW} AS build-google
 WORKDIR /src
 COPY images/bundle-google/package.json images/bundle-google/package-lock.json ./
@@ -59,6 +59,7 @@ COPY images/bundle-google/vendor/mcp-elicitation/package.json ./vendor/mcp-elici
 COPY images/bundle-google/vendor/gmail-shared/package.json ./vendor/gmail-shared/
 COPY images/bundle-google/vendor/google-calendar-shared/package.json ./vendor/google-calendar-shared/
 COPY images/bundle-google/vendor/google-docs-shared/package.json ./vendor/google-docs-shared/
+COPY images/bundle-google/vendor/google-sheets-shared/package.json ./vendor/google-sheets-shared/
 RUN npm ci --no-audit --no-fund
 COPY images/bundle-google/tsconfig.json ./
 COPY images/bundle-google/vendor ./vendor

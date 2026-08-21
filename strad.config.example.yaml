@@ -203,7 +203,7 @@ servers:
   # ONE image backs MANY servers: give each entry the SAME `image` and `bundle`
   # but a distinct `path`, and they all run in that one component (a component
   # still runs exactly one image). That is `ghcr.io/tadasant/strad-bundle:latest`
-  # — 17 MCP servers in one Node process, one shared Chromium, served at /slack,
+  # — 19 MCP servers in one Node process, one shared Chromium, served at /slack,
   # /gmail, /onepassword, /secrets and so on. Every entry below points at it.
   #
   # `env:` maps a container env var to a `${NAME}` ref, and those values resolve
@@ -331,6 +331,57 @@ servers:
         - slack_get_dms
         - slack_get_dm
         - slack_find_user
+
+  # THE ONE SERVER WHOSE CREDENTIAL IS ONE PERSON.
+  #
+  # google-sheets authenticates with an OAuth refresh token, and a refresh token
+  # is exactly one Google account — there is no service account and no
+  # impersonation. The pair below is ONE account, so both slugs sit on the
+  # conventional `/google-sheets` mount and share its credential, and the only
+  # difference between them is the tools policy.
+  #
+  # SEVERAL ACCOUNTS IS THE OTHER SHAPE, and it needs one more thing: give each
+  # slug `path: /<its own slug>`. The bundle host serves one instance per path and
+  # hands a slug its per-slug variables (GOOGLE_SHEETS_WORK_RO__…) only when the
+  # path is the slug's own name — so six google-sheets slugs over three accounts
+  # are six entries, six paths, six mounts, one implementation. Two slugs sharing
+  # one path are one process holding one token, and renderAppSpec refuses that
+  # outright when their values differ. See docs/servers/google-sheets.md.
+  #
+  # Because the credential is per slug in that shape, a read-only slug can be
+  # seeded a refresh token consented only for spreadsheets.readonly — so Google
+  # refuses a write even if the gateway did not. That is a guarantee 1Password's
+  # read-only slug cannot have (HACKS.md #22).
+  - slug: google-sheets-ro
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-sheets
+    entitlements: [admin, readonly]
+    env:
+      GOOGLE_SHEETS_OAUTH_CLIENT_ID: "${GOOGLE_SHEETS_OAUTH_CLIENT_ID}"
+      GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "${GOOGLE_SHEETS_OAUTH_CLIENT_SECRET}"
+      GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "${GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN}"
+    tools:
+      allow:
+        - get_spreadsheet
+        - get_sheet_values
+        - batch_get_sheet_values
+        - find_in_spreadsheet
+
+  # The write tier: no `tools:` block, because the full eight ARE this tier. Its
+  # token needs https://www.googleapis.com/auth/spreadsheets, where the read tier
+  # can live on …/spreadsheets.readonly.
+  - slug: google-sheets-rw
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /google-sheets
+    entitlements: [admin]
+    env:
+      GOOGLE_SHEETS_OAUTH_CLIENT_ID: "${GOOGLE_SHEETS_OAUTH_CLIENT_ID}"
+      GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "${GOOGLE_SHEETS_OAUTH_CLIENT_SECRET}"
+      GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "${GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN}"
 
   # No credential at all — public endpoints, every tool.
   - slug: google-flights

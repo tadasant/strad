@@ -1,12 +1,13 @@
 /**
  * bundle-google — a strad supplementary image.
  *
- * One container, three Google Workspace MCP servers, each mounted on its own
+ * One container, four Google Workspace MCP servers, each mounted on its own
  * path and spoken over Streamable HTTP:
  *
  *   /gmail             -> gmail-workspace-mcp-server
  *   /google-calendar   -> google-calendar-workspace-mcp-server
  *   /google-docs       -> google-docs-workspace-mcp-server
+ *   /google-sheets     -> google-sheets-workspace-mcp-server
  *
  * strad's gateway registers each as a `supplementary-image` server that shares
  * this one `bundle-google` component, differing only by `path`. The gateway
@@ -35,6 +36,7 @@ import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { createMCPServer as createGmailServer } from "gmail-workspace-mcp-server-shared";
 import { createMCPServer as createCalendarServer } from "google-calendar-workspace-mcp-server-shared";
 import { createMCPServer as createDocsServer } from "google-docs-workspace-mcp-server-shared";
+import { createMCPServer as createSheetsServer } from "google-sheets-workspace-mcp-server-shared";
 
 const VERSION = process.env.BUNDLE_GOOGLE_VERSION ?? "0.1.0";
 const PORT = Number(process.env.PORT ?? 8080);
@@ -77,6 +79,15 @@ const MOUNTS: Mount[] = [
     path: "/google-docs",
     slug: "google-docs",
     build: () => createDocsServer({ version: VERSION }),
+  },
+  {
+    path: "/google-sheets",
+    slug: "google-sheets",
+    // ONE account per credential, read from `process.env` here. The collapsed
+    // bundle (servers/bundle) mounts this same server once PER SLUG instead, so
+    // several Google accounts can be served from one container; this image keeps
+    // the single conventional mount it has always had.
+    build: () => createSheetsServer({ version: VERSION }),
   },
 ];
 

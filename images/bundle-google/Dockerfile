@@ -13,6 +13,7 @@ COPY vendor/mcp-elicitation/package.json ./vendor/mcp-elicitation/
 COPY vendor/gmail-shared/package.json ./vendor/gmail-shared/
 COPY vendor/google-calendar-shared/package.json ./vendor/google-calendar-shared/
 COPY vendor/google-docs-shared/package.json ./vendor/google-docs-shared/
+COPY vendor/google-sheets-shared/package.json ./vendor/google-sheets-shared/
 RUN npm ci
 
 # Sources: compile the vendored shared packages (in dependency order) and then
@@ -31,7 +32,7 @@ FROM node:22-slim
 
 # Links the GHCR package back to the repo (README, visibility inheritance).
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad supplementary image — gmail, google-calendar and google-docs MCP servers over Streamable HTTP, credential-free."
+LABEL org.opencontainers.image.description="strad supplementary image — gmail, google-calendar, google-docs and google-sheets MCP servers over Streamable HTTP, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV=production

@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 18 upstream MCP servers (18
+ * bundle — THE strad supplementary image. All 19 upstream MCP servers (19
  * mounts, see `buildMounts`), one container, one process, one Chromium. The
  * gateway's config names more SLUGS than that — 28 supplementary-image entries
  * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
  * …) are several slugs pointing at ONE mount here.
  *
- * EIGHTEEN IS THE FLOOR, not a constant. Two trees (telegram, remote-filesystem)
- * mount ONE INSTANCE PER SLUG the environment carries per-slug values for — see
- * `extraSlugs` — so a container told about `telegram-ro` and `telegram-rw`
- * separately serves /telegram, /telegram-ro and /telegram-rw. No deployment does
- * that today, and the conventional path is always mounted, so a config that does
- * not ask for it sees exactly the eighteen it saw before.
+ * NINETEEN IS THE FLOOR, not a constant. Three trees (telegram,
+ * remote-filesystem, google-sheets) mount ONE INSTANCE PER SLUG the environment
+ * carries per-slug values for — see `extraSlugs` — so a container told about
+ * `telegram-ro` and `telegram-rw` separately serves /telegram, /telegram-ro and
+ * /telegram-rw. google-sheets is the case that will really use it: an OAuth
+ * refresh token IS one Google account, so six google-sheets slugs over three
+ * accounts are three more mounts here. The conventional path is always mounted,
+ * so a config that asks for none of this sees exactly the nineteen it saw before.
  *
  * TWENTY-SEVEN of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
@@ -39,8 +41,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Seventeen servers now share a process. A crash is a
- * 17-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Nineteen servers now share a process. A crash is a
+ * 19-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -294,6 +296,15 @@ async function buildMounts(): Promise<Mount[]> {
     },
   });
 
+  // google-sheets is the one server in this tree whose CREDENTIAL is per slug: an
+  // OAuth refresh token belongs to ONE Google account, and a deployment that wants
+  // several accounts wants several mounts. The conventional path is always served
+  // (degraded when nothing gave it a credential); each slug the environment
+  // carries a full OAuth set for gets its own.
+  mounts.push(loadGoogleSheets(google.sheets, "google-sheets"));
+  for (const slug of extraSlugs("google-sheets", google.sheets.GOOGLE_SHEETS_ENV_NAMES))
+    deferred.push({ slug, load: async () => loadGoogleSheets(google.sheets, slug) });
+
   // --- secrets --------------------------------------------------------------
   // The odd one out, and deliberately so: this server's CREDENTIAL is what makes
   // it safe, not its code. It runs against Google Cloud Parameter Manager (the
@@ -436,10 +447,18 @@ async function loadPulseSubregistry(): Promise<Mount> {
   };
 }
 
+interface GoogleSheetsModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /** The variables ONE account's credential is made of. Owned by the tree. */
+  GOOGLE_SHEETS_ENV_NAMES: readonly string[];
+}
+
 interface GoogleTree {
   gmail: Factory;
   calendar: Factory;
   docs: Factory;
+  sheets: GoogleSheetsModule;
 }
 
 async function loadGoogleTree(): Promise<GoogleTree> {
@@ -455,10 +474,64 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     "bundle-google",
     "vendor/google-docs-shared/build/index.js",
   );
+  const sheets = await loadFromTree<GoogleSheetsModule>(
+    "bundle-google",
+    "vendor/google-sheets-shared/build/index.js",
+  );
   return {
     gmail: gmail.createMCPServer,
     calendar: calendar.createMCPServer,
     docs: docs.createMCPServer,
+    sheets,
+  };
+}
+
+/**
+ * google-sheets: one mount per Google ACCOUNT, and six strad slugs over three of
+ * them.
+ *
+ * WHY THIS ONE IS DIFFERENT. Every other server in this tree authenticates as a
+ * service account with domain-wide delegation — one credential, any user in the
+ * Workspace. Sheets here authenticates as a PERSON: an OAuth refresh token minted
+ * by that person for that account. A refresh token is one account by
+ * construction, so `google-sheets-tadas412-*` and `google-sheets-tadas-tadasant-*`
+ * cannot share a variable, in the same way `gcs` and the artifact store cannot
+ * share GCS_BUCKET.
+ *
+ * The renderer already solves that: every supplementary server's variables are
+ * ALSO baked under its own slug (`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`),
+ * and `slugEnvView` flattens one slug's prefixed names back to the bare ones this
+ * server reads. So a config with six google-sheets slugs produces six mounts here,
+ * each holding exactly one account's token, without this file knowing any of their
+ * names.
+ *
+ * The READ/WRITE half of a slug's name is NOT decided here. This mount serves all
+ * eight tools and strad's gateway withholds the four writes from a `-ro` slug
+ * (src/gateway/toolPolicy.ts) — the same trade every other capability variant in
+ * this container makes. A deployment that wants Google to enforce it too can seed
+ * the `-ro` slug a token consented only for `spreadsheets.readonly`; because the
+ * credential is per slug, that costs nothing here.
+ */
+function loadGoogleSheets(sheets: GoogleSheetsModule, slug: string): Mount {
+  const env = slugEnvView(process.env, slug);
+  // The tree owns what its credential IS. A copy of that list here would keep
+  // gating on three names on the day the server starts needing four.
+  const missing = sheets.missingCredentials(env);
+
+  return {
+    slug,
+    tree: "bundle-google",
+    serverName: "google-sheets-workspace-mcp-server",
+    capabilities: { tools: {} },
+    // Degraded, not unmounted: the tools must still LIST, so the console shows
+    // the slug and an agent can see what it would offer once a token lands.
+    degraded:
+      missing.length > 0
+        ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; every tool will fail`
+        : null,
+    register: async (s) => {
+      await sheets.createMCPServer({ version: VERSION, env }).registerHandlers(s);
+    },
   };
 }
 

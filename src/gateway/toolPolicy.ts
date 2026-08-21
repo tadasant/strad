@@ -11,7 +11,7 @@ import type { StradConfig } from "../config/schema.ts";
  * values of one variable and therefore could not share a container. Every
  * capability variant cost its own billed component: 12 bundles for the 26 server
  * slugs the config declared. The staging fleet is 28 supplementary-image entries:
- * 27 share ONE bundle and collapse onto 18 upstream mounts, while
+ * 27 share ONE bundle and collapse onto 19 upstream mounts, while
  * `zimmer-secrets` runs the same image as its own bundle for a second parameter
  * store. The `echo` builtin and `deepwiki` remote-http add no billed component.
  *

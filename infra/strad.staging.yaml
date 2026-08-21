@@ -17,7 +17,9 @@
 # the `anki` local-tunnel, which ships disabled — see its entry below.
 # Twenty-seven of the twenty-eight land on seventeen upstream mounts inside the
 # one bundle image, because capability variants share a mount; the twenty-eighth
-# (`zimmer-secrets`) runs that same image on a component of its own.
+# (`zimmer-secrets`) runs that same image on a component of its own. The image
+# serves nineteen mounts: `/x-twitter` and `/google-sheets` are in it with no
+# staging slug pointing at either.
 #
 # THREE of the twenty-eight carry `enabled: false` — telegram-ro, telegram-rw
 # and pulse-subregistry — because their credentials are not in the store yet.
@@ -143,19 +145,21 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and seventeen of the image's eighteen
-  # upstream MCP servers — the bundle-api fleet, the Google trio, 1Password (with
-  # the `op` CLI baked in), telegram and the three browser servers, which share ONE
-  # Chromium (never one per server: see servers/bundle/host/src/browser.ts). The
-  # eighteenth mount, `/x-twitter`, is in the image and has no slug here; the
-  # PROCESS registers all eighteen either way — including `/telegram`, whose two
-  # slugs are disabled until their secrets are seeded — which is what the sizing
-  # below is about.
+  # THE bundle. One image, one component, and seventeen of the image's nineteen
+  # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
+  # (with the `op` CLI baked in), telegram and the three browser servers, which
+  # share ONE Chromium (never one per server: see
+  # servers/bundle/host/src/browser.ts). Two mounts, `/x-twitter` and
+  # `/google-sheets`, are in the image with no slug here — google-sheets is
+  # registered in prod, where its six slugs each carry one Google account's OAuth
+  # token. The PROCESS registers all nineteen either way — including `/telegram`,
+  # whose two slugs are disabled until their secrets are seeded — which is what
+  # the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with eighteen servers registered adds ~200MB. 0.5GB is absurd here;
+  # and Node with nineteen servers registered adds ~200MB. 0.5GB is absurd here;
   # 1GB would be one bad page render from an OOM that takes all 27 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if

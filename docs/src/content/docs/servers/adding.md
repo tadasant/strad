@@ -262,7 +262,7 @@ once. It declares thirty server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
 and twenty-eight `supplementary-image` entries — twenty-seven sharing ONE bundle
 over the private network, which resolve onto seventeen of the bundle image's
-eighteen mounts because every read-only / read-write pair is two entries on one
+nineteen mounts because every read-only / read-write pair is two entries on one
 path. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
 credentials from step 4b, and `remote-filesystem-tmp-public` is the deploy-time

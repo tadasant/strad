@@ -1,13 +1,20 @@
 # bundle — THE strad supplementary image
 
-Seventeen MCP servers. One container. One Chromium. One `op` binary.
+Nineteen MCP servers. One container. One Chromium. One `op` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter /telegram
-/google-flights /gmail /google-calendar /google-docs /onepassword /secrets
+/x-twitter /telegram /pulse-subregistry
+/google-flights /gmail /google-calendar /google-docs /google-sheets
+/onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
+
+Nineteen is the floor, not a constant: three of those mounts (`/telegram`,
+`/remote-filesystem-tmp-public`, `/google-sheets`) are re-mounted once more per
+slug the container holds a separate credential for. `/google-sheets` is the one a
+real deployment uses that way — an OAuth refresh token is one Google account, so
+six `google-sheets-*` slugs over three accounts are three more mounts.
 
 strad's staging app is **three components**: `core` (the public gateway),
 `bundle` (this), and `bundle-zimmer-secrets` — a second copy of this image that
@@ -42,7 +49,7 @@ different places:
 | tree | source | servers |
 | --- | --- | --- |
 | `bundle-api` | `servers/bundle-api` | slack, serpapi-hotels, tailscale, monarch-money, gcs, google-flights |
-| `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs |
+| `bundle-google` | `images/bundle-google` | gmail, google-calendar, google-docs, google-sheets |
 | `onepassword` | `servers/onepassword` | onepassword (+ the `op` CLI, baked in) |
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
 | `remote-filesystem` | `servers/remote-filesystem` | remote-filesystem-tmp-public (strad's artifact store) |
@@ -109,7 +116,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Seventeen servers share a process. A crash is a seventeen-server outage. Everything
+Nineteen servers share a process. A crash is a nineteen-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
