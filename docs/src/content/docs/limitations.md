@@ -1175,7 +1175,7 @@ need are [#59](#59-a-dm-needs-slack-scopes-the-channel-tools-never-asked-for).
 reports it. The vendored modules elsewhere in strad (`presence.ts`, `wire.ts`)
 each have a sync script and a drift test; this has neither, by construction. What
 stands in for one is `fork/slack/test/mrkdwn.test.mjs` and `fork/slack/test/dm.test.mjs`,
-run on every PR by `ci.yml`'s `bundle_api` job. They fail if a write tool stops
+run on every PR by `ci.yml`'s `servers (bundle-api)` leg. They fail if a write tool stops
 leading with the tilde rule, if the registered set is no longer exactly the
 thirteen expected names, or if the server starts rewriting a caller's text.
 
@@ -1660,7 +1660,7 @@ does not get one from this server.
 **Only its tests defend the delta,** exactly as with #55. A re-vendor that pastes
 the published package over `fork/google-flights/src` reverts every fix silently.
 `fork/google-flights/test/fork.test.mjs`, run on every PR by `ci.yml`'s
-`bundle_api` job, asserts the encoded `tfs` bytes rather than a round-trip
+`servers (bundle-api)` leg, asserts the encoded `tfs` bytes rather than a round-trip
 through this repo's own schema — a round-trip passes on the broken numbering,
 since the bug was a disagreement with a schema that lives at Google — and asserts
 the grid's window as literal dates, because which dates came back was the bug.
