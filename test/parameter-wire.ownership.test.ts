@@ -2,44 +2,22 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — a plain .mjs script, deliberately not part of the TS program.
-import { drifted, SOURCE, TARGETS } from "../scripts/sync-parameter-wire.mjs";
+import { repoPath, VENDORED } from "../scripts/sync-vendored.mjs";
 
-/**
- * Vendored copies rot. This is the thing that notices.
- *
- * `servers/secrets` is its own npm project with its own lockfile and its own
- * compiler settings, so it cannot import `src/secrets/parameters/wire.ts`. The id
- * fold, the value encoding and the two pointer predicates have to exist in both
- * trees, and the only thing standing between that and two slowly-diverging
- * encodings is this test.
- *
- * The failure it prevents is the one this subsystem otherwise does not have.
- * Everything else here fails loudly; a drift on this seam does not. Both halves
- * address the SAME GCP parameter, so an id fold that folds one character
- * differently addresses a resource the other half cannot see, and a reader that
- * does not know the `encoding` field exists hands a child process base64url TEXT
- * as its credential and reports success. See `HACKS.md` #33.
- *
- * If it fails: edit `src/secrets/parameters/wire.ts` (never the copy), run
- * `npm run wire:sync`, and commit both.
- */
-describe("the vendored parameter wire encoding", () => {
-  it("is byte-identical in every tree that writes to the store", () => {
-    expect(drifted()).toEqual([]);
-  });
-
-  it("covers every tree that addresses a strad parameter", () => {
-    // Naming it here means a fourth tree that reaches the store is a deliberate
-    // act, not something that silently ships with its own copy of the fold.
-    expect(TARGETS).toEqual(["servers/secrets/shared/src/parameter-wire.ts"]);
-  });
-});
+/** Taken from the manifest so this test follows the source if it moves. */
+const SOURCE: string = repoPath(
+  VENDORED.find((entry: { id: string }) => entry.id === "wire").source,
+);
 
 /**
  * A byte comparison fails OPEN. A vendored copy nothing imports is in sync with
  * its source forever, and the tree can quietly keep a second implementation
  * beside it — which is exactly the state this change replaced. So the copy being
  * identical is only half the check: the tree also has to be USING it.
+ *
+ * The other half — that the copy is byte-identical at all — is one entry in the
+ * manifest and is checked in `test/vendored.sync.test.ts`. This file owns what is
+ * true of THIS seam and of no other.
  */
 describe("the secrets tree has no second implementation", () => {
   const dir = "servers/secrets/shared/src";

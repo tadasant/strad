@@ -497,8 +497,9 @@ CMD ["node", "--import", "/app/host/otel/instrument.mjs", "/app/host/dist/index.
 `otel/instrument.mjs` is copied **byte-identical** into every image that has one.
 Each image is its own Docker build context and cannot `COPY` from the repo root —
 the same reason the `shared/` trees are vendored. `telemetry/bundle/instrument.mjs`
-is the source of truth; `scripts/sync-telemetry.mjs` copies it to seven targets;
-`test/telemetry.sync.test.ts` fails CI if any copy drifts.
+is the source of truth; it is the `telemetry` entry in the vendoring manifest
+(`scripts/sync-vendored.mjs`), `npm run telemetry:sync` copies it to seven targets,
+and `test/vendored.sync.test.ts` fails CI if any copy drifts.
 
 Seven targets, because the per-server images (`bundle-api`, `good-eggs`, `fetchpet`,
 `pointsyeah`, `onepassword`, `bundle-google`) still exist and are still built even

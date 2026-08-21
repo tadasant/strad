@@ -1161,8 +1161,9 @@ npm project and writes to the same store, so a copy of the encoding that lost th
 `encoding` field — or folded a path into a different resource id — would fail in
 exactly this way, with both halves still answering. That copy is a vendored file
 (`src/secrets/parameters/wire.ts` → `servers/secrets/shared/src/parameter-wire.ts`,
-`npm run wire:sync`), and `test/parameter-wire.sync.test.ts` fails CI both when it
-drifts and when that tree grows a second implementation beside it. Nothing about
+`npm run wire:sync`), and CI fails both when it drifts (`test/vendored.sync.test.ts`,
+over every vendored seam at once) and when that tree grows a second implementation
+beside it (`test/parameter-wire.ownership.test.ts`). Nothing about
 that helps a ROLLBACK: an old image carries an old copy of both halves, in sync
 with each other and wrong about the store. The paragraph above stands unchanged.
 
@@ -1240,7 +1241,7 @@ fails closed (503) when it is unset.
 **The vendored module.** `src/secrets/presence.ts` is copied byte-identical into
 `servers/bundle/host/src/presence.ts` because that tree is a separate npm project
 and cannot import across the boundary. `npm run presence:sync` writes it,
-`test/presence.sync.test.ts` fails CI on drift. Two copies of the placeholder
+`test/vendored.sync.test.ts` fails CI on drift. Two copies of the placeholder
 table would mean `change-me` reading as filler on one console row and as a
 credential on the next, in one list, under one word.
 
@@ -1295,7 +1296,8 @@ cached for the whole TTL.
 
 **Undo.** Delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
 `src/gateway/bundle-presence.ts`, `src/http/presence.ts`,
-`scripts/sync-presence.mjs`, `servers/bundle/host/src/presence.ts` and its route
+the `presence` entry in `scripts/sync-vendored.mjs`,
+`servers/bundle/host/src/presence.ts` and its route
 in `servers/bundle/host/src/index.ts`, the `presence`/`store` options on
 `ObserveOptions`, `readDeploymentSecretStatus`, the `unrenderable` state, the
 `STRAD_PARAM_KEYS` env var in `src/deploy/appspec.ts`, and
@@ -2349,9 +2351,15 @@ DigitalOcean both times.
   and the env view falls back to bare names, so collapsing the two would point it
   at the wrong bucket.
 - **The mangling rule is vendored across an npm boundary** (`npm run
-envprefix:sync`), like `presence.ts` and `wire.ts`. A drift means the renderer
-  names a variable one way and the host reads another: green deploy, clean boot
-  log, every call failing on a variable that is right there.
+envprefix:sync`), like `presence.ts` and `wire.ts` — one entry each in the
+  `VENDORED` manifest in `scripts/sync-vendored.mjs`, all checked by
+  `test/vendored.sync.test.ts`. A drift means the renderer names a variable one
+  way and the host reads another: green deploy, clean boot log, every call
+  failing on a variable that is right there.
+- **What that check cannot see is the NAMES.** `test/env-prefix.markers.test.ts`
+  is the other half: it greps the two trees for the marker variables the host
+  actually discovers a second instance by. A byte-identical rule applied to a
+  variable nobody spells that way any more fails exactly as quietly.
 - **The slug schema got tighter to make the rule injective.** No `--`, no leading
   or trailing `-`. Without it `a--b` + `C` and `a` + `B__C` are one variable. No
   slug in staging or prod has ever used either shape.
@@ -2364,7 +2372,8 @@ envprefix:sync`), like `presence.ts` and `wire.ts`. A drift means the renderer
 loop and the two checks after it) and restore the unconditional throw; drop `env:`
 from the two trees' `createMCPServer` options; collapse `extraSlugs`/`deferred`
 back to a single `loadTelegram()` / `loadRemoteFilesystem()` call; delete
-`src/secrets/env-prefix.ts`, its vendored copy and its sync script. The slug schema
+`src/secrets/env-prefix.ts`, its vendored copy and its entry in
+`scripts/sync-vendored.mjs`. The slug schema
 can stay tight either way.
 
 ## 57. The ghcr credential is a box-wide file, and the slowest build loses it

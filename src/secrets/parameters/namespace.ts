@@ -19,9 +19,9 @@ import {
  * This module composes and validates those paths, and codes the envelope stored
  * at one. How a path becomes a GCP resource id, and how a value is encoded into
  * the envelope, live in `wire.ts` — that half is vendored into `servers/secrets`
- * and checked by `test/parameter-wire.sync.test.ts`, because all three roles that
- * touch it (the MCP viewer, the console admin, the runtime resolver) must address
- * the same underlying resources.
+ * and checked by `test/vendored.sync.test.ts`, because all three roles that touch
+ * it (the MCP viewer, the console admin, the runtime resolver) must address the
+ * same underlying resources.
  */
 
 /** Build the static-kind namespace for a server slug, e.g. `/strad/staging/mcp/gcs/static/`. */

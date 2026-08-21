@@ -49,7 +49,7 @@ import {
  *
  * The id fold, the value encoding and the envelope shape are not declared in this
  * tree. They are vendored from `src/secrets/parameters/wire.ts` into
- * `parameter-wire.js` by `npm run wire:sync`, and `test/parameter-wire.sync.test.ts`
+ * `parameter-wire.js` by `npm run wire:sync`, and `test/vendored.sync.test.ts`
  * in the root suite fails CI when the copy drifts — both halves address the SAME
  * GCP resource, so a one-character disagreement splits them without either half
  * noticing.

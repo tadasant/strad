@@ -255,7 +255,7 @@ export function bootRequirements(): {
  *
  * It moved because a BUNDLE has to apply the identical rule to the values core
  * cannot see, and that tree cannot import across the package boundary — so the
- * module is vendored, byte-identical, and `test/presence.sync.test.ts` fails CI
+ * module is vendored, byte-identical, and `test/vendored.sync.test.ts` fails CI
  * if the copies drift. Two placeholder tables would mean one component calling
  * `change-me` filler and the other calling it a credential, in one list, under
  * one word.

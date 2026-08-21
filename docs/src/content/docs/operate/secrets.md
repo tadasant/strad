@@ -254,8 +254,9 @@ agree on — the path-to-resource-id fold, the value encoding, the envelope shap
 and the predicate that recognises an un-dereferenced `__REF__` — live in one file,
 `src/secrets/parameters/wire.ts`, which is vendored into
 `servers/secrets/shared/src/parameter-wire.ts` by `npm run wire:sync`.
-`test/parameter-wire.sync.test.ts` fails CI when the copy drifts, and when that
-tree grows a second implementation of a name the shared file owns. It is checked
+`test/vendored.sync.test.ts` fails CI when the copy drifts, and
+`test/parameter-wire.ownership.test.ts` fails when that tree grows a second
+implementation of a name the shared file owns. It is checked
 rather than asked-for-politely because a disagreement here is the one failure in
 this subsystem that is silent: both halves keep answering, and one of them hands a
 process bytes that are not the value. See [Known limitations](/limitations/) #33.
@@ -1191,7 +1192,7 @@ POST /_strad/presence            Authorization: Bearer $STRAD_INTERNAL_TOKEN
 and nothing else. No value, no length, no prefix, no hash, no character class.
 The rule lives in `src/secrets/presence.ts`, which is vendored byte-identical
 into `servers/bundle/host/src/presence.ts` (`npm run presence:sync`;
-`test/presence.sync.test.ts` fails CI on drift) so that `change-me` reads as
+`test/vendored.sync.test.ts` fails CI on drift) so that `change-me` reads as
 filler whichever process holds it.
 
 **It cannot be turned into an oracle.** The key roster core sends is derived from

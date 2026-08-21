@@ -24,7 +24,7 @@ import { parameterPath } from "../src/secrets/parameters/namespace.ts";
  * calls it to read the credential that is current NOW and to persist the one it
  * just rotated to. Both ends of that wire are exercised here — the client is
  * `createParamClient` from `src/secrets/param-route.ts`, which is byte-identical
- * to the copy the bundle host runs (test/param-route.sync.test.ts) — and the
+ * to the copy the bundle host runs (test/vendored.sync.test.ts) — and the
  * store behind it is the in-memory Parameter Manager + Secret Manager double, so
  * the base64url envelope and the per-parameter `secretAccessor` grant are the
  * real ones.
