@@ -2,12 +2,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — a plain .mjs script, deliberately not part of the TS program.
-import { VENDORED } from "../scripts/sync-vendored.mjs";
+import { repoPath, VENDORED } from "../scripts/sync-vendored.mjs";
 
 /** Taken from the manifest so this test follows the source if it moves. */
-const SOURCE: string = VENDORED.find(
-  (entry: { id: string }) => entry.id === "wire",
-).source;
+const SOURCE: string = repoPath(
+  VENDORED.find((entry: { id: string }) => entry.id === "wire").source,
+);
 
 /**
  * A byte comparison fails OPEN. A vendored copy nothing imports is in sync with

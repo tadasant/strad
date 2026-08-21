@@ -118,16 +118,26 @@ export const VENDORED = [
   },
 ];
 
+/**
+ * A manifest path, resolved against the repo root rather than the caller's cwd.
+ *
+ * Exported so a test reads the same file this renders from. Two resolutions of
+ * one `source` string is two opinions about which file the seam is about.
+ */
+export function repoPath(relative) {
+  return join(root, relative);
+}
+
 /** The exact bytes every copy of `entry` should hold. */
 export function rendered(entry) {
-  return entry.banner + readFileSync(join(root, entry.source), "utf8");
+  return entry.banner + readFileSync(repoPath(entry.source), "utf8");
 }
 
 /** The paths of `entry` whose vendored copy is missing or stale. */
 export function drifted(entry) {
   const want = rendered(entry);
   return entry.targets.filter((target) => {
-    const path = join(root, target);
+    const path = repoPath(target);
     if (!existsSync(path)) return true;
     return readFileSync(path, "utf8") !== want;
   });
@@ -151,15 +161,38 @@ export function select(only) {
   return [entry];
 }
 
-/** `--check` and `--only <id>`, in either order. */
+const USAGE = "usage: sync-vendored.mjs [--check] [--only <id>]";
+
+/**
+ * `--check` and `--only <id>`, in either order.
+ *
+ * An argument this does not understand THROWS. Ignoring one would make `--chek`
+ * fall through to the write path and rewrite every copy on behalf of someone who
+ * asked to verify them, and `--only=wire --check` silently check all five.
+ */
 export function parseArgs(argv) {
-  const check = argv.includes("--check");
-  const at = argv.indexOf("--only");
-  if (at === -1) return { check, only: null };
-  const only = argv[at + 1];
-  if (!only || only.startsWith("--")) {
-    throw new Error("--only needs an id, e.g. `--only wire`.");
+  let check = false;
+  let only = null;
+
+  for (let at = 0; at < argv.length; at++) {
+    const arg = argv[at];
+    if (arg === "--check") {
+      check = true;
+    } else if (arg === "--only") {
+      only = argv[++at];
+      if (!only || only.startsWith("--")) {
+        throw new Error(`--only needs an id, e.g. \`--only wire\`. ${USAGE}`);
+      }
+    } else if (arg.startsWith("--only=")) {
+      only = arg.slice("--only=".length);
+      if (!only) {
+        throw new Error(`--only needs an id, e.g. \`--only wire\`. ${USAGE}`);
+      }
+    } else {
+      throw new Error(`unknown argument "${arg}". ${USAGE}`);
+    }
   }
+
   return { check, only };
 }
 
@@ -200,7 +233,7 @@ function main(argv = process.argv.slice(2)) {
   for (const entry of entries) {
     const want = rendered(entry);
     for (const target of entry.targets) {
-      const path = join(root, target);
+      const path = repoPath(target);
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, want);
     }
