@@ -53,34 +53,44 @@ export function renderValueRange(valueRange: ValueRange): RenderedValues {
   let cells = 0;
   let chars = 0;
   let emitted = 0;
-  let truncated = false;
+  /** Which cap stopped us — the two suggest different fixes. */
+  let hitCap: 'cells' | 'chars' | null = null;
 
   for (const [index, row] of rows.entries()) {
-    // `emitted > 0` so a range WIDER than the whole cap still shows its first
-    // row. Reporting "showing 0 of 12 rows" would be true and useless.
-    if (emitted > 0 && (cells + width > MAX_CELLS || chars > MAX_CHARS)) {
-      truncated = true;
-      break;
-    }
     const label = String(origin.row + index + 1);
     const rendered = Array.from({ length: width }, (_, i) =>
       // A literal pipe would break the table this is rendered into.
       cellText(row[i]).split('|').join('\\|')
     );
     const line = `| ${[label, ...rendered].join(' | ')} |`;
+
+    // Measured BEFORE the row is emitted, so neither cap overshoots. `emitted > 0`
+    // so a range wider than the whole cap still shows its first row: reporting
+    // "showing 0 of 12 rows" would be true and useless.
+    if (emitted > 0 && cells + width > MAX_CELLS) {
+      hitCap = 'cells';
+      break;
+    }
+    if (emitted > 0 && chars + line.length > MAX_CHARS) {
+      hitCap = 'chars';
+      break;
+    }
+
     lines.push(line);
     cells += width;
     chars += line.length;
     emitted += 1;
   }
 
-  if (truncated) {
+  if (hitCap) {
     lines.push('');
     lines.push(
-      `_Truncated: showing ${emitted} of ${rows.length} rows (cap: ${MAX_CELLS} cells). ` +
-        'Ask for a narrower A1 range to see the rest._'
+      `_Truncated: showing ${emitted} of ${rows.length} rows (hit the ` +
+        (hitCap === 'cells'
+          ? `${MAX_CELLS}-cell cap). Ask for fewer rows, or fewer columns._`
+          : `${MAX_CHARS}-character cap — these cells are large). Ask for a narrower A1 range._`)
     );
   }
 
-  return { text: lines.join('\n'), rows: emitted, truncated };
+  return { text: lines.join('\n'), rows: emitted, truncated: hitCap !== null };
 }

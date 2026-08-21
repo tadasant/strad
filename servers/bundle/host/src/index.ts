@@ -302,7 +302,7 @@ async function buildMounts(): Promise<Mount[]> {
   // (degraded when nothing gave it a credential); each slug the environment
   // carries a full OAuth set for gets its own.
   mounts.push(loadGoogleSheets(google.sheets, "google-sheets"));
-  for (const slug of extraSlugs("google-sheets", GOOGLE_SHEETS_MARKER_NAMES))
+  for (const slug of extraSlugs("google-sheets", google.sheets.GOOGLE_SHEETS_ENV_NAMES))
     deferred.push({ slug, load: async () => loadGoogleSheets(google.sheets, slug) });
 
   // --- secrets --------------------------------------------------------------
@@ -447,11 +447,18 @@ async function loadPulseSubregistry(): Promise<Mount> {
   };
 }
 
+interface GoogleSheetsModule {
+  createMCPServer: Factory;
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /** The variables ONE account's credential is made of. Owned by the tree. */
+  GOOGLE_SHEETS_ENV_NAMES: readonly string[];
+}
+
 interface GoogleTree {
   gmail: Factory;
   calendar: Factory;
   docs: Factory;
-  sheets: Factory;
+  sheets: GoogleSheetsModule;
 }
 
 async function loadGoogleTree(): Promise<GoogleTree> {
@@ -467,7 +474,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     "bundle-google",
     "vendor/google-docs-shared/build/index.js",
   );
-  const sheets = await loadFromTree<{ createMCPServer: Factory }>(
+  const sheets = await loadFromTree<GoogleSheetsModule>(
     "bundle-google",
     "vendor/google-sheets-shared/build/index.js",
   );
@@ -475,7 +482,7 @@ async function loadGoogleTree(): Promise<GoogleTree> {
     gmail: gmail.createMCPServer,
     calendar: calendar.createMCPServer,
     docs: docs.createMCPServer,
-    sheets: sheets.createMCPServer,
+    sheets,
   };
 }
 
@@ -505,15 +512,11 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * the `-ro` slug a token consented only for `spreadsheets.readonly`; because the
  * credential is per slug, that costs nothing here.
  */
-const GOOGLE_SHEETS_MARKER_NAMES = [
-  "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
-  "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
-  "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
-];
-
-function loadGoogleSheets(factory: Factory, slug: string): Mount {
+function loadGoogleSheets(sheets: GoogleSheetsModule, slug: string): Mount {
   const env = slugEnvView(process.env, slug);
-  const missing = GOOGLE_SHEETS_MARKER_NAMES.filter((name) => !env[name]);
+  // The tree owns what its credential IS. A copy of that list here would keep
+  // gating on three names on the day the server starts needing four.
+  const missing = sheets.missingCredentials(env);
 
   return {
     slug,
@@ -527,7 +530,7 @@ function loadGoogleSheets(factory: Factory, slug: string): Mount {
         ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; every tool will fail`
         : null,
     register: async (s) => {
-      await factory({ version: VERSION, env }).registerHandlers(s);
+      await sheets.createMCPServer({ version: VERSION, env }).registerHandlers(s);
     },
   };
 }

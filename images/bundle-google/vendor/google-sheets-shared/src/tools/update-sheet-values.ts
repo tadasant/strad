@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
+import { intendedSheetGid, resolveRange } from '../utils/resolve-range.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -17,11 +18,15 @@ const PARAM_DESCRIPTIONS = {
     'How Sheets parses what you send. USER_ENTERED (default) behaves as if a person typed ' +
     'it: "5/2/2026" becomes a date, "=SUM(B2:B9)" becomes a formula, "$1,200" becomes a ' +
     'formatted number. RAW stores the literal string, formulas included.',
+  sheet_gid:
+    'The tab to write to, by gid (the number in a Sheets URL after #gid=). An alternative ' +
+    'to naming the tab in `range`; combine it with a bare cell range like "B4:D6".',
 } as const;
 
 export const UpdateSheetValuesSchema = z.object({
   spreadsheet_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.spreadsheet_id),
   range: z.string().min(1).describe(PARAM_DESCRIPTIONS.range),
+  sheet_gid: z.number().int().optional().describe(PARAM_DESCRIPTIONS.sheet_gid),
   values: z.array(z.array(z.unknown())).min(1).describe(PARAM_DESCRIPTIONS.values),
   value_input_option: z
     .enum(['USER_ENTERED', 'RAW'])
@@ -55,6 +60,7 @@ export function updateSheetValuesTool(_server: Server, clientFactory: ClientFact
       properties: {
         spreadsheet_id: { type: 'string', description: PARAM_DESCRIPTIONS.spreadsheet_id },
         range: { type: 'string', description: PARAM_DESCRIPTIONS.range },
+        sheet_gid: { type: 'number', description: PARAM_DESCRIPTIONS.sheet_gid },
         values: {
           type: 'array',
           items: { type: 'array', items: {} },
@@ -74,15 +80,27 @@ export function updateSheetValuesTool(_server: Server, clientFactory: ClientFact
         const spreadsheetId = parseSpreadsheetId(parsed.spreadsheet_id);
         const client = clientFactory();
 
+        // requireTab: a bare "B4:D6" resolves to the FIRST tab, which is how a
+        // caller who read one tab silently overwrites another.
+        const range = await resolveRange(client, spreadsheetId, {
+          range: parsed.range,
+          sheetGid: intendedSheetGid({
+            spreadsheetIdOrUrl: parsed.spreadsheet_id,
+            range: parsed.range,
+            sheetGid: parsed.sheet_gid,
+          }),
+          requireTab: true,
+        });
+
         const result = await client.updateValues(
           spreadsheetId,
-          parsed.range,
+          range,
           parsed.values as unknown[][],
           parsed.value_input_option ?? 'USER_ENTERED'
         );
 
         const output =
-          `Updated ${result.updatedRange ?? parsed.range}: ` +
+          `Updated ${result.updatedRange ?? range}: ` +
           `${result.updatedCells ?? 0} cell(s) across ${result.updatedRows ?? 0} row(s).`;
 
         return { content: [{ type: 'text', text: output }] };

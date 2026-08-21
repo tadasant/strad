@@ -1,8 +1,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
-import { parseSheetGid, parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
-import { resolveRange } from '../utils/resolve-range.js';
+import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
+import { intendedSheetGid, resolveRange } from '../utils/resolve-range.js';
 import { renderValueRange } from '../utils/format-values.js';
 import { logError } from '../logging.js';
 
@@ -83,13 +83,11 @@ export function getSheetValuesTool(_server: Server, clientFactory: ClientFactory
         const spreadsheetId = parseSpreadsheetId(parsed.spreadsheet_id);
         const client = clientFactory();
 
-        // A pasted URL names a tab too (`#gid=…`), so it can stand in for
-        // sheet_gid — but only when the caller did not name a tab in `range`.
-        // A URL-derived gid is an inference, and an explicit range outranks it;
-        // treating them as a conflict would reject an ordinary call.
-        const sheetGid =
-          parsed.sheet_gid ??
-          (parsed.range?.includes('!') ? undefined : parseSheetGid(parsed.spreadsheet_id));
+        const sheetGid = intendedSheetGid({
+          spreadsheetIdOrUrl: parsed.spreadsheet_id,
+          range: parsed.range,
+          sheetGid: parsed.sheet_gid,
+        });
         const range = await resolveRange(client, spreadsheetId, { range: parsed.range, sheetGid });
 
         const valueRange = await client.getValues(spreadsheetId, range, {

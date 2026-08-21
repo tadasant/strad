@@ -1,9 +1,9 @@
 /**
  * The slice of the Google Sheets API v4 surface this server reads.
  *
- * Only the READ shapes exist here. There is no batchUpdate request type and no
- * values.update body, because this server has no code that could send one — see
- * the note at the top of server.ts.
+ * The shapes are narrow on purpose. Reads model only what the renderers touch;
+ * the write side models one batchUpdate request (`addSheet`) and nothing else,
+ * because no tool takes a raw request object — see batch-update.ts.
  *
  * The real resources are much larger than these interfaces; every one of them
  * keeps an index signature so a caller asking for the raw JSON gets the whole
@@ -89,6 +89,3 @@ export interface BatchGetValuesResponse {
 
 /** How a cell's value is rendered by the API. */
 export type ValueRenderOption = 'FORMATTED_VALUE' | 'UNFORMATTED_VALUE' | 'FORMULA';
-
-/** How a date/time cell is rendered by the API. */
-export type DateTimeRenderOption = 'FORMATTED_STRING' | 'SERIAL_NUMBER';

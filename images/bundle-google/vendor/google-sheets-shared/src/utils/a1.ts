@@ -52,6 +52,10 @@ export function columnLetter(index: number): string {
  */
 export function rangeOrigin(range: string): { row: number; column: number } {
   const cells = range.includes('!') ? range.slice(range.lastIndexOf('!') + 1) : range;
+  // A range with no `!` is a whole tab, and a tab title is not a cell address:
+  // `Ledger` would otherwise parse as column 3,231,000. Only something shaped
+  // like an actual A1 reference is read as one; everything else is A1.
+  if (!/^\$?[A-Za-z]{0,3}\$?\d*(:|$)/.test(cells)) return { row: 0, column: 0 };
   // Every part is optional, so this matches anything — including a whole-tab
   // range, which names no cell and correctly yields A1.
   const [, letters, digits] = cells.match(/^\$?([A-Za-z]*)\$?(\d*)/)!;

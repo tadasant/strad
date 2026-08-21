@@ -1,22 +1,14 @@
 import { throwForGoogleApiError } from './api-errors.js';
 import { SHEETS_BASE_URL } from './get-spreadsheet.js';
-import type {
-  BatchGetValuesResponse,
-  DateTimeRenderOption,
-  ValueRange,
-  ValueRenderOption,
-} from '../../types.js';
+import type { BatchGetValuesResponse, ValueRange, ValueRenderOption } from '../../types.js';
 
 export interface ReadValuesOptions {
   valueRenderOption?: ValueRenderOption;
-  dateTimeRenderOption?: DateTimeRenderOption;
 }
 
 function readQuery(options?: ReadValuesOptions): URLSearchParams {
   const query = new URLSearchParams();
   if (options?.valueRenderOption) query.set('valueRenderOption', options.valueRenderOption);
-  if (options?.dateTimeRenderOption)
-    query.set('dateTimeRenderOption', options.dateTimeRenderOption);
   return query;
 }
 

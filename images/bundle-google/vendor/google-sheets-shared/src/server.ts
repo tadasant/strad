@@ -164,10 +164,31 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     };
   }
 
-  async getSpreadsheet(spreadsheetId: string): Promise<Spreadsheet> {
+  /**
+   * Run one API call, and drop the cached access token if Google says it is not
+   * a valid one.
+   *
+   * Without this, a token that expired earlier than the expiry we recorded — the
+   * library can hand back its own cached token, in which case there is no expiry
+   * to record and we assume an hour — turns into a 401 on every subsequent call
+   * for as long as that hour lasts, because nothing would ever ask for a new one.
+   */
+  private async withAuth<T>(call: (headers: Record<string, string>) => Promise<T>): Promise<T> {
     const headers = await this.getHeaders();
+    try {
+      return await call(headers);
+    } catch (error) {
+      if ((error as { category?: string })?.category === 'auth') {
+        this.cachedToken = null;
+        this.tokenExpiry = 0;
+      }
+      throw error;
+    }
+  }
+
+  async getSpreadsheet(spreadsheetId: string): Promise<Spreadsheet> {
     const { getSpreadsheet } = await import('./google-sheets-client/lib/get-spreadsheet.js');
-    return getSpreadsheet(headers, spreadsheetId);
+    return this.withAuth((headers) => getSpreadsheet(headers, spreadsheetId));
   }
 
   async getValues(
@@ -175,9 +196,8 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     range: string,
     options?: ReadValuesOptions
   ): Promise<ValueRange> {
-    const headers = await this.getHeaders();
     const { getValues } = await import('./google-sheets-client/lib/values.js');
-    return getValues(headers, spreadsheetId, range, options);
+    return this.withAuth((headers) => getValues(headers, spreadsheetId, range, options));
   }
 
   async batchGetValues(
@@ -185,9 +205,8 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     ranges: string[],
     options?: ReadValuesOptions
   ): Promise<BatchGetValuesResponse> {
-    const headers = await this.getHeaders();
     const { batchGetValues } = await import('./google-sheets-client/lib/values.js');
-    return batchGetValues(headers, spreadsheetId, ranges, options);
+    return this.withAuth((headers) => batchGetValues(headers, spreadsheetId, ranges, options));
   }
 
   async updateValues(
@@ -196,9 +215,10 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     values: unknown[][],
     valueInputOption: ValueInputOption
   ): Promise<UpdateValuesResponse> {
-    const headers = await this.getHeaders();
     const { updateValues } = await import('./google-sheets-client/lib/values.js');
-    return updateValues(headers, spreadsheetId, range, values, valueInputOption);
+    return this.withAuth((headers) =>
+      updateValues(headers, spreadsheetId, range, values, valueInputOption)
+    );
   }
 
   async appendValues(
@@ -207,28 +227,39 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     values: unknown[][],
     valueInputOption: ValueInputOption
   ): Promise<AppendValuesResponse> {
-    const headers = await this.getHeaders();
     const { appendValues } = await import('./google-sheets-client/lib/values.js');
-    return appendValues(headers, spreadsheetId, range, values, valueInputOption);
+    return this.withAuth((headers) =>
+      appendValues(headers, spreadsheetId, range, values, valueInputOption)
+    );
   }
 
   async clearValues(spreadsheetId: string, range: string): Promise<ClearValuesResponse> {
-    const headers = await this.getHeaders();
     const { clearValues } = await import('./google-sheets-client/lib/values.js');
-    return clearValues(headers, spreadsheetId, range);
+    return this.withAuth((headers) => clearValues(headers, spreadsheetId, range));
   }
 
   async addSheet(
     spreadsheetId: string,
     properties: { title: string; index?: number; rowCount?: number; columnCount?: number }
   ): Promise<SheetProperties> {
-    const headers = await this.getHeaders();
     const { addSheet } = await import('./google-sheets-client/lib/batch-update.js');
-    return addSheet(headers, spreadsheetId, properties);
+    return this.withAuth((headers) => addSheet(headers, spreadsheetId, properties));
   }
 }
 
 export type ClientFactory = () => IGoogleSheetsClient;
+
+/**
+ * One client per credential, for the life of the process.
+ *
+ * Both hosts build a FRESH `Server` per HTTP request, so a client constructed
+ * inside the factory would be constructed per tool call — and its access-token
+ * cache would then live for exactly one call, making every call pay a full token
+ * exchange against Google. Keying on the credential keeps the cache where it is
+ * useful and keeps two accounts apart, which is the property the whole per-slug
+ * design rests on.
+ */
+const clients = new Map<string, IGoogleSheetsClient>();
 
 export interface CreateMCPServerOptions {
   version: string;
@@ -257,11 +288,19 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
     );
   }
 
-  return new OAuthGoogleSheetsClient(
-    env.GOOGLE_SHEETS_OAUTH_CLIENT_ID!,
-    env.GOOGLE_SHEETS_OAUTH_CLIENT_SECRET!,
-    env.GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN!
-  );
+  const clientId = env.GOOGLE_SHEETS_OAUTH_CLIENT_ID!;
+  const clientSecret = env.GOOGLE_SHEETS_OAUTH_CLIENT_SECRET!;
+  const refreshToken = env.GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN!;
+
+  // The key is the credential itself, so two slugs holding the same account
+  // share one token cache and two accounts can never share one.
+  const key = `${clientId}\u0000${clientSecret}\u0000${refreshToken}`;
+  const existing = clients.get(key);
+  if (existing) return existing;
+
+  const client = new OAuthGoogleSheetsClient(clientId, clientSecret, refreshToken);
+  clients.set(key, client);
+  return client;
 }
 
 /**

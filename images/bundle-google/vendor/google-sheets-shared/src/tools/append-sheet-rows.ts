@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
 import type { ClientFactory } from '../server.js';
 import { parseSpreadsheetId } from '../utils/parse-spreadsheet-id.js';
+import { intendedSheetGid, resolveRange } from '../utils/resolve-range.js';
 import { logError } from '../logging.js';
 
 const PARAM_DESCRIPTIONS = {
@@ -14,11 +15,15 @@ const PARAM_DESCRIPTIONS = {
   value_input_option:
     'How Sheets parses what you send. USER_ENTERED (default) behaves as if a person typed ' +
     'it; RAW stores literal strings.',
+  sheet_gid:
+    'The tab to write to, by gid (the number in a Sheets URL after #gid=). An alternative ' +
+    'to naming the tab in `range`; combine it with a bare cell range like "B4:D6".',
 } as const;
 
 export const AppendSheetRowsSchema = z.object({
   spreadsheet_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.spreadsheet_id),
   range: z.string().min(1).describe(PARAM_DESCRIPTIONS.range),
+  sheet_gid: z.number().int().optional().describe(PARAM_DESCRIPTIONS.sheet_gid),
   values: z.array(z.array(z.unknown())).min(1).describe(PARAM_DESCRIPTIONS.values),
   value_input_option: z
     .enum(['USER_ENTERED', 'RAW'])
@@ -50,6 +55,7 @@ export function appendSheetRowsTool(_server: Server, clientFactory: ClientFactor
       properties: {
         spreadsheet_id: { type: 'string', description: PARAM_DESCRIPTIONS.spreadsheet_id },
         range: { type: 'string', description: PARAM_DESCRIPTIONS.range },
+        sheet_gid: { type: 'number', description: PARAM_DESCRIPTIONS.sheet_gid },
         values: {
           type: 'array',
           items: { type: 'array', items: {} },
@@ -69,16 +75,26 @@ export function appendSheetRowsTool(_server: Server, clientFactory: ClientFactor
         const spreadsheetId = parseSpreadsheetId(parsed.spreadsheet_id);
         const client = clientFactory();
 
+        const range = await resolveRange(client, spreadsheetId, {
+          range: parsed.range,
+          sheetGid: intendedSheetGid({
+            spreadsheetIdOrUrl: parsed.spreadsheet_id,
+            range: parsed.range,
+            sheetGid: parsed.sheet_gid,
+          }),
+          requireTab: true,
+        });
+
         const result = await client.appendValues(
           spreadsheetId,
-          parsed.range,
+          range,
           parsed.values as unknown[][],
           parsed.value_input_option ?? 'USER_ENTERED'
         );
 
         const updates = result.updates ?? {};
         const output =
-          `Appended ${parsed.values.length} row(s) to ${result.tableRange ?? parsed.range}` +
+          `Appended ${parsed.values.length} row(s) to ${result.tableRange ?? range}` +
           `${updates.updatedRange ? `, landing in ${updates.updatedRange}` : ''}.`;
 
         return { content: [{ type: 'text', text: output }] };

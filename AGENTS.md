@@ -190,7 +190,7 @@ slop behind when you fix a stale fact.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
 - `servers/bundle/` — one image, 19 mounted MCP servers, one shared Chromium,
-  assembled from TEN independently-built dependency trees.
+  assembled from ELEVEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.
