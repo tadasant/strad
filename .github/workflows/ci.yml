@@ -168,6 +168,10 @@ jobs:
   # host, it has no test suite, and `bundle_image` builds it inside the image where
   # its build order is what matters. The comparison test names that exemption.
   servers:
+    # Without this, GitHub names each leg after EVERY matrix dimension —
+    # `servers (good-eggs, true, true, true)` — so the check name changes the day
+    # a tree gains a build step. The tree is the identity; the booleans are how.
+    name: servers (${{ matrix.tree }})
     runs-on: self-hosted
     strategy:
       # NOT optional. The default cancels every sibling leg on the first failure,
