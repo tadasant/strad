@@ -86,9 +86,9 @@ jobs:
   #
   # The tree list is not maintained by hand. `test/ci-server-trees.test.ts` compares
   # it against the trees `servers/bundle/Dockerfile` bakes and fails until a new one
-  # is named here — which is how a twelfth tree cannot land untested. The eleventh,
-  # x-twitter, did: it shipped four functional suites that ran nowhere for months,
-  # because adding a tree meant remembering to hand-write a tenth job.
+  # is named here — which is how a tree cannot land untested. x-twitter did: it
+  # shipped four functional suites that ran nowhere for months, because adding a
+  # tree meant remembering to hand-write another job.
   #
   # Why each leg is shaped the way it is:
   #
@@ -164,9 +164,13 @@ jobs:
   #               tool list; this suite pins defaults, query construction,
   #               truncation and error handling.
   #
-  # `servers/bundle` is baked too and is deliberately not a leg here — it is the
-  # host, it has no test suite, and `bundle_image` builds it inside the image where
-  # its build order is what matters. The comparison test names that exemption.
+  # Two baked trees are deliberately not legs here, and the comparison test names
+  # both with the job that does cover them: `servers/bundle` is the HOST — no suite
+  # of its own, and `bundle_image` builds it inside the image, which is the only
+  # place its build order against the other trees means anything — and
+  # `images/bundle-google` is a supplementary image in its own right, gated by
+  # `bundle-google-ci.yml`, which installs it, runs its suite, builds the image and
+  # smoke-tests all four mounts of the booted container.
   servers:
     # Without this, GitHub names each leg after EVERY matrix dimension —
     # `servers (good-eggs, true, true, true)` — so the check name changes the day

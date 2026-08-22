@@ -31,9 +31,11 @@ of which, `servers`, is a ten-leg matrix over the server trees:
   `paths:`. A hand-maintained list has already failed twice here: `onepassword`
   and `pointsyeah` were baked with no job at all, and after two more jobs were
   hand-written for them, `x-twitter` landed the same way — four functional
-  suites, baked into the image, run by nothing. `servers/bundle` is the one baked tree
-  with no leg, and the test names that exemption: it is the host, it has no test
-  suite, and `bundle_image` builds it inside the image.
+  suites, baked into the image, run by nothing. Two baked trees are deliberately
+  not legs, and the test names both with the job that covers them:
+  `servers/bundle` is the host — no suite of its own, and `bundle_image` builds it
+  inside the image — and `images/bundle-google` is a supplementary image in its
+  own right, gated by [`bundle-google-ci.yml`](#the-image-workflows).
 
   What each leg is for:
 
