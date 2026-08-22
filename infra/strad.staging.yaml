@@ -12,16 +12,16 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty-one server SLUGS: twenty-eight supplementary-image
+# This file declares thirty-two server SLUGS: twenty-nine supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Twenty-seven of the twenty-eight land on seventeen upstream mounts inside the
-# one bundle image, because capability variants share a mount; the twenty-eighth
+# Twenty-eight of the twenty-nine land on eighteen upstream mounts inside the
+# one bundle image, because capability variants share a mount; the twenty-ninth
 # (`zimmer-secrets`) runs that same image on a component of its own. The image
-# serves nineteen mounts: `/x-twitter` and `/google-sheets` are in it with no
+# serves twenty mounts: `/x-twitter` and `/google-sheets` are in it with no
 # staging slug pointing at either.
 #
-# THREE of the twenty-eight carry `enabled: false` — telegram-ro, telegram-rw
+# THREE of the twenty-nine carry `enabled: false` — telegram-ro, telegram-rw
 # and pulse-subregistry — because their credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
@@ -425,6 +425,29 @@ servers:
     enabled: false
     env:
       PULSEMCP_SUBREGISTRY_API_KEY: "${PULSEMCP_SUBREGISTRY_API_KEY}"
+
+  # strad fetch: web page retrieval. strad's fork of @pulsemcp/pulse-fetch, which
+  # this deployment used to run as an `npx` stdio subprocess inside every agent
+  # session — where a rejected BrightData key was a boot failure that killed the
+  # session (servers/strad-fetch/FORK.md).
+  #
+  # NO `env:` AT ALL, and that is the fork working as intended rather than an
+  # omission. The native HTTP strategy needs no credential and serves most public
+  # pages, so this slug is useful with nothing seeded — like google-flights above,
+  # it deploys as a zero-secret entry rather than shipping `enabled: false` and
+  # doing nothing until a human flips it.
+  #
+  # TO ADD BRIGHTDATA (coverage on sites that block a bare fetch): seed
+  # BRIGHTDATA_API_KEY in /strad/staging/gateway/static/ through the console
+  # (/ui/secrets), add `env: { BRIGHTDATA_API_KEY: "${BRIGHTDATA_API_KEY}" }`
+  # here, and add the name to PROVISIONED_STATICS in test/staging-config.test.ts.
+  # Seeding must come FIRST: an unseeded ${REF} fails the whole render.
+  - slug: strad-fetch
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /strad-fetch
+    entitlements: [admin]
 
   # strad's artifact store: an agent uploads a screenshot, a human opens the link.
   #

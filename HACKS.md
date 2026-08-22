@@ -656,8 +656,8 @@ toggle plumbing.
 
 ## 24. Nineteen servers now share one process, and one Chromium
 
-The collapsed bundle is one container running nineteen MCP servers and one
-headless Chromium. An OOM there is a nineteen-server outage; it used to be a
+The collapsed bundle is one container running twenty MCP servers and one
+headless Chromium. An OOM there is a twenty-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -1664,7 +1664,7 @@ V4 cap, delete the V2 branch instead.
 ## 44. `upload_file` reads any local path outside a small denylist
 
 **What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and
-uploads whatever it reads. It runs in the bundle, whose environment holds sixteen
+uploads whatever it reads. It runs in the bundle, whose environment holds eighteen
 other servers' credentials — one of them a whole Telegram account — so
 `file:///proc/self/environ` was a one-call way to publish all of them. `readSource` now refuses `/proc`, `/sys`, `/dev`, `/app`,
 `/root` and `/etc`.
@@ -2116,7 +2116,7 @@ turned this red run green, but it treats the symptom: with an explicit
 `--builder` nothing on the box can reach this job's builder, so there is no
 transport failure left to retry. It would also cost what #51 costs — buildkit
 does not cache a failed layer, so a genuinely broken bundle `Dockerfile` would be
-built three times, ten dependency trees each.
+built three times, twelve dependency trees each.
 
 **Undo.** Drop `use: false` and the `builder:` inputs and delete the test. Every
 build then resolves the shared pointer again.
@@ -2267,7 +2267,7 @@ both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the cou
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
 `.github/workflows/ci.yml`.
 
-## 56. Per-slug box names are emitted for every server; two of eleven trees can read one
+## 56. Per-slug box names are emitted for every server; two of twelve trees can read one
 
 **What.** Every enabled `supplementary-image` server's resolved `env:` is emitted
 onto its bundle TWICE: under the bare name it always had, and under
@@ -2476,7 +2476,7 @@ empty `RUNNER_TEMP` refuses rather than falling back.
 
 **What is deliberately NOT here.** A `concurrency:` group serialising the release
 workflows would also end it, and would cost every push the SUM of its builds
-rather than the longest — the bundle alone is ten dependency trees. Isolation
+rather than the longest — the bundle alone is twelve dependency trees. Isolation
 costs a `mkdir`.
 
 **Undo.** Delete `.github/actions/docker-config`, its nine call sites and the
@@ -2966,3 +2966,37 @@ strad. Publishing the OAuth app removes the expiry; nothing else does.
 slug seeded with a `spreadsheets.readonly` token is read-only in Google as well as
 in the gateway — which is strictly better than hack #22's position. Whether that
 is true depends on which token a human pasted where, and nothing verifies it.
+
+## 65. strad-fetch's scraped-page cache is shared by every caller of the slug
+
+**What.** `strad-fetch` stores each scraped page as an MCP resource in a
+process-level cache, and the bundle host builds its factory ONCE. So the cache is
+one cache for the whole container: any client entitled to the `strad-fetch` slug
+can `resources/list` the URLs every other client has scraped and
+`resources/read` their content, until an entry is evicted.
+
+**Why.** It is upstream's design, and upstream's deployment made it private for
+free — `@pulsemcp/pulse-fetch` runs as one stdio subprocess per client session, so
+"process-level" and "session-private" were the same sentence. Behind a gateway
+they are not. Keeping the cache is what makes a repeated fetch cheap, and the
+alternative — a cache keyed per token — is a real piece of work for a property no
+caller has asked for yet.
+
+**Blast radius today: small, and not zero.** Both slugs that can reach it in
+staging are `admin`; in prod the `zimmer` role reaches it, and every Zimmer agent
+session authenticates as the same principal. So this leaks scraped pages between
+one person's own agent sessions, not between tenants. What it is NOT is a
+credential leak: nothing in the cache is a secret this deployment holds, only
+public pages someone fetched.
+
+**The edge.** The URLs are the more interesting half. A `resources/list` names
+every page any session fetched, which is a rough transcript of what those sessions
+were researching — visible to a caller who scraped nothing.
+
+**Undo.** `ResourceStorageFactory` is a singleton over one `MemoryResourceStorage`
+(`servers/strad-fetch/shared/src/storage/`). Keying instances by an identity the
+gateway passes through would scope it; nothing above the factory holds a reference,
+so the change is contained to that file and the host's `loadStradFetch`. Setting
+`STRAD_FETCH_CACHE_MAX_ENTRIES=0`-ish is NOT the workaround it looks like — a
+non-positive value is ignored, deliberately, because a store that holds nothing
+would make every `saveOnly` call return a dead link.

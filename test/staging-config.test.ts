@@ -46,7 +46,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
  * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
- * not degrade one slug — it fails the spec and takes all thirty down. That is
+ * not degrade one slug — it fails the spec and takes all thirty-two down. That is
  * the fail-loud property the store-backed deploy is built around, and it is
  * worth keeping; what it costs is that "declare the server" and "seed the
  * secret" are one atomic step, and a PR can only do the first half.
@@ -135,7 +135,7 @@ describe("staging config", () => {
     // Internal-only: internal_ports and NO http_port (both is an API rejection).
     expect(bundle.internal_ports).toEqual([8080]);
     expect(bundle.http_port).toBeUndefined();
-    // The credentials of all sixteen upstream servers, unioned onto the one box
+    // The credentials of all nineteen upstream servers, unioned onto the one box
     // — and every one of them SECRET-typed, so App Platform encrypts it at rest.
     const credentials = bundle.envs.filter((e) => !e.key.startsWith("STRAD_"));
     expect(credentials.some((e) => e.key === "SLACK_BOT_TOKEN")).toBe(true);
@@ -217,7 +217,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(28);
+    expect(supplementary.length).toBe(29);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is

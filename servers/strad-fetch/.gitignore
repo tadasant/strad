@@ -1,0 +1,6 @@
+build/
+node_modules/
+# npm workspaces resolves from the tree-root lockfile; a lockfile inside the
+# workspace is a byproduct of running `npm install` in shared/ and is not read
+# by anything, including the Dockerfile stage.
+shared/package-lock.json

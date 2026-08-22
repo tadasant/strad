@@ -489,7 +489,7 @@ export function createGateway(client: MtprotoClient): TelegramGateway {
  *
  * The import is dynamic so that nothing about the library — including its
  * WebSocket and crypto dependencies — is loaded in a process that never calls a
- * Telegram tool. In the bundle that process hosts sixteen other servers.
+ * Telegram tool. In the bundle that process hosts nineteen other servers.
  */
 export async function createMtprotoClient(
   config: TelegramConfig,

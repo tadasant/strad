@@ -1,10 +1,10 @@
 # bundle — THE strad supplementary image
 
-Nineteen MCP servers. One container. One Chromium. One `op` binary.
+Twenty MCP servers. One container. One Chromium. One `op` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter /telegram /pulse-subregistry
+/x-twitter /telegram /pulse-subregistry /strad-fetch
 /google-flights /gmail /google-calendar /google-docs /google-sheets
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
@@ -41,9 +41,9 @@ its environment at boot. A stale one would not just be ignored — it would stri
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How ten projects become one image
+## How twelve projects become one image
 
-`Dockerfile`'s build context is the **repo root**, because the servers live in ten
+`Dockerfile`'s build context is the **repo root**, because the servers live in twelve
 different places:
 
 | tree | source | servers |
@@ -54,6 +54,8 @@ different places:
 | `secrets` | `servers/secrets` | secrets (Google Parameter + Secret Manager viewer) |
 | `remote-filesystem` | `servers/remote-filesystem` | remote-filesystem-tmp-public (strad's artifact store) |
 | `x-twitter` | `servers/x-twitter` | x-twitter |
+| `pulse-subregistry` | `servers/pulse-subregistry` | pulse-subregistry |
+| `strad-fetch` | `servers/strad-fetch` | strad-fetch (web fetching, strad's own fork) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
@@ -61,7 +63,7 @@ different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging ten dependency trees is how you
+`/app/trees/<name>`. Nothing is merged. Merging twelve dependency trees is how you
 find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
@@ -116,7 +118,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Nineteen servers share a process. A crash is a nineteen-server outage. Everything
+Twenty servers share a process. A crash is a twenty-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the
