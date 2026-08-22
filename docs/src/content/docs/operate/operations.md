@@ -11,55 +11,96 @@ produce a bootable image is a failing PR.
 
 ## `ci.yml` — the gate on every PR
 
-Runs on PRs and pushes to `main`. Sixteen jobs, all `runs-on: self-hosted`:
+Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
+of which, `servers`, is an eleven-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
-- **`good_eggs`** — `servers/**` is outside the core TypeScript program, and the
-  good-eggs image only builds on push, so a PR could otherwise break that server
-  without CI noticing. This job builds it and runs its browser-free MCP-App gating
-  tests.
-- **`fetchpet`** — the same shape as `good_eggs`, for the `fetchpet` server tree.
-  fetchpet drives a login form nobody here controls, and a redesign of it took the
-  mount down in both environments — it listed its four tools and failed every call
-  for weeks. Its tests run over a fake browser: they pin the login selectors against
-  the form Fetch actually serves, and prove a failed login is retried on the next
-  tool call rather than cached for the life of the container.
-- **`secrets`** — the same shape as `good_eggs`, for the `secrets` server tree. Its
-  tests _are_ the security review: they drive the server through a real MCP client
-  against a fake Parameter Manager that models the two-store split, and assert that
-  no tool can return a secret value and that the viewer credential cannot reach one.
-  They also pin the capability probe's permission strings, because the whole tool
-  surface is derived from them and a name Google does not recognise reads as "not
-  granted" rather than as an error — see [Secrets IAM](/operate/secrets-iam/).
-- **`remote_filesystem`** — the same shape as `good_eggs`, for the
-  `remote-filesystem` server tree. Its whole product is the link it hands a human,
-  and its tests pin the two things that decide one: `is_sensitive` picks the kind of
-  link, and GCS's 7-day V4 ceiling is what forces V2 for the 14-day default.
-- **`bundle_api`** — `npm ci`, `npm run build`, `npm test` over the `bundle-api`
-  tree. Four of its six servers are verbatim vendor copies and get no tests here,
-  for the reason the `onepassword` job below spells out. The other two are
-  **forks**, and neither has a sync script or an upstream to diff against, so
-  their tests are the only thing that stops a re-vendor from silently reverting
-  them. `slack` — see [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
-  renders mrkdwn, which is not Markdown: `~text~` is strikethrough, so a message
-  using `~` for "approximately" posts successfully with paragraphs struck out,
-  and the fork's write tools lead with that rule and warn in the tool result
-  after the fact. It also adds the four DM tools upstream has no equivalent for,
-  whose OAuth scopes are [limitations #59](/limitations/#59-a-dm-needs-slack-scopes-the-channel-tools-never-asked-for).
-  `google-flights` — see [limitations #58](/limitations/#58-the-google-flights-date-grid-costs-one-request-per-date-and-two-of-its-fields-are-not-trustworthy) —
-  fixes three defects that each returned a confident wrong answer: cabin class
-  and passenger counts encoded at protobuf field numbers Google skips as unknown,
-  baggage flags read in the wrong order, and a date grid that returned a trailing
-  price history instead of future departures.
-- **`onepassword`** and **`pointsyeah`** — build-only jobs, one per tree: `npm ci`
-  then `npm run build`, which is `tsc` over every workspace in the ordering the
-  image's Dockerfile uses. There is no test step, and that is deliberate: the
-  `shared/` half of each tree is a verbatim vendor copy of `pulsemcp/mcp-servers`,
-  so a test written here would become a merge conflict on every re-vendor. A test
-  for that logic belongs upstream. What the build catches is a type error —
-  including one in 1Password's `shared/src/tools/sanitize.ts`, which is credential
-  redaction — at PR time rather than at bundle-image build time.
+- **`servers`** — one matrix leg per server tree the bundle image bakes: `npm ci`
+  in `servers/<tree>`, then `npm run build`, `npm test`, or both. `servers/**` is
+  outside the core TypeScript program and the bundle image only cuts on a push to
+  `main`, so without these legs a PR can break a server tree and merge green — a
+  type error surfaces first as a failed release build, and a behavioural
+  regression surfaces first in production. Each leg reports as `servers (<tree>)`,
+  and `fail-fast: false` keeps one broken tree from cancelling the other ten.
+
+  **The tree list is not maintained by hand.**
+  `test/ci-server-trees.test.ts` compares the matrix against the trees
+  `servers/bundle/Dockerfile` bakes and fails until a new one is named, the same
+  technique `bundle-release-paths.test.ts` uses on the release workflow's
+  `paths:`. A hand-maintained list has already failed twice here: `onepassword`
+  and `pointsyeah` were baked with no job at all, and after two more jobs were
+  hand-written for them, `x-twitter` landed the same way — four functional
+  suites, baked into the image, run by nothing. Two baked trees are deliberately
+  not legs, and the test names both with the job that covers them:
+  `servers/bundle` is the host — no suite of its own, and `bundle_image` builds it
+  inside the image — and `images/bundle-google` is a supplementary image in its
+  own right, gated by [`bundle-google-ci.yml`](#the-image-workflows).
+
+  What each leg is for:
+
+  - **`good-eggs`** — build (typechecks `shared` + `remote`) and its browser-free
+    MCP-App gating tests.
+  - **`fetchpet`** — tests. fetchpet drives a login form nobody here controls, and
+    a redesign of it took the mount down in both environments — it listed its four
+    tools and failed every call for weeks. Its tests run over a fake browser: they
+    pin the login selectors against the form Fetch actually serves, and prove a
+    failed login is retried on the next tool call rather than cached for the life
+    of the container.
+  - **`secrets`** — tests, which _are_ the security review: they drive the server
+    through a real MCP client against a fake Parameter Manager that models the
+    two-store split, and assert that no tool can return a secret value and that
+    the viewer credential cannot reach one. They also pin the capability probe's
+    permission strings, because the whole tool surface is derived from them and a
+    name Google does not recognise reads as "not granted" rather than as an
+    error — see [Secrets IAM](/operate/secrets-iam/).
+  - **`remote-filesystem`** — tests. Its whole product is the link it hands a
+    human, and they pin the two things that decide one: `is_sensitive` picks the
+    kind of link, and GCS's 7-day V4 ceiling is what forces V2 for the 14-day
+    default.
+  - **`telegram`** — tests. It reads a real person's private messages with a
+    credential that _is_ their account, so its tests cover the tool surface (the
+    read-only tier does not build `send_message`), the mapping and paging below
+    it, and the no-credentials path — the state this server ships in, where it
+    must still mount and list rather than take the bundle down.
+  - **`x-twitter`** — tests: timeline, search, lookups and private bookmarks. The
+    functional suites read no credentials, so they run here like the rest; only
+    `test:e2e`, which CI does not run, resolves X API keys.
+  - **`bundle-api`** — build and tests over the `bundle-api` tree. Four of its six
+    servers are verbatim vendor copies and get no tests here, for the reason
+    `onepassword` below spells out. The other two are **forks**, and neither has a
+    sync script or an upstream to diff against, so their tests are the only thing
+    that stops a re-vendor from silently reverting them. `slack` — see
+    [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
+    renders mrkdwn, which is not Markdown: `~text~` is strikethrough, so a message
+    using `~` for "approximately" posts successfully with paragraphs struck out,
+    and the fork's write tools lead with that rule and warn in the tool result
+    after the fact. It also adds the four DM tools upstream has no equivalent for,
+    whose OAuth scopes are [limitations #59](/limitations/#59-a-dm-needs-slack-scopes-the-channel-tools-never-asked-for).
+    `google-flights` — see [limitations #58](/limitations/#58-the-google-flights-date-grid-costs-one-request-per-date-and-two-of-its-fields-are-not-trustworthy) —
+    fixes three defects that each returned a confident wrong answer: cabin class
+    and passenger counts encoded at protobuf field numbers Google skips as
+    unknown, baggage flags read in the wrong order, and a date grid that returned
+    a trailing price history instead of future departures.
+  - **`onepassword`** and **`pointsyeah`** — build only: `npm run build` is `tsc`
+    over every workspace in the ordering the image's Dockerfile uses. There is no
+    test step, and that is deliberate: the `shared/` half of each tree is a
+    verbatim vendor copy of `pulsemcp/mcp-servers`, so a test written here would
+    become a merge conflict on every re-vendor. A test for that logic belongs
+    upstream. What the build catches is a type error — including one in
+    1Password's `shared/src/tools/sanitize.ts`, which is credential redaction — at
+    PR time rather than at bundle-image build time.
+  - **`pulse-subregistry`** — tests. Forked from the unpublished PulseMCP
+    reference implementation; the bundle smoke test only proves the tool list,
+    while this suite pins defaults, query construction, truncation and error
+    handling.
+  - **`strad-fetch`** — tests. strad's fork of `@pulsemcp/pulse-fetch`. The
+    bundle smoke test only proves the tool list; this suite pins the two
+    behavioural deltas the fork exists for — `speed` demotes native rather than
+    skipping it, and a rejected credential does not abort the strategies after
+    it — plus the cache bounds a shared container needs and a stdio subprocess
+    did not.
+
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
   the full-capability tool count for each (slack 13, tailscale 15, monarch-money 23,

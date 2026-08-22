@@ -436,12 +436,12 @@ For a `pull_request`, GitHub reads the `on` filter from the BASE branch's
 gets no `pull_request` CI. Same bootstrap as hacks #1/#9 and the
 fetchpet+pointsyeah PR: `feat/good-eggs-mcp-app-ui` is added to
 `on.push.branches` so a push runs THIS branch's `ci.yml`. That file also carries
-a new `good_eggs` job that builds + runs the server's browser-free MCP-App tests,
+a new CI job for good-eggs that builds + runs its browser-free MCP-App tests,
 since `servers/**` is otherwise out of the core toolchain and only image-built on
 push.
 
 **Undo.** Once good-eggs is on `main` and this stack retargets, drop
-`feat/good-eggs-mcp-app-ui` from `on.push.branches`. The `good_eggs` job stays —
+`feat/good-eggs-mcp-app-ui` from `on.push.branches`. The good-eggs CI leg stays —
 it is the standing check for `servers/good-eggs`.
 
 ---
@@ -1690,12 +1690,12 @@ under the same terms as good-eggs (#10), and it no longer matches. The deltas, a
 of them driven by running inside the collapsed bundle rather than as a standalone
 stdio server:
 
-| Delta                                         | Why                                                                                               |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `setSharedBrowserProvider()` in `server.ts`   | one Chromium for three browser servers; this one opens a context on it                            |
-| `telemetry.ts`                                | a browser launch and a Chromium crash are things only this process sees                           |
-| `login.ts` and a retried login in `server.ts` | the login form Fetch serves today, and a failure the next tool call retries (#40, strad#28)       |
-| `test/`                                       | both of the above, over a fake browser, with no Fetch account — `ci.yml`'s `fetchpet` job runs it |
+| Delta                                         | Why                                                                                                         |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `setSharedBrowserProvider()` in `server.ts`   | one Chromium for three browser servers; this one opens a context on it                                      |
+| `telemetry.ts`                                | a browser launch and a Chromium crash are things only this process sees                                     |
+| `login.ts` and a retried login in `server.ts` | the login form Fetch serves today, and a failure the next tool call retries (#40, strad#28)                 |
+| `test/`                                       | both of the above, over a fake browser, with no Fetch account — `ci.yml`'s `servers (fetchpet)` leg runs it |
 
 **Why.** The selector fix could not wait on an upstream round trip: the mount was
 broken in prod. The shared-browser seam and the telemetry are strad-specific by
@@ -2236,7 +2236,7 @@ guard: there is no upstream to diff against, and a re-vendor that pastes
 `experimental/slack/shared/src` over `fork/slack/src` reverts the delta with
 nothing to say so. What stands in for the drift test is
 `servers/bundle-api/fork/slack/test/mrkdwn.test.mjs`, run by `ci.yml`'s
-`bundle_api` job: it asserts that every write tool leads with the tilde rule,
+`servers (bundle-api)` leg: it asserts that every write tool leads with the tilde rule,
 that none of them still says "Supports Slack markdown formatting", that the
 registered tool set is exactly the expected thirteen names, and that the bytes
 handed to `chat.postMessage` are the bytes the caller passed. `test/dm.test.mjs`
@@ -2261,7 +2261,7 @@ the two `COPY` lines in EACH of `servers/bundle/Dockerfile` and
 `servers/bundle-api/Dockerfile` (the manifest one and the source one), point
 `loadApiTree` in
 `servers/bundle/host/src/index.ts` back at `upstream/${slug}/build/index.js`, and
-drop the `bundle_api` CI job. It also means dropping the DM tools: the `slack`
+drop the `bundle-api` CI leg. It also means dropping the DM tools: the `slack`
 slug goes back to nine tools and `slack-readonly`'s allow-list back to four, in
 both `infra/strad.staging.yaml` and `strad.config.example.yaml` — plus the counts
 in `servers/bundle/scripts/smoke.mjs`, `test/staging-config.test.ts` and
@@ -2528,7 +2528,7 @@ absent baggage entry as `null` rather than as zero.
 against, and a re-vendor that pastes the published package over `fork/google-flights/src`
 reverts every fix with nothing to say so. What stands in for a drift test is
 `servers/bundle-api/fork/google-flights/test/fork.test.mjs`, run by `ci.yml`'s
-`bundle_api` job. It asserts the ENCODED `tfs` bytes rather than a round-trip
+`servers (bundle-api)` leg. It asserts the ENCODED `tfs` bytes rather than a round-trip
 through this repo's own schema — a round-trip would pass on the broken numbering,
 because the bug was a disagreement with a schema that lives at Google, not an
 inconsistency here — and it asserts the grid's window as literal dates, because

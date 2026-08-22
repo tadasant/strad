@@ -78,223 +78,186 @@ jobs:
             npm run --silent config:check -- --config "$cfg"
           done
 
-  # servers/** is out of the core TS program (see eslint.config.js) and its image
-  # is only built on push, so a PR could otherwise break the good-eggs server
-  # without CI noticing. Build it (typechecks shared + remote) and run its
-  # browser-free MCP-App gating tests here. The browser download is skipped: the
-  # image ships Chromium in its base layer, and these tests never launch it.
-  good_eggs:
+  # Every server tree the bundle image bakes gets a leg here. `servers/**` is out
+  # of the core TS program (see eslint.config.js) and the bundle image only cuts on
+  # a push to main, so without these a PR can break a server tree and merge green:
+  # a type error surfaces first as a failed release build, and a behavioural
+  # regression surfaces first in production.
+  #
+  # The tree list is not maintained by hand. `test/ci-server-trees.test.ts` compares
+  # it against the trees `servers/bundle/Dockerfile` bakes and fails until a new one
+  # is named here — which is how a tree cannot land untested. x-twitter did: it
+  # shipped four functional suites that ran nowhere for months, because adding a
+  # tree meant remembering to hand-write another job.
+  #
+  # Why each leg is shaped the way it is:
+  #
+  #   good-eggs   build + test. The build typechecks shared + remote; the tests are
+  #               the browser-free MCP-App gating suite.
+  #
+  #   fetchpet    test, which builds first. fetchpet drives a login form nobody in
+  #               this repo controls, and when Fetch redesigned it the server timed
+  #               out on a stale selector every boot in both environments — listing
+  #               four tools and failing every call. Its tests pin the selectors
+  #               against the form Fetch actually serves and prove a failed login is
+  #               retried rather than cached, both over a fake browser.
+  #
+  #   secrets     test. The one server whose TESTS are the security review: they
+  #               assert that no tool can return a SECRET value, and that the viewer
+  #               credential cannot reach one.
+  #
+  #   remote-filesystem
+  #               test. strad's artifact store, whose whole product is the LINK it
+  #               hands a human. Its tests pin the two things that decide one:
+  #               `is_sensitive` picks the kind of link, and GCS's 7-day V4 ceiling
+  #               is what forces V2 for the 14-day default.
+  #
+  #   telegram    test. It reads a real person's private messages with a credential
+  #               that IS their account, so its tests are the ones that must run on
+  #               every PR: the tool surface (the read-only tier does not build
+  #               send_message), the mapping and paging below it, and the
+  #               no-credentials path — the state this server ships in, where it
+  #               must still mount and list rather than take the bundle down.
+  #
+  #   x-twitter   test. Timeline, search, lookups and private bookmarks. The
+  #               functional suites read no credentials — only `test:e2e`, which is
+  #               not run here, resolves X API keys — so they need nothing CI cannot
+  #               give them.
+  #
+  #   bundle-api  build + test. Six pure-API servers. Four are verbatim vendor
+  #               copies and get no tests here, for the reason onepassword gives
+  #               below. The other two are FORKED, and their tests are the only
+  #               thing defending the delta: a fork has no upstream to argue with it
+  #               and no sync script to notice its loss, so a careless re-vendor
+  #               silently reverts the fix.
+  #                 fork/slack — `~text~` is strikethrough, so a message using `~`
+  #                   for "approximately" posts successfully with paragraphs struck
+  #                   out. The tests fail if the descriptions go or the server
+  #                   starts rewriting a caller's text.
+  #                 fork/google-flights — three fixes that each returned a confident
+  #                   wrong answer: cabin class and passenger counts encoded at
+  #                   protobuf field numbers Google skips as unknown, the two
+  #                   baggage entries read in the wrong order, and a date grid that
+  #                   returned a trailing price history instead of future
+  #                   departures. The tests assert the encoded `tfs` bytes and the
+  #                   parsed values, because none of the three ever raised an error.
+  #               The build also typechecks the four vendored trees plus remote/,
+  #               which otherwise surfaces first as a failed bundle image build.
+  #
+  #   onepassword, pointsyeah
+  #               build only, and that is deliberate: the shared/ halves are
+  #               verbatim vendor copies of pulsemcp/mcp-servers (HACKS.md #15 and
+  #               #19), so a test written here becomes a merge conflict on every
+  #               re-vendor. A test for that logic belongs upstream — HACKS.md #45
+  #               says the same about the fetchpet divergence. What the build
+  #               catches is a type error — 1Password's
+  #               `shared/src/tools/sanitize.ts` is credential redaction — at PR
+  #               time rather than at bundle-image build time. Each tree's root
+  #               `build` script is what carries the workspace ordering the
+  #               Dockerfile depends on: elicitation -> shared -> remote, where
+  #               shared/ resolves the unpublished @pulsemcp/mcp-elicitation through
+  #               a workspace `*`.
+  #
+  #   pulse-subregistry
+  #               test. Also strad-owned, forked from the unpublished PulseMCP
+  #               reference implementation. The bundle smoke test only proves the
+  #               tool list; this suite pins defaults, query construction,
+  #               truncation and error handling.
+  #
+  #   strad-fetch test. strad's fork of @pulsemcp/pulse-fetch. The bundle smoke
+  #               test only proves the tool list; this suite pins the two
+  #               behavioural deltas the fork exists for — that `speed` demotes
+  #               native rather than skipping it, and that a rejected credential
+  #               does not abort the strategies after it — plus the cache bounds
+  #               that a shared container needs and a stdio subprocess did not.
+  #
+  # Two baked trees are deliberately not legs here, and the comparison test names
+  # both with the job that does cover them: `servers/bundle` is the HOST — no suite
+  # of its own, and `bundle_image` builds it inside the image, which is the only
+  # place its build order against the other trees means anything — and
+  # `images/bundle-google` is a supplementary image in its own right, gated by
+  # `bundle-google-ci.yml`, which installs it, runs its suite, builds the image and
+  # smoke-tests all four mounts of the booted container.
+  servers:
+    # Without this, GitHub names each leg after EVERY matrix dimension —
+    # `servers (good-eggs, true, true, true)` — so the check name changes the day
+    # a tree gains a build step. The tree is the identity; the booleans are how.
+    name: servers (${{ matrix.tree }})
     runs-on: self-hosted
+    strategy:
+      # NOT optional. The default cancels every sibling leg on the first failure,
+      # which turns "good-eggs is broken" into "ten other trees have no result".
+      fail-fast: false
+      # No `max-parallel` on purpose: every leg runs concurrently on the one
+      # self-hosted box, and a cap would only make PRs slower.
+      matrix:
+        include:
+          # skip-browser sets PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD on the install. The
+          # three trees that depend on Playwright get their Chromium from the
+          # image's base layer, and nothing in CI launches one.
+          - tree: good-eggs
+            build: true
+            test: true
+            skip-browser: true
+          - tree: fetchpet
+            build: false
+            test: true
+            skip-browser: true
+          - tree: pointsyeah
+            build: true
+            test: false
+            skip-browser: true
+          - tree: secrets
+            build: false
+            test: true
+            skip-browser: false
+          - tree: remote-filesystem
+            build: false
+            test: true
+            skip-browser: false
+          - tree: telegram
+            build: false
+            test: true
+            skip-browser: false
+          - tree: x-twitter
+            build: false
+            test: true
+            skip-browser: false
+          - tree: bundle-api
+            build: true
+            test: true
+            skip-browser: false
+          - tree: onepassword
+            build: true
+            test: false
+            skip-browser: false
+          - tree: pulse-subregistry
+            build: false
+            test: true
+            skip-browser: false
+          - tree: strad-fetch
+            build: false
+            test: true
+            skip-browser: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Install
-        working-directory: servers/good-eggs
+        working-directory: servers/${{ matrix.tree }}
         run: npm ci
         env:
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      - name: Build (typecheck shared + remote)
-        working-directory: servers/good-eggs
+          # Empty rather than "0" when the leg does not want it: Playwright reads
+          # this as a plain truthy check, and "0" is truthy.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: ${{ matrix.skip-browser && '1' || '' }}
+      - name: Build
+        if: matrix.build
+        working-directory: servers/${{ matrix.tree }}
         run: npm run build
-      - name: Test (MCP-App gating)
-        working-directory: servers/good-eggs
-        run: npm test
-
-  # fetchpet drives a login form nobody in this repo controls, and when Fetch
-  # redesigned it the server timed out on a stale selector every boot in both
-  # environments — listing four tools and failing every call. Its tests pin the
-  # selectors against the form Fetch actually serves and prove a failed login is
-  # retried rather than cached, both over a fake browser. Same shape as good-eggs:
-  # no browser is launched, so the download is skipped.
-  fetchpet:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/fetchpet
-        run: npm ci
-        env:
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      - name: Test (build + the login selector and retry suite)
-        working-directory: servers/fetchpet
-        run: npm test
-
-  # secrets is the one server whose TESTS are the security review: they assert
-  # that no tool can return a SECRET value, and that the viewer credential cannot
-  # reach one. Run them on every PR, like good-eggs'.
-  secrets:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/secrets
-        run: npm ci
-      - name: Test (build + the no-secret-value-ever suite)
-        working-directory: servers/secrets
-        run: npm test
-
-  # remote-filesystem is strad's artifact store, and its whole product is the LINK
-  # it hands a human. Its tests pin the two things that decide one: `is_sensitive`
-  # picks the kind of link, and the 7-day V4 ceiling is what forces V2 for the
-  # 14-day default. Run them on every PR, like secrets'.
-  remote_filesystem:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/remote-filesystem
-        run: npm ci
-      - name: Test (build + the link and sensitivity suite)
-        working-directory: servers/remote-filesystem
-        run: npm test
-
-  # telegram reads a real person's private messages with a credential that IS
-  # their account, so its tests are the ones that must run on every PR: the tool
-  # surface (the read-only tier does not build send_message), the mapping and
-  # paging below it, and the no-credentials path — the state this server ships
-  # in, where it must still mount and list rather than take the bundle down.
-  telegram:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/telegram
-        run: npm ci
-      - name: Test (build + the tool-surface and credential suite)
-        working-directory: servers/telegram
-        run: npm test
-
-  # bundle-api holds six pure-API servers. Four are verbatim vendor copies and get
-  # no tests here, for the reason spelled out in the onepassword job below. The
-  # other two are FORKED, and their tests are the only thing defending the delta:
-  # a fork has no upstream to argue with it and no sync script to notice its loss,
-  # so a careless re-vendor silently reverts the fix.
-  #
-  #   fork/slack        — `~text~` is strikethrough, so a message using `~` for
-  #                       "approximately" posts successfully with paragraphs
-  #                       struck out. The tests fail if the descriptions go or
-  #                       the server starts rewriting a caller's text.
-  #   fork/google-flights — three fixes that each returned a confident wrong
-  #                       answer: cabin class and passenger counts encoded at
-  #                       protobuf field numbers Google skips as unknown, the two
-  #                       baggage entries read in the wrong order, and a date
-  #                       grid that returned a trailing price history instead of
-  #                       future departures. The tests assert the encoded `tfs`
-  #                       bytes and the parsed values, because none of the three
-  #                       ever raised an error.
-  #
-  # The build step also typechecks the four vendored trees plus remote/, which
-  # otherwise surfaces first as a failed bundle image build.
-  bundle_api:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/bundle-api
-        run: npm ci
-      - name: Build (typecheck both forks + four vendored trees + remote)
-        working-directory: servers/bundle-api
-        run: npm run build
-      - name: "Test (both forks: slack mrkdwn, google-flights tfs/baggage/grid)"
-        working-directory: servers/bundle-api
-        run: npm test
-
-  # onepassword and pointsyeah are the last two server trees with a build of their
-  # own, and without these jobs a type error in either — `shared/src/tools/sanitize.ts`
-  # is credential redaction — surfaces first as a failed bundle image build, which
-  # builds both trees (`build-op`, `build-pointsyeah`). Both are BUILD-only jobs: the
-  # shared/ halves are verbatim vendor copies of pulsemcp/mcp-servers (HACKS.md #15
-  # and #19), and a test written here becomes a merge conflict on every re-vendor.
-  # A test for that logic belongs upstream — HACKS.md #45 says the same about the
-  # fetchpet divergence.
-  #
-  # The root `build` script is what carries the workspace ordering the Dockerfile
-  # depends on: elicitation -> shared -> remote, where shared/ resolves the
-  # unpublished @pulsemcp/mcp-elicitation through a workspace `*`.
-  onepassword:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/onepassword
-        run: npm ci
-      - name: Build (typecheck elicitation + shared + remote)
-        working-directory: servers/onepassword
-        run: npm run build
-
-  # Same shape, for the pointsyeah tree: build shared -> remote, no test step, same
-  # vendor-copy reason. The browser download is skipped — the image gets its
-  # Chromium from the Playwright base layer, and typechecking launches nothing.
-  pointsyeah:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/pointsyeah
-        run: npm ci
-        env:
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      - name: Build (typecheck shared + remote)
-        working-directory: servers/pointsyeah
-        run: npm run build
-
-  # pulse-subregistry is also strad-owned, forked from the unpublished PulseMCP
-  # reference implementation. The bundle smoke test only proves the tool list;
-  # this suite pins defaults, query construction, truncation and error handling.
-  pulse_subregistry:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/pulse-subregistry
-        run: npm ci
-      - name: Test (build + mocked PulseMCP registry suite)
-        working-directory: servers/pulse-subregistry
-        run: npm test
-
-  # strad-fetch is strad's fork of @pulsemcp/pulse-fetch. The bundle smoke test
-  # only proves the tool list; this suite pins the two behavioural deltas the
-  # fork exists for — that `speed` demotes native rather than skipping it, and
-  # that a rejected credential does not abort the strategies after it — plus the
-  # cache bounds that a shared container needs and a stdio subprocess did not.
-  strad_fetch:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/strad-fetch
-        run: npm ci
-      - name: Test (build + strategy, storage and tool suites)
-        working-directory: servers/strad-fetch
+      - name: Test
+        if: matrix.test
+        working-directory: servers/${{ matrix.tree }}
         run: npm test
 
   # THE bundle: twenty MCP servers, twelve dependency trees, one Chromium and the
