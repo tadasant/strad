@@ -164,6 +164,13 @@ jobs:
   #               tool list; this suite pins defaults, query construction,
   #               truncation and error handling.
   #
+  #   strad-fetch test. strad's fork of @pulsemcp/pulse-fetch. The bundle smoke
+  #               test only proves the tool list; this suite pins the two
+  #               behavioural deltas the fork exists for — that `speed` demotes
+  #               native rather than skipping it, and that a rejected credential
+  #               does not abort the strategies after it — plus the cache bounds
+  #               that a shared container needs and a stdio subprocess did not.
+  #
   # Two baked trees are deliberately not legs here, and the comparison test names
   # both with the job that does cover them: `servers/bundle` is the HOST — no suite
   # of its own, and `bundle_image` builds it inside the image, which is the only
@@ -179,7 +186,7 @@ jobs:
     runs-on: self-hosted
     strategy:
       # NOT optional. The default cancels every sibling leg on the first failure,
-      # which turns "good-eggs is broken" into "nine other trees have no result".
+      # which turns "good-eggs is broken" into "ten other trees have no result".
       fail-fast: false
       # No `max-parallel` on purpose: every leg runs concurrently on the one
       # self-hosted box, and a cap would only make PRs slower.
@@ -228,6 +235,10 @@ jobs:
             build: false
             test: true
             skip-browser: false
+          - tree: strad-fetch
+            build: false
+            test: true
+            skip-browser: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -247,25 +258,6 @@ jobs:
       - name: Test
         if: matrix.test
         working-directory: servers/${{ matrix.tree }}
-        run: npm test
-
-  # strad-fetch is strad's fork of @pulsemcp/pulse-fetch. The bundle smoke test
-  # only proves the tool list; this suite pins the two behavioural deltas the
-  # fork exists for — that `speed` demotes native rather than skipping it, and
-  # that a rejected credential does not abort the strategies after it — plus the
-  # cache bounds that a shared container needs and a stdio subprocess did not.
-  strad_fetch:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install
-        working-directory: servers/strad-fetch
-        run: npm ci
-      - name: Test (build + strategy, storage and tool suites)
-        working-directory: servers/strad-fetch
         run: npm test
 
   # THE bundle: twenty MCP servers, twelve dependency trees, one Chromium and the

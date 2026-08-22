@@ -12,7 +12,7 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is a ten-leg matrix over the server trees:
+of which, `servers`, is an eleven-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -22,7 +22,7 @@ of which, `servers`, is a ten-leg matrix over the server trees:
   `main`, so without these legs a PR can break a server tree and merge green — a
   type error surfaces first as a failed release build, and a behavioural
   regression surfaces first in production. Each leg reports as `servers (<tree>)`,
-  and `fail-fast: false` keeps one broken tree from cancelling the other nine.
+  and `fail-fast: false` keeps one broken tree from cancelling the other ten.
 
   **The tree list is not maintained by hand.**
   `test/ci-server-trees.test.ts` compares the matrix against the trees
@@ -94,6 +94,12 @@ of which, `servers`, is a ten-leg matrix over the server trees:
     reference implementation; the bundle smoke test only proves the tool list,
     while this suite pins defaults, query construction, truncation and error
     handling.
+  - **`strad-fetch`** — tests. strad's fork of `@pulsemcp/pulse-fetch`. The
+    bundle smoke test only proves the tool list; this suite pins the two
+    behavioural deltas the fork exists for — `speed` demotes native rather than
+    skipping it, and a rejected credential does not abort the strategies after
+    it — plus the cache bounds a shared container needs and a stdio subprocess
+    did not.
 
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
