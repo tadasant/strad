@@ -147,16 +147,17 @@ Returns a list of all items currently in your cart, including:
 - Product name and brand
 - Quantity in cart
 - Unit size (e.g., "6 count", "24 oz")
-- Line subtotal
+- The line subtotal (quantity x unit price), labelled "Line subtotal"
 plus the basket subtotal.
 
 The read comes from the basket state Good Eggs renders into the page, not from
 the drawn markup, so it does not depend on which basket layout the account is
 served.
 
-If the basket cannot be read, this tool returns an ERROR. It never answers an
-unreadable basket with "your cart is empty" — treat an error as "unknown", not
-as "empty", and do not infer that the user removed anything.`;
+If the basket cannot be read — including when the login has lapsed, where the
+page serves a readable but ANONYMOUS basket — this tool returns an ERROR. It
+never answers an unreadable basket with "your cart is empty": treat an error as
+"unknown", not as "empty", and do not infer that the user removed anything.`;
 
 // =============================================================================
 // TOOL DEFINITIONS
@@ -443,7 +444,8 @@ export function createRegisterTools(
                     : `Failed to add to cart: ${result.message}`,
               },
             ],
-            isError: !result.success,
+            // An UNVERIFIED outcome is unknown, not failed, so it is not an error.
+            isError: !result.success && result.verified !== false,
           };
         } catch (error) {
           return {
@@ -735,7 +737,8 @@ export function createRegisterTools(
                     : `Failed to remove from cart: ${result.message}`,
               },
             ],
-            isError: !result.success,
+            // An UNVERIFIED outcome is unknown, not failed, so it is not an error.
+            isError: !result.success && result.verified !== false,
           };
         } catch (error) {
           return {
@@ -777,7 +780,10 @@ export function createRegisterTools(
           const formattedResults = results
             .map(
               (item, i) =>
-                `${i + 1}. **${item.name}**\n   Brand: ${item.brand || 'N/A'}\n   Quantity: ${item.quantity}\n   Unit: ${item.unit || 'N/A'}\n   Price: ${item.price || 'N/A'}\n   URL: ${item.url}`
+                // "Line subtotal", not "Price": every other tool's `Price:` is a
+                // per-unit price, and a 2 x $5.99 line rendered as `Price: $11.98`
+                // is read back as a unit price.
+                `${i + 1}. **${item.name}**\n   Brand: ${item.brand || 'N/A'}\n   Quantity: ${item.quantity}\n   Unit: ${item.unit || 'N/A'}\n   Line subtotal: ${item.price || 'N/A'}\n   URL: ${item.url}`
             )
             .join('\n\n');
 

@@ -113,6 +113,7 @@ not a confession.
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                                                                             |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                                                                            |
 | `servers/telegram/**` — a tool, the credential model, the read/write split          | `servers/telegram.md`, `limitations.md`                                                                                  |
+| `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim      | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                        |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool      | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                            |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                                                                        |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate           | `operate/deploy-model.md`, `operate/secrets.md`                                                                          |
@@ -201,6 +202,13 @@ slop behind when you fix a stale fact.
   the strategy chain, so a bad BrightData key costs coverage rather than the
   fetch. `servers/strad-fetch/FORK.md` has the deltas and the incident behind
   each.
+- `servers/good-eggs/` — the Good Eggs grocery server, behind the `good-eggs`
+  slug. A fork, not a vendor copy: the package its defects were reported against
+  declares no repository, so there was no upstream to fix. Its cart reads come
+  from the `storeData` payload every page renders rather than from the drawn
+  markup — the markup depends on which of two basket layouts the account is
+  served, and a scrape that knew one of them reported an empty cart against a
+  43-item basket. `servers/good-eggs/FORK.md` has the deltas.
 - `servers/telegram/` — strad's own Telegram server, behind `telegram-ro` and
   `telegram-rw`. MTProto with a USER session, because the Bot API cannot read the
   history of a group its account does not administer. The credential is a

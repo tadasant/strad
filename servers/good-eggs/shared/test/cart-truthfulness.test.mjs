@@ -68,6 +68,19 @@ test('an unreadable basket with no button found is still UNVERIFIED', () => {
   assert.match(result.message, /UNVERIFIED/);
 });
 
+test('an UNVERIFIED add claims nothing in its FIELDS either, not just its prose', () => {
+  // `success` must not be derived from the click, and `quantity` must be absent
+  // rather than 0 — a 0 is indistinguishable from a measured absence.
+  for (const buttonFound of [true, false]) {
+    const result = reconcileAddResult(
+      addParams({ cartItems: [], cartReadable: false, buttonFound })
+    );
+    assert.equal(result.success, false, `buttonFound=${buttonFound}`);
+    assert.equal(result.verified, false);
+    assert.equal(result.quantity, undefined);
+  }
+});
+
 test('a readable basket that really lacks the item IS a failure', () => {
   // The message must stay available for the genuine case — the fix is about
   // when it is said, not about never saying it.
@@ -125,6 +138,7 @@ function fakeClient(overrides) {
       return (await this.getBasket()).items;
     },
     removeFromCart: async () => ({ success: true, verified: true, message: 'removed' }),
+    addToCart: async () => ({ success: true, verified: true, message: 'added', quantity: 1 }),
     ...overrides,
   };
 }
@@ -145,6 +159,10 @@ test('get_cart reports the products, the item count and the subtotal', () => {
     assert.match(text, /2 products/);
     assert.match(text, /3 total items/);
     assert.match(text, /subtotal \$13\.27/);
+    // Labelled as a LINE subtotal: `Price:` means a unit price in every sibling
+    // tool, and 2 x $5.99 rendered as `Price: $11.98` is read back as one.
+    assert.match(text, /Line subtotal: \$11\.98/);
+    assert.doesNotMatch(text, /\n {3}Price:/);
     assert.match(text, /Organic Dry-Farmed Early Girl Tomatoes/);
     assert.match(text, /Organic Yellow Onion/);
   });
@@ -171,6 +189,22 @@ test('get_cart reports an unreadable basket as UNKNOWN, never as empty', async (
   assert.match(text, /no basket payload/);
 });
 
+test('get_cart reports a lapsed login as UNKNOWN, not as an empty cart', async () => {
+  const server = toolServer(
+    fakeClient({
+      getBasket: async () => {
+        throw new Error('the page is not signed in, so the basket it carries is an anonymous one');
+      },
+    })
+  );
+
+  const result = await server.call('get_cart');
+  assert.equal(result.isError, true);
+  assert.doesNotMatch(result.content[0].text, /cart is empty/);
+  assert.match(result.content[0].text, /not signed in/);
+  assert.match(result.content[0].text, /UNKNOWN, not empty/);
+});
+
 test('get_cart still reports a genuinely empty basket as empty', async () => {
   const server = toolServer(
     fakeClient({ getBasket: async () => ({ items: [], subtotalCents: 0, source: 'json' }) })
@@ -179,6 +213,40 @@ test('get_cart still reports a genuinely empty basket as empty', async () => {
   const result = await server.call('get_cart');
   assert.match(result.content[0].text, /Your cart is empty/);
   assert.notEqual(result.isError, true);
+});
+
+test('add_to_cart does not prefix an unverified result with "Failed to", and is not an error', async () => {
+  const server = toolServer(
+    fakeClient({
+      addToCart: async () => ({
+        success: false,
+        verified: false,
+        message: 'Clicked add for Onion, but the basket could not be read back. UNVERIFIED.',
+      }),
+    })
+  );
+
+  const result = await server.call('add_to_cart', { grocery_url: ONION_URL });
+  assert.doesNotMatch(result.content[0].text, /Failed to add/);
+  assert.match(result.content[0].text, /UNVERIFIED/);
+  // Unknown is not failed: an isError here reads as "the add did not happen".
+  assert.notEqual(result.isError, true);
+});
+
+test('add_to_cart still reports a measured failure as an error', async () => {
+  const server = toolServer(
+    fakeClient({
+      addToCart: async () => ({
+        success: false,
+        verified: true,
+        message: 'Clicked add for Onion, but it does not appear in your cart afterward.',
+      }),
+    })
+  );
+
+  const result = await server.call('add_to_cart', { grocery_url: ONION_URL });
+  assert.match(result.content[0].text, /Failed to add to cart:/);
+  assert.equal(result.isError, true);
 });
 
 test('remove_from_cart does not prefix an unverified result with "Failed to"', async () => {

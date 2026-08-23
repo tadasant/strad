@@ -14,7 +14,7 @@
     "start": "node remote/build/index.js"
   },
   "comments": {
-    "overrides": "Pin Playwright to the exact version whose bundled Chromium (rev 1228) ships in the mcr.microsoft.com/playwright:v1.61.1-noble base image, so the container never has to download a browser at build time. shared/ declares ^1.49.1; this keeps that file verbatim while guaranteeing the runtime matches the image."
+    "overrides": "Pin Playwright to the exact version whose bundled Chromium (rev 1228) ships in the mcr.microsoft.com/playwright:v1.61.1-noble base image, so the container never has to download a browser at build time. shared/ declares ^1.49.1; the override is what guarantees the runtime matches the image."
   },
   "overrides": {
     "playwright": "1.61.1",

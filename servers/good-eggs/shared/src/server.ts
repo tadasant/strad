@@ -25,6 +25,21 @@ const ELEMENT_WAIT_TIMEOUT_MS = 10_000;
 // ("ADD TO BASKET", "Add to Cart", "Add to Basket") and is occasionally a
 // role="button" element rather than a real <button>. Match all of these
 // case-insensitively so a markup/copy tweak doesn't break the add flow.
+// A Good Eggs product id is a 24-character Mongo-style hex string. Removal
+// interpolates one into a CSS selector, so it is validated against this first.
+const PRODUCT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+// The remove control, in either basket layout. The card layout's quantity pill
+// decrements and becomes the trash button at quantity 1; the summary layout has
+// a "Remove" control (and, failing that, a quantity <select> with a 0 option).
+const REMOVE_CONTROL_SELECTOR =
+  '[data-testid="qty-trash"], [data-testid="qty-decrement"], .quantity-pill__btn--left, ' +
+  'button[aria-label*="remove" i], .summary-item__remove, [class*="remove-button"]';
+
+// Ceiling on remove clicks for one call. A decrement-per-click control on a
+// large line would otherwise spend a second per unit inside a single tool call.
+const MAX_REMOVE_CLICKS = 15;
+
 const ADD_BUTTON_SELECTOR =
   'button:has-text("add to basket"), button:has-text("add to cart"), ' +
   '[role="button"]:has-text("add to basket"), [role="button"]:has-text("add to cart")';
@@ -119,8 +134,11 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
   // not take effect" is what invited re-adds and produced duplicates.
   if (!cartReadable) {
     const name = itemName && itemName !== 'Unknown item' ? itemName : 'the item';
+    // `success: false` here means "not observed to have succeeded", not "failed";
+    // `verified: false` is what says which. `quantity` is omitted rather than
+    // set to 0, because a 0 would be indistinguishable from a measured absence.
     return {
-      success: buttonFound,
+      success: false,
       verified: false,
       message: buttonFound
         ? `Clicked add for ${name}, but the basket could not be read back, so the result is ` +
@@ -129,7 +147,6 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
         : `The add-to-cart button was not found for ${name} and the basket could not be read ` +
           `back, so the result is UNVERIFIED. Check the cart before retrying.`,
       itemName,
-      quantity: 0,
     };
   }
 
@@ -143,6 +160,9 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
   if (!priorQuantityKnown) {
     if (cartQuantity > 0) {
       return {
+        // Verified in the sense this flag carries: the basket WAS read, so the
+        // quantity is measured. What is unknown is attribution, and the message
+        // is where that is said.
         success: true,
         verified: true,
         message:
@@ -1284,8 +1304,10 @@ export class GoodEggsClient implements IGoodEggsClient {
   async removeFromCart(groceryUrl: string): Promise<CartResult> {
     const page = await this.ensureBrowser();
 
+    // Good Eggs product ids are 24-char Mongo hex. Insisting on that shape is
+    // also what makes the id safe to interpolate into a CSS selector below.
     const productId = extractProductId(groceryUrl);
-    if (!productId || productId.length < 3) {
+    if (!PRODUCT_ID_PATTERN.test(productId)) {
       return {
         success: false,
         message: 'Invalid grocery URL - could not extract product identifier',
@@ -1326,8 +1348,15 @@ export class GoodEggsClient implements IGoodEggsClient {
     const itemName = target.name.trim() || 'Unknown item';
 
     // Both basket layouts tag the item's container with `data-product-id`, so
-    // one selector finds it whichever one the account was bucketed into.
+    // one selector finds it whichever one the account was bucketed into. The
+    // basket page also carries recommendation tiles tagged the same way, hence
+    // the search below for the container that actually holds a remove control.
     const cardSelector = `[data-product-id="${productId}"]`;
+
+    // The payload is in the served document but the CARDS are drawn by React, so
+    // wait for one before probing rather than racing the first paint.
+    const elementTimeout = Math.min(this.config.timeout, ELEMENT_WAIT_TIMEOUT_MS);
+    await waitForElement(page, cardSelector, elementTimeout);
 
     // Removing takes a different number of clicks per layout, so drive it as a
     // bounded loop and let the basket say when it worked:
@@ -1335,36 +1364,50 @@ export class GoodEggsClient implements IGoodEggsClient {
     //                  into the trash control at quantity 1
     //   summary layout a "Remove" control, or a quantity <select> with a 0
     //                  option
-    const maxAttempts = Math.max(target.quantity, 1) + 2;
+    // The cap keeps a large line (or a control that does not decrement) from
+    // turning one tool call into a minute of clicking.
+    const maxAttempts = Math.min(Math.max(target.quantity, 1) + 2, MAX_REMOVE_CLICKS);
     let removalAttempted = false;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const card = await page.$(cardSelector);
-      if (!card) break;
+      const cards = await page.$$(cardSelector);
+      if (cards.length === 0) break;
 
-      const control = await card.$(
-        '[data-testid="qty-trash"], [data-testid="qty-decrement"], .quantity-pill__btn--left, ' +
-          'button[aria-label*="remove" i], .summary-item__remove, [class*="remove-button"]'
-      );
-      if (control) {
-        await control.click().catch(() => {});
-        await page.waitForTimeout(1000);
-        removalAttempted = true;
-        continue;
-      }
-
-      const quantitySelect = await card.$('.summary-item__quantity select, select');
-      if (quantitySelect) {
-        try {
-          await quantitySelect.selectOption('0');
-          await page.waitForTimeout(1000);
-          removalAttempted = true;
+      let clicked = false;
+      for (const card of cards) {
+        const control = await card.$(REMOVE_CONTROL_SELECTOR);
+        if (control) {
+          // Only a click that actually landed counts as an attempt — a thrown
+          // click is not evidence that anything was tried.
+          try {
+            await control.click();
+            removalAttempted = true;
+            clicked = true;
+          } catch {
+            // Stale or covered element; fall through to the next candidate.
+          }
+          if (clicked) break;
           continue;
-        } catch {
-          // No zero option; nothing else to try on this card.
         }
+
+        // The summary layout removes through the quantity dropdown's 0 option.
+        // Take every <select> on the card, not the first: DOM order is not a
+        // promise that the first one is the quantity control.
+        for (const quantitySelect of await card.$$('select')) {
+          try {
+            await quantitySelect.selectOption('0');
+            removalAttempted = true;
+            clicked = true;
+            break;
+          } catch {
+            // Not the quantity select, or it has no zero option.
+          }
+        }
+        if (clicked) break;
       }
-      break;
+
+      if (!clicked) break;
+      await page.waitForTimeout(1000);
     }
 
     // Verify against the basket, which is the only thing that decides this.
@@ -1430,9 +1473,19 @@ export class GoodEggsClient implements IGoodEggsClient {
     const snapshot = basketSnapshotFromHtml(html, BASE_URL);
     if (!snapshot) {
       throw new Error(
-        'Could not read the Good Eggs basket: the page carried no basket payload. ' +
-          'This usually means the session is signed out or the page failed to load; ' +
-          'it does NOT mean the basket is empty.'
+        'Could not read the Good Eggs basket: the page carried no usable basket payload. ' +
+          'The page failed to load, or its shape changed; it does NOT mean the basket ' +
+          'is empty.'
+      );
+    }
+    // A signed-out page serves a readable payload for an ANONYMOUS basket, which
+    // is empty. That is not the user's basket, and reporting it as one would put
+    // "your cart is empty" back in front of a full cart by a second route.
+    if (!snapshot.signedIn) {
+      throw new Error(
+        'Could not read the Good Eggs basket: the page is not signed in, so the basket ' +
+          'it carries is an anonymous one and not yours. The login has lapsed; the ' +
+          'basket contents are UNKNOWN, not empty.'
       );
     }
     return snapshot;

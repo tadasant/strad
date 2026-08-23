@@ -376,7 +376,9 @@ it normally and images are cut only from `main`.
 **What.** `servers/onepassword/shared/` is copied **verbatim** from
 [`pulsemcp/mcp-servers` `experimental/onepassword/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/onepassword);
 only `remote/` (the streamable-HTTP entrypoint) is new, reusing `createMCPServer()`.
-Same rationale as good-eggs (hack #10). One extra wrinkle: `shared/` depends on
+The upstream package publishes a stdio server, not a library strad could depend
+on, so the shared source is copied rather than imported. Fixes belong upstream,
+then re-vendor — unlike good-eggs (#10), which is a fork. One extra wrinkle: `shared/` depends on
 `@pulsemcp/mcp-elicitation`, which is **not published to npm** (it lives at
 `libs/elicitation` in the upstream monorepo and is consumed there by a `file:`
 path). So that library is vendored too, as `servers/onepassword/elicitation/`, a
@@ -1692,7 +1694,9 @@ first move.
 
 **What.** `servers/fetchpet/shared/` was copied from
 [`pulsemcp/mcp-servers` `experimental/fetchpet/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/fetchpet)
-under the same terms as good-eggs (#10), and it no longer matches. The deltas, all
+as a vendor copy — the upstream package publishes a stdio server, not a library
+strad could depend on — and it no longer matches. (good-eggs, #10, went the other
+way and is a fork; this tree is still a copy.) The deltas, all
 of them driven by running inside the collapsed bundle rather than as a standalone
 stdio server:
 

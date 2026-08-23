@@ -118,8 +118,11 @@ its true quantity without crediting this call for putting it there. The genuine
 failure message is unchanged and still fires when the basket was read and really
 does lack the item.
 
-The tool layer follows: an unverified result is no longer prefixed
-`Failed to add to cart:`.
+The FIELDS say the same thing as the prose: an unverified result omits
+`quantity` rather than setting it to 0 (a 0 is indistinguishable from a measured
+absence) and never derives `success` from the click. The tool layer follows —
+an unverified result is neither prefixed `Failed to add to cart:` nor flagged
+`isError`, because unknown is not failed.
 
 ## 3. `remove_from_cart` works, and its "not found" means something
 
@@ -151,6 +154,11 @@ after remove:  [] subtotal 0 | clicks used: 3 | budget: 5
 `Item not found in cart` now means the basket really does not contain it, and
 says how many products it does contain.
 
+The loop is bounded twice — by the line's own quantity plus two, and by a hard
+ceiling of 15 clicks — because a decrement-per-click control on a large line
+would otherwise spend a second per unit inside one tool call. The product id is
+validated as 24-char Mongo hex before it reaches the selector.
+
 ## 4. Items are named from the payload, not from the first heading
 
 **Upstream.** `add_to_cart`, `add_favorite` and `remove_favorite` name the
@@ -174,6 +182,18 @@ renders `[]` as "Your cart is empty."
 returns an error that says the contents are UNKNOWN rather than empty, and
 `addToCart` distinguishes "read failed" from "read empty" instead of collapsing
 them.
+
+Three states that all look like an empty basket are refused as unreadable:
+
+- **No payload at all** — an error page, or a markup change.
+- **A payload whose `basket` carries no `items` array** — a shape change or a
+  partial render, which would otherwise land as a zero-item basket.
+- **A payload from a page that is not signed in.** This one is the trap: a
+  logged-out Good Eggs page serves a perfectly READABLE payload for an
+  ANONYMOUS basket, which is empty. The login here happens once, at startup,
+  and nothing re-checks it, so a lapsed session would put "your cart is empty"
+  back in front of a full cart by a second route. `storeData.user` is null on
+  such a page, and that is what `signedIn` on the snapshot reads.
 
 **Why.** This is the delta the actual user-facing harm came from. Every wrong
 statement in the incident was downstream of a read that answered a question it

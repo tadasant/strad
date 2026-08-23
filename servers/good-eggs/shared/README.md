@@ -19,6 +19,7 @@ shared/
 │   ├── tools.ts        # the 11 tool definitions and handlers
 │   ├── appUi.ts        # the MCP-App (io.modelcontextprotocol/ui) surface
 │   ├── telemetry.ts    # browser-span instrumentation
+│   ├── logging.ts      # stderr logging helpers
 │   └── types.ts        # shared types and the Zod input schemas
 └── build/              # built output (tests run against this)
 ```

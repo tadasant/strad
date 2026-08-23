@@ -160,6 +160,15 @@ export interface BasketSnapshot {
   subtotalCents?: number;
   /** Where the snapshot came from — `json` is authoritative. */
   source: 'json' | 'dom';
+  /**
+   * Whether the page that carried this payload was signed in.
+   *
+   * A signed-out page serves a perfectly readable payload for an ANONYMOUS
+   * basket, which is empty. Reporting that as the user's empty cart is the same
+   * false sentence this module exists to stop, arriving by a different route,
+   * so callers must refuse a snapshot with this false.
+   */
+  signedIn: boolean;
 }
 
 /**
@@ -205,14 +214,24 @@ export function cartItemsFromStoreData(
   });
 }
 
-/** Build a full snapshot (items + subtotal) from a rendered page's HTML. */
+/**
+ * Build a full snapshot (items + subtotal) from a rendered page's HTML.
+ *
+ * Null means the basket could not be READ. That covers a page with no payload,
+ * and equally a payload whose `basket` carries no `items` array — a shape change
+ * or a partial render, which would otherwise read as a zero-item basket and be
+ * indistinguishable from a true one.
+ */
 export function basketSnapshotFromHtml(html: string, baseUrl: string): BasketSnapshot | null {
   const storeData = extractStoreData(html);
-  if (!storeData || !storeData.basket) return null;
+  if (!storeData?.basket || !Array.isArray(storeData.basket.items)) return null;
   return {
     items: cartItemsFromStoreData(storeData, baseUrl),
     subtotalCents: storeData.basket.totals?.subtotal,
     source: 'json',
+    // `user` is the slice the store always carries; a signed-out page renders it
+    // null, which is exactly what an anonymous session looks like.
+    signedIn: storeData.user != null,
   };
 }
 
@@ -220,9 +239,9 @@ export function basketSnapshotFromHtml(html: string, baseUrl: string): BasketSna
  * The name Good Eggs gives a product, read from the payload rather than the
  * heading.
  *
- * `add_to_cart` used to name items by the first `h1, [class*="title"]` on the
- * page, which on a product page with no delivery day chosen is the day
- * picker — so successful adds were reported against "Select a delivery day".
+ * The alternative is the first `h1, [class*="title"]` on the page, which on a
+ * product page with no delivery day chosen is the day picker — so results get
+ * reported against an item called "Select a delivery day". See FORK.md #4.
  */
 export function productNameFromHtml(html: string, productId: string): string | undefined {
   const storeData = extractStoreData(html);

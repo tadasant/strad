@@ -142,12 +142,40 @@ test('basketSnapshotFromHtml reports the items and the subtotal', () => {
 
 test('basketSnapshotFromHtml distinguishes an empty basket from an unreadable one', () => {
   // An empty basket is a snapshot with no items...
-  const empty = basketSnapshotFromHtml(renderPage(storeDataWithEmptyBasket()), BASE_URL);
+  const empty = basketSnapshotFromHtml(
+    renderPage({ ...storeDataWithEmptyBasket(), user: { id: 'u1' } }),
+    BASE_URL
+  );
   assert.equal(empty.items.length, 0);
   assert.equal(empty.subtotalCents, 0);
+  assert.equal(empty.signedIn, true);
 
   // ...and an unreadable page is null. Collapsing these two is the bug.
   assert.equal(basketSnapshotFromHtml('<html><body>Sign in</body></html>', BASE_URL), null);
+});
+
+test('a signed-out page is flagged, because its empty basket is somebody else\'s', () => {
+  // A logged-out Good Eggs page serves a perfectly READABLE payload for an
+  // anonymous basket, which is empty. Handing that back as the user's cart is
+  // the same false sentence arriving by a second route, so the snapshot has to
+  // carry the distinction for `getBasket()` to refuse it.
+  const anonymous = basketSnapshotFromHtml(renderPage(storeDataWithEmptyBasket()), BASE_URL);
+  assert.ok(anonymous, 'the payload is readable — that is the whole trap');
+  assert.equal(anonymous.items.length, 0);
+  assert.equal(anonymous.signedIn, false);
+});
+
+test('a basket carrying no items array is unreadable, not empty', () => {
+  // A shape change or a partial render would otherwise land as a zero-item
+  // basket, indistinguishable from a true one.
+  for (const basket of [{}, { totals: { subtotal: 0 } }, { items: null }]) {
+    const storeData = { ...storeDataWithBasket(), basket };
+    assert.equal(
+      basketSnapshotFromHtml(renderPage(storeData), BASE_URL),
+      null,
+      `basket ${JSON.stringify(basket)} should read as unreadable`
+    );
+  }
 });
 
 test('productNameFromHtml names the product from the payload', () => {
