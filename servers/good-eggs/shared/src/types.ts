@@ -26,6 +26,12 @@ export interface CartItem {
   unit?: string;
   quantity: number;
   imageUrl?: string;
+  /**
+   * The stable Good Eggs product id. Read straight off the basket payload, so
+   * it is present even when the product's presentation data is not — which
+   * makes it the join key `remove_from_cart` matches on.
+   */
+  productId?: string;
 }
 
 export interface GroceryDetails {
@@ -54,6 +60,12 @@ export interface CartResult {
   message: string;
   itemName?: string;
   quantity?: number;
+  /**
+   * Whether the outcome was confirmed against the basket. False means the
+   * basket could not be read, so the message describes what was ATTEMPTED and
+   * the caller must not infer either outcome from it.
+   */
+  verified?: boolean;
 }
 
 // =============================================================================

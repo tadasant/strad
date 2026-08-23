@@ -11,21 +11,30 @@ network at `http://bundle-goodeggs:8080/mcp`. Its 11 tools are namespaced
 
 ```
 servers/good-eggs/
-  shared/    # VENDORED VERBATIM from pulsemcp/mcp-servers (the tool logic)
-  remote/    # NEW: streamable-HTTP entrypoint over shared/ (this repo)
+  shared/    # FORKED tool logic — strad owns this (see FORK.md)
+  remote/    # streamable-HTTP entrypoint over shared/
+  FORK.md    # every delta from upstream, and the incident behind each
   Dockerfile # builds shared -> remote, installs Chromium
 ```
 
-- **`shared/`** is copied unchanged from
+- **`shared/`** is a **fork** of
   [`pulsemcp/mcp-servers` `experimental/good-eggs/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/good-eggs)
-  at commit `44f32a32afe27ffe9d00f23b24934c8242730f65`. It holds the Playwright
+  at `44f32a32afe27ffe9d00f23b24934c8242730f65`. It holds the Playwright
   automation and the 11 tools (`search_for_grocery`, `get_cart`, `get_favorites`,
-  `add_to_cart`, …). **Do not edit it here** — fixes belong upstream, then
-  re-vendor. `remote/` reuses `createMCPServer()` from it; nothing is
-  reimplemented.
-- **`remote/`** is the only new logic: it swaps the upstream stdio transport for
-  an Express + `StreamableHTTPServerTransport` front door. Mirrors the upstream
-  `local/src/index.ts` step for step.
+  `add_to_cart`, …). **Fix it here.** The deltas — and the reason there is no
+  upstream to send them to — are in [`FORK.md`](FORK.md). `shared/test/` is what
+  defends them; CI runs it as `servers (good-eggs)` on every PR.
+- **`remote/`** swaps the upstream stdio transport for an Express +
+  `StreamableHTTPServerTransport` front door, reusing `createMCPServer()`.
+
+## Reading the basket
+
+`get_cart`, the post-add verification and the pre-remove lookup all read the
+`storeData` payload Good Eggs renders into every page, not the drawn markup. The
+markup depends on which of two basket layouts the account is served, and the
+payload does not — which is why the scrape they replaced reported an empty cart
+against a 43-item basket. `shared/src/basketState.ts` is that read, and FORK.md
+#1 is the evidence.
 
 ## Browser lifecycle (proven on App Platform gVisor)
 

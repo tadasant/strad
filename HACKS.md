@@ -236,23 +236,29 @@ PR retargets to `main` (after PR #2 merges), `pull_request` CI covers it normall
 
 ---
 
-## 10. good-eggs `shared/` is vendored, not a dependency
+## 10. good-eggs `shared/` is a FORK — there is no upstream to fix
 
-**What.** `servers/good-eggs/shared/` is copied **verbatim** from
+**What.** `servers/good-eggs/shared/` began as a verbatim copy of
 [`pulsemcp/mcp-servers` `experimental/good-eggs/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/good-eggs)
-at commit `44f32a32afe27ffe9d00f23b24934c8242730f65`. Only `remote/` (the
-streamable-HTTP entrypoint) is new; the 11 tools and all Playwright logic are
-reused unchanged via `createMCPServer()`.
+at `44f32a32afe27ffe9d00f23b24934c8242730f65` and is now first-party: strad owns
+it and fixes land here. `servers/good-eggs/FORK.md` lists every delta.
 
-**Why.** The upstream package publishes a stdio `local/` server to npm; it has no
-HTTP entrypoint and isn't published as a library strad could depend on. Vendoring
-the shared source is the fastest way to reuse the tool logic without forking the
-behaviour. strad's eslint/prettier/tsc are scoped away from `servers/**` so the
-upstream code keeps its own formatting and toolchain.
+**Why.** The copy carried a "fixes belong upstream, then re-vendor" note that had
+nowhere to point. The npm package the defects were reported against,
+`good-eggs-mcp-server@0.1.11`, declares no `repository`, `homepage` or `bugs`
+URL, and no matching repo exists under `pulsemcp` or `tadasant`. So a real
+defect — `get_cart` reporting an empty cart against a 43-item basket, adds
+reported as failures, removals refused as "item not found" — had no sanctioned
+place to be fixed. Same call as `strad-fetch` and `bundle-api/fork/*`: a server
+whose bugs return confident wrong answers becomes first-party.
 
-**Undo.** When a shared fix is needed, make it upstream in `pulsemcp/mcp-servers`
-and re-vendor (bump the commit noted in `servers/good-eggs/README.md`). Longer
-term, have upstream publish `shared` as its own package and depend on it.
+**Cost.** A fork has no upstream to argue with it and no sync script to notice a
+loss, so `shared/test/` is the only thing defending the deltas. CI runs it as
+`servers (good-eggs)` on every PR. strad's eslint/prettier/tsc stay scoped away
+from `servers/**`, so this tree keeps its own toolchain.
+
+**Undo.** If upstream ever publishes `shared` as a library with these fixes in
+it, depend on it and delete the fork.
 
 ---
 

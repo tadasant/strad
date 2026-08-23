@@ -1,6 +1,11 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { createRegisterTools } from './tools.js';
 import { withBrowserTelemetry } from './telemetry.js';
+import {
+  basketSnapshotFromHtml,
+  productNameFromHtml,
+  type BasketSnapshot,
+} from './basketState.js';
 import type {
   GoodEggsConfig,
   GroceryItem,
@@ -54,7 +59,12 @@ export function findCartItemForUrl(
 ): CartItem | undefined {
   const productId = extractProductId(groceryUrl);
   if (!productId) return undefined;
-  return cartItems.find((item) => extractProductId(item.url) === productId);
+  // `productId` is read off the basket payload and survives a product whose
+  // presentation data (and therefore whose url) the page didn't ship; fall back
+  // to the url only for items that predate it.
+  return cartItems.find(
+    (item) => (item.productId || extractProductId(item.url)) === productId
+  );
 }
 
 export interface ReconcileAddParams {
@@ -63,9 +73,19 @@ export interface ReconcileAddParams {
   itemName: string;
   /** Quantity of this item already in the cart BEFORE the add was attempted. */
   priorQuantity: number;
+  /**
+   * Whether `priorQuantity` was actually measured. When false the before/after
+   * delta is not available, so a present item cannot be credited to this call.
+   */
+  priorQuantityKnown: boolean;
   /** Cart contents read back AFTER the add was attempted. */
   cartItems: CartItem[];
   buttonFound: boolean;
+  /**
+   * Whether the after-read actually succeeded. When false, `cartItems` is not
+   * evidence of anything and no outcome may be asserted from it.
+   */
+  cartReadable: boolean;
 }
 
 /**
@@ -83,17 +103,75 @@ export interface ReconcileAddParams {
  * this attempt changed nothing.
  */
 export function reconcileAddResult(params: ReconcileAddParams): CartResult {
-  const { groceryUrl, requestedQuantity, itemName, priorQuantity, cartItems, buttonFound } = params;
+  const {
+    groceryUrl,
+    requestedQuantity,
+    itemName,
+    priorQuantity,
+    cartItems,
+    buttonFound,
+    cartReadable,
+    priorQuantityKnown,
+  } = params;
+
+  // The basket could not be read back. Nothing here is evidence, so say that
+  // instead of picking an outcome. Reporting an unread basket as "the add did
+  // not take effect" is what invited re-adds and produced duplicates.
+  if (!cartReadable) {
+    const name = itemName && itemName !== 'Unknown item' ? itemName : 'the item';
+    return {
+      success: buttonFound,
+      verified: false,
+      message: buttonFound
+        ? `Clicked add for ${name}, but the basket could not be read back, so the result is ` +
+          `UNVERIFIED. Do not re-add it without checking the cart first — a blind retry is how ` +
+          `duplicates happen.`
+        : `The add-to-cart button was not found for ${name} and the basket could not be read ` +
+          `back, so the result is UNVERIFIED. Check the cart before retrying.`,
+      itemName,
+      quantity: 0,
+    };
+  }
+
   const match = findCartItemForUrl(cartItems, groceryUrl);
   const cartQuantity = match?.quantity ?? 0;
   const displayName = itemName && itemName !== 'Unknown item' ? itemName : match?.name || itemName;
   const delta = cartQuantity - priorQuantity;
+
+  // The before-read failed, so there is no delta to reason from. Report the
+  // cart quantity that IS known and decline to credit it to this call.
+  if (!priorQuantityKnown) {
+    if (cartQuantity > 0) {
+      return {
+        success: true,
+        verified: true,
+        message:
+          `${displayName} is in your cart at quantity ${cartQuantity}. The basket could not be ` +
+          `read before this add, so whether this call is what put it there is unknown.`,
+        itemName: displayName,
+        quantity: cartQuantity,
+      };
+    }
+    return {
+      success: false,
+      verified: true,
+      message: buttonFound
+        ? `Clicked add for ${displayName}, but it is not in your cart afterward. The add did ` +
+          `not take effect (a delivery day may need to be selected, or the item may be ` +
+          `unavailable).`
+        : `Could not find the add-to-cart button, and ${displayName} is not in your cart. The ` +
+          `add did not succeed.`,
+      itemName: displayName,
+      quantity: 0,
+    };
+  }
 
   // The cart quantity went up: this attempt demonstrably added the item.
   if (delta > 0) {
     if (cartQuantity >= requestedQuantity) {
       return {
         success: true,
+        verified: true,
         message: buttonFound
           ? `Successfully added ${displayName} to cart (cart now has ${cartQuantity}).`
           : `The add-to-cart button was not found on the page, but the cart quantity for ` +
@@ -104,6 +182,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
     }
     return {
       success: true,
+      verified: true,
       message:
         `Partially added: ${displayName} is now in your cart at quantity ${cartQuantity}, ` +
         `below the requested ${requestedQuantity}. You may need to adjust the quantity.`,
@@ -118,6 +197,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
   if (cartQuantity > 0 && priorQuantity >= requestedQuantity) {
     return {
       success: true,
+      verified: true,
       message:
         `${displayName} is already in your cart at quantity ${cartQuantity}, which meets the ` +
         `requested ${requestedQuantity}; no additional units were added.`,
@@ -130,6 +210,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
   if (cartQuantity > 0) {
     return {
       success: false,
+      verified: true,
       message: buttonFound
         ? `Clicked add for ${displayName}, but the cart quantity did not change (still ` +
           `${cartQuantity}, below the requested ${requestedQuantity}). The add did not take ` +
@@ -144,6 +225,7 @@ export function reconcileAddResult(params: ReconcileAddParams): CartResult {
 
   return {
     success: false,
+    verified: true,
     message: buttonFound
       ? `Clicked add for ${displayName}, but it does not appear in your cart afterward. ` +
         `The add did not take effect (a delivery day may need to be selected, or the item may be unavailable).`
@@ -261,9 +343,19 @@ export interface IGoodEggsClient {
   removeFromCart(groceryUrl: string): Promise<CartResult>;
 
   /**
-   * Get current cart contents
+   * Get current cart contents.
+   *
+   * THROWS when the basket cannot be read. It must never answer an unreadable
+   * basket with an empty array — a caller cannot tell those apart, and telling
+   * them apart is the difference between "your cart is empty" and the truth.
    */
   getCart(): Promise<CartItem[]>;
+
+  /**
+   * Get the current basket with its totals. Same read as `getCart()`, and the
+   * same contract: it throws rather than inventing an empty basket.
+   */
+  getBasket(): Promise<BasketSnapshot>;
 
   /**
    * Get the current page URL
@@ -628,13 +720,15 @@ export class GoodEggsClient implements IGoodEggsClient {
     // sufficient quantity would be misreported as a successful add even when this
     // attempt changed nothing (e.g. the button was missing or a delivery day
     // still needs to be selected).
-    let priorCartItems: CartItem[] = [];
+    let priorCartItems: CartItem[] | null = null;
     try {
       priorCartItems = await this.getCart();
     } catch {
-      priorCartItems = [];
+      priorCartItems = null;
     }
-    const priorQuantity = findCartItemForUrl(priorCartItems, groceryUrl)?.quantity ?? 0;
+    const priorQuantity = priorCartItems
+      ? (findCartItemForUrl(priorCartItems, groceryUrl)?.quantity ?? 0)
+      : 0;
 
     // Navigate to the product page if we're not already on it. Wrap in a retry
     // so a stale page / re-render during navigation reloads once instead of
@@ -654,11 +748,17 @@ export class GoodEggsClient implements IGoodEggsClient {
       await page.waitForTimeout(3000);
     });
 
-    // Get the product name for the result
-    const itemName = await page.evaluate(() => {
-      const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
-      return nameEl?.textContent?.trim() || 'Unknown item';
-    });
+    // Name the product from the page's own payload, falling back to the
+    // heading. The heading is not reliable: it reads `h1, [class*="title"]`,
+    // and on a product page with no delivery day chosen the first such element
+    // is the day picker — which is why successful adds were reported against an
+    // item called "Select a delivery day".
+    const itemName =
+      productNameFromHtml(await page.content(), extractProductId(groceryUrl)) ??
+      (await page.evaluate(() => {
+        const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
+        return nameEl?.textContent?.trim() || 'Unknown item';
+      }));
 
     // Set quantity if different from 1. This is best-effort: if the quantity
     // controls can't be found we still attempt the add and let cart
@@ -706,6 +806,7 @@ export class GoodEggsClient implements IGoodEggsClient {
     // actually succeeded) into an accurate result. Reading the cart navigates
     // away from the product page, so do it last.
     let cartItems: CartItem[] = [];
+    let cartReadable = true;
     try {
       cartItems = await this.getCart();
     } catch {
@@ -713,7 +814,11 @@ export class GoodEggsClient implements IGoodEggsClient {
       try {
         cartItems = await this.getCart();
       } catch {
+        // Still unreadable. Say so — an unread basket is not an empty one, and
+        // reconciling against `[]` here is how a successful add was reported as
+        // "it does not appear in your cart afterward".
         cartItems = [];
+        cartReadable = false;
       }
     }
 
@@ -722,8 +827,10 @@ export class GoodEggsClient implements IGoodEggsClient {
       requestedQuantity: quantity,
       itemName,
       priorQuantity,
+      priorQuantityKnown: priorCartItems !== null,
       cartItems,
       buttonFound,
+      cartReadable,
     });
   }
 
@@ -1057,11 +1164,17 @@ export class GoodEggsClient implements IGoodEggsClient {
       await page.waitForTimeout(3000);
     }
 
-    // Get the product name for the result
-    const itemName = await page.evaluate(() => {
-      const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
-      return nameEl?.textContent?.trim() || 'Unknown item';
-    });
+    // Name the product from the page's own payload, falling back to the
+    // heading. The heading is not reliable: it reads `h1, [class*="title"]`,
+    // and on a product page with no delivery day chosen the first such element
+    // is the day picker — which is why successful adds were reported against an
+    // item called "Select a delivery day".
+    const itemName =
+      productNameFromHtml(await page.content(), extractProductId(groceryUrl)) ??
+      (await page.evaluate(() => {
+        const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
+        return nameEl?.textContent?.trim() || 'Unknown item';
+      }));
 
     // Look for the favorite control - Good Eggs uses a div, not a button.
     // Wait for it to render rather than synchronously null-checking.
@@ -1117,11 +1230,17 @@ export class GoodEggsClient implements IGoodEggsClient {
       await page.waitForTimeout(3000);
     }
 
-    // Get the product name for the result
-    const itemName = await page.evaluate(() => {
-      const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
-      return nameEl?.textContent?.trim() || 'Unknown item';
-    });
+    // Name the product from the page's own payload, falling back to the
+    // heading. The heading is not reliable: it reads `h1, [class*="title"]`,
+    // and on a product page with no delivery day chosen the first such element
+    // is the day picker — which is why successful adds were reported against an
+    // item called "Select a delivery day".
+    const itemName =
+      productNameFromHtml(await page.content(), extractProductId(groceryUrl)) ??
+      (await page.evaluate(() => {
+        const nameEl = document.querySelector('h1, [class*="product-name"], [class*="title"]');
+        return nameEl?.textContent?.trim() || 'Unknown item';
+      }));
 
     // Look for the favorite control - Good Eggs uses a div, not a button.
     // Wait for it to render rather than synchronously null-checking.
@@ -1165,17 +1284,8 @@ export class GoodEggsClient implements IGoodEggsClient {
   async removeFromCart(groceryUrl: string): Promise<CartResult> {
     const page = await this.ensureBrowser();
 
-    // Navigate to cart page
-    // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
-    await page.goto(`${BASE_URL}/basket`, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
-
-    // Try to find the item in the cart by its URL or name
-    // First, let's get the product name from the URL if possible
-    const productSlug = groceryUrl.split('/').pop() || '';
-
-    // Validate that we have a valid product slug to search for
-    if (!productSlug || productSlug.length < 3) {
+    const productId = extractProductId(groceryUrl);
+    if (!productId || productId.length < 3) {
       return {
         success: false,
         message: 'Invalid grocery URL - could not extract product identifier',
@@ -1183,174 +1293,153 @@ export class GoodEggsClient implements IGoodEggsClient {
       };
     }
 
-    // Look for the item in the cart using the same selectors as getCart()
-    // Good Eggs uses 'js-basket-item' class for cart items
-    const cartItems = await page.$$('.js-basket-item');
+    // Presence is decided by the basket payload, not by the markup. The scrape
+    // this replaced looked for `.js-basket-item` rows, which the card layout
+    // does not render, so it answered "Item not found in cart" for items that
+    // were plainly there — and there was no other way to undo an add.
+    let before: BasketSnapshot;
+    try {
+      before = await this.getBasket();
+    } catch (error) {
+      return {
+        success: false,
+        verified: false,
+        message:
+          `Could not read the basket, so removal was not attempted: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        itemName: groceryUrl,
+      };
+    }
 
-    let itemFound = false;
+    const target = findCartItemForUrl(before.items, groceryUrl);
+    if (!target) {
+      return {
+        success: false,
+        verified: true,
+        message: `Item not found in cart (the basket has ${before.items.length} product${
+          before.items.length === 1 ? '' : 's'
+        }, none of them this one).`,
+        itemName: groceryUrl,
+      };
+    }
+
+    const itemName = target.name.trim() || 'Unknown item';
+
+    // Both basket layouts tag the item's container with `data-product-id`, so
+    // one selector finds it whichever one the account was bucketed into.
+    const cardSelector = `[data-product-id="${productId}"]`;
+
+    // Removing takes a different number of clicks per layout, so drive it as a
+    // bounded loop and let the basket say when it worked:
+    //   card layout    the quantity pill's left button decrements, and turns
+    //                  into the trash control at quantity 1
+    //   summary layout a "Remove" control, or a quantity <select> with a 0
+    //                  option
+    const maxAttempts = Math.max(target.quantity, 1) + 2;
     let removalAttempted = false;
-    let itemName = 'Unknown item';
 
-    for (const cartItem of cartItems) {
-      // Check if this cart item contains a link to our product
-      // Good Eggs uses .summary-item__name a for the product link
-      const itemLink = await cartItem.$(`a[href*="${productSlug}"]`);
-      if (itemLink) {
-        itemFound = true;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const card = await page.$(cardSelector);
+      if (!card) break;
 
-        // Get the item name using Good Eggs selector
-        const nameEl = await cartItem.$('.summary-item__name a');
-        if (nameEl) {
-          itemName = (await nameEl.textContent()) || 'Unknown item';
-        }
+      const control = await card.$(
+        '[data-testid="qty-trash"], [data-testid="qty-decrement"], .quantity-pill__btn--left, ' +
+          'button[aria-label*="remove" i], .summary-item__remove, [class*="remove-button"]'
+      );
+      if (control) {
+        await control.click().catch(() => {});
+        await page.waitForTimeout(1000);
+        removalAttempted = true;
+        continue;
+      }
 
-        // Find and click the remove button
-        // Good Eggs may have a dedicated remove button or use a quantity dropdown
-        // We try the remove button first, then fall back to the quantity dropdown
-
-        // First, try to find a direct remove button (future-proofing in case Good Eggs adds one)
-        const removeButton = await cartItem.$(
-          'button[aria-label*="remove"], button[aria-label*="Remove"], .summary-item__remove, [class*="remove-button"]'
-        );
-
-        if (removeButton) {
-          await removeButton.click().catch(() => {});
+      const quantitySelect = await card.$('.summary-item__quantity select, select');
+      if (quantitySelect) {
+        try {
+          await quantitySelect.selectOption('0');
           await page.waitForTimeout(1000);
           removalAttempted = true;
-        } else {
-          // Fallback: use the quantity dropdown with value "0" to remove the item
-          // Good Eggs quantity dropdowns have a "Remove" option with value="0"
-          const quantitySelect = await cartItem.$('.summary-item__quantity select');
-          if (quantitySelect) {
-            try {
-              await quantitySelect.selectOption('0');
-              await page.waitForTimeout(1000);
-              removalAttempted = true;
-            } catch {
-              // If selectOption('0') fails (e.g., no "0" option exists), fall through to verification
-            }
-          }
+          continue;
+        } catch {
+          // No zero option; nothing else to try on this card.
         }
-
-        break;
       }
+      break;
     }
 
-    if (!itemFound) {
-      return {
-        success: false,
-        message: 'Item not found in cart',
-        itemName: productSlug,
-      };
-    }
-
-    const trimmedName = itemName.trim();
-
-    // Verify the removal against the actual cart state rather than trusting the
-    // click. If the item is gone, the remove succeeded - even if we couldn't
-    // confirm a control was clicked.
-    let stillPresent: CartItem | undefined;
+    // Verify against the basket, which is the only thing that decides this.
+    let after: BasketSnapshot;
     try {
-      const updatedCart = await this.getCart();
-      stillPresent = findCartItemForUrl(updatedCart, groceryUrl);
-    } catch {
-      // Couldn't re-read the cart. If we did attempt a removal, report
-      // best-effort success rather than a misleading hard failure.
-      if (removalAttempted) {
-        return {
-          success: true,
-          message: `Removed ${trimmedName} from cart (could not re-verify cart state).`,
-          itemName: trimmedName,
-        };
-      }
+      after = await this.getBasket();
+    } catch (error) {
       return {
         success: false,
-        message: `Could not find a way to remove ${trimmedName} from the cart.`,
-        itemName: trimmedName,
+        verified: false,
+        message: removalAttempted
+          ? `Clicked remove for ${itemName}, but the basket could not be read back, so the ` +
+            `result is UNVERIFIED: ${error instanceof Error ? error.message : String(error)}`
+          : `Could not find a way to remove ${itemName}, and the basket could not be re-read.`,
+        itemName,
       };
     }
 
+    const stillPresent = findCartItemForUrl(after.items, groceryUrl);
     if (!stillPresent) {
       return {
         success: true,
-        message: `Successfully removed ${trimmedName} from cart`,
-        itemName: trimmedName,
+        verified: true,
+        message: `Successfully removed ${itemName} from cart`,
+        itemName,
       };
     }
 
     return {
       success: false,
+      verified: true,
       message: removalAttempted
-        ? `Attempted to remove ${trimmedName}, but it is still in your cart (quantity ${stillPresent.quantity}).`
-        : `Could not find a way to remove ${trimmedName} from the cart; it is still present (quantity ${stillPresent.quantity}).`,
-      itemName: trimmedName,
+        ? `Attempted to remove ${itemName}, but it is still in your cart (quantity ${stillPresent.quantity}).`
+        : `Could not find a remove control for ${itemName}; it is still in your cart (quantity ${stillPresent.quantity}).`,
+      itemName,
       quantity: stillPresent.quantity,
     };
   }
 
-  async getCart(): Promise<CartItem[]> {
+  /**
+   * Read the basket from the page's Redux payload.
+   *
+   * `storeData.basket` is what the SERVER thinks the basket is, rendered into
+   * every page against the session cookie. The rendered markup is a view of it,
+   * and which view depends on a per-account layout experiment: the current
+   * basket page draws either `.js-basket-item.summary-item` rows or
+   * `.basket-item-card` cards, and the DOM scrape this replaced only knew the
+   * first. An account bucketed into the card layout therefore read as an EMPTY
+   * basket, every time — see FORK.md #1.
+   *
+   * Throws when the payload is absent, so an unreadable basket can never be
+   * mistaken for an empty one.
+   */
+  async getBasket(): Promise<BasketSnapshot> {
     const page = await this.ensureBrowser();
 
-    // Navigate to basket page
-    // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
+    // Use domcontentloaded instead of networkidle - Good Eggs has persistent
+    // connections. The payload is in the served document, so there is nothing
+    // to wait for beyond it.
     await page.goto(`${BASE_URL}/basket`, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
 
-    // Extract cart items from the basket page
-    const items = await page.evaluate((baseUrl) => {
-      const cartItems: CartItem[] = [];
+    const html = await page.content();
+    const snapshot = basketSnapshotFromHtml(html, BASE_URL);
+    if (!snapshot) {
+      throw new Error(
+        'Could not read the Good Eggs basket: the page carried no basket payload. ' +
+          'This usually means the session is signed out or the page failed to load; ' +
+          'it does NOT mean the basket is empty.'
+      );
+    }
+    return snapshot;
+  }
 
-      // Good Eggs uses 'js-basket-item summary-item' for cart items
-      const basketItems = document.querySelectorAll('.js-basket-item');
-
-      basketItems.forEach((item) => {
-        const nameLink = item.querySelector('.summary-item__name a') as HTMLAnchorElement;
-        const producerLink = item.querySelector('.summary-item__producer a');
-        const unitEl = item.querySelector('.summary-item__unit');
-        const quantitySelect = item.querySelector(
-          '.summary-item__quantity select'
-        ) as HTMLSelectElement;
-        const priceEl = item.querySelector('.summary-item__price');
-        const imgEl = item.querySelector('.summary-item__photo img') as HTMLImageElement;
-
-        if (!nameLink) return;
-
-        // Get quantity from the selected option or default to 1
-        let quantity = 1;
-        if (quantitySelect) {
-          const selectedOption = quantitySelect.querySelector(
-            'option[selected]'
-          ) as HTMLOptionElement;
-          quantity = parseInt(selectedOption?.value || quantitySelect.value || '1', 10);
-        }
-
-        // Build full URL
-        const relativeUrl = nameLink.getAttribute('href') || '';
-        const fullUrl = relativeUrl.startsWith('http') ? relativeUrl : `${baseUrl}${relativeUrl}`;
-
-        // Parse price - might contain original and sale price like "$2.99$3.54"
-        let price = priceEl?.textContent?.trim() || '';
-        // Extract just the current price (first price value)
-        const priceMatch = price.match(/\$[\d.]+/);
-        if (priceMatch) {
-          price = priceMatch[0];
-        }
-
-        cartItems.push({
-          url: fullUrl,
-          name: nameLink.textContent?.trim() || 'Unknown item',
-          brand: producerLink?.textContent?.trim() || '',
-          unit: unitEl?.textContent?.trim() || undefined,
-          quantity: quantity,
-          price: price,
-          imageUrl: imgEl?.src || undefined,
-        });
-      });
-
-      return cartItems;
-    }, BASE_URL);
-
-    return items;
+  async getCart(): Promise<CartItem[]> {
+    return (await this.getBasket()).items;
   }
 
   async getCurrentUrl(): Promise<string> {

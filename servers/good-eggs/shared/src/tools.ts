@@ -6,6 +6,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { ClientFactory, IGoodEggsClient } from './server.js';
+import { formatCents } from './basketState.js';
 import {
   SEARCH_APP_URI,
   SEARCH_APP_NAME,
@@ -70,11 +71,15 @@ Provide:
 - quantity: Number of items to add (default: 1)
 
 Returns confirmation of the item added and the resulting cart quantity. After
-attempting the add, the cart is re-read to verify the item actually landed, so
-the result reflects the true cart state rather than just whether a button was
+attempting the add, the basket is re-read to verify the item actually landed, so
+the result reflects the true basket state rather than just whether a button was
 clicked. Possible outcomes: a confirmed add, a partial add (cart quantity below
-what was requested), or a genuine failure (e.g. a delivery day still needs to be
-selected).
+what was requested), a genuine failure (e.g. a delivery day still needs to be
+selected), or an UNVERIFIED result.
+
+An UNVERIFIED result means the basket could not be read back, so the outcome is
+unknown. Do not retry a blind add on one — read the cart first, or you will
+create duplicates.
 
 **Tip:** This tool checks if you're already on the product page to minimize navigation.`;
 
@@ -125,9 +130,15 @@ Returns confirmation of the action taken.`;
 const REMOVE_FROM_CART_DESCRIPTION = `Remove a grocery item from your shopping cart.
 
 Provide the Good Eggs URL of the item to remove from your cart.
-Navigates to the cart and removes the specified item.
 
-Returns confirmation of the removal or an error if the item is not in the cart.`;
+Whether the item is in the cart is decided against the basket state Good Eggs
+renders into the page, not against the drawn markup, so "item not found in cart"
+means the basket really does not contain it. The removal itself is then verified
+by re-reading the basket.
+
+Returns confirmation of the removal, "item not found in cart", a failure if the
+item is still present afterward, or an UNVERIFIED result if the basket could not
+be read (in which case the outcome is unknown — read the cart before retrying).`;
 
 const GET_CART_DESCRIPTION = `Get the contents of your Good Eggs shopping cart.
 
@@ -136,9 +147,16 @@ Returns a list of all items currently in your cart, including:
 - Product name and brand
 - Quantity in cart
 - Unit size (e.g., "6 count", "24 oz")
-- Current price
+- Line subtotal
+plus the basket subtotal.
 
-Useful for reviewing what's in your cart before checkout.`;
+The read comes from the basket state Good Eggs renders into the page, not from
+the drawn markup, so it does not depend on which basket layout the account is
+served.
+
+If the basket cannot be read, this tool returns an ERROR. It never answers an
+unreadable basket with "your cart is empty" — treat an error as "unknown", not
+as "empty", and do not infer that the user removed anything.`;
 
 // =============================================================================
 // TOOL DEFINITIONS
@@ -417,7 +435,12 @@ export function createRegisterTools(
             content: [
               {
                 type: 'text',
-                text: result.success ? result.message : `Failed to add to cart: ${result.message}`,
+                // An unverified result is not a failure — prefixing it with
+                // "Failed to" is exactly the assertion the fix removed.
+                text:
+                  result.success || result.verified === false
+                    ? result.message
+                    : `Failed to add to cart: ${result.message}`,
               },
             ],
             isError: !result.success,
@@ -706,9 +729,10 @@ export function createRegisterTools(
             content: [
               {
                 type: 'text',
-                text: result.success
-                  ? result.message
-                  : `Failed to remove from cart: ${result.message}`,
+                text:
+                  result.success || result.verified === false
+                    ? result.message
+                    : `Failed to remove from cart: ${result.message}`,
               },
             ],
             isError: !result.success,
@@ -736,7 +760,8 @@ export function createRegisterTools(
       handler: async () => {
         try {
           const goodEggsClient = await getClient();
-          const results = await goodEggsClient.getCart();
+          const basket = await goodEggsClient.getBasket();
+          const results = basket.items;
 
           if (results.length === 0) {
             return {
@@ -758,21 +783,32 @@ export function createRegisterTools(
 
           // Calculate total items
           const totalItems = results.reduce((sum, item) => sum + item.quantity, 0);
+          const subtotal = formatCents(basket.subtotalCents);
 
           return {
             content: [
               {
                 type: 'text',
-                text: `Your cart has ${results.length} product${results.length === 1 ? '' : 's'} (${totalItems} total item${totalItems === 1 ? '' : 's'}):\n\n${formattedResults}`,
+                text:
+                  `Your cart has ${results.length} product${results.length === 1 ? '' : 's'} ` +
+                  `(${totalItems} total item${totalItems === 1 ? '' : 's'})` +
+                  `${subtotal ? `, subtotal ${subtotal}` : ''}:\n\n${formattedResults}`,
               },
             ],
           };
         } catch (error) {
+          // The basket could not be READ. Say that, and say what it does not
+          // mean: an error here is "unknown", never "empty". Answering an
+          // unreadable basket with "your cart is empty" is what led an agent to
+          // tell a user he had removed items he had not touched.
           return {
             content: [
               {
                 type: 'text',
-                text: `Error getting cart: ${error instanceof Error ? error.message : String(error)}`,
+                text:
+                  `Error getting cart: ${error instanceof Error ? error.message : String(error)}\n\n` +
+                  `The cart contents are UNKNOWN, not empty. Do not conclude anything about ` +
+                  `what is or is not in the cart from this result.`,
               },
             ],
             isError: true,

@@ -13,9 +13,9 @@
  * calls the launch function and returns, and this package behaves exactly as it
  * did before.
  *
- * That is the whole design: `shared/` is vendored from upstream (HACKS #10), so
- * it must not grow a hard dependency on strad's telemetry. A duck-typed global
- * and an optional call keep the coupling at zero.
+ * That is the whole design: `shared/` is a fork of an upstream stdio server
+ * (HACKS #10), so it must not grow a hard dependency on strad's telemetry. A
+ * duck-typed global and an optional call keep the coupling at zero.
  */
 
 interface BrowserTelemetryHooks {

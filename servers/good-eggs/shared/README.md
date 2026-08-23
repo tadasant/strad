@@ -1,35 +1,36 @@
-# NAME MCP Server - Shared Module
+# good-eggs MCP server — shared module
 
-This module contains the core business logic for the NAME MCP server.
+The tool logic: the Playwright client, the 11 tools, and the basket read they
+all depend on. `remote/` imports `createMCPServer()` from here; nothing is
+reimplemented there.
 
-## Overview
-
-All resources and tools are implemented here and exported for use by local and remote implementations.
+This is a **fork**, not a vendor copy — strad owns it, and fixes land here.
+[`../FORK.md`](../FORK.md) has every delta from upstream and the incident behind
+each.
 
 ## Structure
 
 ```
 shared/
 ├── src/
-│   ├── index.ts      # Main exports
-│   ├── resources.ts  # Resource implementations
-│   ├── tools.ts      # Tool implementations
-│   └── types.ts      # Shared types
-└── dist/             # Built output
+│   ├── index.ts        # public exports
+│   ├── server.ts       # the Playwright client + createMCPServer()
+│   ├── basketState.ts  # the authoritative basket read (FORK.md #1)
+│   ├── tools.ts        # the 11 tool definitions and handlers
+│   ├── appUi.ts        # the MCP-App (io.modelcontextprotocol/ui) surface
+│   ├── telemetry.ts    # browser-span instrumentation
+│   └── types.ts        # shared types and the Zod input schemas
+└── build/              # built output (tests run against this)
 ```
 
-## Building
+## Building and testing
 
 ```bash
 npm install
 npm run build
+npm test          # builds, then runs test/*.test.mjs with node:test
 ```
 
-## Usage
-
-This module exports:
-
-- `registerResources(server)` - Registers all resources
-- `registerTools(server)` - Registers all tools
-
-Both local and remote implementations import and use these functions.
+The tests need no browser and no Good Eggs login. They are the only thing
+defending the fork's deltas against a careless re-vendor, so a change to the
+cart read, the add reconciliation or the removal path belongs with one.
