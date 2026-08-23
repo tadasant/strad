@@ -2,6 +2,10 @@
 export {
   createMCPServer,
   GoodEggsClient,
+  extractProductId,
+  findCartItemForUrl,
+  reconcileAddResult,
+  type ReconcileAddParams,
   setSharedBrowserProvider,
   type SharedBrowserProvider,
   type IGoodEggsClient,
@@ -12,6 +16,20 @@ export {
 
 // Tools exports
 export { createRegisterTools, type RegisterToolsOptions } from './tools.js';
+
+// Basket state exports — the authoritative read path (see FORK.md #1)
+export {
+  extractStoreData,
+  cartItemsFromStoreData,
+  basketSnapshotFromHtml,
+  productNameFromHtml,
+  basketItemProductId,
+  formatCents,
+  type GoodEggsStoreData,
+  type StoreBasketItem,
+  type StoreProduct,
+  type BasketSnapshot,
+} from './basketState.js';
 
 // MCP App (io.modelcontextprotocol/ui) exports
 export {

@@ -6,7 +6,7 @@ package-lock.json
 # CI and fail on the machine that just built the docs.
 docs/.astro
 .agents
-# Vendored supplementary MCP servers keep their upstream formatting.
+# Supplementary MCP servers, vendored or forked, keep their upstream formatting.
 servers
 # Supplementary-image sources (bundle-google, …) are self-contained projects
 # with their own formatting; they are not part of the core format check.

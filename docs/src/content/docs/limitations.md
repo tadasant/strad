@@ -1123,10 +1123,9 @@ upload directory would be the stronger answer and is not implemented.
 
 ## Supply chain and build
 
-### 10, 15 & 45. The `shared/` trees are vendored, not depended on
+### 15 & 45. The `shared/` trees are vendored, not depended on
 
-`servers/good-eggs/shared/`, `servers/fetchpet/shared/` and
-`servers/onepassword/shared/` are copied from
+`servers/fetchpet/shared/` and `servers/onepassword/shared/` are copied from
 [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers). Mostly the
 `remote/` streamable-HTTP entrypoints are the only new code and the tool logic is
 reused unchanged. 1Password drags one more thing along: its
@@ -1146,6 +1145,29 @@ depend on. strad's ESLint, Prettier, and TypeScript are scoped away from
 
 **Undo:** land shared fixes upstream and re-vendor; longer term, have upstream
 publish `shared` and the elicitation library as real packages.
+
+### 10. good-eggs is a fork, because there was nowhere else to fix it
+
+`servers/good-eggs/shared/` began as a verbatim copy of the same monorepo's
+`experimental/good-eggs/shared`, carrying the same "fixes belong upstream, then
+re-vendor" instruction. That instruction had nowhere to point: the npm package
+the defects were reported against, `good-eggs-mcp-server@0.1.11`, declares no
+`repository`, `homepage` or `bugs` URL, and no matching repo exists under
+`pulsemcp` or `tadasant`. So the tree is first-party now, on the same reasoning
+as `strad-fetch` and the two forks in `bundle-api`.
+
+What it cost: a fork has no upstream to argue with it and no sync script to
+notice a loss, so `servers/good-eggs/shared/test/` is the only thing defending
+its deltas. CI runs that suite on every PR.
+
+`servers/good-eggs/FORK.md` lists all of them. The load-bearing one is that the
+basket is read from the `storeData` payload Good Eggs renders into every page
+rather than from the drawn markup — the markup depends on which of two basket
+layouts the account is served, and the scrape that preceded this knew only one
+of them, so `get_cart` answered "your cart is empty" against a 43-item basket.
+
+**Undo:** if upstream ever publishes `shared` as a library carrying these fixes,
+depend on it and delete the fork.
 
 ### 55. The slack server is a fork, and only its tests defend the delta
 
