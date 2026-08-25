@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 import {
@@ -15,7 +15,7 @@ import {
   loadConfig,
   signingVersionFor,
   withRetry,
-} from "../build/index.js";
+} from "../src/index.js";
 
 /**
  * The seven-day problem, in one file.
@@ -227,7 +227,7 @@ test("only transient connection failures are retried", async () => {
 });
 
 test("base64 is accepted the way tools actually emit it, and a path is not", async () => {
-  const { toolDefinitions } = await import("../build/index.js");
+  const { toolDefinitions } = await import("../src/index.js");
   const stored = [];
   const store = {
     bucket: () => "b",
@@ -285,7 +285,7 @@ test("base64 is accepted the way tools actually emit it, and a path is not", asy
 });
 
 test("a file:// source cannot reach process state or container internals", async () => {
-  const { toolDefinitions } = await import("../build/index.js");
+  const { toolDefinitions } = await import("../src/index.js");
   const store = {
     bucket: () => "b",
     viewerDomain: () => "example.com",
