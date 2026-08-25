@@ -544,7 +544,19 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * credential is per slug, that costs nothing here.
  */
 function loadGoogleSheets(sheets: GoogleSheetsModule, slug: string): Mount {
-  const env = slugEnvView(process.env, slug);
+  const env = {
+    ...slugEnvView(process.env, slug),
+    // WHERE TO GO WHEN THE TOKEN DIES. `invalid_grant` is the normal end of a
+    // refresh token's life (seven days for an app in "testing", or any password
+    // change), and the recovery is one button on this slug's own console page.
+    // The mount knows its slug and the box knows the gateway's public URL, so
+    // the error can name the page rather than describing a procedure.
+    ...(process.env.STRAD_PUBLIC_URL
+      ? {
+          GOOGLE_SHEETS_RECONNECT_URL: `${process.env.STRAD_PUBLIC_URL.replace(/\/$/, "")}/ui/${slug}`,
+        }
+      : {}),
+  };
   // The tree owns what its credential IS. A copy of that list here would keep
   // gating on three names on the day the server starts needing four.
   const missing = sheets.missingCredentials(env);

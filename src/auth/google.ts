@@ -100,7 +100,7 @@ export class GoogleOAuthProvider {
   }
 
   async verifyIdToken(idToken: string): Promise<GoogleIdentity> {
-    const claims = await verifyGoogleJwt(idToken, this.opts.clientId);
+    const claims = await verifyGoogleIdToken(idToken, this.opts.clientId);
 
     // THE check. Not the email suffix.
     if (claims.hd !== this.opts.hostedDomain) {
@@ -124,7 +124,7 @@ export class GoogleOAuthProvider {
 
 export class AuthError extends Error {}
 
-interface GoogleClaims {
+export interface GoogleClaims {
   iss: string;
   aud: string;
   sub: string;
@@ -172,8 +172,17 @@ async function getJwks(): Promise<Jwk[]> {
   return json.keys;
 }
 
-/** Verify RS256 signature, issuer, audience and expiry. */
-async function verifyGoogleJwt(
+/**
+ * Verify RS256 signature, issuer, audience and expiry.
+ *
+ * Exported because the console CONNECTOR flow (src/connectors/google.ts) needs
+ * exactly this and nothing around it. That flow runs against a DIFFERENT OAuth
+ * client — the one a server's own namespace holds — and checks a pinned email
+ * rather than a Workspace `hd`, so it cannot reuse `GoogleOAuthProvider`. What it
+ * must not do is grow a second RS256/JWKS/issuer/audience implementation: this is
+ * the only proof of identity in either flow, and one of it is the point.
+ */
+export async function verifyGoogleIdToken(
   token: string,
   audience: string,
 ): Promise<GoogleClaims> {

@@ -279,6 +279,25 @@ Before this, only the second namespace existed, so a name was a deployment-wide
 singleton: `telegram-ro` and `telegram-rw` both write `${TELEGRAM_API_HASH}` and
 could not be given different credentials, whatever was seeded where.
 
+### A connector's variables are read from that namespace WITHOUT being referenced
+
+An `oauth:` connector names three variables — the OAuth client id, the client
+secret, and the refresh token the console flow writes — and none of them is a
+`${NAME}`. The renderer reads them out of `/strad/{env}/mcp/{slug}/static/` and
+injects them, each one only if the store holds it; the config gate refuses a
+`${NAME}` reference to any of them by name.
+
+That is not a stylistic preference. `render-spec` fails the **whole** app spec on
+one unresolvable reference, and the refresh token cannot exist until a human has
+completed the console consent flow — which needs the slug deployed first. A
+reference would make one unconnected slug a fleet-wide deploy failure. Injection
+makes it a degraded mount and nothing else.
+
+There is no fallback for these three: the gateway namespace is not consulted, and
+neither is a sibling slug's. A client id seeded once at the gateway would make six
+Google Sheets slugs all look ready while none of them owned a credential. Seed
+them per slug. See [Connectors](/operate/connectors/).
+
 ### The same rule, applied at two times
 
 The layering is one rule with two implementations, because the two halves of a

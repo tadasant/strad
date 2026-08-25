@@ -75,10 +75,11 @@ write tools withheld by strad's
   bundle: bundle
   path: /google-sheets-tadas412-ro
   entitlements: [zimmer]
-  env:
-    GOOGLE_SHEETS_OAUTH_CLIENT_ID: "${GOOGLE_SHEETS_OAUTH_CLIENT_ID}"
-    GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "${GOOGLE_SHEETS_OAUTH_CLIENT_SECRET}"
-    GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "${GOOGLE_SHEETS_TADAS412_OAUTH_REFRESH_TOKEN}"
+  oauth:
+    provider: google
+    account: tadas412@gmail.com
+    scopes:
+      - https://www.googleapis.com/auth/spreadsheets.readonly
   tools:
     allow:
       - get_spreadsheet
@@ -87,8 +88,18 @@ write tools withheld by strad's
       - find_in_spreadsheet
 ```
 
+There is no `env:` block, and that is deliberate. The
+[`oauth:` connector](/operate/connectors/) owns all three variables: strad reads
+them from this slug's own namespace and injects them, each one only if the store
+holds it. Writing them as `${NAME}` references is refused by the config gate,
+because the refresh token does not exist until a human has consented in the
+console — and `render-spec` fails the **whole** app spec on one unresolvable
+reference, so a single unconnected slug would take every other server's deploy
+with it.
+
 The `-rw` slug is the same entry with no `tools:` block — the full eight are that
-tier — and its own `path`, so it holds its own credential.
+tier — its own `path`, and `scopes: [https://www.googleapis.com/auth/spreadsheets]`,
+so it holds its own credential consented for the wider scope.
 
 Unlike [1Password](/limitations/#22-onepassword-ro-is-read-only-because-strad-says-so),
 where read-only had to become policy when the containers collapsed, this server
@@ -128,18 +139,40 @@ worse than one that says it stopped.
 
 ## What a human has to do before any of this works
 
-None of it can be done by an agent, and none of it is in this repository:
+None of it can be done by an agent. The first two steps are in the Google Cloud
+console; the rest happen in strad's own.
 
 1. **Enable the Google Sheets API** on the GCP project behind the OAuth client.
-2. **Configure the OAuth consent screen** with the Sheets scope, and add each
-   Google account as a **test user** while the app is unverified.
-3. **Run the consent flow once per account** in a browser, and keep the refresh
-   token it returns.
-4. **Seed each refresh token** into strad's parameter store under the name that
-   slug's `env:` references.
+2. **Configure the OAuth consent screen** with the Sheets scope, add each Google
+   account as a **test user** while the app is unverified, and register strad's
+   exact redirect URI — `https://<your gateway>/ui/oauth/callback`. Staging and
+   production are different URIs; both need registering.
+3. **Seed the client id and secret** for each slug, under that slug's own
+   namespace:
 
-Until then the mount lists its tools and every call fails. That is the designed
-state, not a broken one.
+   ```text
+   /strad/{env}/mcp/<slug>/static/GOOGLE_SHEETS_OAUTH_CLIENT_ID
+   /strad/{env}/mcp/<slug>/static/GOOGLE_SHEETS_OAUTH_CLIENT_SECRET
+   ```
+
+4. **Click Connect Google** on `/ui/<slug>` in strad's console, once per slug, and
+   consent as the account that slug is pinned to. strad writes the refresh token
+   into the third parameter itself — see [Connectors](/operate/connectors/).
+
+The refresh token never passes through a human's hands, a shell, or an agent.
+
+Until a slug is connected the mount lists its tools and every call fails naming
+what is absent. That is the designed state, not a broken one — and it is what
+makes step 4 possible, because the slug has to be deployed before its console page
+exists.
+
+### When it stops working
+
+Google expires a refresh token from an app still in "testing" after seven days,
+and revokes on a password change or a withdrawn consent. The server reports
+`invalid_grant` and tells you to re-consent; **Reconnect Google** on that slug's
+console page is where you do it. It rotates the stored credential, and a failed
+attempt leaves the previous one in place.
 
 ## Non-native files are invisible to this API
 

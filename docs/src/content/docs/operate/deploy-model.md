@@ -316,6 +316,39 @@ gateway](/operate/secrets/#two-stores-one-gateway) for the shape and its cost.
 
 Prod, in `tadasant-internal`, is a separate config against the same renderer.
 
+## A connector's credentials are injected, not referenced
+
+A server with an [`oauth:` connector](/operate/connectors/) has three variables
+the renderer puts on its bundle — the OAuth client id, the client secret, and the
+refresh token strad's console writes when a human consents. They arrive by
+INJECTION from `/strad/{env}/mcp/{slug}/static/`, not by resolving a `${NAME}`,
+and the difference is a deploy-ordering property rather than a style:
+
+- `render-spec` exits 1 on the first `${NAME}` it cannot resolve, and it renders
+  the whole spec. One slug's missing credential is every slug's failed deploy.
+- A connector's refresh token cannot exist until a human has completed the console
+  flow, and the console page for a slug does not exist until that slug is
+  deployed. Referencing it would deadlock the fleet on a value that needs the
+  fleet deployed to be created.
+
+So each variable is injected if — and only if — the store holds it, and the
+config gate refuses a `${NAME}` reference to one. An unconnected slug renders with
+two variables and no third: it deploys, mounts, lists its tools and reports itself
+degraded on `/healthz`. The order is one-phase:
+
+```text
+seed client id + secret  →  deploy  →  connect in the console  →  next deploy
+```
+
+Each value lands as a SECRET env var on that server's bundle alone, under both the
+bare name and the [per-slug name](/operate/secrets/#what-a-servers-variables-are-called-on-the-box),
+never as a broadcast and never on core.
+
+**The activation boundary is a deploy.** A supplementary server's environment is
+baked at render time, so a credential stored through the console reaches the
+container on the next deploy — not the moment the console says it was written. The
+console page says so rather than implying otherwise.
+
 ## Checking a config before it deploys
 
 `scripts/check-config.ts` validates a config the way a deploy would, without

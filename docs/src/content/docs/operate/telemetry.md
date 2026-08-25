@@ -277,6 +277,8 @@ the process, and for each one the exact fields that may go with it.
 | `strad.readiness_failed` / `_store_diagnostics_failed` | the event name only — that surface is failing          |
 | `strad.listening` / `strad.secrets_hydrated`           | what this build mounted, and which keys resolved       |
 | `strad.shutdown`                                       | a clean SIGTERM. Its **absence** is an OOM kill        |
+| `strad.param_written` / `_write_failed` / `_refused`   | a server persisting a credential that rotated under it |
+| `strad.connector_begin` / `_connected` / `_refused`    | a human consenting, in the console, for one slug       |
 
 Three rules make it safe, and they are worth stating because the boundary is the
 reason this exists at all rather than a `pino` transport:
@@ -295,6 +297,16 @@ reason this exists at all rather than a `pino` transport:
    or `_degraded` now goes to **stderr** regardless of which call site emitted
    it, so `mcp.auth_failed` moved off stdout. The stream now agrees with what the
    event is rather than with how it was written.
+
+The connector events are the newest and the tightest. `slug` and `variable` come
+from the **config** — the flow reads the slug out of sealed state and the variable
+out of that server's `oauth:` block, never from a request — and `reason` on a
+refusal is a `ConnectorErrorCode`: a closed set of strad's own words
+(`account_mismatch`, `scope_not_granted`, `no_refresh_token`, …). Google's own
+error bodies are read for nothing at all, not even for a message, so there is no
+upstream text on this path to redact. Nothing derived from the credential — no
+length, no prefix, no digest — exists anywhere in the flow to be exported. See
+[Connectors](/operate/connectors/).
 
 `ui.playground.tool_call` is on no list, and it is the rule working rather than an
 oversight. The console playground writes one per call, naming the slug and the

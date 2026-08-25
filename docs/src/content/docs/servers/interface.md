@@ -22,6 +22,7 @@ Every server, regardless of kind, has these base fields (from
 | `enabled`              | `true`       | Set `false` to configure without exposing.                                            |
 | `tools`                | —            | The capability policy: `{ allow?: [...], deny?: [...] }`. Omitted = every tool.       |
 | `timeoutMs`            | `120000`     | Per-hop upstream timeout. The MCP SDK's own default is 60s at every hop.              |
+| `oauth`                | —            | This server authenticates as a **person**, and strad's console runs the consent. See below. |
 | `title`, `description` | —            | Human-facing metadata.                                                                |
 
 `tools` is `.strict()` and must set at least one of `allow` / `deny`. `allow` is
@@ -38,6 +39,53 @@ the server under `roles.<role>.servers`. Both directions must agree — see
 [Auth](/auth/overview/).
 
 </aside>
+
+### `oauth:` — a credential a human consents to, in strad's console
+
+Some upstreams authenticate as a person rather than as a service account, and the
+artifact is an OAuth refresh token somebody has to mint in a browser. `oauth:` is
+what lets that happen inside strad — **Connect Google** on the slug's console
+page — instead of through an OAuth Playground round trip and a hand-seeded
+parameter.
+
+```yaml
+- slug: google-sheets-tadas412-ro
+  kind: supplementary-image
+  image: ghcr.io/tadasant/strad-bundle:latest
+  bundle: bundle
+  path: /google-sheets-tadas412-ro
+  entitlements: [zimmer]
+  oauth:
+    provider: google
+    account: tadas412@gmail.com
+    scopes:
+      - https://www.googleapis.com/auth/spreadsheets.readonly
+```
+
+| Field                  | Default                              | Meaning                                                                          |
+| ---------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
+| `provider`             | _(required)_                         | `google`. A literal, not an open enum: a config cannot name a provider strad has no implementation for. |
+| `account`              | _(required)_                         | The Google account this slug is pinned to. Checked against the verified `email` claim on the ID token, and a mismatch is refused with nothing written. |
+| `scopes`               | _(required)_                         | The exact capability scopes to request, at least one. strad adds `openid` and `email` itself, and the config gate refuses an identity scope written by hand. |
+| `clientIdVariable`     | `GOOGLE_SHEETS_OAUTH_CLIENT_ID`      | Names a variable in **this slug's own** `/strad/{env}/mcp/{slug}/static/` namespace. |
+| `clientSecretVariable` | `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`  | Same.                                                                            |
+| `refreshTokenVariable` | `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`  | The one the console flow **writes**, on connect and on reconnect.                |
+
+The three are variable NAMES, never paths: core composes
+`/strad/{env}/mcp/{slug}/static/{VARIABLE}` from the slug and these strings and
+from nothing else. The read/write **tier** is derived from the scopes rather than
+declared — every capability scope ending in `.readonly` is read-only, anything
+else is read-write — because a label would be a second source of truth for
+something the scopes already say.
+
+**Do not reference these variables as `${NAME}`.** The renderer injects all three
+from the slug's own namespace, each one only if the store holds it, and the config
+gate refuses a reference by name. The reason is a genuine ordering cycle:
+`render-spec` fails the whole app spec on one unresolvable `${NAME}`, the refresh
+token cannot exist until a human has consented in the console, and the console
+page does not exist until the slug is deployed. Injection breaks it — an
+unconnected slug deploys, mounts and reports itself degraded, costing its own
+capability and nobody else's. See [Connectors](/operate/connectors/).
 
 ## The four kinds
 
@@ -368,6 +416,19 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 - **Two enabled servers declare the same env key with different values, in a
   scope where one would silently overwrite the other.** See below — the scope is
   not the same for the two maps.
+- An `oauth:` connector names a variable that is not a legal environment variable
+  name, or points two of its three fields at names that
+  [fold to one parameter](/operate/secrets/) (a path lowercases before it hashes,
+  so `TOKEN` and `token` are one stored value — connecting would overwrite one of
+  the connector's own inputs).
+- An `oauth:` connector lists an identity scope (`openid`, `email`, `profile`)
+  under `scopes:`, or lists a scope twice. strad requests the identity scopes
+  itself; `scopes:` is for capability.
+- **A server references one of its own connector's variables as a `${NAME}`.**
+  Those three are injected from the slug's own namespace, and a reference to the
+  refresh token would fail every server's deploy until a human had completed a
+  console flow that needs the deploy to have happened. See
+  [Connectors](/operate/connectors/).
 
 Note what is deliberately **not** an error: many servers in one bundle, and two
 servers on the same `path` of one bundle. Both are load-bearing — the first is how

@@ -1,5 +1,6 @@
 import { isUnhosted } from "../config/schema.ts";
-import type { StradConfig } from "../config/schema.ts";
+import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import { connectorVariables } from "./server-namespaces.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
@@ -503,6 +504,27 @@ function firstWins(
   return merged;
 }
 
+/**
+ * The connector variables this server's own namespace actually holds.
+ *
+ * Absent values are simply absent — see the note at the call site. Reads only
+ * `serverSecrets[slug]`, which render-spec populates from
+ * `/strad/{env}/mcp/{slug}/static/` and from nowhere else, so a client id seeded
+ * at the gateway cannot land here.
+ */
+function connectorEnv(
+  server: ServerConfig,
+  own: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!own) return out;
+  for (const name of connectorVariables(server)) {
+    const value = own[name];
+    if (value !== undefined && value !== "") out[name] = value;
+  }
+  return out;
+}
+
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
 
@@ -584,10 +606,29 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // supplementary image that silently shipped the literal
       // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
       const own = opts.serverSecrets?.[server.slug];
-      const resolvedEnv = resolveMap(
-        server.env,
-        own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
-      );
+      const resolvedEnv = {
+        // A CONNECTOR'S VARIABLES ARE INJECTED, AND ONLY WHERE THEY EXIST.
+        //
+        // `oauth:` names three variables in this server's own namespace, and
+        // none of them is a `${NAME}` — the config gate refuses one written by
+        // hand. That is deliberate and it is the deploy-ordering answer: the
+        // refresh token does not exist until a human completes the console
+        // consent flow, and `resolveMap` (below) throws on an unresolved ref,
+        // which would fail the WHOLE render and take every other server's deploy
+        // down with it. Injecting what the store holds means an unconnected slug
+        // deploys with two variables and no third — it mounts, lists its tools
+        // and reports itself degraded, which is the state its server is built to
+        // survive.
+        //
+        // FIRST, so an explicit `env:` entry for the same name still wins: the
+        // config is what a human wrote, and the injection is a convenience over
+        // it.
+        ...connectorEnv(server, own),
+        ...resolveMap(
+          server.env,
+          own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
+        ),
+      };
 
       // Recorded now, decided after the whole list. See `perServerEnv`.
       const contributions = perServerEnv.get(server.bundle) ?? [];

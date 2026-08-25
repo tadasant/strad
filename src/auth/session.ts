@@ -45,6 +45,8 @@ import type { Principal } from "./index.ts";
 const HKDF_SALT = "strad.console.v1";
 const INFO_SESSION = "strad.console.session.v1";
 const INFO_TX = "strad.console.oauth-tx.v1";
+/** The connector consent flow. See ConsoleSessions.connector. */
+const INFO_CONNECTOR = "strad.connector.oauth-tx.v1";
 
 /** The signed Google session. */
 export const SESSION_COOKIE = "strad_console_session";
@@ -140,6 +142,23 @@ export class Sealer {
 export interface ConsoleSessions {
   session: Sealer;
   tx: Sealer;
+  /**
+   * The CONNECTOR authorization transaction — a human consenting, in the
+   * console, to hand one server slug a credential for their Google account.
+   *
+   * A third derived key rather than a reuse of `tx`, on the same reasoning that
+   * separates `tx` from `session`: the two flows return different things from
+   * different OAuth clients, and a sealed value from one must be unforgeable
+   * garbage to the other. Reusing `tx` would let a console LOGIN transaction be
+   * presented as a connector transaction, whose payload names the slug and the
+   * parameter the callback writes.
+   *
+   * It hangs off this interface so there is ONE answer to "does this deployment
+   * have usable key material": a connector that could mint transactions on a
+   * deployment whose console cannot verify a session would be a flow nobody can
+   * start. See src/connectors/state.ts.
+   */
+  connector: Sealer;
 }
 
 /**
@@ -168,6 +187,7 @@ export function consoleSessionsFromEnv(
   return {
     session: new Sealer(ikm, INFO_SESSION),
     tx: new Sealer(ikm, INFO_TX),
+    connector: new Sealer(ikm, INFO_CONNECTOR),
   };
 }
 

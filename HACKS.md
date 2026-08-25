@@ -3010,3 +3010,36 @@ so the change is contained to that file and the host's `loadStradFetch`. Setting
 `STRAD_FETCH_CACHE_MAX_ENTRIES=0`-ish is NOT the workaround it looks like — a
 non-positive value is ignored, deliberately, because a store that holds nothing
 would make every `saveOnly` call return a dead link.
+
+## 66. A connector's credential reaches the container on the next deploy, and there is no Disconnect
+
+**What.** strad's console can now run a Google OAuth consent for a server slug and
+write the resulting refresh token into that slug's parameter namespace
+(`docs/.../operate/connectors.md`). Two things it deliberately does not do.
+
+**The activation boundary is a deploy.** A supplementary image's environment is
+baked at render time, so a credential a human stores through the console reaches
+the container when the app is next deployed — not when the page says it was
+written. The console states this rather than implying success; there is no
+"applying…" state and no restart button.
+
+Live rotation is not impossible here — `paramsWritable:` (hack #62) already
+carries a value from the store to a running container — but it is the wrong shape
+for this one. That path exists so a process can persist a credential that rotated
+UNDER it, and it is single-writer by construction. A connector rotation is
+initiated by a human on a different component, and making the bundle poll for one
+would be a second mechanism with a second set of failure modes for a value that
+changes a handful of times a year.
+
+**There is no Disconnect.** Removing a stored credential is a delete in the
+parameters manager, and revoking the grant at Google is a step at
+myaccount.google.com; strad does not call Google's revocation endpoint. A generic
+Disconnect is only meaningful if it does both, and doing the second means holding
+a live credential purely to destroy it. Deliberately out of scope for the first
+provider.
+
+**And a stored token is not a working one.** The console says "a credential is
+stored", never "this works". Google expires a refresh token from an app in
+"testing" after seven days (hack #64) and revokes on a password change; the store
+cannot see either. The only honest live signal is a real call, and the console
+does not make one.

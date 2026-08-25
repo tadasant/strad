@@ -1647,6 +1647,10 @@ form.inline{display:flex;align-items:center;gap:.25rem;margin:0}
 .env-badge{font-family:var(--font-mono);font-size:.55em;text-transform:uppercase;letter-spacing:.06em;
   vertical-align:middle;border:1px solid var(--g5);border-radius:4px;padding:.15rem .45rem;
   color:var(--text-accent);margin-left:.5rem}
+.scope-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.45rem}
+.scope-list li{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;font-size:.82rem}
+.scope-list code{font-family:var(--font-mono);font-size:.76rem;word-break:break-all}
+.connect-form{display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;margin-top:1rem}
 .panel{margin-top:2.1rem}
 .panel-head{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;
   margin-bottom:.85rem;border-bottom:1px solid var(--g5);padding-bottom:.45rem}
