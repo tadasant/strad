@@ -4,20 +4,19 @@ import type {
   ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
+import type { ServerKind } from "../../config/schema.ts";
 import type { ClientCapabilities } from "../clientCapabilities.ts";
 import type { LocalHost } from "../troubleshoot.ts";
 
 /**
  * A mounted MCP server, from the gateway's point of view.
  *
- * All three config kinds — remote-http, supplementary-image, builtin — collapse
- * to this. The gateway does not know or care which it is talking to; that is
- * the whole point of the abstraction.
+ * Every config kind collapses to this. The gateway does not know or care which
+ * it is talking to; that is the whole point of the abstraction.
  */
 export interface ServerAdapter {
   readonly slug: string;
-  readonly kind:
-    "remote-http" | "local-tunnel" | "supplementary-image" | "builtin";
+  readonly kind: ServerKind;
 
   /**
    * The machine this server runs on, when it runs on one somebody owns.

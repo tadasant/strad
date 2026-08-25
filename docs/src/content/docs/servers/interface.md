@@ -1,6 +1,6 @@
 ---
 title: The server-config interface
-description: strad's three server kinds — remote-http, supplementary-image, and builtin — with the one-line-to-add-a-server examples and the fields each kind takes.
+description: strad's server kinds — remote-http, local-tunnel, supplementary-image, and builtin — with the one-line-to-add-a-server examples and the fields each kind takes.
 sidebar:
   order: 1
 ---
@@ -17,7 +17,7 @@ Every server, regardless of kind, has these base fields (from
 | Field                  | Default      | Meaning                                                                               |
 | ---------------------- | ------------ | ------------------------------------------------------------------------------------- |
 | `slug`                 | _(required)_ | Identifier, `^[a-z0-9]+(-[a-z0-9]+)*$`, max 63. Goes in `?servers=`, prefixes every tool, and [names this server's variables on the container](/operate/secrets/#what-a-servers-variables-are-called-on-the-box) — which is why a dash may not double up, lead or trail. |
-| `kind`                 | _(required)_ | `remote-http` \| `supplementary-image` \| `builtin`.                                  |
+| `kind`                 | _(required)_ | `remote-http` \| `local-tunnel` \| `supplementary-image` \| `builtin`.                |
 | `entitlements`         | `[]`         | Roles allowed to reach this server. **Empty = nobody** (fail closed).                 |
 | `enabled`              | `true`       | Set `false` to configure without exposing.                                            |
 | `tools`                | —            | The capability policy: `{ allow?: [...], deny?: [...] }`. Omitted = every tool.       |
