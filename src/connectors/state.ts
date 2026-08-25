@@ -37,8 +37,12 @@ import type { Principal } from "../auth/index.ts";
  *
  * Ten minutes, which is a consent screen plus a password prompt plus a second
  * factor, and no more. The callback clears the cookie before it does anything
- * else, so a replayed callback finds no transaction; Google's authorization code
- * is itself single-use, which is what makes that a belt rather than the braces.
+ * else — which spends the transaction for a BROWSER, and only for a browser:
+ * strad keeps no server-side nonce, so a script that kept the cookie value could
+ * present it again inside the TTL. What actually stops a replay landing anything
+ * is Google's authorization code, which is single-use at Google. The clear is
+ * the belt: it keeps a stale tab from re-entering the flow and bounds how long
+ * the verifier lives.
  */
 
 export const CONNECTOR_TX_COOKIE = "strad_connector_tx";

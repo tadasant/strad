@@ -202,42 +202,6 @@ export function runtimeRefsBySlug(
 }
 
 /**
- * `slug -> the variables that server's `oauth:` connector owns`, for every
- * enabled server that declares one.
- *
- * NOT `${NAME}` references, and that is the whole distinction. A connector's
- * client id, client secret and refresh token are INJECTED from the server's own
- * namespace by the renderer, never written into the config as refs — the config
- * gate refuses one, because `render-spec` exits 1 on the first unresolvable
- * `${NAME}` and the refresh token cannot exist until after the deploy that lets
- * a human create it. See {@link file://../config/schema.ts} `OAuthConnector`.
- *
- * Kept OUT of `ownNamespaceRefsBySlug` for exactly that reason: that map answers
- * "which `${NAME}`s can this slug resolve for itself", and it is what the deploy
- * gates use to decide a name absent from the gateway namespace is nonetheless
- * served. A connector variable is never absent from anywhere, because nothing
- * ever asked the gateway namespace for it.
- */
-export function connectorVariablesBySlug(
-  config: StradConfig,
-): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  for (const server of config.servers) {
-    if (!server.enabled) continue;
-    if (!server.oauth) continue;
-    out.set(
-      server.slug,
-      new Set([
-        server.oauth.clientIdVariable,
-        server.oauth.clientSecretVariable,
-        server.oauth.refreshTokenVariable,
-      ]),
-    );
-  }
-  return out;
-}
-
-/**
  * Both halves at once: every `${NAME}` a server can resolve from its OWN
  * namespace, whether at render time (`env:`) or at runtime (`url:`, `headers:`,
  * `options:`).
@@ -349,15 +313,6 @@ export function unreadParameters(
   // `${NAME}` naming them, so reporting them as unread would warn, on every
   // deploy, about the two parameters a human was told to seed.
   const byRefs = ownNamespaceNamesBySlug(config);
-  // A connector's three variables are READ — injected onto the container by the
-  // renderer — without any server naming a `${NAME}` for them. Folding them in
-  // here and nowhere else is deliberate: this function's question is "will
-  // anything read this seeded parameter", and for a connector the answer is yes.
-  for (const [slug, variables] of connectorVariablesBySlug(config)) {
-    const held = byRefs.get(slug) ?? new Set<string>();
-    for (const v of variables) held.add(v);
-    byRefs.set(slug, held);
-  }
   const out: UnreadParameters[] = [];
 
   for (const [slug, variables] of [...seeded].sort(([a], [b]) =>

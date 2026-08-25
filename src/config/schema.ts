@@ -798,6 +798,47 @@ export const StradConfig = z
       const oauth = s.oauth;
       if (!oauth) continue;
 
+      // ONLY A KIND THE RENDERER INJECTS FOR.
+      //
+      // `oauth:` lives on ServerBase so the type stays one shape, but only a
+      // supplementary image's environment is built by `renderAppSpec`, which is
+      // what puts the three variables on a container. On any other kind the
+      // console would run a real consent, write a real refresh token, and
+      // nothing would ever read it — a credential minted into a drawer.
+      if (s.kind !== "supplementary-image") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares oauth: on kind "${s.kind}". A ` +
+            `connector's variables are injected onto a container by the app-spec ` +
+            `renderer, and only a supplementary-image has one — the consent would ` +
+            `succeed and the credential would reach nothing.`,
+          path: ["servers"],
+        });
+      }
+
+      // IT MUST BE THE ONLY SERVER ON ITS OWN PATH, and the path must be its own
+      // slug. This is not tidiness; it is what makes the credential deliverable.
+      //
+      // The bundle host mounts a per-slug instance only at `/<slug>`, and a
+      // connector's variables are emitted under the per-slug name ALONE (see
+      // src/deploy/appspec.ts). A connector on any other path would have its
+      // variables baked onto the box under a name nothing reads, and — because
+      // the host falls back to bare names — would come up holding whatever a
+      // sibling was seeded. Refusing here is what makes that unrepresentable
+      // rather than merely unlikely.
+      if (s.kind === "supplementary-image" && s.path !== `/${s.slug}`) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares oauth: but serves path "${s.path}". A ` +
+            `connector's credential is delivered under this slug's own variable ` +
+            `names, and the bundle host reads those only for the server that is ` +
+            `alone on path: /${s.slug}. Set path: /${s.slug}.`,
+          path: ["servers"],
+        });
+      }
+
       const named: { field: string; variable: string }[] = [
         { field: "clientIdVariable", variable: oauth.clientIdVariable },
         { field: "clientSecretVariable", variable: oauth.clientSecretVariable },
@@ -879,6 +920,11 @@ export const StradConfig = z
       };
       if (s.kind === "supplementary-image") {
         for (const value of Object.values(s.env)) scan(value);
+        // `consoleEnv:` too. Its names are resolved from the DEPLOY ENVIRONMENT
+        // rather than from the store (see scripts/render-spec.ts), so a
+        // `${REFRESH_TOKEN}` written here reintroduces the whole-fleet render
+        // failure this rule exists to prevent, by a quieter door.
+        for (const value of Object.values(s.consoleEnv)) scan(value);
       }
       if (isUnhosted(s)) {
         scan(s.url);

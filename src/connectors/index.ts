@@ -54,20 +54,28 @@ export interface ConnectorServer {
   oauth: NonNullable<ServerConfig["oauth"]>;
 }
 
-/** The `oauth:`-declaring server for a slug, or null. Config only. */
+/**
+ * The `oauth:`-declaring server for a slug, or null. Config only.
+ *
+ * `enabled: false` is a NO here, and that is the console's fence as much as the
+ * renderer's: a disabled server is skipped by `renderAppSpec` entirely, so a
+ * consent run against one would mint a real Google credential into a namespace
+ * no render will ever read — the same "credential in a drawer" the kind check in
+ * the config gate refuses, arriving at runtime instead.
+ */
 export function connectorFor(
   config: StradConfig,
   slug: string,
 ): ConnectorServer | null {
   const server = config.servers.find((s) => s.slug === slug);
-  if (!server?.oauth) return null;
+  if (!server?.enabled || !server.oauth) return null;
   return { server, oauth: server.oauth };
 }
 
-/** Every server on this deployment that declares a connector, in config order. */
+/** Every ENABLED server on this deployment that declares a connector, in config order. */
 export function connectorServers(config: StradConfig): ConnectorServer[] {
   return config.servers
-    .filter((s) => s.oauth)
+    .filter((s) => s.enabled && s.oauth)
     .map((s) => ({ server: s, oauth: s.oauth! }));
 }
 
@@ -279,6 +287,42 @@ export function connectionNote(
     `connected as ${email} via the strad console on ${at.toISOString()}; ` +
     `granted: ${grantedScopes.join(" ")}`
   );
+}
+
+/**
+ * Capability scopes Google granted that this slug did not ask for.
+ *
+ * A grant WIDER than the config is not refused, and that is a deliberate
+ * choice rather than an oversight: Google substitutes its own spellings for the
+ * identity scopes (`email` comes back as
+ * `https://www.googleapis.com/auth/userinfo.email`), so a strict "nothing extra"
+ * rule would refuse correct consents on a technicality. Refusing a NARROWER
+ * grant is the check that matters, and `exchangeCode` does it.
+ *
+ * What must not happen is the console going on calling a slug `read-only` over a
+ * stored credential Google will honour writes for. So the widening is computed,
+ * recorded in the note, and said out loud on the page.
+ *
+ * Identity scopes are excluded under every spelling strad has seen, because they
+ * are not capability and listing them as a surprise would cry wolf on every
+ * single connect.
+ */
+const IDENTITY_SCOPE_SPELLINGS = new Set([
+  "openid",
+  "email",
+  "profile",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+]);
+
+export function unexpectedScopes(
+  requested: readonly string[],
+  granted: readonly string[],
+): string[] {
+  const asked = new Set(requested);
+  return granted
+    .filter((g) => !asked.has(g) && !IDENTITY_SCOPE_SPELLINGS.has(g))
+    .sort();
 }
 
 /**

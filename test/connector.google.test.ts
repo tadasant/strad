@@ -316,11 +316,13 @@ describe("the exchange", () => {
     expect(grant.grantedScopes).toContain(SHEETS_RW);
   });
 
-  it("does NOT let a read-write grant slip into a read-only slug unnoticed", async () => {
+  it("reports a WIDER grant faithfully rather than narrowing it in the result", async () => {
     // The `-ro` slug asked for `.readonly` and Google says it granted the wider
-    // scope. That is not a refusal — `spreadsheets` subsumes the read — but the
-    // grant strad returns must report what Google ACTUALLY gave, so the console
-    // note does not claim a narrower credential than is stored.
+    // scope. That is NOT refused, deliberately — Google substitutes its own
+    // spellings for the identity scopes, so a strict "nothing extra" rule would
+    // refuse correct consents. What must not happen is the result under-reporting
+    // it: `unexpectedScopes` reads this list, and the console turns it into a
+    // warning rather than going on calling the slug read-only.
     const grant = await exchange(
       stubGoogle({
         body: {

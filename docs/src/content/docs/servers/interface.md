@@ -424,6 +424,11 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 - An `oauth:` connector lists an identity scope (`openid`, `email`, `profile`)
   under `scopes:`, or lists a scope twice. strad requests the identity scopes
   itself; `scopes:` is for capability.
+- **An `oauth:` connector on a kind nothing injects for** (anything but
+  `supplementary-image`), or on a path other than `/<its own slug>`. The second
+  is what makes the credential deliverable: a connector's variables are emitted
+  under the per-slug name alone, and the bundle host reads those only for the
+  server that is alone on its own path.
 - **A server references one of its own connector's variables as a `${NAME}`.**
   Those three are injected from the slug's own namespace, and a reference to the
   refresh token would fail every server's deploy until a human had completed a

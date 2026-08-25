@@ -230,6 +230,58 @@ describe("oauth: the refusals that keep a fleet deployable", () => {
     ).toThrow(/twice under oauth.scopes/);
   });
 
+  it("refuses oauth: on a kind whose container nothing injects", () => {
+    // A remote-http slug would get a Connect button, run a real consent, and
+    // write a real refresh token that no render ever reads.
+    const raw = `
+version: 1
+gateway: { name: strad, env: test, publicUrl: "https://strad.example" }
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+servers:
+  - slug: somewhere
+    kind: remote-http
+    url: https://example.com/mcp
+    entitlements: [admin]
+    oauth:
+      provider: google
+      account: a@b.com
+      scopes: [${SHEETS_RO}]
+`;
+    expect(() => parseConfig(raw)).toThrow(
+      /the credential would reach nothing/,
+    );
+  });
+
+  it("refuses a connector that is not alone on path: /<its own slug>", () => {
+    // The bundle host mounts a per-slug instance only at `/<slug>`, and a
+    // connector's variables are emitted under the per-slug name alone. On any
+    // other path they would be baked under a name nothing reads.
+    expect(() =>
+      parseConfig(
+        BASE(MINIMAL).replace(
+          "path: /google-sheets-tadas412-ro",
+          "path: /google-sheets",
+        ),
+      ),
+    ).toThrow(/Set path: \/google-sheets-tadas412-ro/);
+  });
+
+  it("refuses a connector ${NAME} hiding in consoleEnv: too", () => {
+    // consoleEnv names are resolved from the deploy ENVIRONMENT, so a reference
+    // here reintroduces the whole-fleet render failure by a quieter door.
+    expect(() =>
+      parseConfig(
+        BASE(
+          MINIMAL,
+          `    consoleEnv:\n      SOMETHING: "\${GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN}"\n`,
+        ),
+      ),
+    ).toThrow(/render-spec exits 1 on the first unresolvable/);
+  });
+
   it("accepts the intended production shape: no env:, three variables it never names", () => {
     const config = parseConfig(BASE(MINIMAL));
     const server = config.servers[0]!;

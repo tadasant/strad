@@ -27,6 +27,7 @@ import {
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
 import { CONNECTOR_TX_COOKIE } from "../src/connectors/state.ts";
+import { connectorFor, connectorServers } from "../src/connectors/index.ts";
 
 /**
  * The whole console flow, end to end, through the REAL Express app over a real
@@ -74,7 +75,7 @@ const REFRESH = "1//0e-REFRESH-TOKEN-CANARY-DO-NOT-LEAK";
 const REFRESH_2 = "1//0e-SECOND-REFRESH-TOKEN-CANARY";
 const AUTH_CODE = "4/0AX-AUTHORIZATION-CODE-CANARY";
 
-const CONFIG = parseConfig(`
+const CONFIG_YAML = `
 version: 1
 gateway:
   name: strad
@@ -121,7 +122,8 @@ servers:
       provider: google
       account: ${RW_ACCOUNT}
       scopes: [${SHEETS_RW}]
-`);
+`;
+const CONFIG = parseConfig(CONFIG_YAML);
 
 const ADMIN_KEY = JSON.stringify({
   client_email: "strad-secrets-admin@demo.iam.gserviceaccount.com",
@@ -707,6 +709,23 @@ describe("the state, and what a callback cannot do", () => {
     // The write landed where the CONFIG said, and nowhere else.
     expect(await listed(RO_NS)).toContain("GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN");
     expect(await listed(GATEWAY_NS)).toEqual([]);
+  });
+
+  it("refuses a DISABLED server, which no render would ever read", async () => {
+    // A disabled server is skipped by renderAppSpec entirely, so a consent run
+    // against one would mint a real Google credential into a namespace nothing
+    // injects — the console half of the "credential in a drawer" the config gate
+    // refuses for a kind nothing injects for.
+    const disabled = parseConfig(
+      CONFIG_YAML.replace(
+        `  - slug: ${RO_SLUG}\n    kind: supplementary-image`,
+        `  - slug: ${RO_SLUG}\n    enabled: false\n    kind: supplementary-image`,
+      ),
+    );
+    expect(connectorFor(disabled, RO_SLUG)).toBeNull();
+    expect(connectorServers(disabled).map((c) => c.server.slug)).toEqual([
+      RW_SLUG,
+    ]);
   });
 
   it("refuses to begin a flow for a server with no connector", async () => {

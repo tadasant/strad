@@ -108,6 +108,36 @@ seed client id + secret  →  deploy (slug mounts, degraded)
 
 An unconnected slug costs its own capability and nobody else's.
 
+### The credential arrives under the slug's own variable name, and only that one
+
+A connector's variables are baked onto the container as
+`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` — the
+[per-slug name](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
+— and **never** under the bare `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`.
+
+That is load-bearing rather than tidy. The bundle host builds a slug's
+environment by starting from the whole container environment and overlaying the
+per-slug names, so a slug with no per-slug name of its own **falls back to the
+bare one**. Six slugs of one OAuth app on one bundle all default to the same
+three variable names; if the bare name carried a value, the first slug connected
+would hand its credential to every sibling that was not — and an unconnected
+`-ro` mount would come up holding the `-rw` slug's write token, fully functional,
+while its console page said "not connected".
+
+Two rules make that unrepresentable:
+
+- the renderer emits a connector's variables under the per-slug alias alone; and
+- the config gate refuses a connector on any path but `/<its own slug>`, because
+  that is the only path the bundle host mounts a per-slug instance at.
+
+A slug therefore reads its own credential or it reads nothing.
+
+### Only a `supplementary-image`, and only an enabled one
+
+`oauth:` on another kind is refused by the config gate, and a disabled server has
+no connector page at all. Both are the same failure: a consent that succeeds and
+writes a real Google credential into a namespace no render will ever read.
+
 ## What the flow refuses
 
 The browser proposes almost nothing. The connect action carries no fields; the
@@ -129,6 +159,15 @@ from the config and from state strad sealed itself.
 - **A narrowed consent.** If Google reports granting less than the config
   requires — a human unticked a box — nothing is written. Storing that token would
   leave a slug that reads "connected" and fails on its first real call.
+
+A grant that is **wider** than the config asked for is _not_ refused, and that is
+a deliberate asymmetry: Google substitutes its own spellings for the identity
+scopes (`email` comes back as `…/auth/userinfo.email`), so a strict
+"nothing extra" rule would refuse correct consents on a technicality. What strad
+does instead is refuse to keep quiet about it — the page says the grant was
+wider, and the stored note lists exactly what Google granted, so the derived tier
+never silently overstates how narrow the stored credential is.
+
 - **A consent with no refresh token.** An access token alone is an hour of
   capability and nothing to store, so it is a failure rather than a partial
   success.

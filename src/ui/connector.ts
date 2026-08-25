@@ -21,6 +21,7 @@ import {
   connectorTier,
   connectionNote,
   ConnectorError,
+  unexpectedScopes,
   exchangeCode,
   readConnectorState,
   refreshTokenPath,
@@ -196,13 +197,36 @@ async function handleConnect(
   }
 
   const scopes = requestedScopes(entry.oauth);
-  const pending = buildAuthorizeUrl({
-    clientId: await readOwnVariable(
+
+  // Guarded, so a store failure is this page saying so rather than the generic
+  // 500 — and so the message describes the OPERATION. `renderUnexpected` is the
+  // catch of last resort, not the handler for the one call here that talks to a
+  // third party.
+  let clientId: string;
+  try {
+    clientId = await readOwnVariable(
       opts,
       resolved.store,
       entry,
       entry.oauth.clientIdVariable,
-    ),
+    );
+  } catch {
+    await renderConnectorPage(res, opts, entry, {
+      signedInAs,
+      status: 503,
+      state,
+      flash: {
+        tone: "error",
+        message:
+          "strad could not read this server's OAuth client id from its own " +
+          "namespace, so it cannot begin an authorization. Nothing was written.",
+      },
+    });
+    return;
+  }
+
+  const pending = buildAuthorizeUrl({
+    clientId,
     redirectUri,
     scopes,
     loginHint: entry.oauth.account,
@@ -304,8 +328,8 @@ async function handleCallback(
   if (tx.env !== opts.config.gateway.env) {
     refuse(
       "That authorization belongs to another deployment",
-      `It was begun against "${esc(tx.env)}" and this gateway is ` +
-        `"${esc(opts.config.gateway.env)}". Nothing was written.`,
+      `It was begun against "${tx.env}" and this gateway is ` +
+        `"${opts.config.gateway.env}". Nothing was written.`,
       403,
     );
     return;
@@ -315,7 +339,7 @@ async function handleCallback(
   if (!entry) {
     refuse(
       "That server no longer has a connector",
-      `"${esc(tx.slug)}" does not declare an oauth: connector on this ` +
+      `"${tx.slug}" does not declare an oauth: connector on this ` +
         `gateway any more. Nothing was written.`,
       409,
     );
@@ -406,6 +430,10 @@ async function handleCallback(
 
     // NOTHING REACHED THE STORE UNTIL HERE. Identity verified, account matched,
     // every required scope granted, a refresh token in hand.
+    const widened = unexpectedScopes(
+      requestedScopes(entry.oauth),
+      grant.grantedScopes,
+    );
     await storeRefreshToken(
       store,
       refreshTokenPath(opts.config, entry),
@@ -419,7 +447,11 @@ async function handleCallback(
       slug: entry.server.slug,
       variable: entry.oauth.refreshTokenVariable,
     });
-    back("?connected=1");
+    // A grant WIDER than the config asked for is stored — see
+    // `unexpectedScopes` for why refusing it would cry wolf — but the page must
+    // not go on calling this slug read-only over a credential Google will honour
+    // writes for. `1` is a boolean; the page reads the scopes from the note.
+    back(widened.length > 0 ? "?connected=wider" : "?connected=1");
   } catch (err) {
     // A CODE, NEVER A MESSAGE, and never the upstream's words. `code` is one of
     // ConnectorErrorCode; the page rebuilds the sentence from config, so no free
@@ -662,6 +694,17 @@ export function connectorFlash(
         `The server picks it up on its next deploy.`,
     };
   }
+  if (query.connected === "wider") {
+    return {
+      tone: "error",
+      message:
+        `Connected, and Google granted MORE than this server asked for. The ` +
+        `token is stored for ${entry.oauth.account}, and the stored note lists ` +
+        `exactly what was granted — read it before relying on the tier above. ` +
+        `strad's tool policy still withholds this slug's withheld tools, but ` +
+        `Google will honour the wider grant for anything that reaches it.`,
+    };
+  }
   const raw = typeof query.error === "string" ? query.error : "";
   if (!raw) return undefined;
   return { tone: "error", message: refusalMessage(raw, entry) };
@@ -725,7 +768,12 @@ function notice(
 }
 
 function renderUnexpected(res: Response, err: unknown): void {
-  console.error("[strad] connector route failed:", err);
+  // THE CLASS, NOT THE OBJECT. A store client's exception can quote a rendered
+  // value, and this is the one handler every route funnels into — logging `err`
+  // here would undo the discipline the rest of the file keeps.
+  console.error(
+    `[strad] connector route failed: ${err instanceof Error ? err.name : "unknown error"}`,
+  );
   if (res.headersSent) return;
   res
     .status(500)
