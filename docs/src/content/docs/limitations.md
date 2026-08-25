@@ -1798,6 +1798,41 @@ container no persistent volume, so it was memory with extra steps).
 
 **Undo:** `HACKS.md` #65.
 
+### 66. A connector's credential reaches the container on the next deploy, and there is no Disconnect
+
+strad's console can run a Google OAuth consent for a server slug and write the
+refresh token into that slug's parameter namespace — see
+[Connectors](/operate/connectors/). Two things it deliberately does not do.
+
+**The activation boundary is a deploy.** A supplementary image's environment is
+baked at render time, so a credential stored through the console reaches the
+container when the app is next deployed, not when the page says it was written.
+The console says so rather than implying success; there is no "applying…" state
+and no restart button.
+
+Live rotation is not impossible in principle — `paramsWritable:`
+[(#62)](#62-a-paramswritable-write-is-single-writer-only-because-the-render-says-so)
+already carries a value from the store to a running container — but it is the
+wrong shape here. That path exists so a process can persist a credential that
+rotated _under_ it, and it is single-writer by construction. A connector rotation
+is initiated by a human on a different component, and making the bundle poll for
+one would be a second mechanism with a second set of failure modes for a value
+that changes a handful of times a year.
+
+**There is no Disconnect.** Removing a stored credential is a delete in the
+parameters manager; revoking the grant is a step at
+[myaccount.google.com](https://myaccount.google.com/permissions). strad does not
+call Google's revocation endpoint. A generic Disconnect is only meaningful if it
+does both, and the second means holding a live credential purely to destroy it —
+deliberately out of scope for the first provider.
+
+**A stored token is not a working one.** The console says _a credential is
+stored_, never _this works_. Google expires a refresh token from an app in
+"testing" after seven days
+[(#64)](#64-a-google-sheets-credential-is-a-human-minted-refresh-token-and-in-testing-mode-it-expires-in-7-days)
+and revokes on a password change; the store can see neither. The only honest live
+signal is a real call, and the console does not make one.
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

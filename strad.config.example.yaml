@@ -352,16 +352,37 @@ servers:
   # seeded a refresh token consented only for spreadsheets.readonly — so Google
   # refuses a write even if the gateway did not. That is a guarantee 1Password's
   # read-only slug cannot have (HACKS.md #22).
+  #
+  # `oauth:` IS THE CREDENTIAL, and there is no `env:` block on either entry.
+  #
+  # A refresh token is minted by a HUMAN in a browser, so strad's console runs
+  # the consent itself: this slug's page gets a Connect Google button, and the
+  # token goes from Google's token endpoint into
+  # /strad/{env}/mcp/{slug}/static/GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN without ever
+  # being displayed. The client id and secret are seeded there by hand, once per
+  # slug; the renderer injects all three onto the bundle.
+  #
+  # DO NOT write them as ${NAME} refs — the config gate refuses it, because
+  # render-spec fails the WHOLE spec on one unresolvable ref and the token cannot
+  # exist until after this slug has deployed. Injection is what breaks that
+  # cycle: an unconnected slug deploys, mounts, and reports itself degraded.
+  # See docs/operate/connectors.md.
   - slug: google-sheets-ro
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /google-sheets
+    # Its OWN path, not the shared /google-sheets: one path is one process
+    # holding one token, and these two slugs hold two different accounts' worth
+    # of consent. It is also what earns each slug its per-slug variable names.
+    path: /google-sheets-ro
     entitlements: [admin, readonly]
-    env:
-      GOOGLE_SHEETS_OAUTH_CLIENT_ID: "${GOOGLE_SHEETS_OAUTH_CLIENT_ID}"
-      GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "${GOOGLE_SHEETS_OAUTH_CLIENT_SECRET}"
-      GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "${GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN}"
+    oauth:
+      provider: google
+      account: someone@example.com
+      # The tier is DERIVED from this, not declared: every capability scope
+      # ending in `.readonly` is a read-only slug.
+      scopes:
+        - https://www.googleapis.com/auth/spreadsheets.readonly
     tools:
       allow:
         - get_spreadsheet
@@ -370,18 +391,19 @@ servers:
         - find_in_spreadsheet
 
   # The write tier: no `tools:` block, because the full eight ARE this tier. Its
-  # token needs https://www.googleapis.com/auth/spreadsheets, where the read tier
-  # can live on …/spreadsheets.readonly.
+  # consent is for the wider https://www.googleapis.com/auth/spreadsheets, so
+  # Google enforces the split as well as the gateway.
   - slug: google-sheets-rw
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
     bundle: bundle
-    path: /google-sheets
+    path: /google-sheets-rw
     entitlements: [admin]
-    env:
-      GOOGLE_SHEETS_OAUTH_CLIENT_ID: "${GOOGLE_SHEETS_OAUTH_CLIENT_ID}"
-      GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "${GOOGLE_SHEETS_OAUTH_CLIENT_SECRET}"
-      GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "${GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN}"
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/spreadsheets
 
   # No credential at all — public endpoints, every tool.
   - slug: google-flights

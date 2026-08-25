@@ -85,6 +85,121 @@ const ToolPolicySchema = z
       "tools: must set `allow` and/or `deny` (omit `tools:` for no restriction)",
   });
 
+/**
+ * kind: the ONE OAuth provider strad can drive a consent flow for.
+ *
+ * A literal rather than an enum with one member: a second provider is a second
+ * implementation (a different token endpoint, a different identity proof, a
+ * different notion of "scope"), and a config that could NAME one strad has no
+ * code for would be a promise nothing keeps.
+ */
+const OAuthProvider = z.literal("google");
+
+/**
+ * The names of the three variables one Google connector owns, all defaulted to
+ * the Google Sheets set (the first — and so far only — server that consumes them).
+ *
+ * They are VARIABLE NAMES, never paths. Core composes
+ * `/strad/{env}/mcp/{slug}/static/{VARIABLE}` from the slug and these strings and
+ * from nothing else, so there is no spelling of one that addresses another
+ * server's namespace, another kind, or another deployment. That is the same fence
+ * `paramsWritable:` stands behind, and it is why the console's callback can take
+ * a slug from sealed state and still never let a browser choose a target.
+ */
+const OAUTH_DEFAULTS = {
+  clientIdVariable: "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
+  clientSecretVariable: "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
+  refreshTokenVariable: "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+} as const;
+
+/**
+ * `oauth:` — this server authenticates as a PERSON, and strad's console is where
+ * that person consents.
+ *
+ * A refresh token is not a credential an operator can seed from a terminal
+ * without first handing it to something: the OAuth Playground shows it on a web
+ * page, a local script prints it to a shell, and either way the value has been
+ * somewhere before it reaches the store. This block is what lets the whole
+ * exchange happen inside strad instead — the console redirects to Google, Google
+ * returns to the console, and the refresh token goes from the token endpoint
+ * straight into the parameter store without ever being rendered, returned or
+ * logged.
+ *
+ *   - slug: google-sheets-tadas412-ro
+ *     kind: supplementary-image
+ *     ...
+ *     oauth:
+ *       provider: google
+ *       account: tadas412@gmail.com
+ *       scopes:
+ *         - https://www.googleapis.com/auth/spreadsheets.readonly
+ *
+ * ## THE SLUG FIXES THE ACCOUNT AND THE SCOPE
+ *
+ * Everything the flow needs is here, and the browser supplies none of it. The
+ * expected email, the exact scopes, and the variable the token lands in are read
+ * out of this block on the way OUT (to build the consent URL) and again on the
+ * way BACK (to validate what Google returned). A callback carries an
+ * authorization code and an opaque state and nothing else that is trusted, so
+ * there is no request a human can craft that installs one account's token into
+ * another account's slug, or a read-write consent into a `-ro` slug.
+ *
+ * ## THE TOKEN IS NEVER A `${NAME}`, AND THAT IS THE DEPLOY-ORDERING ANSWER
+ *
+ * `render-spec` exits 1 on the first `${NAME}` it cannot resolve, and it renders
+ * the WHOLE app spec — so one slug declaring `${GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN}`
+ * before that token exists fails every other server's deploy too. But the token
+ * cannot exist until a human completes the console flow, and the human cannot
+ * reach the console flow until the slug is deployed. That is a cycle, and this
+ * block breaks it: the three variables are INJECTED from this server's own
+ * namespace by the renderer (src/deploy/appspec.ts), each one only if the store
+ * holds it. An unconnected slug deploys with two variables and no third, mounts,
+ * lists its tools, and reports itself degraded — which is exactly the state the
+ * Google Sheets server is built to survive.
+ *
+ * Writing the same names into `env:` as `${NAME}` refs would put the cycle back,
+ * so the `superRefine` below refuses it by name.
+ */
+const OAuthConnector = z.object({
+  provider: OAuthProvider,
+  /**
+   * The Google account this slug is pinned to, e.g. `tadas412@gmail.com`.
+   *
+   * Checked against the verified `email` claim on the ID token Google returns,
+   * NOT against whichever account the browser happened to be signed into. A
+   * mismatch is refused and its token is never written, because a slug is one
+   * account by construction: the refresh token IS the account, and installing
+   * the wrong one gives an agent entitled to `tadas412` a view of `tadasant`.
+   */
+  account: z.string().email(),
+  /**
+   * The exact authorization scopes to request. At least one.
+   *
+   * Requested verbatim, and checked against what Google says it GRANTED before
+   * anything is written — a consent screen where the human unticked a box comes
+   * back with a narrower `scope` than was asked for, and storing that token
+   * would leave a slug that looks connected and fails on its first real call.
+   *
+   * strad adds `openid` and `email` itself. Those are the minimum needed to
+   * learn WHICH account consented, they are not capability, and leaving them to
+   * the config would mean a slug could be configured unable to prove its own
+   * identity.
+   */
+  scopes: z.array(z.string().min(1)).min(1),
+  /** The variable holding the OAuth client id, in THIS slug's own namespace. */
+  clientIdVariable: z.string().min(1).default(OAUTH_DEFAULTS.clientIdVariable),
+  /** The variable holding the OAuth client secret, in THIS slug's own namespace. */
+  clientSecretVariable: z
+    .string()
+    .min(1)
+    .default(OAUTH_DEFAULTS.clientSecretVariable),
+  /** The variable the consent flow WRITES. Created on connect, rotated on reconnect. */
+  refreshTokenVariable: z
+    .string()
+    .min(1)
+    .default(OAUTH_DEFAULTS.refreshTokenVariable),
+});
+
 const ServerBase = z.object({
   /** Stable identifier. Tools are namespaced `<slug>__<tool>`. */
   slug: SLUG,
@@ -100,6 +215,11 @@ const ServerBase = z.object({
   /** Per-request upstream timeout in ms. The MCP SDK defaults to 60s at
    *  every hop, which silently kills long tool calls; make it explicit. */
   timeoutMs: z.number().int().positive().default(120_000),
+  /**
+   * This server authenticates as a person, and the console runs the consent.
+   * Omit it for every server that does not. See {@link OAuthConnector}.
+   */
+  oauth: OAuthConnector.optional(),
 });
 
 /**
@@ -654,6 +774,185 @@ export const StradConfig = z
           });
         }
         seenVars.set(fold, variable);
+      }
+    }
+
+    // OAUTH CONNECTORS.
+    //
+    // Three rules, and the third is the one that keeps a fleet deployable.
+    //
+    // The variable names are checked the same way `paramsWritable:` entries are,
+    // and for the same reason: core composes a store path out of the slug and
+    // these strings, so a name that is not a legal variable composes a path
+    // pointing somewhere else. The case-insensitive distinctness check is
+    // `parameterId`'s doing — a path folds case before it hashes, so
+    // `..._CLIENT_ID` and `..._client_id` are ONE parameter under two variable
+    // names, and a connector that wrote its token over its own client id would
+    // be unrecoverable from the console that caused it.
+    //
+    // The third rule refuses the deploy-ordering trap. See {@link OAuthConnector}:
+    // the connector's variables are injected by the renderer, never referenced,
+    // and a `${NAME}` written by hand puts a whole-fleet render failure back in
+    // front of a token that cannot exist until after the deploy.
+    for (const s of cfg.servers) {
+      const oauth = s.oauth;
+      if (!oauth) continue;
+
+      // ONLY A KIND THE RENDERER INJECTS FOR.
+      //
+      // `oauth:` lives on ServerBase so the type stays one shape, but only a
+      // supplementary image's environment is built by `renderAppSpec`, which is
+      // what puts the three variables on a container. On any other kind the
+      // console would run a real consent, write a real refresh token, and
+      // nothing would ever read it — a credential minted into a drawer.
+      if (s.kind !== "supplementary-image") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares oauth: on kind "${s.kind}". A ` +
+            `connector's variables are injected onto a container by the app-spec ` +
+            `renderer, and only a supplementary-image has one — the consent would ` +
+            `succeed and the credential would reach nothing.`,
+          path: ["servers"],
+        });
+      }
+
+      // IT MUST BE THE ONLY SERVER ON ITS OWN PATH, and the path must be its own
+      // slug. This is not tidiness; it is what makes the credential deliverable.
+      //
+      // The bundle host mounts a per-slug instance only at `/<slug>`, and a
+      // connector's variables are emitted under the per-slug name ALONE (see
+      // src/deploy/appspec.ts). A connector on any other path would have its
+      // variables baked onto the box under a name nothing reads, and — because
+      // the host falls back to bare names — would come up holding whatever a
+      // sibling was seeded. Refusing here is what makes that unrepresentable
+      // rather than merely unlikely.
+      if (s.kind === "supplementary-image" && s.path !== `/${s.slug}`) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares oauth: but serves path "${s.path}". A ` +
+            `connector's credential is delivered under this slug's own variable ` +
+            `names, and the bundle host reads those only for the server that is ` +
+            `alone on path: /${s.slug}. Set path: /${s.slug}.`,
+          path: ["servers"],
+        });
+      }
+
+      const named: { field: string; variable: string }[] = [
+        { field: "clientIdVariable", variable: oauth.clientIdVariable },
+        { field: "clientSecretVariable", variable: oauth.clientSecretVariable },
+        { field: "refreshTokenVariable", variable: oauth.refreshTokenVariable },
+      ];
+
+      for (const { field, variable } of named) {
+        if (
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
+          variable.length > 200
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" sets oauth.${field} to "${variable}", which ` +
+              `is not a legal environment variable name (letters, digits and ` +
+              `underscores; not starting with a digit; at most 200 ` +
+              `characters). It addresses /strad/{env}/mcp/${s.slug}/static/` +
+              `{VARIABLE} and nothing else.`,
+            path: ["servers"],
+          });
+        }
+      }
+
+      const claimed = new Map<string, string>();
+      for (const { field, variable } of named) {
+        const fold = variable.toLowerCase();
+        const first = claimed.get(fold);
+        if (first !== undefined) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" points oauth.${field} and oauth.${first} at ` +
+              `the same parameter ("${variable}"). A parameter path folds case, ` +
+              `so two spellings of one name are ONE stored value — connecting ` +
+              `would overwrite one of this connector's own inputs.`,
+            path: ["servers"],
+          });
+        }
+        claimed.set(fold, field);
+      }
+
+      // strad requests `openid` and `email` itself; see OAuthConnector.scopes.
+      // Listing one here is not wrong so much as a claim about capability that
+      // the identity scopes do not make, and the deploy gate is where a config
+      // gets told.
+      const IDENTITY = new Set(["openid", "email", "profile"]);
+      const seenScopes = new Set<string>();
+      for (const scope of oauth.scopes) {
+        if (IDENTITY.has(scope)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" lists the identity scope "${scope}" under ` +
+              `oauth.scopes:. strad requests openid and email itself, to learn ` +
+              `WHICH account consented; oauth.scopes: is for capability.`,
+            path: ["servers"],
+          });
+        }
+        if (seenScopes.has(scope)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `server "${s.slug}" lists the scope "${scope}" twice under oauth.scopes:`,
+            path: ["servers"],
+          });
+        }
+        seenScopes.add(scope);
+      }
+
+      // Every field this server resolves a `${NAME}` from. A reference to the
+      // connector's own target is the deploy-ordering trap; a reference to its
+      // client id or secret is merely redundant, and silently competes with the
+      // injection for the same box name, so both are refused.
+      const referenced = new Set<string>();
+      const scan = (raw: string): void => {
+        for (const m of raw.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+          if (m[1]) referenced.add(m[1]);
+        }
+      };
+      if (s.kind === "supplementary-image") {
+        for (const value of Object.values(s.env)) scan(value);
+        // `consoleEnv:` too. Its names are resolved from the DEPLOY ENVIRONMENT
+        // rather than from the store (see scripts/render-spec.ts), so a
+        // `${REFRESH_TOKEN}` written here reintroduces the whole-fleet render
+        // failure this rule exists to prevent, by a quieter door.
+        for (const value of Object.values(s.consoleEnv)) scan(value);
+      }
+      if (isUnhosted(s)) {
+        scan(s.url);
+        for (const value of Object.values(s.headers)) scan(value);
+      } else if (s.kind === "builtin") {
+        for (const value of Object.values(s.options)) {
+          if (typeof value === "string") scan(value);
+        }
+      } else {
+        for (const value of Object.values(s.headers)) scan(value);
+      }
+      for (const { field, variable } of named) {
+        if (!referenced.has(variable)) continue;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" references \${${variable}} in its config AND ` +
+            `names it under oauth.${field}. A connector's variables are ` +
+            `INJECTED from /strad/{env}/mcp/${s.slug}/static/, not referenced` +
+            (field === "refreshTokenVariable"
+              ? `: the refresh token does not exist until a human completes the ` +
+                `console consent flow, and render-spec exits 1 on the first ` +
+                `unresolvable \${NAME} — so this one reference would fail every ` +
+                `server's deploy until the very thing it is waiting for arrives.`
+              : `. Delete the reference; the injection already puts it on the ` +
+                `container.`),
+          path: ["servers"],
+        });
       }
     }
 

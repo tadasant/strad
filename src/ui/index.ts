@@ -32,6 +32,12 @@ import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
 import {
+  connectorFlash,
+  mountConnector,
+  renderConnectorPage,
+} from "./connector.ts";
+import { connectorFor } from "../connectors/index.ts";
+import {
   forgetDeploymentDiagnosis,
   readDeploymentSecretStatus,
 } from "./secret-status.ts";
@@ -145,6 +151,8 @@ export interface ConsoleUiOptions {
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
   googleReady?: boolean;
+  /** Test seam: the transport a connector's token exchange uses. See ConnectorUiOptions. */
+  connectorFetch?: typeof fetch;
 }
 
 export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
@@ -202,6 +210,18 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // browser and its `:server` param already means "a slug with a viewer". See
   // src/ui/playground.ts for how it authenticates without touching either gate.
   mountPlayground(app, gate, { config: opts.config, registry: opts.registry });
+
+  // Connect / Reconnect Google, for a server whose config declares `oauth:`.
+  // Same gate, same process, and its callback lives at a fixed path so the slug
+  // is never a thing a browser proposes — see src/ui/connector.ts.
+  mountConnector(app, gate, {
+    config: opts.config,
+    secrets: opts.secrets,
+    env: opts.env,
+    sessions: opts.sessions,
+    parametersStore: opts.parametersStore,
+    connectorFetch: opts.connectorFetch,
+  });
 
   // The secret roster used to live here, as its own destination. It does not any
   // more — it is on `/ui`, on the entry it describes. The redirect stays because
@@ -306,6 +326,31 @@ async function handleServerView(
 ): Promise<void> {
   const slug = req.params.server ?? "";
   const signedInAs = signedInLabel(res);
+
+  // A DECLARATION BEATS A DETECTOR. `resolveServerView` sniffs a server's env for
+  // a bucket or a parameters project; `oauth:` is a thing the config says out
+  // loud, so it is answered first and the sniffing never runs for a slug that
+  // declares one. (Nothing declares both today — the `secrets` slug has no
+  // connector — but the ordering says which concept owns the page if one ever
+  // did.)
+  const connector = connectorFor(opts.config, slug);
+  if (connector) {
+    await renderConnectorPage(
+      res,
+      {
+        config: opts.config,
+        secrets: opts.secrets,
+        env: opts.env,
+        sessions: opts.sessions,
+        parametersStore: opts.parametersStore,
+        connectorFetch: opts.connectorFetch,
+      },
+      connector,
+      { signedInAs, flash: connectorFlash(req.query, connector) },
+    );
+    return;
+  }
+
   const view = resolveServerView(opts.config, slug, opts.secrets);
 
   if (view.kind === "not_found") {

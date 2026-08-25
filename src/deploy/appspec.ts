@@ -1,5 +1,6 @@
 import { isUnhosted } from "../config/schema.ts";
-import type { StradConfig } from "../config/schema.ts";
+import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import { connectorVariables } from "./server-namespaces.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
@@ -503,6 +504,27 @@ function firstWins(
   return merged;
 }
 
+/**
+ * The connector variables this server's own namespace actually holds.
+ *
+ * Absent values are simply absent — see the note at the call site. Reads only
+ * `serverSecrets[slug]`, which render-spec populates from
+ * `/strad/{env}/mcp/{slug}/static/` and from nowhere else, so a client id seeded
+ * at the gateway cannot land here.
+ */
+function connectorEnv(
+  server: ServerConfig,
+  own: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!own) return out;
+  for (const name of connectorVariables(server)) {
+    const value = own[name];
+    if (value !== undefined && value !== "") out[name] = value;
+  }
+  return out;
+}
+
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
 
@@ -556,7 +578,19 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
    */
   const perServerEnv = new Map<
     string,
-    { slug: string; path: string; env: Record<string, string> }[]
+    {
+      slug: string;
+      path: string;
+      env: Record<string, string>;
+      /**
+       * The keys that came from `oauth:` rather than from `env:`.
+       *
+       * They are emitted under this slug's PER-SLUG name and never under the
+       * bare one — see the bare-name loop below for why that is the difference
+       * between a credential and a credential swap.
+       */
+      connectorKeys: Set<string>;
+    }[]
   >();
 
   for (const server of config.servers) {
@@ -584,10 +618,31 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // supplementary image that silently shipped the literal
       // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
       const own = opts.serverSecrets?.[server.slug];
-      const resolvedEnv = resolveMap(
+      const injected = connectorEnv(server, own);
+      const declared = resolveMap(
         server.env,
         own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
       );
+      const resolvedEnv = {
+        // A CONNECTOR'S VARIABLES ARE INJECTED, AND ONLY WHERE THEY EXIST.
+        //
+        // `oauth:` names three variables in this server's own namespace, and
+        // none of them is a `${NAME}` — the config gate refuses one written by
+        // hand. That is deliberate and it is the deploy-ordering answer: the
+        // refresh token does not exist until a human completes the console
+        // consent flow, and `resolveMap` (below) throws on an unresolved ref,
+        // which would fail the WHOLE render and take every other server's deploy
+        // down with it. Injecting what the store holds means an unconnected slug
+        // deploys with two variables and no third — it mounts, lists its tools
+        // and reports itself degraded, which is the state its server is built to
+        // survive.
+        //
+        // FIRST, so an explicit `env:` entry for the same name still wins: the
+        // config is what a human wrote, and the injection is a convenience over
+        // it.
+        ...injected,
+        ...declared,
+      };
 
       // Recorded now, decided after the whole list. See `perServerEnv`.
       const contributions = perServerEnv.get(server.bundle) ?? [];
@@ -595,6 +650,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         slug: server.slug,
         path: server.path,
         env: resolvedEnv,
+        // A key the config ALSO declares under `env:` is that server's own
+        // declaration and keeps the bare name; only the injected ones are
+        // alias-only.
+        connectorKeys: new Set(
+          Object.keys(injected).filter((k) => !(k in server.env)),
+        ),
       });
       perServerEnv.set(server.bundle, contributions);
 
@@ -629,7 +690,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         // same value for a key, and the disagreeing case threw. Key ORDER stays
         // first-seen — a spread the other way round would rewrite the whole
         // env array's order on a config where no value moved at all.
-        env: firstWins(prev?.env, resolvedEnv),
+        // DECLARED ONLY — never `resolvedEnv`. This map becomes the component's
+        // BARE-named environment, and a connector's variables must not be in it:
+        // the bundle host falls back to a bare name for any slug that has no
+        // per-slug one, so a connector credential here is a credential every
+        // sibling on the bundle silently inherits. See the bare-name loop below.
+        env: firstWins(prev?.env, declared),
         params: { ...(prev?.params ?? {}), ...params },
         // Which VARIABLES each `params: true` server contributed, by slug. Names
         // only — see paramKeysEnv() for why the component needs to be told.
@@ -713,9 +779,9 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         if (prior && prior.value !== value) {
           throw new Error(
             `bundle "${bundle}": servers "${prior.slug}" and "${c.slug}" both ` +
-              `set ${key} under env:, both serve path "${c.path}", and the two ` +
-              `resolve to DIFFERENT values — one of them comes from a ` +
-              `per-server namespace ` +
+              `carry ${key} (under env:, or injected by an oauth: connector), ` +
+              `both serve path "${c.path}", and the two resolve to DIFFERENT ` +
+              `values — one of them comes from a per-server namespace ` +
               `(/strad/${config.gateway.env}/mcp/{slug}/static/). One path on ` +
               `one bundle is ONE mount in the container: one process, one set of ` +
               `credentials, so one value would silently overwrite the other. ` +
@@ -735,6 +801,34 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     // unrepresentable and throws — again about instances, not about names.
     const entry = imageBundles.get(bundle);
     const keys = new Set(contributions.flatMap((c) => Object.keys(c.env)));
+
+    // A CONNECTOR'S VARIABLE NEVER TAKES THE BARE NAME.
+    //
+    // This is the difference between a credential and a CREDENTIAL SWAP, and it
+    // is not the same rule as the throw above. That rule is about two servers
+    // that both HOLD a value; this is about one that holds nothing.
+    //
+    // The bundle host's `slugEnvView` starts from the whole environment and
+    // OVERLAYS `<SLUG>__<NAME>`, so a slug with no per-slug name of its own
+    // reads the bare one. A connector's whole point is that an unconnected slug
+    // has no refresh token — so if the bare name carried a sibling's, the
+    // unconnected `-ro` mount would come up holding the `-rw` slug's WRITE
+    // credential, fully functional, while its console page said "not connected".
+    // Six slugs of one Google OAuth app on one bundle is the intended production
+    // shape, so that is not a corner: it is the default.
+    //
+    // Alias-only makes the absent case absent. The slug reads its own name or it
+    // reads nothing, degrades, and says which variable it is missing.
+    //
+    // A key a server ALSO writes under `env:` is not connector-only and keeps its
+    // bare name: that is a human's own declaration and this must not silently
+    // withdraw it.
+    const connectorOnly = new Set(
+      [...keys].filter((key) =>
+        contributions.every((c) => !(key in c.env) || c.connectorKeys.has(key)),
+      ),
+    );
+
     for (const key of keys) {
       const holders = [...byPath]
         .filter(([, held]) => held.has(key))
@@ -757,7 +851,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
             `them the same value.`,
         );
       }
-      if (entry) entry.env[key] = owner.value;
+      if (entry && !connectorOnly.has(key)) entry.env[key] = owner.value;
     }
 
     // --- the per-slug names, for everybody -----------------------------------

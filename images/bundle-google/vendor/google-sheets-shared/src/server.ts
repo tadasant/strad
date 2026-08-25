@@ -99,7 +99,17 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
   private tokenExpiry = 0;
   private refreshPromise: Promise<void> | null = null;
 
-  constructor(clientId: string, clientSecret: string, refreshToken: string) {
+  constructor(
+    clientId: string,
+    clientSecret: string,
+    refreshToken: string,
+    /**
+     * Where a human goes to re-consent: this slug's own console page, which
+     * carries a Reconnect Google button. Optional, because a deployment that is
+     * not strad's console still gets a usable hint.
+     */
+    private readonly reconnectUrl?: string
+  ) {
     this.oauth2Client = new OAuth2Client(clientId, clientSecret);
     this.oauth2Client.setCredentials({ refresh_token: refreshToken });
   }
@@ -112,11 +122,19 @@ class OAuthGoogleSheetsClient implements IGoogleSheetsClient {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('invalid_grant')) {
+        // NAME THE PAGE. Re-consenting used to mean an OAuth Playground round
+        // trip and a hand-seeded parameter; it is now one button on this slug's
+        // own console page, and an error that does not say so sends a human back
+        // to the old procedure.
         throw new Error(
           `${message}\n\nHint: this refresh token is no longer valid — revoked, expired, or ` +
             'invalidated by a password change. A token issued by an OAuth app still in ' +
-            '"testing" mode expires after 7 days. Re-run the consent flow for this account ' +
-            "and re-seed GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN in strad's secret store."
+            '"testing" mode expires after 7 days. ' +
+            (this.reconnectUrl
+              ? `Open ${this.reconnectUrl} in strad's console and click Reconnect Google; ` +
+                'strad re-runs the consent and rotates the stored credential.'
+              : "Re-run the consent flow for this account from this slug's page in strad's " +
+                'console (Reconnect Google), which rotates the stored credential.')
         );
       }
       throw error;
@@ -291,6 +309,10 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
   const clientId = env.GOOGLE_SHEETS_OAUTH_CLIENT_ID!;
   const clientSecret = env.GOOGLE_SHEETS_OAUTH_CLIENT_SECRET!;
   const refreshToken = env.GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN!;
+  // Not a credential and not one of GOOGLE_SHEETS_ENV_NAMES: an absent one costs
+  // a link in an error message and nothing else. The bundle host composes it
+  // from the gateway's public URL and this mount's slug.
+  const reconnectUrl = env.GOOGLE_SHEETS_RECONNECT_URL || undefined;
 
   // The key is the credential itself, so two slugs holding the same account
   // share one token cache and two accounts can never share one.
@@ -298,7 +320,12 @@ export function createDefaultClient(env: EnvLike = process.env): IGoogleSheetsCl
   const existing = clients.get(key);
   if (existing) return existing;
 
-  const client = new OAuthGoogleSheetsClient(clientId, clientSecret, refreshToken);
+  const client = new OAuthGoogleSheetsClient(
+    clientId,
+    clientSecret,
+    refreshToken,
+    reconnectUrl
+  );
   clients.set(key, client);
   return client;
 }

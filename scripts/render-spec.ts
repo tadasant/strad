@@ -75,6 +75,7 @@ import {
   preflightSecrets,
 } from "../src/deploy/preflight.ts";
 import {
+  connectorVarsBySlug,
   coveredPerServer,
   envRefsBySlug,
   groupByServer,
@@ -363,6 +364,19 @@ function resolveNamespace(namespace: string): Promise<Record<string, string>> {
 // `params: true` path below already draws its line: no credential, no per-server
 // read, and every name falls back exactly as it did.
 const refsBySlug = envRefsBySlug(config);
+// The names a server's own namespace must be READ for, which is wider than the
+// names it is CHECKED for. A connector's three variables are injected rather
+// than referenced (src/deploy/appspec.ts), so they belong in the substitution
+// bag — but not in `refsBySlug`, which feeds `coveredPerServer` below and
+// answers a question about `${NAME}` references and their gateway fallback.
+const wantedBySlug = new Map<string, Set<string>>();
+for (const source of [refsBySlug, connectorVarsBySlug(config)]) {
+  for (const [slug, names] of source) {
+    const held = wantedBySlug.get(slug) ?? new Set<string>();
+    for (const name of names) held.add(name);
+    wantedBySlug.set(slug, held);
+  }
+}
 const serverSecrets: Record<string, Record<string, string>> = {};
 if (store) {
   // ONE listing of /strad/{env}/mcp/ for the whole render. It is metadata — a
@@ -386,7 +400,7 @@ if (store) {
   // actually references. Resolved CONCURRENTLY — each `resolve()` renders a
   // whole namespace, and doing them one after another puts the sum of them on
   // the deploy's critical path for no reason.
-  const candidates = [...refsBySlug].filter(([slug, refs]) => {
+  const candidates = [...wantedBySlug].filter(([slug, refs]) => {
     const held = seeded.get(slug);
     return Boolean(held?.length) && [...refs].some((n) => held!.includes(n));
   });

@@ -386,6 +386,34 @@ it is whether a door exists at all, not how close an attempt came to opening it.
 Nothing about the token itself — length, prefix, how close an attempt was — is
 disclosed, and `/mcp` keeps its opaque `401`.
 
+## Connector authorization: a third Google OAuth flow, and not the login one
+
+`/console/oauth/callback` signs a **human into strad**. A connector's callback,
+`/ui/oauth/callback`, obtains a **credential for a server** — and although both
+say "Google OAuth", they agree on almost nothing:
+
+|                 | Console login                         | Connector authorization                           |
+| --------------- | ------------------------------------- | ------------------------------------------------- |
+| OAuth client    | the deployment's (`GOOGLE_CLIENT_ID`) | the **slug's own**, from its parameter namespace  |
+| Scopes          | `openid email profile`                | `openid email` + the slug's capability scopes     |
+| Identity check  | the Workspace `hd` claim              | the pinned `account`, an exact email              |
+| Grant type      | online                                | offline (`access_type=offline`, `prompt=consent`) |
+| What comes back | a session cookie                      | a refresh token, written to the parameter store   |
+| Callback path   | `/console/oauth/callback`             | `/ui/oauth/callback`                              |
+| Signing key     | `INFO_TX` (derived)                   | `INFO_CONNECTOR` (derived, domain-separated)      |
+
+Overloading one callback with both would mean one redirect URI, one client and one
+consent posture serving two jobs that share none of them. The **one** thing they do
+share is the ID-token verifier — RS256, Google's JWKS, issuer and audience — because
+a second implementation of the only proof of identity in either flow is a second
+place to get it wrong.
+
+Both halves of a connector flow are behind the same SSO gate as every other console
+surface, and the in-flight transaction is bound to the console session that began
+it: a transaction cookie on its own is not an authorization. The mechanics, the
+refusals and what is never exposed are on
+[Connectors](/operate/connectors/).
+
 ## Entitlement: the token disposes
 
 Once a caller is authenticated, the servers they may reach are computed

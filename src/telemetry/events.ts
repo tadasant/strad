@@ -150,6 +150,26 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * is the operational fact; core's stderr carries which name.
      */
     "strad.param_refused": [],
+    /**
+     * The console connector flow: a human consenting, in strad's own UI, to
+     * hand one server slug a credential for their Google account.
+     *
+     * `slug` and `variable` come from the CONFIG — the flow reads the slug out
+     * of sealed state and the variable out of that server's `oauth:` block, and
+     * neither is ever taken from a request, so a caller cannot write a string of
+     * its choosing into the ingestor. `reason` is a ConnectorErrorCode: a closed
+     * set of strad's own words (`account_mismatch`, `scope_not_granted`, …).
+     *
+     * What is NOT here is the whole point. No token, no code, no client secret,
+     * no email, no length, no fingerprint — and no upstream text: Google's error
+     * bodies are read for nothing, so a refusal ships the classification and
+     * stops. `strad.connector_refused` on a rising edge is the operational
+     * signal (a token that will not rotate is a server about to go dark), and the
+     * reason is enough to tell "wrong account" from "the store is down".
+     */
+    "strad.connector_begin": ["slug"],
+    "strad.connector_connected": ["slug", "variable"],
+    "strad.connector_refused": ["slug", "reason"],
     /** Clean SIGTERM or an OOM kill — the difference is one line, or its absence. */
     "strad.shutdown": ["signal"],
     /**

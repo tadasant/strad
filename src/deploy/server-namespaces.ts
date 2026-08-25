@@ -1,5 +1,5 @@
 import { isUnhosted } from "../config/schema.ts";
-import type { StradConfig } from "../config/schema.ts";
+import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { ParameterMeta } from "../secrets/parameters/types.ts";
 import { staticNamespace } from "../secrets/parameters/namespace.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -224,6 +224,63 @@ export function ownNamespaceRefsBySlug(
   return out;
 }
 
+/**
+ * The three variables ONE server's `oauth:` connector owns, or [] for a server
+ * that declares none.
+ *
+ * They are read from that server's own namespace and INJECTED — they are never
+ * `${NAME}` references, and the config gate refuses one written by hand (see the
+ * `superRefine` in src/config/schema.ts). That is the whole deploy-ordering
+ * answer: the refresh token cannot exist until a human completes the console
+ * consent flow, and a reference to a name the store does not hold fails the
+ * WHOLE render, so one unconnected slug would take every other server's deploy
+ * with it. An injected variable is simply absent until it is there.
+ */
+export function connectorVariables(server: ServerConfig): string[] {
+  const oauth = server.oauth;
+  if (!oauth) return [];
+  return [
+    oauth.clientIdVariable,
+    oauth.clientSecretVariable,
+    oauth.refreshTokenVariable,
+  ];
+}
+
+/** `slug -> the variables its connector owns`, for every enabled server with one. */
+export function connectorVarsBySlug(
+  config: StradConfig,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    const vars = connectorVariables(server);
+    if (vars.length === 0) continue;
+    out.set(server.slug, new Set(vars));
+  }
+  return out;
+}
+
+/**
+ * Every name a server's OWN namespace serves it, by whichever mechanism.
+ *
+ * `ownNamespaceRefsBySlug` answers the narrower question — which `${NAME}`s
+ * resolve from there — and it is the right input to the deploy gates, which are
+ * about references. This adds the connector variables, which are read without
+ * being referenced, and it is what "does anything read this seeded parameter"
+ * has to mean once a second mechanism exists.
+ */
+export function ownNamespaceNamesBySlug(
+  config: StradConfig,
+): Map<string, Set<string>> {
+  const out = ownNamespaceRefsBySlug(config);
+  for (const [slug, vars] of connectorVarsBySlug(config)) {
+    const held = out.get(slug) ?? new Set<string>();
+    for (const name of vars) held.add(name);
+    out.set(slug, held);
+  }
+  return out;
+}
+
 /** A seeded parameter that no server on this render will read. */
 export interface UnreadParameters {
   slug: string;
@@ -252,7 +309,10 @@ export function unreadParameters(
   config: StradConfig,
   seeded: ReadonlyMap<string, string[]>,
 ): UnreadParameters[] {
-  const byRefs = ownNamespaceRefsBySlug(config);
+  // The WIDER map: a connector's variables are read by the renderer without any
+  // `${NAME}` naming them, so reporting them as unread would warn, on every
+  // deploy, about the two parameters a human was told to seed.
+  const byRefs = ownNamespaceNamesBySlug(config);
   const out: UnreadParameters[] = [];
 
   for (const [slug, variables] of [...seeded].sort(([a], [b]) =>
@@ -293,14 +353,18 @@ export function unreadParameters(
     const unread = variables.filter((v) => !refs.has(v));
     if (unread.length === 0) continue;
 
-    const hint = isUnhosted(server)
-      ? `Reference it — headers: { Authorization: "Bearer \${${unread[0]}}" } — ` +
-        `or delete it.`
-      : server.kind === "builtin"
-        ? `Reference it from options:, or set params: true to inject the whole ` +
-          `namespace.`
-        : `Reference it — env: { ${unread[0]}: "\${${unread[0]}}" } — or set ` +
-          `params: true to inject the whole namespace.`;
+    const hint = server.oauth
+      ? `This server's connector reads ` +
+        `${connectorVariables(server).join(", ")} from here; ${unread[0]} is ` +
+        `not one of them.`
+      : isUnhosted(server)
+        ? `Reference it — headers: { Authorization: "Bearer \${${unread[0]}}" } — ` +
+          `or delete it.`
+        : server.kind === "builtin"
+          ? `Reference it from options:, or set params: true to inject the whole ` +
+            `namespace.`
+          : `Reference it — env: { ${unread[0]}: "\${${unread[0]}}" } — or set ` +
+            `params: true to inject the whole namespace.`;
 
     out.push({
       slug,

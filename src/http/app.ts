@@ -73,6 +73,13 @@ export interface AppOptions {
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
   parametersStore?: ConsoleUiOptions["parametersStore"];
+  /**
+   * Test seam: the transport a CONNECTOR's Google token exchange uses.
+   *
+   * Separate from `fetchImpl` (the bundle presence probe's) because they stub
+   * different third parties. See src/ui/connector.ts.
+   */
+  connectorFetch?: ConsoleUiOptions["connectorFetch"];
   /** Test seam: override the console's capability probe. See ConsoleUiOptions. */
   capabilities?: ConsoleUiOptions["capabilities"];
   /**
@@ -232,6 +239,7 @@ export function createApp(opts: AppOptions): Express {
       diagnosticStore: opts.diagnosticStore,
       sessions: auth.sessions,
       googleReady: auth.ready,
+      connectorFetch: opts.connectorFetch,
     });
   }
 
