@@ -1,5 +1,3 @@
-import { createSign } from "node:crypto";
-
 /**
  * A dependency-free Google Cloud Storage listing client.
  *
@@ -12,8 +10,8 @@ import { createSign } from "node:crypto";
  * dep for the same reason).
  *
  * So this is the minimum that lists a bucket: mint an OAuth2 access token from a
- * service-account key by signing a JWT with node:crypto, then hit the GCS JSON
- * API with a delimiter so "folders" (common prefixes) come back distinct from
+ * service-account key (the shared signed-JWT flow), then hit the GCS JSON API
+ * with a delimiter so "folders" (common prefixes) come back distinct from
  * objects. It is the same wire behaviour the SDK produces — `getFiles({
  * delimiter: "/" })` is `objects.list?delimiter=/` underneath — just without the
  * SDK.
@@ -25,9 +23,16 @@ import { createSign } from "node:crypto";
 // The service-account shape and JWT plumbing are store-neutral and live in one
 // place (src/secrets/parameters/service-account.ts). This browser re-exports the
 // type for its own callers; it does NOT define its own, so "the GCS file" is not
-// where the secrets store gets its ServiceAccount from.
+// where the secrets store gets its ServiceAccount from. The mint is that same
+// module's — one RS256 signing path, one escaped-newline PEM repair, for every
+// GCP client in strad.
 export type { ServiceAccount } from "../secrets/parameters/service-account.ts";
-import type { ServiceAccount } from "../secrets/parameters/service-account.ts";
+import {
+  mintAccessToken,
+  ServiceAccountAuthError,
+  type MintedToken,
+  type ServiceAccount,
+} from "../secrets/parameters/service-account.ts";
 
 /** One object in a bucket. Field names mirror the GCS JSON API. */
 export interface GcsObject {
@@ -60,9 +65,11 @@ export interface ListOptions {
   maxResults?: number;
 }
 
-/** The read-only Storage scope. This browser never writes. */
+/**
+ * The read-only Storage scope. This browser never writes, so it does NOT use the
+ * shared `SCOPE_CLOUD_PLATFORM` — this is the narrower one, passed to the mint.
+ */
 const SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const STORAGE_API = "https://storage.googleapis.com/storage/v1";
 
 /** Injectable so tests can drive the client without touching the network. */
@@ -78,28 +85,34 @@ export type GcsLister = (
   options: ListOptions,
 ) => Promise<ListResult>;
 
-interface CachedToken {
-  token: string;
-  /** Epoch ms after which we must re-mint. */
-  expiresAt: number;
-}
-
 /**
  * A GCS lister backed by the real JSON API.
  *
  * Access tokens are cached per service-account email until shortly before they
  * expire — a listing that clicks through folders should not mint a fresh JWT on
- * every navigation.
+ * every navigation. The cache is this client's; the shared mint deliberately
+ * owns no cache (see gcp.ts, which keeps its own for the same reason).
  */
 export function createGcsLister(fetchImpl: FetchLike = fetch): GcsLister {
-  const tokens = new Map<string, CachedToken>();
+  const tokens = new Map<string, MintedToken>();
 
   async function accessToken(account: ServiceAccount): Promise<string> {
     const cached = tokens.get(account.client_email);
     // 60s of slack so a token that is about to expire is not handed out.
-    if (cached && cached.expiresAt - 60_000 > nowMs()) return cached.token;
+    if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
 
-    const minted = await mintAccessToken(account, fetchImpl);
+    let minted: MintedToken;
+    try {
+      minted = await mintAccessToken(account, { scope: SCOPE, fetchImpl });
+    } catch (err) {
+      // The console renders `GcsError.status` into its 403 explanation, so a
+      // failed exchange stays a GcsError here rather than leaking the shared
+      // module's error type into the view.
+      if (err instanceof ServiceAccountAuthError) {
+        throw new GcsError(`GCS ${err.message}`, err.status);
+      }
+      throw err;
+    }
     tokens.set(account.client_email, minted);
     return minted.token;
   }
@@ -166,94 +179,10 @@ export class GcsError extends Error {
   }
 }
 
-/**
- * Mint a short-lived OAuth2 access token from a service-account key.
- *
- * This is the "signed JWT bearer" flow (RFC 7523): build a JWT asserting the
- * service account, sign it with the account's RSA private key, and exchange it
- * at Google's token endpoint for an access token. No SDK, no metadata server.
- */
-export async function mintAccessToken(
-  account: ServiceAccount,
-  fetchImpl: FetchLike = fetch,
-): Promise<CachedToken> {
-  const iat = Math.floor(nowMs() / 1000);
-  const exp = iat + 3600;
-
-  const claims = {
-    iss: account.client_email,
-    scope: SCOPE,
-    aud: TOKEN_URL,
-    iat,
-    exp,
-  };
-
-  const header = { alg: "RS256", typ: "JWT" };
-  const signingInput = `${base64url(JSON.stringify(header))}.${base64url(
-    JSON.stringify(claims),
-  )}`;
-
-  // Service-account keys are stored with escaped newlines when they travel
-  // through an env var (`\n` as two characters). Restore real newlines or the
-  // PEM parser rejects the key.
-  const pem = account.private_key.includes("\\n")
-    ? account.private_key.replace(/\\n/g, "\n")
-    : account.private_key;
-
-  const signature = createSign("RSA-SHA256")
-    .update(signingInput)
-    .sign(pem, "base64");
-  const assertion = `${signingInput}.${base64urlFromBase64(signature)}`;
-
-  const res = await fetchImpl(TOKEN_URL, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await safeText(res);
-    throw new GcsError(
-      `GCS token exchange failed: ${res.status} ${res.statusText}`,
-      res.status,
-      body,
-    );
-  }
-
-  const json = (await res.json()) as {
-    access_token?: string;
-    expires_in?: number;
-  };
-  if (!json.access_token) {
-    throw new GcsError("GCS token exchange returned no access_token", 502);
-  }
-
-  return {
-    token: json.access_token,
-    expiresAt: nowMs() + (json.expires_in ?? 3600) * 1000,
-  };
-}
-
-function base64url(input: string): string {
-  return base64urlFromBase64(Buffer.from(input, "utf8").toString("base64"));
-}
-
-function base64urlFromBase64(b64: string): string {
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 async function safeText(res: Response): Promise<string | undefined> {
   try {
     return (await res.text()).slice(0, 500);
   } catch {
     return undefined;
   }
-}
-
-// Date.now behind a helper so the one place that reads the clock is obvious.
-function nowMs(): number {
-  return Date.now();
 }
