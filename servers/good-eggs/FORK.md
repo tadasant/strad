@@ -200,7 +200,59 @@ statement in the incident was downstream of a read that answered a question it
 could not answer. A caller cannot tell an empty array from a failed one, so the
 server must not hand it one.
 
-## 6. Not vendored: the upstream `local/` stdio entrypoint
+## 6. The login wait does not wait for an event the page never sends
+
+**Upstream.** After submitting credentials, `initialize()` calls
+
+```ts
+await this.page.waitForURL((url) => !url.pathname.includes('/signin'), {
+  timeout: this.config.timeout,
+});
+```
+
+**Here.** The wait passes `waitUntil: 'domcontentloaded'`, the predicate is the
+exported `isPostSignInUrl()`, and neither the wait's outcome nor the URL alone
+gets the last word — see `waitForSignIn()`.
+
+**Why.** On 2026-08-28 every authenticated call against strad's production
+`good-eggs` slug — `get_favorites` and `get_cart` alike — failed with
+`Login failed: page.waitForURL: Timeout 30000ms exceeded`
+([strad#195](https://github.com/tadasant/strad/issues/195)), over a Playwright
+log that said the navigation had already happened:
+
+```
+waiting for navigation until "load"
+  navigated to "https://www.goodeggs.com/home?recently-logged-in=true"
+  "networkidle" event fired
+  "domcontentloaded" event fired
+```
+
+`waitForURL` defaults to `waitUntil: 'load'`, and Playwright only logs those
+`event fired` lines from the lifecycle wait it enters AFTER the URL predicate has
+matched. So the credentials were accepted, the page rendered, the predicate
+matched — and the wait then sat for 30 seconds on a `load` event that page does
+not send. Every other navigation in this server already passes
+`domcontentloaded`, with a comment saying Good Eggs holds connections open; this
+one wait was the exception, and it gated the entire server.
+
+Two further changes make the same failure cheaper the next time Good Eggs moves
+its landing page:
+
+- `isPostSignInUrl()` is a PATH test against goodeggs.com — query strings,
+  fragments, trailing slashes and casing are noise — so a new landing URL is not
+  a new outage. It is also segment-anchored, where `includes('/signin')` was a
+  substring match.
+- The wait is a signal, not the verdict. When it ends, what decides is where the
+  page actually IS, and failing that whether the page's own payload reports
+  `storeData.user` — the same signed-in signal delta 5 refuses an anonymous
+  basket on. A login that succeeds while Playwright is still waiting for
+  something is no longer reported as a failed one.
+
+`shared/test/login.test.mjs` pins all three over a fake page, with no browser and
+no credentials: the `waitUntil` argument, the predicate against the real observed
+URL, and both verdicts. Four of its cases fail against the code above.
+
+## 7. Not vendored: the upstream `local/` stdio entrypoint
 
 Only `shared/` came across. `remote/` is strad's own Express +
 `StreamableHTTPServerTransport` front door over the same `createMCPServer()`

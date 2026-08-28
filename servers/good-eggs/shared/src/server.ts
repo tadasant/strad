@@ -3,6 +3,7 @@ import { createRegisterTools } from './tools.js';
 import { withBrowserTelemetry } from './telemetry.js';
 import {
   basketSnapshotFromHtml,
+  extractStoreData,
   productNameFromHtml,
   type BasketSnapshot,
 } from './basketState.js';
@@ -39,6 +40,60 @@ const REMOVE_CONTROL_SELECTOR =
 // Ceiling on remove clicks for one call. A decrement-per-click control on a
 // large line would otherwise spend a second per unit inside a single tool call.
 const MAX_REMOVE_CLICKS = 15;
+
+// The paths Good Eggs serves the sign-in form on. A page under one of these is
+// a page nobody is logged in on; anywhere else is somewhere the site sent us
+// after it accepted the credentials.
+const SIGN_IN_PATHS = ['/signin', '/sign-in', '/login'];
+
+/**
+ * Whether `url` is a page reached AFTER the sign-in form — which, on Good Eggs,
+ * means anywhere on goodeggs.com that is not the sign-in form itself.
+ *
+ * Deliberately a PATH test. Good Eggs picks where to land you post-login and
+ * has changed it: it currently lands on `/home?recently-logged-in=true`, and
+ * before that on whichever page you came from. Query strings, fragments,
+ * trailing slashes and casing say nothing about whether the login took, so none
+ * of them participate; an exact-URL predicate would turn the next such change
+ * into a 30-second timeout that takes every tool on the server down with it.
+ *
+ * The host is checked because a login that bounces through a third party is
+ * still mid-flight: only a goodeggs.com page that is not the form counts as
+ * arrival.
+ */
+export function isPostSignInUrl(url: string | URL): boolean {
+  let parsed: URL;
+  try {
+    parsed = typeof url === 'string' ? new URL(url) : url;
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  const host = parsed.hostname.toLowerCase();
+  if (host !== 'goodeggs.com' && !host.endsWith('.goodeggs.com')) return false;
+
+  // Trailing slashes and casing are presentation; `/Signin/` is the form.
+  const path = parsed.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+  return !SIGN_IN_PATHS.some((signIn) => path === signIn || path.startsWith(`${signIn}/`));
+}
+
+/**
+ * Whether the page currently loaded says, in its own state payload, that
+ * somebody is signed in.
+ *
+ * `storeData.user` is null on an anonymous page — the same signal
+ * `basketSnapshotFromHtml` refuses an anonymous basket on (FORK.md #5). Used
+ * only to ACCEPT a login the URL could not confirm, never to reject one: a page
+ * that ships no payload at all says nothing about the session.
+ */
+async function pageReportsSignedIn(page: import('playwright').Page): Promise<boolean> {
+  try {
+    return extractStoreData(await page.content())?.user != null;
+  } catch {
+    return false;
+  }
+}
 
 const ADD_BUTTON_SELECTOR =
   'button:has-text("add to basket"), button:has-text("add to cart"), ' +
@@ -498,18 +553,55 @@ export class GoodEggsClient implements IGoodEggsClient {
     // Click sign in button
     await this.page.click('button:has-text("Sign In")');
 
-    // Wait for navigation to complete (should redirect to home or previous page)
-    await this.page.waitForURL((url) => !url.pathname.includes('/signin'), {
-      timeout: this.config.timeout,
-    });
-
-    // Verify login was successful by checking if we're no longer on signin page
-    const currentUrl = this.page.url();
-    if (currentUrl.includes('/signin')) {
-      throw new Error('Login failed - still on signin page. Check your credentials.');
-    }
+    await this.waitForSignIn();
 
     this.isInitialized = true;
+  }
+
+  /**
+   * Block until the sign-in form has been left behind, then decide whether the
+   * session is really authenticated.
+   *
+   * `waitUntil: 'domcontentloaded'` is the load-bearing argument. `waitForURL`
+   * defaults to `'load'`, and the page Good Eggs lands on after accepting
+   * credentials does not fire it. On 2026-08-28 every authenticated call in
+   * production failed with `page.waitForURL: Timeout 30000ms exceeded`, over a
+   * log that said the navigation to `/home?recently-logged-in=true` had already
+   * happened and that `networkidle` and `domcontentloaded` had both fired —
+   * `load` never did. Playwright only logs those lifecycle lines once the URL
+   * predicate has matched, so the URL was never the problem: the wait was
+   * parked on a `load` event that page does not send. Every other navigation in
+   * this file passes `domcontentloaded` because Good Eggs holds connections
+   * open; this one wait was the exception, and it gated the whole server.
+   *
+   * The wait is a SIGNAL, not the verdict. What decides is where the page
+   * actually is once the wait ends, and — failing that — whether the page's own
+   * payload reports a signed-in user. A login that succeeds while Playwright is
+   * still waiting for something must not be reported as a failed one.
+   */
+  private async waitForSignIn(): Promise<void> {
+    const page = await this.ensureBrowser();
+
+    let waitError: Error | null = null;
+    try {
+      await page.waitForURL((url) => isPostSignInUrl(url), {
+        timeout: this.config.timeout,
+        waitUntil: 'domcontentloaded',
+      });
+    } catch (error) {
+      waitError = error instanceof Error ? error : new Error(String(error));
+    }
+
+    // Where the browser ended up is worth more than how the wait ended.
+    if (isPostSignInUrl(page.url())) return;
+
+    // Still on the form, or somewhere unrecognised. Good Eggs could equally
+    // sign a session in without navigating anywhere; its own payload is the
+    // second opinion.
+    if (await pageReportsSignedIn(page)) return;
+
+    const stillAt = `Login failed - still on the sign-in page (${page.url()}). Check your credentials.`;
+    throw new Error(waitError ? `${stillAt} The wait ended with: ${waitError.message}` : stillAt);
   }
 
   async searchGroceries(query: string): Promise<GroceryItem[]> {
