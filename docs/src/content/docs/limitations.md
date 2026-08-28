@@ -126,6 +126,10 @@ staging deploy's assertions, not a metric. Every deploy in that window passed, a
 the only symptom was a `WARN` line on stdout, a stream that
 [reaches nobody](/operate/telemetry/#logs--strads-own-events-and-only-those).
 
+It happened again, in prod, on 2026-08-28: `good-eggs` listed its tools while
+every authenticated call returned `Login failed: page.waitForURL: Timeout 30000ms
+exceeded`. The login was fixed; the blind spot that let it run unseen was not.
+
 **Undo:** two halves. Give the probe a mixed-method shape — a concurrent
 `tools/list` + `resources/list` per slug, with "answers one but not both"
 classified as `degraded`; the cost is a second round trip per slug per interval
@@ -1165,6 +1169,19 @@ basket is read from the `storeData` payload Good Eggs renders into every page
 rather than from the drawn markup — the markup depends on which of two basket
 layouts the account is served, and the scrape that preceded this knew only one
 of them, so `get_cart` answered "your cart is empty" against a 43-item basket.
+
+The second is the login. The wait after submitting credentials took Playwright's
+default `waitUntil: 'load'`, and the page Good Eggs lands on once it has accepted
+them does not fire that event — so on 2026-08-28 every authenticated call, on
+every tool, failed with a 30-second `page.waitForURL` timeout, over a log showing
+the navigation to `/home?recently-logged-in=true` had already happened. The wait
+now stops at `domcontentloaded` like every other navigation in that server,
+decides on the landing PATH rather than an exact URL, and takes the page's own
+`storeData.user` as the evidence — a signed-in payload is a successful login
+however the wait ended, and an anonymous one is a failed login however the URL
+looks. What made that outage last a day rather than a call is not fixed: the
+login runs once at container boot and its failure is cached for the life of the
+container, so a transient blip still bricks the mount until a redeploy.
 
 **Undo:** if upstream ever publishes `shared` as a library carrying these fixes,
 depend on it and delete the fork.

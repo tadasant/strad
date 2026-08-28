@@ -252,6 +252,14 @@ reported as failures, removals refused as "item not found" — had no sanctioned
 place to be fixed. Same call as `strad-fetch` and `bundle-api/fork/*`: a server
 whose bugs return confident wrong answers becomes first-party.
 
+The fork has taken a second defect on the same reasoning: the post-login wait
+used Playwright's default `waitUntil: 'load'`, an event the page Good Eggs lands
+on does not fire, so on 2026-08-28 every authenticated call on every tool timed
+out after 30 seconds (strad#195). What made that outage LAST is a separate,
+unfixed thing — `createMCPServer()` logs in once at container boot and latches
+the failure, and the bundle host degrades the mount rather than restarting it, so
+a transient blip bricks the mount until a redeploy (strad#196).
+
 **Cost.** A fork has no upstream to argue with it and no sync script to notice a
 loss, so `shared/test/` is the only thing defending the deltas. CI runs it as
 `servers (good-eggs)` on every PR. strad's eslint/prettier/tsc stay scoped away
@@ -1533,6 +1541,11 @@ report a per-mount `degraded` string for exactly this, and nothing reads it —
 not core's probe, not the staging deploy's assertions, not a metric. Every deploy
 in that window passed, and the only symptom was a `WARN` line on stdout, a stream
 that reaches nobody (#37).
+
+The same shape recurred in prod on 2026-08-28: `good-eggs` listed its tools while
+every authenticated call returned `Login failed: page.waitForURL: Timeout 30000ms
+exceeded` (strad#195). The login is fixed; the blind spot that let it run unseen
+is not.
 
 **Undo.** Two halves. Give the probe a mixed-method shape — a concurrent
 `tools/list` + `resources/list` per slug, classifying a slug that answers one but

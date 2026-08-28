@@ -4,6 +4,7 @@ export {
   GoodEggsClient,
   extractProductId,
   findCartItemForUrl,
+  isPostSignInUrl,
   reconcileAddResult,
   type ReconcileAddParams,
   setSharedBrowserProvider,

@@ -200,7 +200,91 @@ statement in the incident was downstream of a read that answered a question it
 could not answer. A caller cannot tell an empty array from a failed one, so the
 server must not hand it one.
 
-## 6. Not vendored: the upstream `local/` stdio entrypoint
+## 6. The login wait does not wait for an event the page never sends
+
+**Upstream.** After submitting credentials, `initialize()` calls
+
+```ts
+await this.page.waitForURL((url) => !url.pathname.includes('/signin'), {
+  timeout: this.config.timeout,
+});
+
+const currentUrl = this.page.url();
+if (currentUrl.includes('/signin')) {
+  throw new Error('Login failed - still on signin page. Check your credentials.');
+}
+```
+
+**Here.** `waitForSignIn()`: the wait passes `waitUntil: 'domcontentloaded'`, the
+predicate is the exported `isPostSignInUrl()`, and the verdict comes from the
+state of the page afterwards rather than from how the wait ended.
+
+**Why.** On 2026-08-28 every authenticated call against strad's production
+`good-eggs` slug — `get_favorites` and `get_cart` alike — failed with
+`Login failed: page.waitForURL: Timeout 30000ms exceeded`
+([strad#195](https://github.com/tadasant/strad/issues/195)), over a Playwright
+log that said the navigation had already happened:
+
+```
+waiting for navigation until "load"
+  navigated to "https://www.goodeggs.com/home?recently-logged-in=true"
+  "networkidle" event fired
+  "domcontentloaded" event fired
+```
+
+`waitForURL` defaults to `waitUntil: 'load'`. Playwright logs `navigated to …`
+from inside its URL predicate and the `"…" event fired` lines only from the
+lifecycle wait it enters AFTER that predicate has matched, so the log itself
+says the URL was never the problem: the credentials were accepted, the page
+rendered, the predicate matched — and the wait then sat for 30 seconds on a
+`load` event that page does not send. Every other navigation in this server
+already passes `domcontentloaded`, with a comment saying Good Eggs holds
+connections open; this one wait was the exception, and it gated all eleven tools.
+
+The trap was documented one tree over and this server did not get the lesson:
+`servers/fetchpet/shared/src/server.ts` avoids `waitForURL` outright, saying the
+default `'load'` "can hang when third-party resources fail to load".
+
+Three further changes decide the login on evidence rather than on the wait:
+
+- **`isPostSignInUrl()`** is a path test against goodeggs.com — query strings,
+  fragments, trailing slashes, casing and percent-encoding are noise — so the
+  next time Good Eggs moves its landing page it is not another outage. It is
+  segment-anchored where `includes('/signin')` was a substring match.
+- **The page's own payload decides, whichever way the wait ended.** `storeData`
+  carries `user`: an object when somebody is signed in, `null` on an anonymous
+  page (the signal delta 5 refuses an anonymous basket on). A signed-in payload
+  is a successful login even if the wait threw — which is exactly the outage
+  above — and an ANONYMOUS payload is a failed one even on a URL that looks like
+  an arrival, which is what would happen if Good Eggs renamed the form to a path
+  the predicate does not know: the wait would return instantly, on the form.
+  A payload with no `user` key, or no payload at all, is `unknown` and leaves the
+  verdict to the URL — refusing a login on an unrecognised payload would be a
+  second way to take the server down.
+- **A closed page is not a signed-in one.** `page.url()` is a cached client-side
+  read that answers happily for a page that no longer exists, so a Chromium
+  killed mid-login — this container shares one across three servers — would
+  otherwise report the URL it died on as a successful sign-in, bringing the mount
+  up healthy to fail every call.
+
+The failure message carries the page WITHOUT its query string, and without the
+`Login failed` prefix its caller already adds. It becomes the bundle's per-mount
+`degraded` string and the body of every tool error that mount returns.
+
+`shared/test/login.test.mjs` pins all of it over a fake page injected through
+`setSharedBrowserProvider`, with no browser and no credentials: the `waitUntil`
+argument, the predicate against the real observed URL and the logged-out forms,
+each verdict, and that the password and the query string stay out of the error.
+Seven of its fifteen cases fail against the code above.
+
+**What this delta does NOT fix.** The wait is why that login failed; it is not
+why the failure lasted. `createMCPServer()` runs the login once, at container
+boot, latches the failure in `loginFailed`, and returns that cached error from
+every later call — and the bundle host degrades the mount rather than exiting, so
+nothing restarts it. A transient blip at boot still bricks the mount until a
+redeploy. Tracked as [strad#196](https://github.com/tadasant/strad/issues/196).
+
+## 7. Not vendored: the upstream `local/` stdio entrypoint
 
 Only `shared/` came across. `remote/` is strad's own Express +
 `StreamableHTTPServerTransport` front door over the same `createMCPServer()`

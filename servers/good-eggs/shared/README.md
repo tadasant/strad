@@ -34,4 +34,7 @@ npm test          # builds, then runs test/*.test.mjs with node:test
 
 The tests need no browser and no Good Eggs login. They are the only thing
 defending the fork's deltas against a careless re-vendor, so a change to the
-cart read, the add reconciliation or the removal path belongs with one.
+cart read, the add reconciliation, the removal path or the login belongs with
+one. `login.test.mjs` drives `initialize()` over a fake page, through the
+`setSharedBrowserProvider` seam, so the post-login wait and the verdict it feeds
+are covered without either.
