@@ -1176,8 +1176,12 @@ them does not fire that event — so on 2026-08-28 every authenticated call, on
 every tool, failed with a 30-second `page.waitForURL` timeout, over a log showing
 the navigation to `/home?recently-logged-in=true` had already happened. The wait
 now stops at `domcontentloaded` like every other navigation in that server,
-decides on the landing PATH rather than an exact URL, and falls back to the
-page's own `storeData.user` when the wait itself ends inconclusively.
+decides on the landing PATH rather than an exact URL, and takes the page's own
+`storeData.user` as the evidence — a signed-in payload is a successful login
+however the wait ended, and an anonymous one is a failed login however the URL
+looks. What made that outage last a day rather than a call is not fixed: the
+login runs once at container boot and its failure is cached for the life of the
+container, so a transient blip still bricks the mount until a redeploy.
 
 **Undo:** if upstream ever publishes `shared` as a library carrying these fixes,
 depend on it and delete the fork.

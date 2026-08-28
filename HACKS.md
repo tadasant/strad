@@ -252,10 +252,13 @@ reported as failures, removals refused as "item not found" — had no sanctioned
 place to be fixed. Same call as `strad-fetch` and `bundle-api/fork/*`: a server
 whose bugs return confident wrong answers becomes first-party.
 
-The fork has since earned itself twice over. The second defect it took was the
-login: the post-login wait used Playwright's default `waitUntil: 'load'`, an
-event the page Good Eggs lands on does not fire, so every authenticated call on
-every tool timed out after 30 seconds (strad#195).
+The fork has taken a second defect on the same reasoning: the post-login wait
+used Playwright's default `waitUntil: 'load'`, an event the page Good Eggs lands
+on does not fire, so on 2026-08-28 every authenticated call on every tool timed
+out after 30 seconds (strad#195). What made that outage LAST is a separate,
+unfixed thing — `createMCPServer()` logs in once at container boot and latches
+the failure, and the bundle host degrades the mount rather than restarting it, so
+a transient blip bricks the mount until a redeploy (strad#196).
 
 **Cost.** A fork has no upstream to argue with it and no sync script to notice a
 loss, so `shared/test/` is the only thing defending the deltas. CI runs it as
