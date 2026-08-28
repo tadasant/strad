@@ -3056,3 +3056,34 @@ stored", never "this works". Google expires a refresh token from an app in
 "testing" after seven days (hack #64) and revokes on a password change; the store
 cannot see either. The only honest live signal is a real call, and the console
 does not make one.
+
+## 67. A lapsed good-eggs session is detected but never repaired
+
+**What.** `servers/good-eggs/` signs in ONCE, in `initialize()`, and holds the
+Playwright context for the life of the container. Nothing re-establishes that
+session.
+
+Since FORK.md #5 and #7 the server can at least _tell_ when the session is gone:
+the basket read and the favorites read both decide it from the `storeData.user`
+the page carries rather than from the markup it drew, so a lapsed login produces
+a loud "the contents are UNKNOWN, not empty" instead of a false empty — and, when
+the page carries a payload this tree recognises, instead of a list of somebody
+else's recommendations. What it cannot do is fix it. The tool stays
+broken until the container restarts.
+
+**Why not.** Re-logging in mid-call means driving the sign-in form again from
+inside a tool handler, with a second call possibly in flight on the same page,
+and inventing a retry policy for a credential that may genuinely have been
+revoked. Detecting the lapse truthfully is what stops the _harm_; repairing it
+is a larger change, and a restart clears it today.
+
+**Adjacent, and worse.** strad#196: a boot-time login failure is LATCHED —
+`createMCPServer()` sets `loginFailed` and `getReadyClient()` short-circuits on
+it forever, cleared only by a `cleanup()` the collapsed bundle never calls. So
+even a transient failure never retries. `fetchpet` already has the retry
+good-eggs lacks.
+
+**Undo.** Give `GoodEggsClient` a `reauthenticate()` and call it from the read
+paths that currently throw on an unconfirmed session, guarded so two concurrent
+tool calls cannot drive the sign-in form at once. Clear the login latch in the
+same change.

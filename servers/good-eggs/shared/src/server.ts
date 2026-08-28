@@ -763,12 +763,31 @@ export class GoodEggsClient implements IGoodEggsClient {
     // Use domcontentloaded instead of networkidle - Good Eggs has persistent connections
     await page.goto(`${BASE_URL}/favorites`, { waitUntil: 'domcontentloaded' });
 
+    // Read the session from the SERVED document, before React hydrates over it.
+    // The payload rides in the document Good Eggs sent, so — exactly as in
+    // `getBasket()` — there is nothing to wait for beyond `domcontentloaded`,
+    // and waiting anyway risks reading a document the app has since rewritten.
+    const session = await signedInFromPage(page);
+
     // Wait for React to render
     await page.waitForTimeout(3000);
 
     // Check if we're redirected to signin
-    if (page.url().includes('/signin')) {
+    if (!isPostSignInUrl(page.url())) {
       throw new Error('Not logged in. Cannot access favorites.');
+    }
+
+    // A page that says nobody is signed in is not this account's favorites page,
+    // whatever it drew on itself. A signed-out /favorites can still render
+    // product tiles — recommendations, a marketing carousel — and handing those
+    // back as "your favorites" is the same false sentence as calling an unread
+    // basket an empty one (FORK.md #5), with a plausible-looking list attached.
+    if (session === 'anonymous') {
+      throw new Error(
+        'Could not read your Good Eggs favorites: the favorites page reports that nobody is ' +
+          'signed in, so anything on it is not yours. The login has lapsed; your favorites ' +
+          'are UNKNOWN, not empty.'
+      );
     }
 
     // Extract favorite items
@@ -819,6 +838,23 @@ export class GoodEggsClient implements IGoodEggsClient {
 
       return products;
     });
+
+    // The page carried no payload this tree recognises — none at all, one with
+    // no `user` key, or a `content()` read that threw. An empty scrape on top of
+    // that is two absences and no evidence — an error page, a markup change, a
+    // render that did not finish — so it is UNKNOWN rather than none.
+    //
+    // A non-empty scrape is returned: products drawn on a page that Good Eggs
+    // served without its usual payload are still products, and dropping them
+    // would understate the account. Only the answer that has nothing in it
+    // needs a session behind it.
+    if (items.length === 0 && session === 'unknown') {
+      throw new Error(
+        'Could not read your Good Eggs favorites: the favorites page carried no usable ' +
+          'session payload and no items. The page failed to load, or its shape changed; ' +
+          'your favorites are UNKNOWN, not empty.'
+      );
+    }
 
     return items;
   }
