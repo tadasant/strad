@@ -51,7 +51,12 @@ Returns a list of all items the user has marked as favorites, including:
 - Product name and brand
 - Price information
 
-Requires the user to be logged in.`;
+Requires the user to be logged in.
+
+An error from this tool means the favorites could not be READ — the session
+lapsed, or the page did not render. It does NOT mean the user has no favorites.
+An empty list is only ever returned when the page confirmed a signed-in session
+and it really held nothing.`;
 
 const GET_GROCERY_DETAILS_DESCRIPTION = `Get detailed information about a specific grocery item.
 
@@ -334,11 +339,17 @@ export function createRegisterTools(
             ],
           };
         } catch (error) {
+          // Same rule as the cart: the favorites could not be READ, and an
+          // unreadable list is "unknown", never "none". A caller that reads this
+          // as an empty favorites list would act on a fact nobody established.
           return {
             content: [
               {
                 type: 'text',
-                text: `Error getting favorites: ${error instanceof Error ? error.message : String(error)}`,
+                text:
+                  `Error getting favorites: ${error instanceof Error ? error.message : String(error)}\n\n` +
+                  `Your favorites are UNKNOWN, not empty. Do not conclude anything about what ` +
+                  `is or is not favorited from this result.`,
               },
             ],
             isError: true,

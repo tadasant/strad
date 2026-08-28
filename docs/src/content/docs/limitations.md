@@ -1850,6 +1850,34 @@ stored_, never _this works_. Google expires a refresh token from an app in
 and revokes on a password change; the store can see neither. The only honest live
 signal is a real call, and the console does not make one.
 
+### 67. A lapsed good-eggs session is detected but never repaired
+
+`servers/good-eggs/` signs in once, in `initialize()`, and holds the browser
+context for the life of the container. Nothing re-establishes that session.
+
+The server can at least tell when the session is gone. The basket read and the
+favorites read both decide "is this signed in" from the `storeData.user` the page
+carries rather than from the markup it drew, so a lapsed login produces a loud
+_the contents are UNKNOWN, not empty_ rather than a false empty — and, when the
+page carries a payload this tree recognises, rather than the plausible list of
+recommendation tiles a signed-out visitor is shown. That is the failure
+[#10](#10-good-eggs-is-a-fork-because-there-was-nowhere-else-to-fix-it) exists to
+prevent. What it cannot do is fix it: the tool stays broken until the container
+restarts.
+
+Re-logging in mid-call means driving the sign-in form from inside a tool handler,
+possibly with another call in flight on the same page, and inventing a retry
+policy for a credential that may genuinely have been revoked. Detecting the lapse
+truthfully is what stops the harm; repairing it is a larger change.
+
+It is worse one layer up: a boot-time login failure is latched for the life of
+the container and cleared only by a teardown the collapsed bundle never calls, so
+even a transient failure never retries.
+
+**Undo:** give the client a `reauthenticate()` and call it from the read paths
+that throw on an unconfirmed session, guarded so two concurrent tool calls cannot
+drive the sign-in form at once — and clear the login latch in the same change.
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

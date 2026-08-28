@@ -284,7 +284,71 @@ every later call — and the bundle host degrades the mount rather than exiting,
 nothing restarts it. A transient blip at boot still bricks the mount until a
 redeploy. Tracked as [strad#196](https://github.com/tadasant/strad/issues/196).
 
-## 7. Not vendored: the upstream `local/` stdio entrypoint
+## 7. An unconfirmed favorites page is "unknown", never "you have none"
+
+**Upstream (and this tree until this delta).** `getFavorites()` throws if the URL
+is the sign-in form and otherwise returns whatever `a.js-product-link` scrapes
+off the page — `[]` included.
+
+**Here.** The page's own `storeData.user` decides whether the session is real,
+read through the same `signedInFromPage()` the login wait uses, and the answer is
+a THREE-state one:
+
+| The page's payload | The scrape found | `getFavorites()` |
+| --- | --- | --- |
+| a user | items | the items |
+| a user | nothing | `[]` — a true empty |
+| `user: null` | anything | throws: nobody is signed in, so none of it is yours |
+| no payload, or none it recognises | items | the items |
+| no payload, or none it recognises | nothing | throws: two absences and no evidence |
+
+**Why.** This is delta 5's harm arriving by a third route. A signed-out
+`/favorites` does not always redirect, and it fails in two directions. It can
+render a page with no product links, which scrapes to `[]` — "you have no
+favorites" — against an account that has plenty. It can equally render
+recommendation tiles to a signed-out visitor, which scrape to a plausible list
+that is not the user's favorites at all; that one is worse, because a wrong list
+invites action in a way an empty one does not. The login happens once at startup
+and nothing re-establishes it (`HACKS.md` #67), so a lapsed session lands in
+both.
+
+The three-state split is what makes the rule safe in both directions.
+`user: null` is a STATEMENT that nobody is signed in, so nothing on that page is
+reportable. `unknown` is a statement about nothing, so only the EMPTY answer is
+refused there — products drawn on a page Good Eggs served without a payload this
+tree recognises are still products, and dropping them would understate the
+account, which is the failure this whole discipline exists to stop.
+
+Two details, both pinned by tests:
+
+- **The payload is read from the SERVED document**, immediately after
+  `domcontentloaded` and before the existing 3-second wait for React — exactly as
+  `getBasket()` reads it. Reading after hydration risks judging a document the
+  app has since rewritten, which would turn a signed-in account with genuinely
+  zero favorites into a hard error.
+- **A `content()` that throws is `unknown`, not `anonymous`.** "Execution context
+  was destroyed" is a fact about timing, not about the session.
+
+The sign-in guard on the same path also moves from `page.url().includes('/signin')`
+to `isPostSignInUrl()` (delta 6), so the two paths agree on what the form is.
+That widens the throw from one spelling of `/signin` to all of them, and to a
+login bouncing through an off-domain identity provider — which is correctly not
+this account's favorites page. It narrows it too: the substring test threw on any
+URL merely CONTAINING the word, so `/favorites?next=/signin` was a failed read.
+
+The tool layer follows the client: `get_favorites`'s error says the favorites are
+UNKNOWN rather than none, the way `get_cart`'s already did, and its description
+tells the model that an error is not an empty list.
+
+`shared/test/favorites-truthfulness.test.mjs` pins all twelve cases — every row
+of the table, both `content()`-throws paths, the read's position in the flow, and
+the sign-in redirect — driving the real `getFavorites()` over a fake page through
+`setSharedBrowserProvider`, with the payload built by the same `renderPage`
+fixture the basket tests use. The in-page DOM scrape is the one part stubbed — it
+runs in a browser — so what the tests pin is the rule around the scrape, not the
+selectors inside it.
+
+## 8. Not vendored: the upstream `local/` stdio entrypoint
 
 Only `shared/` came across. `remote/` is strad's own Express +
 `StreamableHTTPServerTransport` front door over the same `createMCPServer()`

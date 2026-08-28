@@ -34,7 +34,9 @@ npm test          # builds, then runs test/*.test.mjs with node:test
 
 The tests need no browser and no Good Eggs login. They are the only thing
 defending the fork's deltas against a careless re-vendor, so a change to the
-cart read, the add reconciliation, the removal path or the login belongs with
-one. `login.test.mjs` drives `initialize()` over a fake page, through the
-`setSharedBrowserProvider` seam, so the post-login wait and the verdict it feeds
-are covered without either.
+cart read, the add reconciliation, the removal path, the login or the favorites
+read belongs with one. `login.test.mjs` and `favorites-truthfulness.test.mjs`
+both drive the real client over a fake page, through the
+`setSharedBrowserProvider` seam, so the post-login wait, the verdict it feeds and
+the favorites read that follows are covered without either. The in-page DOM
+scrape is the one part stubbed, because it runs in a browser.
