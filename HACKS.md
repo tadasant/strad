@@ -3161,7 +3161,9 @@ died before `doctl` was called.
 The shape is unchanged. What changed is that the two DEPLOY-TIME readers —
 `render-spec` and `store:check` — are one-shot and read-only, so they set
 `rosterTtlMs` and enumerate once per process instead of once per namespace. At
-fourteen namespaces of four parameters that is 1751 requests down to 169.
+the shape a render actually has — one store-wide `list()` then fourteen namespace
+`resolve()`s over 56 parameters, counted against the in-memory fake — that is 1751
+requests down to 169.
 
 **What is still true.** The gateway and the console leave the reuse OFF, because
 they write, and a cached roster answers a freshly-written parameter with "absent".
@@ -3175,10 +3177,14 @@ parameter already seeded in staging and prod, and a reader that tolerates both
 shapes during the migration — a bigger change than the outage warranted, and one
 that wants its own PR.
 
-**The retry, and its ceiling.** `call()` retries a refused request — `429` on
-anything, `5xx` on a read — with exponential backoff and jitter, bounded at three
-retries and about six seconds of added sleep per call (`DEFAULT_RETRY_BUDGET` in
-`src/secrets/parameters/retry.ts`). That clears a burst that overran the quota for a
+**The retry, and its ceiling.** `call()` retries a refused request — `429` or a
+transient `5xx`, on an IDEMPOTENT method only — with exponential backoff and
+jitter, bounded at three retries and at most 2.8s of backoff, under a 6s ceiling a
+server-named `Retry-After` is measured against (`DEFAULT_RETRY_BUDGET` in
+`src/secrets/parameters/retry.ts`). A write is never retried, not even on a `429`:
+a refusal from a fronting proxy can post-date the write, and a retried `POST` that
+landed comes back `409`, which sends `create()`'s rollback down the branch that
+strands a versionless parameter. That clears a burst that overran the quota for a
 second or two. It does NOT clear a quota exhausted for a whole minute: the budget
 runs out and the original `429` is thrown. The bound is deliberate — the store's
 other invariant is that every read SETTLES, and a budget long enough to cross a

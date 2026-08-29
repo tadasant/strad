@@ -527,24 +527,29 @@ aborted a production deploy before `doctl` was reached.
 
 So the store client separates the two:
 
-- **Refusals are retried.** `429` on any request, and `500`/`502`/`503`/`504` on a
-  read, get exponential backoff with jitter — up to three retries and about six
-  seconds of added sleep per call. A `Retry-After` header is honoured verbatim if
-  it fits inside that budget.
-- **Answers are not.** `401`, `403`, `404`, `409` and everything else fail on the
-  first response, unchanged, with the status a caller switches on intact. A
+- **A refusal on a read is retried.** `429`, `500`, `502`, `503` and `504` on a
+  `GET`, `HEAD` or `DELETE` get exponential backoff with jitter: up to three
+  retries, and at most **2.8s** of backoff. A `Retry-After` header is honoured
+  verbatim when it fits the call's 6s ceiling, and declined outright when it does
+  not — a `Retry-After: 600` costs one attempt, not ten minutes of a deploy step.
+- **Answers are not retried.** `401`, `403`, `404`, `409` and everything else fail
+  on the first response, unchanged, with the status a caller switches on intact. A
   permission error retried is the same error reported one backoff later.
-- **A `429` is retried even on a write**, because the quota layer refuses a request
-  before the service sees it — there is nothing to have half-happened. A `503` on a
-  write is not, because the version may have landed and the response been lost.
+- **Nor is anything on a write.** Not even a `429`. A refusal that reaches us from
+  a fronting proxy may have been emitted _after_ the backend applied the write, and
+  nothing in the response tells the two apart. Retrying a `POST` that landed
+  returns `409 ALREADY_EXISTS` — which `create()` reads as "not mine to delete", so
+  it skips the parameter rollback, removes the backing secret it did make, and
+  strands a versionless parameter `destroy()` cannot remove. The deploy path this
+  retry exists for is every-request-a-`GET`, so the line costs nothing.
 
 The budget is small on purpose. Every read must still SETTLE — the runtime provider
 serves stale values when a refresh rejects, but has nothing to react to if a promise
 never settles — so retrying widens that bound rather than removing it.
 
 :::caution[The retry survives a blip, not an exhausted quota]
-Three retries and roughly six seconds of added sleep per call clear a burst that
-overran the quota for a second or two. They do not clear a quota exhausted for the
+Three retries and at most 2.8s of backoff clear a burst that overran the quota for
+a second or two. They do not clear a quota exhausted for the
 whole minute — the budget runs out and the deploy fails as it did before, just
 later. Reading the store fewer times is the other lever, and it is the one below;
 retrying harder is not. See [Known
@@ -564,8 +569,10 @@ is what put a deploy over the quota, and adding a retry would only have made it 
 more slowly.
 
 `render-spec` and `store:check` are one-shot processes that only read, so they set
-`rosterTtlMs` and enumerate **once per process**. Fourteen namespaces of four
-parameters: **1751 requests before, 169 after**. Namespaces resolved concurrently
+`rosterTtlMs` and enumerate **once per process**. Counted against the in-memory GCP
+fake for the shape a render actually has — one store-wide `list()` followed by
+fourteen namespace `resolve()`s over 56 parameters — that is **1751 requests
+before, 169 after**. Namespaces resolved concurrently
 share the enumeration already in flight rather than starting their own, and a
 refused enumeration is never cached.
 

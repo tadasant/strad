@@ -638,7 +638,9 @@ called.
 
 The two deploy-time readers — `render-spec` and `store:check` — are one-shot and
 read-only, so they enumerate once per process rather than once per namespace. At
-fourteen namespaces of four parameters that is 1751 requests down to 169. The
+the shape a render actually has — one store-wide `list()` then fourteen namespace
+`resolve()`s over 56 parameters, counted against the in-memory fake — that is 1751
+requests down to 169. The
 gateway and the console leave the reuse off, because they write and a cached roster
 would report a freshly-written parameter as absent; they still pay N x P. Nothing
 bounds P either.
@@ -647,10 +649,11 @@ The real fix is to put the namespace on a parameter label so the listing can fil
 server-side, which needs a backfill of every parameter already seeded. See
 `HACKS.md` #69.
 
-The store client also retries a refused request — `429` on anything, `5xx` on a read
-— with exponential backoff and jitter, bounded at three retries and about six
-seconds of added sleep per call. That clears a burst that overran the quota for a
-second or two. It does not clear a quota exhausted for a whole minute: the budget
+The store client also retries a refused request — `429` or a transient `5xx`, on an
+idempotent method only — with exponential backoff and jitter, bounded at three
+retries and at most 2.8s of backoff. A write is never retried, because a refusal
+can post-date the write and a retried `POST` that landed comes back `409`. That
+clears a burst that overran the quota for a second or two. It does not clear a quota exhausted for a whole minute: the budget
 runs out and the deploy fails as it did before, just later. The bound is deliberate
 — every read has to SETTLE, and a budget long enough to cross a minute boundary
 would put minutes of sleep on a deploy's critical path, multiplied by every call in

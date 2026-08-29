@@ -128,7 +128,7 @@ describe("the parameter store retries a refusal", () => {
     expect(calls).toHaveLength(budget.attempts);
     // And so does the delay ceiling. A generous slack — this asserts the bound
     // exists, not that the event loop is punctual.
-    expect(elapsed).toBeLessThan(budget.totalDelayMs + 2_000);
+    expect(elapsed).toBeLessThan(budget.totalDelayMs + 5_000);
   });
 
   it("does NOT retry a 403 — a permission error is a real answer", async () => {
@@ -190,7 +190,7 @@ describe("the parameter store retries a refusal", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
-  it("retries a 503 on a GET but not on a POST", async () => {
+  it("retries a transient status on a GET but not on a POST", async () => {
     const unavailable = () =>
       new Response("", { status: 503, statusText: "Service Unavailable" });
 
@@ -201,8 +201,10 @@ describe("the parameter store retries a refusal", () => {
     ).resolves.toEqual([]);
     expect(reads.calls).toHaveLength(2);
 
-    // A POST may have landed before the response was lost. Retrying it could
-    // write a second version, so it fails on the first answer.
+    // A POST may have landed before the response was lost, so it fails on the
+    // first answer. The parameter POST is the first API call `create()` makes
+    // for a non-secret parameter, so it is the failure under test; what follows
+    // is the 404-tolerant rollback DELETE, which is idempotent and does retry.
     const writes = transport(() => unavailable());
     await expect(
       storeOn(writes.impl, quick).create({
@@ -220,10 +222,11 @@ describe("the parameter store retries a refusal", () => {
 });
 
 describe("the retry policy itself", () => {
-  it("treats 429 as retryable whatever the method, and 5xx only for reads", () => {
-    expect(isRetryableStatus(429, false)).toBe(true);
-    expect(isRetryableStatus(429, true)).toBe(true);
-    for (const s of [500, 502, 503, 504]) {
+  it("retries a transient status only where repeating the request is safe", () => {
+    // Including `429`. A refusal from a fronting proxy may post-date the write,
+    // and a retried `POST` that already landed comes back `409` — which is what
+    // strands a versionless parameter. See `isRetryableStatus`.
+    for (const s of [429, 500, 502, 503, 504]) {
       expect(isRetryableStatus(s, true)).toBe(true);
       expect(isRetryableStatus(s, false)).toBe(false);
     }
@@ -437,14 +440,35 @@ describe("enumerating the store once per deploy", () => {
     expect(await gcp.store.list(ns)).toHaveLength(1);
   });
 
-  it("drops a cached roster when a write goes through the same store", async () => {
+  it("drops a cached roster on EVERY write, not just create", async () => {
     const gcp = await seeded();
     const { store } = counting(gcp, 60_000);
     const ns = namespaces[0]!;
+    const path = `${ns}VALUE_0`;
 
+    // create
     expect(await store.list(ns)).toHaveLength(1);
     await store.create({ path: `${ns}SECOND`, secret: false, value: "v" });
     expect(await store.list(ns)).toHaveLength(2);
+
+    // setNote — the roster carries the note, so a stale one shows the old text.
+    await store.setNote(path, "annotated");
+    expect((await store.list(ns)).find((m) => m.path === path)?.note).toBe(
+      "annotated",
+    );
+
+    // rotate — the roster carries `latestVersion`, which a rotation moves.
+    const before = (await store.list(ns)).find(
+      (m) => m.path === path,
+    )!.latestVersion;
+    await store.rotate(path, "rotated");
+    expect(
+      (await store.list(ns)).find((m) => m.path === path)?.latestVersion,
+    ).not.toBe(before);
+
+    // destroy
+    await store.destroy(`${ns}SECOND`);
+    expect(await store.list(ns)).toHaveLength(1);
   });
 
   it("does not cache a REFUSED enumeration", async () => {

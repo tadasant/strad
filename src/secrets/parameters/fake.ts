@@ -191,11 +191,17 @@ export function createFakeGcp(): FakeGcp {
    * turns a client change into a fake-shaped failure rather than a real one.
    */
   const json = (status: number, body: unknown): Response =>
-    new Response(body === undefined ? "" : JSON.stringify(body), {
-      status,
-      statusText: STATUS_TEXT[status] ?? "",
-      headers: { "content-type": "application/json" },
-    });
+    // `null`, not `""`, for a bodiless answer: `new Response("", {status: 204})`
+    // is a constructor `TypeError`, and a fake that throws from inside the
+    // transport is exactly the fake-shaped failure this stopped being.
+    new Response(
+      body === undefined || status === 204 ? null : JSON.stringify(body),
+      {
+        status,
+        statusText: STATUS_TEXT[status] ?? "",
+        headers: { "content-type": "application/json" },
+      },
+    );
 
   /**
    * A transport for ONE calling credential.

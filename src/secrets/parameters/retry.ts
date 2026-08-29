@@ -39,7 +39,14 @@ export interface RetryBudget {
 }
 
 /**
- * Three retries, ~6s of sleep at the very most.
+ * Three retries: at most 2.8s of backoff, under a 6s ceiling on everything.
+ *
+ * The two numbers bound different things. Left to the exponential the terms are
+ * 400ms, 800ms and 1600ms, so three retries sleep 2.8s and no more —
+ * `maxDelayMs` never binds on THIS budget, and is there to cap a caller who
+ * widens `baseDelayMs` or `attempts`. `totalDelayMs` is the ceiling a
+ * server-named `Retry-After` is measured against, which is the only way one call
+ * reaches six seconds.
  *
  * Sized against the failure it exists for: a burst that overruns the per-minute
  * quota for a second or two, which de-synchronising a ten-wide batch is enough
@@ -66,19 +73,23 @@ const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([
 /**
  * Is another attempt at this status both useful and SAFE?
  *
- * The safety half is the reason `idempotent` is a parameter. A `503` on a
- * `POST .../versions` may mean the version was written and the response lost, so
- * retrying it can add a second version to a parameter that already rotated —
- * and `create()`'s rollback would then be reasoning about a resource it did not
- * make. A `429` is different in kind: the quota layer refuses the request BEFORE
- * the service sees it, so it is effect-free whatever the method, and retrying a
- * refused write is safe.
+ * The safety half is the reason `idempotent` is a parameter, and it gates EVERY
+ * status including `429`. A refusal that reaches us from a fronting proxy may
+ * have been emitted AFTER the backend applied the write, and nothing in the
+ * response distinguishes that from a quota layer refusing the request before the
+ * service ever saw it. Retrying a `POST` on either turns a write that landed
+ * into a `409 ALREADY_EXISTS` — which `create()` reads as "this parameter is not
+ * mine to delete", so it skips the parameter rollback, deletes the backing
+ * secret it DID make, and strands a versionless parameter that `destroy()`
+ * cannot remove because `currentEnvelope()` answers `404` for it.
+ *
+ * The deploy path this retry exists for is every-request-a-`GET`, so nothing is
+ * given up by drawing the line here.
  */
 export function isRetryableStatus(
   status: number,
   idempotent: boolean,
 ): boolean {
-  if (status === 429) return true;
   return idempotent && TRANSIENT_STATUSES.has(status);
 }
 

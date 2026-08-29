@@ -186,6 +186,11 @@ export function createGcpParameterStore(
    * Nothing is logged. A retry that succeeded is not news, and a retry that gave
    * up throws the original error unchanged — the status a caller switches on
    * (`404` to `null`, `409` to "already exists") must survive the loop exactly.
+   *
+   * A server-named `Retry-After` is honoured for a store call, which is where
+   * one has ever been seen. `mintAccessToken` raises a `ServiceAccountAuthError`,
+   * which carries no such field, so a throttled token endpoint is backed off
+   * with the blind exponential instead.
    */
   async function retrying<T>(
     idempotent: boolean,
@@ -852,11 +857,14 @@ export function createGcpParameterStore(
   /**
    * One parameter: its value, or the shape of why it has none.
    *
-   * `hard` is what `resolve()` throws on, and it is drawn exactly where the
-   * old loop's `throw` was. A `:render` that errors and an envelope that will
-   * not decode are hard; a versionless parameter and an empty payload are the
-   * two the old loop skipped with `continue`, so they stay soft and `resolve()`
-   * keeps returning the rest.
+   * `hard` is what `resolve()` throws on. A `:render` that errors and an envelope
+   * that will not decode are hard; an empty payload is soft, so `resolve()` keeps
+   * returning the rest.
+   *
+   * The versionless case is soft too and is now unreachable from `renderAll`,
+   * which only ever passes paths `list()` returned — and `list()` drops a
+   * parameter with no readable version before it becomes a meta. The branch
+   * stays because `knownVid` is optional, not because anything reaches it.
    */
   async function renderOne(
     path: string,
