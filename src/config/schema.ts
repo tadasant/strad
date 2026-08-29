@@ -220,6 +220,47 @@ const ServerBase = z.object({
    * Omit it for every server that does not. See {@link OAuthConnector}.
    */
   oauth: OAuthConnector.optional(),
+  /**
+   * `${NAME}`s this server may deploy WITHOUT, staying inactive until they land.
+   *
+   *   - slug: apify
+   *     kind: remote-http
+   *     url: https://mcp.apify.com/mcp
+   *     headers:
+   *       Authorization: "Bearer ${APIFY_TOKEN}"
+   *     mayBeUnseeded: [APIFY_TOKEN]
+   *
+   * It does NOT mean "this server works without the value" — it means the
+   * DEPLOY may proceed without it. Adding a slug whose credential nobody has
+   * seeded yet used to red the whole deploy (`scripts/render-spec.ts` exits 1 on
+   * the first `${NAME}` held in neither namespace), so onboarding a server
+   * carried a human gate: seed the secret before the PR merges, or take the
+   * fleet's deploy down with it. Named here, that name warns instead, this slug
+   * alone comes up `unconfigured` (see gateway/unconfigured.ts), and every other
+   * server deploys normally.
+   *
+   * PER NAME, and not a flag on the server, because the flag would give away the
+   * thing the gate is for. `mayBeUnseeded: true` beside a typo'd
+   * `${APIFY_TOKN}` degrades forever in silence; a LIST names the credential a
+   * human decided to defer, so the typo is a name nobody listed and still fails
+   * the deploy loudly. The deploy gate also rejects an entry this server
+   * references nowhere — a waiver for a name that is not used is itself the typo
+   * (see src/deploy/unseeded.ts).
+   *
+   * A name is only waived when EVERY enabled server referencing it waives it.
+   * One server deferring a token another server needs to boot is not a deferral.
+   *
+   * HOW FAST IT ACTIVATES depends on where the value is read, and the two are
+   * not close:
+   *   - a `url:`, `headers:` or builtin `options:` ref under
+   *     `gcp-parameter-store` is resolved on the request path, so seeding the
+   *     value activates the slug within `gateway.secrets.negativeTtlSeconds`
+   *     (shared namespace) or `ttlSeconds` (the server's own) — no redeploy.
+   *   - a `supplementary-image`'s `env:` is baked onto a container strad does
+   *     not run, and under the `env` provider so is everything else. Those need
+   *     a redeploy after seeding — not a PR, but not a TTL either.
+   */
+  mayBeUnseeded: z.array(z.string().min(1)).default([]),
 });
 
 /**

@@ -87,6 +87,7 @@ import {
   assertImmutableCoreImage,
   mutableImageComponents,
 } from "../src/deploy/imageTag.ts";
+import { unusedWaivers, waivedNames } from "../src/deploy/unseeded.ts";
 
 const { values } = parseArgs({
   options: {
@@ -139,6 +140,39 @@ const envs: EnvVar[] = [
  * a stale baked value silently wins over a rotated stored one.
  */
 const storeBacked = config.gateway.secrets.provider === "gcp-parameter-store";
+
+// A DELIBERATELY UNSEEDED SECRET DEGRADES ONE SLUG. EVERY OTHER ONE STILL REDS
+// THE DEPLOY.
+//
+// Adding a server whose credential nobody has seeded yet used to fail this
+// render for the whole fleet, which put a human gate in front of every new
+// server: seed the token, THEN merge. `mayBeUnseeded:` moves that gate — the
+// name a human listed warns here and leaves its slug `unconfigured` at runtime
+// (src/gateway/unconfigured.ts), and every unlisted name keeps the hard failure
+// that catches a typo at the deploy instead of at 3am on one request. See
+// src/deploy/unseeded.ts for why the waiver is per NAME and has to be unanimous.
+const waived = waivedNames(config);
+
+/**
+ * The waived names that turned out to have NO value at render time.
+ *
+ * Populated as the baked half is resolved below, and handed to `renderAppSpec`
+ * so it drops the `env:`/`consoleEnv:` entries that mention them. A waived name
+ * that DID resolve is not in here — the waiver is permission to be absent, not
+ * an instruction to omit.
+ */
+const unseededBaked = new Set<string>();
+
+// THE TYPO GATE, and the reason the feature does not reintroduce the silence it
+// replaces. A waiver for a name this server references nowhere waives nothing —
+// the reference it was written for is still unwaived and still fails below — so
+// the useless entry is the mistake, and it is fatal here rather than a warning
+// nobody reads. Fails BEFORE any store round trip: it is a pure config question.
+{
+  const problems = unusedWaivers(config);
+  for (const problem of problems) console.error(`::error::${problem}`);
+  if (problems.length > 0) process.exit(1);
+}
 
 /** Present -> SECRET env var. Absent -> omitted, and the app fails closed. */
 function secret(key: string, required = false): void {
@@ -264,6 +298,22 @@ if (!storeBacked) {
   const already = new Set(envs.map((e) => e.key));
   for (const name of collectSecretRefs(config)) {
     if (already.has(name)) continue;
+    // A WAIVED name is not required, and its absence omits the env var rather
+    // than failing the render. Nothing resolves it at boot any more — the
+    // registry resolves `${NAME}` per operation (src/gateway/registry.ts) — so
+    // the omission costs exactly the slugs that named it, which come up
+    // `unconfigured`, and costs nothing to anything else on the spec.
+    if (waived.has(name) && !process.env[name]) {
+      console.error(
+        `::warning::unseeded secret ${name} is not set in the deploy ` +
+          `environment, and ${waived.get(name)!.join(", ")} declared ` +
+          `mayBeUnseeded for it. Those server(s) deploy INACTIVE. This ` +
+          `deployment bakes its secrets (gateway.secrets.provider: env), so ` +
+          `seeding the value takes a REDEPLOY to take effect — not a PR.`,
+      );
+      already.add(name);
+      continue;
+    }
     secret(name, true); // referenced by the config => required to boot
     already.add(name);
   }
@@ -503,6 +553,24 @@ if (wanted.length > 0) {
             refs.has(name) && serverSecrets[slug]?.[name] === undefined,
         )
         .map(([slug]) => slug);
+      // A WAIVED name omits the variable instead of failing the render. Be
+      // honest about the cost: this half is BAKED onto a container strad does
+      // not run, so no runtime resolution inside the gateway can reach it. The
+      // slug comes up without the variable and stays that way until the next
+      // deploy, which is a redeploy rather than a PR — but it is emphatically
+      // not the TTL the runtime refs get.
+      if (waived.has(name)) {
+        unseededBaked.add(name);
+        console.error(
+          `::warning::unseeded secret ${name} is referenced by a supplementary ` +
+            `server's env: and ${waived.get(name)!.join(", ")} declared ` +
+            `mayBeUnseeded for it, so it is omitted from the spec and ` +
+            `${unserved.length > 0 ? unserved.join(", ") : "that component"} ` +
+            `deploys INACTIVE. This half is BAKED onto the component: seeding ` +
+            `the value needs a REDEPLOY to take effect, not just a TTL.`,
+        );
+        continue;
+      }
       console.error(
         `::error::${name} is referenced by a supplementary server's env but ` +
           (storeBacked && !consoleOnly.has(name)
@@ -568,12 +636,33 @@ if (storeBacked && store) {
     }
     process.exit(1);
   }
+  // THE DELIBERATELY-DEFERRED CREDENTIAL, said out loud, once per name.
+  //
+  // `::warning::` and a fixed `unseeded secret` prefix so a deploy log is
+  // greppable for exactly this: which slugs shipped inactive, and what a human
+  // has to seed to finish the job. It is the whole visible cost of the deploy
+  // no longer failing, so it must not be a line that scrolls past unnamed.
+  for (const name of result.waived) {
+    console.error(
+      `::warning::unseeded secret ${name} is held by neither ` +
+        `${result.namespace} nor ${mcpNamespace(config.gateway.env)}{slug}/static/, ` +
+        `and ${result.waivedSlugs[name]!.join(", ")} declared mayBeUnseeded ` +
+        `for it. Those server(s) deploy INACTIVE and report state ` +
+        `"unconfigured" on /healthz and in the console. Seed it in ` +
+        `${result.namespace} and they start serving within ` +
+        `${config.gateway.secrets.negativeTtlSeconds}s, with no redeploy.`,
+    );
+  }
   console.error(
     `[render-spec] preflight ok: ${result.present.length} referenced secret(s) ` +
       `present in ${result.namespace}` +
       (result.perServer.length > 0
         ? `, plus ${result.perServer.length} served from the referencing ` +
           `server's own namespace instead (${result.perServer.join(", ")})`
+        : "") +
+      (result.waived.length > 0
+        ? `, plus ${result.waived.length} deliberately unseeded ` +
+          `(${result.waived.join(", ")})`
         : "") +
       `.`,
   );
@@ -733,6 +822,11 @@ const spec = renderAppSpec({
   env: envs,
   secrets: scopedSecrets,
   serverSecrets,
+  // The names a human deferred and the store does not hold. `renderAppSpec`
+  // DROPS an `env:`/`consoleEnv:` entry that mentions one instead of resolving
+  // it — `resolveMap` throws on an unresolved ref, and that throw would fail the
+  // whole render, which is the fleet-wide failure this feature removes.
+  unseededRefs: unseededBaked,
   bootSecrets,
   resolvedParams,
   domains: resolveDomains(),

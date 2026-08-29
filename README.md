@@ -237,7 +237,10 @@ namespace](https://strad.tadasant.com/operate/secrets/#a-servers-secrets-live-in
 
 Fail-loud survives the move. `render-spec` preflights every referenced `${NAME}`
 against the store and fails the deploy on a missing one — reading metadata only,
-never a value. That is a deploy gate, and it forgives the boot keys a correct
+never a value. The one exception is explicit: a server may list the names it is
+willing to deploy without (`mayBeUnseeded:`), and those warn, leave that slug
+alone `unconfigured`, and start serving once a value is seeded. Every name nobody
+listed still reds the deploy. That is a deploy gate, and it forgives the boot keys a correct
 deployment may legitimately lack, so `npm run store:check -- --config <path>` is
 the wider check to run before switching a live deployment onto the store: it
 counts every name the deployment reads, names what is absent, and has a

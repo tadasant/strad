@@ -569,6 +569,8 @@ const ISSUE_HEADLINE: Record<ServerState, string> = {
   "no-secrets": "",
   missing:
     "A secret this server needs is not seeded. Create the value at the resource named below — the entry goes READY on the next load once it resolves.",
+  unconfigured:
+    "This server declared that it could deploy without a credential it has not been given, so the deploy shipped it INACTIVE rather than failing for the whole fleet. Nothing is broken and nothing will fix it but you: create the value at the resource named below, and the server starts serving on its own within a TTL — no redeploy, no PR.",
   unrenderable:
     "A secret this server needs EXISTS in the parameter store and its value cannot be read. This is neither absent nor healthy: creating it again fails with 409, and nothing that references it gets a value. Rotate it through the console, which rewrites the payload.",
   placeholder:

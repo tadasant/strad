@@ -6,6 +6,7 @@ import {
 } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
+import { ServerUnconfiguredError } from "./unconfigured.ts";
 
 /**
  * Does each mounted server actually serve tools?
@@ -31,6 +32,17 @@ import type { Registry } from "./registry.ts";
  * server that derives its tool surface from a live IAM probe (see
  * servers/secrets/shared/src/capabilities.ts). `ok` is a slug with a tool on it.
  * Collapsing the first two into "unhealthy" would send someone to the wrong page.
+ *
+ * `unconfigured` is the fifth, and like `offline` it is NOT a degraded state —
+ * for the opposite reason. A slug whose `mayBeUnseeded:` credential has not been
+ * seeded yet is a deploy that shipped AHEAD of a token, on purpose
+ * (src/deploy/unseeded.ts): nothing is down, no component is misrouted, and no
+ * amount of restarting or re-probing will change it. Counting it as `degraded`
+ * would put it in the list the staging deploy gate asserts on and red the deploy
+ * that the whole feature exists to let through — reinstating the fleet-wide
+ * failure one layer further down. It is instead named on its own, in the
+ * snapshot's `unconfigured` list, where a human can see exactly which slugs are
+ * waiting on which credential.
  *
  * `offline` is the fourth, and it is NOT a degraded state. A `local-tunnel`'s
  * machine being switched off is the advertised behaviour of that kind rather
@@ -72,7 +84,8 @@ import type { Registry } from "./registry.ts";
  * would make one number answer two questions.
  */
 
-export type SurfaceState = "ok" | "empty" | "unreachable" | "offline";
+export type SurfaceState =
+  "ok" | "empty" | "unreachable" | "offline" | "unconfigured";
 
 export interface ToolSurface {
   slug: string;
@@ -97,6 +110,21 @@ export interface ToolSurfaceSnapshot {
    * so nothing is hidden — it just stops being reported as a problem.
    */
   degraded: string[];
+  /**
+   * The slugs waiting on a credential a human has not seeded yet.
+   *
+   * Separate from `degraded` (nothing is broken) and separate from the per-slug
+   * `state` (which a caller would have to filter for), because this is the one
+   * list an operator acts on directly: each entry is a slug that will start
+   * serving the moment a value lands in the store, and nothing else will make it.
+   * On `/healthz` beside `degraded`, so "which slugs are waiting on a token" is
+   * one unauthenticated read rather than a console login.
+   *
+   * Slugs only. WHICH `${NAME}` is missing is in the logs and in the console —
+   * `/healthz` is public, and a secret name is a fact about a deployment that a
+   * public route has no reason to publish.
+   */
+  unconfigured: string[];
 }
 
 export interface ProbeOptions {
@@ -131,11 +159,23 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
    * needs. See the reason text in `refresh()`.
    */
   refused: Set<string>;
+  /**
+   * `slug -> the ${NAME}s it is waiting on`, for the slugs that are
+   * `unconfigured`.
+   *
+   * Kept off the snapshot deliberately. `/healthz` is unauthenticated, and a
+   * secret NAME is a fact about a deployment that a public route has no reason
+   * to publish — the snapshot's `unconfigured` list of slugs is all a public
+   * reader needs. These names come from strad's own config and go to the log
+   * line, where the human who has to seed them is the only reader.
+   */
+  unconfigured: Map<string, string[]>;
 }> {
   const slugs = opts.slugs ?? opts.registry.slugs;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const failures = new Map<string, string>();
   const refused = new Set<string>();
+  const unconfigured = new Map<string, string[]>();
 
   const surfaces = await Promise.all(
     slugs.map(async (slug): Promise<ToolSurface> => {
@@ -153,6 +193,15 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
           kind: adapter.kind,
         };
       } catch (err) {
+        // FIRST, and by class rather than by message: this error is raised inside
+        // the endpoint thunk before any transport work happens, so it can never
+        // be a symptom of a machine being off — and it is not a FAILURE either,
+        // so it stays out of `failures`, which is the map of things that went
+        // wrong. The names go to `unconfigured` instead.
+        if (err instanceof ServerUnconfiguredError) {
+          unconfigured.set(slug, err.names);
+          return { slug, state: "unconfigured", tools: 0, kind: adapter.kind };
+        }
         failures.set(slug, err instanceof Error ? err.message : String(err));
         if (err instanceof LocalHostRefusedError) refused.add(slug);
         // A machine somebody switched off gets its own state and is NOT
@@ -185,11 +234,20 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
       observedAt: (opts.now?.() ?? new Date()).toISOString(),
       surfaces,
       degraded: surfaces
-        .filter((s) => s.state !== "ok" && s.state !== "offline")
+        .filter(
+          (s) =>
+            s.state !== "ok" &&
+            s.state !== "offline" &&
+            s.state !== "unconfigured",
+        )
+        .map((s) => s.slug),
+      unconfigured: surfaces
+        .filter((s) => s.state === "unconfigured")
         .map((s) => s.slug),
     },
     failures,
     refused,
+    unconfigured,
   };
 }
 
@@ -297,7 +355,8 @@ export class ToolSurfaceMonitor {
   }
 
   async refresh(): Promise<ToolSurfaceSnapshot> {
-    const { snapshot, failures, refused } = await probeToolSurfaces(this.opts);
+    const { snapshot, failures, refused, unconfigured } =
+      await probeToolSurfaces(this.opts);
     const first = this.current === null;
     this.current = snapshot;
 
@@ -340,6 +399,26 @@ export class ToolSurfaceMonitor {
             tool_count: surface.tools,
           });
         }
+        continue;
+      }
+
+      if (surface.state === "unconfigured") {
+        // A deploy that shipped ahead of a token, which is a supported state and
+        // not a fault. `log`, not `warn`, and NOT `_degraded` — that event is
+        // what an alert rule keys on and what the deploy gate reads, and paging
+        // somebody about a credential they have not seeded yet would make the
+        // deferral useless. The line still gets written, because "which slug is
+        // still waiting" is a real question and this is where a boot answers it.
+        this.log({
+          evt: "strad.tool_surface_unconfigured",
+          slug: surface.slug,
+          kind: surface.kind,
+          // From strad's own config, never from an upstream: the names this
+          // slug declared `mayBeUnseeded:` for and the store does not hold.
+          // Without them the line says a slug is waiting and not what for,
+          // which is the half a human needs to finish the job.
+          names: unconfigured.get(surface.slug) ?? [],
+        });
         continue;
       }
 
@@ -400,7 +479,11 @@ export class ToolSurfaceMonitor {
 
     // The SET, not its length: `a` recovering while `b` dies is a change worth a
     // line, and two degraded slugs for six hours is not.
-    const summary = snapshot.degraded.join(",");
+    // BOTH sets, or the line goes stale: a slug that gets its credential seeded
+    // leaves `unconfigured` without touching `degraded`, and a summary keyed on
+    // `degraded` alone would keep reporting it as waiting for as long as nothing
+    // else changed.
+    const summary = `${snapshot.degraded.join(",")}|${snapshot.unconfigured.join(",")}`;
     if (first || summary !== this.lastSummary) {
       this.lastSummary = summary;
       this.log({
@@ -409,6 +492,7 @@ export class ToolSurfaceMonitor {
         server_count: snapshot.surfaces.length,
         serving_count: snapshot.surfaces.filter((s) => s.state === "ok").length,
         degraded: snapshot.degraded,
+        unconfigured: snapshot.unconfigured,
       });
     }
 
@@ -478,7 +562,14 @@ export class ToolSurfaceMonitor {
    */
   private needsFastRetry(): boolean {
     return (this.current?.surfaces ?? []).some(
-      (s) => s.state !== "ok" && s.kind !== "local-tunnel",
+      (s) =>
+        s.state !== "ok" &&
+        // An unseeded credential is not a deploy converging. It clears when a
+        // human writes a value, which is minutes or days away, and re-probing
+        // every ten seconds until then would hold the whole fleet at the fast
+        // cadence for the entire window the feature exists to make comfortable.
+        s.state !== "unconfigured" &&
+        s.kind !== "local-tunnel",
     );
   }
 

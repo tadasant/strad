@@ -16,6 +16,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { mcpNamespace } from "../deploy/server-namespaces.ts";
+import { waiversBySlug } from "../deploy/unseeded.ts";
 import { errorSummary } from "../secrets/provider/snapshot.ts";
 import {
   placeholderReason,
@@ -1304,6 +1305,21 @@ export type ServerState =
   | "no-secrets"
   /** At least one is definitively not seeded. */
   | "missing"
+  /**
+   * Everything it is short of, it declared it could deploy without.
+   *
+   * `missing` says nobody seeded a credential this server needs; this says the
+   * config DECLARED that, listed the names in `mayBeUnseeded:`, and shipped the
+   * server anyway rather than failing the deploy for the whole fleet (see
+   * src/deploy/unseeded.ts). Both want the same action — seed the value — and
+   * they are not the same news: one is an oversight and the other is a plan
+   * halfway through, and a console that spelt them the same way would report a
+   * deliberate deferral as a fault on every page load until somebody got round
+   * to it.
+   *
+   * Still `isActionable`. A human finishes this; nothing else does.
+   */
+  | "unconfigured"
   /** At least one parameter exists and cannot be dereferenced. */
   | "unrenderable"
   /** At least one resolves to something evidently fake. */
@@ -1358,6 +1374,7 @@ export const STATE_LABEL: Record<ServerState, string> = {
   ready: "ready",
   "no-secrets": "no secrets",
   missing: "not seeded",
+  unconfigured: "awaiting credential",
   unrenderable: "cannot render",
   placeholder: "check value",
   unverified: "unverified",
@@ -1368,6 +1385,11 @@ export const STATE_LABEL: Record<ServerState, string> = {
 export function isActionable(state: ServerState): boolean {
   return (
     state === "missing" ||
+    // A deferral is a job somebody has not finished, not a job nobody has. It
+    // stays on the actionable list — dropping it there is how "we will seed it
+    // later" becomes "nobody ever seeded it", which is the failure mode this
+    // whole feature has to be careful not to buy.
+    state === "unconfigured" ||
     state === "placeholder" ||
     // A parameter that exists and cannot render is as actionable as either: the
     // server is broken now, and the fix (rotate the value) is a specific thing a
@@ -1469,6 +1491,7 @@ export function deriveServerStatuses(
   presence?: BundlePresence,
 ): ServerSecretStatus[] {
   const byName = new Map(observations.map((o) => [o.requirement.name, o]));
+  const waivers = waiversBySlug(config);
 
   return config.servers
     .filter((s) => s.enabled)
@@ -1534,10 +1557,21 @@ export function deriveServerStatuses(
       const worst = requirements.reduce((a, b) =>
         STATE_RANK[b.state] > STATE_RANK[a.state] ? b : a,
       );
-      const state = FROM_SECRET_STATE[worst.state];
       const bad = requirements.filter(
         (r) => r.state === worst.state && worst.state !== "present",
       );
+
+      // A DEFERRAL IS NOT AN OVERSIGHT. Downgraded only when EVERY missing name
+      // is one this server listed in `mayBeUnseeded:` — a server short of one
+      // declared name and one undeclared one is `missing`, because the
+      // undeclared one is the news and the row has to be labelled by the
+      // strongest bad news it carries.
+      const waived = waivers.get(server.slug) ?? new Set<string>();
+      const state: ServerState =
+        worst.state === "missing" &&
+        bad.every((r) => waived.has(r.requirement.name))
+          ? "unconfigured"
+          : FROM_SECRET_STATE[worst.state];
 
       return {
         server,
@@ -1566,6 +1600,13 @@ function summarise(
       return `All ${total} required ${plural} ${total === 1 ? "resolves" : "resolve"}. strad has not verified that any upstream accepts them.`;
     case "missing":
       return `${bad.length} of ${total} required ${plural} not seeded: ${names}.`;
+    case "unconfigured":
+      return (
+        `${bad.length} of ${total} required ${plural} not seeded yet: ${names}. ` +
+        `This server declares \`mayBeUnseeded\` for ${bad.length === 1 ? "it" : "them"}, ` +
+        `so the deploy shipped it INACTIVE instead of failing — it starts serving ` +
+        `on its own within a TTL of the value landing, with no redeploy.`
+      );
     case "unrenderable":
       return `${bad.length} of ${total} required ${plural} ${badIs} in the store and cannot be read: ${names}. Not absent — rotate the value.`;
     case "placeholder":
@@ -1587,6 +1628,7 @@ export function tally(
     ready: 0,
     "no-secrets": 0,
     missing: 0,
+    unconfigured: 0,
     unrenderable: 0,
     placeholder: 0,
     unverified: 0,

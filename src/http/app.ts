@@ -141,6 +141,14 @@ export function createApp(opts: AppOptions): Express {
   // monitor (gateway/reachability.ts) — read, never taken, so this stays
   // instant — and `degraded` is the one field a deploy job needs to assert on.
   //
+  // `unconfigured` sits BESIDE it rather than inside it: a slug waiting on a
+  // credential a human deliberately deferred (src/deploy/unseeded.ts) is not
+  // broken, and folding it into `degraded` would red the staging deploy gate on
+  // a deployment that is doing exactly what was asked of it. Two lists, because
+  // they call for two different actions — go and look, versus go and seed.
+  // SLUGS ONLY. Which `${NAME}` is missing stays in the logs and the console;
+  // this route is unauthenticated and a secret name is not a thing to publish.
+  //
   // `ok` stays true regardless. This route is liveness; a degraded upstream is
   // not a reason to restart core.
   app.get("/healthz", (_req, res) => {
@@ -158,6 +166,7 @@ export function createApp(opts: AppOptions): Express {
               servers: surfaces.surfaces,
             },
             degraded: surfaces.degraded,
+            unconfigured: surfaces.unconfigured,
           }
         : {}),
     });

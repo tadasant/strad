@@ -131,6 +131,14 @@ one referencing server would still fall through for does. Getting this wrong in
 the strict direction is not a small bug — this gate exits 1, so a credential filed
 in its owner's namespace would red every deploy until it was moved back out.
 
+The one thing that does **not** fail it is a name a server declared
+[`mayBeUnseeded:`](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential).
+That prints one `::warning::unseeded secret <NAME> …` naming the slugs that
+shipped inactive, counts them apart in the summary line, and renders. The waiver
+is per name and has to be unanimous across every server referencing it, and an
+entry naming a `${NAME}` its server references nowhere is a **hard error** — so a
+typo'd reference still reds the deploy rather than degrading in silence.
+
 #### The exception: a container that cannot ask the store
 
 "Read it at runtime instead" is a claim about strad's own process. A
@@ -395,7 +403,7 @@ stderr, so GitHub annotates the run, and repeated as a list on stdout. Output is
 names and structure only — it never prints a value, and the values it renders
 with are dummies anyway.
 
-Four checks, in order:
+Five checks, in order:
 
 1. **Schema.** The same `parseConfig` the gateway boots with — types, required
    fields, and the cross-field rules (an undefined role, two images in one bundle,
@@ -421,6 +429,12 @@ Four checks, in order:
    every enabled server's map into one flat environment, so a collision means the
    last declaration silently wins and the other server's console runs as the wrong
    identity.
+5. **Unseeded-secret waivers.** Every entry in a server's `mayBeUnseeded:` must
+   name a `${NAME}` that server actually references. `mayBeUnseeded:` is the one
+   key that buys a hard failure away, so the key itself has to be typo-proof: a
+   waiver that matches nothing waives nothing, and the reference it was written
+   for still reds the deploy. Checked here as well as in `render-spec`, so a
+   config in this repo answers for it one merge before a deploy asks.
 
 A collision between two servers' `env:` maps in one bundle — two different
 `${REF}` _strings_ under one key — is **not** a check here: it is rejected

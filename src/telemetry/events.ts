@@ -112,7 +112,35 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * question this kind raises.
      */
     "strad.tool_surface_offline": ["slug", "kind"],
-    "strad.tool_surface": ["server_count", "serving_count", "degraded"],
+    /**
+     * A slug waiting on a `mayBeUnseeded:` credential nobody has seeded yet.
+     *
+     * Its own event, at Info, for the same reason `_offline` has one: `_degraded`
+     * is what an alert rule keys on, and a deploy that shipped ahead of a token
+     * on purpose is not something to page a human about at 3am. What it IS is a
+     * thing a human finishes later, so it still ships — "which slugs are still
+     * waiting" is the operational question this feature creates.
+     *
+     * `names` is the list of `${NAME}`s, which strad's own config authored. No
+     * value, and nothing from an upstream.
+     */
+    "strad.tool_surface_unconfigured": ["slug", "kind", "names"],
+    "strad.tool_surface": [
+      "server_count",
+      "serving_count",
+      "degraded",
+      "unconfigured",
+    ],
+    /**
+     * A slug that could not be listed because a `mayBeUnseeded:` credential has
+     * not been seeded yet.
+     *
+     * Its own event, at Info, so `mcp.list_tools_failed` and
+     * `mcp.list_resources_failed` keep meaning "a fault" — see the branches in
+     * gateway/mcpServer.ts. `names` comes from strad's own config; there is no
+     * value in it and nothing from an upstream.
+     */
+    "mcp.server_unconfigured": ["slug", "explicit", "names"],
     /**
      * 424 fail-closed. `requested` and the raw `unavailable` list are NOT here:
      * both are the caller's own query string, echoed back. What ships is the
@@ -234,6 +262,11 @@ const THROTTLED = new Set([
   "mcp.list_tools_failed",
   "mcp.list_resources_failed",
   "mcp.local_machine_offline",
+  // A slug waiting on a deferred credential fires this on every tools/list and
+  // resources/list a client sends, for as long as the value is pending — which
+  // is exactly the unbounded, client-driven shape this set exists for. Left out,
+  // it would evict genuine faults from the shared batch queue.
+  "mcp.server_unconfigured",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
 ]);

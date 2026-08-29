@@ -3195,3 +3195,50 @@ gives up immediately rather than sleeping past the bound.
 **Undo.** Label a parameter with its namespace at `create()`, backfill the existing
 ones, and filter the listing server-side. Then `rosterTtlMs` can go back to zero
 everywhere and the retry stops being load-bearing.
+
+## 70. Nothing escalates a slug that sits `unconfigured` forever
+
+**What.** `mayBeUnseeded:` (src/deploy/unseeded.ts) lets a server deploy ahead of
+its credential: the render warns instead of exiting 1, and that slug alone comes
+up `unconfigured` until somebody seeds a value. Removing the deploy-time gate
+removes the thing that used to guarantee somebody dealt with it — a red deploy is
+hard to ignore, and a warning in a run log is not.
+
+The state is visible in four places: `/healthz` (`servers[].state` and a top-level
+`unconfigured` list), the console index (chip `awaiting credential`, counted as
+actionable), `/api/secrets/readiness`, and one `strad.tool_surface_unconfigured`
+log line per boot and per state change. What none of them do is ESCALATE. A slug
+waiting a week looks exactly like a slug waiting ten minutes, and no alert fires
+either way — deliberately, because the same event at ERROR severity would page a
+production channel about a credential a human already decided to defer.
+
+**What holds it up in the meantime.** The waiver is per NAME, unanimous across the
+servers referencing it, and an entry naming a `${NAME}` its server references
+nowhere is a hard error in both `render-spec` and `config:check`. So the failure
+mode this entry describes is a slug somebody deliberately deferred and then
+forgot — not a typo, which still reds the deploy.
+
+**Why not.** An alert wants a threshold ("unconfigured for more than N days"),
+which wants a memory of when the state started, which the tool-surface monitor
+does not have — it holds a current snapshot, not a history. The honest home for
+this is the alerting stack reading `strad.tool_surface_unconfigured` out of the
+log pipeline with a `for:` duration, which is a Grafana change and not a strad one.
+
+**The other half, and it is a real asymmetry.** How fast a seeded value takes
+effect depends on where the reference is read. A `url:`, `headers:` or builtin
+`options:` ref under `gcp-parameter-store` is resolved on the request path, so the
+slug activates within `negativeTtlSeconds` with no redeploy — which is the whole
+point of the feature. A `supplementary-image`'s `env:`, and everything under
+`provider: env`, is BAKED onto a container strad does not run: seeding the value
+does nothing until the next deploy. Both are supported and the render says which
+it is in the warning, but "no PR" and "no deploy" are not the same promise, and
+only the first holds for every case. The baked half is also thinner in what it
+reports: `unconfigured` is a state STRAD'S OWN process derives from a resolution
+it performs, so a slug whose only waived name is a `supplementary-image` `env:`
+variable ships without that variable and reads as whatever its own server says
+about itself.
+
+**Undo.** Add a `since` timestamp to the tool-surface monitor's per-slug state and
+export it as a gauge, then alert on it. Or reinstate the hard failure by deleting
+`mayBeUnseeded:` from the schema — every path that reads it falls back to today's
+behaviour, which is the pre-change one.

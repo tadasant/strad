@@ -970,12 +970,18 @@ fails CI on the PR rather than the deploy after it.
   a connect URL for a disabled server is one the gateway would reject.
 - **`/healthz`** is dependency-free and returns `mode`, `bundle`, `env`, and
   `servers` — used by the App Platform health check and the deploy smoke test. It
-  also carries `toolSurfaces` and `degraded`: the last observation from the
-  background tool-surface monitor, naming the slugs that are mounted but serving
-  **no tools**, each with its `state` (`ok` / `empty` / `unreachable` / `offline`
-  — the last being a `local-tunnel` whose machine is switched off, which is that
-  kind's normal state and is left out of `degraded`), its tool
-  count and its `kind`. Listing the slugs and stopping there was compatible with
+  also carries `toolSurfaces`, `degraded` and `unconfigured`: the last
+  observation from the background tool-surface monitor, naming the slugs that are
+  mounted but serving **no tools**, each with its `state` (`ok` / `empty` /
+  `unreachable` / `offline` / `unconfigured`), its tool count and its `kind`.
+  Two of those states are deliberately out of `degraded`: `offline` is a
+  `local-tunnel` whose machine is switched off, which is that kind's normal
+  state, and `unconfigured` is a slug that
+  [declared `mayBeUnseeded:`](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential)
+  for a credential nobody has seeded yet — a deploy that shipped ahead of a token
+  on purpose. The latter gets its own top-level list, because "go and look" and
+  "go and seed" are different actions. Slugs only: which `${NAME}` is missing
+  stays in the logs and the console, since this route is unauthenticated. Listing the slugs and stopping there was compatible with
   three of them being dead, which is exactly what happened. `ok` stays `true`
   regardless — this route is liveness, and a sick upstream is not a reason for
   App Platform to restart core. The values are read, never computed on request,

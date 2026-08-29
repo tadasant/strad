@@ -659,6 +659,41 @@ runs out and the deploy fails as it did before, just later. The bound is deliber
 would put minutes of sleep on a deploy's critical path, multiplied by every call in
 a store-wide read.
 
+### 70. Nothing escalates a slug that sits `unconfigured` forever
+
+A server can name the `${NAME}`s it is willing to deploy without
+([`mayBeUnseeded:`](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential)),
+so onboarding one no longer needs its credential seeded before the config PR can
+merge. The cost is that a red deploy used to be what guaranteed somebody dealt
+with it, and a warning in a run log is not.
+
+The state is visible in four places — `/healthz` (`servers[].state`, plus a
+top-level `unconfigured` list), the console index (chip `awaiting credential`,
+counted as actionable), `/api/secrets/readiness`, and a
+`strad.tool_surface_unconfigured` log line per boot and per state change. None of
+them **escalate**. A slug waiting a week looks exactly like one waiting ten
+minutes, and no alert fires either way — deliberately, because the same event at
+ERROR severity would page a production channel about a credential a human already
+decided to defer. The honest home for a threshold is the alerting stack reading
+that event with a `for:` duration.
+
+What still fails loudly is the mistake: a `${NAME}` no server waived reds the
+deploy exactly as before, and a waiver naming a reference its server does not use
+is a hard error in both `render-spec` and `config:check`. So this describes a slug
+somebody deferred and then forgot, not a typo.
+
+There is one asymmetry worth knowing. How fast a seeded value takes effect depends
+on where the reference is read: a `url:`, `headers:` or builtin `options:` ref
+under `gcp-parameter-store` activates within `negativeTtlSeconds` with no
+redeploy, while a `supplementary-image`'s `env:` — and everything under
+`provider: env` — is baked onto a container strad does not run and needs the next
+deploy. The render says which it is in the warning, but "no PR" and "no deploy"
+are not the same promise. The baked half also reports less: `unconfigured` is a
+state strad derives from a resolution it performs itself, so a slug whose only
+waived name is a `supplementary-image` `env:` variable ships without that
+variable and reads as whatever its own server says about itself. See
+`HACKS.md` #70.
+
 ### 29. The console's secret badges prove presence, not that a credential works
 
 `/ui` lists every configured MCP server and whether the secrets it requires

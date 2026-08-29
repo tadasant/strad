@@ -182,12 +182,18 @@ export interface BootKey {
 }
 
 /**
- * `missing` is worse news than `unrenderable`, which is worse than `placeholder`,
- * which is worse than `unknown`, which is worse than `unverified`.
+ * `missing` is worse news than `unconfigured`, which is worse than
+ * `unrenderable`, which is worse than `placeholder`, which is worse than
+ * `unknown`, which is worse than `unverified`.
  */
 const ISSUE_RANK: Record<ServerState, number> = {
-  missing: 5,
-  // Between `missing` and `placeholder`, matching STATE_RANK in
+  missing: 6,
+  // Below `missing`: both are a server with no value, and the difference is
+  // whether anyone knew. A name nobody seeded is a server broken by an
+  // oversight; a deferred one is a plan somebody has not finished. Above
+  // `unrenderable` for the reason `missing` is — there is no value at all.
+  unconfigured: 5,
+  // Between the two above and `placeholder`, matching STATE_RANK in
   // ui/secret-status.ts. A caller sorting by severity and a page sorting by
   // severity must not disagree about which row is worse.
   unrenderable: 4,

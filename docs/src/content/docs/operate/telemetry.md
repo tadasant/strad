@@ -235,7 +235,7 @@ the telemetry exists to diagnose.
 What _is_ recorded is **shape and identity**: which server, which tool, how many
 arguments, how many bytes, how long, and whether it failed — in one of a **fixed,
 closed set** of error kinds (`timeout`, `upstream_unavailable`,
-`local_machine_offline`, `not_selected`, …).
+`local_machine_offline`, `server_unconfigured`, `not_selected`, …).
 
 Two things that look like omissions and are not:
 
@@ -277,6 +277,8 @@ the process, and for each one the exact fields that may go with it.
 | `mcp.local_machine_offline`                            | a `local-tunnel` host is off or refusing — not a fault |
 | `strad.tool_surface_degraded` / `_recovered`           | which slug, and when it changed                        |
 | `strad.tool_surface_offline`                           | a local-tunnel's machine is off — not degraded         |
+| `strad.tool_surface_unconfigured`                      | a slug waiting on a `mayBeUnseeded:` credential        |
+| `mcp.server_unconfigured`                              | the same, on a listing that named the slug             |
 | `strad.tool_surface`                                   | the fleet summary, on change                           |
 | `mcp.unavailable`                                      | 424 fail-closed: a slug asked for and not entitled     |
 | `mcp.policy_unmatched_tools`                           | a `tools:` typo silently narrowing a toolset           |
