@@ -515,6 +515,73 @@ pointer at Secret Manager, not the secret. Nothing in the preflight path calls
 `:render` or `reveal`. A credential with no `secretmanager.versions.access`
 passes it happily, which is the proof.
 
+## A refused read is not an answer about the parameter
+
+Parameter Manager enforces a per-project, per-minute read quota, and a deploy is
+the workload that runs into it: `store:check --resolve` reads the whole store, and
+`render-spec` reads it again seconds later.
+
+A `429` out of that burst says nothing about the parameter. It is there, the
+credential is right, the request was simply refused. Treating it like a `403`
+aborted a production deploy before `doctl` was reached.
+
+So the store client separates the two:
+
+- **A refusal on a read is retried.** `429`, `500`, `502`, `503` and `504` on a
+  `GET`, `HEAD` or `DELETE` get exponential backoff with jitter: up to three
+  retries, and at most **2.8s** of backoff. A `Retry-After` header is honoured
+  verbatim when it fits the call's 6s ceiling, and declined outright when it does
+  not — a `Retry-After: 600` costs one attempt, not ten minutes of a deploy step.
+- **Answers are not retried.** `401`, `403`, `404`, `409` and everything else fail
+  on the first response, unchanged, with the status a caller switches on intact. A
+  permission error retried is the same error reported one backoff later.
+- **Nor is anything on a write.** Not even a `429`. A refusal that reaches us from
+  a fronting proxy may have been emitted _after_ the backend applied the write, and
+  nothing in the response tells the two apart. Retrying a `POST` that landed
+  returns `409 ALREADY_EXISTS` — which `create()` reads as "not mine to delete", so
+  it skips the parameter rollback, removes the backing secret it did make, and
+  strands a versionless parameter `destroy()` cannot remove. The deploy path this
+  retry exists for is every-request-a-`GET`, so the line costs nothing.
+
+The budget is small on purpose. Every read must still SETTLE — the runtime provider
+serves stale values when a refresh rejects, but has nothing to react to if a promise
+never settles — so retrying widens that bound rather than removing it.
+
+:::caution[The retry survives a blip, not an exhausted quota]
+Three retries and at most 2.8s of backoff clear a burst that overran the quota for
+a second or two. They do not clear a quota exhausted for the
+whole minute — the budget runs out and the deploy fails as it did before, just
+later. Reading the store fewer times is the other lever, and it is the one below;
+retrying harder is not. See [Known
+limitations](/limitations/#69-a-namespace-is-not-addressable-so-reading-one-means-reading-the-whole-store).
+:::
+
+## One enumeration per deploy, not one per namespace
+
+A parameter's namespace lives inside its version **envelope**, not on a Parameter
+Manager label. So `list(namespace)` cannot ask the store for a namespace — it pages
+every `managed-by: strad` parameter in the project, reads a version of each one to
+recover its envelope, and filters afterwards.
+
+`resolve()` calls `list()`. Resolving N namespaces therefore cost **N x P version
+reads** for P parameters, and both factors grow every time a server is added. That
+is what put a deploy over the quota, and adding a retry would only have made it fail
+more slowly.
+
+`render-spec` and `store:check` are one-shot processes that only read, so they set
+`rosterTtlMs` and enumerate **once per process**. Counted against the in-memory GCP
+fake for the shape a render actually has — one store-wide `list()` followed by
+fourteen namespace `resolve()`s over 56 parameters — that is **1751 requests
+before, 169 after**. Namespaces resolved concurrently
+share the enumeration already in flight rather than starting their own, and a
+refused enumeration is never cached.
+
+The gateway and the console leave it **off**, which is the default. They write, and
+a store that answers from a cache reports a parameter someone just created as
+absent — the console writes and re-lists in the same breath. Every write through a
+store drops its roster regardless, so the reuse cannot outlive a change made through
+it.
+
 ## Is the namespace complete? (store-check)
 
 The preflight above is a **deploy gate**, and it is scoped like one. It checks the

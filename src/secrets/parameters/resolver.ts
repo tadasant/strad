@@ -44,8 +44,24 @@ export const RESOLVER_ENV = {
  * service account may do is still decided by IAM, and the resolver role has no
  * write permission whatever this interface offers.
  */
+export interface ResolverOptions {
+  /**
+   * How long an enumeration of the store may be reused, in ms. `0` (the
+   * default) means never.
+   *
+   * A one-shot, READ-ONLY deploy reader sets this. `render-spec` and
+   * `store:check` each resolve every namespace, and `resolve()` enumerates the
+   * whole project once per namespace — so the cost is N x P version reads for P
+   * parameters, and it grows with the server count. The gateway and the console
+   * leave it off: they write, and a cached roster answers a freshly-written
+   * parameter with "absent".
+   */
+  rosterTtlMs?: number;
+}
+
 export function resolverFromEnv(
   env: NodeJS.ProcessEnv = process.env,
+  opts: ResolverOptions = {},
 ): ParameterStore | null {
   const projectId = env[RESOLVER_ENV.projectId];
   const keyJson = env[RESOLVER_ENV.keyJson];
@@ -61,5 +77,6 @@ export function resolverFromEnv(
     pmApiBase: env[RESOLVER_ENV.pmApiBase],
     smApiBase: env[RESOLVER_ENV.smApiBase],
     tokenUrl: env[RESOLVER_ENV.tokenUrl],
+    rosterTtlMs: opts.rosterTtlMs,
   });
 }

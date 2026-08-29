@@ -180,14 +180,28 @@ export function createFakeGcp(): FakeGcp {
   const policyWrites = new Map<string, number>();
   const etagOf = (id: string) => `etag-${policyWrites.get(id) ?? 0}`;
 
+  /**
+   * A REAL `Response`, not a duck-typed stand-in.
+   *
+   * The client reads more of the response than a body: it consults
+   * `headers.get("retry-after")` when deciding how long to back off, and it
+   * cancels the body of a refused request before sleeping on it. An object
+   * literal carrying only `ok`/`status`/`text` answers those with a `TypeError`,
+   * which the resolver then reports as an unrenderable parameter — a fake that
+   * turns a client change into a fake-shaped failure rather than a real one.
+   */
   const json = (status: number, body: unknown): Response =>
-    ({
-      ok: status >= 200 && status < 300,
-      status,
-      statusText: STATUS_TEXT[status] ?? "",
-      text: async () => (body === undefined ? "" : JSON.stringify(body)),
-      json: async () => body,
-    }) as Response;
+    // `null`, not `""`, for a bodiless answer: `new Response("", {status: 204})`
+    // is a constructor `TypeError`, and a fake that throws from inside the
+    // transport is exactly the fake-shaped failure this stopped being.
+    new Response(
+      body === undefined || status === 204 ? null : JSON.stringify(body),
+      {
+        status,
+        statusText: STATUS_TEXT[status] ?? "",
+        headers: { "content-type": "application/json" },
+      },
+    );
 
   /**
    * A transport for ONE calling credential.

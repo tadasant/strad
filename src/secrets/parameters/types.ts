@@ -130,6 +130,15 @@ export class ParameterStoreError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /**
+     * The delay the API itself named in `Retry-After`, in ms, when it sent one.
+     *
+     * Carried on the error rather than handled where the `Response` was, so the
+     * one place that decides whether to try again decides it from one shape.
+     * Absent on every locally-constructed error — nothing local knows when the
+     * store will next answer.
+     */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "ParameterStoreError";

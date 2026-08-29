@@ -126,7 +126,10 @@ const config = (() => {
 // The SAME client the gateway container will hold, built from the SAME env vars,
 // so a namespace this passes against is one that credential can read. A checker
 // running as the console admin would answer a question nobody asked.
-const store = resolverFromEnv(process.env);
+// Same one-shot, read-only enumeration reuse as `render-spec`: this check
+// resolves every namespace, and without it each one re-reads a version of every
+// parameter in the project. See `resolverFromEnv`'s `rosterTtlMs`.
+const store = resolverFromEnv(process.env, { rosterTtlMs: 10 * 60_000 });
 if (!store) {
   // Two different failures, and telling someone to set a variable they have
   // already set is how a corrupt key gets diagnosed as a missing one.

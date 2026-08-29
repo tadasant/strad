@@ -239,6 +239,19 @@ the gateway process does not run, so nothing inside strad can change it while it
 runs. A `bundle: core` builtin with `params: true` resolves **at runtime**, on
 every call, and does pick up a change without a restart.
 
+Namespaces are resolved **three at a time**, not all at once. Each `resolve()`
+already fans out ten wide inside one namespace, so resolving every namespace
+simultaneously made the size of the burst a function of how many servers the config
+has — six added slugs were enough to push it past Parameter Manager's per-project
+read quota and 429 the render. The batch keeps the burst flat as the config grows.
+
+Two other things guard the same seam. The render enumerates the store [once, not
+once per
+namespace](/operate/secrets/#one-enumeration-per-deploy-not-one-per-namespace),
+which is what cuts the request COUNT rather than its shape; and the [retry in the
+store client](/operate/secrets/#a-refused-read-is-not-an-answer-about-the-parameter)
+is what survives a refusal when one happens anyway.
+
 The render also bakes **`STRAD_PARAM_KEYS`** onto each component that carries a
 `params: true` server: a `GENERAL` (not `SECRET`) env var holding
 `{"<slug>": ["VARIABLE", ...]}`. Names only, and only when at least one server on
