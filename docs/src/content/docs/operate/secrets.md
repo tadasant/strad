@@ -114,12 +114,13 @@ have parameters that predate this, run the one-time backfill in
 
 Not instant. The numbers, and where they come from:
 
-| Change                                         | Visible within                     | Why                                                                                                                                                                                                                                          |
-| ---------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Rotating** a secret read on the request path | `ttlSeconds` (default 60s)         | The namespace snapshot is refreshed on the first read after it goes stale. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
-| **Adding** a name that was absent              | `negativeTtlSeconds` (default 10s) | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                                                              |
-| A change written through strad's own console   | immediately                        | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                                                      |
-| A brand-new **secret** parameter               | up to ~2 minutes                   | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                  |
+| Change                                                                                                           | Visible within                                    | Why                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Rotating** a secret read on the request path                                                                   | `ttlSeconds` (default 60s)                        | The namespace snapshot is refreshed on the first read after it goes stale. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
+| **Adding** a name that was absent                                                                                | `negativeTtlSeconds` (default 10s)                | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                                                              |
+| A change written through strad's own console                                                                     | immediately                                       | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                                                      |
+| **Seeding** a name a slug declared [`mayBeUnseeded`](#maybeunseeded--deploying-a-server-ahead-of-its-credential) | `negativeTtlSeconds`, then one reachability probe | The same mechanism as any newly-added name. The slug goes from `unconfigured` to serving with no redeploy.                                                                                                                                   |
+| A brand-new **secret** parameter                                                                                 | up to ~2 minutes                                  | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                  |
 
 Two behaviours matter more than the numbers:
 
@@ -514,6 +515,95 @@ secret parameter the underlying Parameter Manager payload holds a `__REF__`
 pointer at Secret Manager, not the secret. Nothing in the preflight path calls
 `:render` or `reveal`. A credential with no `secretmanager.versions.access`
 passes it happily, which is the proof.
+
+## `mayBeUnseeded:` — deploying a server ahead of its credential
+
+That preflight had a second effect nobody chose. Adding a server whose credential
+nobody had seeded yet failed the render for the **whole fleet**, so onboarding one
+carried a human gate: seed the token, _then_ merge the PR. A config change and a
+store write had to be ordered by a person, every time.
+
+A server can now name the `${NAME}`s it is willing to deploy without:
+
+```yaml
+- slug: apify
+  kind: remote-http
+  url: https://mcp.apify.com/mcp
+  entitlements: [admin]
+  headers:
+    Authorization: "Bearer ${APIFY_TOKEN}"
+  mayBeUnseeded: [APIFY_TOKEN]
+```
+
+The deploy then **warns instead of failing**, that slug alone comes up inactive,
+and every other server deploys exactly as before.
+
+It does not mean "this server works without the value". It means the deploy may
+proceed without it.
+
+### Three properties, and the third is the reason for the shape
+
+**A listed name warns.** `render-spec` prints one `::warning::unseeded secret
+<NAME> …` per name — greppable by that prefix — saying which slugs shipped
+inactive and what to seed. The summary line counts them apart from the ones that
+resolved.
+
+**An unlisted name still reds the deploy.** Nothing about the default moved. A
+`${NAME}` no server waived fails the render by name, as it always did.
+
+**A waiver that waives nothing is itself an error.** This is why the marker is a
+_list of names_ rather than a flag on the server. `mayBeUnseeded: true` beside a
+typo'd `${APIFY_TOKN}` would degrade forever in silence — exactly the failure this
+repo has already been bitten by. A list cannot: the typo'd reference is a name
+nobody waived, so it still fails, _and_ the useless entry is reported as the
+mistake it is. `npm run config:check` and `render-spec` both refuse it.
+
+A fourth rule falls out of the same reasoning: **a name is waived only when every
+enabled server that references it waives it.** One server deferring a token
+another server needs is not a deferral — the second server would come up dead,
+which is the fleet-wide failure spelt differently.
+
+### What the slug looks like while it waits
+
+Not "down", and not "gone". It gets its own state everywhere state is reported:
+
+| Surface                            | Says                                                              |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `/healthz`                         | `servers[].state: "unconfigured"`, and the slug in `unconfigured` |
+| `/healthz` `degraded`              | **not** listed — nothing is broken                                |
+| `/console`                         | the chip reads `awaiting credential`, in the actionable count     |
+| `/api/secrets/readiness`           | `state: "unconfigured"`, ranked just under `missing`              |
+| `tools/list` for `?servers=<slug>` | an error naming the slug and the `${NAME}`                        |
+| `tools/list` with no `?servers=`   | the slug contributes no tools; every other server is unaffected   |
+| logs                               | `strad.tool_surface_unconfigured`, at Info — it does not page     |
+
+Keeping it out of `degraded` is load-bearing rather than cosmetic: `degraded` is
+what the staging deploy gate asserts on, so counting a deliberate deferral there
+would red the deploy this feature exists to let through, one layer further down
+than the preflight that used to.
+
+Nothing ever sends the literal `${APIFY_TOKEN}` upstream. Resolution throws before
+a request is built, which is the whole reason the slug has a state at all.
+
+### How fast it activates once you seed it
+
+That depends on where the value is read, and the two are not close.
+
+| The reference                                                         | Activates                                                                              |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| A `url:`, `headers:` or builtin `options:` ref, `gcp-parameter-store` | within `negativeTtlSeconds` (default 10s) of the store write. No redeploy, no restart. |
+| The same, seeded in the server's own `/mcp/{slug}/static/` namespace  | within `ttlSeconds` (default 60s) — that layer does not chase a miss.                  |
+| A `supplementary-image`'s `env:`, or anything under `provider: env`   | **next deploy.** It is baked onto a container strad does not run.                      |
+
+`/healthz` and the console follow within one reachability probe (60s) of the
+value resolving. In every case it is a store write and a wait — never a PR.
+
+:::caution[Nothing alerts on a slug that sits unconfigured forever]
+The state is visible on `/healthz`, in the console's actionable count, and in a
+log line per boot. Nothing escalates if a slug stays there for a week. That is
+the residual cost of removing the deploy-time gate, and closing it is an alerting
+change rather than a strad one.
+:::
 
 ## A refused read is not an answer about the parameter
 

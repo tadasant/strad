@@ -53,6 +53,7 @@ import {
   bakedSecretNames,
   consoleScopeProblems,
 } from "../src/deploy/preflight.ts";
+import { unusedWaivers } from "../src/deploy/unseeded.ts";
 
 function usage(message: string): never {
   console.error(`::error::${message}`);
@@ -160,6 +161,15 @@ try {
 if (spec) {
   for (const message of consoleScopeProblems(config, spec)) problem(message);
 }
+
+// --- 5. unseeded-secret waivers ---------------------------------------------
+//
+// `mayBeUnseeded:` is the one config key that BUYS a hard failure away, so the
+// key itself has to be typo-proof: a waiver naming something this server does
+// not reference waives nothing, and the reference it was written for still reds
+// the deploy. Checked here as well as in render-spec so a config in this repo
+// answers for it in CI, one merge before a deploy asks.
+for (const message of unusedWaivers(config)) problem(message);
 
 // --- what the deployment must seed ------------------------------------------
 //

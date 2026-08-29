@@ -127,15 +127,46 @@ required SECRET; an unresolved `${…}` makes render fail loudly rather than let
 the gateway crash-loop. Seed staging secrets with the `secrets-sync` workflow (see
 [Operations & CI](/operate/operations/#seeding-secrets)).
 
-## 4a. If the secret is not seeded yet, ship the entry `enabled: false`
+## 4a. If the secret is not seeded yet, declare `mayBeUnseeded:`
 
 Declaring the server and seeding its credential are two steps, and a PR can only
-do the first. The render is **all or nothing** — one `${NAME}` the store does not
-hold exits `render-spec` with an error and no spec at all — so an entry merged
-ahead of its secret does not merely degrade its own slug. It stops the deploy for
-every other server in the file, on `main`, until someone notices.
+do the first. By default the render is **all or nothing** — one `${NAME}` the
+store does not hold exits `render-spec` with an error and no spec at all — so an
+entry merged ahead of its secret does not merely degrade its own slug. It stops
+the deploy for every other server in the file.
 
-So an entry whose credential is not in the store yet lands disabled:
+Naming the reference waives that, for that name only:
+
+```yaml
+- slug: apify
+  kind: remote-http
+  url: https://mcp.apify.com/mcp
+  entitlements: [admin]
+  headers:
+    Authorization: "Bearer ${APIFY_TOKEN}"
+  mayBeUnseeded: [APIFY_TOKEN]
+```
+
+The render warns instead of failing, every other server deploys normally, and
+this slug comes up `unconfigured`: named on `/healthz`, chipped `awaiting
+credential` in the console, and refusing a `?servers=apify` listing with a
+message naming the credential. Seed the value and — under
+`gcp-parameter-store`, for a `url:`/`headers:`/`options:` ref — it starts serving
+within `negativeTtlSeconds`, with no redeploy and no second PR. A
+`supplementary-image`'s `env:` is baked onto its container instead, so that half
+takes the next deploy. Full behaviour is in
+[Secrets](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential).
+
+It is a list of names rather than a flag, and that is the safety property: an
+entry naming a `${NAME}` its server references nowhere is a **hard error** in both
+`config:check` and `render-spec`, so a typo'd `${APIFY_TOKN}` beside a waiver for
+`APIFY_TOKEN` still reds the deploy rather than degrading in silence. A name is
+also only waived when **every** enabled server referencing it waives it.
+
+### When `enabled: false` is still the right answer
+
+`mayBeUnseeded:` ships a slug that is visible and waiting. Ship it disabled
+instead when it should not be listed, entitled or mounted at all yet:
 
 ```yaml
 - slug: pulse-subregistry
@@ -153,10 +184,10 @@ server on later is a one-line diff and a redeploy.
 
 `test/staging-config.test.ts` holds the staging config to a **provisioning
 ledger** — `PROVISIONED_STATICS`, the names staging's store actually holds. An
-enabled entry referencing a name that is not on it fails CI, which is the cheap
-version of the failure; the expensive version is a red `main` and a blocked
-deploy. Adding a server enabled means seeding the secret **and** adding its name
-there, in the same PR.
+enabled entry referencing a name that is neither on it nor waived fails CI, which
+is the cheap version of the failure; the expensive version is a red `main` and a
+blocked deploy. Adding a server whose credential is seeded means adding its name
+there in the same PR.
 
 ## 4b. A credential the AGENT must not hold — `consoleEnv:`
 

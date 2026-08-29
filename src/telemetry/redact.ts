@@ -60,6 +60,11 @@ const ERROR_KINDS = [
   "upstream_unavailable",
   "upstream_error",
   "local_machine_offline",
+  // A slug whose `mayBeUnseeded:` credential has not been seeded yet. Its own
+  // kind because it is the one failure that is neither an outage nor a bug: it
+  // is a deploy that shipped ahead of a token on purpose, and it clears when a
+  // human seeds a value. See src/gateway/unconfigured.ts.
+  "server_unconfigured",
   "not_selected",
   "not_mounted",
   "tool_error",

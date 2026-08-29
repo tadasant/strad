@@ -141,6 +141,23 @@ servers:
   #   entitlements: [admin]
   #   headers:
   #     Authorization: "Bearer ${GRANOLA_TOKEN}"
+  #
+  # A `${NAME}` nobody has seeded yet fails the DEPLOY, for every server — which
+  # is right for a typo and wrong for a server you are onboarding ahead of its
+  # token. `mayBeUnseeded:` waives that for the names you list, and only those:
+  # the deploy warns, THIS slug comes up "unconfigured" on /healthz and in the
+  # console, every other server ships normally, and it starts serving on its own
+  # once a value lands (no redeploy under `gcp-parameter-store`). An entry naming
+  # a ${NAME} this server does not reference is a hard error, so a typo cannot
+  # hide behind it. See docs: operate/secrets.
+  #
+  # - slug: apify
+  #   kind: remote-http
+  #   url: https://mcp.apify.com/mcp
+  #   entitlements: [admin]
+  #   headers:
+  #     Authorization: "Bearer ${APIFY_TOKEN}"
+  #   mayBeUnseeded: [APIFY_TOKEN]
 
   # --- kind: local-tunnel ---------------------------------------------------
   # An MCP server running on a machine YOU own — a laptop, a desktop — reached

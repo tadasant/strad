@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
 import { bakedSecretNames } from "../src/deploy/preflight.ts";
+import { waivedNames } from "../src/deploy/unseeded.ts";
 
 /**
  * The staging config is the proof that the collapse actually collapsed.
@@ -53,11 +54,21 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * So the second half is written down here. A name belongs on this list once it
  * is actually set in `/strad/staging/gateway/static/` (or the referencing
- * server's own `/strad/staging/mcp/<slug>/static/`). Adding a server whose
- * credential is not seeded yet means shipping it `enabled: false` — the
- * telegram and pulse-subregistry entries are exactly that — and NOT adding the
- * name here. The assertion below is what makes the two halves disagree loudly,
- * in CI, instead of quietly, in the deploy that runs after the merge.
+ * server's own `/strad/staging/mcp/<slug>/static/`). The assertion below is what
+ * makes the two halves disagree loudly, in CI, instead of quietly, in the deploy
+ * that runs after the merge.
+ *
+ * A name a server declared `mayBeUnseeded:` for is NOT on the ledger and is
+ * subtracted before the comparison. That is the whole point of the waiver: the
+ * deploy proceeds without it and the slug comes up `unconfigured`, so demanding
+ * it here would reinstate the atomic step one layer up. `test/unseeded.test.ts`
+ * is what holds the waiver itself honest — an entry naming a `${NAME}` its server
+ * does not reference is a hard error, and an unwaived absent name still exits 1.
+ *
+ * The other way to ship a server ahead of its credential is `enabled: false` —
+ * the telegram and pulse-subregistry entries are exactly that. It is the right
+ * choice when the slug should not be listed or entitled at all yet; `mayBeUnseeded:`
+ * is the right one when it should be visible and waiting.
  */
 const PROVISIONED_STATICS = [
   "FETCHPET_PASSWORD",
@@ -96,10 +107,14 @@ describe("staging config", () => {
     // Two ways to fail, and the fix differs:
     //   - a name in the config, not in the ledger — the case that reddened
     //     `main` on 2026-08-14 (pulse-subregistry, run 31798910011). Either seed
-    //     it and add it here, or ship the entry `enabled: false`.
+    //     it and add it here, declare it `mayBeUnseeded:` on every server that
+    //     references it, or ship the entry `enabled: false`.
     //   - a name in the ledger, not in the config — a stale entry, or a server
     //     that was disabled. Delete the line.
-    expect(bakedSecretNames(CONFIG)).toEqual(PROVISIONED_STATICS);
+    const waived = waivedNames(CONFIG);
+    expect(bakedSecretNames(CONFIG).filter((n) => !waived.has(n))).toEqual(
+      PROVISIONED_STATICS,
+    );
   });
 
   it("renders exactly THREE components: core + bundle + the second store", () => {

@@ -10,9 +10,14 @@ import {
   type ParameterResolver,
 } from "../secrets/parameters/index.ts";
 import { SnapshotCache } from "../secrets/provider/snapshot.ts";
+import { waiversBySlug } from "../deploy/unseeded.ts";
 import { BuiltinServerAdapter, loadBuiltin } from "./adapters/builtin.ts";
 import { HttpServerAdapter } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
+import { resolvingFor } from "./unconfigured.ts";
+
+/** Shared empty waiver set — most slugs declare none. */
+const EMPTY: ReadonlySet<string> = new Set<string>();
 
 /**
  * Config -> live adapters.
@@ -112,6 +117,18 @@ export class Registry {
     // parameter — and the thunk below runs on every tool call, so it must not
     // reach the store every time. This is the same TTL/single-flight/stale-on-
     // error cache the secret provider uses, keyed by namespace.
+    // Which `${NAME}`s each slug declared it may deploy without. A miss on one of
+    // these is `unconfigured` — a deploy that shipped ahead of a token on purpose
+    // — rather than an upstream failure, and every consumer downstream of here
+    // (/healthz, the console, the MCP error a client sees) depends on the two
+    // being told apart. A miss on anything else stays the fault it is.
+    const waived: ReadonlyMap<string, ReadonlySet<string>> = waiversBySlug(
+      config,
+    );
+    /** This slug's endpoint/options resolution, with its declared misses named. */
+    const resolving = <T>(slug: string, resolve: () => Promise<T>) =>
+      resolvingFor(slug, waived.get(slug) ?? EMPTY, resolve);
+
     const resolver = opts.resolver;
     const paramCache = resolver
       ? new SnapshotCache((namespace) => resolver.resolve(namespace), {
@@ -126,9 +143,8 @@ export class Registry {
     const optionsFor =
       (server: Extract<StradConfig["servers"][number], { kind: "builtin" }>) =>
       async (): Promise<Record<string, unknown>> => {
-        const base = await resolveOptionsAsync(
-          server.options,
-          secrets.forServer(server.slug),
+        const base = await resolving(server.slug, () =>
+          resolveOptionsAsync(server.options, secrets.forServer(server.slug)),
         );
         if (!server.params || !paramCache) return base;
         const params = await paramCache.get(
@@ -169,16 +185,17 @@ export class Registry {
               // The url AND the headers are re-resolved per operation: a
               // third-party bearer token is the single most likely thing in a
               // strad config to be rotated, and it lives right here.
-              endpoint: async () => ({
-                url: await resolveRefsAsync(
-                  server.url,
-                  secrets.forServer(server.slug),
-                ),
-                headers: await resolveMapAsync(
-                  server.headers,
-                  secrets.forServer(server.slug),
-                ),
-              }),
+              endpoint: async () =>
+                resolving(server.slug, async () => ({
+                  url: await resolveRefsAsync(
+                    server.url,
+                    secrets.forServer(server.slug),
+                  ),
+                  headers: await resolveMapAsync(
+                    server.headers,
+                    secrets.forServer(server.slug),
+                  ),
+                })),
               timeoutMs: server.timeoutMs,
             }),
           );
@@ -197,16 +214,17 @@ export class Registry {
             new HttpServerAdapter({
               slug: server.slug,
               kind: "local-tunnel",
-              endpoint: async () => ({
-                url: await resolveRefsAsync(
-                  server.url,
-                  secrets.forServer(server.slug),
-                ),
-                headers: await resolveMapAsync(
-                  server.headers,
-                  secrets.forServer(server.slug),
-                ),
-              }),
+              endpoint: async () =>
+                resolving(server.slug, async () => ({
+                  url: await resolveRefsAsync(
+                    server.url,
+                    secrets.forServer(server.slug),
+                  ),
+                  headers: await resolveMapAsync(
+                    server.headers,
+                    secrets.forServer(server.slug),
+                  ),
+                })),
               timeoutMs: server.timeoutMs,
               // The one behavioural difference from remote-http: an absent
               // machine must be a fast, legible failure rather than a hang.
@@ -240,13 +258,14 @@ export class Registry {
             new HttpServerAdapter({
               slug: server.slug,
               kind: "supplementary-image",
-              endpoint: async () => ({
-                url: joinUrl(base, server.path),
-                headers: await resolveMapAsync(
-                  server.headers,
-                  secrets.forServer(server.slug),
-                ),
-              }),
+              endpoint: async () =>
+                resolving(server.slug, async () => ({
+                  url: joinUrl(base, server.path),
+                  headers: await resolveMapAsync(
+                    server.headers,
+                    secrets.forServer(server.slug),
+                  ),
+                })),
               timeoutMs: server.timeoutMs,
             }),
           );

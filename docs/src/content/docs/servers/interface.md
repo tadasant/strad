@@ -23,6 +23,7 @@ Every server, regardless of kind, has these base fields (from
 | `tools`                | —            | The capability policy: `{ allow?: [...], deny?: [...] }`. Omitted = every tool.       |
 | `timeoutMs`            | `120000`     | Per-hop upstream timeout. The MCP SDK's own default is 60s at every hop.              |
 | `oauth`                | —            | This server authenticates as a **person**, and strad's console runs the consent. See below. |
+| `mayBeUnseeded`        | `[]`         | `${NAME}`s this server may **deploy without**, staying inactive until they land. See below. |
 | `title`, `description` | —            | Human-facing metadata.                                                                |
 
 `tools` is `.strict()` and must set at least one of `allow` / `deny`. `allow` is
@@ -39,6 +40,39 @@ the server under `roles.<role>.servers`. Both directions must agree — see
 [Auth](/auth/overview/).
 
 </aside>
+
+### `mayBeUnseeded:` — deploy the server, seed the token later
+
+An unseeded `${NAME}` used to fail the deploy for the whole fleet, so adding a
+server meant seeding its credential before the config PR could merge. Naming the
+reference here waives that, for that name only:
+
+```yaml
+- slug: apify
+  kind: remote-http
+  url: https://mcp.apify.com/mcp
+  entitlements: [admin]
+  headers:
+    Authorization: "Bearer ${APIFY_TOKEN}"
+  mayBeUnseeded: [APIFY_TOKEN]
+```
+
+It is not a claim that the server works without the value — it is permission for
+the **deploy** to proceed without it. The slug comes up `unconfigured`, says so on
+`/healthz` and in the console, refuses a named `tools/list` with a message naming
+the credential, and starts serving on its own once a value is seeded.
+
+Three rules keep it from becoming the silence it replaces:
+
+- a name **no** referencing server waives still fails the deploy, exactly as before;
+- a name is waived only when **every** enabled server referencing it waives it;
+- an entry naming a `${NAME}` this server references nowhere is a **hard error** —
+  which is why this is a list of names and not a boolean. A flag beside a typo'd
+  `${APIFY_TOKN}` would degrade forever in silence; a list leaves the typo
+  unwaived and reports the useless entry.
+
+Full behaviour, including how fast a seeded value takes effect, is in
+[Secrets](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential).
 
 ### `oauth:` — a credential a human consents to, in strad's console
 

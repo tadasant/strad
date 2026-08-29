@@ -20,6 +20,7 @@ import {
   resultShape,
   tracer,
 } from "../telemetry/index.ts";
+import { ServerUnconfiguredError } from "./unconfigured.ts";
 import {
   LocalHostUnavailableError,
   LocalMachineOfflineError,
@@ -244,6 +245,28 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
     } catch (err) {
       const kind = errorKind(err);
       callSpan.setAttribute("error.kind", kind);
+      // A DISPATCH ONTO A SLUG THAT IS WAITING FOR A TOKEN SAYS SO.
+      //
+      // Relayed in full because strad constructed it — a slug and a set of
+      // `${NAME}`s from our own config, with no upstream text and no value in it
+      // — and as `InvalidRequest` rather than `InternalError`, because nothing
+      // internal went wrong. A caller that reaches here asked a server to work
+      // before anyone gave it a credential, and the one useful thing to tell them
+      // is exactly that. Re-thrown AFTER the metrics below so the call still
+      // counts.
+      if (err instanceof ServerUnconfiguredError) {
+        inst.toolCalls.add(1, {
+          ...toolAttrs,
+          outcome: "error",
+          "error.kind": kind,
+        });
+        inst.toolCallDuration.record(elapsedSeconds(toolStartedAt), {
+          ...toolAttrs,
+          outcome: "error",
+        });
+        callSpan.setStatus({ code: SpanStatusCode.ERROR });
+        throw new McpError(ErrorCode.InvalidRequest, err.message);
+      }
       // setStatus, NOT recordException: recordException writes the exception
       // MESSAGE and STACK as span-event attributes, and an upstream MCP server's
       // error message is arbitrary text we did not author. See redact.ts.
@@ -481,6 +504,25 @@ export async function listToolsFor(
         // will not clear until somebody rotates it — so it keeps the
         // ERROR-severity `_failed` record and keeps paging. `listResourcesFor`
         // below draws the same line.
+        // A SLUG WAITING ON A TOKEN IS NOT A FAULT, AND MUST NOT PAGE.
+        //
+        // `mcp.list_tools_failed` ships at ERROR severity and an alert rule keyed
+        // on `severity >= ERROR` pages on it. A deploy that shipped ahead of a
+        // credential on purpose (src/deploy/unseeded.ts) would otherwise page a
+        // production channel once per listing, for as long as the value is
+        // pending — which would make the deferral useless. Same line
+        // `LocalMachineOfflineError` already drew, for the same reason.
+        if (err instanceof ServerUnconfiguredError) {
+          event({
+            evt: "mcp.server_unconfigured",
+            slug,
+            explicit: Boolean(explicit),
+            // strad's own config authored these. No value, nothing upstream.
+            names: err.names,
+          });
+          return { ok: false, slug, err };
+        }
+
         const offline = err instanceof LocalMachineOfflineError;
         event(
           offline
@@ -547,6 +589,23 @@ export async function listToolsFor(
     // bundle in a two-bundle outage invisible to the counter that exists to
     // find it.
     for (const f of failures) explicit.onUnlistable(f.slug);
+    // AN UNCONFIGURED SLUG SAYS SO, IN STRAD'S OWN WORDS.
+    //
+    // Reported first when there is one, because "this server is waiting for a
+    // credential" and "this server's upstream is broken" send a caller to
+    // opposite places, and the generic sentence below would send them to the
+    // wrong one. This message is safe to relay in full precisely because strad
+    // constructed it: a slug and a set of `${NAME}`s out of our own config, and
+    // no upstream text or secret value anywhere in it.
+    const pending = failures.find(
+      (f) => f.err instanceof ServerUnconfiguredError,
+    );
+    if (pending) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        (pending.err as ServerUnconfiguredError).message,
+      );
+    }
     // The upstream's own message is NOT relayed. It is arbitrary text from
     // someone else's server — the one that motivated this branch was a
     // full HTML error page — and it would land in a client's error

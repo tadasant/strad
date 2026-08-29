@@ -226,15 +226,23 @@ empty list is a server with no tools, and no amount of error handling can tell
 those apart from the outside — which is why core also watches from the inside. A
 background **tool-surface monitor** (`src/gateway/reachability.ts`) probes every
 mounted slug on an interval and classifies it `ok`, `empty` (answered, offered
-nothing), `unreachable` (refused, 404'd or timed out) or `offline` — the last
-being a `local-tunnel` whose machine is simply switched off, which is that
-kind's normal state, stays out of the `degraded` list and pages nobody. It is
+nothing), `unreachable` (refused, 404'd or timed out), `offline` — a
+`local-tunnel` whose machine is simply switched off, which is that
+kind's normal state, stays out of the `degraded` list and pages nobody — or
+`unconfigured`, a slug that
+[declared `mayBeUnseeded:`](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential)
+for a credential nobody has seeded yet. The last is out of `degraded` for the
+opposite reason to `offline`: nothing is down and nothing is misrouted, the
+deploy shipped ahead of a token on purpose, and counting it as degraded would red
+the deploy the feature exists to let through. It is named on its own in the
+snapshot's `unconfigured` list instead. It is
 tagged with the server
 `kind` so a third-party remote — or a laptop that is simply switched off — is
 not confused with a component we deploy. It
 logs `strad.tool_surface_degraded` when a slug's state changes — or
-`strad.tool_surface_offline`, at Info and pageable by nothing, for the switched-off
-case — publishes the current answer on
+`strad.tool_surface_offline` / `strad.tool_surface_unconfigured`, both at Info and
+pageable by nothing, for the switched-off and awaiting-a-token cases — publishes
+the current answer on
 [`/healthz`](/operate/operations/#health-and-console-surface) as `degraded`, and
 records [`strad.mcp.tool_surface`](/operate/telemetry/#stradmcptool_surface--is-a-slug-serving-anything-at-all).
 All three leave the container: the log line ships too, against the

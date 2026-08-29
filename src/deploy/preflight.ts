@@ -11,6 +11,7 @@ import {
   CORE_BOOT_ENV_KEYS,
   REQUIRED_BOOT_ENV_KEYS,
 } from "../secrets/provider/hydrate.ts";
+import { waivedNames } from "./unseeded.ts";
 import type { ParameterAdmin } from "../secrets/parameters/types.ts";
 
 /**
@@ -67,6 +68,18 @@ export interface PreflightResult {
    * (a boot key).
    */
   unservedSlugs: Record<string, string[]>;
+  /**
+   * Names no namespace holds that are NOT missing, because every enabled server
+   * referencing them declared `mayBeUnseeded:` for them.
+   *
+   * The deliberately-deferred credential. Reported, never fatal: the servers
+   * that named it deploy `unconfigured` and the rest of the fleet deploys
+   * normally. See src/deploy/unseeded.ts for why the waiver is per name and why
+   * it has to be unanimous.
+   */
+  waived: string[];
+  /** For each waived name, the slugs that waived it. */
+  waivedSlugs: Record<string, string[]>;
   /** The namespace consulted. */
   namespace: string;
 }
@@ -281,15 +294,26 @@ export async function preflightSecrets(
   };
 
   const optional = new Set(opts.optional ?? OPTIONAL_BOOT_ENV_KEYS);
+  const waivers = waivedNames(config);
   const present: string[] = [];
   const perServer: string[] = [];
   const missing: string[] = [];
+  const waived: string[] = [];
+  const waivedSlugs: Record<string, string[]> = {};
   const unservedSlugs: Record<string, string[]> = {};
 
   for (const name of requiredSecretNames(config)) {
     if (held.has(name)) present.push(name);
     else if (coveredPerServer(name)) perServer.push(name);
-    else if (!optional.has(name)) {
+    else if (waivers.has(name)) {
+      // Absent, and every server that references it said it might be. Kept out
+      // of `missing` and named separately: "seeded somewhere else", "deliberately
+      // not seeded yet" and "nobody seeded this" are three different facts about
+      // a store, and collapsing the middle one into either of the others is what
+      // makes a deploy log unreadable.
+      waived.push(name);
+      waivedSlugs[name] = waivers.get(name)!;
+    } else if (!optional.has(name)) {
       missing.push(name);
       const short = [...refsBySlug]
         .filter(
@@ -302,5 +326,13 @@ export async function preflightSecrets(
     }
   }
 
-  return { missing, present, perServer, unservedSlugs, namespace };
+  return {
+    missing,
+    present,
+    perServer,
+    waived,
+    waivedSlugs,
+    unservedSlugs,
+    namespace,
+  };
 }
