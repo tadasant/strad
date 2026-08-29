@@ -625,6 +625,37 @@ render fails, but the error names every name that could not render, with
 value-free reasons. That keeps the failure whole while making the diagnosis a
 single line.
 
+### 69. A namespace is not addressable, so reading one means reading the whole store
+
+A parameter's namespace lives inside its version envelope, not on a Parameter
+Manager label. `list(namespace)` therefore cannot ask for a namespace: it pages
+every managed parameter in the project, reads a version of each to recover its
+envelope, and filters afterwards. `resolve()` calls `list()`, so resolving N
+namespaces cost N x P version reads for P parameters — and both factors grow as
+servers are added. Six added server slugs took that past Parameter Manager's
+per-project read quota, and a production deploy died on a `429` before `doctl` was
+called.
+
+The two deploy-time readers — `render-spec` and `store:check` — are one-shot and
+read-only, so they enumerate once per process rather than once per namespace. At
+fourteen namespaces of four parameters that is 1751 requests down to 169. The
+gateway and the console leave the reuse off, because they write and a cached roster
+would report a freshly-written parameter as absent; they still pay N x P. Nothing
+bounds P either.
+
+The real fix is to put the namespace on a parameter label so the listing can filter
+server-side, which needs a backfill of every parameter already seeded. See
+`HACKS.md` #69.
+
+The store client also retries a refused request — `429` on anything, `5xx` on a read
+— with exponential backoff and jitter, bounded at three retries and about six
+seconds of added sleep per call. That clears a burst that overran the quota for a
+second or two. It does not clear a quota exhausted for a whole minute: the budget
+runs out and the deploy fails as it did before, just later. The bound is deliberate
+— every read has to SETTLE, and a budget long enough to cross a minute boundary
+would put minutes of sleep on a deploy's critical path, multiplied by every call in
+a store-wide read.
+
 ### 29. The console's secret badges prove presence, not that a credential works
 
 `/ui` lists every configured MCP server and whether the secrets it requires

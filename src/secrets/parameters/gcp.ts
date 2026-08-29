@@ -2,10 +2,20 @@ import {
   mintAccessToken,
   parseServiceAccount,
   SCOPE_CLOUD_PLATFORM,
+  ServiceAccountAuthError,
   type FetchLike,
   type MintedToken,
   type ServiceAccount,
 } from "./service-account.ts";
+import {
+  DEFAULT_RETRY_BUDGET,
+  isIdempotentMethod,
+  isRetryableStatus,
+  parseRetryAfter,
+  retryDelayMs,
+  sleep,
+  type RetryBudget,
+} from "./retry.ts";
 import {
   decodeEnvelope,
   decodeEnvelopeValue,
@@ -68,6 +78,20 @@ export interface GcpParameterStoreConfig {
    * every read passes through.
    */
   timeoutMs?: number;
+  /**
+   * How hard a refused call is tried again. Defaults to
+   * `DEFAULT_RETRY_BUDGET`; see `retry.ts` for what each ceiling holds and why
+   * the default is small.
+   */
+  retry?: Partial<RetryBudget>;
+  /**
+   * How long an enumeration of the whole store may be reused, in ms.
+   *
+   * `0` — the default — means never, and that is the right answer for anything
+   * that writes: a cached roster reports a parameter someone just created as
+   * absent. Deploy-time readers set it; see `roster()`.
+   */
+  rosterTtlMs?: number;
 }
 
 const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
@@ -96,6 +120,20 @@ interface IamBinding {
   condition?: unknown;
 }
 
+/**
+ * The HTTP status behind a failure, for the two error types this client raises.
+ *
+ * `undefined` means the failure was not an HTTP answer at all — an aborted
+ * request, a socket reset, a `JSON.parse` on a truncated body. Those are NOT
+ * retried: a timeout retried is the per-attempt deadline multiplied by the
+ * attempt count, which is the unbounded read `timeoutMs` exists to prevent.
+ */
+function statusOf(err: unknown): number | undefined {
+  if (err instanceof ParameterStoreError) return err.status;
+  if (err instanceof ServiceAccountAuthError) return err.status;
+  return undefined;
+}
+
 export function createGcpParameterStore(
   cfg: GcpParameterStoreConfig,
 ): ParameterStore {
@@ -106,16 +144,73 @@ export function createGcpParameterStore(
   const pmParent = `projects/${cfg.projectId}/locations/${location}`;
   const smParent = `projects/${cfg.projectId}`;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const budget: RetryBudget = { ...DEFAULT_RETRY_BUDGET, ...cfg.retry };
+  const rosterTtlMs = cfg.rosterTtlMs ?? 0;
   let cached: MintedToken | undefined;
+  let cachedRoster: { at: number; entries: Promise<RosterEntry[]> } | undefined;
 
+  /**
+   * The bearer every call carries, minted once per hour and shared.
+   *
+   * Bounded and retried exactly like the calls it authorizes. It is on the same
+   * critical path — `call()` awaits it before it has a `Response` to abort — so
+   * a token endpoint that hangs or throttles takes down every read regardless of
+   * what the per-request signal below promises. The mint's own `fetchImpl` is
+   * wrapped rather than `mintAccessToken` being taught about deadlines: the
+   * deadline belongs to this store's configuration, not to the JWT exchange.
+   */
   async function token(): Promise<string> {
     if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
-    cached = await mintAccessToken(cfg.account, {
-      scope: SCOPE_CLOUD_PLATFORM,
-      tokenUrl: cfg.tokenUrl,
-      fetchImpl,
-    });
+    // Idempotent despite being a POST: minting a token creates no resource and
+    // changes nothing, so a refused exchange is safe to repeat.
+    cached = await retrying(true, () =>
+      mintAccessToken(cfg.account, {
+        scope: SCOPE_CLOUD_PLATFORM,
+        tokenUrl: cfg.tokenUrl,
+        fetchImpl: (input, init) =>
+          fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
+      }),
+    );
     return cached.token;
+  }
+
+  /**
+   * Run `attempt` until it stops failing in a way worth repeating.
+   *
+   * Both callers reach a Google API and both can be refused by the same
+   * per-project quota, but they report it differently — `call()` raises a
+   * `ParameterStoreError`, `mintAccessToken` a `ServiceAccountAuthError`. What
+   * they share is a status and a budget, so the loop lives here and the status
+   * is read off whichever error arrived.
+   *
+   * Nothing is logged. A retry that succeeded is not news, and a retry that gave
+   * up throws the original error unchanged — the status a caller switches on
+   * (`404` to `null`, `409` to "already exists") must survive the loop exactly.
+   */
+  async function retrying<T>(
+    idempotent: boolean,
+    attempt: () => Promise<T>,
+  ): Promise<T> {
+    let spentMs = 0;
+    for (let n = 0; ; n++) {
+      try {
+        return await attempt();
+      } catch (err) {
+        const status = statusOf(err);
+        if (status === undefined || !isRetryableStatus(status, idempotent))
+          throw err;
+        const delay = retryDelayMs({
+          attempt: n,
+          spentMs,
+          retryAfterMs:
+            err instanceof ParameterStoreError ? err.retryAfterMs : undefined,
+          budget,
+        });
+        if (delay === undefined) throw err;
+        await sleep(delay);
+        spentMs += delay;
+      }
+    }
   }
 
   async function call(
@@ -124,35 +219,63 @@ export function createGcpParameterStore(
     path: string,
     body?: unknown,
   ): Promise<unknown> {
-    const res = await fetchImpl(`${base}/v1/${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${await token()}`,
-        "content-type": "application/json",
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      // Bound every call. See `timeoutMs` above: an unbounded read is the one
-      // failure the runtime provider cannot degrade around.
-      signal: AbortSignal.timeout(timeoutMs),
+    // The path names a resource; it never carries a value (values travel in the
+    // body, which is not echoed here). Strip the query and any `:verb`.
+    const resource = (path.split("?")[0] ?? path).split(":")[0];
+    const idempotent = isIdempotentMethod(method);
+    // The bearer is resolved OUTSIDE the loop. `token()` carries a retry budget
+    // of its own, and nesting the two would multiply them into sixteen attempts
+    // at one throttled token endpoint.
+    const bearer = await token();
+    return retrying(idempotent, async () => {
+      const res = await fetchImpl(`${base}/v1/${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          "content-type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        // Bound every ATTEMPT — a fresh signal each time round, because an
+        // AbortSignal that has already fired aborts the next request instantly.
+        // See `timeoutMs` above: an unbounded read is the one failure the
+        // runtime provider cannot degrade around, and retrying widens that bound
+        // rather than removing it (see `retry.ts` for the ceiling).
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        if (isRetryableStatus(res.status, idempotent)) {
+          // Release the socket before sleeping on it. The body of a refused
+          // request is a Google error payload we never read, and leaving it
+          // undrained holds the connection open for the whole backoff.
+          await res.body?.cancel().catch(() => {});
+        }
+        throw new ParameterStoreError(
+          `${method} ${resource} failed: ${res.status} ${res.statusText}`,
+          res.status,
+          parseRetryAfter(res.headers.get("retry-after")),
+        );
+      }
+      if (res.status === 204) return {};
+      const text = await res.text();
+      return text ? (JSON.parse(text) as unknown) : {};
     });
-    if (!res.ok) {
-      // The path names a resource; it never carries a value (values travel in
-      // the body, which is not echoed here). Strip the query and any `:verb`.
-      const resource = (path.split("?")[0] ?? path).split(":")[0];
-      throw new ParameterStoreError(
-        `${method} ${resource} failed: ${res.status} ${res.statusText}`,
-        res.status,
-      );
-    }
-    if (res.status === 204) return {};
-    const text = await res.text();
-    return text ? (JSON.parse(text) as unknown) : {};
   }
 
   const pm = (m: string, p: string, b?: unknown) => call(pmBase, m, p, b);
   const sm = (m: string, p: string, b?: unknown) => call(smBase, m, p, b);
 
   // --- Parameter Manager version plumbing ---------------------------------
+
+  /**
+   * One parameter as an enumeration sees it: the id, plus everything its latest
+   * version says about it. The envelope carries the path, so this is what a
+   * namespace filter is applied to.
+   */
+  interface RosterEntry {
+    envelope: ParameterEnvelope;
+    versionId: string;
+    createTime?: string;
+  }
 
   interface RawVersion {
     name?: string;
@@ -321,7 +444,15 @@ export function createGcpParameterStore(
 
   // --- ParameterStore surface ---------------------------------------------
 
-  async function list(namespace: string): Promise<ParameterMeta[]> {
+  /**
+   * Every `managed-by: strad` parameter in the project, with its envelope.
+   *
+   * The namespace is INSIDE the envelope, not on a label, so there is no way to
+   * ask the store for one namespace: enumerating means reading a version of
+   * every parameter and filtering afterwards. That is what makes this expensive,
+   * and why `roster()` exists.
+   */
+  async function enumerate(): Promise<RosterEntry[]> {
     const params: { id: string }[] = [];
     let pageToken: string | undefined;
     do {
@@ -342,7 +473,7 @@ export function createGcpParameterStore(
     // One version read per parameter to recover its envelope (path, secret,
     // note) and whether it has a value. Bounded fan-out: a store of 500
     // parameters must not open 500 connections to render one page.
-    const out: ParameterMeta[] = [];
+    const out: RosterEntry[] = [];
     const FANOUT = 10;
     for (let i = 0; i < params.length; i += FANOUT) {
       const batch = await Promise.all(
@@ -352,22 +483,63 @@ export function createGcpParameterStore(
               return null;
             throw err;
           });
-          if (!cur) return null;
-          const { path, secret, note } = cur.envelope;
-          if (!path.startsWith(namespace)) return null;
-          const meta: ParameterMeta = {
-            path,
-            variable: variableOf(path),
-            secret,
-            note,
-            hasValue: true,
-            latestVersion: cur.versionId,
-            updatedAt: cur.createTime,
-          };
-          return meta;
+          return cur ? { ...cur } : null;
         }),
       );
-      for (const m of batch) if (m) out.push(m);
+      for (const e of batch) if (e) out.push(e);
+    }
+    return out;
+  }
+
+  /**
+   * The enumeration above, optionally reused for `rosterTtlMs`.
+   *
+   * Off by default, because a store that answers from a cache is a store that
+   * can report a parameter someone just wrote as absent — and the console writes
+   * and re-lists in the same breath. It is opted into by the two DEPLOY-TIME
+   * readers (`render-spec`, `store:check`), which are one-shot, read-only, and
+   * the reason the cache exists at all: each resolves N namespaces, `resolve()`
+   * enumerates the whole project once per namespace, and the cost is therefore
+   * N x P version reads for P parameters. Adding six server slugs took that past
+   * Parameter Manager's per-project read quota and 429'd a production deploy.
+   * One enumeration per process makes it P.
+   *
+   * The PROMISE is cached, not its result, so namespaces resolved concurrently
+   * share one enumeration instead of racing to start several. A rejection is
+   * evicted — a refused enumeration must not be the answer for a whole minute.
+   */
+  async function roster(): Promise<RosterEntry[]> {
+    if (rosterTtlMs <= 0) return enumerate();
+    const held = cachedRoster;
+    if (held && Date.now() - held.at < rosterTtlMs) return held.entries;
+    const entries = enumerate();
+    const fresh = { at: Date.now(), entries };
+    cachedRoster = fresh;
+    entries.catch(() => {
+      if (cachedRoster === fresh) cachedRoster = undefined;
+    });
+    return entries;
+  }
+
+  /** Drop the roster. Every write calls this; a stale roster is a wrong answer. */
+  function forgetRoster(): void {
+    cachedRoster = undefined;
+  }
+
+  async function list(namespace: string): Promise<ParameterMeta[]> {
+    const out: ParameterMeta[] = [];
+    for (const { envelope, versionId, createTime } of await roster()) {
+      const { path, secret, note } = envelope;
+      if (!path.startsWith(namespace)) continue;
+      out.push({
+        path,
+        variable: variableOf(path),
+        secret,
+        note,
+        hasValue: true,
+        latestVersion: versionId,
+        updatedAt: createTime,
+      });
     }
     out.sort((a, b) => a.path.localeCompare(b.path));
     return out;
@@ -661,7 +833,9 @@ export function createGcpParameterStore(
     const FANOUT = 10;
     for (let i = 0; i < metas.length; i += FANOUT) {
       const batch = await Promise.all(
-        metas.slice(i, i + FANOUT).map((meta) => renderOne(meta.path)),
+        metas
+          .slice(i, i + FANOUT)
+          .map((meta) => renderOne(meta.path, meta.latestVersion)),
       );
       for (const outcome of batch) {
         if ("value" in outcome) values[outcome.variable] = outcome.value;
@@ -684,11 +858,18 @@ export function createGcpParameterStore(
    * two the old loop skipped with `continue`, so they stay soft and `resolve()`
    * keeps returning the rest.
    */
-  async function renderOne(path: string): Promise<RenderOutcome> {
+  async function renderOne(
+    path: string,
+    knownVid?: string,
+  ): Promise<RenderOutcome> {
     const id = parameterId(path);
     const variable = variableOf(path);
 
-    const vid = await currentVersionId(id);
+    // `list()` already read the latest version to recover the envelope, so
+    // re-deriving it here is a versions LIST per parameter that answers a
+    // question the caller holds the answer to. On a deploy that is one wasted
+    // request for every parameter in every namespace resolved.
+    const vid = knownVid ?? (await currentVersionId(id));
     if (!vid) {
       return {
         variable,
@@ -775,14 +956,33 @@ export function createGcpParameterStore(
     return renderAll(namespace);
   }
 
+  /**
+   * A write, with the roster dropped either way.
+   *
+   * `finally`, not "on success": a write that throws may still have landed —
+   * `create()` rolls back with best-effort DELETEs that are allowed to fail — so
+   * the only safe assumption after any write is that the enumeration is stale.
+   */
+  function writing<A extends unknown[], T>(
+    fn: (...args: A) => Promise<T>,
+  ): (...args: A) => Promise<T> {
+    return async (...args: A) => {
+      try {
+        return await fn(...args);
+      } finally {
+        forgetRoster();
+      }
+    };
+  }
+
   return {
     backend: "gcp",
     list,
-    create,
-    rotate,
-    setNote,
+    create: writing(create),
+    rotate: writing(rotate),
+    setNote: writing(setNote),
     reveal,
-    destroy,
+    destroy: writing(destroy),
     resolve,
     resolveDetailed,
   };

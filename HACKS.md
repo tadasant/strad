@@ -3146,3 +3146,46 @@ build.
 **Undo.** If Grafana ever publishes an npm package, this becomes an ordinary
 tree: delete the fetch stage, drop the `binary` seam, and import the server the
 way every other mount is imported.
+
+## 69. A namespace is not addressable, so reading one means reading the whole store
+
+**What.** A parameter's namespace lives inside its version ENVELOPE, not on a
+Parameter Manager label. So `list(namespace)` cannot ask for a namespace: it pages
+every `managed-by: strad` parameter in the project, reads a version of each one to
+recover its envelope, and filters afterwards. `resolve()` calls `list()`, so
+resolving N namespaces cost N x P version reads for P parameters — and both factors
+grow when servers are added. Six new `google-sheets-*` slugs took that past
+Parameter Manager's per-project read quota: the render 429'd and a production deploy
+died before `doctl` was called.
+
+The shape is unchanged. What changed is that the two DEPLOY-TIME readers —
+`render-spec` and `store:check` — are one-shot and read-only, so they set
+`rosterTtlMs` and enumerate once per process instead of once per namespace. At
+fourteen namespaces of four parameters that is 1751 requests down to 169.
+
+**What is still true.** The gateway and the console leave the reuse OFF, because
+they write, and a cached roster answers a freshly-written parameter with "absent".
+They still pay N x P. Nothing bounds P either: a store that grew to 500 parameters
+would cost 1000 version reads for one enumeration, per process, however few
+namespaces it needed.
+
+**Why not.** The real fix is to put the namespace on a parameter LABEL so the
+listing can filter server-side. That means a schema change plus a backfill of every
+parameter already seeded in staging and prod, and a reader that tolerates both
+shapes during the migration — a bigger change than the outage warranted, and one
+that wants its own PR.
+
+**The retry, and its ceiling.** `call()` retries a refused request — `429` on
+anything, `5xx` on a read — with exponential backoff and jitter, bounded at three
+retries and about six seconds of added sleep per call (`DEFAULT_RETRY_BUDGET` in
+`src/secrets/parameters/retry.ts`). That clears a burst that overran the quota for a
+second or two. It does NOT clear a quota exhausted for a whole minute: the budget
+runs out and the original `429` is thrown. The bound is deliberate — the store's
+other invariant is that every read SETTLES, and a budget long enough to cross a
+minute boundary would put minutes of sleep on a deploy's critical path, multiplied
+by every call in a store-wide read. A `Retry-After` longer than the remaining budget
+gives up immediately rather than sleeping past the bound.
+
+**Undo.** Label a parameter with its namespace at `create()`, backfill the existing
+ones, and filter the listing server-side. Then `rosterTtlMs` can go back to zero
+everywhere and the retry stops being load-bearing.

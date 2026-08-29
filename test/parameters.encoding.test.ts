@@ -375,13 +375,9 @@ describe("a rotate that half-fails", () => {
     return ((input, init) => {
       const url = typeof input === "string" ? input : String(input);
       if (url.includes(":addVersion") && url.includes("/secrets/")) {
-        return Promise.resolve({
-          ok: false,
-          status: 503,
-          statusText: "Service Unavailable",
-          text: async () => "",
-          json: async () => ({}),
-        } as Response);
+        return Promise.resolve(
+          new Response("", { status: 503, statusText: "Service Unavailable" }),
+        );
       }
       return real(input, init);
     }) as typeof gcp.fetchImpl;

@@ -272,7 +272,14 @@ if (!storeBacked) {
 // The store client, when this deployment is store-backed. It is built from the
 // SAME bootstrap credential the container will hold, so a deploy that can
 // preflight is a deploy whose container can resolve.
-const store = resolverFromEnv(process.env);
+// One enumeration of the store for the whole render. `resolve()` enumerates the
+// project once per namespace — the namespace lives inside a parameter's envelope,
+// not on a label — so resolving N namespaces cost N x P version reads, and six
+// added server slugs took that past Parameter Manager's per-project read quota
+// and 429'd a production deploy. This render is one-shot and reads only, so
+// reusing the enumeration is safe here in a way it is not for the gateway or the
+// console, both of which write.
+const store = resolverFromEnv(process.env, { rosterTtlMs: 10 * 60_000 });
 if (storeBacked && !store) {
   console.error(
     `::error::gateway.secrets.provider is "gcp-parameter-store" but ` +
@@ -397,21 +404,38 @@ if (store) {
   }
 
   // The slugs worth a value read: seeded, AND seeded with a name this server
-  // actually references. Resolved CONCURRENTLY — each `resolve()` renders a
+  // actually references. Resolved concurrently — each `resolve()` renders a
   // whole namespace, and doing them one after another puts the sum of them on
   // the deploy's critical path for no reason.
   const candidates = [...wantedBySlug].filter(([slug, refs]) => {
     const held = seeded.get(slug);
     return Boolean(held?.length) && [...refs].some((n) => held!.includes(n));
   });
-  const bags = await Promise.all(
-    candidates.map(async ([slug, refs]) =>
-      substitutionBag(
-        await resolveNamespace(staticNamespace(config.gateway.env, slug)),
-        refs,
-      ),
-    ),
-  );
+
+  // ...but in BATCHES, not all at once. `resolve()` already fans out ten wide
+  // inside one namespace, so resolving every namespace simultaneously made the
+  // burst a function of how many servers the config has — and Parameter Manager
+  // enforces a per-project read quota. Six new `google-sheets-*` slugs were what
+  // took that burst over it: the render 429'd, and a production deploy died
+  // before `doctl` was ever called. The retry in the store client is what
+  // survives a refusal; this is what stops provoking one, and it holds whether
+  // the config carries fourteen servers or forty.
+  const NAMESPACE_FANOUT = 3;
+  const bags: ReturnType<typeof substitutionBag>[] = [];
+  for (let i = 0; i < candidates.length; i += NAMESPACE_FANOUT) {
+    bags.push(
+      ...(await Promise.all(
+        candidates
+          .slice(i, i + NAMESPACE_FANOUT)
+          .map(async ([slug, refs]) =>
+            substitutionBag(
+              await resolveNamespace(staticNamespace(config.gateway.env, slug)),
+              refs,
+            ),
+          ),
+      )),
+    );
+  }
 
   for (const [i, [slug]] of candidates.entries()) {
     const namespace = staticNamespace(config.gateway.env, slug);
