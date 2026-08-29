@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 20 upstream MCP servers (20
- * mounts, see `buildMounts`), one container, one process, one Chromium. The
- * gateway's config names more SLUGS than that — 29 supplementary-image entries
- * in infra/strad.staging.yaml — because capability variants (gmail-ro, gmail-rw,
- * …) are several slugs pointing at ONE mount here.
+ * bundle — THE strad supplementary image. All 21 upstream MCP servers (21
+ * mounts, see `buildMounts`), one container, one process, one Chromium, one
+ * mcp-grafana child. The gateway's config names more SLUGS than that — 30
+ * supplementary-image entries in infra/strad.staging.yaml — because capability
+ * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  *
- * NINETEEN IS THE FLOOR, not a constant. Three trees (telegram,
- * remote-filesystem, google-sheets) mount ONE INSTANCE PER SLUG the environment
- * carries per-slug values for — see `extraSlugs` — so a container told about
- * `telegram-ro` and `telegram-rw` separately serves /telegram, /telegram-ro and
- * /telegram-rw. google-sheets is the case that will really use it: an OAuth
- * refresh token IS one Google account, so six google-sheets slugs over three
- * accounts are three more mounts here. The conventional path is always mounted,
- * so a config that asks for none of this sees exactly the nineteen it saw before.
+ * TWENTY-ONE IS THE FLOOR, not a constant. Four trees (telegram,
+ * remote-filesystem, google-sheets, grafana) mount ONE INSTANCE PER SLUG the
+ * environment carries per-slug values for — see `extraSlugs` — so a container
+ * told about `telegram-ro` and `telegram-rw` separately serves /telegram,
+ * /telegram-ro and /telegram-rw. google-sheets and grafana are the cases a real
+ * deployment uses: an OAuth refresh token IS one Google account and a
+ * service-account token IS one Grafana, so each extra account is another mount
+ * here. The conventional path is always mounted, so a config that asks for none
+ * of this sees exactly the twenty-one it saw before.
  *
- * TWENTY-EIGHT of those are on one component. The other one, `zimmer-secrets`,
+ * TWENTY-NINE of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, because it fronts a second
  * parameter store and `loadSecrets()` below reads `process.env` — one container,
  * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
@@ -41,8 +42,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Nineteen servers now share a process. A crash is a
- * 19-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Twenty-one servers now share a process. A crash is a
+ * 21-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled

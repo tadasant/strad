@@ -255,8 +255,8 @@ A server **served by a container image**. strad deploys the image as an
 internal-only component and proxies to it over the private network.
 
 One bundle runs one image, but that image may host **many** servers — each on its
-own `path`. strad's own bundle image mounts twenty-one MCP servers in one process, so
-seventeen `path`s on one container.
+own `path`. strad's own bundle image mounts twenty-one MCP servers in one process,
+and staging's slugs land on nineteen `path`s of one container.
 
 Two servers may also share a `path` in one bundle — that is the capability-variant
 pattern (`gmail-ro` and `gmail-rw`, told apart by their `tools:` policy). What they

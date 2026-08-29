@@ -89,9 +89,18 @@ complete credential for.
 A slug on `path: /<its own slug>` is handed its own values under
 `<SLUG>__<NAME>`; that is the general
 [per-slug variable mechanism](/operate/secrets/), and Grafana is one of the four
-trees that reads it. The conventional `/grafana` mount is always served — degraded
-until something gives it a URL and a token — so the slug and its 52 tools are
-visible in the console before any credential exists.
+trees that reads it.
+
+The conventional `/grafana` mount is **always** served, so the slug and its 52
+tools are visible in the console before any credential exists. Be precise about
+what it holds, though: the renderer emits every supplementary server's variables
+under the **bare** name as well as the per-slug one, and an instance with no
+per-slug names of its own falls back to the bare ones. So on a container where
+`grafana-registry` is the only Grafana slug, `/grafana` comes up holding *that*
+slug's URL and token rather than degraded. Nothing routes to it — no config entry
+names `path: /grafana` — but it is a live mount, not an empty one, and a
+deployment that wants `/grafana` to mean obs.tadasant.com should say so with its
+own `grafana` slug rather than rely on the fallback.
 
 Which means **adding a second Grafana is config alone**: a new slug, its own
 `path: /<slug>`, its own two variables. No image change.
