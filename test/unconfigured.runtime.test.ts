@@ -383,6 +383,88 @@ describe("seeding the value, with the gateway still running", () => {
   });
 });
 
+describe("a genuine fault outranks a deferral", () => {
+  it("reports the BROKEN slug, not the waiting one, when a listing has both", async () => {
+    // "Seed a token" is advice somebody can act on, and act on wrongly. A named
+    // selection holding an unconfigured slug AND a broken one must send them to
+    // the upstream that is actually down — the deferral message is for the case
+    // where it is the only thing wrong, which is what a console-issued
+    // `?servers=<slug>` link produces.
+    const dead = await startUpstream("dead", "never-matches");
+    await dead.close(); // nothing is listening on that port now
+
+    const config = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: ${ENV}
+  secrets:
+    provider: gcp-parameter-store
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+servers:
+  - slug: dead
+    kind: remote-http
+    url: ${dead.url}
+    entitlements: [admin]
+  - slug: apify
+    kind: remote-http
+    url: ${apify.url}
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${APIFY_TOKEN}"
+    mayBeUnseeded: [APIFY_TOKEN]
+`);
+    const provider = new StoreSecretProvider(
+      createFakeGcp().store,
+      `/strad/${ENV}/gateway/static/`,
+      { ttlMs: 60_000, now: () => clock },
+    );
+    const env: NodeJS.ProcessEnv = {
+      STRAD_TOKENS: JSON.stringify([clientToken.record]),
+    };
+    const reg = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(provider),
+      mode: "core",
+      env,
+    });
+    const app = createApp({
+      config,
+      registry: reg,
+      tokenStore: tokenStoreFromConfig(config, env),
+      mode: "core",
+      env,
+    });
+    const srv = app.listen(0);
+    await new Promise((r) => srv.once("listening", r));
+    const port = (srv.address() as { port: number }).port;
+    try {
+      const c = new Client({ name: "t", version: "1" }, { capabilities: {} });
+      await c.connect(
+        new StreamableHTTPClientTransport(
+          new URL(`http://127.0.0.1:${port}/mcp?servers=dead,apify`),
+          {
+            requestInit: {
+              headers: { Authorization: `Bearer ${clientToken.plaintext}` },
+            },
+          },
+        ),
+      );
+      await expect(c.listTools()).rejects.toThrow(
+        /server "dead" was requested by name/,
+      );
+      await c.close();
+    } finally {
+      srv.closeAllConnections();
+      srv.close();
+      await reg.close();
+    }
+  });
+});
+
 describe("without the waiver, nothing about today changes", () => {
   it("an undeclared missing credential is `unreachable` AND degraded", async () => {
     // The negative control, and the property the whole design is protecting: a

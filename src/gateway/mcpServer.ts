@@ -597,10 +597,19 @@ export async function listToolsFor(
     // wrong one. This message is safe to relay in full precisely because strad
     // constructed it: a slug and a set of `${NAME}`s out of our own config, and
     // no upstream text or secret value anywhere in it.
+    // A GENUINE FAULT OUTRANKS A DEFERRAL. A named selection holding both an
+    // unconfigured slug and a broken one reports the BROKEN one: "seed a token"
+    // is advice somebody can act on and act on wrongly, and it would send them
+    // away from an upstream that is actually down. The unconfigured message is
+    // for the case where it is the only thing wrong — which is the case a
+    // console-issued `?servers=<slug>` link produces.
+    const broken = failures.find(
+      (f) => !(f.err instanceof ServerUnconfiguredError),
+    );
     const pending = failures.find(
       (f) => f.err instanceof ServerUnconfiguredError,
     );
-    if (pending) {
+    if (pending && !broken) {
       throw new McpError(
         ErrorCode.InvalidRequest,
         (pending.err as ServerUnconfiguredError).message,
@@ -649,6 +658,20 @@ async function listResourcesFor(
       try {
         return await adapter.listResources();
       } catch (err) {
+        // A slug waiting on a deferred credential is not a fault, and
+        // `mcp.list_resources_failed` ships at ERROR severity. Every client that
+        // lists resources would otherwise page once per listing, for as long as
+        // the value is pending — the same trap the tools path draws this line to
+        // avoid.
+        if (err instanceof ServerUnconfiguredError) {
+          event({
+            evt: "mcp.server_unconfigured",
+            slug,
+            explicit: false,
+            names: err.names,
+          });
+          return [];
+        }
         event(
           // `LocalMachineOfflineError` and NOT the `LocalHostUnavailableError`
           // base: a host that REFUSES is answering, and a stale credential is a

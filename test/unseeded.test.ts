@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -218,6 +218,40 @@ describe("a waiver that waives nothing is the typo", () => {
     expect(waivedNames(config).has("APIFY_TOKEN")).toBe(false);
   });
 
+  it("REFUSES a waiver on a gateway boot key, even when a server names it", () => {
+    // The hole a fresh-eyes review found: unanimity alone did not protect a boot
+    // key, it only happened to, because no config referenced one. A builtin
+    // whose `options:` mentions ${STRAD_TOKENS} gives the key a referencing slug
+    // — and without an explicit rule that slug could waive it, producing a green
+    // render and a gateway that rejects every request in the fleet.
+    const config = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: ${ENV}
+  secrets:
+    provider: gcp-parameter-store
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+servers:
+  - slug: echo
+    kind: builtin
+    module: ./src/servers/echo.ts
+    entitlements: [admin]
+    options:
+      greeting: "\${STRAD_TOKENS}"
+    mayBeUnseeded: [STRAD_TOKENS]
+`);
+    const problems = unusedWaivers(config);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("BOOT key");
+    // And the waiver does not take effect even so — belt and braces, because the
+    // gate and the resolution are read by different callers.
+    expect(waivedNames(config).has("STRAD_TOKENS")).toBe(false);
+  });
+
   it("says nothing about a waiver that matches", () => {
     expect(unusedWaivers(parseConfig(WAIVED))).toEqual([]);
     expect(unusedWaivers(parseConfig(UNWAIVED))).toEqual([]);
@@ -435,6 +469,146 @@ describe("render-spec and an unseeded secret", () => {
     ).toEqual([RESOLVER_ENV.keyJson]);
     // And the config both servers ride on is on the component, unaltered.
     expect(core.envs.map((e) => e.key)).toContain("STRAD_CONFIG_YAML");
+  });
+
+  it("RENDERS a supplementary image whose baked env: ref was waived", async () => {
+    // THE REGRESSION THIS TEST EXISTS FOR. The baked half is resolved by
+    // `renderAppSpec`, and `resolveMap` THROWS on an unresolved ref — so warning
+    // and skipping in render-spec left the throw in place and the whole fleet's
+    // deploy still died, now with a stack trace after a warning that said the
+    // opposite. The waived name is dropped from the map before resolution
+    // instead.
+    const result = await render(`
+version: 1
+gateway:
+  name: strad
+  env: ${ENV}
+  secrets:
+    provider: gcp-parameter-store
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle-shop
+servers:
+  - slug: granola
+    kind: remote-http
+    url: https://mcp.granola.example.com/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${GRANOLA_TOKEN}"
+  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:1.0.0
+    bundle: bundle-shop
+    entitlements: [admin]
+    env:
+      SHOP_PASSWORD: "\${SHOP_PASSWORD}"
+    mayBeUnseeded: [SHOP_PASSWORD]
+`);
+    expect(result.ok).toBe(true);
+    expect(result.stderr).toContain("::warning::unseeded secret SHOP_PASSWORD");
+    expect(result.stderr).not.toContain("::error::");
+
+    // The component ships, and ships WITHOUT the variable. An empty string would
+    // be worse than absent: the container would try to use it as a credential,
+    // and the server's own "is this set" check would never fire.
+    const bundle = result.spec!.services.find((s) => s.name === "bundle-shop");
+    expect(bundle).toBeDefined();
+    expect(bundle!.envs.map((e) => e.key)).not.toContain("SHOP_PASSWORD");
+    // ...and the rest of the fleet is on the spec, untouched.
+    expect(result.spec!.services.map((s) => s.name)).toContain("core");
+  });
+
+  it("EXITS 1 on the same supplementary env: ref with no waiver", async () => {
+    const result = await render(`
+version: 1
+gateway:
+  name: strad
+  env: ${ENV}
+  secrets:
+    provider: gcp-parameter-store
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle-shop
+servers:
+  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:1.0.0
+    bundle: bundle-shop
+    entitlements: [admin]
+    env:
+      SHOP_PASSWORD: "\${SHOP_PASSWORD}"
+`);
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toContain("::error::");
+    expect(result.stderr).toContain("SHOP_PASSWORD");
+  });
+
+  it("omits the SECRET var, and renders, under the `env` provider too", () => {
+    // The other baking path. Under `provider: env` every `${NAME}` is a
+    // `secret(name, required)` broadcast onto the spec, and a missing one used to
+    // exit 1 there as well. The waiver omits the var instead — the slug resolves
+    // nothing at runtime and comes up `unconfigured`, exactly as under the store,
+    // but the value only lands on a REDEPLOY because this provider bakes.
+    //
+    // execFileSync is safe here and only here: an env-backed render talks to no
+    // store, so there is no in-process HTTP server for it to deadlock against.
+    const dir = mkdtempSync(join(tmpdir(), "strad-unseeded-env-"));
+    const cfg = join(dir, "cfg.yaml");
+    writeFileSync(
+      cfg,
+      `
+version: 1
+gateway:
+  name: strad
+  env: ${ENV}
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+servers:
+  - slug: apify
+    kind: remote-http
+    url: https://mcp.apify.example.com/mcp
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer \${APIFY_TOKEN}"
+    mayBeUnseeded: [APIFY_TOKEN]
+`,
+    );
+    const stdout = execFileSync(
+      process.execPath,
+      [
+        "--experimental-transform-types",
+        "scripts/render-spec.ts",
+        "--config",
+        cfg,
+        "--image",
+        "ghcr.io/tadasant/strad:0.1.0",
+        "--app",
+        "strad-test",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH ?? "",
+          STRAD_TOKENS: "[]",
+          STRAD_INTERNAL_TOKEN: "internal",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    const spec = JSON.parse(stdout) as RenderedSpec;
+    const core = spec.services.find((s) => s.name === "core")!;
+    expect(core.envs.map((e) => e.key)).not.toContain("APIFY_TOKEN");
+    // The boot keys that ARE set still land, so this is an omission of one name
+    // rather than the whole secret path falling over.
+    expect(core.envs.map((e) => e.key)).toContain("STRAD_TOKENS");
   });
 
   it("never prints the value of a secret it DID resolve", async () => {

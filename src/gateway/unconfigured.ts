@@ -31,7 +31,16 @@ export class ServerUnconfiguredError
   implements SelfClassifyingError
 {
   readonly slug: string;
-  /** The `${NAME}`s this slug declared and the store does not hold. */
+  /**
+   * The `${NAME}`s this slug declared and the store does not hold.
+   *
+   * In practice ONE, and that is worth knowing rather than inferring: resolution
+   * runs the names concurrently through `Promise.all`, so the first rejection
+   * wins and the others are never reported. A plural field because a caller
+   * should not have to care, and because reporting one at a time is a property
+   * of how resolution happens rather than of what is missing — a slug short of
+   * two credentials will name the second one on the next probe.
+   */
   readonly names: string[];
 
   constructor(slug: string, names: string[]) {

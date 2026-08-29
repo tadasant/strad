@@ -4,6 +4,7 @@ import { connectorVariables } from "./server-namespaces.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
+import { refsIn } from "../secrets/provider/resolve.ts";
 import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
 import { BUNDLE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
 import { CORE_URL_ENV } from "../secrets/param-route.ts";
@@ -79,6 +80,21 @@ export interface RenderOptions {
    */
   resolvedParams?: Readonly<Record<string, Record<string, string>>>;
   /**
+   * `${NAME}`s that resolve to nothing AND that every referencing server
+   * declared `mayBeUnseeded:` for. An `env:`/`consoleEnv:` entry mentioning one
+   * is DROPPED rather than resolved, so the component ships without the variable.
+   *
+   * Necessary because `resolveMap` throws on an unresolved ref — which is right
+   * for a name nobody deferred, and wrong for one a human did: the throw would
+   * take the whole render down and reinstate exactly the fleet-wide failure
+   * `mayBeUnseeded:` exists to remove. See src/deploy/unseeded.ts.
+   *
+   * Dropping rather than substituting an empty string is the point: an empty
+   * `Authorization` header is a credential the container would try to use, and
+   * the server's own "is this variable set" check is the thing that should fire.
+   */
+  unseededRefs?: ReadonlySet<string>;
+  /**
    * Override the image a supplementary component runs, without editing the
    * config's 25 `image:` lines. This is what makes a BRANCH deployable:
    * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
@@ -143,12 +159,18 @@ export interface RenderOptions {
 function consoleEnvVars(
   config: StradConfig,
   secrets: Readonly<Record<string, string>>,
+  unseeded: ReadonlySet<string>,
 ): EnvVar[] {
   const merged: Record<string, string> = {};
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
-    Object.assign(merged, server.consoleEnv);
+    for (const [key, value] of Object.entries(server.consoleEnv)) {
+      // A deferred credential is omitted, not resolved. `resolveMap` throws on
+      // an unresolved ref, and here that throw would fail the whole render.
+      if (refsIn(value).some((name) => unseeded.has(name))) continue;
+      merged[key] = value;
+    }
   }
   return Object.entries(resolveMap(merged, secrets)).map(
     ([key, value]): EnvVar => ({
@@ -525,8 +547,11 @@ function connectorEnv(
   return out;
 }
 
+const EMPTY_REFS: ReadonlySet<string> = new Set<string>();
+
 export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
+  const unseeded = opts.unseededRefs ?? EMPTY_REFS;
 
   const override = opts.supplementaryImage
     ? parseImage(opts.supplementaryImage)
@@ -619,8 +644,23 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // "${GOODEGGS_PASSWORD}" would fail its login in a confusing way.
       const own = opts.serverSecrets?.[server.slug];
       const injected = connectorEnv(server, own);
+      // A DEFERRED CREDENTIAL IS DROPPED, NOT RESOLVED.
+      //
+      // `resolveMap` throws on an unresolved ref, and that throw fails the WHOLE
+      // render — which is right for a name nobody deferred and is precisely the
+      // fleet-wide failure `mayBeUnseeded:` exists to remove. A waived name is
+      // therefore taken out before resolution, so this component ships without
+      // the variable and every other component renders normally.
+      const declaredEnv = Object.fromEntries(
+        Object.entries(server.env).filter(
+          ([, value]) =>
+            !refsIn(value).some(
+              (name) => unseeded.has(name) && own?.[name] === undefined,
+            ),
+        ),
+      );
       const declared = resolveMap(
-        server.env,
+        declaredEnv,
         own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
       );
       const resolvedEnv = {
@@ -1009,7 +1049,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
         ...opts.env,
         // Core-only credentials. Deliberately NOT part of opts.env, which is
         // broadcast — see consoleEnvVars().
-        ...consoleEnvVars(config, opts.secrets ?? {}),
+        ...consoleEnvVars(config, opts.secrets ?? {}, unseeded),
       ],
       health_check: { http_path: "/healthz", initial_delay_seconds: 10 },
     },

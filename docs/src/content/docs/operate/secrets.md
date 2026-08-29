@@ -565,7 +565,11 @@ which is the fleet-wide failure spelt differently.
 
 ### What the slug looks like while it waits
 
-Not "down", and not "gone". It gets its own state everywhere state is reported:
+Not "down", and not "gone". It gets its own state everywhere state is reported —
+**for a reference strad's own process resolves**: a `url:`, a `headers:` map, a
+builtin's `options:`. A `supplementary-image`'s `env:` is a variable on a
+container strad does not run, so a waiver there means the component simply ships
+without it and the slug's state is whatever that server reports about itself.
 
 | Surface                            | Says                                                              |
 | ---------------------------------- | ----------------------------------------------------------------- |
@@ -583,7 +587,10 @@ would red the deploy this feature exists to let through, one layer further down
 than the preflight that used to.
 
 Nothing ever sends the literal `${APIFY_TOKEN}` upstream. Resolution throws before
-a request is built, which is the whole reason the slug has a state at all.
+a request is built, which is the whole reason the slug has a state at all. For the
+same reason, the render **drops** an `env:` / `consoleEnv:` entry whose `${NAME}`
+was waived and resolved to nothing, rather than baking an empty string: a blank
+credential is one the container would try to use.
 
 ### How fast it activates once you seed it
 

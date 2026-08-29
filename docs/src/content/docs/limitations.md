@@ -688,7 +688,11 @@ under `gcp-parameter-store` activates within `negativeTtlSeconds` with no
 redeploy, while a `supplementary-image`'s `env:` — and everything under
 `provider: env` — is baked onto a container strad does not run and needs the next
 deploy. The render says which it is in the warning, but "no PR" and "no deploy"
-are not the same promise. See `HACKS.md` #70.
+are not the same promise. The baked half also reports less: `unconfigured` is a
+state strad derives from a resolution it performs itself, so a slug whose only
+waived name is a `supplementary-image` `env:` variable ships without that
+variable and reads as whatever its own server says about itself. See
+`HACKS.md` #70.
 
 ### 29. The console's secret badges prove presence, not that a credential works
 

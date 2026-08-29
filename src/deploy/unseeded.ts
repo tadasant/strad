@@ -1,5 +1,20 @@
 import { isUnhosted, type StradConfig } from "../config/schema.ts";
+import { CORE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
+
+/**
+ * Names no waiver may ever cover, whatever a config writes.
+ *
+ * The gateway process reads these for itself at boot, out of the shared
+ * provider. Ordinarily no server references one, so they have no referencing
+ * slug and the unanimity rule alone keeps them unwaivable — but that is an
+ * accident of how configs are written, not a guarantee. A builtin whose
+ * `options:` mentions `${STRAD_TOKENS}` gives the key a referencing slug, and
+ * without this the slug could then waive it: a green render, a clean boot log,
+ * and `/mcp` rejecting every request in the fleet. Deferring the credential that
+ * makes the front door work is not a thing to allow by accident.
+ */
+const NEVER_WAIVABLE: ReadonlySet<string> = new Set<string>(CORE_BOOT_ENV_KEYS);
 
 /**
  * Which `${NAME}`s a deploy is allowed to ship without.
@@ -35,10 +50,12 @@ import { refsIn } from "../secrets/provider/resolve.ts";
  *
  * ## What it deliberately does not know about
  *
- * Boot keys. `CORE_BOOT_ENV_KEYS` are read by the gateway process for itself and
- * are named by no server, so they have no referencing slug and can never be
- * waived here. They have their own optionality (preflight's
- * `OPTIONAL_BOOT_ENV_KEYS`) and it is a different question.
+ * Boot keys. `CORE_BOOT_ENV_KEYS` are read by the gateway process for itself.
+ * Ordinarily no server references one, so the unanimity rule alone would keep
+ * them unwaivable — but that is how configs happen to be written rather than a
+ * guarantee, so `NEVER_WAIVABLE` enforces it, and a config that tries is a hard
+ * error rather than a line that quietly does nothing. Their own optionality
+ * (preflight's `OPTIONAL_BOOT_ENV_KEYS`) is a different question.
  */
 
 /**
@@ -112,6 +129,7 @@ export function waivedNames(config: StradConfig): Map<string, string[]> {
 
   const out = new Map<string, string[]>();
   for (const [name, slugs] of referencing) {
+    if (NEVER_WAIVABLE.has(name)) continue;
     const all = [...slugs].sort();
     if (all.every((slug) => waivers.get(slug)?.has(name))) out.set(name, all);
   }
@@ -176,6 +194,19 @@ export function unusedWaivers(config: StradConfig): string[] {
     if (!server.enabled) continue;
     const referenced = references.get(server.slug) ?? new Set<string>();
     for (const name of server.mayBeUnseeded) {
+      // A BOOT KEY IS NOT DEFERRABLE, and saying so beats silently ignoring it.
+      // `waivedNames` drops it either way, so the config would deploy — with an
+      // entry its author believed was doing something. That is the shape this
+      // whole gate exists to refuse.
+      if (NEVER_WAIVABLE.has(name)) {
+        problems.push(
+          `server "${server.slug}" declares mayBeUnseeded: ${name}, which is a ` +
+            `gateway BOOT key — the process reads it for itself at boot, and a ` +
+            `deployment without it comes up rejecting every request. It cannot ` +
+            `be deferred. Seed it, or remove the entry.`,
+        );
+        continue;
+      }
       if (referenced.has(name)) continue;
       problems.push(
         `server "${server.slug}" declares mayBeUnseeded: ${name} but ` +

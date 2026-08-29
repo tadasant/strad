@@ -132,21 +132,22 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
       "unconfigured",
     ],
     /**
+     * A slug that could not be listed because a `mayBeUnseeded:` credential has
+     * not been seeded yet.
+     *
+     * Its own event, at Info, so `mcp.list_tools_failed` and
+     * `mcp.list_resources_failed` keep meaning "a fault" — see the branches in
+     * gateway/mcpServer.ts. `names` comes from strad's own config; there is no
+     * value in it and nothing from an upstream.
+     */
+    "mcp.server_unconfigured": ["slug", "explicit", "names"],
+    /**
      * 424 fail-closed. `requested` and the raw `unavailable` list are NOT here:
      * both are the caller's own query string, echoed back. What ships is the
      * subset that names a CONFIGURED slug plus counts — enough to see "a client
      * keeps asking for `secrets` and being refused", which is the operational
      * question, with nothing a caller can write into.
      */
-    /**
-     * A named slug that could not be listed because a `mayBeUnseeded:`
-     * credential has not been seeded yet.
-     *
-     * Its own event, at Info, so `mcp.list_tools_failed` keeps meaning "a fault"
-     * — see the branch in gateway/mcpServer.ts. `names` comes from strad's own
-     * config; there is no value in it and nothing from an upstream.
-     */
-    "mcp.server_unconfigured": ["slug", "explicit", "names"],
     "mcp.unavailable": [
       "principal",
       "requested_count",
@@ -261,6 +262,11 @@ const THROTTLED = new Set([
   "mcp.list_tools_failed",
   "mcp.list_resources_failed",
   "mcp.local_machine_offline",
+  // A slug waiting on a deferred credential fires this on every tools/list and
+  // resources/list a client sends, for as long as the value is pending — which
+  // is exactly the unbounded, client-driven shape this set exists for. Left out,
+  // it would evict genuine faults from the shared batch queue.
+  "mcp.server_unconfigured",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
 ]);

@@ -153,6 +153,16 @@ const storeBacked = config.gateway.secrets.provider === "gcp-parameter-store";
 // src/deploy/unseeded.ts for why the waiver is per NAME and has to be unanimous.
 const waived = waivedNames(config);
 
+/**
+ * The waived names that turned out to have NO value at render time.
+ *
+ * Populated as the baked half is resolved below, and handed to `renderAppSpec`
+ * so it drops the `env:`/`consoleEnv:` entries that mention them. A waived name
+ * that DID resolve is not in here — the waiver is permission to be absent, not
+ * an instruction to omit.
+ */
+const unseededBaked = new Set<string>();
+
 // THE TYPO GATE, and the reason the feature does not reintroduce the silence it
 // replaces. A waiver for a name this server references nowhere waives nothing —
 // the reference it was written for is still unwaived and still fails below — so
@@ -550,6 +560,7 @@ if (wanted.length > 0) {
       // deploy, which is a redeploy rather than a PR — but it is emphatically
       // not the TTL the runtime refs get.
       if (waived.has(name)) {
+        unseededBaked.add(name);
         console.error(
           `::warning::unseeded secret ${name} is referenced by a supplementary ` +
             `server's env: and ${waived.get(name)!.join(", ")} declared ` +
@@ -811,6 +822,11 @@ const spec = renderAppSpec({
   env: envs,
   secrets: scopedSecrets,
   serverSecrets,
+  // The names a human deferred and the store does not hold. `renderAppSpec`
+  // DROPS an `env:`/`consoleEnv:` entry that mentions one instead of resolving
+  // it — `resolveMap` throws on an unresolved ref, and that throw would fail the
+  // whole render, which is the fleet-wide failure this feature removes.
+  unseededRefs: unseededBaked,
   bootSecrets,
   resolvedParams,
   domains: resolveDomains(),

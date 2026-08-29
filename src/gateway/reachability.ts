@@ -193,6 +193,15 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
           kind: adapter.kind,
         };
       } catch (err) {
+        // FIRST, and by class rather than by message: this error is raised inside
+        // the endpoint thunk before any transport work happens, so it can never
+        // be a symptom of a machine being off — and it is not a FAILURE either,
+        // so it stays out of `failures`, which is the map of things that went
+        // wrong. The names go to `unconfigured` instead.
+        if (err instanceof ServerUnconfiguredError) {
+          unconfigured.set(slug, err.names);
+          return { slug, state: "unconfigured", tools: 0, kind: adapter.kind };
+        }
         failures.set(slug, err instanceof Error ? err.message : String(err));
         if (err instanceof LocalHostRefusedError) refused.add(slug);
         // A machine somebody switched off gets its own state and is NOT
@@ -210,15 +219,6 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
         const offline =
           err instanceof LocalMachineOfflineError ||
           (adapter.kind === "local-tunnel" && err instanceof DeadlineError);
-        // Checked FIRST, and by class rather than by message: this error is
-        // raised inside the endpoint thunk before any transport work happens, so
-        // it can never be a symptom of a machine being off, and letting the
-        // offline branch above claim it would file "waiting on a token" under
-        // "somebody shut their laptop".
-        if (err instanceof ServerUnconfiguredError) {
-          unconfigured.set(slug, err.names);
-          return { slug, state: "unconfigured", tools: 0, kind: adapter.kind };
-        }
         return {
           slug,
           state: offline ? "offline" : "unreachable",

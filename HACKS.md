@@ -3232,7 +3232,11 @@ point of the feature. A `supplementary-image`'s `env:`, and everything under
 `provider: env`, is BAKED onto a container strad does not run: seeding the value
 does nothing until the next deploy. Both are supported and the render says which
 it is in the warning, but "no PR" and "no deploy" are not the same promise, and
-only the first holds for every case.
+only the first holds for every case. The baked half is also thinner in what it
+reports: `unconfigured` is a state STRAD'S OWN process derives from a resolution
+it performs, so a slug whose only waived name is a `supplementary-image` `env:`
+variable ships without that variable and reads as whatever its own server says
+about itself.
 
 **Undo.** Add a `since` timestamp to the tool-surface monitor's per-slug state and
 export it as a gauge, then alert on it. Or reinstate the hard failure by deleting
