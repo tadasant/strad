@@ -1657,7 +1657,7 @@ otherwise be one variable; no slug in any strad config has ever used either shap
 
 ---
 
-### 58. The google-flights date grid costs one request per date, and two of its fields are not trustworthy
+### 58. The google-flights date grid costs one request per date, a premium seat has no legroom to report, and the fare brand is not the cabin
 
 `servers/bundle-api/fork/google-flights/` is the second fork in that tree (#55 is
 the first), taken from the published `google-flights-mcp-server` v0.2.6. It fixes
@@ -1684,17 +1684,35 @@ outright.
 honest answer to "cheapest month" is several calls, and the tool says so rather
 than returning a fast grid of the wrong dates.
 
-**Two fields are reported as unknown rather than guessed.**
-`segments[].legroom` is populated on economy offers and absent on the premium
-offers this fork can now retrieve, so business and first report `null`. And
-`fare_brand` names a tier _within_ the requested cabin, not the cabin: a
-business-class result whose tier reads `"Economy Flex"` is not an economy fare.
-Both are documented in the tool description instead of being smoothed over with a
+**`segments[].legroom` is `null` on a lie-flat seat, because Google publishes no
+measurement for one.** This was recorded as a suspected parser gap — an index the
+fork had not found on payloads it could only reach once the cabin field number
+was fixed — and it is not one. A business offer for the same physical flight
+differs from its economy twin in five values that could name an amenity, and in
+nothing else of the kind: the seat classification, the two legroom strings going
+`null`, the cabin, and the price. No measurement appears anywhere else in a
+premium document.
+
+The cabin does not predict it. Across 372 legs from eight searches over two
+routes and four cabins, a figure is present exactly when Google classifies the
+seat by legroom band and absent exactly when it classifies it by seat type — a
+recliner, an angled flat, a lie flat. Premium-economy segments therefore often do
+carry one (`"35 inches"`, `"37 inches"`), and an economy connection inside a
+business itinerary carries its own while the premium legs either side report
+`null`. The seat classification is not translated into a label like "lie flat
+seat" either: the payload carries no text establishing what its codes name, and
+inventing one is the failure this fork exists to stop.
+
+**`fare_brand` is the field that remains untrustworthy.** It names a tier
+_within_ the requested cabin, not the cabin: a business-class result whose tier
+reads `"Economy Flex"` is not an economy fare. Both it and the legroom null are
+documented in the tool description instead of being smoothed over with a
 plausible transformation — the same call the baggage parser makes when it reports
 an absent entry as `null` rather than as zero.
 
-**Cost:** a caller that wants premium legroom, or a human-readable fare name,
-does not get one from this server.
+**Cost:** a caller that wants a legroom figure for a premium seat, or a
+human-readable fare name, does not get one from this server; for the seat, the
+airline's own seat map is the source.
 
 **Only its tests defend the delta,** exactly as with #55. A re-vendor that pastes
 the published package over `fork/google-flights/src` reverts every fix silently.
