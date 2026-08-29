@@ -259,6 +259,57 @@ function formatDate(dateArr: number[] | null | undefined): string {
   return `${dateArr[0]}-${String(dateArr[1]).padStart(2, '0')}-${String(dateArr[2]).padStart(2, '0')}`;
 }
 
+/**
+ * `legroom` is `leg[30]` — and there is no premium-cabin index to fall back to.
+ *
+ * The symptom that raised this was "business-class segments always report
+ * `null`", which reads like a parser that knows one index and misses another.
+ * It is not. A business offer for the SAME physical flight differs from its
+ * economy twin in the seat classification, the two legroom strings, the cabin,
+ * and what it costs — in nothing else that could name an amenity. Diffed whole,
+ * offer subtree against offer subtree, UA916 AKL->SFO 2027-01-10 (the booking
+ * token and the page's own opaque ids differ too, and are omitted):
+ *
+ *   [0][2][0][13]  1 -> 5           [0][2][0][30]  "31 inches" -> null
+ *   [0][2][0][14]  "31 in" -> null  [1][0][1]      1108 -> 4163
+ *   [0][2][0][16]  1 -> 3
+ *
+ * `leg[14]` is the same measurement short-form, and it goes absent with
+ * `leg[30]`; the fallback covers a shape difference, never a cabin. No string
+ * matching /\d+\s*(in|inches|cm)/, and none saying "lie flat", "angled" or
+ * "reclining", occurs ANYWHERE in a premium document — not in the leg, not in
+ * the offer, not in the page.
+ *
+ * And the missing field is not about the cabin, which is the part that would
+ * have made a cabin-keyed workaround wrong. `leg[16]` IS the cabin (1 economy,
+ * 2 premium economy, 3 business, 4 first — the same numbering the request
+ * encodes). The predicate is `leg[13]`, how Google classified the SEAT. Over
+ * 372 legs from eight searches across two routes and four cabins:
+ *
+ *   leg[13] | legs | cabins  | leg[30]
+ *      1    |   26 | 1       | "30 inches", "31 inches"
+ *      2    |    6 | 1, 2    | "29 inches", "35 inches"
+ *      3    |   19 | 1, 2    | "32 inches", "33 inches", "37 inches"
+ *      4    |   25 | 2, 3, 4 | null
+ *      5    |  127 | 3, 4    | null
+ *      6    |   68 | 3, 4    | null
+ *      8    |   99 | 3, 4    | null
+ *      9    |    2 | 3       | null
+ *
+ * An exact bijection on `leg[13] <= 3`, and cabin sits on both sides of it:
+ * premium-economy legs on LAX->JFK report "35 inches" and "37 inches", and one
+ * AKL->JFK business itinerary reports "30 inches" on its economy connection and
+ * `null` on the business leg either side of it. Codes 1-3 are Google's legroom
+ * BANDS (below average / average / above average, relative to the cabin); 4 and
+ * up are seat TYPES, the classification Google uses for a recliner or a
+ * lie-flat, and it ships no measurement with them.
+ *
+ * So `null` here means Google stated no legroom, and it is the whole of what the
+ * document knows. `leg[13]` is not translated into a label — the codes above 3
+ * have no text anywhere in the payload to establish what they name, and a
+ * plausible-sounding "lie flat seat" invented from an ordinal is exactly the
+ * failure this fork exists to stop. `HACKS.md` #58.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseSegment(leg: any[]): FlightSegment | null {
   if (!leg) return null;

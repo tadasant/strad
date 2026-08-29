@@ -152,12 +152,12 @@ class of failure as reporting that absence as "not included".
 
 | File | Change |
 | --- | --- |
-| `src/flights-client/flights-client.ts` | `Info.seat` 1→9, `Info.passengers` 6→8, `FlightData.maxStops` 9→5. `parseExtensions` reads `[checked, carry_on]` and maps absent→`null`. `isBasicEconomy` tests the carry-on. `getDateGrid` rewritten to price each date, classifying no-offers / failed / not-attempted separately and raising a block rather than reporting it as an empty route; new exported `gridDates` (with a real-calendar-date guard and a return-date bound) and `GRID_BUDGET_MS`. The rate limiter reserves its slot synchronously. |
+| `src/flights-client/flights-client.ts` | `Info.seat` 1→9, `Info.passengers` 6→8, `FlightData.maxStops` 9→5. `parseExtensions` reads `[checked, carry_on]` and maps absent→`null`. `isBasicEconomy` tests the carry-on. `getDateGrid` rewritten to price each date, classifying no-offers / failed / not-attempted separately and raising a block rather than reporting it as an empty route; new exported `gridDates` (with a real-calendar-date guard and a return-date bound) and `GRID_BUDGET_MS`. The rate limiter reserves its slot synchronously. `parseSegment` records what a `null` legroom is — the payload's answer, not a missing index — with the diff and the 372-leg table behind it. |
 | `src/flights-client/types.ts` | Baggage fields become nullable. `GetDateGridOptions` gains `window_days` and `return_date`; `DateGridResult` gains `window`, `unavailable_dates`, `failed_dates` and `not_attempted_dates`. |
 | `src/flights.proto` | The two field numbers, matched to the code. |
 | `src/tools/get-date-grid.ts` | `window_days` and `return_date` params; description states the per-date cost and the no-past-dates guarantee; `round_trip` now requires a return date instead of quietly pricing a one-way. |
-| `src/tools/search-flights.ts` | Description: `fare_brand` is a tier *within* the cabin and does not name the cabin; a `null` baggage value means unknown, not zero. |
-| `test/fork.test.mjs` | **New.** Twenty-four tests over all three, the tool schema, and the fan-out (driven through an injected `fetch`). |
+| `src/tools/search-flights.ts` | Description: `fare_brand` is a tier *within* the cabin and does not name the cabin; a `null` baggage value means unknown, not zero; a `null` `legroom` means Google published no measurement for that seat, which is normal for a lie-flat and is not a property of the cabin. |
+| `test/fork.test.mjs` | **New.** Thirty tests over all three, the legroom null, the tool schema, and the fan-out (driven through an injected `fetch`). |
 
 No tool is renamed, added or removed. The surface is still the three tools the
 `google-flights` slug serves, so every `tools:` policy entry still names a tool
@@ -185,11 +185,9 @@ reading as authority for the numbering that caused the bug.
 
 ## Known gaps, not fixed here
 
-- **`segments[].legroom` is `null` on premium cabins.** It reads `leg[30]`, which
-  is populated on economy offers (`"31 inches"`) and absent on the business
-  offers this fork can now retrieve. The economy path is unaffected. Finding the
-  premium-cabin index is a separate exercise against a payload that only became
-  reachable once bug 2 was fixed.
+- **`segments[].legroom` is `null` on a lie-flat seat, because Google publishes
+  no measurement for one.** This was carried as a suspected parser gap — an
+  index the fork had not found — and it is not one. See below.
 - **`fare_brand` is a tier, not a product name.** `"Economy Flex"` on a
   business-class result is the *tier within* that cabin. Upstream's own comment
   admits the mapping is a best-effort read of undocumented numeric codes; this
@@ -198,6 +196,64 @@ reading as authority for the numbering that caused the bug.
 - **The date grid cannot be cheap.** One request per date is inherent to there
   being no forward grid in the payload. If Google exposes a calendar RPC, that
   would be the better source.
+
+### Legroom: what the null means, established
+
+The premium payload only became inspectable once bug 2 was fixed, so the gap was
+recorded on the assumption that a premium-cabin legroom index existed and had not
+been found. Dumping one settles it: there is no such index, and the field the
+absence tracks is not the cabin.
+
+A business offer for the SAME physical flight differs from its economy twin in
+the seat classification, the two legroom strings, the cabin, and what it costs —
+in nothing else that could name an amenity. Diffed whole, offer subtree against
+offer subtree, UA916 AKL→SFO 2027-01-10 (the booking token and the page's own
+opaque ids differ too, and are omitted):
+
+| path | economy | business |
+| --- | --- | --- |
+| `[0][2][0][13]` | 1 | 5 |
+| `[0][2][0][14]` | `"31 in"` | `null` |
+| `[0][2][0][16]` | 1 | 3 |
+| `[0][2][0][30]` | `"31 inches"` | `null` |
+| `[1][0][1]` | 1108 | 4163 |
+
+`leg[14]` is the same measurement short-form and goes absent with `leg[30]`. No
+string matching `/\d+\s*(in|inches|cm)/`, and none saying "lie flat", "angled" or
+"reclining", occurs anywhere in a premium document — not in the leg, not in the
+offer, not in the page.
+
+**And the cabin does not predict it**, which is what makes a cabin-keyed
+workaround wrong rather than merely unnecessary. `leg[16]` IS the cabin — 1
+economy, 2 premium economy, 3 business, 4 first, the same numbering the request
+encodes. The predicate is `leg[13]`, how Google classified the SEAT. Over 372
+legs from eight searches across two routes and four cabins:
+
+| `leg[13]` | legs | cabins (`leg[16]`) | `leg[30]` |
+| --- | --- | --- | --- |
+| 1 | 26 | 1 | `"30 inches"`, `"31 inches"` |
+| 2 | 6 | 1, 2 | `"29 inches"`, `"35 inches"` |
+| 3 | 19 | 1, 2 | `"32 inches"`, `"33 inches"`, `"37 inches"` |
+| 4 | 25 | 2, 3, 4 | `null` |
+| 5 | 127 | 3, 4 | `null` |
+| 6 | 68 | 3, 4 | `null` |
+| 8 | 99 | 3, 4 | `null` |
+| 9 | 2 | 3 | `null` |
+
+An exact bijection on `leg[13] <= 3`, with cabin values on both sides of it.
+Premium-economy legs on LAX→JFK report `"35 inches"` and `"37 inches"`; one
+AKL→JFK business itinerary reports `"30 inches"` on its economy connection and
+`null` on the business legs either side of it, in the same offer, in the same
+document. Codes 1–3 are Google's legroom BANDS — below average, average, above
+average, relative to the cabin — and 4 and up are seat TYPES, the classification
+it uses for a recliner or a lie-flat, shipped without a measurement.
+
+So `null` is the document's answer and the whole of what it knows. `leg[13]` is
+not translated into a label either: the codes above 3 have no text anywhere in
+the payload to establish what they name, and `"lie flat seat"` invented from an
+ordinal is the same failure as a baggage count invented from an absent flag. A
+caller that needs the number for a premium seat needs the airline's seat map;
+the tool description says so.
 
 ## Re-vendoring
 

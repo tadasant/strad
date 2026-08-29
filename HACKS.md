@@ -2505,7 +2505,7 @@ costs a `mkdir`.
 **Undo.** Delete `.github/actions/docker-config`, its nine call sites and the
 test. Every job then logs in to the same file again.
 
-## 58. The google-flights date grid costs one request per date, and two of its fields still cannot be trusted
+## 58. The google-flights date grid costs one request per date, a premium seat has no legroom to report, and the fare brand is not the cabin
 
 **What.** `servers/bundle-api/fork/google-flights/` is the second FORK in that
 tree (#55 is the first), taken from the published `google-flights-mcp-server`
@@ -2536,16 +2536,36 @@ So a genuinely wide date search is not something this tool can serve, and the
 honest answer to "cheapest month" is several calls or none. If Google exposes a
 calendar RPC, that is the better source and this becomes one request again.
 
-**Two fields remain untrustworthy, and are documented rather than guessed.**
-`segments[].legroom` reads `leg[30]`, which is populated on economy offers
-(`"31 inches"`) and absent on the business offers this fork can now retrieve — so
-premium cabins report `null`. And `fare_brand` is a tier WITHIN the requested
-cabin, not a product name: a business-class result whose tier reads
+**`segments[].legroom` is `null` on a lie-flat seat, and that is the payload's
+answer rather than a missing index.** It was recorded here as a suspected parser
+gap — premium payloads only became inspectable once the cabin field number was
+fixed — and dumping one settles it. A business offer for the SAME physical flight
+differs from its economy twin in five values and no more: `leg[13]` 1→5,
+`leg[14]` `"31 in"`→`null`, `leg[16]` 1→3, `leg[30]` `"31 inches"`→`null`, and the
+price. No string matching `/\d+\s*(in|inches|cm)/`, and none saying "lie flat",
+"angled" or "reclining", occurs anywhere in a premium document.
+
+The cabin does not predict it, which is what would have made a cabin-keyed
+workaround wrong rather than merely unnecessary. `leg[16]` IS the cabin (1
+economy, 2 premium economy, 3 business, 4 first); the predicate is `leg[13]`, how
+Google classified the SEAT. Over 372 legs from eight searches across two routes
+and four cabins, a measurement is present exactly when `leg[13] <= 3` — Google's
+legroom BANDS, relative to the cabin — and absent exactly when it is 4 or more,
+its seat TYPES. Cabin sits on both sides: premium-economy legs on LAX→JFK report
+`"35 inches"` and `"37 inches"`, and one AKL→JFK business itinerary reports
+`"30 inches"` on its economy connection and `null` on the business legs either
+side of it, in the same offer. `leg[13]` is not translated into a label either —
+the codes above 3 have no text anywhere in the payload to establish what they
+name, and `"lie flat seat"` invented from an ordinal is the same failure as a
+baggage count invented from an absent flag.
+
+**`fare_brand` is the one that remains untrustworthy.** It is a tier WITHIN the
+requested cabin, not a product name: a business-class result whose tier reads
 `"Economy Flex"` is not an economy fare. Upstream's own comment concedes the
-mapping is a best-effort read of undocumented numeric codes. Both are stated in
-the tool description instead of being papered over with a plausible-looking
-transformation, which is the same call `parseExtensions` makes when it reports an
-absent baggage entry as `null` rather than as zero.
+mapping is a best-effort read of undocumented numeric codes. Like the legroom
+null, it is stated in the tool description instead of being papered over with a
+plausible-looking transformation, which is the same call `parseExtensions` makes
+when it reports an absent baggage entry as `null` rather than as zero.
 
 **The sharp edge is the same one #55 has.** A fork has no upstream to diff
 against, and a re-vendor that pastes the published package over `fork/google-flights/src`

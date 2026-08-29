@@ -77,6 +77,8 @@ Returns structured flight data including prices, airlines, times, durations, sto
 
 The fare_brand field indicates the fare tier WITHIN the requested cabin: "Economy" (lowest tier), "Economy+" (mid-tier), or "Economy Flex" (higher tier). It is derived from Google's numeric fare tier data and may be null. It does NOT name the cabin — a business-class search returns business fares whose tier still reads "Economy Flex". The cabin you get is the seat_class you asked for; the query block echoes it back.
 
+The segments[].legroom field may be null, and null means Google stated no legroom for that seat — not that the seat is cramped and not that the scrape failed. Google measures legroom only for seats it classifies by legroom band; for the seat types premium cabins use (recliner, angled flat, lie flat) it publishes no measurement at all, so business and first segments are usually null. It is not a property of the cabin: premium-economy segments often do carry a figure ("35 inches", "37 inches"), and an economy connection inside a business itinerary carries its own. Report a null as unknown and, if the traveller needs the number, send them to the airline's seat map.
+
 The extensions field reports baggage: checked_bags_included (a count) and carry_on_included (a boolean). Either may be null, which means Google stated nothing for that fare — null is NOT "not included", and should be reported as unknown rather than as zero. Google commonly omits checked-bag information entirely on international itineraries.
 
 By default, basic economy fares are excluded: the lowest fare tier with no free carry-on. Set exclude_basic_economy to false to include all fare tiers.
