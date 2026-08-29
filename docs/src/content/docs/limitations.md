@@ -1688,16 +1688,17 @@ than returning a fast grid of the wrong dates.
 measurement for one.** This was recorded as a suspected parser gap — an index the
 fork had not found on payloads it could only reach once the cabin field number
 was fixed — and it is not one. A business offer for the same physical flight
-differs from its economy twin in five values and no more: the seat
-classification, the two legroom strings going `null`, the cabin, and the price.
-No measurement appears anywhere else in a premium document.
+differs from its economy twin in five values that could name an amenity, and in
+nothing else of the kind: the seat classification, the two legroom strings going
+`null`, the cabin, and the price. No measurement appears anywhere else in a
+premium document.
 
 The cabin does not predict it. Across 372 legs from eight searches over two
 routes and four cabins, a figure is present exactly when Google classifies the
 seat by legroom band and absent exactly when it classifies it by seat type — a
 recliner, an angled flat, a lie flat. Premium-economy segments therefore often do
 carry one (`"35 inches"`, `"37 inches"`), and an economy connection inside a
-business itinerary carries its own while the business legs either side report
+business itinerary carries its own while the premium legs either side report
 `null`. The seat classification is not translated into a label like "lie flat
 seat" either: the payload carries no text establishing what its codes name, and
 inventing one is the failure this fork exists to stop.

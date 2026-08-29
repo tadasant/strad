@@ -296,13 +296,19 @@ function formatDate(dateArr: number[] | null | undefined): string {
  *      8    |   99 | 3, 4    | null
  *      9    |    2 | 3       | null
  *
- * An exact bijection on `leg[13] <= 3`, and cabin sits on both sides of it:
+ * A measurement is present on every one of the 51 legs at codes 1-3 and on none
+ * of the 321 at 4 and above, and cabin sits on both sides of that line:
  * premium-economy legs on LAX->JFK report "35 inches" and "37 inches", and one
  * AKL->JFK business itinerary reports "30 inches" on its economy connection and
- * `null` on the business leg either side of it. Codes 1-3 are Google's legroom
- * BANDS (below average / average / above average, relative to the cabin); 4 and
- * up are seat TYPES, the classification Google uses for a recliner or a
- * lie-flat, and it ships no measurement with them.
+ * `null` on the premium legs either side of it. (Code 7 does not occur in the
+ * capture, so "4 and above" is five observed codes, not a proven ceiling.)
+ *
+ * Codes 1-3 are BANDS: a code covers a range of measurements, and which range
+ * depends on the cabin — in economy 2 is 29 in, 1 is 30-31 in and 3 is 32-33 in,
+ * while in premium economy 2 is 35 in and 3 is 37 in. They are not named here,
+ * because the payload does not name them. 4 and up are seat TYPES — the
+ * classification Google uses for a recliner or a lie-flat — and it ships no
+ * measurement with them.
  *
  * So `null` here means Google stated no legroom, and it is the whole of what the
  * document knows. `leg[13]` is not translated into a label — the codes above 3

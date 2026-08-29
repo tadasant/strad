@@ -2540,21 +2540,24 @@ calendar RPC, that is the better source and this becomes one request again.
 answer rather than a missing index.** It was recorded here as a suspected parser
 gap — premium payloads only became inspectable once the cabin field number was
 fixed — and dumping one settles it. A business offer for the SAME physical flight
-differs from its economy twin in five values and no more: `leg[13]` 1→5,
-`leg[14]` `"31 in"`→`null`, `leg[16]` 1→3, `leg[30]` `"31 inches"`→`null`, and the
-price. No string matching `/\d+\s*(in|inches|cm)/`, and none saying "lie flat",
+differs from its economy twin in five values that could name an amenity, and in
+nothing else of the kind: `leg[13]` 1→5, `leg[14]` `"31 in"`→`null`, `leg[16]`
+1→3, `leg[30]` `"31 inches"`→`null`, and the price. (The booking token and the
+page's own opaque ids differ too.) No string matching `/\d+\s*(in|inches|cm)/`, and none saying "lie flat",
 "angled" or "reclining", occurs anywhere in a premium document.
 
 The cabin does not predict it, which is what would have made a cabin-keyed
 workaround wrong rather than merely unnecessary. `leg[16]` IS the cabin (1
 economy, 2 premium economy, 3 business, 4 first); the predicate is `leg[13]`, how
 Google classified the SEAT. Over 372 legs from eight searches across two routes
-and four cabins, a measurement is present exactly when `leg[13] <= 3` — Google's
-legroom BANDS, relative to the cabin — and absent exactly when it is 4 or more,
-its seat TYPES. Cabin sits on both sides: premium-economy legs on LAX→JFK report
-`"35 inches"` and `"37 inches"`, and one AKL→JFK business itinerary reports
-`"30 inches"` on its economy connection and `null` on the business legs either
-side of it, in the same offer. `leg[13]` is not translated into a label either —
+and four cabins, a measurement is present on every one of the 51 legs at
+`leg[13] <= 3` and on none of the 321 at 4 and above. Codes 1–3 are BANDS — a
+code covers a range of measurements, and which range depends on the cabin — and 4
+and up are seat TYPES, five of them observed (code 7 does not occur, so "4 and
+above" is not a proven ceiling). Cabin sits on both sides: premium-economy legs
+on LAX→JFK report `"35 inches"` and `"37 inches"`, and one AKL→JFK business
+itinerary reports `"30 inches"` on its economy connection and `null` on the
+premium legs either side of it, in the same offer. `leg[13]` is not translated into a label either —
 the codes above 3 have no text anywhere in the payload to establish what they
 name, and `"lie flat seat"` invented from an ordinal is the same failure as a
 baggage count invented from an absent flag.

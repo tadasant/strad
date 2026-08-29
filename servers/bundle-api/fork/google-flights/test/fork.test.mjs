@@ -243,12 +243,19 @@ test('basic economy is the lowest tier with no free carry-on', () => {
 // and absent exactly when it is 4 or more (a seat type — recliner, angled flat,
 // lie flat), with cabin values appearing on both sides of that line.
 //
-// The fixtures below are transcribed from those captures. They exist to fail a
-// "fix" keyed on the cabin, which would report premium economy and mixed-cabin
+// The `leg[13]`, `leg[14]`, `leg[16]` and `leg[30]` values below are transcribed
+// from those captures; everything else `rawLeg` fills in is filler, so a route
+// named in a comment is not the route the fixture spells. One leg is
+// deliberately NOT transcribed and says so at its call site. They exist to fail
+// a "fix" keyed on the cabin, which would report premium economy and mixed-cabin
 // connections wrongly, and to fail one that translates a `leg[13]` code into a
 // seat-type label the payload carries no text to establish.
 
-/** A leg in Google's shape, carrying just the fields `parseSegment` reads. */
+/**
+ * A leg in Google's shape, carrying just the fields `parseSegment` reads. Only
+ * the four legroom-relevant indices are per-fixture; the route, times, aircraft
+ * and dates are constant filler that no assertion here reads back.
+ */
 function rawLeg({ code, number, airline, seatCode, cabin, legroom, legroomShort }) {
   const leg = [];
   leg[3] = 'AKL';
@@ -283,7 +290,9 @@ test('legroom is the long form at leg[30], with the short form at leg[14] as fal
   // Both indices carry the same measurement — "31 inches" and "31 in" — and on
   // every captured leg they are present or absent together. The fallback covers
   // a shape difference, so it must prefer the long form and still read a leg
-  // that only carries the short one.
+  // that only carries the short one. The second leg is therefore the one
+  // constructed rather than transcribed: no capture has `leg[14]` without
+  // `leg[30]`, and the fallback exists for the case where one does.
   const offer = offerWithLegs(
     [
       rawLeg({ code: 'UA', number: '916', airline: 'United', seatCode: 1, cabin: 1, legroom: '31 inches', legroomShort: '31 in' }),
@@ -322,10 +331,10 @@ test('legroom is not derived from the cabin — premium economy carries a figure
   assert.deepEqual(legroomOf(offer), ['37 inches', '35 inches', null]);
 });
 
-test('one itinerary reports per leg: the economy connection has legroom, the business legs do not', () => {
-  // AKL->JFK 2027-01-10 in business, Air Canada: AC40 (business, seat type 5),
-  // AC8650 (an economy connection, band 1, "30 inches"), AS18 (cabin 4, seat
-  // type 8). Same offer, same document — so this cannot be explained by "the
+test('one itinerary reports per leg: the economy connection has legroom, the premium legs do not', () => {
+  // AKL->JFK 2027-01-10 in business, Air Canada: AC40 (cabin 3, seat type 5),
+  // AC8650 (an economy connection, band 1, "30 inches"), AS18 (cabin 4 — first,
+  // not business — seat type 8). Same offer, same document — so this cannot be explained by "the
   // premium document omits the field", and it is why the read stays per leg.
   const offer = offerWithLegs(
     [
@@ -347,10 +356,30 @@ test('the seat classification is not published as a legroom label', () => {
     [rawLeg({ code: 'UA', number: '916', airline: 'United', seatCode: 5, cabin: 3 })],
     'l5'
   );
-  const values = Object.values(offer.segments[0]).map((v) => JSON.stringify(v));
-  assert.ok(!values.includes('5'), 'the seat classification code is not reported as a value');
+  // Asserted as the segment's whole key set rather than as "5 is absent": a
+  // label read off the code could arrive under any name and in any shape, and
+  // matching on the value would miss `"5"`, `{code: 5}` or "seat type 5". A new
+  // field here should fail this test and be argued for on its own evidence.
+  assert.deepEqual(Object.keys(offer.segments[0]).sort(), [
+    'aircraft',
+    'airline',
+    'airline_code',
+    'arrival',
+    'arrival_date',
+    'departure',
+    'departure_date',
+    'destination',
+    'destination_name',
+    'duration_minutes',
+    'flight_number',
+    'legroom',
+    'operated_by',
+    'origin',
+    'origin_name',
+  ]);
+  assert.equal(offer.segments[0].legroom, null);
   assert.ok(
-    !values.some((v) => /flat|reclin|suite|pod/i.test(v)),
+    !/flat|reclin|suite|pod|\bseat type\b/i.test(JSON.stringify(offer.segments[0])),
     'no seat-type label is invented from the code'
   );
 });
