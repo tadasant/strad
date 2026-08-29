@@ -12,17 +12,19 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty-two server SLUGS: twenty-nine supplementary-image
+# This file declares thirty-three server SLUGS: thirty supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Twenty-eight of the twenty-nine land on eighteen upstream mounts inside the
-# one bundle image, because capability variants share a mount; the twenty-ninth
+# Twenty-nine of the thirty land on nineteen upstream mounts inside the
+# one bundle image, because capability variants share a mount; the thirtieth
 # (`zimmer-secrets`) runs that same image on a component of its own. The image
-# serves twenty mounts: `/x-twitter` and `/google-sheets` are in it with no
-# staging slug pointing at either.
+# serves twenty-one mounts: `/x-twitter`, `/google-sheets` and `/grafana` are in
+# it with no staging slug pointing at any of them — `grafana-registry` is served
+# by a per-slug instance at `/grafana-registry`, not by the conventional mount.
 #
-# THREE of the twenty-nine carry `enabled: false` — telegram-ro, telegram-rw
-# and pulse-subregistry — because their credentials are not in the store yet.
+# FOUR of the thirty carry `enabled: false` — telegram-ro, telegram-rw,
+# pulse-subregistry and grafana-registry — because their credentials are not in
+# the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
 # every other server's deploy down with it.
@@ -448,6 +450,60 @@ servers:
     bundle: bundle
     path: /strad-fetch
     entitlements: [admin]
+
+  # Grafana, for the MCP Registry's OWN observability plane — not for ours.
+  #
+  # `grafana.prod.registry.modelcontextprotocol.io` is the Grafana in front of the
+  # modelcontextprotocol/registry deployment (a GKE cluster running
+  # VictoriaMetrics + VictoriaLogs + an OpenTelemetry collector). It is a
+  # DIFFERENT Grafana from obs.tadasant.com, which is the dashboard plane for the
+  # Tadas/Zimmer/strad fleet; this slug answers questions about the REGISTRY's own
+  # traffic (pageviews, downloads, API requests) and nothing about our infra.
+  #
+  # WHY IT IS A MOUNT AND NOT A LOCAL COMMAND. Grafana ships mcp-grafana as a Go
+  # binary and a Docker image only, so it used to run agent-side as a ~900
+  # character `sh -c` that curled the pinned release into $TMPDIR on every fresh
+  # session and exec'd it. That is the thing this replaces: the binary is baked
+  # into the bundle image at a pinned, SHA-256-verified version, and this slug
+  # proxies to it like any other supplementary server — which is what lets its
+  # credential live in the parameter store instead of in a client's config.
+  #
+  # READ-ONLY AT THE BINARY. The bundle host runs the child with `-disable-write`
+  # and `-disable-proxied`, so the 13 write tools do not exist in the process and
+  # a datasource cannot advertise new ones — 52 read tools. Hence no `tools:`
+  # policy here: there is nothing left for the gateway to withhold. A read-write
+  # Grafana would be a SECOND mount, never this one with a flag removed.
+  #
+  # ONE MOUNT, MANY GRAFANAS. `path: /grafana-registry` is not a typo for
+  # `/grafana`: the bundle host mounts a per-slug instance at `/<slug>` for every
+  # slug the container carries a whole Grafana credential for, and a per-slug
+  # instance is what gives this one its own child process holding its own token.
+  # Pointing a second slug at obs.tadasant.com is then config alone — a `grafana`
+  # entry on `path: /grafana` — with no image change.
+  #
+  # DISABLED UNTIL ITS SECRET IS SEEDED, like telegram-ro/rw and
+  # pulse-subregistry. A `${REF}` the store does not hold fails the WHOLE render.
+  # Minting the token needs admin on the registry's Grafana, whose only login is
+  # Google OAuth restricted to @modelcontextprotocol.io — so it comes from an MCP
+  # Registry maintainer, not from a tadasant.com account. To turn it on: seed
+  # GRAFANA_REGISTRY_SERVICE_ACCOUNT_TOKEN in /strad/staging/gateway/static/
+  # (the console, /ui/secrets), delete the `enabled` line below, and add the name
+  # to PROVISIONED_STATICS in test/staging-config.test.ts.
+  - slug: grafana-registry
+    kind: supplementary-image
+    title: Grafana (MCP Registry production)
+    description: >-
+      Read-only Grafana for the MCP Registry's own production cluster:
+      Prometheus/VictoriaMetrics queries, dashboards, and VictoriaLogs through
+      the datasource proxy. Not the tadasant fleet's Grafana.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /grafana-registry
+    entitlements: [admin]
+    enabled: false
+    env:
+      GRAFANA_URL: https://grafana.prod.registry.modelcontextprotocol.io
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: "${GRAFANA_REGISTRY_SERVICE_ACCOUNT_TOKEN}"
 
   # strad's artifact store: an agent uploads a screenshot, a human opens the link.
   #

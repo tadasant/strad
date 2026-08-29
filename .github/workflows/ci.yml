@@ -164,6 +164,18 @@ jobs:
   #               tool list; this suite pins defaults, query construction,
   #               truncation and error handling.
   #
+  #   grafana     test. The proxy in front of the pinned mcp-grafana Go binary. Its
+  #               suite runs against a fake MCP child rather than the real
+  #               executable — which CI cannot run here and a unit test should not
+  #               need to — and pins the seam: that the child is spawned with
+  #               `-disable-write` and `-disable-proxied` (a read-only mount
+  #               becoming read-write is silent otherwise), that it receives an
+  #               allowlisted environment rather than the bundle's twenty other
+  #               credentials, that tools and results are forwarded verbatim, and
+  #               that a child which dies is replaced on the next call. The
+  #               binary's own tool count is asserted by `bundle_image`, against
+  #               the real thing.
+  #
   #   strad-fetch test. strad's fork of @pulsemcp/pulse-fetch. The bundle smoke
   #               test only proves the tool list; this suite pins the two
   #               behavioural deltas the fork exists for — that `speed` demotes
@@ -239,6 +251,10 @@ jobs:
             build: false
             test: true
             skip-browser: false
+          - tree: grafana
+            build: false
+            test: true
+            skip-browser: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -260,7 +276,7 @@ jobs:
         working-directory: servers/${{ matrix.tree }}
         run: npm test
 
-  # THE bundle: twenty MCP servers, twelve dependency trees, one Chromium and the
+  # THE bundle: twenty-one MCP servers, thirteen dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

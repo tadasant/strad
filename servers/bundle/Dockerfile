@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Twenty MCP servers, one container.
+# bundle — THE strad supplementary image. Twenty-one MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from twelve existing projects that live in different places:
+# assembled from thirteen existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -18,10 +18,12 @@
 #   servers/telegram        telegram               (MTProto, USER session)
 #   servers/pulse-subregistry  pulse-subregistry
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
+#   servers/grafana         grafana                (proxies the pinned mcp-grafana
+#                                                  Go binary, baked below)
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging twelve dependency trees is how you
+# Nothing is merged. That is on purpose: merging thirteen dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -145,6 +147,57 @@ RUN npm ci --no-audit --no-fund
 COPY servers/strad-fetch/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
+# ---- grafana -----------------------------------------------------------------
+# The proxy half of the Grafana mount: it supervises the pinned mcp-grafana
+# binary (fetched in the stage below) over stdio and forwards one MCP surface to
+# it. Its only dependency is the MCP SDK — the server itself is Go.
+FROM ${PW} AS build-grafana
+WORKDIR /src
+COPY servers/grafana/package.json servers/grafana/package-lock.json ./
+COPY servers/grafana/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/grafana/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- mcp-grafana, the pinned Go binary ---------------------------------------
+# Grafana ships its MCP server as a Go executable and a Docker image, and as
+# nothing else: there is no npm package to build into a tree. So the binary is
+# baked in, exactly like `op` below.
+#
+# THE CHECKSUM IS PINNED HERE, NOT FETCHED. The Zimmer-side bootstrap this mount
+# replaces downloaded the release's own `checksums.txt` alongside the tarball and
+# compared the two — which proves the download was not corrupted in flight, and
+# proves nothing at all about the release, since both files come from the same
+# server. The digests below are in the repo: they were verified against the
+# published v0.17.1 assets when this landed, they are reviewable in the diff, and
+# a re-tagged or substituted release now fails the BUILD rather than shipping.
+#
+# Both architectures are here because the digest must be selectable without a
+# network round-trip. Only amd64 is built today (App Platform), and an arm64
+# build — a laptop, a future runner — must not silently fall back to it.
+FROM ${PW} AS fetch-mcp-grafana
+ARG MCP_GRAFANA_VERSION=0.17.1
+ARG MCP_GRAFANA_SHA256_AMD64=d6c2db06c16177eef6d24b7d53b5515f0e1c9fd209317a9ed867884598c763b3
+ARG MCP_GRAFANA_SHA256_ARM64=5719e72b9faa65874d271332a6db63d1fae08e2443fe65ee3ab765f785b73bbe
+ARG TARGETARCH=amd64
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) asset=x86_64; want="${MCP_GRAFANA_SHA256_AMD64}" ;; \
+      arm64) asset=arm64;  want="${MCP_GRAFANA_SHA256_ARM64}" ;; \
+      *) echo "mcp-grafana: no pinned digest for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl -fsSL -o /tmp/mcp-grafana.tar.gz \
+      "https://github.com/grafana/mcp-grafana/releases/download/v${MCP_GRAFANA_VERSION}/mcp-grafana_Linux_${asset}.tar.gz"; \
+    echo "${want}  /tmp/mcp-grafana.tar.gz" | sha256sum -c -; \
+    mkdir -p /out; \
+    tar xzf /tmp/mcp-grafana.tar.gz -C /out mcp-grafana; \
+    chmod 755 /out/mcp-grafana; \
+    rm -f /tmp/mcp-grafana.tar.gz; \
+    rm -rf /var/lib/apt/lists/*; \
+    test "$(/out/mcp-grafana --version)" = "${MCP_GRAFANA_VERSION}"
+
 FROM ${PW} AS build-goodeggs
 WORKDIR /src
 COPY servers/good-eggs/package.json servers/good-eggs/package-lock.json ./
@@ -188,7 +241,7 @@ RUN npm run build && npm prune --omit=dev
 FROM ${PW}
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="strad's single supplementary image — 20 MCP servers (API, Google, X.com, Telegram, web fetching, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
+LABEL org.opencontainers.image.description="strad's single supplementary image — 21 MCP servers (API, Google, X.com, Telegram, web fetching, Grafana, 1Password, secrets, browser) over streamable-HTTP, one shared Chromium, credential-free."
 LABEL org.opencontainers.image.licenses="MIT"
 
 # --- 1Password CLI (op), pinned ----------------------------------------------
@@ -220,7 +273,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The twelve trees, each with the node_modules it was built against.
+# The thirteen trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -233,6 +286,13 @@ COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
+COPY --from=build-grafana /src /app/trees/grafana
+
+# The one upstream in this image that is not JavaScript. It goes on PATH because
+# that is where the grafana tree's supervisor looks for it (DEFAULT_BINARY), and
+# it is spawned per mount with an allowlisted environment — see
+# servers/grafana/shared/src/config.ts for what it is and is not handed.
+COPY --from=fetch-mcp-grafana /out/mcp-grafana /usr/local/bin/mcp-grafana
 
 # The host: the only new code in this image.
 COPY --from=build-host /src/node_modules /app/host/node_modules

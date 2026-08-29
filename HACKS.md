@@ -3110,3 +3110,39 @@ good-eggs lacks.
 paths that currently throw on an unconfirmed session, guarded so two concurrent
 tool calls cannot drive the sign-in form at once. Clear the login latch in the
 same change.
+
+## 68. The Grafana mount runs a downloaded binary, and its version is pinned in three places
+
+**What.** `grafana` is the only upstream in the bundle image that is not
+JavaScript. Grafana publishes `mcp-grafana` as a Go executable and a Docker image
+and nothing else, so `servers/bundle/Dockerfile` fetches the pinned release,
+checks it against a SHA-256 in the Dockerfile, and installs it on PATH;
+`servers/grafana` supervises it as a stdio child and proxies to it.
+
+Three things must move together on a version bump, and nothing checks that they
+have:
+
+- `MCP_GRAFANA_VERSION` and BOTH `MCP_GRAFANA_SHA256_*` digests in the Dockerfile
+  — a version bumped without its digests fails the build, which is the good case.
+- The tool count in `servers/bundle/scripts/smoke.mjs` (`grafana: 52`), if the
+  release adds or removes a read tool. This one fails CI loudly, which is the
+  point of asserting a count nobody can predict from the diff.
+- The prose in `docs/servers/grafana.md`, which names the version and the count.
+
+**Why.** The alternative to a pinned digest is resolving `latest` at build time,
+which means a rebuild of an old commit produces a different image — the thing
+pinning `op` already exists to prevent. The alternative to baking it at all is
+what this replaced: a ~900-character `sh -c` in every client's MCP config that
+curled the release into `$TMPDIR` on every fresh session, which put the
+credential in the client rather than in the store and re-downloaded the binary
+per machine.
+
+**What is NOT a limitation here.** The digest is stronger than what it replaced,
+not weaker: the bootstrap compared the tarball against a `checksums.txt` fetched
+from the same server, which detects a corrupted download and nothing else. The
+digest in this repo is reviewed in a diff, so a re-tagged release fails the
+build.
+
+**Undo.** If Grafana ever publishes an npm package, this becomes an ordinary
+tree: delete the fetch stage, drop the `binary` seam, and import the server the
+way every other mount is imported.

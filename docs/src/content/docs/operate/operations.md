@@ -434,8 +434,8 @@ below for the move that publishes one.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — fourteen entries: the twelve trees
-the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
+`release-bundle-image.yml` has a `paths:` filter — fifteen entries: the thirteen
+trees the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
 commits cut no bundle image and stepping past them is the normal case, not an
 exception. `--kind bundle` reads that filter out of
 the workflow rather than keeping a second copy of the list. A commit that **did**
@@ -851,7 +851,7 @@ actionlint and all. `test/workflow-buildx-builder.test.ts` is what covers it: no
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all four server kinds so the deploy path is proven end-to-end. It
-declares thirty-two server slugs:
+declares thirty-three server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
@@ -860,15 +860,17 @@ declares thirty-two server slugs:
   new hostname per process, so there is no stable value to commit; it is turned
   on by putting a hostname in `url` and flipping the flag. Like `deepwiki` it
   costs no component.
-- twenty-eight `supplementary-image` entries on the one `bundle` component running
-  `ghcr.io/tadasant/strad-bundle`. They land on seventeen of the bundle image's
-  twenty mounts, because a read-only and a read-write variant of one upstream
-  are two entries sharing one `path`. Three of them — `telegram-ro`,
-  `telegram-rw` and `pulse-subregistry` — carry `enabled: false` until their
+- twenty-nine `supplementary-image` entries on the one `bundle` component running
+  `ghcr.io/tadasant/strad-bundle`. They land on nineteen paths, because a
+  read-only and a read-write variant of one upstream are two entries sharing one
+  `path`: eighteen of the bundle image's twenty-one baked mounts, plus
+  `/grafana-registry`, a per-slug instance the host stands up for that slug's own
+  Grafana credential. Four of them — `telegram-ro`, `telegram-rw`,
+  `pulse-subregistry` and `grafana-registry` — carry `enabled: false` until their
   secrets are seeded, so they are skipped at render; see
   [Telegram](/servers/telegram/#not-configured-is-a-supported-state) and
   [A server whose secret is not seeded yet](#a-server-whose-secret-is-not-seeded-yet).
-- `zimmer-secrets` — a twenty-ninth `supplementary-image` entry, running that same
+- `zimmer-secrets` — a thirtieth `supplementary-image` entry, running that same
   image on its **own** component, `bundle-zimmer-secrets`. It is the only server
   that leaves the one bundle, and the only reason to leave it: a parameter store is
   `process.env`. See [Two stores, one

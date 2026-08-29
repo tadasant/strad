@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that twenty servers, twelve dependency trees and
+ * What it is really checking is that twenty-one servers, thirteen dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -73,6 +73,11 @@ const EXPECT = {
   // get_me, list_chats, get_chat, get_chat_history, search_messages, and the one
   // write tool, send_message — which `telegram-ro` is the allow-list without.
   telegram: 6,
+  // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
+  // gateway allow-list: the child process does not contain them. If this number
+  // moves, either the pin moved or a flag stopped being passed — and the second
+  // one is a read-only mount quietly becoming read-write.
+  grafana: 52,
 };
 
 /**

@@ -317,7 +317,7 @@ It degrades the same way an offline machine does. That is a deliberate change of
 mind: a refusal used to fail the whole `?servers=` listing, on the reasoning that
 a broken credential silently removing one server from a fleet goes unnoticed for
 weeks. The objection was to the SILENCE, and there is none left — the slug now
-says out loud that it was refused and why. Taking twenty-nine healthy servers
+says out loud that it was refused and why. Taking thirty healthy servers
 down to make that point is no longer the only way to make it.
 
 Rotating an access token badly is therefore a one-slug problem again. Rotate the
