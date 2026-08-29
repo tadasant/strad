@@ -30,6 +30,7 @@ export type { ServiceAccount } from "../secrets/parameters/service-account.ts";
 import {
   mintAccessToken,
   ServiceAccountAuthError,
+  type FetchLike,
   type MintedToken,
   type ServiceAccount,
 } from "../secrets/parameters/service-account.ts";
@@ -73,7 +74,7 @@ const SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
 const STORAGE_API = "https://storage.googleapis.com/storage/v1";
 
 /** Injectable so tests can drive the client without touching the network. */
-export type FetchLike = typeof fetch;
+export type { FetchLike } from "../secrets/parameters/service-account.ts";
 
 /**
  * The listing surface the UI depends on. Real GCS in production; a canned fake

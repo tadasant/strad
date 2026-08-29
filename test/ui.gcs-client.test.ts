@@ -15,7 +15,7 @@ import { createGcsLister, GcsError } from "../src/ui/gcs-client.ts";
 /**
  * The GCS browser's own half of the shared service-account mint.
  *
- * `createGcsLister` no longer signs its own JWT — it calls the store-neutral
+ * `createGcsLister` does not sign its own JWT: it calls the store-neutral
  * `mintAccessToken` in src/secrets/parameters/service-account.ts. Three things
  * about that seam are load-bearing and invisible to the type system:
  *
@@ -26,7 +26,7 @@ import { createGcsLister, GcsError } from "../src/ui/gcs-client.ts";
  *      HTTP status on it. src/ui/index.ts renders its 403 explanation from
  *      `.status`; the shared module throws `ServiceAccountAuthError` instead.
  *   3. The per-client_email token cache is this client's, not the shared
- *      module's, and survives the conversion.
+ *      module's — including the seconds-to-ms expiry the mint hands back.
  */
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -46,7 +46,7 @@ function account(email: string): ServiceAccount {
 const ACCOUNT = account("browser@demo.iam.gserviceaccount.com");
 
 interface Stub {
-  calls: { url: string; body?: string }[];
+  calls: { url: string; body?: string; auth?: string }[];
   fetchImpl: typeof fetch;
 }
 
@@ -55,7 +55,7 @@ interface Stub {
  * decides what the exchange answers; the listing is always the same page.
  */
 function stub(token: { status: number; body: unknown }): Stub {
-  const calls: { url: string; body?: string }[] = [];
+  const calls: Stub["calls"] = [];
   const fetchImpl = (async (input: URL | string, init?: RequestInit) => {
     const url = String(input);
     if (url === TOKEN_URL) {
@@ -66,7 +66,10 @@ function stub(token: { status: number; body: unknown }): Stub {
         headers: { "content-type": "application/json" },
       });
     }
-    calls.push({ url });
+    calls.push({
+      url,
+      auth: new Headers(init?.headers).get("authorization") ?? undefined,
+    });
     return new Response(
       JSON.stringify({
         items: [{ name: "shots/readme.txt", size: "42" }],
@@ -101,6 +104,7 @@ describe("createGcsLister mints through the shared service-account flow", () => 
     // The exchange happened, and the listing carried the minted token.
     expect(s.calls[0]!.url).toBe(TOKEN_URL);
     expect(s.calls[1]!.url).toContain("storage.googleapis.com");
+    expect(s.calls[1]!.auth).toBe("Bearer at-1");
   });
 
   it("asks for the read-only Storage scope, never cloud-platform", async () => {
@@ -127,6 +131,23 @@ describe("createGcsLister mints through the shared service-account flow", () => 
     await list(account("other@demo.iam.gserviceaccount.com"), {
       bucket: "demo",
     });
+    expect(s.calls.filter((c) => c.url === TOKEN_URL)).toHaveLength(2);
+  });
+
+  it("re-mints a token whose expiry is inside the 60s slack", async () => {
+    // `expires_in` is SECONDS and the cache compares epoch MILLISECONDS; the
+    // conversion is the shared module's now. 30s in is inside the slack, so
+    // the second listing must mint again rather than hand out a token that is
+    // about to die mid-flight.
+    const s = stub({
+      status: 200,
+      body: { access_token: "at-1", expires_in: 30 },
+    });
+    const list = createGcsLister(s.fetchImpl);
+
+    await list(ACCOUNT, { bucket: "demo" });
+    await list(ACCOUNT, { bucket: "demo" });
+
     expect(s.calls.filter((c) => c.url === TOKEN_URL)).toHaveLength(2);
   });
 
@@ -218,7 +239,7 @@ beforeAll(async () => {
     mode: "core",
     env,
     secrets: SECRETS,
-    // The REAL lister, over a stubbed network — the converted mint included.
+    // The REAL lister, mint included, over a stubbed network.
     gcsList: createGcsLister(
       stub({ status: 403, body: { error: "unauthorized_client" } }).fetchImpl,
     ),
@@ -242,7 +263,7 @@ describe("the console's credential panel", () => {
     expect(res.status).toBe(502);
     const html = await res.text();
     expect(html).toContain("Could not list this bucket");
-    // `${err.status} — ${err.message}`, the shape index.ts has always rendered.
+    // `${err.status} — ${err.message}`, the shape index.ts renders.
     expect(html).toContain("403 — GCS token exchange failed: 403");
     expect(html).toContain("credential or bucket-permission problem");
   });
