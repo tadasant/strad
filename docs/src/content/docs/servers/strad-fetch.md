@@ -100,14 +100,14 @@ through the server's `env:` map.
 The two credential names are bare because each names one vendor and nothing else in
 the bundle image reads them — the same reasoning that leaves `SLACK_BOT_TOKEN`
 bare. Everything else is namespaced, because the bundle is one container and a
-generic name there is a claim on nineteen other mounts.
+generic name there is a claim on twenty other mounts.
 
 ## The cache, and what it is shared with
 
 A scraped page is cached in the process, so a repeated fetch of a URL is free. The
 cache is **LRU-bounded** on entry count and total bytes — upstream's is unbounded,
 which is correct for a subprocess the OS reclaims and an out-of-memory risk in a
-container hosting twenty mounts.
+container hosting twenty-one mounts.
 
 It is also **one cache for every caller of the slug**, which is a limitation rather
 than a feature: see [limitation #65](/limitations/#65-strad-fetchs-scraped-page-cache-is-shared-by-every-caller-of-the-slug).

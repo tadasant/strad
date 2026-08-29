@@ -100,6 +100,7 @@ export default defineConfig({
             { label: "Telegram", slug: "servers/telegram" },
             { label: "Google Sheets", slug: "servers/google-sheets" },
             { label: "strad fetch", slug: "servers/strad-fetch" },
+            { label: "Grafana", slug: "servers/grafana" },
           ],
         },
         {

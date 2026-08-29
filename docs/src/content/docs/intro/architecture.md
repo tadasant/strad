@@ -62,13 +62,16 @@ none. Every non-core component gets `STRAD_CORE_URL` for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts twenty MCP servers in one
-Node process, assembled from twelve independently-built dependency trees. The
-staging config maps twenty-eight of its twenty-nine `supplementary-image`
-entries onto eighteen of those mounts, because capability variants of one
-upstream are two entries pointing at the same path — `/x-twitter` and
-`/google-sheets` are in the image with no staging slug. The twenty-ninth entry
-runs on the second bundle, below.
+`ghcr.io/tadasant/strad-bundle` container that mounts twenty-one MCP servers in
+one Node process, assembled from thirteen independently-built dependency trees.
+The staging config maps twenty-nine of its thirty `supplementary-image`
+entries onto nineteen paths, because capability variants of one upstream are two
+entries pointing at the same path. Eighteen of those are baked mounts;
+`/x-twitter`, `/google-sheets` and `/grafana` are baked with no staging slug
+pointing at them. The nineteenth, `/grafana-registry`, is a **per-slug
+instance** — a mount the host stands up only when the container carries that
+slug's own credential (see below). The thirtieth entry runs on the second
+bundle, below.
 
 Three of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
@@ -189,7 +192,7 @@ A failing upstream is handled differently depending on **who chose that server**
   Any named server failing fails the listing, not all of them.
 - **The request did not** (no `?servers=`, meaning "everything I'm entitled to")
   — the failing server contributes **zero tools** and a log line, rather than
-  taking the other twenty-nine down with it.
+  taking the other thirty down with it.
 
 There is exactly one exception, and it is `local-tunnel`. The rule above exists
 because a silently smaller toolset **hides a fault**; for a server on a machine
@@ -342,8 +345,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, nineteen servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all nineteen down together, and the
+**One process, one core, twenty-one servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all twenty-one down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See

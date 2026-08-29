@@ -82,6 +82,12 @@ Each process carries these resource attributes:
 | `strad.container.memory.utilization`                                    | usage / limit, `0..1`. **This is the OOM predictor.**          |
 | `strad.process.memory.rss` / `.heap.used` / `.heap.total` / `.external` | Where the memory went                                          |
 
+Two of the bundle's tenants are **not** in the Node numbers and **are** in the
+cgroup one: the shared Chromium, and the `mcp-grafana` child the Grafana mount
+supervises. `strad.process.memory.rss` will look calm while
+`strad.container.memory.utilization` climbs, which is the whole reason the
+container metric is the one to alert on.
+
 The limit is read from the **cgroup** (`/sys/fs/cgroup/memory.max`), not from
 `os.totalmem()`. This matters more than it sounds: inside the bundle's 2GB App
 Platform container, `os.totalmem()` reports the _host's_ memory (tens of GB), so a

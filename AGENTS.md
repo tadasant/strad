@@ -114,6 +114,7 @@ not a confession.
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache       | `operate/console-pwa.md`, `auth/overview.md`                                                                             |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model      | `servers/artifact-store.md`, `limitations.md`                                                                            |
 | `servers/telegram/**` — a tool, the credential model, the read/write split          | `servers/telegram.md`, `limitations.md`                                                                                  |
+| `servers/grafana/**` — the pinned version, the read-only flags, the env allowlist   | `servers/grafana.md`, `limitations.md`, and the counts in `servers/bundle/scripts/smoke.mjs`                             |
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim      | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                        |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool      | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                            |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate              | `operate/deploy-model.md`, `servers/interface.md`                                                                        |
@@ -147,10 +148,10 @@ numbers describe "how many servers," and they count different things:
 | The number | What it counts                                                                                     |
 | ---------- | -------------------------------------------------------------------------------------------------- |
 | **3**      | App Platform components: `core`, `bundle`, `bundle-zimmer-secrets`                                 |
-| **11**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
-| **20**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
-| **29**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
-| **31**     | total server slugs in staging (28 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
+| **13**     | dependency trees the bundle Dockerfile builds into `/app/trees`                                    |
+| **21**     | MCP servers mounted inside the bundle image (`buildMounts()`)                                      |
+| **30**     | `supplementary-image` entries in `infra/strad.staging.yaml` (capability variants included)         |
+| **33**     | total server slugs in staging (30 + `echo` builtin + `deepwiki` remote-http + `anki` local-tunnel) |
 
 A slug is not a mount, and a mount is not a component. Before you write a number,
 grep for the others.
@@ -192,8 +193,8 @@ slop behind when you fix a stale fact.
   "did I typo a key" is answered here, by `scripts/check-config.ts`.
 - `src/deploy/appspec.ts` — turns the config into a DigitalOcean App Platform spec.
   The server list decides the container topology.
-- `servers/bundle/` — one image, 20 mounted MCP servers, one shared Chromium,
-  assembled from TWELVE independently-built dependency trees.
+- `servers/bundle/` — one image, 21 mounted MCP servers, one shared Chromium,
+  assembled from THIRTEEN independently-built dependency trees.
 - `servers/remote-filesystem/` — strad's own artifact store, behind the
   `remote-filesystem-tmp-public` slug. `is_sensitive` picks the KIND of link;
   GCS's 7-day V4 ceiling is why the 14-day default is signed with V2.

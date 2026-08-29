@@ -255,7 +255,7 @@ A server **served by a container image**. strad deploys the image as an
 internal-only component and proxies to it over the private network.
 
 One bundle runs one image, but that image may host **many** servers — each on its
-own `path`. strad's own bundle image mounts twenty MCP servers in one process, so
+own `path`. strad's own bundle image mounts twenty-one MCP servers in one process, so
 seventeen `path`s on one container.
 
 Two servers may also share a `path` in one bundle — that is the capability-variant
@@ -437,7 +437,7 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 
 Note what is deliberately **not** an error: many servers in one bundle, and two
 servers on the same `path` of one bundle. Both are load-bearing — the first is how
-twenty MCP servers fit in one container, the second is how a read-only and a
+twenty-one MCP servers fit in one container, the second is how a read-only and a
 read-write variant share it.
 
 Nor is repeating one env key across servers with the **same value**. That is the

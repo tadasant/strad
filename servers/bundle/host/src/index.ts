@@ -259,6 +259,15 @@ async function buildMounts(): Promise<Mount[]> {
 
   mounts.push(await loadStradFetch());
 
+  // grafana: the conventional mount, plus one per slug the environment carries a
+  // whole Grafana credential for. The default is always served — degraded until
+  // something gives it a URL and a token — so a config that names no Grafana at
+  // all still shows the slug and its 52 read tools.
+  const grafana = await loadGrafanaTree();
+  mounts.push(loadGrafana(grafana, "grafana"));
+  for (const slug of extraSlugs("grafana", grafana.GRAFANA_ENV_NAMES))
+    deferred.push({ slug, load: async () => loadGrafana(grafana, slug) });
+
   mounts.push(await loadTelegram("telegram"));
   for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
     deferred.push({ slug, load: () => loadTelegram(slug) });
@@ -483,6 +492,99 @@ async function loadStradFetch(): Promise<Mount> {
     capabilities: { resources: {}, tools: {} },
     register: (s) => created.registerHandlers(s),
   };
+}
+
+interface GrafanaModule {
+  createMCPServer: (opts: Record<string, unknown>) => {
+    registerHandlers: (server: unknown) => Promise<void>;
+    missing: string[];
+    close: () => Promise<void>;
+  };
+  /** The tree owns what its credential IS — see loadGoogleSheets for why. */
+  missingCredentials: (env: Record<string, string | undefined>) => string[];
+  /** The variables ONE Grafana's credential is made of. Owned by the tree. */
+  GRAFANA_ENV_NAMES: readonly string[];
+}
+
+async function loadGrafanaTree(): Promise<GrafanaModule> {
+  return (await loadFromTree("grafana", "shared/build/index.js")) as GrafanaModule;
+}
+
+/**
+ * grafana — Grafana Labs' own MCP server, hosted here rather than run as a
+ * client-side binary.
+ *
+ * THE ONE UPSTREAM IN THIS IMAGE THAT IS NOT JAVASCRIPT. Grafana ships it as a
+ * Go executable and a Docker image and nothing else, so there is no package to
+ * import: the Dockerfile bakes the pinned, SHA-256-verified binary onto PATH and
+ * the `grafana` tree supervises it over stdio, forwarding one MCP surface to it.
+ * Everything below this line is the same as any other mount — which is the whole
+ * point of doing it this way rather than teaching strad's config a `command:`.
+ *
+ * READ-ONLY AT THE BINARY. The child runs with `-disable-write` and
+ * `-disable-proxied`: 52 read tools, and no write to withhold. That is a
+ * deliberate exception to this container's rule that every upstream runs at FULL
+ * capability and the gateway narrows it — the gateway can only ever withhold a
+ * tool, and for a fleet's observability control plane the stronger guarantee is
+ * worth the exception. See servers/grafana/shared/src/upstream.ts.
+ *
+ * ONE INSTANCE PER SLUG, and this is the mount that most needs it: a Grafana
+ * credential is one Grafana. `grafana-registry` (the MCP Registry's cluster) and
+ * a future `grafana` (obs.tadasant.com, the fleet's dashboard plane) are two
+ * origins and two tokens, so they are two children of this process — the same
+ * shape telegram and google-sheets take, for the same reason.
+ */
+function loadGrafana(mod: GrafanaModule, slug: string): Mount {
+  const env = slugEnvView(process.env, slug);
+
+  // Degraded, not unmounted, and for the usual reason: the tools must still LIST
+  // so the console shows the slug and an agent can see what it would offer once
+  // a token lands. mcp-grafana lists its 52 tools without ever reaching Grafana,
+  // so this mount's surface is honest even here — only the calls fail.
+  const missing = mod.missingCredentials(env);
+  const unconfigured =
+    missing.length > 0
+      ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; ` +
+        `tools will list but every call will fail`
+      : null;
+
+  const mount: Mount = {
+    slug,
+    tree: "grafana",
+    serverName: "strad-grafana",
+    capabilities: { tools: {} },
+    degraded: unconfigured,
+    // Replaced below, once the supervisor it delegates to exists.
+    register: async () => {},
+  };
+
+  const created = mod.createMCPServer({
+    version: VERSION,
+    env,
+    slug,
+    log: (line: string) => log(`${slug}: ${line}`),
+    // A child that cannot be started is this mount's fault and nobody else's:
+    // report it on /healthz rather than only in the error of whoever happened to
+    // call next. A child that came up clears it — back to the missing-credential
+    // state if that is still true, because a running binary with no token is
+    // still a mount that fails every call.
+    onDegraded: (reason: string | null) => {
+      if (reason === null) {
+        if (mount.degraded !== unconfigured) {
+          mount.degraded = unconfigured;
+          log(`${slug}: mcp-grafana is up (mount is no longer degraded)`);
+        }
+        return;
+      }
+      mount.degraded = reason;
+      logWarn(
+        `${slug}: ${reason} (this mount is degraded; the container keeps serving)`,
+      );
+    },
+  });
+
+  mount.register = (s) => created.registerHandlers(s);
+  return mount;
 }
 
 interface GoogleTree {

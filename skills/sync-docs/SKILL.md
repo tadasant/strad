@@ -39,10 +39,10 @@ number, know which of these you mean and grep for the others:
 | The number | What it counts                                                                       | Where it's decided                                    |
 | ---------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------- |
 | **3**      | App Platform components                                                              | `renderAppSpec` output; `test/staging-config.test.ts` |
-| **11**     | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
-| **20**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
-| **29**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                            |
-| **30**     | total server slugs in staging (28 + `echo` builtin + `deepwiki` remote-http)         | `infra/strad.staging.yaml`                            |
+| **13**     | dependency trees the bundle Dockerfile builds into `/app/trees`                      | `servers/bundle/Dockerfile`, `TreeName` in `trees.ts` |
+| **21**     | MCP servers mounted inside the bundle image                                          | `buildMounts()` in `servers/bundle/host/src/index.ts` |
+| **30**     | `supplementary-image` _entries_ in the staging config (capability variants included) | `infra/strad.staging.yaml`                            |
+| **33**     | total server slugs in staging (30 + `echo` + `deepwiki` + `anki`)                    | `infra/strad.staging.yaml`                            |
 
 A slug is not a mount, and a mount is not a component. Say which one you mean.
 

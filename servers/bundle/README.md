@@ -1,20 +1,23 @@
 # bundle — THE strad supplementary image
 
-Twenty MCP servers. One container. One Chromium. One `op` binary.
+Twenty-one MCP servers. One container. One Chromium. One `op` binary. One
+`mcp-grafana` binary.
 
 ```
 /slack /serpapi-hotels /tailscale /monarch-money /gcs /remote-filesystem-tmp-public
-/x-twitter /telegram /pulse-subregistry /strad-fetch
+/x-twitter /telegram /pulse-subregistry /strad-fetch /grafana
 /google-flights /gmail /google-calendar /google-docs /google-sheets
 /onepassword /secrets
 /good-eggs /fetchpet /pointsyeah
 ```
 
-Nineteen is the floor, not a constant: three of those mounts (`/telegram`,
-`/remote-filesystem-tmp-public`, `/google-sheets`) are re-mounted once more per
-slug the container holds a separate credential for. `/google-sheets` is the one a
-real deployment uses that way — an OAuth refresh token is one Google account, so
-six `google-sheets-*` slugs over three accounts are three more mounts.
+Twenty-one is the floor, not a constant: four of those mounts (`/telegram`,
+`/remote-filesystem-tmp-public`, `/google-sheets`, `/grafana`) are re-mounted once
+more per slug the container holds a separate credential for. `/google-sheets` is
+the one a real deployment uses that way — an OAuth refresh token is one Google
+account, so six `google-sheets-*` slugs over three accounts are three more mounts.
+`/grafana` is the same shape for the same reason: a Grafana service-account token
+is one Grafana, so `grafana-registry` is its own mount and its own child process.
 
 strad's staging app is **three components**: `core` (the public gateway),
 `bundle` (this), and `bundle-zimmer-secrets` — a second copy of this image that
@@ -36,15 +39,18 @@ server config carries a `tools:` allow/deny policy that strad enforces on
 **full capability**, and `gmail-ro` and `gmail-rw` are two strad slugs pointing at
 the same path in this one container.
 
+`grafana` is the one exception, and it is deliberate: its child process runs with
+`-disable-write`, so the 13 write tools are not in it to withhold. See below.
+
 This host therefore **scrubs** every `*_ENABLED_TOOLGROUPS`-shaped variable out of
 its environment at boot. A stale one would not just be ignored — it would strip
 write tools from the read-**write** slugs too, and the failure would look like an
 upstream bug.
 
-## How twelve projects become one image
+## How thirteen projects become one image
 
-`Dockerfile`'s build context is the **repo root**, because the servers live in twelve
-different places:
+`Dockerfile`'s build context is the **repo root**, because the servers live in
+thirteen different places:
 
 | tree | source | servers |
 | --- | --- | --- |
@@ -56,6 +62,7 @@ different places:
 | `x-twitter` | `servers/x-twitter` | x-twitter |
 | `pulse-subregistry` | `servers/pulse-subregistry` | pulse-subregistry |
 | `strad-fetch` | `servers/strad-fetch` | strad-fetch (web fetching, strad's own fork) |
+| `grafana` | `servers/grafana` | grafana (proxies the pinned `mcp-grafana` Go binary, baked in) |
 | `telegram` | `servers/telegram` | telegram (MTProto, a user session) |
 | `good-eggs` | `servers/good-eggs` | good-eggs |
 | `fetchpet` | `servers/fetchpet` | fetchpet |
@@ -63,8 +70,8 @@ different places:
 
 Each is built **in its own stage, with its own lockfile and its own
 `node_modules`**, exactly as its standalone image builds it, and lands at
-`/app/trees/<name>`. Nothing is merged. Merging twelve dependency trees is how you
-find out in production that two of them wanted different Playwright versions.
+`/app/trees/<name>`. Nothing is merged. Merging thirteen dependency trees is how
+you find out in production that two of them wanted different Playwright versions.
 
 `host/` imports across the trees **by path** (`src/trees.ts`). Node resolves each
 shared package's own imports from its own tree, so no upstream server runs
@@ -89,6 +96,38 @@ see fetchpet's cookies. If the browser dies, the next caller relaunches it.
 Measured, two browser servers logging in at once: **one** Chromium process tree,
 ~940MB RSS across it (mostly shared), ~760MB container working set. Hence the 2GB
 instance in `infra/strad.staging.yaml`.
+
+## The one upstream that is not JavaScript
+
+Grafana ships its MCP server as a **Go binary** and a Docker image, and as
+nothing else — there is no npm package to build into a tree. strad's config knows
+three server kinds and none of them runs a local command, so the way to host it
+is to bake it: `Dockerfile` fetches the pinned release, verifies its SHA-256
+against a digest **in this repo** (not against the checksums file the same server
+serves), and puts it on PATH. `servers/grafana` is the other half — an MCP proxy
+that supervises the binary over stdio and forwards `tools/list` and `tools/call`
+to it.
+
+**Read-only at the binary, not at the gateway.** The child runs with
+`-disable-write` (drops the 13 write tools, narrows alerting to its read actions:
+65 tools become 52) and `-disable-proxied` (Grafana datasources can advertise
+external MCP servers whose tools `-disable-write` does not constrain, and whose
+names change under a mount that is supposed to enumerate 52). A gateway policy
+can only ever *withhold* a tool; this is the stronger claim, and for a fleet's
+observability control plane it is worth the exception. Writes are added by
+adding a second mount, never by loosening this one.
+
+**One child per slug.** A Grafana service-account token is one Grafana, so
+`grafana-registry` (the MCP Registry's cluster) and a future `grafana`
+(obs.tadasant.com) are two mounts and two child processes, discovered from the
+environment exactly as telegram's and google-sheets' extra instances are.
+
+**The child gets an allowlisted environment**, not this container's. Every other
+mount is code inside the host process; this one is a separate executable, and a
+child spawned with the default environment would inherit a Slack token, a
+1Password token, a GCP service-account key and six Google refresh tokens. It gets
+`GRAFANA_URL`, `GRAFANA_SERVICE_ACCOUNT_TOKEN`, an optional `GRAFANA_ORG_ID` and
+four process variables. `servers/grafana/shared/src/config.ts` is that list.
 
 ## The GCS_BUCKET collision
 
@@ -118,7 +157,7 @@ could perform one. See [`servers/secrets/README.md`](../secrets/README.md).
 
 ## Blast radius, honestly
 
-Twenty servers share a process. A crash is a twenty-server outage. Everything
+Twenty-one servers share a process. A crash is a twenty-one-server outage. Everything
 that *can* be made survivable is:
 
 - a browser server whose **login fails** is marked `degraded` in `/healthz`; the

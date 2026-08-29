@@ -345,12 +345,12 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty servers share one process and one CPU
+### 24. Twenty-one servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty MCP servers and
-launches one shared Chromium, on `apps-s-1vcpu-2gb`. A crash in the host takes all
-nineteen down together, and Chromium contends with every other server for the single
-vCPU.
+The `bundle` component runs one Node process that mounts twenty-one MCP servers,
+launches one shared Chromium and supervises one `mcp-grafana` child process, on
+`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-one down together, and
+Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
 a 2GB limit — so memory has headroom. Compute is the suspected binding constraint,
@@ -1512,7 +1512,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is twelve dependency trees. Isolation costs a
+than the longest — the bundle alone is thirteen dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -1609,7 +1609,7 @@ for the telegram pair, `PULSEMCP_SUBREGISTRY_API_KEY` for `pulse-subregistry` �
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only two of the twelve trees can read one
+### 56. Per-slug variable names are emitted for every server; only four of the thirteen trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -1624,10 +1624,10 @@ they read is the bare name. Two slugs on one path resolving one variable
 differently is still a hard error — one process cannot hold two credentials,
 whatever the variables are called.
 
-**Only `telegram` and `remote-filesystem` read an injected environment.** The
-other eight trees in the bundle image are vendored upstream code that reads
-`process.env` directly, often lazily at call time, so they see the bare names
-only. The renderer cannot tell which tree an image contains — an image is a tag in
+**Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`)
+and `grafana` read an injected environment.** The other nine trees in the bundle
+image are vendored upstream code that reads `process.env` directly, often lazily
+at call time, so they see the bare names only. The renderer cannot tell which tree an image contains — an image is a tag in
 someone else's config — so a slug of another tree given its own path renders,
 warns, and serves nothing, because the image has no mount at that path.
 Reachability reports the deployment `degraded`, which is where you would see it.
@@ -1827,7 +1827,7 @@ leak. Nothing in the cache is a credential; it is public pages someone fetched.
 
 **What the fork DID bound is the memory.** Upstream's store grows for the life of
 the process, which is fine for a subprocess the OS reclaims and an out-of-memory
-kill in a container that hosts twenty mounts. The cache is LRU-bounded on both
+kill in a container that hosts twenty-one mounts. The cache is LRU-bounded on both
 entry count and bytes, and the filesystem backend is gone (App Platform gives the
 container no persistent volume, so it was memory with extra steps).
 
@@ -1895,6 +1895,30 @@ even a transient failure never retries.
 **Undo:** give the client a `reauthenticate()` and call it from the read paths
 that throw on an unconfirmed session, guarded so two concurrent tool calls cannot
 drive the sign-in form at once — and clear the login latch in the same change.
+
+### 68. The Grafana mount runs a downloaded binary, and its version is pinned in three places
+
+`grafana` is the only upstream in the bundle image that is not JavaScript.
+Grafana publishes `mcp-grafana` as a Go executable and a Docker image and nothing
+else, so the bundle Dockerfile fetches the pinned release, verifies it against a
+SHA-256 digest committed here, and installs it on PATH; `servers/grafana`
+supervises it as a stdio child and proxies to it.
+
+A version bump has to move three things, and nothing checks that it did: the
+`MCP_GRAFANA_VERSION` and both `MCP_GRAFANA_SHA256_*` digests in the Dockerfile (a
+mismatch fails the build, which is the good case), the tool count in the bundle
+smoke test if the release changed the read surface (that one fails CI), and the
+prose on [Grafana](/servers/grafana/), which names both.
+
+**This is stronger than what it replaced, not weaker.** The client-side bootstrap
+compared the tarball against a `checksums.txt` fetched from the same server —
+which detects a corrupted download and nothing else. A digest in the repo is
+reviewed in a diff, so a re-tagged release fails the build.
+
+**Undo:** `HACKS.md` #68. If Grafana ever ships an npm package, this becomes an
+ordinary tree.
+
+---
 
 ## What the human still needs to provision
 
