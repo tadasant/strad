@@ -1330,15 +1330,20 @@ async function main(): Promise<void> {
   // null (and logs nothing) on every deployment that set no `paramsRefresh:`,
   // which is all of them by default.
   const refresh = startParamRefresh({ mounts });
-  if (refresh) {
-    // One pass at boot, so a value rotated between the last render and this
-    // start is current immediately rather than after a whole interval. It is the
-    // same read `loadXTwitter` already does for its own token, generalised.
-    await refresh.runOnce().catch((err: unknown) => {
-      logWarn(`initial parameter refresh failed: ${errMessage(err)}`);
-      return [];
-    });
-  }
+  // One pass at boot, so a value rotated between the last render and this start
+  // is current sooner than a whole interval away.
+  //
+  // NOT AWAITED, and that is deliberate. A pass is one sequential read per
+  // listed variable, each with its own timeout, so awaiting it would put a slow
+  // or unreachable core directly in front of `listen()` below — twenty-one
+  // mounts held off serving because one credential could not be re-read. The
+  // container starting with the value the deploy baked is exactly the behaviour
+  // every deployment has today, so falling back to it costs nothing; blocking
+  // readiness on it would cost everything.
+  void refresh?.runOnce().catch((err: unknown) => {
+    logWarn(`initial parameter refresh failed: ${errMessage(err)}`);
+    return [];
+  });
 
   const app = express();
   app.disable("x-powered-by");

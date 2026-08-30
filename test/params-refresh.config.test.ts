@@ -256,6 +256,71 @@ describe("what the renderer bakes onto the component", () => {
   });
 });
 
+describe("a refreshable name may not shadow a sibling's variable", () => {
+  // THE HOLE THIS CLOSES. The existing shadow check (see appspec.ts) walks the
+  // parameters the render RESOLVED, and for an ordinary `params: true` server
+  // that is enough — an unseeded name reaches no container. A refreshable name
+  // is different: it is a name the component may acquire LATER, when a human
+  // seeds it, written under the same bare name the renderer would have used. So
+  // a collision must be caught at render time even though there is no value yet,
+  // or the credential of the sibling that owns that bare name gets silently
+  // overwritten minutes after somebody clicks "create" in the console — long
+  // after any deploy anyone would think to correlate it with.
+  const twoServers = (refreshName: string) =>
+    config(`  - slug: strad-fetch
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /strad-fetch
+    entitlements: [admin]
+    params: true
+    paramsRefresh: [${refreshName}]
+  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /slack
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "a-literal-slack-token"
+`);
+
+  const render = (yaml: string) =>
+    renderAppSpec({
+      config: parseConfig(yaml),
+      appName: "strad",
+      region: "nyc",
+      image: IMAGE,
+      env: [],
+    });
+
+  it("refuses to render when the name is another server's on the same bundle", () => {
+    expect(() => render(twoServers("SLACK_BOT_TOKEN"))).toThrow(
+      /SLACK_BOT_TOKEN is contributed by more than one server/,
+    );
+  });
+
+  it("renders fine when the refreshable name collides with nothing", () => {
+    expect(() => render(twoServers("BRIGHTDATA_API_KEY"))).not.toThrow();
+  });
+
+  it("still lets a server shadow its OWN env: key with its own refreshable name", () => {
+    // The documented migration path off a hand-written `${REF}` is a server
+    // overriding itself, and it stays a deliberate single-server decision.
+    expect(() =>
+      render(
+        FETCH(
+          `    params: true
+    paramsRefresh: [BRIGHTDATA_API_KEY]
+    env:
+      BRIGHTDATA_API_KEY: "the-value-this-config-was-written-with"
+`,
+        ),
+      ),
+    ).not.toThrow();
+  });
+});
+
 describe("reading the manifest back, in the container", () => {
   // The container is handed this by a renderer it cannot verify, so every shape
   // is checked again here. A plan it cannot read is not a boot failure: it

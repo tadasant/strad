@@ -1026,6 +1026,21 @@ own slug and the config's own variable name — the request's bytes are used for
 equality test and nothing else — so a name no config listed is a 403 even when it
 sits in a namespace this very component already holds baked.
 
+### A listed name may not be a sibling's variable
+
+One bundle is one container with one environment. A refreshable name that another
+server on the same bundle already owns would have that server's credential
+overwritten — and, unlike an ordinary config collision, it would happen when a
+human seeds the value in the console rather than when anything deploys, which is
+the hardest kind of change to correlate with a symptom. `renderAppSpec` refuses
+that config outright, and it refuses it whether or not the name is seeded yet:
+the check reads the names the CONFIG declares, not the ones the render happened
+to resolve.
+
+A server shadowing its own `env:` key with its own refreshable name is not a
+collision. That is the documented migration path off a hand-written `${REF}`, and
+it stays a deliberate single-server override.
+
 ### A listed name that is not seeded yet
 
 It stays on the list, and that is useful rather than an oversight. The render

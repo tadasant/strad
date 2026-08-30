@@ -760,7 +760,19 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
           server.slug,
         );
       }
-      for (const key of Object.keys(params)) {
+      // DECLARED `paramsRefresh:` NAMES COUNT HERE TOO, seeded or not.
+      //
+      // The loop above registers what the render RESOLVED, and for an ordinary
+      // `params: true` server that is the whole story — a name with no value
+      // reaches no container. A refreshable name is different: it is a name this
+      // component may acquire LATER, when somebody seeds it, and the refresh
+      // writes it under the same bare name the renderer would have. So a
+      // collision that this check would have caught at render time for a seeded
+      // parameter must not become invisible merely because the value is not in
+      // the store yet — that is the one shape where a sibling's credential could
+      // be overwritten by a human action taken long after the deploy, with
+      // nothing reporting it.
+      for (const key of [...Object.keys(params), ...server.paramsRefresh]) {
         (owners.get(key) ?? owners.set(key, new Set()).get(key)!).add(
           server.slug,
         );

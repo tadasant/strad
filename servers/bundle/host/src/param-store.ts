@@ -172,10 +172,28 @@ export function startParamRefresh(opts: {
     clear: (handle: unknown) => clearInterval(handle as NodeJS.Timeout),
   };
 
+  // ONE PASS AT A TIME. A pass is `plan.length` sequential reads against core,
+  // each with its own timeout, so a slow or unreachable core can make a pass
+  // outrun the interval — and `setInterval` does not care, it just fires again.
+  // Without this the passes pile up, and the thing they pile onto is the
+  // parameter store that has already 429'd three production deploys.
+  let running = false;
   const handle = timer.set(() => {
-    void runOnce().catch((err: unknown) =>
-      logWarn(`parameter refresh pass failed: ${errMessage(err)}`),
-    );
+    if (running) {
+      logWarn(
+        `skipping a parameter refresh: the previous pass is still running ` +
+          `(the interval is ${seconds}s)`,
+      );
+      return;
+    }
+    running = true;
+    void runOnce()
+      .catch((err: unknown) =>
+        logWarn(`parameter refresh pass failed: ${errMessage(err)}`),
+      )
+      .finally(() => {
+        running = false;
+      });
   }, seconds * 1000);
 
   return { runOnce, stop: () => timer.clear(handle) };

@@ -414,6 +414,12 @@ plus two that shape how this server gets its values:
     paramsRefresh: [BRIGHTDATA_API_KEY]
   ```
 
+  **A listed name may not be another server's variable on the same bundle.** One
+  bundle is one container with one environment, so a refresh that wrote a name a
+  sibling owns would overwrite that sibling's credential — and it would do it
+  when a human seeds the value, not when anything deploys. `renderAppSpec`
+  refuses that config, whether or not the name is seeded yet.
+
   **A listed name that nobody has seeded yet is included on purpose**: it bakes no
   variable, and the first poll after somebody seeds it is what puts it on the
   container — so "seed a credential after the deploy" stops needing a redeploy
