@@ -3285,3 +3285,62 @@ to re-read its credential (a factory called per request, as strad-fetch has) and
 set `liveEnv: true`. The general fix is a mount-level `reload()` on the `Mount`
 interface that `refreshParamsOnce`'s `onChange` calls, which is a change to each
 tree rather than to this seam.
+
+---
+
+## 72. The App Platform spec has a size nobody documents, and nothing measured it
+
+**What.** A DigitalOcean App Platform spec is refused past some size, and
+DigitalOcean publishes no figure for it. strad's renderer had no notion of the
+limit at all, so the first thing that ever mentioned it was the API:
+
+```
+400 error validating app spec field "App spec": size limit exceeded
+```
+
+Every `strad-prod` deploy failed on that from 2026-08-30T16:09Z until the
+config's inlined form (`src/deploy/config-inline.ts`) shrank the spec.
+
+**The evidence, and its limits.** Two runs, same app, same day:
+
+| Run                                    | Components | Rendered spec | Result                |
+| -------------------------------------- | ---------- | ------------- | --------------------- |
+| tadasant-internal 33291566037 (04:01Z) | 2          | 131,010 bytes | accepted              |
+| tadasant-internal 33330369567 (19:18Z) | 3          | 141,342 bytes | `size limit exceeded` |
+
+So the ceiling is somewhere in `(131010, 141342]`. **128 KiB is 131,072 — 62 bytes
+above the accepted spec — and that is a coincidence, not a measurement.** It is
+the obvious inference and it is not evidence of anything; treat it as a range
+until a larger spec is observed to deploy. Related: an agent guessing rather than
+checking a DigitalOcean identifier is what caused the failure immediately before
+this one (`apps-s-1vcpu-512mb`, tadasant/strad#209).
+
+**Why this was invisible.** The spec's size is not a property anything owned.
+`render-spec` emitted it, `assert-spec` printed a byte count that no one had a
+threshold for, and the deploy job printed another. Production spent an unknown
+period with roughly 60 bytes of headroom, and the first symptom of crossing the
+line was a total outage of the deploy path — not of one component, of everything.
+
+**What is done about it.** Two things, neither of which is a claim to know the
+limit:
+
+- **The bytes were mostly prose.** `STRAD_CONFIG_YAML` was 66,019 of the 141,342
+  — the config file inlined verbatim, comments and all, on the core component,
+  and 44,209 bytes of that file were comment-only lines. `render-spec` now bakes
+  the document re-emitted without them, checked lossless against the original
+  before the schema sees either, and falls back to the file's own text if the
+  round trip does not hold or does not shrink. Prod's spec: 141,342 → ~96,238.
+- **`assert-spec` reports the size and where it is** — the total, plus bytes per
+  component — and warns past ~80% of the largest spec known to have deployed.
+  A **warning**, never an error: a hard gate on an inferred number fails deploys
+  that would have worked.
+
+**What it does NOT fix.** The other 45% of the spec is `bundle`'s 93 credential
+variables, roughly half of them the per-slug aliases of #56. That is real
+duplication, it grows with the server count, and shrinking it means changing how
+credentials reach a container — tadasant/tadasant-internal#213, which injects one
+bootstrap credential instead of baking a set. This entry buys that redesign time;
+it does not remove the need for it.
+
+**Undo.** Delete `src/deploy/config-inline.ts` and bake `raw` again. The spec goes
+back to carrying every comment in the config file.

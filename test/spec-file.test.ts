@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   assertDeployableSpec,
+  LARGEST_ACCEPTED_SPEC_BYTES,
+  sizeAdvisory,
   SpecFileError,
 } from "../src/deploy/spec-file.ts";
 
@@ -342,5 +344,70 @@ describe("scripts/assert-spec.ts", () => {
       { encoding: "utf8" },
     );
     expect(truncated.status).toBe(1);
+  });
+});
+
+/**
+ * The size report, and why it is a report rather than a gate.
+ *
+ * On 2026-08-30 prod's spec crossed a size DigitalOcean refuses, and the deploy
+ * log said only `size limit exceeded`. Nothing measured the spec on the way past
+ * — the last spec that deployed had 62 bytes of headroom and no one knew.
+ *
+ * DigitalOcean publishes no limit, so the number this compares against is an
+ * observation with a range around it. Every assertion below is therefore about
+ * a WARNING, and the last one pins that a large spec still passes the check.
+ */
+describe("spec size reporting", () => {
+  it("attributes the bytes to components, largest first", () => {
+    const got = assertDeployableSpec(
+      JSON.stringify({
+        name: "strad-staging",
+        services: [
+          { name: "core", envs: [] },
+          { name: "bundle", envs: [{ key: "K", value: "v".repeat(500) }] },
+        ],
+      }),
+    );
+    expect(got.componentBytes.map((c) => c.name)).toEqual(["bundle", "core"]);
+    expect(got.componentBytes[0]!.bytes).toBeGreaterThan(
+      got.componentBytes[1]!.bytes,
+    );
+  });
+
+  it("says nothing about a spec with room to spare", () => {
+    expect(assertDeployableSpec(spec()).sizeAdvisory).toBeUndefined();
+    expect(sizeAdvisory(1_000)).toBeUndefined();
+  });
+
+  it("warns as a spec approaches the largest one known to have deployed", () => {
+    const near = sizeAdvisory(Math.round(LARGEST_ACCEPTED_SPEC_BYTES * 0.9));
+    expect(near).toMatch(/largest one known to have deployed/);
+    // The evidence travels with the claim: this is an inference from two runs,
+    // not a documented constant, and the message has to say so.
+    expect(near).toMatch(/documents no app-spec size limit/);
+  });
+
+  it("warns harder past that size, without claiming to know the ceiling", () => {
+    const over = sizeAdvisory(LARGEST_ACCEPTED_SPEC_BYTES + 1);
+    expect(over).toMatch(/larger than any spec this deployment is known/);
+    expect(over).toMatch(/may be refused/);
+    // Never "the limit is N".
+    expect(over).not.toMatch(/128 ?KiB|131072/);
+  });
+
+  it("still ACCEPTS an oversized spec — the advisory is not a gate", () => {
+    const big = JSON.stringify({
+      name: "strad-staging",
+      services: [
+        {
+          name: "core",
+          envs: [{ key: "STRAD_CONFIG_YAML", value: "x".repeat(200_000) }],
+        },
+      ],
+    });
+    const got = assertDeployableSpec(big, { expectedName: "strad-staging" });
+    expect(got.name).toBe("strad-staging");
+    expect(got.sizeAdvisory).toBeDefined();
   });
 });

@@ -23,6 +23,14 @@
  * Prints the app name, the component names and the byte count to STDERR — the
  * spec itself holds secret values and is never echoed. Exits 1 with a
  * `::error::` annotation on any defect.
+ *
+ * It also prints the byte count PER COMPONENT, and warns when the total is near
+ * or past the largest spec this deployment is known to have deployed. That is a
+ * warning and not a gate: DigitalOcean publishes no size limit, so the figure it
+ * compares against is an observation with a range around it (see
+ * `LARGEST_ACCEPTED_SPEC_BYTES`) and must not fail a deploy that would work.
+ * What it is for is the state prod was in on 2026-08-30 — 62 bytes of headroom,
+ * with nothing measuring it.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -57,13 +65,23 @@ try {
 }
 
 try {
-  const { name, components, bytes } = assertDeployableSpec(text, {
-    expectedName,
-  });
+  const { name, components, bytes, componentBytes, sizeAdvisory } =
+    assertDeployableSpec(text, { expectedName });
   console.error(
     `[assert-spec] ${path}: "${name}", ${bytes} bytes, ` +
       `${components.length} component(s): ${components.join(", ")}.`,
   );
+  // Where the bytes are, largest first. Names and numbers only — both are
+  // config, and neither can carry a value out of a file that holds secrets.
+  console.error(
+    `[assert-spec] bytes by component: ` +
+      componentBytes.map((c) => `${c.name} ${c.bytes}`).join(", "),
+  );
+  // A ::warning::, never an ::error::. The ceiling this is measured against is
+  // an observation with a range around it, not a documented constant, so it
+  // must not be able to fail a deploy that would have worked. See
+  // LARGEST_ACCEPTED_SPEC_BYTES.
+  if (sizeAdvisory) console.error(`::warning::${sizeAdvisory}`);
 } catch (err) {
   if (!(err instanceof SpecFileError)) throw err;
   console.error(`::error::${path} is not deployable — ${err.message}`);
