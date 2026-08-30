@@ -171,6 +171,18 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.param_written": ["slug", "variable"],
     "strad.param_write_failed": ["slug", "variable"],
     /**
+     * A hosted server read the CURRENT value of one of its own parameters —
+     * either the once-at-boot read a `paramsWritable:` server does, or a
+     * `paramsRefresh:` poll.
+     *
+     * This is the deploy record that runtime refresh would otherwise not have.
+     * Baking a credential into a spec leaves a rendered artifact an operator can
+     * read back mid-incident; re-reading one under a running process leaves
+     * nothing, unless this says so. Same two config-owned fields as the writes
+     * above, and emphatically not the value.
+     */
+    "strad.param_read": ["slug", "variable"],
+    /**
      * THE EVENT NAME AND NOTHING ELSE, for the same reason the two above carry
      * config strings only: this one fires when the lookup FAILED, so the only
      * slug and variable in scope are the caller's own bytes. A refusal is

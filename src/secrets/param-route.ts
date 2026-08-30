@@ -351,3 +351,195 @@ export function createParamClient(opts: ParamClientOptions): ParamClient {
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// RUNTIME REFRESH — the same wire, on an interval instead of once
+// ---------------------------------------------------------------------------
+
+/**
+ * ## Why this is here and not a fourth credential
+ *
+ * `params: true` on a `supplementary-image` server is the ONE credential path in
+ * strad that is still deploy-time. The other three resolve at runtime already: a
+ * gateway `${NAME}` within `gateway.secrets.ttlSeconds`, a `builtin`'s `params:`
+ * per tool call (gateway/registry.ts), an unhosted server's `${NAME}` per
+ * request. A supplementary image's parameters are resolved by `render-spec` and
+ * baked onto the component as SECRET env vars, and process environment is fixed
+ * at spawn — so rotating the token behind such a slug meant redeploying the
+ * fleet by hand.
+ *
+ * The fix reuses the wire above rather than adding anything. `get()` already
+ * reads the CURRENT value of one of a server's own parameters through core, and
+ * `loadXTwitter` already calls it once at mount time for exactly this reason.
+ * All that is new is calling it again, on a bounded interval, for the variables
+ * a config listed under `paramsRefresh:`.
+ *
+ * ## What bounds it: the plan, which comes from the config
+ *
+ * The plan is the list of names the CONFIG listed under `paramsRefresh:`, handed
+ * over in `STRAD_PARAM_REFRESH` by the renderer. Nothing here enumerates a
+ * namespace and nothing here asks core what exists, so a parameter created under
+ * a slug that nobody listed changes nothing until the next deploy. The rendered
+ * spec still names every variable this component may ever hold; what is no
+ * longer pinned by it is the value, and the value moves toward the store, which
+ * is where the render read it from in the first place.
+ *
+ * ## The cost, stated
+ *
+ * One store read per listed variable per component per interval, paid whether or
+ * not anybody is using the credential. That is the reason this polls instead of
+ * resolving per request the way a builtin does: a poll's cost is a constant, and
+ * Parameter Manager has already 429'd three consecutive production deploys.
+ * `MIN_PARAM_REFRESH_SECONDS` is the floor under it.
+ */
+
+/**
+ * The env var naming which slugs re-read which variables: `{"slug":["NAME",…]}`.
+ *
+ * GENERAL, not SECRET — it holds names, exactly like `STRAD_PARAM_KEYS` beside
+ * it. What is secret is the values, and none are here.
+ */
+export const PARAM_REFRESH_ENV = "STRAD_PARAM_REFRESH";
+
+/** How often to re-read, in seconds. GENERAL: a number. */
+export const PARAM_REFRESH_SECONDS_ENV = "STRAD_PARAM_REFRESH_SECONDS";
+
+/**
+ * The floor, restated here as well as in the config schema.
+ *
+ * Two copies on purpose. The schema's copy refuses the config; this one refuses
+ * the ENVIRONMENT, which a component can be given by something other than this
+ * renderer. A reader that trusted the variable could be talked down to one
+ * second by a spec edit nothing in this repo produced.
+ */
+export const MIN_PARAM_REFRESH_SECONDS = 30;
+
+/** What the schema defaults to, used when the variable is absent or unusable. */
+export const DEFAULT_PARAM_REFRESH_SECONDS = 300;
+
+/** One server's refreshable variables. */
+export interface ParamRefreshTarget {
+  slug: string;
+  variables: string[];
+}
+
+/**
+ * Read the plan out of an environment. Never throws: a component with no plan,
+ * a malformed one, or one written by a renderer this image does not know
+ * refreshes nothing and keeps the values the deploy baked.
+ */
+export function parseParamRefreshPlan(
+  env: Readonly<Record<string, string | undefined>>,
+): ParamRefreshTarget[] {
+  const raw = env[PARAM_REFRESH_ENV];
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return [];
+  }
+  const plan: ParamRefreshTarget[] = [];
+  for (const [slug, value] of Object.entries(
+    parsed as Record<string, unknown>,
+  )) {
+    // Both shapes are checked because this string arrives from the environment,
+    // not from the config: the config's own validation happened in another
+    // process, on another machine, at another time.
+    if (!isParamSlug(slug)) continue;
+    if (!Array.isArray(value)) continue;
+    const variables = value.filter(
+      (v): v is string => typeof v === "string" && isParamVariable(v),
+    );
+    if (variables.length > 0) plan.push({ slug, variables });
+  }
+  return plan.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/** The interval to poll on, clamped to the floor. */
+export function paramRefreshSeconds(
+  env: Readonly<Record<string, string | undefined>>,
+): number {
+  const raw = env[PARAM_REFRESH_SECONDS_ENV];
+  const parsed = raw === undefined ? NaN : Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_PARAM_REFRESH_SECONDS;
+  return Math.max(MIN_PARAM_REFRESH_SECONDS, Math.floor(parsed));
+}
+
+export interface ParamRefreshOptions {
+  /** What to re-read. Usually {@link parseParamRefreshPlan} of the environment. */
+  plan: readonly ParamRefreshTarget[];
+  /** One store handle per slug. The host binds these to its own environment. */
+  clientFor: (slug: string) => ParamClient;
+  /** The environment to WRITE INTO — `process.env` in the container. */
+  env: Record<string, string | undefined>;
+  /**
+   * What one (slug, variable) is CALLED on this box.
+   *
+   * Passed in rather than computed here because the answer lives in
+   * env-prefix.ts, which is a different vendored module, and this file must stay
+   * import-free. The host passes the bare name AND `<SLUG>__<NAME>`: the bare
+   * one is what the renderer wrote for a parameter, and the per-slug alias is
+   * what a tree reading through `slugEnvView` would see instead. Writing both is
+   * what stops a refresh from landing on a name nothing reads — the alias is
+   * slug-scoped, so it can only ever be this server's own.
+   */
+  names: (slug: string, variable: string) => string[];
+  /** Called once per variable whose value actually MOVED. Never given the value. */
+  onChange?: (slug: string, variable: string) => void;
+  /** Soft outcomes. `get()` already reports its own; this adds the applying. */
+  note?: (level: "info" | "warn", message: string) => void;
+}
+
+/**
+ * One pass over the plan. Returns the variables whose value changed.
+ *
+ * NEVER THROWS, and never partially fails a pass: each variable is independent,
+ * and `get()` already returns undefined rather than throwing for every reason a
+ * read can fail. An unreachable core means this pass changes nothing and the
+ * container keeps serving with what it has, which is the same posture the boot
+ * read takes.
+ *
+ * A value that has not moved is not rewritten and not reported. That is what
+ * makes the change log an actual record of rotations rather than a heartbeat.
+ */
+export async function refreshParamsOnce(
+  opts: ParamRefreshOptions,
+): Promise<{ slug: string; variable: string }[]> {
+  const changed: { slug: string; variable: string }[] = [];
+  for (const target of opts.plan) {
+    const client = opts.clientFor(target.slug);
+    for (const variable of target.variables) {
+      let value: string | undefined;
+      try {
+        value = await client.get(variable);
+      } catch (err) {
+        // `get()` promises not to throw, but it is an interface and this is a
+        // background loop: one implementation breaking that promise must not
+        // stop the OTHER servers on this component from refreshing.
+        opts.note?.(
+          "warn",
+          `${target.slug}: reading ${variable} threw ` +
+            `(${err instanceof Error ? err.message : String(err)}); ` +
+            `keeping the value this container already holds`,
+        );
+        continue;
+      }
+      if (value === undefined) continue;
+
+      const names = opts.names(target.slug, variable);
+      // The bare name is the one the renderer wrote a parameter under, so it is
+      // the one that decides whether this is a change at all. The aliases follow
+      // it rather than voting on it.
+      const before = opts.env[names[0] ?? variable];
+      if (before === value) continue;
+      for (const name of names) opts.env[name] = value;
+      changed.push({ slug: target.slug, variable });
+      opts.onChange?.(target.slug, variable);
+    }
+  }
+  return changed;
+}

@@ -65,7 +65,7 @@ import {
   parsePresenceRequest,
   PRESENCE_ROUTE,
 } from "./presence.js";
-import { paramStoreFor } from "./param-store.js";
+import { paramStoreFor, startParamRefresh } from "./param-store.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,6 +120,18 @@ interface Mount {
   sessionful?: boolean;
   /** Non-null when this server is up but cannot serve (e.g. login failed). */
   degraded?: string | null;
+  /**
+   * True when this mount reads its credential out of `process.env` LATE — when
+   * it builds a client per request — rather than snapshotting it at mount time.
+   *
+   * Only `paramsRefresh:` cares. A refreshed parameter lands in this process's
+   * environment, and whether the upstream then uses it is this property. Leaving
+   * it unset is the safe answer: the boot log says the refresh may not reach the
+   * mount, which is true of every server that memoises a client or a connection
+   * (telegram's MTProto session, a Grafana client, the X OAuth provider). Set it
+   * only where the per-request path has been read and it really does re-read.
+   */
+  liveEnv?: boolean;
   /** Optional non-MCP upload endpoint exposed beside this mount. */
   upload?: (token: string, body: Buffer) => Promise<{
     content: Array<{ type: "text"; text: string }>;
@@ -491,6 +503,12 @@ async function loadStradFetch(): Promise<Mount> {
     tree: "strad-fetch",
     serverName: "strad-fetch",
     capabilities: { resources: {}, tools: {} },
+    // Its default client factory reads FIRECRAWL_API_KEY and BRIGHTDATA_API_KEY
+    // out of `process.env` when it is INVOKED, and `registerHandlers` runs per
+    // request (see statelessHandler) — so a key rotated under this process is
+    // used by the next call, with no restart. That is what `paramsRefresh:` on
+    // this slug relies on.
+    liveEnv: true,
     register: (s) => created.registerHandlers(s),
   };
 }
@@ -1305,6 +1323,22 @@ async function main(): Promise<void> {
   scrubCapabilityEnv();
 
   const mounts = await buildMounts();
+
+  // A rotated credential reaching a RUNNING container, for the servers whose
+  // config asked for it. Started after the mounts so it can say, per slug,
+  // whether the mount it refreshes will actually observe the new value; returns
+  // null (and logs nothing) on every deployment that set no `paramsRefresh:`,
+  // which is all of them by default.
+  const refresh = startParamRefresh({ mounts });
+  if (refresh) {
+    // One pass at boot, so a value rotated between the last render and this
+    // start is current immediately rather than after a whole interval. It is the
+    // same read `loadXTwitter` already does for its own token, generalised.
+    await refresh.runOnce().catch((err: unknown) => {
+      logWarn(`initial parameter refresh failed: ${errMessage(err)}`);
+      return [];
+    });
+  }
 
   const app = express();
   app.disable("x-powered-by");

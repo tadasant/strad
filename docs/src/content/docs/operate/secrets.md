@@ -771,24 +771,24 @@ secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-
 into is decided by _who reads it_, and that is a property of the name rather than
 of the store:
 
-| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                      |
-| A `params: true` server's managed parameters                                                                                                     | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list, in which case the container re-reads it at **boot**. |
-| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                      |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                     |
-| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                       |
-| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                          |
+| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                            |
+| A `params: true` server's managed parameters                                                                                                     | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**). |
+| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                                                                                                                            |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                           |
+| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                             |
+| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                |
 
-So `ttlSeconds` is the answer for **request-path references and nothing else** —
+`ttlSeconds` is the answer for **request-path references and nothing else** —
 plus one thing that is not a rotation at all: it also bounds how stale the
 console's and the readiness endpoint's
 [store diagnosis](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read)
 may be, capped at 60s there. A
-deployment whose config has no request-path `${NAME}` and no `params: true`
-server has no name that rotates live, however the TTL is set. That is a real
-deployment shape, not a hypothetical: check your own config before promising
-anyone a rotation that lands without a deploy.
+deployment whose config has no request-path `${NAME}`, no `params: true` server
+and no `paramsRefresh:` entry has no name that rotates live, however the TTL is
+set. That is a real deployment shape, not a hypothetical: check your own config
+before promising anyone a rotation that lands without a deploy.
 
 ### Why the bundle boot env is baked rather than hydrated
 
@@ -941,9 +941,10 @@ caller**, and the difference matters enough to say first.
 it is the same token core presents when it proxies `/mcp` to them. A caller
 presents nothing else, so the route cannot tell one container from another. The
 reachable set is therefore the **union** of every enabled server's
-`paramsWritable:`, for any container holding the token: a compromised container
-on one bundle can read and overwrite the rotating credential of a server on
-another. The `GET` is also a value read on the public component, so that token is
+`paramsWritable:` — plus, for the `GET` alone, every
+[`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) —
+for any container holding the token: a compromised container on one bundle can
+read and overwrite the rotating credential of a server on another. The `GET` is also a value read on the public component, so that token is
 now a read credential for the names on that union — which belongs in how often
 you rotate it. Both are recorded as
 [limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter);
@@ -968,6 +969,112 @@ It is `supplementary-image` only. A `builtin` on the core bundle runs inside
 strad's own process and has the resolver in scope already; a builtin on another
 bundle has no consumer for this today, and an unused capability on a write path
 is not a thing to ship speculatively.
+
+## `paramsRefresh:` — a rotation that lands without a deploy
+
+A `params: true` supplementary server's credentials are resolved by `render-spec`
+and **baked onto its component as environment variables**, and a container's
+environment is fixed when it spawns. So rotating one of those credentials in the
+store changed nothing until somebody redeployed — the containers went on serving
+the value the last render read. That is the one credential path in strad that was
+not already live: a gateway `${NAME}`, a `builtin`'s `params:` and an unhosted
+server's `${NAME}` all resolve at runtime.
+
+`paramsRefresh:` closes it. It is an allowlist, per server, of variables that
+server **re-reads on an interval** while it is running:
+
+```yaml
+- slug: strad-fetch
+  kind: supplementary-image
+  params: true
+  paramsRefresh: [BRIGHTDATA_API_KEY]
+```
+
+Rotate `BRIGHTDATA_API_KEY` in the console and the running container picks it up
+within `gateway.secrets.paramRefreshSeconds` (default 300, floor 30). No deploy,
+no restart.
+
+### It is off unless you write it
+
+The list defaults to `[]`, on every server. A deployment that does not name a
+variable here behaves exactly as it did — the renderer emits no manifest, the
+container starts no loop, and nothing makes a single extra read. This is
+deliberate: a change in secret resolution touches every slug on the deployment,
+and prod runs more than forty of them.
+
+It requires `params: true`, for the same reason `paramsWritable:` does and for
+one more. That flag is what makes `/strad/{env}/mcp/{slug}/static/` this server's
+environment at all, so re-reading a namespace nothing injects would keep a value
+current that nothing reads. And because `params: true` already bakes that whole
+namespace onto this component at render time, **the read discloses nothing new**:
+the container is already holding these values. What the read adds is freshness.
+
+### How it travels
+
+The container never sees strad's config. `renderAppSpec` therefore bakes the
+names onto the component as `STRAD_PARAM_REFRESH` (a `{slug: [NAME]}` map) and
+`STRAD_PARAM_REFRESH_SECONDS`, both **`GENERAL`, not `SECRET`** — they hold
+variable names, and those are already in the store, in the console and in the
+spec beside them.
+
+The read itself goes over the route that already existed for
+[`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use):
+`GET /_strad/params/{slug}/{VARIABLE}` on **core**, which is the component
+holding the store-admin credential. No new credential reaches the container, and
+no new IAM is involved. Core still composes the store path out of the config's
+own slug and the config's own variable name — the request's bytes are used for an
+equality test and nothing else — so a name no config listed is a 403 even when it
+sits in a namespace this very component already holds baked.
+
+### A listed name that is not seeded yet
+
+It stays on the list, and that is useful rather than an oversight. The render
+bakes nothing for it (there is no value to bake), the container comes up without
+it, and the first poll after somebody seeds the value is what puts it on the box.
+So `paramsRefresh:` covers **seeding a credential after the deploy** as well as
+rotating one — which is the half of
+[`mayBeUnseeded:`](#maybeunseeded--deploying-a-server-ahead-of-its-credential)
+that otherwise still needed a redeploy.
+
+### Why it polls instead of resolving per request
+
+A `builtin`'s `params:` resolves on the tool-call path behind a TTL cache. That
+would be the obvious thing to copy here and it is the wrong shape: a request-path
+read costs whatever the traffic costs, and Parameter Manager rate limits are not
+hypothetical — a 429 from it failed three consecutive production deploys. A poll
+costs **one read per listed variable per component per interval**, which is a
+constant you can multiply out before you turn it on. `paramRefreshSeconds` has a
+floor of 30 in the schema, and the container clamps the environment variable to
+the same floor independently, so a spec written by something other than this
+renderer cannot talk a container down to one second.
+
+### What it cannot do: make an upstream re-read
+
+The refresh puts the current value in the container's environment. Whether the
+**mount** then uses it is a property of that upstream, not of strad.
+
+`strad-fetch` builds its scraping clients from `process.env` inside a factory the
+bundle host invokes per request, so a rotated key is used by the next call. A
+server that snapshots its credential at mount time and memoises a connection —
+telegram's MTProto session, a Grafana client, X's OAuth provider — does not, and
+goes on using the boot value until the container restarts.
+
+The bundle host says so rather than leaving it silent: it logs, per opted-in slug
+at boot, whether that mount is known to read its credential per call. Point
+`paramsRefresh:` at a slug whose mount does not, and you get a warning naming the
+variables and saying the value will be current in the environment and possibly
+unused. See [limitation #71](/limitations/#71-a-refreshed-parameter-only-reaches-an-upstream-that-re-reads-its-environment).
+
+### What it grants
+
+The same widening `paramsWritable:` has, and no more.
+`STRAD_INTERNAL_TOKEN` is one token broadcast to every supplementary component,
+so the reachable set is the union of every enabled server's `paramsWritable:`
+**and `paramsRefresh:`**, for any container holding it. For the refresh half that
+union is bounded by something stronger than the write half: every name on it is,
+by construction, a value already baked onto a component that holds the same
+token. Per-component tokens remain the fix, and are recorded as
+[limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter).
 
 ## Migrating
 
