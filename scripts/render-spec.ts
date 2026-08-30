@@ -58,6 +58,7 @@ import {
   renderAppSpec,
   type EnvVar,
 } from "../src/deploy/appspec.ts";
+import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
 import {
   BUNDLE_BOOT_ENV_KEYS,
   REQUIRED_BOOT_ENV_KEYS,
@@ -121,12 +122,30 @@ assertImmutableCoreImage(values.image, coreImage.tag);
 const raw = readFileSync(values.config, "utf8");
 const config = parseConfig(raw, values.config);
 
+// The server list, inline, WITHOUT the prose. The stock image ships zero
+// servers by design, and this variable is what makes the spec *this* deployment
+// rather than an empty gateway — but a strad config is mostly comments (44,209
+// of prod's 64,531 bytes on 2026-08-30), and an App Platform spec has a size the
+// API refuses past. See src/deploy/config-inline.ts for the ceiling this ran
+// into and for why the round trip is checked rather than assumed.
+const inlined = inlineConfigYaml(raw);
+if (inlined.keptRawBecause) {
+  console.error(
+    `[render-spec] STRAD_CONFIG_YAML: inlining the config verbatim ` +
+      `(${inlined.rawBytes} bytes) — ${inlined.keptRawBecause}.`,
+  );
+} else {
+  console.error(
+    `[render-spec] STRAD_CONFIG_YAML: ${inlined.inlinedBytes} bytes ` +
+      `(${inlined.rawBytes} in the file; comments and formatting are not ` +
+      `deployed).`,
+  );
+}
+
 const envs: EnvVar[] = [
-  // The server list, inline. The stock image ships zero servers by design; this
-  // is what makes it *this* deployment rather than an empty gateway.
   {
     key: "STRAD_CONFIG_YAML",
-    value: raw,
+    value: inlined.yaml,
     scope: "RUN_TIME",
     type: "GENERAL",
   },

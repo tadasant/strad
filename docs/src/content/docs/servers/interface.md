@@ -634,6 +634,13 @@ Config is loaded from two sources, in priority order (`src/config/load.ts`):
 2. **`STRAD_CONFIG`** — a path to a file. This is how an image that **bakes its
    config in** works (e.g. `tadasant-internal`).
 
+`STRAD_CONFIG_YAML` is the config **document**, not the config **file**: a spec
+rendered by `render-spec` carries it re-emitted without its comments, because an
+App Platform spec has a size the API refuses past and a strad config is mostly
+prose. The values are identical — the round trip is checked before it is used —
+so nothing about how a config is written changes. See [the deploy
+model](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
+
 The full, annotated example lives at
 [`strad.config.example.yaml`](https://github.com/tadasant/strad/blob/main/strad.config.example.yaml)
 in the repo. To actually wire a server end-to-end, see [Adding a

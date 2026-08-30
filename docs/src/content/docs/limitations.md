@@ -2017,6 +2017,55 @@ ordinary tree.
 
 ---
 
+### 72. The App Platform spec has a size nobody documents, and nothing measured it
+
+A DigitalOcean App Platform spec is refused past some size, and DigitalOcean
+publishes no figure for it anywhere. The first thing that ever mentioned it to
+strad was the API, on a deploy that had otherwise gone fine:
+
+```
+400 error validating app spec field "App spec": size limit exceeded
+```
+
+Every production deploy failed on that from 2026-08-30T16:09Z until the config's
+inlined form shrank the spec.
+
+**What is known is a range, not a number.** Two runs, same app, same day: a
+131,010-byte spec deployed at 04:01Z, and a 141,342-byte spec was refused at
+19:18Z. So the ceiling is somewhere in `(131010, 141342]`. 128 KiB is 131,072 —
+62 bytes above the accepted spec — which makes it look like the answer and is a
+coincidence, not a measurement. Nothing here treats it as known.
+
+**The real problem was that nobody was looking.** Production had been deploying
+on headroom nobody had measured — somewhere between 1 and 10,332 bytes, which is
+all the two runs establish. The size was printed in two places and compared
+against nothing, so the first symptom of crossing the line was the whole deploy
+path failing — not one component, everything.
+
+Two things changed, neither of which claims to know the limit:
+
+- **The config no longer travels with its prose.** `STRAD_CONFIG_YAML` was 66,019
+  bytes of that 141,342 — 47% of the spec, on the core component alone — because
+  `render-spec` inlined the config file verbatim, and 44,209 bytes of that file
+  were comment-only lines. It now bakes the document re-emitted without comments,
+  checked lossless against the original before the schema sees either, falling
+  back to the file's own text if the round trip does not hold or does not shrink.
+  Prod's spec: 141,342 → ~96,238 bytes. See
+  [the deploy model](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
+- **`assert-spec` reports the size and where it is**, per component, and warns
+  past ~80% of the largest spec known to have deployed. A warning and never an
+  error — a hard gate on an inferred number fails deploys that would have worked.
+
+**What is still true.** The largest remaining block is the `bundle` component's
+93 credential variables, about half of them the per-slug aliases of #56. That
+grows with the server count, and shrinking it means changing how credentials
+reach a container rather than how many bytes they take. The headroom above buys
+that redesign time; it does not remove the need for it.
+
+**Undo:** `HACKS.md` #72.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

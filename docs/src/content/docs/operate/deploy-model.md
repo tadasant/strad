@@ -312,7 +312,7 @@ learn:
 - **Deploy from a registry image, not a GitHub source.** App Platform's GitHub
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.
-- The **core** service gets `STRAD_MODE=core`, `NODE_ENV=production`, the whole
+- The **core** service gets `STRAD_MODE=core`, `NODE_ENV=production`, the
   config inline as `STRAD_CONFIG_YAML`, a `/healthz` health check, and a
   `STRAD_BUNDLE_URL_<BUNDLE>` env per bundle (bound to `${bundle.PRIVATE_URL}`).
 - **What a bundle component gets depends on whose image it runs.** A bundle of
@@ -346,6 +346,57 @@ Capability is config, and config can be shared; a parameter STORE is
 gateway](/operate/secrets/#two-stores-one-gateway) for the shape and its cost.
 
 Prod, in `tadasant-internal`, is a separate config against the same renderer.
+
+## The config travels without its prose, and the spec has a size
+
+`STRAD_CONFIG_YAML` is the config document, inline on the core component. It is
+not the config _file_: `render-spec` re-emits the document without its comments
+before baking it (`src/deploy/config-inline.ts`).
+
+A strad config is mostly prose, deliberately — a `bundles:` entry explains why an
+instance size is what it is, and that comment is why the next person does not
+re-break it. On 2026-08-30 prod's config was 64,531 bytes, of which 44,209 were
+comment-only lines, and inlining it cuts that document to 20,210. The prose stays
+in the file, where humans read it, and stops travelling to App Platform, where
+nothing does.
+
+**This is checked, not assumed.** The re-emitted text is parsed back and compared
+to the original document — before the schema sees either, so a key Zod would strip
+still has to survive — and it is used only if it holds the same values _and_ is
+smaller. Either check failing bakes the file verbatim and says so in the deploy
+log. A spec that fits and configures a different gateway is not an improvement.
+
+Why it matters: **an App Platform spec has a size the API refuses past, and
+DigitalOcean does not document what it is.** What is known is two runs on
+2026-08-30 — a 131,010-byte spec deployed, a 141,342-byte spec came back
+`400 error validating app spec field "App spec": size limit exceeded` — so the
+ceiling is somewhere in `(131010, 141342]` and nothing knows where. Which means
+production had been deploying on headroom nobody had measured — somewhere between
+1 and 10,332 bytes. See [Known limitations](/limitations/) #72.
+
+The bytes are dominated by whole-document values, not by the number of servers.
+For prod's spec at the moment it was refused:
+
+| Where                                            | Bytes   | Share |
+| ------------------------------------------------ | ------- | ----- |
+| `STRAD_CONFIG_YAML` on `core`                    | 66,019  | 47%   |
+| everything else on `core`                        | ~6,300  | 4%    |
+| `bundle` (prod's 35 slugs, resolved credentials) | ~64,000 | 45%   |
+| `bundle-internal` (1 server)                     | ~1,900  | 1%    |
+
+**Under `gcp-parameter-store`, adding a component costs that component's own
+environment and nothing else.** The spec carries one credential, the bootstrap
+one, and that one is [scoped to the strad image](/operate/secrets/) — so a
+`supplementary-image` component receives no broadcast of the deployment's
+credentials at all. `bundle-internal`, a whole new component, was 1,390 bytes of
+the 10,332 by which prod's spec grew; the other 7,900 were the config file's own
+comments.
+
+**Under `provider: env` that does not hold, and it is the OSS default.** There
+every SECRET in the deploy environment is rendered onto every supplementary
+component bar the strad-image-only ones, so a new component does cost a further
+copy of the credential set. On that provider the spec grows per component, not
+just per config edit — which is the case the paragraph above does not describe.
 
 ## A connector's credentials are injected, not referenced
 
