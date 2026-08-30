@@ -29,8 +29,8 @@
  * warning and not a gate: DigitalOcean publishes no size limit, so the figure it
  * compares against is an observation with a range around it (see
  * `LARGEST_ACCEPTED_SPEC_BYTES`) and must not fail a deploy that would work.
- * What it is for is the state prod was in on 2026-08-30 — 62 bytes of headroom,
- * with nothing measuring it.
+ * What it is for is the state prod was in on 2026-08-30 — headroom nobody had
+ * measured, somewhere between 1 and 10,332 bytes.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -65,16 +65,26 @@ try {
 }
 
 try {
-  const { name, components, bytes, componentBytes, sizeAdvisory } =
-    assertDeployableSpec(text, { expectedName });
+  const {
+    name,
+    components,
+    bytes,
+    compactBytes,
+    componentBytes,
+    sizeAdvisory,
+  } = assertDeployableSpec(text, { expectedName });
   console.error(
     `[assert-spec] ${path}: "${name}", ${bytes} bytes, ` +
       `${components.length} component(s): ${components.join(", ")}.`,
   );
   // Where the bytes are, largest first. Names and numbers only — both are
   // config, and neither can carry a value out of a file that holds secrets.
+  //
+  // COMPACT bytes, including the total on this line, so the parts and the whole
+  // share a unit. The figure on the line above is the file, which carries the
+  // renderer's indentation as well.
   console.error(
-    `[assert-spec] bytes by component: ` +
+    `[assert-spec] ${compactBytes} bytes compact: ` +
       componentBytes.map((c) => `${c.name} ${c.bytes}`).join(", "),
   );
   // A ::warning::, never an ::error::. The ceiling this is measured against is

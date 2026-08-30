@@ -88,6 +88,7 @@ Pages are under `docs/src/content/docs/`:
 | `src/config/load.ts` (`STRAD_CONFIG` / `STRAD_CONFIG_YAML`)                   | `servers/interface.md#where-the-config-comes-from`                                      |
 | `src/auth/**` (`tokens.ts`, `google.ts`, `dev.ts`)                            | `auth/overview.md`                                                                      |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                             | `operate/deploy-model.md`                                                               |
+| `src/deploy/config-inline.ts` (what `STRAD_CONFIG_YAML` carries)              | `operate/deploy-model.md`, `servers/interface.md`                                       |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                         | `operate/telemetry.md`                                                                  |
 | `servers/bundle/**` (a mount added or removed, the Chromium, the `op` CLI)    | `intro/architecture.md#sizing`, `operate/telemetry.md`, and every count                 |
 | `infra/strad.staging.yaml`                                                    | `operate/operations.md#the-staging-config`, `servers/adding.md`                         |

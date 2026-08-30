@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
 import { parseConfig } from "../src/config/load.ts";
@@ -25,7 +25,7 @@ function repoConfigs(): { path: string; raw: string }[] {
   const found: { path: string; raw: string }[] = [];
   for (const root of roots) {
     for (const name of readdirSync(root)) {
-      if (!/^strad\..*\.ya?ml$|^strad\.config\.ya?ml$/.test(name)) continue;
+      if (!/^strad\..*\.ya?ml$/.test(name)) continue;
       const path = join(root, name);
       found.push({ path, raw: readFileSync(path, "utf8") });
     }
@@ -50,10 +50,16 @@ describe("inlineConfigYaml", () => {
       // And at the config level, which is what actually boots.
       expect(parseConfig(got.yaml, path)).toEqual(parseConfig(raw, path));
 
-      expect(got.keptRawBecause).toBeUndefined();
-      expect(got.inlinedBytes).toBeLessThan(got.rawBytes);
       expect(got.rawBytes).toBe(Buffer.byteLength(raw, "utf8"));
       expect(got.inlinedBytes).toBe(Buffer.byteLength(got.yaml, "utf8"));
+      // Smaller WHEN it inlined. Not "always smaller": a config small enough
+      // that the round trip cannot beat it is a supported outcome, and demanding
+      // otherwise would red an unrelated PR that adds a three-line config.
+      if (got.keptRawBecause === undefined) {
+        expect(got.inlinedBytes).toBeLessThan(got.rawBytes);
+      } else {
+        expect(got.yaml).toBe(raw);
+      }
     });
   }
 
@@ -90,13 +96,63 @@ describe("inlineConfigYaml", () => {
     expect(got.keptRawBecause).toBe("the re-emitted document is no smaller");
   });
 
-  it("keeps the raw text when the document does not parse, rather than throwing", () => {
+  it("keeps the raw text when the config does not parse, rather than throwing", () => {
     // A malformed config is parseConfig's error to report, with the message
     // built for it — not this function's to turn into a stack trace.
     const raw = "gateway:\n  name: [unclosed\n";
     const got = inlineConfigYaml(raw);
     expect(got.yaml).toBe(raw);
-    expect(got.keptRawBecause).toMatch(/could not be re-emitted|did not parse/);
+    expect(got.keptRawBecause).toBe(
+      "the config file did not parse (YAMLParseError)",
+    );
+  });
+
+  it("never puts the config's own text in the reason it kept it", () => {
+    // `yaml` quotes the source in its messages, and the source is a document
+    // that may hold a credential. Only the error's NAME travels.
+    const got = inlineConfigYaml("gateway:\n  name: [s3cret-tok\n");
+    expect(got.keptRawBecause).not.toContain("s3cret-tok");
+  });
+
+  // THE SAFETY NET ITSELF. Everything above rests on the deep-equal check
+  // catching a round trip that changed a value, so the branch has to be
+  // exercised by an input that really does change one — not merely asserted.
+  //
+  // Both cases below are the same shape: re-emitting rewrites a QUOTED scalar
+  // into a plain one, and a plain scalar's type is the parser's business.
+  it.each([
+    [
+      "a %YAML 1.1 document, where `yes` is a boolean and a date is a timestamp",
+      "%YAML 1.1\n---\nflag: yes\nts: 2024-01-01\n",
+    ],
+    ["a !!binary value, which parses to a Buffer", "a: !!binary aGk=\n"],
+  ])("keeps the raw text for %s", (_label, raw) => {
+    const got = inlineConfigYaml(raw);
+    expect(got.yaml).toBe(raw);
+    expect(got.keptRawBecause).toBe(
+      "the re-emitted document does not hold the same values",
+    );
+  });
+
+  it.each([
+    ["a multi-document stream", "a: 1\n---\nb: 2\n"],
+    ["duplicate keys", "a: 1\na: 2\n"],
+  ])("keeps the raw text for %s", (_label, raw) => {
+    const got = inlineConfigYaml(raw);
+    expect(got.yaml).toBe(raw);
+    expect(got.keptRawBecause).toBe(
+      "the config file did not parse (YAMLParseError)",
+    );
+  });
+
+  it("carries anchors and aliases through as the values they expand to", () => {
+    const raw =
+      "defaults: &d\n  timeout: 30\n" +
+      "one:\n  <<: *d\n  name: a\n" +
+      "two: *d\n";
+    const got = inlineConfigYaml(raw);
+    // Whether it inlined or fell back, the values the gateway reads are equal.
+    expect(parseYaml(got.yaml)).toEqual(parseYaml(raw));
   });
 
   it("saves most of a prose-heavy config", () => {
@@ -119,35 +175,43 @@ describe("inlineConfigYaml", () => {
  * the real prose-heavy configs; this is about the wiring.
  */
 describe("render-spec bakes the inlined document", () => {
-  const rendered = JSON.parse(
-    execFileSync(
-      process.execPath,
-      [
-        "--experimental-transform-types",
-        "scripts/render-spec.ts",
-        "--config",
-        "strad.config.yaml",
-        "--image",
-        "ghcr.io/tadasant/strad:0.1.0",
-        "--app",
-        "strad-example",
-      ],
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          PATH: process.env.PATH ?? "",
-          HOME: process.env.HOME ?? "",
-          STRAD_TOKENS: "test-token",
-          STRAD_INTERNAL_TOKEN: "test-internal",
-        },
-      },
-    ),
-  ) as { services: { name: string; envs: { key: string; value: string }[] }[] };
-
-  const core = rendered.services.find((s) => s.name === "core")!;
-  const baked = core.envs.find((e) => e.key === "STRAD_CONFIG_YAML")!.value;
+  // Rendered in beforeAll, not at collection time: a render-spec failure should
+  // arrive as a named test failure, not as a file-level collection error with no
+  // test to point at.
+  let baked: string;
   const raw = readFileSync("strad.config.yaml", "utf8");
+
+  beforeAll(() => {
+    const rendered = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "--experimental-transform-types",
+          "scripts/render-spec.ts",
+          "--config",
+          "strad.config.yaml",
+          "--image",
+          "ghcr.io/tadasant/strad:0.1.0",
+          "--app",
+          "strad-example",
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: process.env.HOME ?? "",
+            STRAD_TOKENS: "test-token",
+            STRAD_INTERNAL_TOKEN: "test-internal",
+          },
+        },
+      ),
+    ) as {
+      services: { name: string; envs: { key: string; value: string }[] }[];
+    };
+    const core = rendered.services.find((s) => s.name === "core")!;
+    baked = core.envs.find((e) => e.key === "STRAD_CONFIG_YAML")!.value;
+  });
 
   it("bakes the inlined text, not the file", () => {
     expect(baked).toBe(inlineConfigYaml(raw).yaml);

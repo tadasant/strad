@@ -370,27 +370,33 @@ Why it matters: **an App Platform spec has a size the API refuses past, and
 DigitalOcean does not document what it is.** What is known is two runs on
 2026-08-30 — a 131,010-byte spec deployed, a 141,342-byte spec came back
 `400 error validating app spec field "App spec": size limit exceeded` — so the
-ceiling is somewhere in `(131010, 141342]` and nothing knows where. Production had
-been deploying with about 60 bytes of headroom and nothing measuring it. See
-[Known limitations](/limitations/) #72.
+ceiling is somewhere in `(131010, 141342]` and nothing knows where. Which means
+production had been deploying on headroom nobody had measured — somewhere between
+1 and 10,332 bytes. See [Known limitations](/limitations/) #72.
 
 The bytes are dominated by whole-document values, not by the number of servers.
 For prod's spec at the moment it was refused:
 
-| Where                                       | Bytes   | Share |
-| ------------------------------------------- | ------- | ----- |
-| `STRAD_CONFIG_YAML` on `core`               | 66,019  | 47%   |
-| everything else on `core`                   | ~6,300  | 4%    |
-| `bundle` (35 servers' resolved credentials) | ~64,000 | 45%   |
-| `bundle-internal` (1 server)                | ~1,900  | 1%    |
+| Where                                            | Bytes   | Share |
+| ------------------------------------------------ | ------- | ----- |
+| `STRAD_CONFIG_YAML` on `core`                    | 66,019  | 47%   |
+| everything else on `core`                        | ~6,300  | 4%    |
+| `bundle` (prod's 35 slugs, resolved credentials) | ~64,000 | 45%   |
+| `bundle-internal` (1 server)                     | ~1,900  | 1%    |
 
-Adding a component costs that component's own environment and nothing else — a
+**Under `gcp-parameter-store`, adding a component costs that component's own
+environment and nothing else.** The spec carries one credential, the bootstrap
+one, and that one is [scoped to the strad image](/operate/secrets/) — so a
 `supplementary-image` component receives no broadcast of the deployment's
-credentials under `provider: gcp-parameter-store`, because under that provider
-the spec carries only the one bootstrap credential and that one is
-[scoped to the strad image](/operate/secrets/). `bundle-internal`, a whole new
-component, was 1,390 bytes of the 10,332 by which the spec grew; the other 7,900
-were the config file's own comments.
+credentials at all. `bundle-internal`, a whole new component, was 1,390 bytes of
+the 10,332 by which prod's spec grew; the other 7,900 were the config file's own
+comments.
+
+**Under `provider: env` that does not hold, and it is the OSS default.** There
+every SECRET in the deploy environment is rendered onto every supplementary
+component bar the strad-image-only ones, so a new component does cost a further
+copy of the credential set. On that provider the spec grows per component, not
+just per config edit — which is the case the paragraph above does not describe.
 
 ## A connector's credentials are injected, not referenced
 

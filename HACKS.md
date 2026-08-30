@@ -3318,7 +3318,8 @@ this one (`apps-s-1vcpu-512mb`, tadasant/strad#209).
 **Why this was invisible.** The spec's size is not a property anything owned.
 `render-spec` emitted it, `assert-spec` printed a byte count that no one had a
 threshold for, and the deploy job printed another. Production spent an unknown
-period with roughly 60 bytes of headroom, and the first symptom of crossing the
+period on headroom nobody had measured — somewhere between 1 and 10,332 bytes,
+which is all the two runs above establish — and the first symptom of crossing the
 line was a total outage of the deploy path — not of one component, of everything.
 
 **What is done about it.** Two things, neither of which is a claim to know the

@@ -330,21 +330,26 @@ Neither guard is visible in a healthy run. See
 [Known limitations](/limitations/) #47 for what the failure looked like.
 
 **It also reports the spec's size, and where the size is.** Two lines on stderr:
-the total and the byte count per component, largest first. Both are names and
-numbers — the spec itself holds secret values and is never echoed.
+the file's byte count, then the same spec compact with the byte count per
+component, largest first. Both are names and numbers — the spec itself holds
+secret values and is never echoed.
 
 ```
 [assert-spec] /run/spec.json: "strad-prod", 96238 bytes, 3 component(s): core, bundle, bundle-internal.
-[assert-spec] bytes by component: bundle 64012, core 27196, bundle-internal 1915
+[assert-spec] 87422 bytes compact: bundle 58204, core 27196, bundle-internal 1915
 ```
+
+The two totals differ by the renderer's indentation, which is why the second
+line carries its own: the per-component figures are compact, so they add up to
+that one and not to the first.
 
 Past ~80% of the largest spec this deployment is known to have deployed, that
 becomes a `::warning::`. It is a warning and never an error: DigitalOcean
 publishes no app-spec size limit, so the figure it compares against is an
 observation with a range around it, and a hard gate on an inferred number would
 fail deploys that would have worked. What it is for is the state prod was
-actually in on 2026-08-30 — 62 bytes of headroom, with nothing measuring it, until
-the API started answering `size limit exceeded`. See
+actually in on 2026-08-30 — headroom nobody had measured, somewhere between 1 and
+10,332 bytes, until the API started answering `size limit exceeded`. See
 [Known limitations](/limitations/) #72.
 
 ### Which image a deploy ships

@@ -2037,7 +2037,8 @@ inlined form shrank the spec.
 coincidence, not a measurement. Nothing here treats it as known.
 
 **The real problem was that nobody was looking.** Production had been deploying
-with about 60 bytes of headroom. The size was printed in two places and compared
+on headroom nobody had measured — somewhere between 1 and 10,332 bytes, which is
+all the two runs establish. The size was printed in two places and compared
 against nothing, so the first symptom of crossing the line was the whole deploy
 path failing — not one component, everything.
 

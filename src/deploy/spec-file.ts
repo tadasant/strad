@@ -54,7 +54,20 @@ export interface SpecSummary {
   /** Size of the file as read, in bytes. Useful in the run log as a tripwire. */
   bytes: number;
   /**
-   * Bytes per component, largest first — where the spec's size actually went.
+   * The spec re-serialised COMPACT, in bytes.
+   *
+   * `bytes` above is the file as written, and `render-spec` writes with an
+   * indent — so the two differ by the formatting, and only this one is
+   * comparable to the per-component figures below. Both are reported because
+   * they answer different questions: `bytes` is what a byte count of the file
+   * says (and is therefore what the observations behind
+   * `LARGEST_ACCEPTED_SPEC_BYTES` are of), and this is what the parts add up to.
+   */
+  compactBytes: number;
+  /**
+   * Bytes per component, COMPACT and largest first — where the spec's size
+   * actually went. Sums to a little under `compactBytes`, the remainder being
+   * the spec's own top-level fields.
    *
    * Safe to log: it is a component name and a number, and both are config. It
    * exists because the total on its own answers nothing. When prod's spec was
@@ -91,8 +104,9 @@ export interface SpecSummary {
  * than the failure it is guarding.
  *
  * It is used only to WARN, and the warning's job is to make growth visible while
- * there is still room to act on it — the state prod was actually in was 62 bytes
- * of headroom with nothing measuring it.
+ * there is still room to act on it. What prod was actually in was headroom
+ * nobody had measured — somewhere between 1 and 10,332 bytes, since the accepted
+ * spec deployed and one 10,332 bytes larger did not.
  *
  * Raise this if a larger spec is observed to deploy; that is a better
  * measurement, not a weakening.
@@ -293,6 +307,7 @@ export function assertDeployableSpec(
     name,
     components,
     bytes,
+    compactBytes: Buffer.byteLength(JSON.stringify(spec), "utf8"),
     componentBytes,
     sizeAdvisory: sizeAdvisory(bytes),
   };
