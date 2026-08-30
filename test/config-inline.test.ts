@@ -118,8 +118,10 @@ describe("inlineConfigYaml", () => {
   // catching a round trip that changed a value, so the branch has to be
   // exercised by an input that really does change one — not merely asserted.
   //
-  // Both cases below are the same shape: re-emitting rewrites a QUOTED scalar
-  // into a plain one, and a plain scalar's type is the parser's business.
+  // Both cases below lose a TYPE the emitted document has no way to carry. The
+  // 1.1 directive does not survive re-emission, so `yes` and `2024-01-01` go in
+  // as a boolean and a Date and come back as a string and a string; `!!binary`
+  // parses to a Buffer that re-emits as a plain string.
   it.each([
     [
       "a %YAML 1.1 document, where `yes` is a boolean and a date is a timestamp",
