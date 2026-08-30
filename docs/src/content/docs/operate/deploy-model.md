@@ -294,7 +294,17 @@ learn:
   gets one per bundle it proxies to, and every non-core component gets
   `STRAD_CORE_URL` = `${core.PRIVATE_URL}` for the
   [parameter write-back route](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use),
-  which is the one call that runs bundle → core.
+  which is the one call that runs bundle → core. The same route carries the
+  [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
+  poll.
+- **A `paramsRefresh:` server puts two `GENERAL` vars on its component** —
+  `STRAD_PARAM_REFRESH`, a `{slug: [VARIABLE]}` manifest, and
+  `STRAD_PARAM_REFRESH_SECONDS`. Names and a number, never values. Both are
+  omitted entirely when no server on the component opted in, so a spec diff only
+  moves when the thing it describes does. The manifest is what makes the set of
+  refreshable names a property of the **rendered spec** rather than of whatever
+  happens to be in the store: adding a name is still a deploy, and only the value
+  behind an already-listed name may change under a running process.
 - **A component that hosts a `paramsWritable:` server may not have
   `instanceCount` above 1.** The render throws rather than emit it: a credential
   that rotates on use has exactly one valid value at a time, so two replicas

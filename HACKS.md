@@ -3242,3 +3242,46 @@ about itself.
 export it as a gauge, then alert on it. Or reinstate the hard failure by deleting
 `mayBeUnseeded:` from the schema — every path that reads it falls back to today's
 behaviour, which is the pre-change one.
+
+## 71. A refreshed parameter only reaches an upstream that re-reads its environment
+
+**What.** `paramsRefresh:` (src/config/schema.ts, src/secrets/param-route.ts) keeps
+a listed parameter current in a supplementary container's `process.env` without a
+redeploy. What it cannot do is make the MCP server inside that container LOOK at
+the new value. That is a property of the upstream, and this image runs
+twenty-one of them written by other people.
+
+The split is real and it is not subtle:
+
+- `strad-fetch` builds its scraping clients inside a factory the bundle host
+  invokes PER REQUEST (`servers/strad-fetch/shared/src/server.ts` reads
+  `BRIGHTDATA_API_KEY` and `FIRECRAWL_API_KEY` when it is called, and
+  `statelessHandler` calls `registerHandlers` per POST). A rotated key is used by
+  the next tool call. This is the case the feature was built for, and the mount
+  is marked `liveEnv: true` for it.
+- `telegram` snapshots `slugEnvView(process.env, slug)` at mount time and the tree
+  memoises ONE MTProto session for the life of the process. `grafana` and
+  `google-sheets` build a client per mount. `x-twitter` caches its OAuth provider
+  deliberately, because the token rotates in memory and re-reading would fight it.
+  For all of those the refreshed value sits in the environment, correct and unused,
+  until the container restarts.
+
+**Why not.** Making every mount re-readable means re-running its loader when a
+value moves, and the loaders are the expensive part of this image: a Chromium
+page, an MTProto login, a memoised session store. Rebuilding one mid-flight to
+pick up a credential is a bigger blast radius than the staleness it fixes, and for
+`x-twitter` it would be actively wrong — its refresh token rotates in memory and a
+re-read would hand the process a value its own last refresh already spent.
+
+**What stops it being silent**, which is the part that matters. `Mount.liveEnv` in
+`servers/bundle/host/src/index.ts` records which mounts re-read per call, and
+`startParamRefresh` logs one line per opted-in slug at boot: an unmarked mount gets
+a WARN naming the variables and saying the value will be current in the
+environment and may go unused. So pointing `paramsRefresh:` at the wrong slug is a
+line in the boot log, not a rotation that quietly does nothing.
+
+**Undo.** Per mount, and only where the upstream supports it: give the tree a way
+to re-read its credential (a factory called per request, as strad-fetch has) and
+set `liveEnv: true`. The general fix is a mount-level `reload()` on the `Mount`
+interface that `refreshParamsOnce`'s `onChange` calls, which is a change to each
+tree rather than to this seam.

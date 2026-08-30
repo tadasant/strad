@@ -29,19 +29,27 @@ import { event } from "../telemetry/index.ts";
  * ## The name never comes from the caller
  *
  * The URL proposes a slug and a variable; the CONFIG disposes. `writableTarget`
- * below looks the pair up in that server's `paramsWritable:` allowlist and
- * returns the config's OWN strings, and the store path is composed from those.
- * The request's bytes are used for exactly one thing: an equality test. There is
- * no spelling of a URL that addresses a path no config names — not a traversal,
- * not an encoding trick, not a case fold — because no part of the request is
- * ever concatenated into a path.
+ * (POST) and `readableTarget` (GET) look the pair up in that server's own
+ * allowlists and return the config's OWN strings, and the store path is composed
+ * from those. The request's bytes are used for exactly one thing: an equality
+ * test. There is no spelling of a URL that addresses a path no config names —
+ * not a traversal, not an encoding trick, not a case fold — because no part of
+ * the request is ever concatenated into a path.
+ *
+ * ## Two verbs, two allowlists
+ *
+ * `paramsWritable:` fences the POST. `paramsRefresh:` widens the GET, and only
+ * the GET — see `readableTarget` for why a read of a name is not the same risk
+ * as a write of it. Both require `params: true`, which is what makes the read
+ * side disclose nothing: the value is already baked onto the calling component.
  *
  * ## What it refuses, and with which words
  *
- * ONE refusal for every "you may not write that": unknown slug, disabled server,
- * variable not on the list. They are the same answer to the caller and telling
- * them apart would turn the route into a config-enumeration oracle for a
- * credential that is otherwise only good for the thing it is scoped to.
+ * ONE refusal for every "you may not do that to that name": unknown slug,
+ * disabled server, variable not on the verb's list. They are the same answer to
+ * the caller and telling them apart would turn the route into a
+ * config-enumeration oracle for a credential that is otherwise only good for the
+ * thing it is scoped to.
  *
  * ## WHAT THE ALLOWLIST DOES NOT BOUND: which caller
  *
@@ -98,11 +106,54 @@ export function writableTarget(
   slug: string,
   variable: string,
 ): { slug: string; variable: string } | null {
+  return targetIn(config, slug, variable, (s) => s.paramsWritable);
+}
+
+/**
+ * The same lookup for the GET, over a WIDER list: `paramsWritable` ∪
+ * `paramsRefresh`.
+ *
+ * Two lists rather than one because the two verbs are not the same risk.
+ * `paramsWritable` fences a WRITE — a name on it can have a working credential
+ * replaced — so it stays exactly as narrow as it was. `paramsRefresh` fences a
+ * READ of a value this component is already holding: `params: true` (which the
+ * schema requires for either list) bakes the server's whole namespace onto this
+ * same component at render time, so a name on it discloses nothing the caller
+ * does not already have in its own environment. What the read adds is FRESHNESS,
+ * which is the entire point.
+ *
+ * Writable is included here because a writer must be able to read what it is
+ * about to rotate — that is the boot read `loadXTwitter` does — and splitting
+ * them would mean a config that could write a name but not read it back.
+ */
+export function readableTarget(
+  config: StradConfig,
+  slug: string,
+  variable: string,
+): { slug: string; variable: string } | null {
+  return targetIn(config, slug, variable, (s) => [
+    ...s.paramsWritable,
+    ...s.paramsRefresh,
+  ]);
+}
+
+/** Shared by both: find the server, then match the request against ITS strings. */
+function targetIn(
+  config: StradConfig,
+  slug: string,
+  variable: string,
+  allowlist: (
+    server: Extract<
+      StradConfig["servers"][number],
+      { kind: "supplementary-image" }
+    >,
+  ) => readonly string[],
+): { slug: string; variable: string } | null {
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
     if (server.slug !== slug) continue;
-    const allowed = server.paramsWritable.find((v) => v === variable);
+    const allowed = allowlist(server).find((v) => v === variable);
     if (allowed === undefined) return null;
     return { slug: server.slug, variable: allowed };
   }
@@ -193,11 +244,20 @@ export function storeForPath(
   return { store };
 }
 
-/** Shared by both verbs: authorize, then resolve the target from the config. */
+/**
+ * Shared by both verbs: authorize, then resolve the target from the config.
+ *
+ * `lookup` is the verb's own allowlist — `writableTarget` for the POST,
+ * `readableTarget` for the GET. It is a parameter rather than a branch inside
+ * because the ONE property this route rests on is that the returned strings came
+ * out of the parsed config; passing the lookup in keeps that true of both verbs
+ * by construction.
+ */
 function target(
   req: Request,
   res: Response,
   opts: ParamsHandlerOptions,
+  lookup: typeof writableTarget,
 ): { slug: string; variable: string; path: string } | null {
   const auth = authorizePresence(
     req.get("authorization"),
@@ -209,7 +269,7 @@ function target(
     return null;
   }
 
-  const found = writableTarget(
+  const found = lookup(
     opts.config,
     req.params.slug ?? "",
     req.params.variable ?? "",
@@ -218,18 +278,19 @@ function target(
     // ONE answer for every shape of "no". See the header.
     //
     // Evented WITH NO FIELDS, and that is the most this can safely say. The
-    // likeliest cause is a typo'd or missing `paramsWritable:` entry, and the
-    // symptom of that is otherwise invisible from core: the caller degrades its
-    // own mount on the BUNDLE's /healthz, which nothing scrapes, and logs to a
-    // stdout stream that is never shipped. Naming the slug or the variable here
-    // would put a caller-chosen string in the ingestor, which telemetry/events.ts
-    // refuses on principle — so the event carries the fact and the operator
-    // reads core's stderr for the rest.
+    // likeliest cause is a typo'd or missing `paramsWritable:` / `paramsRefresh:`
+    // entry, and the symptom of that is otherwise invisible from core: the caller
+    // degrades its own mount on the BUNDLE's /healthz, which nothing scrapes, and
+    // logs to a stdout stream that is never shipped. Naming the slug or the
+    // variable here would put a caller-chosen string in the ingestor, which
+    // telemetry/events.ts refuses on principle — so the event carries the fact
+    // and the operator reads core's stderr for the rest.
     event({ evt: "strad.param_refused" });
     console.warn(
-      `[strad] refused a parameter write-back for ` +
+      `[strad] refused ${req.method} /_strad/params for ` +
         `${req.params.slug}/${req.params.variable}: no enabled ` +
-        `supplementary-image server names it under paramsWritable:`,
+        `supplementary-image server names it under ` +
+        `${req.method === "GET" ? "paramsWritable: or paramsRefresh:" : "paramsWritable:"}`,
     );
     res.status(403).json({ error: "parameter_not_writable" });
     return null;
@@ -247,7 +308,7 @@ export function createParamWriteHandler(
 ): RequestHandler {
   return (req: Request, res: Response) => {
     void (async () => {
-      const found = target(req, res, opts);
+      const found = target(req, res, opts, writableTarget);
       if (!found) return;
 
       const parsed = parseParamWriteRequest(req.body);
@@ -322,7 +383,7 @@ export function createParamReadHandler(
 ): RequestHandler {
   return (req: Request, res: Response) => {
     void (async () => {
-      const found = target(req, res, opts);
+      const found = target(req, res, opts, readableTarget);
       if (!found) return;
 
       const resolved = storeForPath(
@@ -340,6 +401,13 @@ export function createParamReadHandler(
 
       try {
         const value = await resolved.store.reveal(found.path);
+        // The record a runtime refresh would otherwise not leave. Config strings
+        // only, never the value — see telemetry/events.ts.
+        event({
+          evt: "strad.param_read",
+          slug: found.slug,
+          variable: found.variable,
+        });
         // Never cached, for the same reason the presence route is not: the
         // answer changes the moment the caller itself writes a new one, and a
         // stale hit is a dead credential handed to a fresh container.

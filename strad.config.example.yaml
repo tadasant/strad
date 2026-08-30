@@ -52,6 +52,17 @@ gateway:
     # is done, to make "the store is the only source" enforceable.
     envFallback: true
 
+    # How often a supplementary component re-reads the parameters its servers
+    # listed under `paramsRefresh:`. NOT ttlSeconds: that one bounds a cache in
+    # front of a read the gateway was going to do anyway, so a short value costs
+    # nothing when nothing asks. This drives a POLL, and a poll's cost is paid
+    # whether or not anybody is using the credential — one store read per listed
+    # variable per component per interval. Hence the floor of 30.
+    #
+    # No effect unless some server sets `paramsRefresh:`, which none does by
+    # default.
+    paramRefreshSeconds: 300
+
 auth:
   # Humans. Verified against the Google Workspace `hd` claim — NOT the email
   # suffix, which a personal account can spell however it likes.
@@ -304,6 +315,27 @@ servers:
   # through core, and re-read the live one at boot instead of the value the last
   # deploy baked — which is what makes "set it once and it keeps working" true
   # across restarts. See docs: /operate/secrets/.
+  #
+  # THE OTHER HALF, for a credential that does NOT rotate on use but does get
+  # rotated by a human: `paramsRefresh:`. A supplementary server's managed
+  # parameters are BAKED onto its component by the renderer, so rotating one in
+  # the console changes nothing until the next deploy. Listing the name here makes
+  # the container re-read it while it runs:
+  #
+  #     params: true
+  #     paramsRefresh: [BRIGHTDATA_API_KEY]
+  #
+  # Empty by default on every server — nothing refreshes unless a human writes the
+  # name. The poll costs one store read per listed variable per component per
+  # `gateway.secrets.paramRefreshSeconds` (default 300, floor 30), which is why it
+  # is a poll and not a per-request resolve. It requires `params: true`, which is
+  # also what makes it disclose nothing: that flag already baked the whole
+  # namespace onto this component, so the re-read only adds freshness.
+  #
+  # WHAT IT CANNOT DO is make an upstream re-read. A server that builds its client
+  # per request (strad-fetch) uses the new value on the next call; one that
+  # memoises a connection at mount time (telegram's MTProto session) keeps the boot
+  # value until it restarts. The bundle host logs which at boot. See limitation #71.
   - slug: x-twitter
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -507,7 +539,8 @@ servers:
       # IT BOUNDS THE NAMES, NOT THE CALLER. `STRAD_INTERNAL_TOKEN` is one token,
       # on every supplementary component, and nothing binds a caller to the slug
       # it addresses — so the reachable set is the UNION of every enabled
-      # server's `paramsWritable:`, and the GET is a value read on the component
+      # server's `paramsWritable:` (and, for the GET alone, every
+      # `paramsRefresh:`), and the GET is a value read on the component
       # with the public route. Factor that into how often this token is rotated.
       # What it does bound: the union is opt-in and empty by default, nothing
       # outside it is reachable, and every name on it is a credential that

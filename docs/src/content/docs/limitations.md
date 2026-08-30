@@ -659,6 +659,34 @@ runs out and the deploy fails as it did before, just later. The bound is deliber
 would put minutes of sleep on a deploy's critical path, multiplied by every call in
 a store-wide read.
 
+### 71. A refreshed parameter only reaches an upstream that re-reads its environment
+
+[`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
+keeps a listed parameter current in a supplementary container's environment
+without a redeploy. It cannot make the MCP server inside that container **look**
+at the new value — that is a property of the upstream, and the bundle image runs
+twenty-one of them written by other people.
+
+`strad-fetch` builds its scraping clients inside a factory the host invokes per
+request, so a rotated key is used by the next tool call; that is the case the
+feature was built for. A server that snapshots its credential at mount time and
+memoises a connection does not: `telegram` holds one MTProto session for the life
+of the process, `grafana` and `google-sheets` build a client per mount, and
+`x-twitter` caches its OAuth provider deliberately, because its token rotates in
+memory and re-reading would fight that. For those the refreshed value sits in the
+environment, correct and unused, until the container restarts.
+
+Making every mount re-readable would mean re-running its loader when a value
+moves, and the loaders are the expensive part of that image — a Chromium page, an
+MTProto login, a memoised session store. Rebuilding one mid-flight is a bigger
+blast radius than the staleness it fixes.
+
+What stops this being silent is that the host records which mounts re-read per
+call and logs one line per opted-in slug at boot: an unmarked mount gets a warning
+naming the variables and saying the value will be current in the environment and
+may go unused. So pointing `paramsRefresh:` at the wrong slug is a line in the
+boot log, not a rotation that quietly does nothing. See `HACKS.md` #71.
+
 ### 70. Nothing escalates a slug that sits `unconfigured` forever
 
 A server can name the `${NAME}`s it is willing to deploy without

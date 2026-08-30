@@ -6,6 +6,10 @@ import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
+import {
+  PARAM_REFRESH_ENV,
+  PARAM_REFRESH_SECONDS_ENV,
+} from "../secrets/param-route.ts";
 import { BUNDLE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
 import { CORE_URL_ENV } from "../secrets/param-route.ts";
 
@@ -426,6 +430,50 @@ function paramKeysEnv(paramKeys: Record<string, string[]>): EnvVar[] {
   ];
 }
 
+/**
+ * Tell a component which of its managed parameters it may RE-READ at runtime,
+ * and how often.
+ *
+ * GENERAL, like `STRAD_PARAM_KEYS` above and for the same reason: it holds
+ * variable names, and every one of them is already in the store, in the console
+ * and in the spec beside it. What is secret is the values.
+ *
+ * The container needs telling because it never sees strad's config — it knows
+ * the server list only through the variables this renderer bakes on. Handing it
+ * the NAMES here rather than letting it ask core is also what keeps the refresh
+ * from inventing variables: the set is fixed by the render, so a parameter
+ * created afterwards needs a deploy, and only the VALUE of an
+ * already-deployed name can move under a running process.
+ *
+ * Omitted entirely when no server on the component sets `paramsRefresh:`, which
+ * is every deployment by default — so a spec diff only moves when the thing it
+ * describes does.
+ */
+function paramRefreshEnvs(
+  refresh: Record<string, string[]>,
+  intervalSeconds: number,
+): EnvVar[] {
+  if (Object.keys(refresh).length === 0) return [];
+  const sorted: Record<string, string[]> = {};
+  for (const slug of Object.keys(refresh).sort()) {
+    sorted[slug] = [...(refresh[slug] ?? [])].sort();
+  }
+  return [
+    {
+      key: PARAM_REFRESH_ENV,
+      value: JSON.stringify(sorted),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+    {
+      key: PARAM_REFRESH_SECONDS_ENV,
+      value: String(intervalSeconds),
+      scope: "RUN_TIME",
+      type: "GENERAL",
+    },
+  ];
+}
+
 function identityEnvs(
   component: string,
   environment: string,
@@ -584,6 +632,8 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       params: Record<string, string>;
       /** `slug -> VARIABLE[]` for the `params: true` servers on this component. */
       paramKeys: Record<string, string[]>;
+      /** `slug -> VARIABLE[]` for the servers that set `paramsRefresh:`. */
+      paramRefresh: Record<string, string[]>;
     }
   >();
   const builtinBundles = new Set<string>();
@@ -710,7 +760,19 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
           server.slug,
         );
       }
-      for (const key of Object.keys(params)) {
+      // DECLARED `paramsRefresh:` NAMES COUNT HERE TOO, seeded or not.
+      //
+      // The loop above registers what the render RESOLVED, and for an ordinary
+      // `params: true` server that is the whole story — a name with no value
+      // reaches no container. A refreshable name is different: it is a name this
+      // component may acquire LATER, when somebody seeds it, and the refresh
+      // writes it under the same bare name the renderer would have. So a
+      // collision that this check would have caught at render time for a seeded
+      // parameter must not become invisible merely because the value is not in
+      // the store yet — that is the one shape where a sibling's credential could
+      // be overwritten by a human action taken long after the deploy, with
+      // nothing reporting it.
+      for (const key of [...Object.keys(params), ...server.paramsRefresh]) {
         (owners.get(key) ?? owners.set(key, new Set()).get(key)!).add(
           server.slug,
         );
@@ -745,6 +807,18 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
               [server.slug]: Object.keys(params).sort(),
             }
           : (prev?.paramKeys ?? {}),
+        // From the CONFIG, not from `params` — a name a human listed but has not
+        // seeded yet has no resolved value to bake, and it is exactly the name a
+        // refresh should pick up when they do seed it. Reading this off the
+        // store's contents instead would make "seed it after the deploy" go on
+        // needing a redeploy, which is half of what this feature is for.
+        paramRefresh:
+          server.paramsRefresh.length > 0
+            ? {
+                ...(prev?.paramRefresh ?? {}),
+                [server.slug]: [...server.paramsRefresh],
+              }
+            : (prev?.paramRefresh ?? {}),
       });
     } else if (server.bundle !== "core") {
       builtinBundles.add(server.bundle);
@@ -1103,6 +1177,10 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       ),
       coreUrlEnv,
       ...paramKeysEnv(supplementary.paramKeys),
+      ...paramRefreshEnvs(
+        supplementary.paramRefresh,
+        config.gateway.secrets.paramRefreshSeconds,
+      ),
       ...opts.env.filter(
         (e) =>
           !STRAD_IMAGE_ONLY_SECRET_KEYS.has(e.key) &&

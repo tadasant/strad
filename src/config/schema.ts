@@ -432,6 +432,46 @@ const SupplementaryImageServer = ServerBase.extend({
    */
   paramsWritable: z.array(z.string().min(1)).default([]),
   /**
+   * Variables this server re-reads AT RUNTIME, so a rotation reaches the running
+   * container without a redeploy.
+   *
+   * THE GAP THIS CLOSES. Three of strad's four credential paths already resolve
+   * at runtime: a gateway `${NAME}` (within `gateway.secrets.ttlSeconds`), a
+   * `builtin`'s `params:` (per tool call, gateway/registry.ts), and an unhosted
+   * server's `${NAME}` (per request). A SUPPLEMENTARY image's `params:` is the
+   * one that does not — `renderAppSpec` bakes it onto the component as a SECRET
+   * env var, and process environment is fixed at spawn. Rotating the credential
+   * behind such a slug therefore meant redeploying the fleet by hand.
+   *
+   * WHAT BOUNDS IT IS THIS LIST, and that is what keeps the deployment
+   * auditable. Only a name written here can move under a running process, so the
+   * rendered spec still names every variable this component may ever hold — a
+   * parameter created under this slug that nobody listed here changes nothing
+   * until the next deploy. What is no longer pinned by the spec is the VALUE.
+   *
+   * A listed name that is not seeded yet is included on purpose. It bakes no env
+   * var (there is nothing to bake), and the first poll after somebody seeds it
+   * is what puts it on the container — so "seed a credential after the deploy"
+   * stops needing a redeploy too, not just "rotate one".
+   *
+   * AN ALLOWLIST BY NAME, exactly like `paramsWritable:` above, and for the same
+   * structural reason: core composes the store path from the CONFIG's slug and
+   * the CONFIG's own copy of this string, never from the URL a caller sent (see
+   * src/http/params.ts). Requiring `params: true` is what makes this disclose
+   * nothing new — that flag already bakes this entire namespace onto this
+   * component, so the container holds these values already. It just holds STALE
+   * ones.
+   *
+   * WHAT IT CANNOT DO. The refresh updates the container's environment; whether
+   * the upstream server NOTICES is a property of that server. One that reads
+   * `process.env` when it builds a client per request (strad-fetch) picks the
+   * new value up on the next call. One that snapshots its credential at mount
+   * and memoises a connection (telegram's MTProto session, a Grafana client)
+   * does not, and keeps the boot value until the next restart. The bundle host
+   * says so at boot rather than leaving it silent — see HACKS.md #71.
+   */
+  paramsRefresh: z.array(z.string().min(1)).default([]),
+  /**
    * Env for the CORE gateway only — the human console's half of this server.
    * It is NOT injected into the server's container, and that asymmetry is the
    * whole point.
@@ -671,12 +711,29 @@ const SecretsConfig = z
      * enforceable rather than merely intended.
      */
     envFallback: z.boolean().default(true),
+    /**
+     * How often a supplementary component re-reads the parameters its servers
+     * listed under `paramsRefresh:`. Seconds.
+     *
+     * Deliberately NOT `ttlSeconds`. That one bounds a cache in front of a read
+     * the gateway was going to do anyway, so a short value costs nothing when
+     * nothing asks. This one drives a POLL, and a poll's cost is paid whether or
+     * not anybody is using the credential: one store read per listed variable
+     * per component per interval, forever. The floor is what keeps a config
+     * typo (`5`) from turning three variables into a permanent 2000-reads-an-
+     * hour load on a store that has already 429'd a deploy three times.
+     *
+     * It has no effect at all unless some server sets `paramsRefresh:`, which no
+     * server does by default.
+     */
+    paramRefreshSeconds: z.number().int().min(30).max(86_400).default(300),
   })
   .default({
     provider: "env",
     ttlSeconds: 60,
     negativeTtlSeconds: 10,
     envFallback: true,
+    paramRefreshSeconds: 300,
   });
 
 // ---------------------------------------------------------------------------
@@ -742,79 +799,90 @@ export const StradConfig = z
       }
     }
 
-    // PARAMS-WRITABLE.
+    // PARAMS-WRITABLE, AND PARAMS-REFRESH.
     //
-    // The allowlist is the fence around a route that WRITES to the parameter
-    // store, so what it may contain is checked here rather than at the route:
-    // core builds the store path out of these strings and the server's slug, and
-    // a name that is not a legal variable would compose a path pointing
-    // somewhere else entirely. `validateVariableName` is the same rule the
-    // console applies when a human creates a parameter, restated as a regex so
-    // this file stays dependency-free.
+    // Two allowlists, one rule set, because they fence the same thing: core
+    // composes a parameter path out of the server's slug and the CONFIG's own
+    // copy of one of these strings (src/http/params.ts), never out of the URL a
+    // caller sent. A name that is not a legal variable would compose a path
+    // pointing somewhere else entirely, so what may appear in either list is
+    // checked here rather than at the route. `validateVariableName` is the same
+    // rule the console applies when a human creates a parameter, restated as a
+    // regex so this file stays dependency-free.
     //
-    // `params: true` is REQUIRED, and not merely for tidiness. That flag is what
-    // injects `/strad/{env}/mcp/{slug}/static/` onto this component in the first
-    // place; without it the server would be writing a namespace it does not
-    // read, which is a credential going nowhere — the silent no-op
-    // src/deploy/server-namespaces.ts exists to stop shipping.
+    // `params: true` is REQUIRED for both, and not merely for tidiness. That
+    // flag is what injects `/strad/{env}/mcp/{slug}/static/` onto this component
+    // in the first place. Without it `paramsWritable:` would write a namespace
+    // the server does not read — a credential going nowhere, the silent no-op
+    // src/deploy/server-namespaces.ts exists to stop shipping — and
+    // `paramsRefresh:` would re-read a namespace nothing injected, which is the
+    // same no-op arrived at from the other end. It is also what makes the read
+    // side disclose nothing: the value is already baked on this component, and
+    // the refresh only replaces a stale copy of it.
     for (const s of cfg.servers) {
       if (s.kind !== "supplementary-image") continue;
-      if (s.paramsWritable.length === 0) continue;
-      if (!s.params) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `server "${s.slug}" sets paramsWritable: but not params: true. ` +
-            `paramsWritable names variables in this server's own ` +
-            `/strad/{env}/mcp/${s.slug}/static/ namespace, and params: true is ` +
-            `what makes that namespace this server's environment. Without it ` +
-            `the server would write values nothing injects.`,
-          path: ["servers"],
-        });
-      }
-      const seenVars = new Map<string, string>();
-      for (const variable of s.paramsWritable) {
-        // The same two rules `validateVariableName` applies when a human creates
-        // a parameter in the console, restated as code so this file stays
-        // dependency-free. The length cap is Parameter Manager's, and a name past
-        // it is a write that cannot land.
-        if (
-          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
-          variable.length > 200
-        ) {
+      const lists = [
+        { field: "paramsWritable", verb: "write", entries: s.paramsWritable },
+        { field: "paramsRefresh", verb: "re-read", entries: s.paramsRefresh },
+      ].filter((l) => l.entries.length > 0);
+
+      for (const { field, verb, entries } of lists) {
+        if (!s.params) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message:
-              `server "${s.slug}" lists "${variable}" under paramsWritable:, ` +
-              `which is not a legal environment variable name (letters, digits ` +
-              `and underscores; not starting with a digit; at most 200 ` +
-              `characters). A paramsWritable entry is a VARIABLE, not a path — ` +
-              `it addresses /strad/{env}/mcp/${s.slug}/static/{VARIABLE} and ` +
-              `nothing else.`,
+              `server "${s.slug}" sets ${field}: but not params: true. ` +
+              `${field} names variables in this server's own ` +
+              `/strad/{env}/mcp/${s.slug}/static/ namespace, and params: true is ` +
+              `what makes that namespace this server's environment. Without it ` +
+              `the server would ${verb} values nothing injects.`,
             path: ["servers"],
           });
         }
-        // DUPLICATES ARE COMPARED CASE-INSENSITIVELY, because `parameterId`
-        // folds case before it hashes: `X_TOKEN` and `x_token` name ONE resource
-        // in the store but two different environment variables in the container.
-        // Listing both is a config where one name works and its twin 404s
-        // forever, which is the least diagnosable outcome available here.
-        const fold = variable.toLowerCase();
-        const first = seenVars.get(fold);
-        if (first !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message:
-              first === variable
-                ? `server "${s.slug}" lists "${variable}" twice under paramsWritable:`
-                : `server "${s.slug}" lists both "${first}" and "${variable}" ` +
-                  `under paramsWritable:. A parameter path folds case, so those ` +
-                  `are ONE parameter under two variable names — one of them ` +
-                  `would resolve and the other would never be found.`,
-            path: ["servers"],
-          });
+        const seenVars = new Map<string, string>();
+        for (const variable of entries) {
+          // The same two rules `validateVariableName` applies when a human
+          // creates a parameter in the console, restated as code so this file
+          // stays dependency-free. The length cap is Parameter Manager's, and a
+          // name past it addresses a parameter that cannot exist.
+          if (
+            !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
+            variable.length > 200
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}" lists "${variable}" under ${field}:, ` +
+                `which is not a legal environment variable name (letters, digits ` +
+                `and underscores; not starting with a digit; at most 200 ` +
+                `characters). A ${field} entry is a VARIABLE, not a path — ` +
+                `it addresses /strad/{env}/mcp/${s.slug}/static/{VARIABLE} and ` +
+                `nothing else.`,
+              path: ["servers"],
+            });
+          }
+          // DUPLICATES ARE COMPARED CASE-INSENSITIVELY, because `parameterId`
+          // folds case before it hashes: `X_TOKEN` and `x_token` name ONE
+          // resource in the store but two different environment variables in the
+          // container. Listing both is a config where one name works and its twin
+          // 404s forever, which is the least diagnosable outcome available here.
+          const fold = variable.toLowerCase();
+          const first = seenVars.get(fold);
+          if (first !== undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                first === variable
+                  ? `server "${s.slug}" lists "${variable}" twice under ${field}:`
+                  : `server "${s.slug}" lists both "${first}" and "${variable}" ` +
+                    `under ${field}:. A parameter path folds case, so those ` +
+                    `are ONE parameter under two variable names — one of them ` +
+                    `would resolve and the other would never be found.`,
+              path: ["servers"],
+            });
+          }
+          seenVars.set(fold, variable);
         }
-        seenVars.set(fold, variable);
       }
     }
 

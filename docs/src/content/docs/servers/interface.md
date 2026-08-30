@@ -389,6 +389,52 @@ plus two that shape how this server gets its values:
   use](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use) for the
   transport, the failure modes and what the grant actually is.
 
+- **`paramsRefresh`** (default `[]`) — the variables this server **re-reads at
+  runtime**, so rotating one takes effect on the running container instead of on
+  the next deploy.
+
+  This is the answer to the one credential path in strad that was still
+  deploy-time. A `${NAME}` on a `remote-http` server, a `builtin`'s `params:`, and
+  a gateway reference all resolve while the process runs; a
+  `supplementary-image`'s managed parameters are resolved by the renderer and
+  baked onto the component as environment, and process environment is fixed at
+  spawn. So rotating the token behind such a slug meant redeploying by hand.
+
+  Listing a name here puts it on a manifest the renderer bakes onto the
+  component. The container polls core for those names on
+  `gateway.secrets.paramRefreshSeconds` (default 300, floor 30) and updates its
+  own environment when a value has moved. It requires `params: true` — which is
+  also what makes it disclose nothing, since that flag already baked the whole
+  namespace onto this component; what the re-read adds is freshness.
+
+  ```yaml
+  - slug: strad-fetch
+    kind: supplementary-image
+    params: true
+    paramsRefresh: [BRIGHTDATA_API_KEY]
+  ```
+
+  **A listed name may not be another server's variable on the same bundle.** One
+  bundle is one container with one environment, so a refresh that wrote a name a
+  sibling owns would overwrite that sibling's credential — and it would do it
+  when a human seeds the value, not when anything deploys. `renderAppSpec`
+  refuses that config, whether or not the name is seeded yet.
+
+  **A listed name that nobody has seeded yet is included on purpose**: it bakes no
+  variable, and the first poll after somebody seeds it is what puts it on the
+  container — so "seed a credential after the deploy" stops needing a redeploy
+  too. What still needs one is adding a name to this list, which keeps the
+  rendered spec the record of every variable the component may ever hold.
+
+  **Whether the upstream notices is a property of that upstream.** One that reads
+  its key when it builds a client per request picks the new value up on the next
+  call; one that snapshots a credential at mount time and memoises a connection
+  keeps the boot value until the next restart. The bundle host says which at boot
+  rather than leaving it silent. `supplementary-image` only.
+
+  See [`paramsRefresh:` — a rotation that lands without a
+  deploy](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy).
+
 ```yaml
 servers:
   # supplementary-image — a server served by a container image, on one path of it.
