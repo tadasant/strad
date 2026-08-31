@@ -1,6 +1,6 @@
 // Login tests for the Fetch Pet server.
 //
-// These run against the BUILT output (../build) with node:test — no browser, no
+// These run against the TypeScript sources (../src) under vitest — no browser, no
 // real Fetch Pet account. They pin the two things that took this server down in
 // staging and prod (strad#28):
 //
@@ -16,7 +16,7 @@
 // them and a `$` that does not. That difference is the bug — the old code probed
 // with the non-waiting `$` and, when the React tree had not rendered yet, fell
 // through to a waiting fill on a selector that could never match.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,7 @@ import {
   FetchPetClient,
   createMCPServer,
   setSharedBrowserProvider,
-} from '../build/index.js';
+} from '../src/index.js';
 
 // ---------------------------------------------------------------------------
 // A DOM small enough to reason about, and a matcher for the selector subset we
