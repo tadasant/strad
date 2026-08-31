@@ -1249,6 +1249,11 @@ README lists its deltas. The debt is real: a re-vendor is a merge, not a copy.
 depend on. strad's ESLint, Prettier, and TypeScript are scoped away from
 `servers/**` so the vendored code keeps its own toolchain.
 
+A vendored tree can still be tested from outside itself: 1Password's Vitest suite
+lives at `servers/onepassword/test/`, at the tree root, and imports the vendored
+sources rather than sitting among them. A re-vendor overwrites `shared/` and never
+touches `test/`, so the suite is not part of the merge.
+
 **Undo:** land shared fixes upstream and re-vendor; longer term, have upstream
 publish `shared` and the elicitation library as real packages.
 

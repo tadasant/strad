@@ -82,14 +82,28 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
     and passenger counts encoded at protobuf field numbers Google skips as
     unknown, baggage flags read in the wrong order, and a date grid that returned
     a trailing price history instead of future departures.
-  - **`onepassword`** and **`pointsyeah`** — build only: `npm run build` is `tsc`
-    over every workspace in the ordering the image's Dockerfile uses. There is no
-    test step, and that is deliberate: the `shared/` half of each tree is a
-    verbatim vendor copy of `pulsemcp/mcp-servers`, so a test written here would
-    become a merge conflict on every re-vendor. A test for that logic belongs
-    upstream. What the build catches is a type error — including one in
-    1Password's `shared/src/tools/sanitize.ts`, which is credential redaction — at
-    PR time rather than at bundle-image build time.
+  - **`pointsyeah`** — build only: `npm run build` is `tsc` over every workspace
+    in the ordering the image's Dockerfile uses. There is no test step, and that
+    is deliberate: the `shared/` half of the tree is a verbatim vendor copy of
+    `pulsemcp/mcp-servers`, so a test written _inside it_ would become a merge
+    conflict on every re-vendor. A test for that logic belongs upstream. What the
+    build catches is a type error at PR time rather than at bundle-image build
+    time.
+  - **`onepassword`** — tests, and no separate build leg, because `npm test` is
+    `npm run build && vitest run`: the same `tsc` over every workspace in the
+    Dockerfile's ordering runs first, so a type error — 1Password's
+    `shared/src/tools/sanitize.ts` is credential redaction — still fails the PR.
+    Its `shared/` half is the same kind of verbatim vendor copy `pointsyeah`'s is,
+    and the re-vendor argument above is why the suite lives in
+    `servers/onepassword/test/`, at the **tree root** rather than inside
+    `shared/`: a re-vendor overwrites `shared/` and never touches `test/`. From
+    there it imports the vendored TypeScript sources directly and covers the `op`
+    client's request-building (the argv each call assembles, and that the
+    service-account token travels in the environment rather than in argv) and its
+    response-shaping (list sanitization, share-URL parsing, and how a CLI failure
+    becomes a not-found, an authentication, or a command error).
+    `child_process.spawn` is faked, so the suite spawns no process, reaches no
+    network, and needs no 1Password credential.
   - **`pulse-subregistry`** — tests. Forked from the unpublished PulseMCP
     reference implementation; the bundle smoke test only proves the tool list,
     while this suite pins defaults, query construction, truncation and error

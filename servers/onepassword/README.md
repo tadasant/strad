@@ -17,6 +17,7 @@ servers/onepassword/
   elicitation/  # VENDORED @pulsemcp/mcp-elicitation (shared/ imports it; unpublished on npm)
   shared/       # VENDORED VERBATIM from pulsemcp/mcp-servers (the tool logic)
   remote/       # NEW: streamable-HTTP entrypoint over shared/ (this repo)
+  test/         # NEW: the tree's Vitest suite (kept OUT of the vendored shared/)
   Dockerfile    # bakes in a pinned `op`, builds elicitation -> shared -> remote
 ```
 
@@ -78,6 +79,35 @@ the confirmation-friction boundary is `OP_ELICITATION_READ` /
 image** as two strad server configs pointing at it — e.g. an `onepassword-ro`
 config with `ENABLED_TOOLGROUPS=readonly` and an `onepassword-rw` config without
 it — differing only in environment. This repo does not define those variants.
+
+## Tests
+
+```bash
+cd servers/onepassword
+npm ci
+npm test          # npm run build && vitest run --config vitest.config.ts
+```
+
+Vitest over the TypeScript sources, matching the repo root and the other strad
+server trees. The suite covers the 1Password client's **request-building** (the
+`op` argv each call assembles, and the fact that the service-account token
+travels in the environment rather than in argv) and its **response-shaping**
+(list sanitization, share-URL parsing, and the CLI-error classification into
+`OnePasswordNotFoundError` / `OnePasswordAuthenticationError` /
+`OnePasswordCommandError`).
+
+Two things about how it is arranged:
+
+- **The tests live in `test/` at the tree root, not in `shared/`.** `shared/` is
+  a verbatim vendor copy (HACKS.md #15) that a re-vendor overwrites, so a test
+  file added there would be a merge conflict every time. From the tree root the
+  suite imports the vendored TypeScript sources directly.
+- **`npm run build` stays in front of `vitest run`.** Testing sources rather
+  than `build/` would otherwise drop the accidental smoke test that a `tsc`
+  failure fails `npm test`.
+
+`child_process.spawn` is faked, so the suite starts no process, reaches no
+network and reads no credential. It needs no 1Password account and no token.
 
 ## Build & run locally
 
