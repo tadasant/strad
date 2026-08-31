@@ -1,6 +1,7 @@
 import type { IScrapingClients } from './server.js';
 import type { ScrapingStrategy, IStrategyConfigClient } from './strategy-config/index.js';
 import { logDebug, logWarning } from './logging.js';
+import { assessExtraction } from './clean/extraction.js';
 
 export interface ScrapeOptions {
   url: string;
@@ -14,6 +15,21 @@ export interface ScrapeResult {
   error?: string;
   metadata?: Record<string, unknown>;
   isAuthError?: boolean;
+  /**
+   * The cleaned extraction of `content`, computed while deciding whether this
+   * strategy could read the page. Absent when the cleaner itself failed, in
+   * which case the caller cleans for itself and falls back to the raw bytes.
+   */
+  extraction?: string;
+  /**
+   * Bytes a strategy DID fetch, when no strategy produced readable content.
+   *
+   * Present only on the unreadable outcome, and it is what keeps that outcome
+   * honest in both directions: the content is UNKNOWN rather than empty, and a
+   * caller who asked for raw bytes (`cleanScrape: false`) still gets the ones
+   * that were fetched.
+   */
+  fetched?: { source: string; content: string };
   diagnostics?: {
     strategiesAttempted: string[];
     strategyErrors: Record<string, string>;
@@ -62,7 +78,8 @@ export function extractUrlPattern(url: string): string {
 
 /**
  * Universal scraping: try every strategy this deployment has, in an order the
- * caller's OPTIMIZE_FOR chooses, and stop at the first that returns content.
+ * caller's OPTIMIZE_FOR chooses, and stop at the first whose result can
+ * actually be READ.
  *
  *   cost (default): native -> firecrawl -> brightdata
  *   speed:          firecrawl -> brightdata -> native
@@ -82,6 +99,17 @@ export function extractUrlPattern(url: string): string {
  * like any other failure and the next strategy runs; the auth failure is
  * reported only if nothing else worked, where it is a diagnosis rather than a
  * verdict.
+ *
+ * FORK DELTA (FORK.md #10) — A STRATEGY IS ACCEPTED ON WHAT COULD BE READ OUT
+ * OF IT, NOT ON WHETHER BYTES CAME BACK. Upstream accepts any 200 with a body,
+ * which makes a client-rendered page — full document, nothing drawn — a SUCCESS
+ * whose content is the empty string: the chain stops there, and the strategy
+ * that read nothing is learned for the URL prefix, so every later request for
+ * it reads nothing too. Here each candidate is cleaned before it is accepted;
+ * an extraction with nothing in it is a failure of THAT strategy, the chain
+ * escalates to the JS-rendering strategies that exist for exactly this, and if
+ * none of them can read the page either the result says the content is UNKNOWN
+ * rather than handing back an empty body under a success footer.
  */
 export async function scrapeUniversal(
   clients: IScrapingClients,
@@ -106,6 +134,40 @@ export async function scrapeUniversal(
    */
   const authFailures = new Set<string>();
 
+  /**
+   * The FIRST strategy whose bytes nothing could be extracted from, kept so the
+   * final answer can say what was fetched even though it could not be read.
+   * First in chain order, because a caller who asks for raw bytes wants the
+   * ones the cheapest strategy that answered actually served.
+   */
+  let unreadable: { source: string; content: string } | undefined;
+
+  /**
+   * Accept a strategy only if something can be READ out of what it fetched.
+   *
+   * A 200 with a full document whose content is drawn client-side is bytes
+   * without content: this returns null for it, records why against the strategy
+   * in the diagnostics, and lets the chain move on to a strategy that renders
+   * JavaScript.
+   */
+  const acceptIfReadable = async (
+    source: string,
+    content: string
+  ): Promise<ScrapeResult | null> => {
+    const assessment = await assessExtraction(content, url);
+    if (assessment.readable) {
+      return { success: true, content, source, extraction: assessment.text, diagnostics };
+    }
+
+    diagnostics.strategyErrors[source] = assessment.reason ?? 'produced no readable content';
+    // A body with nothing in it IS empty — there are no bytes to offer a caller
+    // and nothing to call unknown. Only a page that served something records
+    // here, so the UNKNOWN answer below stays about pages that were readable in
+    // principle.
+    if (!assessment.empty && !unreadable) unreadable = { source, content };
+    return null;
+  };
+
   // Helper function to try native scraping
   const tryNative = async (): Promise<ScrapeResult | null> => {
     const startTime = Date.now();
@@ -116,12 +178,8 @@ export async function scrapeUniversal(
       diagnostics.timing.native = Date.now() - startTime;
 
       if (nativeResult.success && nativeResult.status === 200 && nativeResult.data) {
-        return {
-          success: true,
-          content: nativeResult.data,
-          source: 'native',
-          diagnostics,
-        };
+        const accepted = await acceptIfReadable('native', nativeResult.data);
+        if (accepted) return accepted;
       }
 
       // Record the failure reason
@@ -153,12 +211,8 @@ export async function scrapeUniversal(
       diagnostics.timing.firecrawl = Date.now() - startTime;
 
       if (firecrawlResult.success && firecrawlResult.data) {
-        return {
-          success: true,
-          content: firecrawlResult.data.html,
-          source: 'firecrawl',
-          diagnostics,
-        };
+        const accepted = await acceptIfReadable('firecrawl', firecrawlResult.data.html);
+        if (accepted) return accepted;
       }
 
       // An auth failure is RECORDED, not returned: see FORK DELTA 2 above.
@@ -197,12 +251,8 @@ export async function scrapeUniversal(
       diagnostics.timing.brightdata = Date.now() - startTime;
 
       if (brightDataResult.success && brightDataResult.data) {
-        return {
-          success: true,
-          content: brightDataResult.data,
-          source: 'brightdata',
-          diagnostics,
-        };
+        const accepted = await acceptIfReadable('brightdata', brightDataResult.data);
+        if (accepted) return accepted;
       }
 
       // An auth failure is RECORDED, not returned: see FORK DELTA 2 above.
@@ -226,7 +276,8 @@ export async function scrapeUniversal(
     return null;
   };
 
-  // Every strategy runs until one returns content. `speed` reorders the chain;
+  // Every strategy runs until one returns content something can be read out
+  // of. `speed` reorders the chain;
   // it does not shorten it (FORK DELTA 1), and no strategy short-circuits the
   // rest by failing to authenticate (FORK DELTA 2).
   const chain =
@@ -250,6 +301,21 @@ export async function scrapeUniversal(
     authFailures.size > 0
       ? ` Credentials REJECTED by: ${[...authFailures].sort().join(', ')} — check the API key(s).`
       : '';
+
+  // "Nothing could fetch this page" and "everything fetched it and nothing could
+  // read it" are different answers, and only the second one is about the page.
+  // Saying so is the point: the content is UNKNOWN, not absent.
+  if (unreadable) {
+    return {
+      success: false,
+      content: null,
+      source: 'none',
+      fetched: unreadable,
+      error: `Fetched ${url}, but no strategy produced readable content — the content of this page is UNKNOWN, not empty. Attempted: ${diagnostics.strategiesAttempted.join(', ')}. Errors: ${errorDetails}${authNote}`,
+      isAuthError: authFailures.size > 0,
+      diagnostics,
+    };
+  }
 
   return {
     success: false,
@@ -279,6 +345,32 @@ function looksLikeAuthFailure(error: string): boolean {
 }
 
 /**
+ * The single-strategy counterpart of `acceptIfReadable`.
+ *
+ * The learned-strategy path runs before the chain does, so it needs the same
+ * verdict: a strategy that fetched a page it could not read must FAIL here, or
+ * a prefix that once learned `native` keeps answering an empty document for a
+ * page that has since gone client-rendered.
+ */
+async function acceptSingleIfReadable(
+  source: ScrapingStrategy,
+  content: string,
+  url: string
+): Promise<ScrapeResult> {
+  const assessment = await assessExtraction(content, url);
+  if (assessment.readable) {
+    return { success: true, content, source, extraction: assessment.text };
+  }
+
+  return {
+    success: false,
+    content: null,
+    source,
+    error: `Strategy ${source} ${assessment.reason ?? 'produced no readable content'}`,
+  };
+}
+
+/**
  * Try a specific scraping strategy
  */
 export async function scrapeWithSingleStrategy(
@@ -293,11 +385,7 @@ export async function scrapeWithSingleStrategy(
       case 'native': {
         const result = await clients.native.scrape(url, { timeout: options.timeout });
         if (result.success && result.status === 200 && result.data) {
-          return {
-            success: true,
-            content: result.data,
-            source: 'native',
-          };
+          return acceptSingleIfReadable('native', result.data, url);
         }
         break;
       }
@@ -317,11 +405,7 @@ export async function scrapeWithSingleStrategy(
         });
 
         if (result.success && result.data) {
-          return {
-            success: true,
-            content: result.data.html,
-            source: 'firecrawl',
-          };
+          return acceptSingleIfReadable('firecrawl', result.data.html, url);
         }
         break;
       }
@@ -338,11 +422,7 @@ export async function scrapeWithSingleStrategy(
 
         const result = await clients.brightData.scrape(url);
         if (result.success && result.data) {
-          return {
-            success: true,
-            content: result.data,
-            source: 'brightdata',
-          };
+          return acceptSingleIfReadable('brightdata', result.data, url);
         }
         break;
       }
@@ -396,7 +476,11 @@ export async function scrapeWithStrategy(
     );
     const universalResult = await scrapeUniversal(clients, options);
 
-    // If universal succeeded and we have a config client, save the successful strategy
+    // If universal succeeded and we have a config client, save the successful
+    // strategy. A strategy that fetched a page it could not READ is not
+    // successful (FORK.md #10), so it is never learned here — which is what
+    // stops one unreadable answer from becoming every later answer for the
+    // prefix.
     if (universalResult.success && universalResult.source !== 'none') {
       try {
         const urlPattern = extractUrlPattern(options.url);
@@ -438,14 +522,27 @@ export async function scrapeWithStrategy(
   // Fall back to universal approach
   const universalResult = await scrapeUniversal(clients, options);
 
-  // If universal succeeded and we don't have a configured strategy, save it
-  if (universalResult.success && universalResult.source !== 'none' && !configuredStrategy) {
+  // Save the strategy that worked, whether or not one was already learned.
+  //
+  // Same guard as above: an unreadable result is not a success, so nothing that
+  // read nothing is written back for this prefix. And a learned entry that has
+  // STOPPED working is corrected rather than left in place — a prefix whose
+  // pages went client-rendered has an entry naming a strategy that now reads
+  // nothing, and leaving it there makes every later request re-run that
+  // strategy, fail, and fall through the whole chain again, forever.
+  if (
+    universalResult.success &&
+    universalResult.source !== 'none' &&
+    universalResult.source !== configuredStrategy
+  ) {
     try {
       const urlPattern = extractUrlPattern(options.url);
       await configClient.upsertEntry({
         prefix: urlPattern,
         default_strategy: universalResult.source as ScrapingStrategy,
-        notes: 'Auto-discovered via universal fallback',
+        notes: configuredStrategy
+          ? `Auto-discovered after ${configuredStrategy} stopped working`
+          : 'Auto-discovered via universal fallback',
       });
     } catch (error) {
       // Don't fail scraping if config update fails

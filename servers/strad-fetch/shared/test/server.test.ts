@@ -42,6 +42,15 @@ const stubClients = (body: string): IScrapingClients => ({
   },
 });
 
+/**
+ * The page from tadasant/strad#205: full document, server-rendered `ld+json`,
+ * result rows drawn client-side. It extracts to nothing.
+ */
+const CLIENT_RENDERED = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>SF bay area apartments / housing for rent - craigslist</title></head>
+<body class="search"><div id="page-container"><div class="cl-search-page"></div></div>
+<script type="application/ld+json" id="ld_searchpage_results">{"@context":"https://schema.org","itemListElement":[{"item":{"name":"Garden Areas, Washer/Dryers","@type":"Apartment"},"position":"0","@type":"ListItem"}]}</script></body></html>`;
+
 const stubConfig = (): IStrategyConfigClient => ({
   async loadConfig() {
     return [];
@@ -257,7 +266,9 @@ describe('tools/call scrape', () => {
   });
 
   it('keeps the raw and cleaned caches apart, per cleanScrape', async () => {
-    const recorder = await register(stubClients('<html><body><p>Body.</p></body></html>'));
+    const recorder = await register(
+      stubClients('<html><body><p>Body of the page.</p></body></html>')
+    );
 
     // Cache the cleaned form only…
     await recorder.call('tools/call', {
@@ -270,13 +281,15 @@ describe('tools/call scrape', () => {
       arguments: { url: 'https://example.com/a', resultHandling: 'returnOnly', cleanScrape: false },
     });
 
-    expect(raw.content[0].text).toContain('<p>Body.</p>');
+    expect(raw.content[0].text).toContain('<p>Body of the page.</p>');
     expect(raw.content[0].text).toContain('Scraped using: native');
     expect(raw.content[0].text).not.toContain('Served from cache');
   });
 
   it('embeds the cleaned resource, with a markdown mime type, on a saveAndReturn cache hit', async () => {
-    const recorder = await register(stubClients('<html><body><h1>Title</h1></body></html>'));
+    const recorder = await register(
+      stubClients('<html><body><h1>Title of the page</h1></body></html>')
+    );
 
     await recorder.call('tools/call', {
       name: 'scrape',
@@ -357,6 +370,142 @@ describe('tools/call scrape', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Strategies attempted: native');
     expect(result.content[0].text).toContain('403');
+  });
+
+  /**
+   * tadasant/strad#205. Upstream answers a page that served 200 with a full
+   * document — and drew none of it — with the whole response
+   *
+   *     \n\n---\nScraped using: native
+   *
+   * which is an absence the caller never observed, stated as a fact. Here it is
+   * an error that names what could not be done, and says UNKNOWN.
+   */
+  it('reports a page nothing could read as UNKNOWN, not as an empty body', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://sfbay.craigslist.org/search/apa', resultHandling: 'returnOnly' },
+    });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain('UNKNOWN');
+    expect(text).not.toContain('Scraped using:');
+    // The per-strategy diagnostics, so "could not read" is legible as such.
+    expect(text).toContain('Strategies attempted: native');
+    expect(text).toContain('extracted 0 characters');
+    expect(text).toContain('cleanScrape: false');
+  });
+
+  it('saves nothing for a page nothing could read', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://sfbay.craigslist.org/search/apa' },
+    });
+
+    expect((await recorder.call('resources/list')).resources).toEqual([]);
+  });
+
+  /**
+   * The escape hatch stays open. `cleanScrape: false` is the documented way to
+   * see what was actually served, and it is the workaround for this exact
+   * situation — so it must not be gated behind a clean-derived check.
+   */
+  it('still returns the raw HTML of an unreadable page for cleanScrape: false', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'returnOnly',
+        cleanScrape: false,
+      },
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain('ld_searchpage_results');
+    expect(text).toContain('Garden Areas, Washer/Dryers');
+    expect(text).toContain('Scraped using: native');
+    // …and it does not pretend the page was read.
+    expect(text).toContain('no strategy could extract readable content');
+  });
+
+  it('escalates an unreadable page to a strategy that can render it', async () => {
+    const rendered =
+      '<html><body><article><h1>Apartments</h1><p>1br in Santa Clara.</p></article></body></html>';
+    const recorder = await register({
+      native: {
+        async scrape() {
+          return { success: true, status: 200, data: CLIENT_RENDERED };
+        },
+      },
+      brightData: {
+        async scrape() {
+          return { success: true, data: rendered };
+        },
+      },
+    });
+
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: { url: 'https://sfbay.craigslist.org/search/apa', resultHandling: 'returnOnly' },
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Apartments');
+    expect(result.content[0].text).toContain('Scraped using: brightdata');
+  });
+
+  it('paginates the raw bytes of an unreadable page like any other content', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'returnOnly',
+        cleanScrape: false,
+        startIndex: 15,
+        maxChars: 20,
+      },
+    });
+
+    expect(result.content[0].text).toContain(CLIENT_RENDERED.slice(15, 35));
+    expect(result.content[0].text).toContain('[Content truncated at 20 characters');
+  });
+
+  it('saves the raw bytes of an unreadable page, and says they were not read', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'saveOnly',
+        cleanScrape: false,
+      },
+    });
+
+    expect(result.content[0].type).toBe('resource_link');
+    expect(result.content[0].description).toContain('no strategy could extract readable content');
+    const read = await recorder.call('resources/read', { uri: result.content[0].uri });
+    expect(read.contents[0].text).toBe(CLIENT_RENDERED);
+  });
+
+  it('rescrapes an unreadable page when told to, and still reports it UNKNOWN', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'returnOnly',
+        forceRescrape: true,
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('UNKNOWN');
   });
 
   it('paginates with startIndex and maxChars', async () => {

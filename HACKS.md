@@ -3412,3 +3412,47 @@ what makes the PR-time coverage hard to remove by accident.
 
 **Undo.** Point `ci.yml`'s two builds back at `docker/build-push-action@v6`. The
 release path goes back to being unexecuted until it is merged.
+
+## 74. strad-fetch decides a page was read by counting characters
+
+**What.** `servers/strad-fetch/shared/src/clean/extraction.ts` decides whether a
+strategy could read a page by cleaning it and comparing the result against a
+floor of **8 characters**. Under the floor, the strategy is treated as unable to
+read the page and the chain escalates; at or above it, the page was read.
+
+**Why it is a hack.** "How much text came out" is a proxy for "is there anything
+here a caller can act on", and it is a coarse one in both directions:
+
+- **A shell that renders something is indistinguishable from a page.** A
+  client-rendered page whose static markup carries a nav bar, a cookie banner or
+  a skip link extracts to a few dozen characters of exactly that, clears the
+  floor, and is served as the page's content. The defect this fixes
+  (tadasant/strad#205, a craigslist search page) extracted to _zero_, which is
+  the easy case. A ratio — bytes fetched against characters extracted — would
+  see the harder one, but there is no measurement behind a ratio yet, and a
+  wrong one escalates real pages to paid strategies.
+- **A very short real page is one bad cleaner release from "unknown".** The
+  floor sits below every extraction measured that carries a sentence, so it has
+  headroom today. It has no test against a real corpus, only against fixtures.
+
+**Why it is this and not something better.** The alternative is judging content
+rather than counting it, and everything in reach for that is worse: a model call
+(cost, and this fork removed LLM extraction for good reasons — FORK.md #4), or a
+per-site rule table (the thing the learned-strategy cache already is, and it
+cannot bootstrap itself). A floor near zero catches the failure that was actually
+reported without claiming anything about quality.
+
+**Two edges it leaves open.** The verdict is reached on at most the first 256KB
+of a document, so a page whose entire content sits past that much head and script
+is judged on a prefix that never reached it. And a `cleanScrape: false` call that
+saves an unreadable page caches the raw bytes without the note saying they could
+not be read, so a later cache hit on the same URL serves them plainly — one
+container lifetime, since the store is in memory.
+
+**How you would know.** A page that reports as read but whose content is a
+navigation menu. `cleanScrape: false` shows what was served.
+
+**Undo.** Delete `src/clean/extraction.ts` and the `acceptIfReadable` /
+`acceptSingleIfReadable` helpers in `scraping-strategies.ts`. The chain goes back
+to accepting any 200 with a body, and a client-rendered page goes back to being a
+successful scrape of an empty document.

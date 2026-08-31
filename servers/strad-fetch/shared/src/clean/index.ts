@@ -25,3 +25,5 @@ export interface CleanerOptions {
 
 export { detectContentType } from './content-type-detector.js';
 export { createCleaner } from './cleaner-factory.js';
+export { assessExtraction, MIN_EXTRACTED_CHARS } from './extraction.js';
+export type { ExtractionAssessment } from './extraction.js';
