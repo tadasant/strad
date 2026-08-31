@@ -1,7 +1,7 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
-import { GcsArtifactStore, DEFAULT_LINK_DAYS } from "../build/index.js";
+import { GcsArtifactStore, DEFAULT_LINK_DAYS } from "../src/index.js";
 
 /**
  * `GcsArtifactStore` against a fake `Storage`, injected through the
