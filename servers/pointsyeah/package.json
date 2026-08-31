@@ -10,7 +10,11 @@
   ],
   "scripts": {
     "build": "npm run build --workspace shared && npm run build --workspace remote",
-    "start": "node remote/build/index.js"
+    "start": "node remote/build/index.js",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
   },
   "comments": {
     "overrides": "Pin Playwright to the exact version whose bundled Chromium (rev 1228) ships in the mcr.microsoft.com/playwright:v1.61.1-noble base image, so the container never has to download a browser at build time. shared/ declares ^1.58.2 and remote/ ^1.58.2; 1.61.1 satisfies both while guaranteeing the runtime matches the image."

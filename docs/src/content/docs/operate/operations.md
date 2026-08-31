@@ -82,13 +82,23 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
     and passenger counts encoded at protobuf field numbers Google skips as
     unknown, baggage flags read in the wrong order, and a date grid that returned
     a trailing price history instead of future departures.
-  - **`pointsyeah`** — build only: `npm run build` is `tsc` over every workspace
-    in the ordering the image's Dockerfile uses. There is no test step, and that
-    is deliberate: the `shared/` half of the tree is a verbatim vendor copy of
-    `pulsemcp/mcp-servers`, so a test written _inside it_ would become a merge
-    conflict on every re-vendor. A test for that logic belongs upstream. What the
-    build catches is a type error at PR time rather than at bundle-image build
-    time.
+  - **`pointsyeah`** — tests, and no separate build leg, because `npm test` is
+    `npm run build && vitest run`: the same `tsc` over both workspaces, in the
+    ordering the image's Dockerfile uses, runs first, so a type error still fails
+    the PR rather than the bundle-image build. The `shared/` half of the tree is a
+    verbatim vendor copy of `pulsemcp/mcp-servers`, so a test written _inside it_
+    would become a merge conflict on every re-vendor and belongs upstream — but
+    that is an argument about where the file lives, not about whether the code is
+    testable, so the suite lives in `servers/pointsyeah/test/`, at the **tree
+    root**, and imports the vendored TypeScript sources from outside them. It
+    covers the PointsYeah client's request-building (the Cognito refresh envelope,
+    the search URL the site is navigated to, the Cognito cookies injected into the
+    browser, and the raw — never `Bearer` — id token the API expects) and its
+    response-shaping (token expiry taken from the access token's own `exp` claim,
+    the `create_task` envelope, and how an HTTP failure becomes an error carrying
+    its status code). `fetch` is stubbed and the Playwright surface is the
+    injected one, so the suite opens no socket, launches no browser, and needs no
+    PointsYeah credential.
   - **`onepassword`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run`: the same `tsc` over every workspace in the
     Dockerfile's ordering runs first, so a type error — 1Password's

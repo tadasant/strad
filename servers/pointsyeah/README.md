@@ -68,3 +68,35 @@ docker run --rm -p 18083:8080 \
 ```
 
 The image is published by `.github/workflows/release-pointsyeah-image.yml`.
+
+## Tests
+
+```bash
+cd servers/pointsyeah
+npm ci
+npm test          # npm run build && vitest run --config vitest.config.ts
+```
+
+Vitest over the TypeScript sources, matching the repo root and the other strad
+server trees. The suite covers the PointsYeah client's **request-building** (the
+Cognito `InitiateAuth` envelope, the search URL the browser is navigated to, the
+six Cognito cookies injected before it navigates, and the raw — never `Bearer` —
+id token `api2.pointsyeah.com` expects) and its **response-shaping** (the token
+expiry taken from the access token's own `exp` claim, the `create_task` envelope,
+and how an HTTP failure becomes an error carrying its status code, which is what
+`withAuth`'s 401 retry reads).
+
+Two things about how it is arranged:
+
+- **The tests live in `test/` at the tree root, not in `shared/`.** `shared/` is
+  vendored verbatim and a re-vendor overwrites it, so a test file added there
+  would be a merge conflict every time. From the tree root the suite imports the
+  vendored TypeScript sources directly, and a re-vendor never touches it.
+- **Nothing in the suite reaches PointsYeah.** `fetch` is stubbed and the
+  Playwright surface is the injected `PlaywrightSearchDeps`, so no socket is
+  opened, no browser is launched, and no refresh token is needed. Every JWT in
+  the file is synthetic.
+
+`tsconfig.json`'s `include` is `src/**/*` in both workspaces, so `test/` and
+`vitest.config.ts` compile into nothing — `npm run build` output is unchanged by
+them.

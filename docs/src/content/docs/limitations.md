@@ -1231,7 +1231,8 @@ upload directory would be the stronger answer and is not implemented.
 
 ### 15 & 45. The `shared/` trees are vendored, not depended on
 
-`servers/fetchpet/shared/` and `servers/onepassword/shared/` are copied from
+`servers/fetchpet/shared/`, `servers/onepassword/shared/` and
+`servers/pointsyeah/shared/` are copied from
 [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers). Mostly the
 `remote/` streamable-HTTP entrypoints are the only new code and the tool logic is
 reused unchanged. 1Password drags one more thing along: its
@@ -1249,10 +1250,11 @@ README lists its deltas. The debt is real: a re-vendor is a merge, not a copy.
 depend on. strad's ESLint, Prettier, and TypeScript are scoped away from
 `servers/**` so the vendored code keeps its own toolchain.
 
-A vendored tree can still be tested from outside itself: 1Password's Vitest suite
-lives at `servers/onepassword/test/`, at the tree root, and imports the vendored
-sources rather than sitting among them. A re-vendor overwrites `shared/` and never
-touches `test/`, so the suite is not part of the merge.
+A vendored tree can still be tested from outside itself: the 1Password and
+PointsYeah Vitest suites live at `servers/onepassword/test/` and
+`servers/pointsyeah/test/`, at their tree roots, and import the vendored sources
+rather than sitting among them. A re-vendor overwrites `shared/` and never touches
+`test/`, so neither suite is part of the merge.
 
 **Undo:** land shared fixes upstream and re-vendor; longer term, have upstream
 publish `shared` and the elicitation library as real packages.

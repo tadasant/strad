@@ -535,6 +535,14 @@ is pure waste, so `servers/pointsyeah/remote/` injects a browser-reusing
 `PlaywrightSearchDeps` (one browser at startup, a new context per search) via the
 shared factory's DI seam — `shared/` is left verbatim (see hack #10).
 
+**Note (pointsyeah tests).** `servers/pointsyeah/shared/` is a verbatim vendor
+copy of the same upstream monorepo that hacks #15 and #45 describe, so the tree's
+Vitest suite is at `servers/pointsyeah/test/`, at the tree ROOT rather than inside
+`shared/`, and imports the vendored TypeScript sources from there. A re-vendor
+overwrites `shared/` and never touches `test/`, so the suite is not part of the
+merge. The belief that it would have to be is why this tree had no tests for as
+long as it did.
+
 **Undo.** Once the good-eggs stack + this PR reach `main`: delete the
 `feat/browser-servers-fetchpet-pointsyeah` line from `ci.yml on.push.branches`;
 seed `strad-staging-FETCHPET_USERNAME` / `_PASSWORD` and
