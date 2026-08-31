@@ -12,7 +12,7 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is an eleven-leg matrix over the server trees:
+of which, `servers`, is a twelve-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -22,7 +22,7 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
   `main`, so without these legs a PR can break a server tree and merge green — a
   type error surfaces first as a failed release build, and a behavioural
   regression surfaces first in production. Each leg reports as `servers (<tree>)`,
-  and `fail-fast: false` keeps one broken tree from cancelling the other ten.
+  and `fail-fast: false` keeps one broken tree from cancelling the other eleven.
 
   **The tree list is not maintained by hand.**
   `test/ci-server-trees.test.ts` compares the matrix against the trees
@@ -68,7 +68,7 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
     `test:e2e`, which CI does not run, resolves X API keys.
   - **`bundle-api`** — build and tests over the `bundle-api` tree. Four of its six
     servers are verbatim vendor copies and get no tests here, for the reason
-    `onepassword` below spells out. The other two are **forks**, and neither has a
+    `pointsyeah` below spells out. The other two are **forks**, and neither has a
     sync script or an upstream to diff against, so their tests are the only thing
     that stops a re-vendor from silently reverting them. `slack` — see
     [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
@@ -82,14 +82,28 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
     and passenger counts encoded at protobuf field numbers Google skips as
     unknown, baggage flags read in the wrong order, and a date grid that returned
     a trailing price history instead of future departures.
-  - **`onepassword`** and **`pointsyeah`** — build only: `npm run build` is `tsc`
-    over every workspace in the ordering the image's Dockerfile uses. There is no
-    test step, and that is deliberate: the `shared/` half of each tree is a
-    verbatim vendor copy of `pulsemcp/mcp-servers`, so a test written here would
-    become a merge conflict on every re-vendor. A test for that logic belongs
-    upstream. What the build catches is a type error — including one in
-    1Password's `shared/src/tools/sanitize.ts`, which is credential redaction — at
-    PR time rather than at bundle-image build time.
+  - **`pointsyeah`** — build only: `npm run build` is `tsc` over every workspace
+    in the ordering the image's Dockerfile uses. There is no test step, and that
+    is deliberate: the `shared/` half of the tree is a verbatim vendor copy of
+    `pulsemcp/mcp-servers`, so a test written _inside it_ would become a merge
+    conflict on every re-vendor. A test for that logic belongs upstream. What the
+    build catches is a type error at PR time rather than at bundle-image build
+    time.
+  - **`onepassword`** — tests, and no separate build leg, because `npm test` is
+    `npm run build && vitest run`: the same `tsc` over every workspace in the
+    Dockerfile's ordering runs first, so a type error — 1Password's
+    `shared/src/tools/sanitize.ts` is credential redaction — still fails the PR.
+    Its `shared/` half is the same kind of verbatim vendor copy `pointsyeah`'s is,
+    and the re-vendor argument above is why the suite lives in
+    `servers/onepassword/test/`, at the **tree root** rather than inside
+    `shared/`: a re-vendor overwrites `shared/` and never touches `test/`. From
+    there it imports the vendored TypeScript sources directly and covers the `op`
+    client's request-building (the argv each call assembles, and that the
+    service-account token travels in the environment rather than in argv) and its
+    response-shaping (list sanitization, share-URL parsing, and how a CLI failure
+    becomes a not-found, an authentication, or a command error).
+    `child_process.spawn` is faked, so the suite spawns no process, reaches no
+    network, and needs no 1Password credential.
   - **`pulse-subregistry`** — tests. Forked from the unpublished PulseMCP
     reference implementation; the bundle smoke test only proves the tool list,
     while this suite pins defaults, query construction, truncation and error
@@ -100,6 +114,15 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
     skipping it, and a rejected credential does not abort the strategies after
     it — plus the cache bounds a shared container needs and a stdio subprocess
     did not.
+  - **`grafana`** — tests. The proxy in front of the pinned `mcp-grafana` Go
+    binary. Its suite runs against a fake MCP child rather than the real
+    executable, and pins the seam: that the child is spawned with
+    `-disable-write` and `-disable-proxied` (a read-only mount becoming
+    read-write is silent otherwise), that it receives an allowlisted environment
+    rather than the bundle's twenty other credentials, that tools and results are
+    forwarded verbatim, and that a child which dies is replaced on the next call.
+    The binary's own tool count is asserted by `bundle_image`, against the real
+    thing.
 
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting

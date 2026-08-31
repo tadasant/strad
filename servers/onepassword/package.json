@@ -11,7 +11,11 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @pulsemcp/mcp-elicitation && npm run build --workspace onepassword-mcp-server-shared && npm run build --workspace onepassword-mcp-server-remote",
-    "start": "node remote/build/index.js"
+    "start": "node remote/build/index.js",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
   },
   "comments": {
     "layout": "Three workspaces built in dependency order. `elicitation/` is @pulsemcp/mcp-elicitation, vendored from pulsemcp/mcp-servers libs/elicitation because it is NOT published to npm (shared/ imports it). `shared/` is the upstream tool logic, vendored verbatim. `remote/` is the only new logic: a streamable-HTTP entrypoint over shared/. The op CLI is NOT an npm dependency — it is a binary baked into the Docker image and invoked via child_process; see Dockerfile."
