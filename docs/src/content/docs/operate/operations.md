@@ -863,10 +863,10 @@ would only spend wall clock reaching the same red.
 
 `ci.yml`'s `build_image` and `bundle_image` jobs build through
 `.github/actions/build-push`, which is why every pull request LOADS and RUNS the
-action the eight release workflows share. Before that, nothing on the PR path
-loaded it — every call site was a release workflow, and those run on `main` only —
-so the first execution of a change to the release path was also its first
-production run. On 2026-08-11 that was eight release workflows red within twenty
+action every image build in this repo shares. Before that, nothing on the PR path
+could load it — every call site sat in a release workflow or in
+`deploy-staging.yml`, none of which a pull request reaches — so the first
+execution of a change to the release path was also its first production run. On 2026-08-11 that was eight release workflows red within twenty
 seconds of one merge, and three more merges to settle.
 
 `ci.yml`'s `lint` job still runs `actionlint` over every workflow, and the two are
@@ -875,7 +875,7 @@ neither its prose nor its shell; the runner template-parses the entire manifest
 when it LOADS it, so a `${{ … }}` written as an EXAMPLE in an input `description:`
 is evaluated against a scope that has no `steps`, the action fails to load, and
 every step calling it fails instantly — green actionlint and all. That is the
-2026-08-11 failure. Running the action on a PR is what catches it now;
+2026-08-11 failure. Running the action on a PR is what catches it;
 `test/workflow-buildx-builder.test.ts` catches it a second way, by refusing `${{`
 in the `name:` or `description:` of any local action manifest.
 

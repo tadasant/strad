@@ -31,8 +31,8 @@ description: >-
 #     retry re-pushes rather than rebuilds and costs seconds.
 #   - The BUILD failed. buildkit does not cache a failed layer, so that layer
 #     and everything after it run again on every attempt. A `Dockerfile` that is
-#     genuinely broken is therefore built three times, and for the bundle — ten
-#     dependency trees — that is minutes, not seconds, before the run goes red.
+#     genuinely broken is therefore built three times, and for the bundle —
+#     thirteen dependency trees — that is minutes, not seconds, before it is red.
 #
 # See HACKS.md #51: this also hides a persistent ghcr permission change behind
 # three identical 403s, so read the attempt warnings before believing "flake".
@@ -43,16 +43,17 @@ description: >-
 # ends the run instead.
 #
 # WHY THE PULL-REQUEST CASE IS DECIDED HERE, ONCE. Until this existed, nothing on
-# the PR path loaded this action at all: every call site was a release workflow,
-# and those run on `main` only. So the first execution of a change to this file
-# was also its first production run, and on 2026-08-11 that cost eight
-# simultaneously red release workflows and three follow-up merges to settle
-# (HACKS.md #53, #73). `ci.yml` now builds both of its images through this
-# action, on every pull request. That only works if a pull-request run cannot
-# push, and the way to guarantee it is one derivation in one file rather than a
-# condition repeated across nine workflows: the mode step below folds the event
-# name in, so a `push: true` call site reached from a pull request builds and
-# publishes nothing. It is not a condition a call site can forget.
+# the PR path loaded this action at all: every call site sat in a release
+# workflow or in `deploy-staging.yml`, and a pull request reaches neither. So the
+# first execution of a change to this file was also its first production run, and
+# on 2026-08-11 that cost eight simultaneously red release workflows and three
+# follow-up merges to settle (HACKS.md #53, #73). `ci.yml` builds both of its
+# images through this action, on every pull request. That only works if a
+# pull-request run cannot push, and the way to guarantee it is one derivation in
+# one file rather than a condition repeated across ten call sites: the mode step
+# below folds the event name in, so a `push: true` call site reached from a pull
+# request builds and publishes nothing. It is not a condition a call site can
+# forget.
 #
 # It is not the ONLY thing standing between a pull request and ghcr, and must not
 # become it: no workflow reachable from either PR event logs in to a registry or

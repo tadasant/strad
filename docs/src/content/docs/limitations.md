@@ -1436,11 +1436,13 @@ It cannot see why the step failed — a broken `Dockerfile` and a refused blob l
 the same from outside `docker/build-push-action`. A retry after a refused push
 costs seconds, because the layers are cached; a retry after a failed build costs
 a rebuild, because buildkit does not cache a failed layer. So a broken bundle
-build runs three times, minutes of it, before the run goes red — and a real
-permission change (visibility flipped, linked repo dropped, `packages: write`
-removed) is retried twice before it goes red.
+build on the release path runs three times, minutes of it, before the run goes
+red — and a real permission change (visibility flipped, linked repo dropped,
+`packages: write` removed) is retried twice before it goes red. A run that
+publishes nothing takes exactly one attempt: there is no registry to refuse it,
+so a failure is the build itself and a retry would only spend wall clock (#73).
 
-The wrapper declares only the seven inputs its call sites pass, and a `with:` key
+The wrapper declares only the ten inputs its call sites pass, and a `with:` key
 it does not declare is dropped with a warning rather than an error. `builder:` is
 the one it refuses to run without — see #53.
 
@@ -2072,10 +2074,11 @@ that redesign time; it does not remove the need for it.
 ### 73. The release path executes on a pull request, but only as far as the push
 
 Every image build in this repo goes through one composite action,
-`.github/actions/build-push`. For most of its life every call site was a release
-workflow — `push: branches: [main]`, all eight of them — so nothing on the pull
-request path loaded it, and **the first execution of a change to the release path
-was also its first production run.** The failure mode is a red `main` plus, when
+`.github/actions/build-push`. For most of its life every call site sat in a
+workflow no pull request could reach — the eight release workflows, on
+`push: branches: [main]`, plus `deploy-staging.yml` on `workflow_call` — so
+nothing on the pull request path loaded it, and **the first execution of a change
+to the release path was also its first production run.** The failure mode is a red `main` plus, when
 an image fails to publish, a wedged deploy for every later commit (#54).
 
 On 2026-08-11 a `${{ … }}` written as an EXAMPLE in an input `description:`
@@ -2084,8 +2087,8 @@ eight alerts from one merge, and three more merges to settle. `actionlint` was
 green on all of it, because it validates an action's INTERFACE and reads neither
 its prose nor its shell.
 
-`ci.yml`'s `build_image` and `bundle_image` jobs now build through that action
-with `push: false`, so every pull request loads and runs it. What that covers: the
+`ci.yml`'s `build_image` and `bundle_image` jobs build through that action with
+`push: false`, so every pull request loads and runs it. What that covers: the
 manifest parses and LOADS, every input a call site passes is declared, the builder
 guard runs, and `docker/setup-buildx-action` → `builder:` → buildx holds together
 end to end on the shared self-hosted daemon.
@@ -2105,8 +2108,8 @@ unmerged branch can trigger something to push WITH, which trades this gap for a
 worse one. So the boundary is drawn at the credential, and drawn twice: no
 workflow reachable from a `pull_request` event runs `docker/login-action` or asks
 for `packages: write`, and `build-push` folds `github.event_name` into its own
-effective `push` — once, in one file, rather than as a condition nine call sites
-could each forget.
+effective `push` — once, in one file, rather than as a condition ten call sites
+across nine workflows could each forget.
 
 **Undo:** `HACKS.md` #73.
 

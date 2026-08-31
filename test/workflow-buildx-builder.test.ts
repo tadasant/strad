@@ -251,9 +251,9 @@ describe("no build runs on a builder its own job does not own", () => {
  * and before a single build ran. It shipped green because no PR job loaded this
  * action then — every call site was a release workflow — and `actionlint`
  * validates an action's interface without evaluating its prose. `ci.yml` loads
- * it on every PR now (#73), which is the other half of the same guard: a load
- * proves the file parses today, and this assertion is what keeps the next
- * example out of a description. HACKS.md #53.
+ * it on every PR (#73), which is the other half of the same guard: a load proves
+ * the file parses, and this assertion is what keeps the next example out of a
+ * description. HACKS.md #53.
  */
 describe("an action manifest's prose is never parsed as code", () => {
   /**

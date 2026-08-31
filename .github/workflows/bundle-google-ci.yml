@@ -16,6 +16,12 @@ on:
       - "images/bundle-google/**"
       - ".github/workflows/bundle-google-ci.yml"
 
+# Declared for the reason `ci.yml` gives: this workflow is reachable from a pull
+# request, and an undeclared token is whatever the repository default happens to
+# be rather than what this file asked for.
+permissions:
+  contents: read
+
 concurrency:
   group: bundle-google-ci-${{ github.ref }}
   cancel-in-progress: true

@@ -7,6 +7,14 @@ on:
     branches:
       - main
 
+# Nothing here reads the workflow token, and nothing here may push to a
+# registry — but "grants nothing" is only as good as the repository SETTING that
+# decides the default, and that setting lives in GitHub rather than in this repo.
+# Flipping it to read/write would hand `packages: write` to every pull-request
+# run without a line here changing. Declared, so the guarantee is in the file.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

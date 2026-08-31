@@ -1982,7 +1982,7 @@ same way, as a failed step. So:
   the registry refusing, so read #57's error strings — `oauth token: denied` and
   `anonymous token … 403` — before believing this bullet and going to check the
   package's settings.
-- The wrapper declares only the seven inputs its call sites pass. A `with:` key
+- The wrapper declares only the ten inputs its call sites pass. A `with:` key
   it does not declare is DROPPED with a runner warning, not an error — so adding,
   say, `platforms:` or `secrets:` to a call site means declaring it on the
   wrapper first, or the build quietly runs without it. `builder:` is the one
@@ -1992,7 +1992,7 @@ Nothing here retries the ghcr login, the tag-digest check in `release-image.yml`
 or the deploy's image pull; each is a separate 403 with a separate fix.
 
 `ci.yml`'s `lint` job runs `actionlint` over every workflow, which PARSES this
-action on a PR; `ci.yml`'s `build_image` and `bundle_image` jobs now RUN it, with
+action on a PR; `ci.yml`'s `build_image` and `bundle_image` jobs RUN it, with
 `push: false`, which is a different and stronger thing (#73). A build-only run
 takes exactly one attempt: there is no registry to refuse it, so a failure is the
 `Dockerfile` and rebuilding it twice more would only spend a PR's wall clock.
@@ -2115,8 +2115,8 @@ inside it, and not its prose. At the time nothing else in a PR build loaded
 whole file was effectively unlinted on the PR path, and an expression written
 anywhere in it as an EXAMPLE is fatal: there is no backslash escape, and the
 runner template-parses the entire manifest when it LOADS it. #73 closed the
-second half of that — `ci.yml` builds both of its images through the action now,
-so the manifest is loaded and its steps run on every pull request — and the
+second half of that — `ci.yml` builds both of its images through the action, so
+the manifest is loaded and its steps run on every pull request — and the
 assertions below still stand, because a green load proves the file parses and not
 that a description is free of examples.
 
@@ -3371,7 +3371,7 @@ That is not a hypothesis. #127 (`450ad5c`) wrote an expression into an input
 twenty seconds — eight `#alerts` posts from one merge — and it took #129, #130 and
 #131 to settle. #53 has that story; this entry is the gap that let it merge.
 
-**What a PR now covers.** The manifest parses and LOADS (the #53 failure, which
+**What a PR covers.** The manifest parses and LOADS (the #53 failure, which
 `actionlint` is green on). Every input a call site passes is declared, and one that
 is not is a runner warning on a step that ran rather than a surprise on `main`.
 The builder guard runs. `docker/setup-buildx-action` → `builder:` → buildx holds
@@ -3391,8 +3391,8 @@ fork can trigger something to push WITH, which trades this gap for a worse one.
 So the boundary is drawn at the credential, and it is drawn twice: no
 `pull_request`-reachable workflow runs `docker/login-action` or asks for
 `packages: write`, and `build-push` folds `github.event_name` into its effective
-`push` itself — once, in one file, rather than as a condition nine call sites
-could each forget. `test/workflow-pr-build-coverage.test.ts` holds all three
+`push` itself — once, in one file, rather than as a condition ten call sites
+across nine workflows could each forget. `test/workflow-pr-build-coverage.test.ts` holds all three
 halves still: that an unfiltered `pull_request` workflow really does run the
 action, that nothing reaches `docker/build-push-action` around it, and — by
 RUNNING the mode script rather than reading it — that a pull request cannot
@@ -3402,8 +3402,8 @@ publish.
 already passed `push: false` to `docker/build-push-action` directly. This routes
 them through the wrapper instead. `release-onepassword-image.yml`'s verification
 build and `bundle-google-ci.yml`'s build went the same way, so "every image build
-in this repo goes through `build-push`" is now true without qualification — which
-is what makes the PR-time coverage hard to remove by accident.
+in this repo goes through `build-push`" holds without qualification — which is
+what makes the PR-time coverage hard to remove by accident.
 
 **Undo.** Point `ci.yml`'s two builds back at `docker/build-push-action@v6`. The
 release path goes back to being unexecuted until it is merged.
