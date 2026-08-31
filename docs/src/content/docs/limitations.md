@@ -2118,7 +2118,6 @@ across nine workflows could each forget.
 
 **Undo:** `HACKS.md` #73.
 
-
 ### 74. strad-fetch decides a page was read by counting characters
 
 `strad-fetch` accepts a scraping strategy on what can be _extracted_ from what it

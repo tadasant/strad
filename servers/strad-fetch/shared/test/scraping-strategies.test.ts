@@ -361,8 +361,7 @@ describe('scrapeUniversal', () => {
       { url: 'https://sfbay.craigslist.org/search/apa' }
     );
 
-    // speed puts brightdata first, so its bytes are the ones a caller would
-    // have been handed before this check existed.
+    // speed puts brightdata first, so its bytes are the ones the chain reports.
     expect(result.fetched).toEqual({ source: 'brightdata', content: brightDataShell });
   });
 

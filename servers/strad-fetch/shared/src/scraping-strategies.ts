@@ -137,8 +137,8 @@ export async function scrapeUniversal(
   /**
    * The FIRST strategy whose bytes nothing could be extracted from, kept so the
    * final answer can say what was fetched even though it could not be read.
-   * First in chain order, because that is the one whose bytes the caller would
-   * have got before this check existed.
+   * First in chain order, because a caller who asks for raw bytes wants the
+   * ones the cheapest strategy that answered actually served.
    */
   let unreadable: { source: string; content: string } | undefined;
 

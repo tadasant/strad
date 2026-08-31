@@ -3412,6 +3412,7 @@ what makes the PR-time coverage hard to remove by accident.
 
 **Undo.** Point `ci.yml`'s two builds back at `docker/build-push-action@v6`. The
 release path goes back to being unexecuted until it is merged.
+
 ## 74. strad-fetch decides a page was read by counting characters
 
 **What.** `servers/strad-fetch/shared/src/clean/extraction.ts` decides whether a
