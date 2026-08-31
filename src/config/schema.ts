@@ -546,7 +546,7 @@ export const ServerConfig = z.discriminatedUnion("kind", [
  * to run?" asks it here rather than naming a kind — which is what keeps a fifth
  * kind from having to be added to a dozen scattered comparisons.
  */
-export const UNHOSTED_KINDS = ["remote-http", "local-tunnel"] as const;
+const UNHOSTED_KINDS = ["remote-http", "local-tunnel"] as const;
 
 export function isUnhosted(
   server: ServerConfig,
@@ -1215,6 +1215,12 @@ export const StradConfig = z
 
 export type StradConfig = z.infer<typeof StradConfig>;
 export type ServerConfig = z.infer<typeof ServerConfig>;
+/**
+ * The discriminant of the server union, derived from the schema that defines
+ * it. Anything that needs to name the kinds derives from this rather than
+ * writing the union out again, so a kind added to the schema is added once.
+ */
+export type ServerKind = ServerConfig["kind"];
 export type RemoteHttpServer = z.infer<typeof RemoteHttpServer>;
 export type LocalTunnelServer = z.infer<typeof LocalTunnelServer>;
 export type SupplementaryImageServer = z.infer<typeof SupplementaryImageServer>;

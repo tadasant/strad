@@ -184,7 +184,7 @@ slop behind when you fix a stale fact.
 - `src/gateway/toolPolicy.ts` — which _tools_ a slug may use. Enforced on
   `tools/list` and on `tools/call`.
 - `src/gateway/adapters/` — the one `ServerAdapter` interface (`listTools`,
-  `callTool`, `close`) that all three server kinds reduce to.
+  `callTool`, `close`) that every server kind reduces to.
 - `src/gateway/reachability.ts` — which slugs actually SERVE tools. A slug can be
   configured, entitled, routed and dead, and the only symptom is an empty
   `tools/list`. Probed on an interval, logged when it changes for the worse,
