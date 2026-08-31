@@ -373,15 +373,19 @@ that were fetched.`,
         //
         // The chain already cleaned this page to decide whether the strategy
         // that fetched it could read it, so the extraction travels back on the
-        // result rather than being recomputed here. It is absent only when the
-        // cleaner itself threw, which is the case the fallback below is for.
+        // result rather than being cleaned a second time here.
+        //
+        // It arrives absent in two cases, and raw content is the right answer to
+        // both: the cleaner declined to run, and the document was too large to
+        // clean whole so the chain reached its verdict on a prefix. Rendering a
+        // prefix as the page is the one thing worse than rendering the bytes.
         if (cleanScrape) {
           if (result.extraction !== undefined) {
             cleanedContent = result.extraction;
             displayContent = cleanedContent;
           } else {
+            const cleaner = createCleaner(rawContent, url);
             try {
-              const cleaner = createCleaner(rawContent, url);
               cleanedContent = await cleaner.clean(rawContent, url);
               displayContent = cleanedContent;
             } catch (cleanError) {

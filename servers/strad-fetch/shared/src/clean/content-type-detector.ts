@@ -22,8 +22,16 @@ export function detectContentType(content: string, url?: string): string {
     }
   }
 
-  // Check content patterns
-  if (trimmedContent.startsWith('<?xml') || trimmedContent.startsWith('<rss')) {
+  // Check content patterns.
+  //
+  // The root elements below are XML documents that carry no HTML at all, so an
+  // HTML clean extracts nothing from them and would report a perfectly readable
+  // feed, sitemap or image as unreadable. A declaration is not enough to spot
+  // them: plenty of feeds ship without one.
+  if (
+    trimmedContent.startsWith('<?xml') ||
+    /^<(rss|feed|svg|urlset|sitemapindex)[\s>]/i.test(trimmedContent)
+  ) {
     return 'application/xml';
   }
 

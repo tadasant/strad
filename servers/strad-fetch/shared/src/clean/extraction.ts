@@ -24,13 +24,36 @@ import { logWarning } from '../logging.js';
  */
 export const MIN_EXTRACTED_CHARS = 8;
 
+/**
+ * The most bytes this check will clean to reach a verdict.
+ *
+ * The cleaner's cost tracks the amount of content it EXTRACTS, not the size of
+ * the document: a 906KB client-rendered shell cleans in 833ms because there is
+ * nothing in it, while an 846KB page of prose takes 5.8s and a 2MB one takes
+ * 42s. So a size ceiling that skipped large documents would exempt exactly the
+ * shells this check is for, and still leave the expensive case unbounded.
+ *
+ * Capping the INPUT bounds it the other way round — ~1s at any document size,
+ * measured — and costs almost nothing in accuracy: a page that draws nothing
+ * draws nothing in its first 256KB either, and a page that draws something
+ * clears an eight-character floor long before then. The trade is a page whose
+ * entire content sits past 256KB of head and script, which is judged on a
+ * prefix that did not reach it.
+ *
+ * A partial clean is a verdict only. Its text is NOT handed back, because the
+ * caller would render a truncated page as the whole one.
+ */
+const ASSESS_MAX_BYTES = 256 * 1024;
+
 export interface ExtractionAssessment {
   /** Could a caller read anything out of these bytes? */
   readable: boolean;
-  /** The cleaned text, when the cleaner ran. Absent when it threw. */
+  /** The cleaned text, when the whole document was cleaned. */
   text?: string;
   /** Why not — a phrase, for the per-strategy diagnostics. */
   reason?: string;
+  /** Were these bytes empty to begin with? An empty page is empty, not unknown. */
+  empty?: boolean;
 }
 
 /**
@@ -48,16 +71,22 @@ export interface ExtractionAssessment {
  * recomputed by the caller.
  */
 export async function assessExtraction(
-  content: string,
+  content: string | undefined,
   url: string
 ): Promise<ExtractionAssessment> {
-  if (content.trim().length === 0) {
-    return { readable: false, reason: 'fetched an empty body' };
+  // An upstream can report success and hand back nothing — firecrawl's payload
+  // carries `html` as an optional field. Nothing can be read out of that, and
+  // it is the one case where "empty" is the honest word rather than "unknown".
+  if (!content || content.trim().length === 0) {
+    return { readable: false, empty: true, reason: 'fetched an empty body' };
   }
+
+  const partial = content.length > ASSESS_MAX_BYTES;
+  const assessed = partial ? content.slice(0, ASSESS_MAX_BYTES) : content;
 
   let text: string;
   try {
-    text = await createCleaner(content, url).clean(content, url);
+    text = await createCleaner(assessed, url).clean(assessed, url);
   } catch (error) {
     // OUR failure to clean says nothing about the page. Do not spend another
     // strategy on it, and leave the caller to fall back to the raw bytes.
@@ -70,20 +99,21 @@ export async function assessExtraction(
   // exactly when their bytes are — which the empty check above already decided.
   // Holding them to a character floor would escalate `{"ok":true}` to a paid
   // strategy that would return the same eleven bytes.
-  if (detectContentType(content, url) !== 'text/html') {
-    return { readable: true, text };
+  const lossless = detectContentType(assessed, url) !== 'text/html';
+  if (lossless) {
+    return { readable: true, text: partial ? undefined : text };
   }
 
   const extracted = text.trim().length;
   if (extracted < MIN_EXTRACTED_CHARS) {
     return {
       readable: false,
-      text,
+      text: partial ? undefined : text,
       reason:
         `fetched ${content.length} bytes but extracted ${extracted} characters of readable ` +
         `content — the page is likely rendered client-side`,
     };
   }
 
-  return { readable: true, text };
+  return { readable: true, text: partial ? undefined : text };
 }

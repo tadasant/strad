@@ -98,12 +98,19 @@ Three consequences, and they are the point:
   could be extracted from them. It is the way to look at what was actually served,
   and it is exactly the tool for this situation.
 
-The floor is 8 characters and applies only to HTML. It is low on purpose: a false
-escalation spends a paid credential *and* turns a genuinely short page into
-"unknown", which is the same over-claiming in the other direction. JSON, XML and
-plain text are exempt — they come back byte-identical from the cleaner, so holding
-`{"ok":true}` to a character floor would escalate it to a strategy that returns
-the same eleven bytes.
+The floor is 8 characters and applies only to content the cleaner is **lossy**
+over — that is, HTML. It is low on purpose: a false escalation spends a paid
+credential *and* turns a genuinely short page into "unknown", which is the same
+over-claiming in the other direction. JSON, XML and plain text are exempt; they
+come back byte-identical from the cleaner, so holding `{"ok":true}` to a character
+floor would escalate it to a strategy that returns the same eleven bytes.
+
+Reaching a verdict costs at most one clean of the first 256KB. The cleaner's cost
+tracks the content it *extracts*, not the size of the document — a 906KB
+client-rendered shell cleans in under a second because there is nothing in it,
+while 2MB of prose takes forty — so capping the input bounds the expensive case
+without exempting the shells the check is for. A page over the cap is judged on
+its prefix and cleaned in full by the tool afterwards, exactly as it was before.
 
 The check runs whatever `cleanScrape` says, because `cleanScrape` chooses what is
 *displayed* and must not change which strategy is chosen or remembered — otherwise

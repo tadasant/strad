@@ -100,17 +100,16 @@ export function extractUrlPattern(url: string): string {
  * reported only if nothing else worked, where it is a diagnosis rather than a
  * verdict.
  *
- * FORK DELTA (FORK.md #10) — A STRATEGY IS ACCEPTED ON WHAT COULD BE READ OUT OF IT, NOT ON
- * WHETHER BYTES CAME BACK. Upstream (and this fork before it) accepted any 200
- * with a body, which makes a client-rendered page — full document, nothing
- * drawn — a SUCCESS whose content is the empty string. The chain then stopped,
- * and the strategy that read nothing was learned for the URL prefix, so every
- * later request for it read nothing too. Here each candidate is cleaned before
- * it is accepted; an extraction with nothing in it is a failure of THAT
- * strategy, the chain escalates to the JS-rendering strategies that exist for
- * exactly this, and if none of them can read the page either the result says
- * the content is UNKNOWN rather than handing back an empty body under a success
- * footer.
+ * FORK DELTA (FORK.md #10) — A STRATEGY IS ACCEPTED ON WHAT COULD BE READ OUT
+ * OF IT, NOT ON WHETHER BYTES CAME BACK. Upstream accepts any 200 with a body,
+ * which makes a client-rendered page — full document, nothing drawn — a SUCCESS
+ * whose content is the empty string: the chain stops there, and the strategy
+ * that read nothing is learned for the URL prefix, so every later request for
+ * it reads nothing too. Here each candidate is cleaned before it is accepted;
+ * an extraction with nothing in it is a failure of THAT strategy, the chain
+ * escalates to the JS-rendering strategies that exist for exactly this, and if
+ * none of them can read the page either the result says the content is UNKNOWN
+ * rather than handing back an empty body under a success footer.
  */
 export async function scrapeUniversal(
   clients: IScrapingClients,
@@ -161,7 +160,11 @@ export async function scrapeUniversal(
     }
 
     diagnostics.strategyErrors[source] = assessment.reason ?? 'produced no readable content';
-    if (!unreadable) unreadable = { source, content };
+    // A body with nothing in it IS empty — there are no bytes to offer a caller
+    // and nothing to call unknown. Only a page that served something records
+    // here, so the UNKNOWN answer below stays about pages that were readable in
+    // principle.
+    if (!assessment.empty && !unreadable) unreadable = { source, content };
     return null;
   };
 
@@ -364,7 +367,6 @@ async function acceptSingleIfReadable(
     content: null,
     source,
     error: `Strategy ${source} ${assessment.reason ?? 'produced no readable content'}`,
-    fetched: { source, content },
   };
 }
 
@@ -520,16 +522,27 @@ export async function scrapeWithStrategy(
   // Fall back to universal approach
   const universalResult = await scrapeUniversal(clients, options);
 
-  // If universal succeeded and we don't have a configured strategy, save it.
+  // Save the strategy that worked, whether or not one was already learned.
+  //
   // Same guard as above: an unreadable result is not a success, so nothing that
-  // read nothing is written back as the strategy for this prefix.
-  if (universalResult.success && universalResult.source !== 'none' && !configuredStrategy) {
+  // read nothing is written back for this prefix. And a learned entry that has
+  // STOPPED working is corrected rather than left in place — a prefix whose
+  // pages went client-rendered has an entry naming a strategy that now reads
+  // nothing, and leaving it there makes every later request re-run that
+  // strategy, fail, and fall through the whole chain again, forever.
+  if (
+    universalResult.success &&
+    universalResult.source !== 'none' &&
+    universalResult.source !== configuredStrategy
+  ) {
     try {
       const urlPattern = extractUrlPattern(options.url);
       await configClient.upsertEntry({
         prefix: urlPattern,
         default_strategy: universalResult.source as ScrapingStrategy,
-        notes: 'Auto-discovered via universal fallback',
+        notes: configuredStrategy
+          ? `Auto-discovered after ${configuredStrategy} stopped working`
+          : 'Auto-discovered via universal fallback',
       });
     } catch (error) {
       // Don't fail scraping if config update fails

@@ -2142,6 +2142,13 @@ check exists to remove. Judging content rather than counting it would need a mod
 call — which this fork deliberately removed — or a per-site rule table, which is
 what the learned-strategy cache already is and cannot bootstrap itself.
 
+**Two edges it leaves open.** The verdict is reached on at most the first 256KB
+of a document, so a page whose entire content sits past that much head and script
+is judged on a prefix that never reached it. And a `cleanScrape: false` call that
+saves an unreadable page caches the raw bytes without the note saying they could
+not be read, so a later cache hit on the same URL serves them plainly — one
+container lifetime, since the store is in memory.
+
 **How you would know.** A page reported as read whose content is a navigation
 menu. `cleanScrape: false` returns the raw bytes that were served.
 

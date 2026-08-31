@@ -373,13 +373,13 @@ describe('tools/call scrape', () => {
   });
 
   /**
-   * tadasant/strad#205. The whole response used to be
+   * tadasant/strad#205. Upstream answers a page that served 200 with a full
+   * document — and drew none of it — with the whole response
    *
    *     \n\n---\nScraped using: native
    *
-   * for a page that served 200 with a full document — an absence the caller
-   * never observed, stated as a fact. It is an error naming what it could not
-   * do now, and it says UNKNOWN rather than showing nothing.
+   * which is an absence the caller never observed, stated as a fact. Here it is
+   * an error that names what could not be done, and says UNKNOWN.
    */
   it('reports a page nothing could read as UNKNOWN, not as an empty body', async () => {
     const recorder = await register(stubClients(CLIENT_RENDERED));
@@ -434,7 +434,8 @@ describe('tools/call scrape', () => {
   });
 
   it('escalates an unreadable page to a strategy that can render it', async () => {
-    const rendered = '<html><body><article><h1>Apartments</h1><p>1br in Santa Clara.</p></article></body></html>';
+    const rendered =
+      '<html><body><article><h1>Apartments</h1><p>1br in Santa Clara.</p></article></body></html>';
     const recorder = await register({
       native: {
         async scrape() {
@@ -456,6 +457,55 @@ describe('tools/call scrape', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('Apartments');
     expect(result.content[0].text).toContain('Scraped using: brightdata');
+  });
+
+  it('paginates the raw bytes of an unreadable page like any other content', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'returnOnly',
+        cleanScrape: false,
+        startIndex: 15,
+        maxChars: 20,
+      },
+    });
+
+    expect(result.content[0].text).toContain(CLIENT_RENDERED.slice(15, 35));
+    expect(result.content[0].text).toContain('[Content truncated at 20 characters');
+  });
+
+  it('saves the raw bytes of an unreadable page, and says they were not read', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'saveOnly',
+        cleanScrape: false,
+      },
+    });
+
+    expect(result.content[0].type).toBe('resource_link');
+    expect(result.content[0].description).toContain('no strategy could extract readable content');
+    const read = await recorder.call('resources/read', { uri: result.content[0].uri });
+    expect(read.contents[0].text).toBe(CLIENT_RENDERED);
+  });
+
+  it('rescrapes an unreadable page when told to, and still reports it UNKNOWN', async () => {
+    const recorder = await register(stubClients(CLIENT_RENDERED));
+    const result = await recorder.call('tools/call', {
+      name: 'scrape',
+      arguments: {
+        url: 'https://sfbay.craigslist.org/search/apa',
+        resultHandling: 'returnOnly',
+        forceRescrape: true,
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('UNKNOWN');
   });
 
   it('paginates with startIndex and maxChars', async () => {

@@ -208,10 +208,28 @@ strategy for the prefix, so every later request for it read nothing too
 deliberately near the bottom.** The reported failure extracts to exactly zero;
 the shortest page measured that carries a sentence (`<p>Not found.</p>`) extracts
 to ten. A false escalation spends a paid credential *and* turns a short-but-real
-page into "unknown", which is this same over-claiming pointed the other way. It
-applies only to HTML, because JSON, XML and plain text come back byte-identical
-from a pass-through cleaner — holding `{"ok":true}` to a character floor would
-escalate it to a strategy that returns the same eleven bytes.
+page into "unknown", which is this same over-claiming pointed the other way.
+
+**It applies only to what `detectContentType` calls HTML**, because only a lossy
+clean can turn a fetched page into nothing — JSON, XML and plain text come back
+byte-identical from a pass-through cleaner, and holding `{"ok":true}` to a
+character floor would escalate it to a strategy that returns the same eleven
+bytes. That made the detector load-bearing in a way it had not been: it knew
+`<?xml` and `<rss` and sent everything else with a `<` in it to the HTML
+cleaner, so an SVG image and an Atom feed shipped without a declaration were
+cleaned as HTML, extracted to nothing, and would have been reported UNKNOWN. It
+now recognises `<feed`, `<svg`, `<urlset` and `<sitemapindex` as roots too —
+which also stops those being answered with empty Markdown on a default call.
+
+**The check cleans at most 256KB to reach a verdict.** The cleaner's cost tracks
+the content it EXTRACTS rather than the size of the document: a 906KB
+client-rendered shell cleans in 833ms because there is nothing in it, while
+846KB of prose takes 5.8s and 2MB takes 42s. A size ceiling would therefore have
+exempted exactly the shells this check is for and left the expensive case
+unbounded; capping the INPUT holds it to about a second at any document size. A
+partial clean is a verdict only — its text is not handed back, because a prefix
+rendered as the whole page is worse than the raw bytes, so a document over the
+cap is cleaned again by the tool exactly as it was before this delta.
 
 **Two things it deliberately does not do.** It does not read the caller's
 `cleanScrape` flag: that is a *display* option, and letting it reach the chain

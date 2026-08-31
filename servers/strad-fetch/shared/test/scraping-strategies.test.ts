@@ -333,6 +333,39 @@ describe('scrapeUniversal', () => {
     expect(result.diagnostics?.strategyErrors.native).toContain('403');
   });
 
+  /**
+   * An empty body is the one case where "empty" is the honest word: there are
+   * no bytes to offer a caller and nothing to call unknown.
+   */
+  it('calls an empty body a failure, not an unknown', async () => {
+    const result = await scrapeUniversal(clients({ native: { ok: true, body: '   ' } }), {
+      url: 'https://example.com/a',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.fetched).toBeUndefined();
+    expect(result.error).toContain('All strategies failed');
+    expect(result.error).not.toContain('UNKNOWN');
+    expect(result.diagnostics?.strategyErrors.native).toBe('fetched an empty body');
+  });
+
+  it('reports the bytes of the FIRST unreadable strategy in chain order', async () => {
+    process.env.STRAD_FETCH_OPTIMIZE_FOR = 'speed';
+    const brightDataShell = `<html><head><title>b</title></head><body><div id="app"></div></body></html>`;
+
+    const result = await scrapeUniversal(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        brightData: { ok: true, body: brightDataShell },
+      }),
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    // speed puts brightdata first, so its bytes are the ones a caller would
+    // have been handed before this check existed.
+    expect(result.fetched).toEqual({ source: 'brightdata', content: brightDataShell });
+  });
+
   it('reports every strategy it attempted, in order', async () => {
     const result = await scrapeUniversal(
       clients({
@@ -459,6 +492,45 @@ describe('scrapeWithStrategy', () => {
     expect(result.success).toBe(true);
     expect(result.source).toBe('brightdata');
     expect(calls).toEqual(['native', 'native', 'brightdata']);
+  });
+
+  /**
+   * The prefix in tadasant/strad#205 already HAS an entry naming `native`, and
+   * the table is on disk, so it outlives the process. Leaving a learned entry
+   * that has stopped working in place would make every later request re-run it,
+   * fail, and fall through the whole chain again — for good.
+   */
+  it('corrects a learned strategy that has stopped being able to read the page', async () => {
+    const config = configClient([
+      { prefix: 'sfbay.craigslist.org', default_strategy: 'native' },
+    ]);
+
+    await scrapeWithStrategy(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        brightData: { ok: true, body: RENDERED },
+      }),
+      config,
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(config.entries).toContainEqual({
+      prefix: 'sfbay.craigslist.org/search/',
+      default_strategy: 'brightdata',
+      notes: 'Auto-discovered after native stopped working',
+    });
+  });
+
+  it('does not rewrite a learned strategy that is still the one that worked', async () => {
+    const config = configClient([{ prefix: 'example.com', default_strategy: 'native' }]);
+
+    await scrapeWithStrategy(
+      clients({ native: { ok: true, body: '<html><body><p>Still fine here.</p></body></html>' } }),
+      config,
+      { url: 'https://example.com/a/b' }
+    );
+
+    expect(config.entries).toEqual([{ prefix: 'example.com', default_strategy: 'native' }]);
   });
 
   it('survives a strategy config it cannot read', async () => {

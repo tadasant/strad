@@ -42,6 +42,17 @@ describe('assessExtraction', () => {
     expect(assessment.readable).toBe(false);
     expect(assessment.reason).toBe('fetched an empty body');
     expect(assessment.text).toBeUndefined();
+    // An empty page IS empty. Only a page that served something can be unknown.
+    expect(assessment.empty).toBe(true);
+  });
+
+  it('treats an absent body the same as an empty one', async () => {
+    // firecrawl's payload carries `html` as an optional field, so a success can
+    // arrive with nothing in it.
+    const assessment = await assessExtraction(undefined, 'https://example.com/a');
+
+    expect(assessment.readable).toBe(false);
+    expect(assessment.empty).toBe(true);
   });
 
   it('returns the extraction it computed, so nothing downstream cleans twice', async () => {
@@ -93,6 +104,64 @@ describe('assessExtraction', () => {
       expect(body.length).toBeLessThan(MIN_EXTRACTED_CHARS);
       expect((await assessExtraction(body, 'https://example.com/a')).readable).toBe(true);
     }
+  });
+
+  /**
+   * A document whose root element is XML carries no HTML at all, so an HTML
+   * clean extracts nothing from it — and a feed, a sitemap or an image would be
+   * reported unreadable while being perfectly readable. A declaration is not
+   * enough to spot them: plenty of feeds ship without one.
+   */
+  it.each([
+    ['an SVG image', '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>'],
+    [
+      'an Atom feed with no declaration',
+      '<feed xmlns="http://www.w3.org/2005/Atom"><title>t</title></feed>',
+    ],
+    ['a sitemap', '<urlset xmlns="x"><url><loc>https://example.com/a</loc></url></urlset>'],
+    ['an RSS channel', '<rss version="2.0"><channel><title>t</title></channel></rss>'],
+  ])('reads %s rather than calling it unreadable', async (_name, body) => {
+    const assessment = await assessExtraction(body, 'https://example.com/a');
+
+    expect(assessment.readable).toBe(true);
+    expect(assessment.text).toBe(body);
+  });
+
+  /**
+   * The cleaner's cost tracks the content it EXTRACTS, not the document's size:
+   * a 906KB client-rendered shell cleans in under a second because there is
+   * nothing in it, while 2MB of prose takes forty. Capping the INPUT bounds the
+   * expensive case without exempting the shells this check exists for.
+   */
+  describe('over the assessment cap', () => {
+    const CAP = 256 * 1024;
+    const shell = (bytes: number) =>
+      `<!DOCTYPE html><html><head><title>s</title></head><body><div id="app"></div>` +
+      `<script type="application/ld+json">{"a":"${'x'.repeat(bytes)}"}</script></body></html>`;
+    const prose = (bytes: number) =>
+      `<html><body><article><h1>Title</h1><p>${'lorem ipsum dolor sit amet '.repeat(
+        Math.ceil(bytes / 26)
+      )}</p></article></body></html>`;
+
+    it('still catches a client-rendered shell far larger than the cap', async () => {
+      const html = shell(CAP * 2);
+      expect(html.length).toBeGreaterThan(CAP);
+
+      const assessment = await assessExtraction(html, 'https://example.com/a');
+      expect(assessment.readable).toBe(false);
+      expect(assessment.reason).toContain(`fetched ${html.length} bytes`);
+    });
+
+    it('reads a page larger than the cap, and hands back no partial text', async () => {
+      const html = prose(CAP * 2);
+      expect(html.length).toBeGreaterThan(CAP);
+
+      const assessment = await assessExtraction(html, 'https://example.com/a');
+      expect(assessment.readable).toBe(true);
+      // A prefix rendered as the whole page is worse than the raw bytes, so the
+      // caller gets nothing to render and cleans for itself.
+      expect(assessment.text).toBeUndefined();
+    });
   });
 
   it('holds HTML at exactly the floor, and rejects one character under it', async () => {
