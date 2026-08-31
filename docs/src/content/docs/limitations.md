@@ -1436,11 +1436,13 @@ It cannot see why the step failed — a broken `Dockerfile` and a refused blob l
 the same from outside `docker/build-push-action`. A retry after a refused push
 costs seconds, because the layers are cached; a retry after a failed build costs
 a rebuild, because buildkit does not cache a failed layer. So a broken bundle
-build runs three times, minutes of it, before the run goes red — and a real
-permission change (visibility flipped, linked repo dropped, `packages: write`
-removed) is retried twice before it goes red.
+build on the release path runs three times, minutes of it, before the run goes
+red — and a real permission change (visibility flipped, linked repo dropped,
+`packages: write` removed) is retried twice before it goes red. A run that
+publishes nothing takes exactly one attempt: there is no registry to refuse it,
+so a failure is the build itself and a retry would only spend wall clock (#73).
 
-The wrapper declares only the seven inputs its call sites pass, and a `with:` key
+The wrapper declares only the ten inputs its call sites pass, and a `with:` key
 it does not declare is dropped with a warning rather than an error. `builder:` is
 the one it refuses to run without — see #53.
 
@@ -1491,11 +1493,14 @@ interpolates to the empty string and reads as "no `--builder`".
 
 **One thing that fix exposed, the expensive way.** The `actionlint` step that
 gates every PR validates a local action's interface — not the shell inside it,
-and not its prose. Nothing else in a PR build loads that action either, since the
-steps using it run only on `main` (#51). So the file is unlinted where it
-matters, and there is no backslash escape for the expression delimiter: the
-runner template-parses the WHOLE manifest when it loads it, so an expression
-written anywhere in it as an example is evaluated.
+and not its prose. At the time nothing else in a PR build loaded that action
+either, since every step using it ran on `main` only. So the file was unlinted
+where it mattered, and there is no backslash escape for the expression delimiter:
+the runner template-parses the WHOLE manifest when it loads it, so an expression
+written anywhere in it as an example is evaluated. #73 closed the second half of
+that — `ci.yml` builds through the action on every PR, so a manifest that does
+not load fails the PR — and the assertions below still stand, because a green
+load proves the file parses and not that a description is free of examples.
 
 The first version of this fix avoided that in the guard's shell message and then
 walked into it one field over, putting `steps.<id>.outputs.name` — as a live
@@ -2063,6 +2068,50 @@ reach a container rather than how many bytes they take. The headroom above buys
 that redesign time; it does not remove the need for it.
 
 **Undo:** `HACKS.md` #72.
+
+---
+
+### 73. The release path executes on a pull request, but only as far as the push
+
+Every image build in this repo goes through one composite action,
+`.github/actions/build-push`. For most of its life every call site sat in a
+workflow no pull request could reach — the eight release workflows, on
+`push: branches: [main]`, plus `deploy-staging.yml` on `workflow_call` — so
+nothing on the pull request path loaded it, and **the first execution of a change
+to the release path was also its first production run.** The failure mode is a red `main` plus, when
+an image fails to publish, a wedged deploy for every later commit (#54).
+
+On 2026-08-11 a `${{ … }}` written as an EXAMPLE in an input `description:`
+merged green and took all eight release workflows down inside twenty seconds —
+eight alerts from one merge, and three more merges to settle. `actionlint` was
+green on all of it, because it validates an action's INTERFACE and reads neither
+its prose nor its shell.
+
+`ci.yml`'s `build_image` and `bundle_image` jobs build through that action with
+`push: false`, so every pull request loads and runs it. What that covers: the
+manifest parses and LOADS, every input a call site passes is declared, the builder
+guard runs, and `docker/setup-buildx-action` → `builder:` → buildx holds together
+end to end on the shared self-hosted daemon.
+
+**What a pull request still cannot exercise**, deliberately — everything
+downstream of the push:
+
+- the ghcr login, and `packages: write`;
+- the push itself, and therefore the three-403 retry of #51;
+- `release-image.yml`'s tag-digest verification, which reads the registry back;
+- the `VERSION`-offset version arithmetic, which needs `main`'s history;
+- `deploy-staging.yml`'s tag resolution (#54) and the deploy.
+
+All five need a registry credential, and the whole point of a pull-request build
+is that the run holds none. Reaching them would mean giving a workflow an
+unmerged branch can trigger something to push WITH, which trades this gap for a
+worse one. So the boundary is drawn at the credential, and drawn twice: no
+workflow reachable from a `pull_request` event runs `docker/login-action` or asks
+for `packages: write`, and `build-push` folds `github.event_name` into its own
+effective `push` — once, in one file, rather than as a condition ten call sites
+across nine workflows could each forget.
+
+**Undo:** `HACKS.md` #73.
 
 ---
 

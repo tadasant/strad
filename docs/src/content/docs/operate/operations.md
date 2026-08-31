@@ -831,12 +831,12 @@ ones and the images.
 
 </aside>
 
-### Every push to ghcr is retried
+### Every image build goes through one action, and every push is retried
 
-No step in this repo pushes to ghcr with `docker/build-push-action` directly.
-Each one goes through `.github/actions/build-push`, a composite action that runs
-the identical build up to three times, 15s and 45s apart, and lets the third
-decide the run.
+No step in this repo builds an image with `docker/build-push-action` directly.
+All fourteen go through `.github/actions/build-push`, a composite action that
+decides whether the run publishes and, when it does, runs the identical build up
+to three times, 15s and 45s apart, letting the third decide the run.
 
 ghcr answers a blob `HEAD` with `403 Forbidden` from time to time, in the middle
 of a push whose credentials worked seconds earlier — the build is done, the layers
@@ -853,22 +853,48 @@ registry is refusing rather than flaking: the next place to look is the package'
 visibility and linked repository, not the re-run button. See
 [Known limitations](/limitations/).
 
-The four `docker/build-push-action` steps that remain direct
-(`release-onepassword-image.yml`'s verification build, `bundle-google-ci.yml`,
-and two in `ci.yml`) build with `push: false`. They never touch a registry, so
-there is nothing there to flake.
+Four of the fourteen call sites pass `push: false` and only build:
+`release-onepassword-image.yml`'s verification build, `bundle-google-ci.yml`, and
+the two in `ci.yml`. Those take exactly one attempt — nothing left the runner, so
+a failure is the `Dockerfile` and not a registry, and rebuilding it twice more
+would only spend wall clock reaching the same red.
 
-Nothing on the PR path loads the wrapper, so `ci.yml`'s `lint` job runs
-`actionlint` over every workflow to catch a malformed `action.yml` before the
-next release. Know what that does and does not buy: actionlint validates an
-action's INTERFACE, and does not evaluate the prose in it. The runner
-template-parses the entire manifest when it loads it, so a `${{ … }}` written as
-an EXAMPLE in an input `description:` is evaluated against a scope that has no
-`steps` — the action then fails to LOAD, and every step calling it fails
-instantly. That reddened all eight release workflows at once on 2026-08-11, green
-actionlint and all. `test/workflow-buildx-builder.test.ts` is what covers it: no
-`${{` in the `name:` or `description:` of any local action manifest. See
-[Known limitations](/limitations/).
+### The release path runs before it is merged
+
+`ci.yml`'s `build_image` and `bundle_image` jobs build through
+`.github/actions/build-push`, which is why every pull request LOADS and RUNS the
+action every image build in this repo shares. Before that, nothing on the PR path
+could load it — every call site sat in a release workflow or in
+`deploy-staging.yml`, none of which a pull request reaches — so the first
+execution of a change to the release path was also its first production run. On 2026-08-11 that was eight release workflows red within twenty
+seconds of one merge, and three more merges to settle.
+
+`ci.yml`'s `lint` job still runs `actionlint` over every workflow, and the two are
+not the same check. actionlint validates an action's INTERFACE and evaluates
+neither its prose nor its shell; the runner template-parses the entire manifest
+when it LOADS it, so a `${{ … }}` written as an EXAMPLE in an input `description:`
+is evaluated against a scope that has no `steps`, the action fails to load, and
+every step calling it fails instantly — green actionlint and all. That is the
+2026-08-11 failure. Running the action on a PR is what catches it;
+`test/workflow-buildx-builder.test.ts` catches it a second way, by refusing `${{`
+in the `name:` or `description:` of any local action manifest.
+
+**A pull request builds; it never publishes.** That is not a condition repeated at
+each call site. `build-push` folds `github.event_name` into its own effective
+`push`, in one place, so a `push: true` call site reached from a pull request
+builds and publishes nothing — and an unrecognised spelling of the input is an
+error rather than a falsy value, because a release that silently pushed nothing
+would go green and starve the next deploy. The prior lock is that a
+`pull_request`-triggered run holds no credential to push with: no workflow
+reachable from that event runs `docker/login-action` or asks for `packages:
+write`. `test/workflow-pr-build-coverage.test.ts` asserts both, and asserts the
+coverage itself — that an unfiltered `pull_request` workflow really does run the
+action, and that nothing reaches `docker/build-push-action` around it.
+
+What a PR therefore cannot exercise is everything downstream of the push: the
+ghcr login, the push and its retry, `release-image.yml`'s tag-digest
+verification, the `VERSION` arithmetic, and the deploy. All five need a registry
+credential. See [Known limitations](/limitations/).
 
 ## The staging config
 

@@ -16,6 +16,12 @@ on:
       - "images/bundle-google/**"
       - ".github/workflows/bundle-google-ci.yml"
 
+# Declared for the reason `ci.yml` gives: this workflow is reachable from a pull
+# request, and an undeclared token is whatever the repository default happens to
+# be rather than what this file asked for.
+permissions:
+  contents: read
+
 concurrency:
   group: bundle-google-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -100,13 +106,19 @@ jobs:
           docker container prune -f --filter label=strad-ci --filter until=24h || true
           docker image prune -af --filter label=strad-ci --filter until=24h || true
 
+      # Through the release path's own `.github/actions/build-push`, with
+      # `push: false`. Every image build in this repo goes through that wrapper,
+      # pushing or not, so the one action the release path cannot afford to have
+      # broken is exercised by everything that builds — see the note on
+      # `ci.yml`'s `bundle_image`. This workflow logs in to no registry, and the
+      # wrapper refuses to push from a `pull_request` run regardless.
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: images/bundle-google
-          push: false
-          load: true
+          push: "false"
+          load: "true"
           tags: ${{ env.BUNDLE_GOOGLE_IMAGE }}
           labels: strad-ci=1
           cache-from: type=gha,scope=bundle-google
