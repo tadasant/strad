@@ -1,14 +1,14 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
-import { createWriteClient } from "../build/write-client.js";
+import { createWriteClient } from "../src/write-client.js";
 import {
   encodeSecretValue,
   isRenderSafe,
   parameterId,
-} from "../build/parameter-wire.js";
+} from "../src/parameter-wire.js";
 // A REAL RSA key: the client signs a JWT before any fetch, so a placeholder
 // string fails in node:crypto long before the stub is reached.
-import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
+import { VIEWER_ACCOUNT } from "./fake-parameter-manager.js";
 
 /**
  * The WRITE half, against a fake that actually accepts writes.

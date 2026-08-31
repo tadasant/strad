@@ -1,9 +1,9 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
-import { PROBE_PERMISSIONS, probeCapabilities } from "../build/capabilities.js";
+import { PROBE_PERMISSIONS, probeCapabilities } from "../src/capabilities.js";
 // A REAL RSA key: the probe signs a JWT before any fetch, so a placeholder
 // string fails in node:crypto long before the stub is reached.
-import { VIEWER_ACCOUNT } from "./fake-parameter-manager.mjs";
+import { VIEWER_ACCOUNT } from "./fake-parameter-manager.js";
 
 /**
  * The probe's PERMISSION STRINGS, pinned literally.
