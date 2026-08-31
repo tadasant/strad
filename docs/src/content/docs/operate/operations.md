@@ -67,8 +67,10 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
     functional suites read no credentials, so they run here like the rest; only
     `test:e2e`, which CI does not run, resolves X API keys.
   - **`bundle-api`** — build and tests over the `bundle-api` tree. Four of its six
-    servers are verbatim vendor copies and get no tests here, for the reason
-    `pointsyeah` below spells out. The other two are **forks**, and neither has a
+    servers are verbatim vendor copies with no tests here yet: a test written
+    _inside_ a vendored copy is a merge conflict on every re-vendor and belongs
+    upstream, and nobody has yet given them the tree-root treatment `pointsyeah`
+    and `onepassword` have. The other two are **forks**, and neither has a
     sync script or an upstream to diff against, so their tests are the only thing
     that stops a re-vendor from silently reverting them. `slack` — see
     [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —

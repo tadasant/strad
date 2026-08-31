@@ -323,14 +323,12 @@ describe("reading the user out of an id token", () => {
     expect(getUserSubFromIdToken(ID_TOKEN)).toBe(SUB);
   });
 
-  it("survives a payload that encodes to the URL-safe alphabet", () => {
-    // This payload's base64url form is `eyJzdWIiOiI-bzk_bHQyZCJ9` — it uses both
-    // `-` and `_`, and carries no padding, which is the shape a real Cognito JWT
-    // arrives in. The claim comes back byte for byte.
+  it("returns a sub whose payload encodes with `-` and `_`, unpadded", () => {
+    // `eyJzdWIiOiI-bzk_bHQyZCJ9` — the shape a real Cognito JWT arrives in. This
+    // does NOT discriminate base64url from base64: Node's base64 decoder accepts
+    // the URL-safe alphabet too, so swapping the source's encoding argument
+    // keeps this green. What it pins is that the claim survives byte for byte.
     const sub = ">o9?lt2d";
-    expect(Buffer.from(JSON.stringify({ sub })).toString("base64url")).toContain(
-      "-",
-    );
     expect(getUserSubFromIdToken(jwt({ sub }))).toBe(sub);
   });
 
@@ -415,18 +413,29 @@ describe("building the search URL", () => {
     expect(q.get("cabin")).toBe("Premium Economy");
   });
 
-  it("falls back to Economy as the primary cabin when the list is empty", () => {
+  it("falls the primary cabin back to Economy but leaves the list empty", () => {
+    // `FlightSearchParamsSchema` puts no `.min(1)` on `cabins`, so `[]` reaches
+    // here, and the two keys then disagree: `cabin=Economy` with `cabins=`. This
+    // asserts what the code does, not that the disagreement is right — see
+    // https://github.com/tadasant/strad/issues/230.
     const q = new URL(buildSearchUrl(params({ cabins: [] }))).searchParams;
 
     expect(q.get("cabins")).toBe("");
     expect(q.get("cabin")).toBe("Economy");
   });
 
-  it("sends the default banks and airline programs, and never a search-time override", () => {
+  it("sends the default banks and airline programs", () => {
     const q = new URL(buildSearchUrl(params())).searchParams;
 
-    // Not caller-controllable: `FlightSearchParams` has no bank or program
-    // field, so every search is the full default sweep.
+    // Neither is caller-controllable: `FlightSearchParams` has no bank or
+    // program field, so every search is the full default sweep.
+    //
+    // The `+` in `Capital+One` is the source constant's own, and the wire form
+    // is `Capital%2BOne` — a literal plus, not a space. If that constant was
+    // lifted from a browser URL, the value PointsYeah wants is "Capital One" and
+    // this filter matches nothing. Asserting the DECODED value keeps this test
+    // true either way rather than pinning the ambiguity as correct. Filed as
+    // https://github.com/tadasant/strad/issues/230.
     expect(q.get("banks")).toBe("Amex,Bilt,Capital+One,Chase,Citi,WF");
     expect(q.get("airlineProgram")?.split(",")).toHaveLength(21);
     expect(q.get("airlineProgram")?.split(",")).toContain("UA");
@@ -469,7 +478,13 @@ type FakeBrowser = {
  */
 function fakeBrowser(respond: () => Promise<unknown>): FakeBrowser {
   const state: FakeBrowser = {
-    deps: { launchBrowser: async () => context },
+    // Replaced once `context` below exists; a placeholder that throws makes a
+    // missing assignment loud rather than a forward reference that reads fine.
+    deps: {
+      launchBrowser: () => {
+        throw new Error("fakeBrowser: deps used before it was wired");
+      },
+    },
     cookies: [],
     gotos: [],
     predicates: [],
@@ -709,6 +724,36 @@ describe("creating a search task through the browser", () => {
       REFRESH_TOKEN,
       browser.deps,
     );
+
+    expect(browser.closed).toEqual({ page: 1, context: 1 });
+  });
+
+  it("closes the page and the context when the interception times out", async () => {
+    // The likeliest production failure: PointsYeah changes its request and the
+    // 60s `waitForResponse` gives up. `fakeBrowser` resolves that promise, so
+    // this test overrides `newPage` to hand back a page whose interception
+    // rejects — the browser must still be torn down.
+    const browser = fakeBrowser(taskOk);
+    const context = await browser.deps.launchBrowser();
+    const page = await context.newPage();
+    context.newPage = async () => ({
+      ...page,
+      waitForResponse: () =>
+        Promise.reject(new Error("Timeout 60000ms exceeded")),
+    });
+    browser.order.length = 0;
+    browser.closed.page = 0;
+    browser.closed.context = 0;
+
+    await expect(
+      createSearchTask(
+        params(),
+        ACCESS_TOKEN,
+        ID_TOKEN,
+        REFRESH_TOKEN,
+        browser.deps,
+      ),
+    ).rejects.toThrow("Timeout 60000ms exceeded");
 
     expect(browser.closed).toEqual({ page: 1, context: 1 });
   });

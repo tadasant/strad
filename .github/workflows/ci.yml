@@ -139,8 +139,10 @@ jobs:
   #               give them.
   #
   #   bundle-api  build + test. Six pure-API servers. Four are verbatim vendor
-  #               copies and get no tests here, for the reason pointsyeah gives
-  #               below. The other two are FORKED, and their tests are the only
+  #               copies with no tests here yet: a test written INSIDE a vendored
+  #               copy is a merge conflict on every re-vendor and belongs upstream,
+  #               and nobody has given them the tree-root treatment pointsyeah and
+  #               onepassword have. The other two are FORKED, and their tests are the only
   #               thing defending the delta: a fork has no upstream to argue with it
   #               and no sync script to notice its loss, so a careless re-vendor
   #               silently reverts the fix.
