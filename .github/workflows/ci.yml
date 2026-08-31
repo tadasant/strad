@@ -139,8 +139,10 @@ jobs:
   #               give them.
   #
   #   bundle-api  build + test. Six pure-API servers. Four are verbatim vendor
-  #               copies and get no tests here, for the reason pointsyeah gives
-  #               below. The other two are FORKED, and their tests are the only
+  #               copies with no tests here yet: a test written INSIDE a vendored
+  #               copy is a merge conflict on every re-vendor and belongs upstream,
+  #               and nobody has given them the tree-root treatment pointsyeah and
+  #               onepassword have. The other two are FORKED, and their tests are the only
   #               thing defending the delta: a fork has no upstream to argue with it
   #               and no sync script to notice its loss, so a careless re-vendor
   #               silently reverts the fix.
@@ -158,14 +160,22 @@ jobs:
   #               The build also typechecks the four vendored trees plus remote/,
   #               which otherwise surfaces first as a failed bundle image build.
   #
-  #   pointsyeah  build only, and that is deliberate: the shared/ half is a verbatim
-  #               vendor copy of pulsemcp/mcp-servers (HACKS.md #15 and #19), so a
-  #               test written INSIDE it becomes a merge conflict on every
-  #               re-vendor. A test for that logic belongs upstream — HACKS.md #45
-  #               says the same about the fetchpet divergence. What the build
-  #               catches is a type error at PR time rather than at bundle-image
-  #               build time. The tree's root `build` script is what carries the
-  #               workspace ordering the Dockerfile depends on.
+  #   pointsyeah  test, and no separate build leg: `npm test` is `npm run build &&
+  #               vitest run`, so the same tsc over both workspaces still runs
+  #               first, in the ordering (shared -> remote) the image's Dockerfile
+  #               depends on, and a type error still fails the PR rather than the
+  #               bundle-image build. The shared/ half is a verbatim vendor copy of
+  #               pulsemcp/mcp-servers (HACKS.md #15 and #19), so a test written
+  #               INSIDE it becomes a merge conflict on every re-vendor and belongs
+  #               upstream — HACKS.md #45 says the same about the fetchpet
+  #               divergence. That argument is about WHERE the file lives, not
+  #               about whether the code is testable, so the suite is in
+  #               `servers/pointsyeah/test/` at the TREE root and imports the
+  #               vendored sources from outside them: a re-vendor overwrites
+  #               `shared/` and never touches `test/`. It covers the PointsYeah
+  #               client's request-building and response-shaping over a stubbed
+  #               `fetch` and the injected Playwright surface, so it opens no
+  #               socket, launches no browser, and needs no PointsYeah credential.
   #
   #   onepassword test, and no separate build leg: `npm test` is `npm run build &&
   #               vitest run`, so the build still happens — it is the same tsc over
@@ -240,8 +250,8 @@ jobs:
             test: true
             skip-browser: true
           - tree: pointsyeah
-            build: true
-            test: false
+            build: false
+            test: true
             skip-browser: true
           - tree: secrets
             build: false
