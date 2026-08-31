@@ -17,6 +17,21 @@ import type { IStrategyConfigClient, StrategyConfigEntry } from '../src/strategy
  * would break.
  */
 
+/**
+ * A page whose content is drawn client-side: a full document, a server-rendered
+ * `ld+json` payload, and result rows that only exist once JavaScript runs. This
+ * is the shape of https://sfbay.craigslist.org/search/apa in tadasant/strad#205,
+ * and it extracts to zero characters.
+ */
+const CLIENT_RENDERED = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>SF bay area apartments / housing for rent - craigslist</title></head>
+<body class="search"><div id="page-container"><div class="cl-search-page"></div></div>
+<script type="application/ld+json" id="ld_searchpage_results">{"@context":"https://schema.org","itemListElement":[{"item":{"name":"Garden Areas, Washer/Dryers","@type":"Apartment"},"position":"0","@type":"ListItem"}]}</script></body></html>`;
+
+/** What a JS-rendering strategy returns for the same URL. */
+const RENDERED = `<html><body><article><h1>Apartments for rent</h1>
+<p>Garden Areas, Washer/Dryers, Renovated Interiors — Santa Clara, 1br.</p></article></body></html>`;
+
 /** A client set built from what each strategy should do. `undefined` = not configured. */
 function clients(opts: {
   native?: { ok: boolean; status?: number; error?: string; body?: string };
@@ -97,7 +112,11 @@ describe('scrapeUniversal', () => {
   it('cost mode (the default) tries native first and stops there when it works', async () => {
     const calls: string[] = [];
     const result = await scrapeUniversal(
-      clients({ native: { ok: true, body: '<html>hi</html>' }, brightData: { ok: true }, calls }),
+      clients({
+        native: { ok: true, body: '<html><body><p>Hello from the page.</p></body></html>' },
+        brightData: { ok: true },
+        calls,
+      }),
       { url: 'https://example.com/a' }
     );
 
@@ -205,6 +224,115 @@ describe('scrapeUniversal', () => {
     expect(result.error).not.toContain('REJECTED');
   });
 
+  /**
+   * FORK.md #10, and the defect in tadasant/strad#205. Native fetches the page
+   * fine and there is nothing in it to extract, which is the canonical signal
+   * for a client-rendered page — exactly what the paid strategies exist for.
+   */
+  it('escalates to the next strategy when a page fetches but extracts to nothing', async () => {
+    const calls: string[] = [];
+    const result = await scrapeUniversal(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        brightData: { ok: true, body: RENDERED },
+        calls,
+      }),
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.source).toBe('brightdata');
+    expect(result.content).toBe(RENDERED);
+    expect(calls).toEqual(['native', 'brightdata']);
+    // Native's failure is a diagnostic, not a silence.
+    expect(result.diagnostics?.strategyErrors.native).toContain('extracted 0 characters');
+  });
+
+  it('escalates past every strategy that cannot read the page', async () => {
+    const calls: string[] = [];
+    const result = await scrapeUniversal(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        firecrawl: { ok: true, html: CLIENT_RENDERED },
+        brightData: { ok: true, body: RENDERED },
+        calls,
+      }),
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(result.source).toBe('brightdata');
+    expect(calls).toEqual(['native', 'firecrawl', 'brightdata']);
+  });
+
+  /** The "unknown, never empty" half. An empty body under a success footer is the bug. */
+  it('reports UNKNOWN, not empty, when nothing can read the page', async () => {
+    const result = await scrapeUniversal(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        brightData: { ok: true, body: CLIENT_RENDERED },
+      }),
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.content).toBeNull();
+    expect(result.source).toBe('none');
+    expect(result.error).toContain('UNKNOWN, not empty');
+    // Per-strategy diagnostics, so the caller can see it was FETCHED.
+    expect(result.diagnostics?.strategiesAttempted).toEqual(['native', 'brightdata']);
+    expect(result.diagnostics?.strategyErrors.native).toContain('extracted 0 characters');
+    expect(result.diagnostics?.strategyErrors.brightdata).toContain('extracted 0 characters');
+    // …and the bytes survive, for the caller who asked for raw ones.
+    expect(result.fetched).toEqual({ source: 'native', content: CLIENT_RENDERED });
+  });
+
+  it('keeps "nothing could fetch it" distinct from "nothing could read it"', async () => {
+    const result = await scrapeUniversal(
+      clients({ native: { ok: false, status: 403, error: 'HTTP 403: Forbidden' } }),
+      { url: 'https://example.com/a' }
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.fetched).toBeUndefined();
+    expect(result.error).toContain('All strategies failed');
+    expect(result.error).not.toContain('UNKNOWN');
+  });
+
+  /** The other direction: a short page is short, and must not cost a paid call. */
+  it('does not escalate a page that is genuinely short but readable', async () => {
+    const calls: string[] = [];
+    const result = await scrapeUniversal(
+      clients({
+        native: { ok: true, body: '<html><body><p>Not found.</p></body></html>' },
+        firecrawl: { ok: true, html: RENDERED },
+        brightData: { ok: true, body: RENDERED },
+        calls,
+      }),
+      { url: 'https://example.com/a' }
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.source).toBe('native');
+    expect(calls).toEqual(['native']);
+  });
+
+  /** The path that already worked, pinned so this change cannot cost it. */
+  it('still escalates on a native HTTP error', async () => {
+    const calls: string[] = [];
+    const result = await scrapeUniversal(
+      clients({
+        native: { ok: false, status: 403, error: 'HTTP 403: Forbidden' },
+        brightData: { ok: true, body: RENDERED },
+        calls,
+      }),
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(result.source).toBe('brightdata');
+    expect(calls).toEqual(['native', 'brightdata']);
+    expect(result.diagnostics?.strategyErrors.native).toContain('403');
+  });
+
   it('reports every strategy it attempted, in order', async () => {
     const result = await scrapeUniversal(
       clients({
@@ -276,6 +404,61 @@ describe('scrapeWithStrategy', () => {
     expect(result.success).toBe(true);
     expect(result.source).toBe('native');
     expect(calls).toEqual(['brightdata', 'native']);
+  });
+
+  /**
+   * The sticky half of tadasant/strad#205. A strategy that read nothing must not
+   * become the learned strategy for the prefix, or one unreadable answer becomes
+   * every later answer for it.
+   */
+  it('does not learn a strategy that produced nothing extractable', async () => {
+    const config = configClient();
+    const result = await scrapeWithStrategy(
+      clients({ native: { ok: true, body: CLIENT_RENDERED } }),
+      config,
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(result.success).toBe(false);
+    expect(config.entries).toEqual([]);
+  });
+
+  it('learns the strategy that COULD read the page, not the one that fetched it', async () => {
+    const config = configClient();
+    await scrapeWithStrategy(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        brightData: { ok: true, body: RENDERED },
+      }),
+      config,
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    expect(config.entries).toEqual([
+      {
+        prefix: 'sfbay.craigslist.org/search/',
+        default_strategy: 'brightdata',
+        notes: 'Auto-discovered via universal fallback',
+      },
+    ]);
+  });
+
+  it('falls through when a learned strategy stops being able to read the page', async () => {
+    const calls: string[] = [];
+    const result = await scrapeWithStrategy(
+      clients({
+        native: { ok: true, body: CLIENT_RENDERED },
+        brightData: { ok: true, body: RENDERED },
+        calls,
+      }),
+      configClient([{ prefix: 'sfbay.craigslist.org', default_strategy: 'native' }]),
+      { url: 'https://sfbay.craigslist.org/search/apa' }
+    );
+
+    // native as the learned strategy, then the whole cost chain behind it.
+    expect(result.success).toBe(true);
+    expect(result.source).toBe('brightdata');
+    expect(calls).toEqual(['native', 'native', 'brightdata']);
   });
 
   it('survives a strategy config it cannot read', async () => {

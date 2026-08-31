@@ -2118,6 +2118,35 @@ across nine workflows could each forget.
 
 **Undo:** `HACKS.md` #73.
 
+
+### 74. strad-fetch decides a page was read by counting characters
+
+`strad-fetch` accepts a scraping strategy on what can be _extracted_ from what it
+fetched, not on whether bytes came back — that is what stops a client-rendered
+page from being reported as a successful scrape of an empty document. The test is
+a **character floor**: clean the page, and under 8 characters of readable HTML
+means the strategy could not read it.
+
+Counting characters is a proxy for "is there anything here", and it is coarse in
+both directions. A client-rendered page whose static shell carries a nav bar or a
+cookie banner extracts to a few dozen characters of exactly that, clears the
+floor, and is served as the page's content — the case that was actually reported
+(a craigslist search page) extracted to zero, which is the easy one. And a very
+short real page sits closer to the floor than anything else does; it has headroom
+against every extraction measured that carries a sentence, but that is fixtures,
+not a corpus.
+
+The floor is low on purpose. A false escalation costs a paid credential _and_
+turns a genuinely short page into "unknown", which is the same over-claiming the
+check exists to remove. Judging content rather than counting it would need a model
+call — which this fork deliberately removed — or a per-site rule table, which is
+what the learned-strategy cache already is and cannot bootstrap itself.
+
+**How you would know.** A page reported as read whose content is a navigation
+menu. `cleanScrape: false` returns the raw bytes that were served.
+
+See `HACKS.md` #74.
+
 ---
 
 ## What the human still needs to provision

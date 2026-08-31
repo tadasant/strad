@@ -27,10 +27,19 @@ unless `forceRescrape` is set.
 | `firecrawl`  | `FIRECRAWL_API_KEY`  | pages that need JavaScript rendered           |
 | `brightdata` | `BRIGHTDATA_API_KEY` | pages behind anti-bot measures                |
 
-The chain is tried in order until one returns content, and the strategy that
-worked is remembered per URL prefix. **A missing or rejected paid key costs
-coverage on protected sites, never the fetch itself** — `native` is in the chain
-in both optimisation modes, which is the delta that matters most against upstream.
+The chain is tried in order until one returns content something can be read out
+of, and the strategy that worked is remembered per URL prefix. **A missing or
+rejected paid key costs coverage on protected sites, never the fetch itself** —
+`native` is in the chain in both optimisation modes, which is the delta that
+matters most against upstream.
+
+**A strategy has to be able to READ the page, not just fetch it.** A page that
+draws its content client-side answers 200 with a full document that extracts to
+nothing, so it is treated as unread: the chain escalates to a strategy that
+renders JavaScript, the strategy that read nothing is never remembered for the
+prefix, and if none of them can read it the result says the content is UNKNOWN
+rather than returning an empty body under a success footer. `cleanScrape: false`
+still returns the raw bytes. See `FORK.md` #10.
 
 ## Environment
 

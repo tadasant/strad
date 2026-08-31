@@ -171,9 +171,59 @@ the root `types.ts` (whose `ToolResponse` existed for `responses.ts`).
 package ships has ever contained that file, so every deployment took the
 hard-coded fallback; the fallback is now the only path, written out plainly.
 
+## 10. A strategy is accepted on what could be READ out of it
+
+**Upstream.** `scrapeUniversal` accepts a strategy on `success && data` — bytes
+came back. The cleaner runs afterwards, in the tool, entirely outside the chain.
+
+**Here.** Each candidate is cleaned *before* it is accepted
+(`shared/src/clean/extraction.ts`), and an extraction under **8 characters** of
+HTML is that strategy's failure, recorded in `diagnostics.strategyErrors` like
+any other. The chain escalates, the strategy that read nothing is never written
+back as the learned strategy for the prefix, and if no strategy can read the
+page the result says the content is **UNKNOWN** — never an empty body under a
+`Scraped using: …` footer. The extraction travels back on the result, so the
+tool renders the clean the chain already computed rather than doing it twice.
+
+**Why.** `strad-fetch__scrape` against `https://sfbay.craigslist.org/search/apa`
+returned, in its entirety:
+
+```
+
+---
+Scraped using: native
+```
+
+Craigslist draws its result rows client-side, so native fetched a full document
+and the cleaner correctly found nothing in the undrawn markup — and that empty
+extraction was reported as a successful scrape. Two harms, and the second is why
+it stuck: a caller cannot tell "this page has no content" from "this deployment
+could not read this page", and the empty result was cached as the learned
+strategy for the prefix, so every later request for it read nothing too
+(tadasant/strad#205). It is the same conflation as delta 5 of
+`servers/good-eggs/FORK.md` — *an unreadable basket is "unknown", never
+"empty"* — and the remedy is the same: a result may only claim what was measured.
+
+**The floor is 8 characters, measured against this cleaner, and it is
+deliberately near the bottom.** The reported failure extracts to exactly zero;
+the shortest page measured that carries a sentence (`<p>Not found.</p>`) extracts
+to ten. A false escalation spends a paid credential *and* turns a short-but-real
+page into "unknown", which is this same over-claiming pointed the other way. It
+applies only to HTML, because JSON, XML and plain text come back byte-identical
+from a pass-through cleaner — holding `{"ok":true}` to a character floor would
+escalate it to a strategy that returns the same eleven bytes.
+
+**Two things it deliberately does not do.** It does not read the caller's
+`cleanScrape` flag: that is a *display* option, and letting it reach the chain
+would mean a `cleanScrape: false` call and a `cleanScrape: true` call learning
+different strategies for the same prefix. And it does not gate the raw path — a
+`cleanScrape: false` call for a page nothing could read still gets the bytes that
+were fetched, under a note saying they could not be extracted from. That is the
+documented debugging escape hatch, and it was the workaround for this defect.
+
 ## Re-vendoring
 
 `npm test` in this tree is what stops a re-vendor from silently reverting any of
-the above: the strategy-chain deltas (2, 3), the fixed tool schema (4), the cache
-bounds (6), the cache-hit kind (7) and the server name (8) each have an assertion
-that fails if upstream's behaviour comes back. Read this file first, re-apply, run the suite.
+the above: the strategy-chain deltas (2, 3, 10), the fixed tool schema (4), the
+cache bounds (6), the cache-hit kind (7) and the server name (8) each have an
+assertion that fails if upstream's behaviour comes back. Read this file first, re-apply, run the suite.

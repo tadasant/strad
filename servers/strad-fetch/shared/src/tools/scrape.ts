@@ -150,7 +150,16 @@ The tool automatically:
 3. Falls back through every OTHER available strategy, including native — a
    missing or rejected paid credential costs coverage on protected sites, never
    the fetch itself
-4. Remembers the strategy that worked, for future requests to that prefix`,
+4. Remembers the strategy that worked, for future requests to that prefix
+
+A strategy counts as having worked only if content can actually be READ out of
+what it fetched. A page whose content is drawn client-side answers 200 with a
+full document and extracts to nothing, so that strategy is treated as unable to
+read the page and the chain escalates to one that renders JavaScript. If none of
+them can read it, the result says the content is UNKNOWN — it is never returned
+as an empty body under a success footer, and the strategy that read nothing is
+not remembered for the prefix. Pass cleanScrape: false to see the raw bytes
+that were fetched.`,
     /**
      * FORK DELTA — THIS SCHEMA IS A CONSTANT. Upstream grows an `extract`
      * parameter when LLM credentials are present, so the same image advertises
@@ -300,9 +309,23 @@ The tool automatically:
           timeout,
         });
 
+        /**
+         * A page every strategy FETCHED but none could READ is UNKNOWN, not
+         * empty — except to a caller who explicitly asked for the raw bytes.
+         * `cleanScrape: false` is the documented way to look at what was
+         * actually served, and it is the workaround for this exact situation,
+         * so it still gets them. The strategy chain ran identically either way:
+         * the caller's display preference decides what is RENDERED here, never
+         * which strategy is chosen or learned.
+         */
+        const rawFallback = cleanScrape ? undefined : result.fetched;
+
         // Check if scraping failed
-        if (!result.success) {
-          let errorMessage = `Failed to scrape ${url}`;
+        if (!result.success && !rawFallback) {
+          const unreadable = result.fetched !== undefined;
+          let errorMessage = unreadable
+            ? `Could not read ${url}. Every strategy that fetched it produced nothing extractable, so the content of this page is UNKNOWN — not empty.`
+            : `Failed to scrape ${url}`;
 
           if (result.diagnostics) {
             errorMessage += `\n\nDiagnostics:\n`;
@@ -325,6 +348,10 @@ The tool automatically:
             errorMessage += `: ${result.error || 'All scraping strategies failed'}`;
           }
 
+          if (unreadable) {
+            errorMessage += `\nThe page is most likely rendered client-side. Retry with cleanScrape: false to read the raw bytes that ${result.fetched!.source} fetched.`;
+          }
+
           return {
             content: [
               {
@@ -336,21 +363,32 @@ The tool automatically:
           };
         }
 
-        const rawContent = result.content || '';
+        const rawContent = rawFallback ? rawFallback.content : result.content || '';
+        const source = rawFallback ? rawFallback.source : result.source;
         let cleanedContent: string | undefined;
         let displayContent = rawContent;
 
         // Apply cleaning if cleanScrape is true (default)
         // This converts HTML to semantic Markdown and removes ads, navigation, etc.
+        //
+        // The chain already cleaned this page to decide whether the strategy
+        // that fetched it could read it, so the extraction travels back on the
+        // result rather than being recomputed here. It is absent only when the
+        // cleaner itself threw, which is the case the fallback below is for.
         if (cleanScrape) {
-          try {
-            const cleaner = createCleaner(rawContent, url);
-            cleanedContent = await cleaner.clean(rawContent, url);
+          if (result.extraction !== undefined) {
+            cleanedContent = result.extraction;
             displayContent = cleanedContent;
-          } catch (cleanError) {
-            console.warn('Content cleaning failed, proceeding with raw content:', cleanError);
-            // Continue with raw content if cleaning fails
-            displayContent = rawContent;
+          } else {
+            try {
+              const cleaner = createCleaner(rawContent, url);
+              cleanedContent = await cleaner.clean(rawContent, url);
+              displayContent = cleanedContent;
+            } catch (cleanError) {
+              console.warn('Content cleaning failed, proceeding with raw content:', cleanError);
+              // Continue with raw content if cleaning fails
+              displayContent = rawContent;
+            }
           }
         }
 
@@ -376,7 +414,10 @@ The tool automatically:
           if (wasTruncated) {
             resultText += `\n\n[Content truncated at ${maxChars} characters. Use startIndex parameter to continue reading from character ${startIndex + maxChars}]`;
           }
-          resultText += `\n\n---\nScraped using: ${result.source}`;
+          resultText += `\n\n---\nScraped using: ${source}`;
+          if (rawFallback) {
+            resultText += `\nNOTE: no strategy could extract readable content from this page — these are the raw bytes it served, not a page with nothing on it.`;
+          }
         }
 
         const response: {
@@ -417,7 +458,7 @@ The tool automatically:
               cleaned: cleanedContent,
               metadata: {
                 url,
-                source: result.source,
+                source,
                 timestamp: new Date().toISOString(),
                 contentLength: rawContent.length,
                 startIndex,
@@ -430,7 +471,9 @@ The tool automatically:
             // Add the resource link to the response - use the most processed version
             const primaryUri = cleanedContent ? uris.cleaned : uris.raw;
 
-            const resourceDescription = `Scraped content from ${url}`;
+            const resourceDescription = rawFallback
+              ? `Raw bytes from ${url} — no strategy could extract readable content from them`
+              : `Scraped content from ${url}`;
 
             // Determine MIME type based on what content we're actually storing/returning
             const contentMimeType = cleanedContent

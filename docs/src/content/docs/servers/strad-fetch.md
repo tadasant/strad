@@ -48,10 +48,10 @@ mean the image advertising one tool in CI and a different one in production.
 | `firecrawl`  | `FIRECRAWL_API_KEY`  | pages that need JavaScript rendered           |
 | `brightdata` | `BRIGHTDATA_API_KEY` | pages behind anti-bot measures                |
 
-The chain runs in order until one returns content, and the strategy that worked is
-remembered per URL prefix, in a table under the container's temp directory. A
-subsequent request to that prefix starts with the strategy that worked last time
-and falls through the rest if it does not.
+The chain runs in order until one returns content that can actually be read, and
+the strategy that worked is remembered per URL prefix, in a table under the
+container's temp directory. A subsequent request to that prefix starts with the
+strategy that worked last time and falls through the rest if it does not.
 
 **`native` is always in the chain.** Upstream's `speed` mode omits it, which turns
 a deployment with no working paid key into a deployment that cannot fetch
@@ -71,6 +71,53 @@ Upstream's chain had nothing that could succeed, so every fetch failed — and
 because upstream's stdio entrypoint also **probes both credentials at boot and
 exits 1** when one is rejected, the subprocess never started at all, which killed
 the agent session hosting it.
+
+## A strategy has to be able to READ the page, not just fetch it
+
+"The response had a body" and "the page had content" are different questions, and
+the chain answers the first while reporting the second unless something makes it
+look. A page that draws its content client-side answers 200 with a full document
+whose rendered markup is empty — so the bytes are there, the clean finds nothing,
+and the fetch looks like a success against a page with nothing on it.
+
+So a strategy is accepted on **what can be extracted from what it fetched**. The
+page is cleaned before the strategy is accepted; if the extraction comes back with
+under 8 characters of readable content, that is treated as *this strategy could
+not read this page* and the chain escalates to one that renders JavaScript, which
+is what firecrawl and brightdata are in the chain for.
+
+Three consequences, and they are the point:
+
+- **A strategy that read nothing is never learned for the prefix.** Otherwise one
+  unreadable answer becomes every later answer for every URL under it.
+- **When nothing can read the page, the result says the content is UNKNOWN**, with
+  the per-strategy diagnostics — how many bytes each one fetched and how much came
+  out. It is never an empty body under a `Scraped using: native` footer, because
+  that states an absence nothing observed.
+- **`cleanScrape: false` still returns the raw bytes**, with a note that nothing
+  could be extracted from them. It is the way to look at what was actually served,
+  and it is exactly the tool for this situation.
+
+The floor is 8 characters and applies only to HTML. It is low on purpose: a false
+escalation spends a paid credential *and* turns a genuinely short page into
+"unknown", which is the same over-claiming in the other direction. JSON, XML and
+plain text are exempt — they come back byte-identical from the cleaner, so holding
+`{"ok":true}` to a character floor would escalate it to a strategy that returns
+the same eleven bytes.
+
+The check runs whatever `cleanScrape` says, because `cleanScrape` chooses what is
+*displayed* and must not change which strategy is chosen or remembered — otherwise
+two callers asking for the same page in different formats teach the deployment
+different things about it.
+
+:::caution[It is a length floor, and that is its limit]
+"Was the page read" is decided by counting characters, which is a proxy for "is
+there anything here". A client-rendered page whose shell renders a nav bar or a
+cookie banner extracts to a few dozen characters of exactly that, clears the
+floor, and is served as the page's content. The case that was reported extracted
+to zero, which is the easy one. See
+[limitation #74](/limitations/#74-strad-fetch-decides-a-page-was-read-by-counting-characters).
+:::
 
 ## There is no boot-time credential probe
 
