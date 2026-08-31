@@ -179,7 +179,13 @@ boundaries.
      ```bash
      node -e "for (const f of ['skills/skills.json','references/references.json']) { JSON.parse(require('fs').readFileSync(f)); console.log(f, 'OK'); }"
      ```
-   - The config example still loads: `npm run spec:render -- --config strad.config.example.yaml --image x --app x >/dev/null` (or at minimum, that its shape still matches `src/config/schema.ts`).
+   - The config example still validates:
+     ```bash
+     npm run config:check -- --config strad.config.example.yaml
+     ```
+     This is the gate CI runs over every config in this repo, and it is a strict
+     parse — an unknown key is a hard error there, so a typo in the example is
+     caught rather than stripped in silence.
    - Commands and code samples in the docs are real — they exist in `package.json`
      scripts, `scripts/`, or `.github/workflows/`.
    - Internal links and file paths still resolve.
