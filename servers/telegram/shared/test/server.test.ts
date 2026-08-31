@@ -1,9 +1,9 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { createGateway, createMCPServer } from "../build/index.js";
+import { createGateway, createMCPServer } from "../src/index.js";
 import {
   fakeClient,
   fakeDialogsWithCollision,
