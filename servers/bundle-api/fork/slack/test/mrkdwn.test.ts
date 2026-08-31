@@ -7,26 +7,26 @@
 // are the tool DESCRIPTION (before the send) and the tool RESULT (after it). Both
 // are asserted here, and so is the promise that neither one rewrites the caller's
 // text.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { lintMrkdwn, mrkdwnAdvisory, MRKDWN_TEXT_GUIDANCE } from '../build/mrkdwn.js';
-import { createRegisterTools } from '../build/tools.js';
-import { postMessageTool } from '../build/tools/post-message.js';
-import { replyToThreadTool } from '../build/tools/reply-to-thread.js';
-import { updateMessageTool } from '../build/tools/update-message.js';
-import { uploadSnippetTool } from '../build/tools/upload-snippet.js';
-import { reactToMessageTool } from '../build/tools/react-to-message.js';
-import { getChannelsTool } from '../build/tools/get-channels.js';
-import { getChannelTool } from '../build/tools/get-channel.js';
-import { getThreadTool } from '../build/tools/get-thread.js';
-import { downloadFileTool } from '../build/tools/download-file.js';
-import { getDmsTool } from '../build/tools/get-dms.js';
-import { getDmTool } from '../build/tools/get-dm.js';
-import { findUserTool } from '../build/tools/find-user.js';
-import { sendDmTool } from '../build/tools/send-dm.js';
+import { lintMrkdwn, mrkdwnAdvisory, MRKDWN_TEXT_GUIDANCE } from '../src/mrkdwn.js';
+import { createRegisterTools } from '../src/tools.js';
+import { postMessageTool } from '../src/tools/post-message.js';
+import { replyToThreadTool } from '../src/tools/reply-to-thread.js';
+import { updateMessageTool } from '../src/tools/update-message.js';
+import { uploadSnippetTool } from '../src/tools/upload-snippet.js';
+import { reactToMessageTool } from '../src/tools/react-to-message.js';
+import { getChannelsTool } from '../src/tools/get-channels.js';
+import { getChannelTool } from '../src/tools/get-channel.js';
+import { getThreadTool } from '../src/tools/get-thread.js';
+import { downloadFileTool } from '../src/tools/download-file.js';
+import { getDmsTool } from '../src/tools/get-dms.js';
+import { getDmTool } from '../src/tools/get-dm.js';
+import { findUserTool } from '../src/tools/find-user.js';
+import { sendDmTool } from '../src/tools/send-dm.js';
 
 // An abridged copy of the message that actually shipped struck through, in
 // #general on 2026-08-11. Six tildes, every one of them meaning "approximately".
@@ -240,7 +240,7 @@ test('the fork renames and drops no upstream tool, and adds exactly the DM four'
   // Read from createRegisterTools rather than a hand-written list, so a tool
   // dropped from ALL_TOOLS in src/tools.ts fails here too. Every caller of the
   // published package addresses these names — upstream's nine are untouched, and
-  // the four the fork ADDS are the DM surface (test/dm.test.mjs covers them).
+  // the four the fork ADDS are the DM surface (test/dm.test.ts covers them).
   assert.deepEqual(await registeredNames(['readonly', 'write']), [
     'slack_download_file',
     'slack_find_user',

@@ -62,7 +62,8 @@ economy, one adult), the two baggage entries were read in the wrong order, and
 departure dates. Details and the evidence for each are in
 [`fork/google-flights/FORK.md`](fork/google-flights/FORK.md).
 
-`npm test` at this level runs both forks' suites, which is what stops a
+`npm test` at this level runs both forks' suites — Vitest over each fork's
+TypeScript sources, with `tsc` still running first — which is what stops a
 re-vendor from quietly reverting either.
 
 Per request we mint a fresh, stateless MCP `Server` + transport and reuse the

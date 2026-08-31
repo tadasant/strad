@@ -17,23 +17,23 @@
 // So: the fallback path is pinned, the scope is pinned into the error text,
 // ambiguity is pinned as a refusal that sends nothing, and a truncated scan is
 // pinned as an answer of its own rather than a "no".
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { createRegisterTools } from '../build/tools.js';
-import { sendDmTool } from '../build/tools/send-dm.js';
-import { getDmTool } from '../build/tools/get-dm.js';
-import { getDmsTool } from '../build/tools/get-dms.js';
-import { findUserTool } from '../build/tools/find-user.js';
-import { resolveUser, userLabel, UserResolutionError } from '../build/tools/resolve-user.js';
-import { openDm, findDmChannel } from '../build/slack-client/lib/open-dm.js';
-import { getDms, listDmChannels } from '../build/slack-client/lib/get-dms.js';
-import { findUsers } from '../build/slack-client/lib/find-users.js';
-import { listUsers } from '../build/slack-client/lib/list-users.js';
-import { lookupUserByEmail } from '../build/slack-client/lib/lookup-user-by-email.js';
-import { createIntegrationMockSlackClient } from '../build/slack-client/slack-client.integration-mock.js';
+import { createRegisterTools } from '../src/tools.js';
+import { sendDmTool } from '../src/tools/send-dm.js';
+import { getDmTool } from '../src/tools/get-dm.js';
+import { getDmsTool } from '../src/tools/get-dms.js';
+import { findUserTool } from '../src/tools/find-user.js';
+import { resolveUser, userLabel, UserResolutionError } from '../src/tools/resolve-user.js';
+import { openDm, findDmChannel } from '../src/slack-client/lib/open-dm.js';
+import { getDms, listDmChannels } from '../src/slack-client/lib/get-dms.js';
+import { findUsers } from '../src/slack-client/lib/find-users.js';
+import { listUsers } from '../src/slack-client/lib/list-users.js';
+import { lookupUserByEmail } from '../src/slack-client/lib/lookup-user-by-email.js';
+import { createIntegrationMockSlackClient } from '../src/slack-client/slack-client.integration-mock.js';
 
 const TADAS = {
   id: 'U0BFTSUN8MD',

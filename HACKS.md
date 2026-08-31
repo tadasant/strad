@@ -2275,11 +2275,11 @@ silent divergence is a silent one. A FORK has the opposite problem and no such
 guard: there is no upstream to diff against, and a re-vendor that pastes
 `experimental/slack/shared/src` over `fork/slack/src` reverts the delta with
 nothing to say so. What stands in for the drift test is
-`servers/bundle-api/fork/slack/test/mrkdwn.test.mjs`, run by `ci.yml`'s
+`servers/bundle-api/fork/slack/test/mrkdwn.test.ts`, run by `ci.yml`'s
 `servers (bundle-api)` leg: it asserts that every write tool leads with the tilde rule,
 that none of them still says "Supports Slack markdown formatting", that the
 registered tool set is exactly the expected thirteen names, and that the bytes
-handed to `chat.postMessage` are the bytes the caller passed. `test/dm.test.mjs`
+handed to `chat.postMessage` are the bytes the caller passed. `test/dm.test.ts`
 pins the DM tools' behaviour and asserts the read-only tier is exactly its seven
 names. A revert fails those. A revert that also deletes the tests does
 not — the same hole `check-tool-policy` has (#46), and the same answer: the test
@@ -2590,7 +2590,7 @@ when it reports an absent baggage entry as `null` rather than as zero.
 **The sharp edge is the same one #55 has.** A fork has no upstream to diff
 against, and a re-vendor that pastes the published package over `fork/google-flights/src`
 reverts every fix with nothing to say so. What stands in for a drift test is
-`servers/bundle-api/fork/google-flights/test/fork.test.mjs`, run by `ci.yml`'s
+`servers/bundle-api/fork/google-flights/test/fork.test.ts`, run by `ci.yml`'s
 `servers (bundle-api)` leg. It asserts the ENCODED `tfs` bytes rather than a round-trip
 through this repo's own schema — a round-trip would pass on the broken numbering,
 because the bug was a disagreement with a schema that lives at Google, not an

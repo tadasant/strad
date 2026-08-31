@@ -52,7 +52,7 @@ Four files, plus one new module. No tool is renamed and none is removed.
 | `src/tools/update-message.ts` | Same three changes, plus the 4,000-character `chat.update` cap — which is what made the original message unrepairable. |
 | `src/tools/upload-snippet.ts` | Documents the **opposite**: snippet content is a file body, uploaded verbatim, and no mrkdwn applies to it. |
 
-`test/mrkdwn.test.mjs` pins all of it, including the parts a careless re-vendor
+`test/mrkdwn.test.ts` pins all of it, including the parts a careless re-vendor
 would revert.
 
 #### Advise, never rewrite
@@ -81,7 +81,7 @@ To repair: slack_update_message with channel_id "C0BG98BRH7U" and message_ts "17
 ```
 
 Each quoted span ENDS at the closing tilde, which is why they read as fragments:
-that is exactly the run of text Slack ate. `test/mrkdwn.test.mjs` pins the first
+that is exactly the run of text Slack ate. `test/mrkdwn.test.ts` pins the first
 one character-for-character.
 
 An advisory is the only in-band signal available: the message has already
@@ -127,7 +127,7 @@ tools are untouched.
 | `src/slack-client/lib/slack-error.ts` | **New.** Carries Slack's `needed` scope into the error message. |
 | `src/server.ts`, `src/types.ts`, `src/tools.ts`, `src/slack-client/slack-client.integration-mock.ts` | The interface, the shapes, the registration table, the mock. |
 
-`test/dm.test.mjs` pins it.
+`test/dm.test.ts` pins it.
 
 #### Naming a recipient
 
