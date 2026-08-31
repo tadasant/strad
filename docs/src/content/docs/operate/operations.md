@@ -40,7 +40,8 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
   What each leg is for:
 
   - **`good-eggs`** — build (typechecks `shared` + `remote`) and its browser-free
-    MCP-App gating tests.
+    tests: the MCP-App gating, the basket read, what a cart result may claim, the
+    favorites read and the login wait.
   - **`fetchpet`** — tests. fetchpet drives a login form nobody here controls, and
     a redesign of it took the mount down in both environments — it listed its four
     tools and failed every call for weeks. Its tests run over a fake browser: they

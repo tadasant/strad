@@ -21,7 +21,7 @@ shared/
 │   ├── telemetry.ts    # browser-span instrumentation
 │   ├── logging.ts      # stderr logging helpers
 │   └── types.ts        # shared types and the Zod input schemas
-└── build/              # built output (tests run against this)
+└── build/              # built output (what `remote/` imports)
 ```
 
 ## Building and testing
@@ -29,13 +29,13 @@ shared/
 ```bash
 npm install
 npm run build
-npm test          # builds, then runs test/*.test.mjs with node:test
+npm test          # builds, then runs test/*.test.ts with vitest
 ```
 
 The tests need no browser and no Good Eggs login. They are the only thing
 defending the fork's deltas against a careless re-vendor, so a change to the
 cart read, the add reconciliation, the removal path, the login or the favorites
-read belongs with one. `login.test.mjs` and `favorites-truthfulness.test.mjs`
+read belongs with one. `login.test.ts` and `favorites-truthfulness.test.ts`
 both drive the real client over a fake page, through the
 `setSharedBrowserProvider` seam, so the post-login wait, the verdict it feeds and
 the favorites read that follows are covered without either. The in-page DOM

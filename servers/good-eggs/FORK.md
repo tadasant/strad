@@ -271,7 +271,7 @@ The failure message carries the page WITHOUT its query string, and without the
 `Login failed` prefix its caller already adds. It becomes the bundle's per-mount
 `degraded` string and the body of every tool error that mount returns.
 
-`shared/test/login.test.mjs` pins all of it over a fake page injected through
+`shared/test/login.test.ts` pins all of it over a fake page injected through
 `setSharedBrowserProvider`, with no browser and no credentials: the `waitUntil`
 argument, the predicate against the real observed URL and the logged-out forms,
 each verdict, and that the password and the query string stay out of the error.
@@ -340,7 +340,7 @@ The tool layer follows the client: `get_favorites`'s error says the favorites ar
 UNKNOWN rather than none, the way `get_cart`'s already did, and its description
 tells the model that an error is not an empty list.
 
-`shared/test/favorites-truthfulness.test.mjs` pins all twelve cases — every row
+`shared/test/favorites-truthfulness.test.ts` pins all twelve cases — every row
 of the table, both `content()`-throws paths, the read's position in the flow, and
 the sign-in redirect — driving the real `getFavorites()` over a fake page through
 `setSharedBrowserProvider`, with the payload built by the same `renderPage`
