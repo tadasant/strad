@@ -403,8 +403,8 @@ all — it is a pinned binary baked into the image (see `servers/onepassword/Doc
 **Tests.** The tree's Vitest suite is at `servers/onepassword/test/`, at the tree
 ROOT rather than inside `shared/`, and imports the vendored TypeScript sources
 from there. A re-vendor overwrites `shared/` and never touches `test/`, so the
-suite costs nothing at re-vendor time — which is the whole reason this tree had no
-tests for as long as it did.
+suite is not part of the merge. The belief that it would have to be is why this
+tree had no tests for as long as it did.
 
 **Undo.** When a shared fix is needed, make it upstream and re-vendor both dirs.
 Longer term, have upstream publish `@pulsemcp/mcp-elicitation` and `shared` as

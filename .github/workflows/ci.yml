@@ -139,7 +139,7 @@ jobs:
   #               give them.
   #
   #   bundle-api  build + test. Six pure-API servers. Four are verbatim vendor
-  #               copies and get no tests here, for the reason onepassword gives
+  #               copies and get no tests here, for the reason pointsyeah gives
   #               below. The other two are FORKED, and their tests are the only
   #               thing defending the delta: a fork has no upstream to argue with it
   #               and no sync script to notice its loss, so a careless re-vendor

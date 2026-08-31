@@ -15,8 +15,14 @@
 import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/**
+ * A queued CLI run. `stdout` is a LIST of chunks on purpose: the real `op` writes
+ * its JSON across however many `data` events the pipe hands over, and the client
+ * has to accumulate them. One chunk per run would let `stdout = data.toString()`
+ * pass every test.
+ */
 type OpRun =
-  | { stdout?: string; stderr?: string; code: number | null }
+  | { stdout?: string[]; stderr?: string[]; code: number | null }
   | { spawnError: Error & { code?: string } };
 
 type SpawnCall = {
@@ -26,15 +32,8 @@ type SpawnCall = {
 };
 
 const op = vi.hoisted(() => ({
-  calls: [] as {
-    command: string;
-    args: string[];
-    env: Record<string, string | undefined>;
-  }[],
-  runs: [] as (
-    | { stdout?: string; stderr?: string; code: number | null }
-    | { spawnError: Error & { code?: string } }
-  )[],
+  calls: [] as SpawnCall[],
+  runs: [] as OpRun[],
 }));
 
 vi.mock("child_process", () => ({
@@ -44,7 +43,12 @@ vi.mock("child_process", () => ({
     options: { env: Record<string, string | undefined> },
   ) => {
     op.calls.push({ command, args: [...args], env: options.env });
-    const run = op.runs.shift() ?? { stdout: "{}", code: 0 };
+    const run = op.runs.shift();
+    // A default would invent a successful run for a test that forgot `nextRun`,
+    // and the failure would surface somewhere unrecognisable downstream.
+    if (!run) {
+      throw new Error(`unqueued op spawn: ${command} ${args.join(" ")}`);
+    }
 
     const proc = new EventEmitter() as EventEmitter & {
       stdout: EventEmitter;
@@ -59,11 +63,17 @@ vi.mock("child_process", () => ({
 
     setImmediate(() => {
       if ("spawnError" in run) {
+        // Node emits both, and the client must not double-settle on the second.
         proc.emit("error", run.spawnError);
+        proc.emit("close", null);
         return;
       }
-      if (run.stdout !== undefined) proc.stdout.emit("data", run.stdout);
-      if (run.stderr !== undefined) proc.stderr.emit("data", run.stderr);
+      for (const chunk of run.stdout ?? []) {
+        proc.stdout.emit("data", Buffer.from(chunk));
+      }
+      for (const chunk of run.stderr ?? []) {
+        proc.stderr.emit("data", Buffer.from(chunk));
+      }
       proc.emit("close", run.code);
     });
 
@@ -94,9 +104,14 @@ function nextRun(run: OpRun): void {
   op.runs.push(run);
 }
 
-/** Queue a successful CLI run whose stdout is `value` as JSON. */
+/**
+ * Queue a successful CLI run whose stdout is `value` as JSON, split across two
+ * `data` events so the client's accumulation is exercised on every call.
+ */
 function nextJson(value: unknown): void {
-  nextRun({ stdout: JSON.stringify(value), code: 0 });
+  const json = JSON.stringify(value);
+  const cut = Math.floor(json.length / 2);
+  nextRun({ stdout: [json.slice(0, cut), json.slice(cut)], code: 0 });
 }
 
 /** The single spawn the test under it provoked. */
@@ -126,21 +141,29 @@ describe("the op invocation", () => {
 
     const call = onlyCall();
     expect(call.env.OP_SERVICE_ACCOUNT_TOKEN).toBe(TOKEN);
-    expect(call.args).not.toContain(TOKEN);
     expect(call.args.join(" ")).not.toContain(TOKEN);
   });
 
   it("leaves a caller-chosen format alone rather than appending a second one", async () => {
-    nextRun({ stdout: '{"ok":true}', code: 0 });
+    nextRun({ stdout: ['{"ok":true}'], code: 0 });
     await executeCommand(TOKEN, ["item", "get", "x", "--format", "csv"]);
 
-    expect(onlyCall().args).toEqual([
-      "item",
-      "get",
-      "x",
-      "--format",
-      "csv",
-    ]);
+    expect(onlyCall().args).toEqual(["item", "get", "x", "--format", "csv"]);
+  });
+
+  it("recognises the short `-f` form of the format flag too", async () => {
+    nextRun({ stdout: ['{"ok":true}'], code: 0 });
+    await executeCommand(TOKEN, ["item", "get", "x", "-f", "csv"]);
+
+    expect(onlyCall().args).toEqual(["item", "get", "x", "-f", "csv"]);
+  });
+
+  it("accumulates stdout across several data events", async () => {
+    nextRun({ stdout: ['{"id":"vau', 'lt-abc","name":"Infra"}'], code: 0 });
+
+    await expect(
+      executeCommand(TOKEN, ["vault", "get", "Infra"]),
+    ).resolves.toEqual({ id: "vault-abc", name: "Infra" });
   });
 });
 
@@ -417,7 +440,10 @@ describe("creating items", () => {
 
 describe("sharing an item", () => {
   it("builds the share flags and asks for JSON exactly once", async () => {
-    nextRun({ stdout: '{"share_url":"https://share.1password.com/s/a"}', code: 0 });
+    nextRun({
+      stdout: ['{"share_url":"https://share.1password.com/s/a"}'],
+      code: 0,
+    });
     await shareItem(TOKEN, "Deploy key", "Infra", {
       expiresIn: "7d",
       emails: ["a@example.com", "b@example.com"],
@@ -441,7 +467,10 @@ describe("sharing an item", () => {
   });
 
   it("omits every optional flag when no options are given", async () => {
-    nextRun({ stdout: '{"share_url":"https://share.1password.com/s/a"}', code: 0 });
+    nextRun({
+      stdout: ['{"share_url":"https://share.1password.com/s/a"}'],
+      code: 0,
+    });
     await shareItem(TOKEN, "Deploy key");
 
     expect(onlyCall().args).toEqual([
@@ -451,6 +480,30 @@ describe("sharing an item", () => {
       "--format",
       "json",
     ]);
+  });
+
+  it("omits --emails for an empty recipient list", async () => {
+    nextRun({
+      stdout: ['{"share_url":"https://share.1password.com/s/a"}'],
+      code: 0,
+    });
+    await shareItem(TOKEN, "Deploy key", undefined, { emails: [] });
+
+    expect(onlyCall().args).toEqual([
+      "item",
+      "share",
+      "Deploy key",
+      "--format",
+      "json",
+    ]);
+  });
+
+  it("classifies a failed share the way a failed read is classified", async () => {
+    nextRun({ stderr: ['"Deploy key" isn\'t an item'], code: 1 });
+
+    await expect(shareItem(TOKEN, "Deploy key")).rejects.toBeInstanceOf(
+      OnePasswordNotFoundError,
+    );
   });
 
   it("reads share_url and the timestamps out of a JSON payload", async () => {
@@ -495,8 +548,9 @@ describe("sharing an item", () => {
 
   it("prefers a share.1password.com URL in plain-text output", async () => {
     nextRun({
-      stdout:
+      stdout: [
         "opening https://my.1password.com/home\nhttps://share.1password.com/s/plain\n",
+      ],
       code: 0,
     });
 
@@ -506,7 +560,10 @@ describe("sharing an item", () => {
   });
 
   it("takes the last URL when none of them is a share link", async () => {
-    nextRun({ stdout: "https://example.com/a\nhttps://example.com/b\n", code: 0 });
+    nextRun({
+      stdout: ["https://example.com/a\nhttps://example.com/b\n"],
+      code: 0,
+    });
 
     await expect(shareItem(TOKEN, "Deploy key")).resolves.toEqual({
       share_url: "https://example.com/b",
@@ -515,8 +572,9 @@ describe("sharing an item", () => {
 
   it("ignores a non-string share_url and falls through to the text scan", async () => {
     nextRun({
-      stdout:
+      stdout: [
         '{"share_url":42,"detail":"link https://share.1password.com/s/nested here"}',
+      ],
       code: 0,
     });
 
@@ -526,7 +584,7 @@ describe("sharing an item", () => {
   });
 
   it("throws when the output holds no URL at all", async () => {
-    nextRun({ stdout: '{"ok":true}', code: 0 });
+    nextRun({ stdout: ['{"ok":true}'], code: 0 });
 
     await expect(shareItem(TOKEN, "Deploy key")).rejects.toThrow(
       OnePasswordCommandError,
@@ -540,7 +598,7 @@ describe("shaping a failure", () => {
     '"Deploy key" isn\'t an item in the "Infra" vault',
     "vault not found",
   ])("reports %j as a not-found error", async (stderr) => {
-    nextRun({ stderr, code: 1 });
+    nextRun({ stderr: [stderr], code: 1 });
 
     await expect(getItem(TOKEN, "Deploy key")).rejects.toBeInstanceOf(
       OnePasswordNotFoundError,
@@ -554,7 +612,7 @@ describe("shaping a failure", () => {
     "invalid token",
     "you are not signed in",
   ])("reports %j as an authentication error", async (stderr) => {
-    nextRun({ stderr, code: 1 });
+    nextRun({ stderr: [stderr], code: 1 });
 
     await expect(getVaults(TOKEN)).rejects.toBeInstanceOf(
       OnePasswordAuthenticationError,
@@ -562,7 +620,7 @@ describe("shaping a failure", () => {
   });
 
   it("reports anything else as a command error carrying the exit code", async () => {
-    nextRun({ stderr: "connection reset by peer", code: 7 });
+    nextRun({ stderr: ["connection reset by peer"], code: 7 });
 
     const error = await getVaults(TOKEN).catch((e: unknown) => e);
 
@@ -574,7 +632,7 @@ describe("shaping a failure", () => {
   });
 
   it("substitutes exit 1 when the CLI dies without an exit code", async () => {
-    nextRun({ stderr: "boom", code: null });
+    nextRun({ stderr: ["boom"], code: null });
 
     const error = await getVaults(TOKEN).catch((e: unknown) => e);
 
@@ -582,7 +640,7 @@ describe("shaping a failure", () => {
   });
 
   it("reports stdout that is not JSON as a command error", async () => {
-    nextRun({ stdout: "not json at all", code: 0 });
+    nextRun({ stdout: ["not json at all"], code: 0 });
 
     const error = await getVaults(TOKEN).catch((e: unknown) => e);
 
@@ -604,7 +662,9 @@ describe("shaping a failure", () => {
   });
 
   it("reports any other spawn failure as a command error", async () => {
-    nextRun({ spawnError: Object.assign(new Error("EACCES"), { code: "EACCES" }) });
+    nextRun({
+      spawnError: Object.assign(new Error("EACCES"), { code: "EACCES" }),
+    });
 
     await expect(getVaults(TOKEN)).rejects.toThrow(
       "Failed to execute command: EACCES",

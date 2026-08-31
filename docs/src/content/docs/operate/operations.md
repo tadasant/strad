@@ -12,7 +12,7 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is an eleven-leg matrix over the server trees:
+of which, `servers`, is a twelve-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -22,7 +22,7 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
   `main`, so without these legs a PR can break a server tree and merge green — a
   type error surfaces first as a failed release build, and a behavioural
   regression surfaces first in production. Each leg reports as `servers (<tree>)`,
-  and `fail-fast: false` keeps one broken tree from cancelling the other ten.
+  and `fail-fast: false` keeps one broken tree from cancelling the other eleven.
 
   **The tree list is not maintained by hand.**
   `test/ci-server-trees.test.ts` compares the matrix against the trees
@@ -68,7 +68,7 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
     `test:e2e`, which CI does not run, resolves X API keys.
   - **`bundle-api`** — build and tests over the `bundle-api` tree. Four of its six
     servers are verbatim vendor copies and get no tests here, for the reason
-    `onepassword` below spells out. The other two are **forks**, and neither has a
+    `pointsyeah` below spells out. The other two are **forks**, and neither has a
     sync script or an upstream to diff against, so their tests are the only thing
     that stops a re-vendor from silently reverting them. `slack` — see
     [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
@@ -114,6 +114,15 @@ of which, `servers`, is an eleven-leg matrix over the server trees:
     skipping it, and a rejected credential does not abort the strategies after
     it — plus the cache bounds a shared container needs and a stdio subprocess
     did not.
+  - **`grafana`** — tests. The proxy in front of the pinned `mcp-grafana` Go
+    binary. Its suite runs against a fake MCP child rather than the real
+    executable, and pins the seam: that the child is spawned with
+    `-disable-write` and `-disable-proxied` (a read-only mount becoming
+    read-write is silent otherwise), that it receives an allowlisted environment
+    rather than the bundle's twenty other credentials, that tools and results are
+    forwarded verbatim, and that a child which dies is replaced on the next call.
+    The binary's own tool count is asserted by `bundle_image`, against the real
+    thing.
 
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting
