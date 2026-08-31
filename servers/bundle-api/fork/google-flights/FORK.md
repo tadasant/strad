@@ -157,7 +157,7 @@ class of failure as reporting that absence as "not included".
 | `src/flights.proto` | The two field numbers, matched to the code. |
 | `src/tools/get-date-grid.ts` | `window_days` and `return_date` params; description states the per-date cost and the no-past-dates guarantee; `round_trip` now requires a return date instead of quietly pricing a one-way. |
 | `src/tools/search-flights.ts` | Description: `fare_brand` is a tier *within* the cabin and does not name the cabin; a `null` baggage value means unknown, not zero; a `null` `legroom` means Google published no measurement for that seat, which is normal for a lie-flat and is not a property of the cabin. |
-| `test/fork.test.mjs` | **New.** Thirty tests over all three, the legroom null, the tool schema, and the fan-out (driven through an injected `fetch`). |
+| `test/fork.test.ts` | **New.** Thirty tests over all three, the legroom null, the tool schema, and the fan-out (driven through an injected `fetch`). |
 
 No tool is renamed, added or removed. The surface is still the three tools the
 `google-flights` slug serves, so every `tools:` policy entry still names a tool

@@ -8,7 +8,7 @@
 //
 // The payload fixtures below are transcribed from real Google Flights responses
 // captured on 2026-08-12; the provenance of each is recorded at its definition.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import protobuf from 'protobufjs';
 
@@ -18,7 +18,7 @@ import {
   isBasicEconomy,
   gridDates,
   MAX_GRID_DAYS,
-} from '../build/flights-client/flights-client.js';
+} from '../src/flights-client/flights-client.js';
 
 // =============================================================================
 // Bug 2 — cabin class and passenger counts reached Google as unknown fields
@@ -460,8 +460,8 @@ test('the window crosses a month and a year boundary correctly', () => {
 // silently drop window_days, return_date and the round-trip guard while leaving
 // all sixteen green. These cover that file, and the loop that calls it.
 
-import { GetDateGridSchema } from '../build/tools/get-date-grid.js';
-import { getDateGrid } from '../build/flights-client/flights-client.js';
+import { GetDateGridSchema } from '../src/tools/get-date-grid.js';
+import { getDateGrid } from '../src/flights-client/flights-client.js';
 
 test('the grid schema defaults, caps, and rejects a round trip with no return leg', () => {
   const base = { origin: 'AKL', destination: 'SFO' };
