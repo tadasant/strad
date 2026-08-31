@@ -798,14 +798,17 @@ workflow builds the image, loads it locally, and runs `op --version` inside it
 before publishing — asserting the pinned CLI against the real artifact rather than
 against the Dockerfile it came from. It is `runs-on: self-hosted` like everything
 else here, so the tag it verifies is a name on a daemon the whole box shares.
+Its own `concurrency` group keeps two runs of _it_ from overlapping; every other
+job on the box is unaffected by that, and is what the tag has to be safe from.
 Under a fixed `strad-server-onepassword:ci`, a concurrent job rebuilding that tag
 between the build and the `docker run` moves the assertion onto an image this run
 never built — and it passes, because both came from the same Dockerfile. Nothing
 errors, and the release publishes having verified someone else's artifact. So the
 verification tag is `strad-server-onepassword:ci-<run id>-<run attempt>`, the
 image and its containers carry the `strad-ci` label, the job opens with the same
-day-old sweep the CI jobs use, and an `if: always()` teardown removes this run's
-tag and no other.
+day-old sweep `bundle-google-ci.yml` uses — the two prunes `ci.yml` runs, plus
+the running-container pass those two prunes cannot reach — and an `if: always()`
+teardown removes this run's tag and no other.
 
 The published tags are deliberately not part of that: `:latest` and
 `:sha-<commit>` are the release, and App Platform pulls them by name. A per-run

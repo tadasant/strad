@@ -1064,7 +1064,7 @@ claim any fixed name — a path, a container, a host port, an image tag. The pro
 deploy has not moved off `/tmp/spec.json`
 ([#115](https://github.com/tadasant/strad/issues/115)), and it is the instance
 that remains open. The docker half is closed: every job in this repo that builds
-an image and runs it now tags it per run, because a concurrent job rebuilding a
+an image and runs it tags it per run, because a concurrent job rebuilding a
 shared `strad:ci` between the build and the `docker run` lets an assertion pass
 against an image the run never built — the "`/mcp` with no token returns 401" one
 in `ci.yml` ([#117](https://github.com/tadasant/strad/issues/117)), the mount

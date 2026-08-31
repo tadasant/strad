@@ -78,17 +78,29 @@ describe("release-onepassword-image.yml cannot verify a concurrent job's artifac
         `wrong-artifact green on a release.`,
     ).toMatch(/^\$\{\{\s*env\.[A-Z_]+\s*\}\}$/);
 
-    // …and the env it points at is where the run id actually is.
-    const values = [...code().matchAll(/^\s+[A-Z_]+_IMAGE:\s+(.+)$/gm)].map(
-      (m) => m[1]!,
-    );
+    // …and the env var it names — that one, not merely some var in the job —
+    // is where the run id actually is. Reading any `*_IMAGE:` here instead
+    // would pass on a workflow that declares a per-run var, leaves it unused,
+    // and builds `${{ env.VERIFY_TAG }}` off a fixed one: exactly the shape a
+    // half-finished refactor leaves behind.
+    const name = tags[0]!.match(/env\.([A-Z_]+)/)![1]!;
+    const value = envValue(name);
 
-    expect(values.length).toBeGreaterThanOrEqual(1);
-
-    for (const value of values) {
-      expect(value).toMatch(PER_RUN);
-      expect(value).toMatch(PER_ATTEMPT);
-    }
+    expect(
+      value,
+      `${WORKFLOW} builds \`\${{ env.${name} }}\`, and no job-level ` +
+        `\`${name}:\` declares what that is.`,
+    ).not.toBeNull();
+    expect(
+      value!,
+      `${WORKFLOW} builds ${name}=${value}, which no run can call its own.`,
+    ).toMatch(PER_RUN);
+    expect(
+      value!,
+      `${WORKFLOW} builds ${name}=${value}, which carries the run id but not ` +
+        `the ATTEMPT — so a re-run of a run whose first attempt leaked the tag ` +
+        `retries straight back into the collision it is retrying out of.`,
+    ).toMatch(PER_ATTEMPT);
   });
 
   it("leaves the PUBLISHED tags alone", () => {
@@ -97,7 +109,16 @@ describe("release-onepassword-image.yml cannot verify a concurrent job's artifac
     // Whoever run-scopes the verification tag must not "fix" these too.
     const tags = tagsOf("Build and push");
 
-    expect(tags).toEqual(PUBLISHED);
+    // Named individually rather than compared as a list: a seventh tag is a
+    // decision someone may legitimately make, and it must go through the loop
+    // below rather than redden this line with a diff of two arrays.
+    for (const required of PUBLISHED) {
+      expect(
+        tags,
+        `${WORKFLOW} no longer publishes ${required}, which is what App ` +
+          `Platform pulls.`,
+      ).toContain(required);
+    }
 
     for (const tag of tags) {
       expect(
@@ -118,16 +139,16 @@ describe("release-onepassword-image.yml cannot verify a concurrent job's artifac
         (m) => m[1]!,
       ),
     );
-    const runs = code()
-      .split("\n")
-      .filter((line) => /docker run\b/.test(line));
+    const runs = dockerRuns();
 
     expect(
       images.size,
       `${WORKFLOW} declares no \`*_IMAGE\` env var, so there is nothing for ` +
         `its \`docker run\`s to be checked against.`,
     ).toBeGreaterThanOrEqual(1);
-    expect(runs.length).toBeGreaterThanOrEqual(2);
+    // Guard the guard only — the invariant is what each run NAMES, not how
+    // many of them there are.
+    expect(runs.length).toBeGreaterThanOrEqual(1);
 
     for (const line of runs) {
       const referenced = [...line.matchAll(/"\$([A-Z][A-Z0-9_]*)"/g)].map(
@@ -153,11 +174,18 @@ describe("release-onepassword-image.yml cannot verify a concurrent job's artifac
     // publishes nothing and this list is legitimately EMPTY — no guard-the-guard
     // minimum for that reason. The point is that ADDING a fixed `-p 8080:8080`
     // would hand it a box-wide resource the second concurrent job cannot bind.
-    const publishes = [
-      ...code().matchAll(
-        /(?:^|\s)(?:-[a-zA-Z]*p|--publish)[=\s]?\s*([\d.:[\]]+)/g,
-      ),
-    ].map((m) => m[1]!);
+    //
+    // Read off the `docker run` lines rather than the whole file, unlike the
+    // sibling tests: this workflow's verify step runs `grep -oP`, and a `-p`
+    // scan over every line reads that as a port publication.
+    const runs = dockerRuns();
+    const publishes = runs
+      .flatMap((line) => [
+        ...line.matchAll(
+          /(?:^|\s)(?:-[a-zA-Z]*p|--publish)[=\s]?\s*([\d.:[\]]+)/g,
+        ),
+      ])
+      .map((m) => m[1]!);
 
     for (const spec of publishes) {
       expect(
@@ -165,6 +193,19 @@ describe("release-onepassword-image.yml cannot verify a concurrent job's artifac
         `${WORKFLOW} publishes ${spec}, which binds a fixed host port every ` +
           `concurrent job competes for. Leave the host port empty.`,
       ).toMatch(/^(?:[\d.]+)?::\d+$/);
+    }
+
+    // Bare `-P` picks free ports too, so it survives the check above by taking
+    // no argument at all — but it binds them on EVERY interface, which puts
+    // whatever the container serves on the runner box's public address for the
+    // life of the job.
+    for (const line of runs) {
+      expect(
+        line,
+        `${WORKFLOW} runs \`${line.trim()}\`, publishing with \`-P\`, which ` +
+          `picks free ports but binds them on every interface. Name the ` +
+          `loopback address instead.`,
+      ).not.toMatch(/(?:^|\s)-[a-zA-Z]*P(?:\s|$)/);
     }
   });
 
@@ -235,6 +276,19 @@ describe("release-onepassword-image.yml cannot verify a concurrent job's artifac
     }
   });
 });
+
+/** Every line of the job that starts a container. */
+function dockerRuns(): string[] {
+  return code()
+    .split("\n")
+    .filter((line) => /docker run\b/.test(line));
+}
+
+/** The value of a job-level `env:` key, or null if the job declares no such key. */
+function envValue(name: string): string | null {
+  const m = code().match(new RegExp(`^\\s+${name}:[^\\S\\n]+(\\S.*)$`, "m"));
+  return m ? m[1]!.trim() : null;
+}
 
 /** Every `docker rm -f <x>` / `docker rmi -f <x>` target in the given text. */
 function* wf_rm(wf: string): Generator<string> {

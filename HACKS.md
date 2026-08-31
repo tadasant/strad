@@ -1798,7 +1798,7 @@ the deploy would have gone green. That is why the guard checks the app NAME and
 not merely that a name exists.
 
 **The same shape, elsewhere.** A shared path is one instance of "two jobs agree
-on a name nobody coordinates", and this box has others:
+on a name nobody coordinates", and this box has had others:
 
 - tadasant-internal's prod deploy still writes `/tmp/spec.json`, and is still
   exposed to any _other_ job on those runners that picks the same name.
