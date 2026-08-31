@@ -20,6 +20,7 @@ import {
   SpanStatusCode,
   trace,
 } from "@opentelemetry/api";
+import type { ServerKind } from "../../config/schema.ts";
 import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
 import {
   errorKind,
@@ -166,7 +167,7 @@ class Conn {
  */
 export class HttpServerAdapter implements ServerAdapter {
   readonly slug: string;
-  readonly kind: "remote-http" | "local-tunnel" | "supplementary-image";
+  readonly kind: Exclude<ServerKind, "builtin">;
   /** See `ServerAdapter.host`. Set for `local-tunnel` and nothing else. */
   readonly host?: LocalHost;
 
@@ -199,7 +200,7 @@ export class HttpServerAdapter implements ServerAdapter {
   constructor(
     private readonly opts: {
       slug: string;
-      kind: "remote-http" | "local-tunnel" | "supplementary-image";
+      kind: Exclude<ServerKind, "builtin">;
       /** Resolve the current URL + headers. Called on every operation. */
       endpoint: () => Promise<HttpEndpoint>;
       /**

@@ -1,6 +1,6 @@
 ---
 title: The server-config interface
-description: strad's three server kinds — remote-http, supplementary-image, and builtin — with the one-line-to-add-a-server examples and the fields each kind takes.
+description: strad's server kinds — remote-http, local-tunnel, supplementary-image, and builtin — with the one-line-to-add-a-server examples and the fields each kind takes.
 sidebar:
   order: 1
 ---

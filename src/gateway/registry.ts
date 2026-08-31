@@ -176,44 +176,19 @@ export class Registry {
 
       // --- core mode ---
       switch (server.kind) {
-        case "remote-http": {
-          adapters.set(
-            server.slug,
-            new HttpServerAdapter({
-              slug: server.slug,
-              kind: "remote-http",
-              // The url AND the headers are re-resolved per operation: a
-              // third-party bearer token is the single most likely thing in a
-              // strad config to be rotated, and it lives right here.
-              endpoint: async () =>
-                resolving(server.slug, async () => ({
-                  url: await resolveRefsAsync(
-                    server.url,
-                    secrets.forServer(server.slug),
-                  ),
-                  headers: await resolveMapAsync(
-                    server.headers,
-                    secrets.forServer(server.slug),
-                  ),
-                })),
-              timeoutMs: server.timeoutMs,
-            }),
-          );
-          slugs.push(server.slug);
-          break;
-        }
-
+        // One transport, one endpoint thunk. The url AND the headers are
+        // re-resolved per operation for both: a third-party bearer token is the
+        // single most likely thing in a strad config to be rotated, and a tunnel
+        // URL is exactly the kind of value that changes without a deploy (a
+        // Cloudflare quick tunnel mints a new hostname every restart). For both
+        // kinds, resolving per call is the point rather than an inherited detail.
+        case "remote-http":
         case "local-tunnel": {
-          // Same transport as remote-http, and the same per-operation endpoint
-          // thunk — a tunnel URL is exactly the kind of value that changes
-          // without a deploy (a Cloudflare quick tunnel mints a new hostname
-          // every restart), so resolving it per call is the point rather than
-          // an inherited detail.
           adapters.set(
             server.slug,
             new HttpServerAdapter({
               slug: server.slug,
-              kind: "local-tunnel",
+              kind: server.kind,
               endpoint: async () =>
                 resolving(server.slug, async () => ({
                   url: await resolveRefsAsync(
@@ -226,21 +201,27 @@ export class Registry {
                   ),
                 })),
               timeoutMs: server.timeoutMs,
-              // The one behavioural difference from remote-http: an absent
-              // machine must be a fast, legible failure rather than a hang.
-              connectTimeoutMs: server.connectTimeoutMs,
+              // The one behavioural difference a local-tunnel carries: an absent
+              // machine must be a fast, legible failure rather than a hang...
+              connectTimeoutMs:
+                server.kind === "local-tunnel"
+                  ? server.connectTimeoutMs
+                  : undefined,
               // ...and what to tell a caller when it IS absent. Built here, from
               // config alone, because this is the only place that has both the
               // entry and the adapter — and because everything downstream of it
               // (the troubleshooting tool, the error message) must be strad's
               // own words rather than an upstream's.
-              host: {
-                slug: server.slug,
-                hostname: plainHostname(server.url),
-                machine: server.recovery.machine,
-                commands: server.recovery.commands,
-                notes: server.recovery.notes,
-              },
+              host:
+                server.kind === "local-tunnel"
+                  ? {
+                      slug: server.slug,
+                      hostname: plainHostname(server.url),
+                      machine: server.recovery.machine,
+                      commands: server.recovery.commands,
+                      notes: server.recovery.notes,
+                    }
+                  : undefined,
             }),
           );
           slugs.push(server.slug);
@@ -312,6 +293,18 @@ export class Registry {
             );
           }
           slugs.push(server.slug);
+          break;
+        }
+
+        default: {
+          // Compile-time only. A kind added to the schema and not handled here
+          // fails `npm run typecheck` on this assignment, which is the point of
+          // deriving the union rather than restating it. At RUNTIME this stays a
+          // skip: Zod's discriminated union has already rejected an unknown kind
+          // before the registry sees it, and boot is deliberately lenient so a
+          // rollback does not become an outage.
+          const unhandled: never = server;
+          void unhandled;
           break;
         }
       }

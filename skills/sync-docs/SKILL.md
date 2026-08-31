@@ -68,7 +68,7 @@ Cast a wide net, then narrow to what the diff actually affects:
 
 | Surface                                      | What it covers                                                                                                                                                    |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `README.md`                                  | Project overview, the one rule, the three server kinds, auth, secrets, develop.                                                                                   |
+| `README.md`                                  | Project overview, the one rule, the server kinds, auth, secrets, develop.                                                                                         |
 | `AGENTS.md` (`CLAUDE.md` is a symlink to it) | House rules for humans and coding agents: conventions, architecture orientation, the docs rule.                                                                   |
 | **`docs/`**                                  | **The documentation site** (Astro Starlight → Cloudflare Pages). Pages live in `docs/src/content/docs/**`. This is the canonical prose.                           |
 | `HACKS.md`                                   | The numbered catalog of deliberate shims. Every entry has a status and an undo. `docs/src/content/docs/limitations.md` is its public face and must agree with it. |

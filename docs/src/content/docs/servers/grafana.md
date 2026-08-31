@@ -15,8 +15,7 @@ nothing else.
 
 ## Why it is baked into the image
 
-strad knows three kinds of server — `remote-http`, `supplementary-image` and
-`local-tunnel` — and **none of them runs a local command**. There is no
+**No strad server kind runs a local command.** There is no
 `command:` in the config schema, deliberately: a gateway whose config can spawn
 processes on the box is a different security posture than one that cannot.
 

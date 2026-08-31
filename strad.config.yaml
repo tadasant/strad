@@ -7,7 +7,7 @@
 # spec does exactly that), or by baking its own file in and pointing
 # STRAD_CONFIG at it.
 #
-# See strad.config.example.yaml for a config with all three server kinds.
+# See strad.config.example.yaml for a fully annotated config.
 
 version: 1
 

@@ -346,6 +346,45 @@ servers:
     await registry.close();
   });
 
+  it("gives a remote-http slug no host, and a local-tunnel one", async () => {
+    // `remote-http` and `local-tunnel` build the SAME adapter from one merged
+    // registry case, so `host` is a ternary on `server.kind` rather than a case
+    // boundary. Inverting it compiles and lints, and would hand every
+    // third-party upstream a `troubleshoot_host` tool — mcpServer gates that on
+    // `host` alone. (The sibling `connectTimeoutMs` ternary needs no test: the
+    // inverted branch narrows to `remote-http`, which has no such field, so the
+    // compiler rejects it.)
+    const config = parseConfig(`${BASE}
+servers:
+  - slug: third-party
+    kind: remote-http
+    url: "https://mcp.example.com/mcp"
+    entitlements: [admin]
+  - slug: anki
+    kind: local-tunnel
+    url: "http://127.0.0.1:9/mcp"
+    connectTimeoutMs: 750
+    entitlements: [admin]
+`);
+    const registry = await Registry.build({
+      config,
+      secrets: sharedSecretProviders(new EnvSecretProvider({})),
+      mode: "core",
+      env: {},
+    });
+
+    const remote = registry.get("third-party");
+    expect(remote?.kind).toBe("remote-http");
+    // Somebody else's URL: there is no machine anyone can go and switch on.
+    expect(remote?.host).toBeUndefined();
+
+    const tunnel = registry.get("anki");
+    expect(tunnel?.kind).toBe("local-tunnel");
+    expect(tunnel?.host).toMatchObject({ slug: "anki", hostname: "127.0.0.1" });
+
+    await registry.close();
+  });
+
   it("does NOT relax the rule for a broken server of any other kind", async () => {
     // The regression guard. The exemption is scoped to an offline local-tunnel
     // and nothing else: a `supplementary-image` that cannot be listed is still
