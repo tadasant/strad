@@ -15,8 +15,7 @@ nothing else.
 
 ## Why it is baked into the image
 
-None of strad's server kinds — `remote-http`, `local-tunnel`,
-`supplementary-image`, `builtin` — **runs a local command**. There is no
+**No strad server kind runs a local command.** There is no
 `command:` in the config schema, deliberately: a gateway whose config can spawn
 processes on the box is a different security posture than one that cannot.
 

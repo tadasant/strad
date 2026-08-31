@@ -100,9 +100,8 @@ instance in `infra/strad.staging.yaml`.
 ## The one upstream that is not JavaScript
 
 Grafana ships its MCP server as a **Go binary** and a Docker image, and as
-nothing else — there is no npm package to build into a tree. strad's config knows
-three server kinds and none of them runs a local command, so the way to host it
-is to bake it: `Dockerfile` fetches the pinned release, verifies its SHA-256
+nothing else — there is no npm package to build into a tree. no strad server kind
+runs a local command, so the way to host it is to bake it: `Dockerfile` fetches the pinned release, verifies its SHA-256
 against a digest **in this repo** (not against the checksums file the same server
 serves), and puts it on PATH. `servers/grafana` is the other half — an MCP proxy
 that supervises the binary over stdio and forwards `tools/list` and `tools/call`

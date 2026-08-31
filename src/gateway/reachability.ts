@@ -57,7 +57,7 @@ import { ServerUnconfiguredError } from "./unconfigured.ts";
  * and it will not clear until somebody rotates it — so it keeps `unreachable`
  * and keeps counting as degraded.
  *
- * `kind` rides along because the three are not equally actionable: a
+ * `kind` rides along because the kinds are not equally actionable: a
  * `supplementary-image` that cannot be reached is a component WE deploy and is a
  * deploy failure, while a `remote-http` on the public internet having a bad
  * afternoon is somebody else's. The deploy gate filters on it.

@@ -295,6 +295,18 @@ export class Registry {
           slugs.push(server.slug);
           break;
         }
+
+        default: {
+          // Compile-time only. A kind added to the schema and not handled here
+          // fails `npm run typecheck` on this assignment, which is the point of
+          // deriving the union rather than restating it. At RUNTIME this stays a
+          // skip: Zod's discriminated union has already rejected an unknown kind
+          // before the registry sees it, and boot is deliberately lenient so a
+          // rollback does not become an outage.
+          const unhandled: never = server;
+          void unhandled;
+          break;
+        }
       }
     }
 

@@ -59,8 +59,8 @@ it's relevant.
 ### 4. A platform, not a bundle of integrations
 
 The core ships with **zero** servers baked in. Attaching one is a single entry
-under `servers:` — one of three kinds (`remote-http`, `supplementary-image`,
-`builtin`), unified behind one adapter interface. That config file is the whole
+under `servers:` — one of four kinds (`remote-http`, `local-tunnel`,
+`supplementary-image`, `builtin`), unified behind one adapter interface. That config file is the whole
 extension surface, and it is also the deployment: the server list is what decides
 how many containers exist and how they are wired.
 
