@@ -1319,8 +1319,9 @@ cached for the whole TTL.
 **Undo.** Delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
 `src/gateway/bundle-presence.ts`, `src/http/presence.ts`,
 the `presence` entry in `scripts/sync-vendored.mjs`,
-`servers/bundle/host/src/presence.ts` and its route
-in `servers/bundle/host/src/index.ts`, the `presence`/`store` options on
+`servers/bundle/host/src/presence.ts`, `servers/bundle/host/src/presence-route.ts`
+and the route that mounts it in `servers/bundle/host/src/index.ts`, the
+`presence`/`store` options on
 `ObserveOptions`, `readDeploymentSecretStatus`, the `unrenderable` state, the
 `STRAD_PARAM_KEYS` env var in `src/deploy/appspec.ts`, and
 `resolveDetailed`/`renderAll` in `src/secrets/parameters/gcp.ts`. The console
@@ -2403,10 +2404,21 @@ envprefix:sync`), like `presence.ts` and `wire.ts` — one entry each in the
 - **The slug schema got tighter to make the rule injective.** No `--`, no leading
   or trailing `-`. Without it `a--b` + `C` and `a` + `B__C` are one variable. No
   slug in staging or prod has ever used either shape.
-- **The bundle host has no test suite.** It is typechecked by the `bundle_image`
-  CI job and nothing more, so `extraSlugs` and the per-slug wiring are covered
-  through the modules they call and the two trees' own suites. Pre-existing, and
-  this made it matter more.
+- **The bundle host's suite covers the discovery, not the mounting.**
+  `servers/bundle/host` now has one (`npm test`, vitest over its TypeScript
+  sources), and `extraSlugs` is in it: the complete-set rule, the default slug,
+  the sort, the discovery log line, and remote-filesystem's double prefix. What
+  is still uncovered is everything that needs `/app/trees` to exist —
+  `buildMounts()` itself, the deferred-instance loop that refuses a discovered
+  slug colliding with a mount this image already serves, and the two loaders that
+  build a per-slug instance. Those are still reached only by the `bundle_image`
+  job, which asserts the mount SET against a booted container and exercises no
+  branch. AND THE SUITE RUNS NOWHERE IN CI: `ci.yml`'s `servers` matrix names a
+  leg `servers/<tree>`, and `test/ci-server-trees.test.ts` reads those names to
+  check the matrix against the Dockerfile — so `servers/bundle/host`, one level
+  deeper, cannot be spelled as a leg without changing how the matrix addresses a
+  nested tree. Issue #229. Until then a broken assertion here goes red locally and
+  green in CI, which is the failure #154 was filed about.
 
 **Undo.** Delete the per-slug post-pass in `src/deploy/appspec.ts` (the path-group
 loop and the two checks after it) and restore the unconditional throw; drop `env:`
