@@ -72,8 +72,9 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
     sync script or an upstream to diff against, so their tests are the only thing
     that stops a re-vendor from silently reverting them. Both fork suites run
     under Vitest against their TypeScript sources, and `npm test` in each is
-    `npm run build && vitest run`, so `tsc` over the tree still gates the PR.
-    `slack` — see
+    `npm run build && vitest run`, so each fork is typechecked before its own
+    suite runs; the leg's separate build step is what typechecks the four
+    vendored trees and `remote/`. `slack` — see
     [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
     renders mrkdwn, which is not Markdown: `~text~` is strikethrough, so a message
     using `~` for "approximately" posts successfully with paragraphs struck out,
