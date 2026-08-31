@@ -217,8 +217,10 @@ describe("no build runs on a builder its own job does not own", () => {
     // expression, and a malformed one fails the whole action to load. That matters
     // most in a local action: actionlint does NOT read a composite's `run:`
     // blocks even when it follows the `uses:` to them, so `ci.yml`'s workflow
-    // lint cannot see this, and the steps that load `build-push` only run on
-    // `main` (#51). Nothing else in a PR build would say a word.
+    // lint cannot see this. `ci.yml` also RUNS `build-push` on every PR (#73),
+    // which would catch a manifest that does not load — but a `run:` block only
+    // executes on the branch a step is reached from, and the ones below the first
+    // attempt are reached only when a build has already failed.
     for (const { file, job, steps } of jobs())
       for (const step of steps)
         expect(
@@ -246,9 +248,12 @@ describe("no build runs on a builder its own job does not own", () => {
  * That is not the step failing. The manifest fails validation, so the action
  * fails to load, so the step that calls it fails instantly — which on
  * 2026-08-11 was all eight release workflows on `main`, on one commit, seconds
- * and before a single build ran. It shipped green because nothing on the PR path
- * loads this action (#51) and `actionlint` validates an action's interface
- * without evaluating its prose. HACKS.md #53.
+ * and before a single build ran. It shipped green because no PR job loaded this
+ * action then — every call site was a release workflow — and `actionlint`
+ * validates an action's interface without evaluating its prose. `ci.yml` loads
+ * it on every PR now (#73), which is the other half of the same guard: a load
+ * proves the file parses today, and this assertion is what keeps the next
+ * example out of a description. HACKS.md #53.
  */
 describe("an action manifest's prose is never parsed as code", () => {
   /**

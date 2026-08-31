@@ -1,7 +1,7 @@
 name: Build and push an image
 description: >-
   docker/build-push-action, retried when the registry refuses the push. Wraps
-  every step in this repo that pushes to ghcr.
+  every step in this repo that builds an image, pushing or not.
 
 # WHY THIS EXISTS
 #
@@ -37,6 +37,29 @@ description: >-
 # See HACKS.md #51: this also hides a persistent ghcr permission change behind
 # three identical 403s, so read the attempt warnings before believing "flake".
 #
+# A build-only run — `push: false`, or ANY run triggered by a pull request — has
+# no registry to refuse it, so there is no flake to absorb and the retry would
+# only rebuild a broken `Dockerfile` twice more. The step after the first attempt
+# ends the run instead.
+#
+# WHY THE PULL-REQUEST CASE IS DECIDED HERE, ONCE. Until this existed, nothing on
+# the PR path loaded this action at all: every call site was a release workflow,
+# and those run on `main` only. So the first execution of a change to this file
+# was also its first production run, and on 2026-08-11 that cost eight
+# simultaneously red release workflows and three follow-up merges to settle
+# (HACKS.md #53, #73). `ci.yml` now builds both of its images through this
+# action, on every pull request. That only works if a pull-request run cannot
+# push, and the way to guarantee it is one derivation in one file rather than a
+# condition repeated across nine workflows: the mode step below folds the event
+# name in, so a `push: true` call site reached from a pull request builds and
+# publishes nothing. It is not a condition a call site can forget.
+#
+# It is not the ONLY thing standing between a pull request and ghcr, and must not
+# become it: no workflow reachable from either PR event logs in to a registry or
+# asks for `packages: write`, which is what
+# `test/workflow-pr-build-coverage.test.ts` holds still. This is the second lock,
+# on the door the credential is not behind.
+#
 # The inputs below are the ones the call sites use, and a `with:` key that is not
 # among them is dropped with a runner warning rather than an error. Adding a
 # `docker/build-push-action` input to a call site means declaring it here first.
@@ -52,7 +75,7 @@ description: >-
 # and setup-buildx, then the step whose `uses:` is this action fails instantly —
 # in every workflow that calls it, before any build runs.
 # It reddened all eight release workflows on 2026-08-11 (HACKS.md #53). There is
-# backslash escape either. Name an expression in prose, as the fields below do.
+# no backslash escape either. Name an expression in prose, as the fields below do.
 
 inputs:
   builder:
@@ -85,6 +108,28 @@ inputs:
     default: ""
   cache-to:
     description: buildx `--cache-to`. Empty writes no cache — which is how a branch build avoids poisoning the release cache.
+    required: false
+    default: ""
+  push:
+    description: >-
+      Whether this call INTENDS to push. `true` or `false`, spelled exactly;
+      anything else is an error rather than a falsy value, because a typo that
+      read as `false` would be a release that silently published nothing. It is
+      an intent, not the last word — a run triggered by a pull request never
+      pushes whatever this says. See the mode step below.
+    required: false
+    default: "true"
+  load:
+    description: >-
+      Load the built image into the local docker daemon, so a later step can
+      `docker run` it. Off for a release, which has no use for it and pays the
+      export.
+    required: false
+    default: "false"
+  labels:
+    description: >-
+      Newline-separated `KEY=value` image labels. `ci.yml` labels what it builds
+      so its sweep step can find what a killed job left behind.
     required: false
     default: ""
 
@@ -122,6 +167,55 @@ runs:
         fi
         echo "building on ${BUILDER}"
 
+    # THE one place that decides whether anything leaves this runner.
+    #
+    # A pull request may build; it may not publish. Every call site's `push:`
+    # is an intent, and this step is where the intent meets the event — so a
+    # release workflow given a `pull_request` trigger, or a new call site that
+    # forgets to say `push: false`, cannot publish an image from an unreviewed
+    # branch by omission. There is no second copy of this rule to keep in sync.
+    #
+    # An unrecognised intent is an ERROR, not a falsy value: `push: no` read as
+    # "do not push" would be a release that goes green having published nothing,
+    # and the next deploy would find no image. Fail on the spelling instead.
+    #
+    # `test/workflow-pr-build-coverage.test.ts` RUNS this script over each case
+    # rather than reading it, for the reason the builder guard's test gives: an
+    # inverted comparison still contains every string a grep would look for.
+    - name: Decide whether this run publishes
+      id: mode
+      shell: bash
+      env:
+        WANT_PUSH: ${{ inputs.push }}
+        LOAD: ${{ inputs.load }}
+        EVENT: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        case "${WANT_PUSH:-}" in
+          true | false) ;;
+          *) echo "::error::build-push got push='${WANT_PUSH:-}'; spell it exactly true or false."; exit 1 ;;
+        esac
+        case "${LOAD:-}" in
+          true | false) ;;
+          *) echo "::error::build-push got load='${LOAD:-}'; spell it exactly true or false."; exit 1 ;;
+        esac
+        push="$WANT_PUSH"
+        # Both spellings. `pull_request_target` is the sharper one: it runs
+        # against the BASE ref with the full write token, so a workflow that
+        # grew one would be the single event where an unreviewed branch could
+        # reach ghcr with a real credential.
+        case "${EVENT:-}" in
+          pull_request | pull_request_target)
+            push=false
+            if [ "$WANT_PUSH" = "true" ]; then
+              echo "::notice::${EVENT}: building without pushing. A pull-request run never publishes an image."
+            fi
+            ;;
+        esac
+        echo "event=${EVENT:-<none>} push=${push} load=${LOAD}"
+        echo "push=${push}" >> "$GITHUB_OUTPUT"
+        echo "load=${LOAD}" >> "$GITHUB_OUTPUT"
+
     - name: Build and push
       id: attempt-1
       uses: docker/build-push-action@v6
@@ -130,11 +224,30 @@ runs:
         builder: ${{ inputs.builder }}
         context: ${{ inputs.context }}
         file: ${{ inputs.file }}
-        push: true
+        push: ${{ steps.mode.outputs.push }}
+        load: ${{ steps.mode.outputs.load }}
         tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
         build-args: ${{ inputs.build-args }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}
+
+    # The retry absorbs a refused blob, and a build-only run has no blob to
+    # refuse: nothing left this runner, so a failure here is the `Dockerfile`, the
+    # build context or the wiring, every time. Rebuilding it twice more would only
+    # spend a pull request's wall clock reaching the same red — and a bundle build
+    # is thirteen dependency trees.
+    #
+    # Failing here is what stops that: a composite action's steps stop at the
+    # first one that exits non-zero, so the two attempts below are unreachable on
+    # a build-only run rather than gated. Delete this step and they become
+    # reachable again — slower, still red, never green.
+    - name: A build-only run has no refused push to retry
+      if: steps.attempt-1.outcome == 'failure' && steps.mode.outputs.push != 'true'
+      shell: bash
+      run: |
+        echo "::error::the build failed and this run publishes nothing, so there is no refused blob to retry. Read the build log above: this is the build, not the registry."
+        exit 1
 
     - name: Wait, then try again
       if: steps.attempt-1.outcome == 'failure'
@@ -152,8 +265,10 @@ runs:
         builder: ${{ inputs.builder }}
         context: ${{ inputs.context }}
         file: ${{ inputs.file }}
-        push: true
+        push: ${{ steps.mode.outputs.push }}
+        load: ${{ steps.mode.outputs.load }}
         tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
         build-args: ${{ inputs.build-args }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}
@@ -175,8 +290,10 @@ runs:
         builder: ${{ inputs.builder }}
         context: ${{ inputs.context }}
         file: ${{ inputs.file }}
-        push: true
+        push: ${{ steps.mode.outputs.push }}
+        load: ${{ steps.mode.outputs.load }}
         tags: ${{ inputs.tags }}
+        labels: ${{ inputs.labels }}
         build-args: ${{ inputs.build-args }}
         cache-from: ${{ inputs.cache-from }}
         cache-to: ${{ inputs.cache-to }}

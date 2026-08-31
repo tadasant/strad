@@ -28,11 +28,17 @@ jobs:
       - name: Format
         run: npm run format:check
 
-      # Nothing else in a PR build reads a workflow. `.github/actions/build-push`
-      # is loaded only by steps that push to ghcr, and those run on `main` — so a
-      # malformed `action.yml` or a typo'd `uses:` merges green and first shows up
-      # as a startup_failure on the release path, where the fix is another merge.
+      # Nothing else in a PR build READS a workflow, and a malformed `action.yml`
+      # or a typo'd `uses:` on the release path would otherwise merge green and
+      # first show up as a startup_failure, where the fix is another merge.
       # actionlint parses every workflow AND every local action they reference.
+      #
+      # This is the static half. The `build_image` and `bundle_image` jobs below
+      # are the other one: they build through `.github/actions/build-push`, so
+      # the release path's shared action is EXECUTED on every pull request rather
+      # than only read. actionlint validates an action's interface and evaluates
+      # neither its prose nor its shell, which is exactly the gap that reddened
+      # all eight release workflows at once (HACKS.md #53, #73).
       - name: Lint the workflows
         env:
           ACTIONLINT_VERSION: 1.7.7
@@ -338,14 +344,27 @@ jobs:
           docker container prune -f --filter label=strad-ci --filter until=24h || true
           docker image prune -af --filter label=strad-ci --filter until=24h || true
 
+      # Through the release path's own wrapper, with `push: false`. The build
+      # itself would work either way; going through `.github/actions/build-push`
+      # is the point. Every OTHER call site of that action is a release workflow
+      # that runs on `main` only, so until this step existed nothing on the PR
+      # path loaded it — a malformed manifest, a bad input, or buildx wiring that
+      # does not hold together merged green and first ran in production. On
+      # 2026-08-11 that was eight release workflows red on one commit and three
+      # follow-up merges to settle. See HACKS.md #73.
+      #
+      # `push: false` here is not what keeps the image off ghcr: the action
+      # refuses to push from a pull-request run whatever a call site asks for,
+      # and this workflow logs in to no registry to push with. The two of those
+      # are the guarantee; this line is the third.
       - name: Build the bundle image
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
           file: servers/bundle/Dockerfile
-          push: false
-          load: true
+          push: "false"
+          load: "true"
           tags: ${{ env.BUNDLE_IMAGE }}
           labels: strad-ci=1
           cache-from: type=gha,scope=bundle
@@ -658,13 +677,16 @@ jobs:
           docker container prune -f --filter label=strad-ci --filter until=24h || true
           docker image prune -af --filter label=strad-ci --filter until=24h || true
 
+      # Through `.github/actions/build-push`, for the reason spelled out on
+      # `bundle_image`: this and that step are the only two executions the
+      # release path's shared action gets on a pull request.
       - name: Build image
-        uses: docker/build-push-action@v6
+        uses: ./.github/actions/build-push
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: .
-          push: false
-          load: true
+          push: "false"
+          load: "true"
           tags: ${{ env.STRAD_IMAGE }}
           labels: strad-ci=1
           cache-from: type=gha

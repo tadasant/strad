@@ -1991,11 +1991,13 @@ same way, as a failed step. So:
 Nothing here retries the ghcr login, the tag-digest check in `release-image.yml`,
 or the deploy's image pull; each is a separate 403 with a separate fix.
 
-`ci.yml`'s `lint` job runs `actionlint` over every workflow, which is what parses
-this action on a PR — no PR job loads it otherwise, because the steps that use it
-only run on `main`.
+`ci.yml`'s `lint` job runs `actionlint` over every workflow, which PARSES this
+action on a PR; `ci.yml`'s `build_image` and `bundle_image` jobs now RUN it, with
+`push: false`, which is a different and stronger thing (#73). A build-only run
+takes exactly one attempt: there is no registry to refuse it, so a failure is the
+`Dockerfile` and rebuilding it twice more would only spend a PR's wall clock.
 
-**Undo.** Point the ten call sites back at `docker/build-push-action@v6` (add
+**Undo.** Point the fourteen call sites back at `docker/build-push-action@v6` (add
 `push: true`, which the wrapper supplies) and delete `.github/actions/build-push`.
 
 ## 52. Two servers on ONE bundle still cannot hold two values for one name
@@ -2108,11 +2110,15 @@ guard whose test is inverted still contains that string and still reads fine.
 
 **The blind spot next door, and what it then cost.** `ci.yml`'s `actionlint` step
 follows a `uses:` to a local action and validates its INTERFACE — not the shell
-inside it, and not its prose. Nothing else in a PR build loads `build-push`
-either, because the steps that use it only run on `main` (#51). So the whole file
-is effectively unlinted on the PR path, and an expression written anywhere in it
-as an EXAMPLE is fatal: there is no backslash escape, and the runner
-template-parses the entire manifest when it LOADS it.
+inside it, and not its prose. At the time nothing else in a PR build loaded
+`build-push` either, because every step that used it ran on `main` only. So the
+whole file was effectively unlinted on the PR path, and an expression written
+anywhere in it as an EXAMPLE is fatal: there is no backslash escape, and the
+runner template-parses the entire manifest when it LOADS it. #73 closed the
+second half of that — `ci.yml` builds both of its images through the action now,
+so the manifest is loaded and its steps run on every pull request — and the
+assertions below still stand, because a green load proves the file parses and not
+that a description is free of examples.
 
 The first version of this fix knew that about `run:` blocks and wrote the guard's
 message in prose to avoid it — then put `${{ steps.<id>.outputs.name }}` in the
@@ -3345,3 +3351,59 @@ it does not remove the need for it.
 
 **Undo.** Delete `src/deploy/config-inline.ts` and bake `raw` again. The spec goes
 back to carrying every comment in the config file.
+
+## 73. The release path executes on a pull request, but only as far as the push
+
+**What.** `ci.yml`'s `build_image` and `bundle_image` jobs build through
+`.github/actions/build-push` with `push: false`, so the action every release
+workflow shares is LOADED and RUN on every pull request. It was not, and that is
+what this entry is about; what a PR still cannot exercise is the second half of
+the release path.
+
+**Why.** Of the thirteen workflows in this repo, two ran on `pull_request`. All
+eight release workflows and `deploy-staging.yml` did not, and `build-push` was
+loaded by nothing else — so the first execution of a change to the release path
+was also its first production run, and its failure mode is a red `main` plus, when
+an image fails to publish, a wedged deploy for every later commit (#54).
+
+That is not a hypothesis. #127 (`450ad5c`) wrote an expression into an input
+`description:`, merged green, and took all eight release workflows down inside
+twenty seconds — eight `#alerts` posts from one merge — and it took #129, #130 and
+#131 to settle. #53 has that story; this entry is the gap that let it merge.
+
+**What a PR now covers.** The manifest parses and LOADS (the #53 failure, which
+`actionlint` is green on). Every input a call site passes is declared, and one that
+is not is a runner warning on a step that ran rather than a surprise on `main`.
+The builder guard runs. `docker/setup-buildx-action` → `builder:` → buildx holds
+together end to end, on the shared self-hosted daemon, twice.
+
+**What it does NOT cover, deliberately.** Everything downstream of the push:
+
+- the ghcr login, and `packages: write`;
+- the push itself, and therefore the three-403 retry of #51;
+- `release-image.yml`'s tag-digest verification, which reads the registry back;
+- the `VERSION`-offset version arithmetic, which needs the `main` history;
+- `deploy-staging.yml`'s tag resolution (#54) and the deploy.
+
+All five need a registry credential, and the point of a PR-time build is that a
+`pull_request` run holds none. Reaching them would mean giving a workflow that a
+fork can trigger something to push WITH, which trades this gap for a worse one.
+So the boundary is drawn at the credential, and it is drawn twice: no
+`pull_request`-reachable workflow runs `docker/login-action` or asks for
+`packages: write`, and `build-push` folds `github.event_name` into its effective
+`push` itself — once, in one file, rather than as a condition nine call sites
+could each forget. `test/workflow-pr-build-coverage.test.ts` holds all three
+halves still: that an unfiltered `pull_request` workflow really does run the
+action, that nothing reaches `docker/build-push-action` around it, and — by
+RUNNING the mode script rather than reading it — that a pull request cannot
+publish.
+
+**The cost.** Nothing measurable: `ci.yml` already built both images, and both
+already passed `push: false` to `docker/build-push-action` directly. This routes
+them through the wrapper instead. `release-onepassword-image.yml`'s verification
+build and `bundle-google-ci.yml`'s build went the same way, so "every image build
+in this repo goes through `build-push`" is now true without qualification — which
+is what makes the PR-time coverage hard to remove by accident.
+
+**Undo.** Point `ci.yml`'s two builds back at `docker/build-push-action@v6`. The
+release path goes back to being unexecuted until it is merged.
