@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { generateKeyPairSync } from "node:crypto";
 
-import { parameterId } from "../build/index.js";
+import { parameterId } from "../src/index.js";
 
 /**
  * A fake Google Cloud **Parameter Manager**, good enough to prove the thing that

@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -11,12 +11,12 @@ import {
   toolDefinitions,
   parameterId,
   ParameterManagerReadClient,
-} from "../build/index.js";
+} from "../src/index.js";
 import {
   startFakeParameterManager,
   makeParameter,
   VIEWER_ACCOUNT,
-} from "./fake-parameter-manager.mjs";
+} from "./fake-parameter-manager.js";
 
 /**
  * These tests drive the server through a REAL MCP client over an in-memory
@@ -226,7 +226,7 @@ test("a write tool refuses when the probe says the credential cannot", async () 
     return f;
   })();
 
-  const { createMCPServer: make } = await import("../build/index.js");
+  const { createMCPServer: make } = await import("../src/index.js");
   const { server, registerHandlers } = make({
     version: "test",
     config,
