@@ -1060,14 +1060,19 @@ so moving one side ends it.
 
 **Still true, and not only for the spec.** The condition that made this possible
 is unchanged: these are long-lived shared runners, and any job on them can still
-claim any fixed name — a path, a container, a host port, an image tag. Two known
-instances remain open. The prod deploy has not moved off `/tmp/spec.json`
-([#115](https://github.com/tadasant/strad/issues/115)). And `ci.yml` builds and
-runs its containers under fixed names and fixed image tags on a shared docker
-daemon ([#117](https://github.com/tadasant/strad/issues/117)) — where the tag is
-the dangerous half, because a concurrent job rebuilding `strad:ci` lets the
-"`/mcp` with no token returns 401" assertion pass against an image the PR did not
-build. The durable fix for the class is ephemeral runners.
+claim any fixed name — a path, a container, a host port, an image tag. The prod
+deploy has not moved off `/tmp/spec.json`
+([#115](https://github.com/tadasant/strad/issues/115)), and it is the instance
+that remains open. The docker half is closed: every job in this repo that builds
+an image and runs it now tags it per run, because a concurrent job rebuilding a
+shared `strad:ci` between the build and the `docker run` lets an assertion pass
+against an image the run never built — the "`/mcp` with no token returns 401" one
+in `ci.yml` ([#117](https://github.com/tadasant/strad/issues/117)), the mount
+count in `bundle-google-ci.yml`
+([#119](https://github.com/tadasant/strad/issues/119)), and the pinned `op
+--version` that gates the published 1Password image
+([#126](https://github.com/tadasant/strad/issues/126)). The durable fix for the
+class is ephemeral runners.
 
 **Why the name check, and not just "has a name."** One second later on the clock
 and staging's `doctl` would have read prod's _complete_ 91302-byte spec — valid,

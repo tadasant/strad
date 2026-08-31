@@ -1797,18 +1797,23 @@ carrying prod's images, prod's domains and prod's secrets. `doctl apps update
 the deploy would have gone green. That is why the guard checks the app NAME and
 not merely that a name exists.
 
-**The same shape, elsewhere, unfixed.** A shared path is one instance of "two
-jobs agree on a name nobody coordinates", and this box has others:
+**The same shape, elsewhere.** A shared path is one instance of "two jobs agree
+on a name nobody coordinates", and this box has others:
 
 - tadasant-internal's prod deploy still writes `/tmp/spec.json`, and is still
   exposed to any _other_ job on those runners that picks the same name.
   tadasant/strad#115.
-- `ci.yml` runs its containers as the fixed names `strad-ci` / `bundle-ci`, on a
-  fixed host port, from the fixed image tags `strad:ci` / `strad-bundle:ci`, on a
-  shared docker daemon. The name and port collisions are loud. The TAG one is
-  not: a concurrent job rebuilding `strad:ci` means this job's
-  "`/mcp` with no token returns 401" assertion — the load-bearing one — can pass
-  against an image the PR did not build. tadasant/strad#117.
+- The docker daemon is shared the same way, and any job that builds an image and
+  runs it can claim a fixed `<something>:ci` tag. The name and host-port
+  collisions that follow are loud; the TAG one is not, because a concurrent job
+  rebuilding the tag between a build and its `docker run` moves the assertion
+  onto an image the run never built, and it passes. Closed in all three of
+  strad's own workflows — `ci.yml` (tadasant/strad#117), `bundle-google-ci.yml`
+  (tadasant/strad#119) and `release-onepassword-image.yml`'s verification build
+  (tadasant/strad#126) — by suffixing the tag with the run id and the run
+  attempt, labelling everything `strad-ci`, and sweeping what a killed runner
+  leaked. Three `*.isolation.test.ts` files read the workflows as
+  text and fail the PR that puts a fixed name back.
 
 **Undo.** Nothing to undo on this side; the collision needs both writers to agree
 on a path, so moving one ends it. The durable fix for the CLASS is ephemeral

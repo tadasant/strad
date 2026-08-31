@@ -791,6 +791,30 @@ been re-pointed at the collapsed bundle yet, and its spec still names those
 repositories. Deleting them before prod moves would be an outage, not a cleanup.
 See [Known limitations](/limitations/).
 
+<aside class="starlight-aside starlight-aside--note">
+
+**Why `release-onepassword-image.yml` tags its verification image per run.** That
+workflow builds the image, loads it locally, and runs `op --version` inside it
+before publishing — asserting the pinned CLI against the real artifact rather than
+against the Dockerfile it came from. It is `runs-on: self-hosted` like everything
+else here, so the tag it verifies is a name on a daemon the whole box shares.
+Under a fixed `strad-server-onepassword:ci`, a concurrent job rebuilding that tag
+between the build and the `docker run` moves the assertion onto an image this run
+never built — and it passes, because both came from the same Dockerfile. Nothing
+errors, and the release publishes having verified someone else's artifact. So the
+verification tag is `strad-server-onepassword:ci-<run id>-<run attempt>`, the
+image and its containers carry the `strad-ci` label, the job opens with the same
+day-old sweep the CI jobs use, and an `if: always()` teardown removes this run's
+tag and no other.
+
+The published tags are deliberately not part of that: `:latest` and
+`:sha-<commit>` are the release, and App Platform pulls them by name. A per-run
+tag there would be a mispublish rather than a fix, so
+`test/release-onepassword-workflow.isolation.test.ts` asserts both directions —
+the verification tag carries the run id, and the published two do not.
+
+</aside>
+
 `bundle-google-ci.yml` is the second CI workflow: it builds and smoke-tests the
 `bundle-google` image on any PR touching `images/bundle-google/`.
 
