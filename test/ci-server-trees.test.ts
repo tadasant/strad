@@ -32,9 +32,12 @@ const WORKFLOW = ".github/workflows/ci.yml";
 const COVERED_ELSEWHERE = new Map([
   [
     "servers/bundle",
-    "the HOST: no test suite of its own, and `ci.yml`'s `bundle_image` job " +
-      "builds it inside the image, which is the only place its build order " +
-      "against the other trees means anything",
+    "the HOST: `ci.yml`'s `bundle_image` job builds it inside the image, which " +
+      "is the only place its build order against the other trees means " +
+      "anything. Its own vitest suite (`servers/bundle/host`) is NOT covered by " +
+      "anything here — a leg cannot be spelled for a tree one level deeper " +
+      "than `servers/<name>`, and both comparisons below would call it " +
+      "orphaned. Issue #229",
   ],
   [
     "images/bundle-google",

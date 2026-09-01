@@ -1776,6 +1776,19 @@ per-slug name a server may actually be reading. And a slug may no longer contain
 `--`, or lead or trail with `-`, because `a--b` + `C` and `a` + `B__C` would
 otherwise be one variable; no slug in any strad config has ever used either shape.
 
+**The discovery is unit-tested; the mounting is not, and neither runs in CI.**
+The bundle host has a suite (`servers/bundle/host`, vitest over its TypeScript
+sources) covering the discovery rule, the two `degraded` verdicts, the presence
+route's wiring and the per-tree SDK cache. What it does not cover is anything
+needing `/app/trees` to exist — `buildMounts()` itself, the loop that refuses a
+discovered slug colliding with a mount the image already serves, and the two
+loaders that build a per-slug instance. Those are reached only by the
+`bundle_image` job, which asserts the mount **set** against a booted container and
+exercises no branch. And the suite runs in no CI job yet: the `servers` matrix
+names a leg `servers/<tree>`, and this tree is `servers/bundle/host`, one level
+deeper — so a leg for it means changing how the matrix addresses a nested tree,
+and until that happens a broken assertion goes red locally and green in CI.
+
 **Undo:** `HACKS.md` #56.
 
 ---

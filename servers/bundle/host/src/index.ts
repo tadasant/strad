@@ -51,20 +51,22 @@
  * failure (OOM), and that is the risk the telemetry is there to watch.
  */
 import express, { type Request, type Response } from "express";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
-import { slugEnvView, slugsWithPrefixedNames } from "./env-prefix.js";
+import { slugEnvView } from "./env-prefix.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
-  authorizePresence,
-  buildPresenceReport,
-  parsePresenceRequest,
-  PRESENCE_ROUTE,
-} from "./presence.js";
+  extraSlugs,
+  missingCredentialsDegraded,
+  remoteFilesystemDegraded,
+  scrubCapabilityEnv,
+} from "./mounts.js";
+import { PRESENCE_ROUTE } from "./presence.js";
+import { presenceResponse } from "./presence-route.js";
 import { paramStoreFor, startParamRefresh } from "./param-store.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 
@@ -84,14 +86,6 @@ const PORT = parseInt(process.env.PORT ?? "8080", 10);
  * different claims. This is what lets core tell them apart.
  */
 const BOOTED_AT = new Date();
-
-/** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
-function constantTimeEquals(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
-}
 
 // --- the shape every vendored shared/ factory returns ------------------------
 
@@ -137,56 +131,6 @@ interface Mount {
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
   }>;
-}
-
-/**
- * Capability is the gateway's job now. Any surviving container-side toggle would
- * silently narrow EVERY slug served from this process — including the read-write
- * ones — so it does not merely get ignored, it gets removed.
- */
-function scrubCapabilityEnv(): void {
-  const SHAPE =
-    /(^|_)(ENABLED_TOOLGROUPS|ENABLED_TOOL_GROUPS|TOOL_GROUPS|ENABLED_TOOLS|DISABLED_TOOLS)$/;
-  for (const key of Object.keys(process.env)) {
-    if (!SHAPE.test(key)) continue;
-    logWarn(
-      `ignoring ${key}: capability is enforced by the strad gateway now ` +
-        `(tools.allow / tools.deny in the server config), not by this container. ` +
-        `Leaving it set would strip tools from the read-write slugs too.`,
-    );
-    delete process.env[key];
-  }
-}
-
-/**
- * Which slugs to mount a tree under: its conventional path, plus every slug the
- * environment carries per-slug values for.
- *
- * THIS PROCESS NEVER SEES strad's CONFIG. It knows the server list only through
- * the variables the renderer baked onto the container, so "is there a second
- * telegram?" is answered by looking for `<SLUG>__TELEGRAM_API_ID` and nothing
- * else. src/secrets/env-prefix.ts (vendored here) owns the name shape on both
- * sides of that.
- *
- * THE DEFAULT SLUG IS ALWAYS MOUNTED, even when per-slug values exist. A config
- * that points several slugs at the conventional path — which is every strad
- * deployment today — must keep resolving without editing that config first, so
- * this only ever ADDS mounts.
- */
-function extraSlugs(
-  defaultSlug: string,
-  markerNames: readonly string[],
-): string[] {
-  const discovered = slugsWithPrefixedNames(process.env, markerNames).filter(
-    (slug) => slug !== defaultSlug,
-  );
-  if (discovered.length > 0) {
-    log(
-      `${defaultSlug}: per-slug environment found for ${discovered.join(", ")} — ` +
-        `mounting ${discovered.length + 1} instance(s)`,
-    );
-  }
-  return discovered;
 }
 
 async function buildMounts(): Promise<Mount[]> {
@@ -689,10 +633,7 @@ function loadGoogleSheets(sheets: GoogleSheetsModule, slug: string): Mount {
     capabilities: { tools: {} },
     // Degraded, not unmounted: the tools must still LIST, so the console shows
     // the slug and an agent can see what it would offer once a token lands.
-    degraded:
-      missing.length > 0
-        ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; every tool will fail`
-        : null,
+    degraded: missingCredentialsDegraded(missing),
     register: async (s) => {
       await sheets.createMCPServer({ version: VERSION, env }).registerHandlers(s);
     },
@@ -748,9 +689,6 @@ async function loadRemoteFilesystem(slug: string): Promise<Mount> {
     uploadSlug: slug,
   });
 
-  const bucket = env[`${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET`];
-  const viewerDomain = env[`${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN`];
-
   return {
     slug,
     tree: "remote-filesystem",
@@ -758,11 +696,7 @@ async function loadRemoteFilesystem(slug: string): Promise<Mount> {
     capabilities: { tools: {} },
     // Degraded, not unmounted: the tools must still LIST so an agent can see
     // what this deployment would offer, and so the console shows the slug at all.
-    degraded: !bucket
-      ? `${REMOTE_FS_ENV_PREFIX}_GCS_BUCKET is not set; every tool will fail`
-      : !viewerDomain
-        ? `${REMOTE_FS_ENV_PREFIX}_SENSITIVE_VIEWER_DOMAIN is not set; is_sensitive=true uploads will be refused`
-        : null,
+    degraded: remoteFilesystemDegraded(env, REMOTE_FS_ENV_PREFIX),
     register: (s) => created.registerHandlers(s),
     upload: created.handleUpload,
   };
@@ -904,10 +838,7 @@ async function loadTelegram(slug: string): Promise<Mount> {
     tree: "telegram",
     serverName: "strad-telegram",
     capabilities: { tools: {} },
-    degraded:
-      missing.length > 0
-        ? `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set; every tool will fail`
-        : null,
+    degraded: missingCredentialsDegraded(missing),
     register: (s) => created.registerHandlers(s),
   };
 }
@@ -1406,31 +1337,14 @@ async function main(): Promise<void> {
   // length, no prefix, no hash. Behind the same internal token core already
   // presents to proxy /mcp here, and fail-closed when that token is unset.
   app.post(PRESENCE_ROUTE, (req, res) => {
-    const auth = authorizePresence(
-      req.get("authorization"),
-      process.env.STRAD_INTERNAL_TOKEN,
-      // presence.ts stays import-free so it can be vendored, and falls back to a
-      // JS comparator. This caller has node:crypto, so it passes the real one.
-      constantTimeEquals,
-    );
-    if (!auth.ok) {
-      res.status(auth.status).json({ error: auth.error });
-      return;
-    }
-    const parsed = parsePresenceRequest(req.body);
-    if (!parsed.ok) {
-      res.status(parsed.status).json({ error: parsed.error });
-      return;
-    }
-    res.set("cache-control", "no-store").json(
-      buildPresenceReport({
-        component: process.env.STRAD_COMPONENT ?? "bundle",
-        image: process.env.STRAD_VERSION ?? VERSION,
-        bootedAt: BOOTED_AT,
-        env: process.env,
-        keys: parsed.keys,
-      }),
-    );
+    const answer = presenceResponse({
+      authorization: req.get("authorization"),
+      body: req.body,
+      env: process.env,
+      bootedAt: BOOTED_AT,
+      version: VERSION,
+    });
+    res.status(answer.status).set(answer.headers).json(answer.body);
   });
 
   for (const mount of mounts) {
