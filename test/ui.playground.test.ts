@@ -8,6 +8,10 @@ import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import {
   connectUrl,
+  degradedSurfaceNote,
+  hostUnavailable,
+  ingressTimeoutNote,
+  localTunnelNote,
   originFor,
   playgroundHref,
   readable,
@@ -45,7 +49,7 @@ auth:
   staticTokens: { enabled: true }
   consoleDevBypass: { enabled: true, roles: [admin] }
 roles:
-  admin: { servers: [echo, locked, walled, dead] }
+  admin: { servers: [echo, locked, walled, dead, sleepy] }
   other: { servers: [walled] }
 servers:
   - slug: echo
@@ -76,6 +80,19 @@ servers:
     kind: remote-http
     url: http://127.0.0.1:1/mcp
     entitlements: [admin]
+  # The same dead endpoint, behind the ONE kind for which that is not a fault: a
+  # machine somebody switched off. Same port 1, so the connection is refused in
+  # a millisecond and the handshake never completes.
+  - slug: sleepy
+    kind: local-tunnel
+    url: http://127.0.0.1:1/mcp
+    entitlements: [admin]
+    connectTimeoutMs: 300
+    tools:
+      deny: [forbidden]
+    recovery:
+      machine: "the MacBook"
+      commands: ["launchctl kickstart -k gui/$(id -u)/com.cloudflare.cloudflared"]
 `);
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
@@ -135,6 +152,7 @@ interface Payload {
   ok: boolean;
   error?: string;
   detail?: string;
+  hostUnavailable?: boolean;
   tool?: string;
   elapsedMs?: number;
   session: { serverName: string; serverVersion: string; transport: string };
@@ -507,5 +525,183 @@ describe("the error a human is shown", () => {
       "MCP error -32603: upstream exploded",
     );
     expect(readable("fetch failed")).toBe("fetch failed");
+  });
+});
+
+// --- a local-tunnel whose machine is off -----------------------------------
+
+/**
+ * The one failure on this page that is NOT a fault.
+ *
+ * A `local-tunnel` is an MCP server on a machine somebody owns, and that machine
+ * is off much of the time by design. The gateway carries that distinction
+ * everywhere — a dedicated error class, its own error kind, an exemption from
+ * the deploy gate — and the console, the one surface a human actually looks at,
+ * used to flatten it to a status code: `Could not open a session: HTTP 504`.
+ *
+ * Three shapes, and the page words all three from strad's own vocabulary:
+ *
+ *   1. The listing SUCCEEDS with the degraded surface — one `troubleshoot_host`
+ *      tool instead of the server's own. The commonest shape by far, and the one
+ *      that would otherwise read as a healthy session with one tool in it.
+ *   2. A call raises strad's own `LocalHostUnavailableError`, which the route
+ *      classifies by CLASS and the page renders in strad's words.
+ *   3. Nothing of strad's arrives at all — a non-JSON body from in front of the
+ *      app, which is where the reported `504` came from.
+ *
+ * Anything that is not a `local-tunnel`, and a `local-tunnel` failing for an
+ * unrelated reason, keeps exactly the wording it had.
+ */
+describe("an offline local-tunnel says so, instead of showing a status code", () => {
+  it("flags the degraded surface on a listing that succeeded", async () => {
+    const res = await post("/playground/sleepy/tools/list", {});
+    // 200: the listing did not fail. That is the trap — the machine is off and
+    // the slug still answers, with strad's tool in place of its own.
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Payload;
+
+    expect(body.ok).toBe(true);
+    expect(body.hostUnavailable).toBe(true);
+    expect(body.tools.map((t) => t.name)).toEqual([
+      "sleepy__troubleshoot_host",
+    ]);
+  });
+
+  it("leaves a healthy server's listing unflagged", async () => {
+    const res = await post("/playground/echo/tools/list", {});
+    const body = (await res.json()) as Payload;
+    expect(body.ok).toBe(true);
+    expect(body.hostUnavailable).toBe(false);
+  });
+
+  it("relays strad's own words when a CALL finds the machine gone", async () => {
+    const res = await post("/playground/sleepy/tools/call", {
+      tool: "anything",
+      arguments: {},
+    });
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as Payload;
+
+    expect(body.ok).toBe(false);
+    // No flag on this path, and none is needed: the session is a real MCP
+    // session over an in-memory transport, so `LocalMachineOfflineError` arrives
+    // as an `McpError` with its MESSAGE and no class — and that message is
+    // strad's own, naming the machine, the kind and the commands.
+    expect(body.error).toContain(
+      'the machine hosting "sleepy" is not reachable',
+    );
+    expect(body.error).toContain("Nothing is wrong with strad");
+    expect(body.error).toContain("launchctl kickstart");
+  });
+
+  it("does NOT flag a local-tunnel failing for an unrelated reason", async () => {
+    // A capability policy refusal on the same slug. strad declined on purpose,
+    // the machine has nothing to do with it, and the page keeps "Call failed".
+    const res = await post("/playground/sleepy/tools/call", {
+      tool: "forbidden",
+      arguments: {},
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Payload;
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain("capability policy");
+    expect(body.error).not.toContain("local-tunnel server");
+  });
+
+  it("does NOT flag a dead upstream that is not a local-tunnel", async () => {
+    // Same unreachable endpoint, a kind with no machine to be off. It stays a
+    // fault, and the page stays on "Could not open a session: …".
+    const res = await post("/playground/dead/tools/list", {});
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as Payload;
+    expect(body.ok).toBe(false);
+    expect(body.hostUnavailable).toBeUndefined();
+  });
+});
+
+describe("the page's own kind-awareness", () => {
+  it("hands a local-tunnel page its kind and both sentences", async () => {
+    const html = await (
+      await fetch(`${baseUrl}/playground/sleepy`, { headers: { cookie } })
+    ).text();
+
+    expect(html).toContain('var KIND = "local-tunnel"');
+    // As the script's own constants — the page holds no prose of its own, so
+    // the sentences it can print are the ones this module builds.
+    expect(html).toContain(JSON.stringify(degradedSurfaceNote("sleepy")));
+    expect(html).toContain(JSON.stringify(ingressTimeoutNote("sleepy")));
+  });
+
+  it("gives another kind's page neither sentence", async () => {
+    const html = await (
+      await fetch(`${baseUrl}/playground/echo`, { headers: { cookie } })
+    ).text();
+
+    expect(html).toContain('var KIND = "builtin"');
+    expect(html).not.toContain("local-tunnel server");
+    expect(html).not.toContain("is not serving its own tools");
+  });
+});
+
+describe("what counts as the degraded surface", () => {
+  const sleepy = CONFIG.servers.find((s) => s.slug === "sleepy")!;
+  const echo = CONFIG.servers.find((s) => s.slug === "echo")!;
+  const tool = (name: string) => ({
+    name,
+    inputSchema: { type: "object" as const },
+  });
+
+  it("is one troubleshooting tool, on this kind, for this slug", () => {
+    expect(hostUnavailable(sleepy, [tool("sleepy__troubleshoot_host")])).toBe(
+      true,
+    );
+  });
+
+  it("is not a server serving its own tools", () => {
+    expect(hostUnavailable(sleepy, [tool("sleepy__note_add")])).toBe(false);
+    expect(
+      hostUnavailable(sleepy, [
+        tool("sleepy__troubleshoot_host"),
+        tool("sleepy__note_add"),
+      ]),
+    ).toBe(false);
+    expect(hostUnavailable(sleepy, [])).toBe(false);
+  });
+
+  it("is not another slug's tool, and not another kind", () => {
+    expect(hostUnavailable(sleepy, [tool("other__troubleshoot_host")])).toBe(
+      false,
+    );
+    expect(hostUnavailable(echo, [tool("echo__troubleshoot_host")])).toBe(
+      false,
+    );
+  });
+});
+
+describe("the sentences themselves", () => {
+  it("says which machine, and that off is expected", () => {
+    expect(localTunnelNote("anki")).toBe(
+      '"anki" is a local-tunnel server: it serves tools only while the machine hosting it is ' +
+        "awake, running the server, and holding its tunnel open. A machine that is off is the " +
+        "expected state for this kind, not a fault in strad.",
+    );
+  });
+
+  it("says a successful listing is not a serving server", () => {
+    expect(degradedSurfaceNote("anki")).toContain(
+      "is not serving its own tools",
+    );
+    expect(degradedSurfaceNote("anki")).toContain(localTunnelNote("anki"));
+    expect(degradedSurfaceNote("anki")).toContain("call it for the diagnosis");
+  });
+
+  it("names the status it got, and where it came from", () => {
+    expect(ingressTimeoutNote("anki", 504)).toBe(
+      "The request timed out — HTTP 504, answered in front of strad rather than by strad " +
+        `itself. ${localTunnelNote("anki")} Waiting on a machine that is not there is the ` +
+        "commonest reason for this, so check that machine before you check the gateway.",
+    );
+    // The page substitutes the status it actually received.
+    expect(ingressTimeoutNote("anki")).toContain("HTTP {status}");
   });
 });

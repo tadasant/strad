@@ -333,6 +333,14 @@ that refuses an agent. A second listing path would be a second opinion about wha
 a policy means, and the first `tools:` rule that changed would leave the console
 showing a human something they cannot call.
 
+Sharing the builder means sharing its wire, too. An adapter's error crosses a
+JSON-RPC boundary on its way to the page, so it arrives as an `McpError` carrying
+a message and no class. Where the console has to know WHICH failure it is holding
+— a `local-tunnel` whose machine is off, which is expected rather than broken —
+it reads the degraded surface the gateway substitutes (one `troubleshoot_host`
+tool in place of the server's own) instead of the error, and says so above the
+tool list. See [what the console shows](/servers/local-tunnel-host/#what-the-console-shows).
+
 The console holds no `/mcp` token and mints none — see
 [the console playground](/auth/overview/#the-console-playground) for why the
 session stops one layer short of the wire.

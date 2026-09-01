@@ -287,6 +287,30 @@ Without it the tool still exists and falls back to generic guidance; it will not
 invent a command. See [the kind's
 fields](/servers/interface/#2-local-tunnel).
 
+### What the console shows
+
+Open `/playground/<slug>` in the console while the machine is off and the page
+says so, in the amber tone it uses for "expected, not broken":
+
+> "anki" is not serving its own tools: the machine hosting it is not available to
+> strad. "anki" is a local-tunnel server: it serves tools only while the machine
+> hosting it is awake, running the server, and holding its tunnel open. A machine
+> that is off is the expected state for this kind, not a fault in strad. The one
+> tool below is strad's own — call it for the diagnosis and the exact commands to
+> run on that machine.
+
+The listing SUCCEEDED to get there — one tool, strad's own — so the page reads
+the substitution rather than an error, and it is the only surface that draws that
+distinction from a 200. A tool call that finds the machine gone prints strad's
+own message instead, which already names the machine and what to run on it.
+
+If the page is answered by something in FRONT of strad — a `504` from the
+platform ingress, whose body is not JSON — it says the request timed out, names
+the status, and adds the same sentence about the kind. That one is a hint rather
+than a verdict: nothing inspected the machine, and a wait on a machine that is
+not there is simply the commonest reason a request on this kind runs long enough
+to be timed out elsewhere.
+
 ### The machine is offline
 
 strad reads these as "that machine is not there":
