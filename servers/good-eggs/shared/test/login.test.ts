@@ -17,13 +17,13 @@
 // never fires — the default `waitUntil` for `waitForURL`, and the one
 // navigation in this server that did not override it.
 //
-// They run against the BUILT output with node:test — no browser, no login. The
+// They run against the TypeScript sources under vitest — no browser, no login. The
 // client is driven through `setSharedBrowserProvider`, the seam strad's
 // collapsed bundle hands a browser through, so `initialize()` runs for real
 // over a fake page.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { GoodEggsClient, isPostSignInUrl, setSharedBrowserProvider } from '../build/index.js';
+import { GoodEggsClient, isPostSignInUrl, setSharedBrowserProvider } from '../src/index.js';
 
 // The URL Good Eggs actually landed on during the outage.
 const POST_LOGIN_URL = 'https://www.goodeggs.com/home?recently-logged-in=true';

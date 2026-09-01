@@ -13,16 +13,16 @@
 // favorites at all. The login happens once at startup and nothing
 // re-establishes it, so a lapsed session lands in exactly those two places.
 //
-// They run against the BUILT output with node:test — no browser, no login. The
+// They run against the TypeScript sources under vitest — no browser, no login. The
 // client is driven through `setSharedBrowserProvider`, the seam strad's
 // collapsed bundle hands a browser through, so the real `getFavorites()` runs
 // over a fake page. The in-page DOM scrape is the one part that is stubbed:
 // `page.evaluate()` runs in a browser, so the fake answers for it, and what
 // these tests pin is the truthfulness rule around the scrape rather than the
 // selectors inside it.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { GoodEggsClient, setSharedBrowserProvider } from '../build/index.js';
+import { GoodEggsClient, setSharedBrowserProvider } from '../src/index.js';
 import { renderPage } from './fixtures/page.mjs';
 
 const POST_LOGIN_URL = 'https://www.goodeggs.com/home?recently-logged-in=true';

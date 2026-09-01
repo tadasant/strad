@@ -1,10 +1,10 @@
 // MCP-App (io.modelcontextprotocol/ui) gating tests for the Good Eggs server.
 //
-// These run against the BUILT output (../build) with node:test — no browser, no
+// These run against the TypeScript sources (../src) under vitest — no browser, no
 // real Good Eggs login. They pin the one property that matters: the App surface
 // (ui:// resource, tool `_meta`, structured result) appears ONLY when the client
 // advertised the extension, and a plain client's bytes are unchanged.
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   ListToolsRequestSchema,
@@ -20,7 +20,7 @@ import {
   SEARCH_APP_URI,
   SEARCH_APP_MIME,
   MCP_APPS_EXTENSION,
-} from '../build/index.js';
+} from '../src/index.js';
 
 // A Server stand-in that just records the handlers registered against it, keyed
 // by the (identity-stable) request schema, so a test can invoke them directly.

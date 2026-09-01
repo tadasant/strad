@@ -6,8 +6,8 @@
 // server told a user his 43-item, $340.70 cart was empty, then refused to
 // remove items it claimed were not there.
 //
-// They run against the BUILT output with node:test — no browser, no login.
-import { test } from 'node:test';
+// They run against the TypeScript sources under vitest — no browser, no login.
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   extractStoreData,
@@ -16,7 +16,7 @@ import {
   productNameFromHtml,
   formatCents,
   findCartItemForUrl,
-} from '../build/index.js';
+} from '../src/index.js';
 import {
   renderPage,
   storeDataWithBasket,

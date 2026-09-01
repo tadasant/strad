@@ -5,14 +5,14 @@
 // measured. An unread basket is "unknown", never "empty" and never "the add did
 // not take effect".
 //
-// Runs against the BUILT output with node:test — no browser, no login.
-import { test } from 'node:test';
+// Runs against the TypeScript sources under vitest — no browser, no login.
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   reconcileAddResult,
   createRegisterTools,
   cartItemsFromStoreData,
-} from '../build/index.js';
+} from '../src/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { storeDataWithBasket, TOMATOES_URL, ONION_URL } from './fixtures/page.mjs';
 
