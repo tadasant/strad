@@ -287,6 +287,37 @@ Without it the tool still exists and falls back to generic guidance; it will not
 invent a command. See [the kind's
 fields](/servers/interface/#2-local-tunnel).
 
+### What the console shows
+
+Open `/playground/<slug>` in the console while the machine is not answering and
+the page says so, in the amber tone it uses for "not broken, and not fine
+either":
+
+> "anki" is not serving its own tools: the machine hosting it is not available to
+> strad. "anki" is a local-tunnel server: it serves tools only while the machine
+> hosting it is awake, running the server, and holding its tunnel open. Either
+> that machine is not answering — which is expected while it is off, and not a
+> fault in strad — or it answered and refused strad's credentials, which is a
+> stale credential somebody has to rotate. The one tool below is strad's own:
+> call it for the diagnosis and the exact commands to run on that machine.
+
+Both states are named because the page cannot tell them apart. The listing
+SUCCEEDED to get there — one tool, strad's own — so what the page reads is the
+substitution, not an error, and the substitution happens for offline and refused
+alike. The tool below re-probes the machine and answers which one it is. A tool
+call that finds the machine gone prints strad's own message instead, which names
+the machine and what to run on it.
+
+If the page is answered by something in FRONT of strad — a `504` or `524` whose
+body is not JSON, so nothing strad authored — it says the request timed out,
+names the status, and adds that a machine that is off is expected for this kind.
+That one is a hint rather than a verdict: nothing inspected the machine, and a
+wait on a machine that is not there is simply the commonest reason a request on
+this kind runs long enough to be timed out elsewhere. It is a much narrower set
+than the statuses below, and it is about a different hop — these two are a
+gateway that gave up waiting on **strad**, where the list below is strad reading
+a tunnel edge's answer about **the machine**.
+
 ### The machine is offline
 
 strad reads these as "that machine is not there":

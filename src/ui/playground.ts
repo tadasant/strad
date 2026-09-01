@@ -12,9 +12,10 @@ import { buildGatewayServer } from "../gateway/mcpServer.ts";
 import type { Registry } from "../gateway/registry.ts";
 import { compileToolPolicies } from "../gateway/toolPolicy.ts";
 import { denamespace } from "../gateway/adapters/types.ts";
+import { TROUBLESHOOT_TOOL } from "../gateway/troubleshoot.ts";
 import { event } from "../telemetry/index.ts";
 import { consolePrincipal, signedInLabel } from "./console-auth.ts";
-import { esc, layout, renderMessage } from "./render.ts";
+import { esc, jsonForScript, layout, renderMessage } from "./render.ts";
 
 /**
  * `/playground/:server` — a human MCP client for ONE server, in the console.
@@ -179,7 +180,7 @@ export function mountPlayground(
     gate,
     requireJson,
     async (req, res) => {
-      await withSession(req, res, opts, policies, async (client, slug) => {
+      await withSession(req, res, opts, policies, async (client, server) => {
         const listed = await client.listTools();
         const version = client.getServerVersion();
         res.json({
@@ -192,7 +193,11 @@ export function mountPlayground(
             serverVersion: version?.version ?? "unknown",
             transport: "in-process (InMemoryTransport)",
           },
-          tools: listed.tools.map((t) => shapeTool(t, slug)),
+          // A SUCCESSFUL LISTING IS NOT ALWAYS A HEALTHY ONE. See
+          // `hostUnavailable` — this is the flag that keeps the page from
+          // reporting a switched-off laptop as "1 tool served to you".
+          hostUnavailable: hostUnavailable(server, listed.tools),
+          tools: listed.tools.map((t) => shapeTool(t, server.slug)),
         });
       });
     },
@@ -222,7 +227,8 @@ export function mountPlayground(
         return;
       }
 
-      await withSession(req, res, opts, policies, async (client, slug) => {
+      await withSession(req, res, opts, policies, async (client, server) => {
+        const slug = server.slug;
         const startedAt = Date.now();
         // Names arrive namespaced from the listing; a human editing the field can
         // also type the bare name. Both are accepted, and both are re-namespaced
@@ -295,7 +301,7 @@ async function withSession(
   res: Response,
   opts: PlaygroundOptions,
   policies: ReturnType<typeof compileToolPolicies>,
-  run: (client: Client, slug: string) => Promise<void>,
+  run: (client: Client, server: ServerConfig) => Promise<void>,
 ): Promise<void> {
   const slug = req.params.server ?? "";
   const decision = decide(res, opts.config, slug);
@@ -341,7 +347,7 @@ async function withSession(
       server.connect(serverTransport),
       client.connect(clientTransport),
     ]);
-    await run(client, decision.server.slug);
+    await run(client, decision.server);
   } catch (err) {
     // The upstream's own words, to the human who asked for them. This is the one
     // surface where relaying them is the feature — a signed-in operator staring
@@ -486,6 +492,114 @@ export function readable(err: unknown): string {
   return raw.replace(/^(MCP error -?\d+: )(?=\1)/, "");
 }
 
+/**
+ * Is this listing the DEGRADED SURFACE rather than the server's own tools?
+ *
+ * A `local-tunnel` whose machine is not answering does not fail a listing — it
+ * keeps its place and serves exactly one tool, strad's `troubleshoot_host`
+ * (gateway/troubleshoot.ts). That is right for an agent and it is a trap for
+ * this page: `tools/list` returns 200 with one tool, so the status line would
+ * report "1 tool(s) served to you" in the healthy tone about a laptop somebody
+ * has shut. The whole point of the kind is that a machine being off is a
+ * first-class, benign state, and a green line saying nothing about it drops that
+ * distinction exactly as a bare status code does.
+ *
+ * There is no error to classify here — the listing SUCCEEDED — and there would
+ * be nothing to classify by CLASS even if it had failed: this route runs a real
+ * MCP session over an in-memory transport, so an adapter's error crosses a
+ * JSON-RPC boundary and arrives as an `McpError` carrying its message and
+ * nothing else. `LocalMachineOfflineError` is gone by the time this file sees
+ * it. What survives is the substitution itself, and that is the signal: this
+ * kind, one tool, and the tool is strad's own. A `local-tunnel` whose upstream
+ * really did serve a single tool of that name would be read as unavailable —
+ * which is the shadowing `troubleshoot_host` already accepts by name (see
+ * TROUBLESHOOT_TOOL), and the reason that name is specific enough that no MCP
+ * server on a laptop is likely to have picked it.
+ *
+ * Which of the two unavailable STATES it is — a machine that is off or one that
+ * refused strad's credentials — is deliberately not guessed: both degrade this
+ * way, the error that knew is gone by here, and the tool below answers it
+ * properly when called. The page words this case for both.
+ */
+export function hostUnavailable(server: ServerConfig, tools: Tool[]): boolean {
+  if (server.kind !== "local-tunnel" || tools.length !== 1) return false;
+  const parsed = denamespace(tools[0]!.name);
+  return parsed?.slug === server.slug && parsed.tool === TROUBLESHOOT_TOOL;
+}
+
+/**
+ * What the page says when a `local-tunnel` lists the degraded surface.
+ *
+ * The listing succeeded, so this is not an error tone and not a bare status: it
+ * is one server that is not serving its own tools, and a tool sitting right
+ * there with the commands to bring it back.
+ *
+ * BOTH unavailable states degrade this way, and the page says both rather than
+ * picking one. A machine that is off is expected; a machine that ANSWERED and
+ * refused strad's credentials is not — it is a stale credential somebody has to
+ * rotate, which is why the gateway keeps that one paging (mcpServer.ts). This
+ * flag cannot tell them apart, so a sentence promising "expected, not a fault"
+ * over both would be wrong half the time. The tool below re-probes the machine
+ * and answers it properly.
+ */
+export function degradedSurfaceNote(slug: string): string {
+  return (
+    `"${slug}" is not serving its own tools: the machine hosting it is not available to strad. ` +
+    `${localTunnelNote(slug)} Either that machine is not answering — which is expected while it ` +
+    `is off, and not a fault in strad — or it answered and refused strad's credentials, which is ` +
+    `a stale credential somebody has to rotate. The one tool below is strad's own: call it for ` +
+    `the diagnosis and the exact commands to run on that machine.`
+  );
+}
+
+/**
+ * What the page says when no strad answer arrived at all.
+ *
+ * This is the shape the issue reported: the console printed `HTTP 504`, a status
+ * `statusFor()` cannot emit, because the body was not JSON and the page fell
+ * back to the number. These routes answer JSON for every outcome they reach, so
+ * a non-JSON body came from in front of strad — and on a `local-tunnel`, the
+ * commonest reason a request waits long enough to be timed out there is a
+ * machine that is not answering. Said as the strong hint it is rather than as a
+ * verdict the page cannot support: nothing here inspected the machine.
+ *
+ * `INGRESS_STATUS_TOKEN` is substituted by the page with the status it actually
+ * received. The prose stays in this file — the script below holds none of its
+ * own — and the token is exported so both halves of that substitution name the
+ * same string.
+ */
+export const INGRESS_STATUS_TOKEN = "{status}";
+
+export function ingressTimeoutNote(
+  slug: string,
+  status: number | string = INGRESS_STATUS_TOKEN,
+): string {
+  return (
+    `The request timed out — HTTP ${status}, answered in front of strad rather than by strad ` +
+    `itself. ${localTunnelNote(slug)} A machine that is off is the expected state for this kind, ` +
+    `not a fault in strad, and waiting on one that is not there is the commonest reason for this ` +
+    `— so check that machine before you check the gateway.`
+  );
+}
+
+/**
+ * The sentence that makes a `local-tunnel` legible to whoever is looking at it.
+ *
+ * Every kind-aware message on this page opens with it, because it carries the
+ * fact a status code cannot: there is a MACHINE somebody owns behind this slug,
+ * and it has to be awake for the server to serve. What that means for the
+ * failure in hand is the next sentence's job and differs per case, so this one
+ * makes no claim about which failure it is. Built here, from the slug and
+ * nothing else — strad's own prose, never an upstream's — and handed to the
+ * page's script as a constant, so this file is the only place it is written.
+ */
+export function localTunnelNote(slug: string): string {
+  return (
+    `"${slug}" is a local-tunnel server: it serves tools only while the machine hosting it ` +
+    `is awake, running the server, and holding its tunnel open.`
+  );
+}
+
 /** One tool, as the page needs it: bare name, namespaced name, schema. */
 function shapeTool(tool: Tool, slug: string): Record<string, unknown> {
   const parsed = denamespace(tool.name);
@@ -566,7 +680,7 @@ export function renderPlayground(opts: PlaygroundPageOptions): string {
   </section>
 </div>
 ${PLAYGROUND_CSS}
-${playgroundScript(slug)}`;
+${playgroundScript(server)}`;
 
   return layout({
     title: `${slug} · playground`,
@@ -577,11 +691,20 @@ ${playgroundScript(slug)}`;
     brandSub: "console",
     footNote: "human MCP client · no model involved",
     helpTitle: "Playground guide",
-    help: GUIDE,
+    help: guide(server),
   });
 }
 
-const GUIDE = `
+/**
+ * The help drawer, for the server this page is about.
+ *
+ * A function rather than a constant because one paragraph is about ONE kind, and
+ * prose about a kind that is not in play is noise in a drawer whose whole job is
+ * explaining what is in front of the reader. Same rule the page's script follows
+ * for its two sentences.
+ */
+function guide(server: ServerConfig): string {
+  return `
   <details class="acc" open>
     <summary>What this is connected to</summary>
     <div class="acc-body">
@@ -611,6 +734,15 @@ const GUIDE = `
         <li><b>The upstream</b> — what the server itself offers right now. An empty list from a
           server that should have tools is the shape a dead upstream makes.</li>
       </ul>
+      ${
+        server.kind === "local-tunnel"
+          ? `<p>This one is a <code>local-tunnel</code>: it runs on a machine somebody owns, and
+        that machine is off much of the time by design. While it is, the slug does not fail and
+        does not go quiet — it serves a single <code>troubleshoot_host</code> tool with the
+        commands to bring the machine back, and this page says so above the list rather than
+        reporting a healthy session with one tool in it.</p>`
+          : ""
+      }
     </div>
   </details>
   <details class="acc">
@@ -638,6 +770,7 @@ const GUIDE = `
         <code>Authorization: Bearer …</code>.</p>
     </div>
   </details>`;
+}
 
 /**
  * The page's own client, in plain JS.
@@ -650,10 +783,31 @@ const GUIDE = `
  * never `innerHTML`. A tool description is text from someone else's MCP server
  * and a tool result is arbitrary bytes; neither is ever parsed as HTML.
  */
-function playgroundScript(slug: string): string {
+function playgroundScript(server: ServerConfig): string {
   return `<script>
 (function () {
-  var SLUG = ${JSON.stringify(slug)};
+  var SLUG = ${jsonForScript(server.slug)};
+  // The slug's KIND, because one kind fails in a way that is not a fault.
+  // Nothing else on the page branches on it.
+  var KIND = ${jsonForScript(server.kind)};
+  var UNAVAILABLE_NOTE = ${jsonForScript(
+    server.kind === "local-tunnel" ? degradedSurfaceNote(server.slug) : "",
+  )};
+  var TIMED_OUT_NOTE = ${jsonForScript(
+    server.kind === "local-tunnel" ? ingressTimeoutNote(server.slug) : "",
+  )};
+  var STATUS_TOKEN = ${jsonForScript(INGRESS_STATUS_TOKEN)};
+  // "STRAD WAITED, AND NOTHING CAME" — the shape a wait on a machine that is not
+  // there makes when it outlives the patience of whatever sits in front of the
+  // app. A 504 is a gateway that gave up waiting on strad; a 524 is a Cloudflare
+  // origin that accepted the request and did not answer in time.
+  //
+  // Deliberately much narrower than the adapter's ORIGIN_UNREACHABLE_STATUSES
+  // (src/gateway/adapters/http.ts), which asks a different question one hop
+  // further in. A 502, a 503 and a 521/522/523 all mean strad ITSELF was not
+  // reached — nothing waited on anybody's laptop — and saying "check that
+  // machine" about them points at the wrong machine.
+  var TIMED_OUT = { 504: 1, 524: 1 };
   var tools = [];
   var current = null;
 
@@ -675,13 +829,43 @@ function playgroundScript(slug: string): string {
       credentials: "same-origin",
       body: JSON.stringify(payload || {})
     }).then(function (r) {
-      return r.json().catch(function () { return { ok: false, error: "HTTP " + r.status }; });
+      // NO JSON BODY. These two routes answer JSON for every outcome they reach,
+      // including a failure, so this answer came from something in front of
+      // them — the platform ingress, a proxy, or the console gate redirecting a
+      // session that expired mid-page. Which of those is a question the status
+      // answers, not this flag: it records only that nothing here authored the
+      // body. The status is kept rather than only rendered, because on a
+      // local-tunnel it is the only thing left to reason about (see failure()).
+      return r.json().catch(function () {
+        return { ok: false, error: "HTTP " + r.status, status: r.status, nonJsonBody: true };
+      });
     });
   }
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
     statusEl.className = "pg-status " + cls;
+  }
+
+  /**
+   * A failed request, in words.
+   *
+   * The one case worth its own sentence is a request that never reached strad
+   * at all: the body was not JSON, so something in front of the app answered,
+   * and on a local-tunnel the commonest reason for that is a wait on a machine
+   * that is not there. When strad ITSELF answers, its message is already its
+   * own — it names the machine and the commands — so it is printed as it
+   * arrived. Everything else keeps the wording it had.
+   */
+  function failure(res) {
+    if (KIND === "local-tunnel" && res.nonJsonBody && TIMED_OUT[res.status]) {
+      return {
+        label: "Host machine is not answering",
+        text: TIMED_OUT_NOTE.replace(STATUS_TOKEN, String(res.status)),
+        warn: true
+      };
+    }
+    return { label: "Call failed", text: res.error || "unknown error", warn: false };
   }
 
   /** A starting point for the argument editor, from the tool's own schema. */
@@ -767,7 +951,8 @@ function playgroundScript(slug: string): string {
     resultEl.hidden = false;
 
     if (!res.ok) {
-      resultEl.appendChild(block("Call failed", res.error || "unknown error", "pg-bad"));
+      var f = failure(res);
+      resultEl.appendChild(block(f.label, f.text, f.warn ? "pg-warn" : "pg-bad"));
       if (res.detail) resultEl.appendChild(block("Detail", res.detail, "pg-bad"));
       return;
     }
@@ -824,7 +1009,11 @@ function playgroundScript(slug: string): string {
 
   post("/playground/" + encodeURIComponent(SLUG) + "/tools/list", {}).then(function (res) {
     if (!res.ok) {
-      setStatus("Could not open a session: " + (res.error || "unknown error"), "pg-status-bad");
+      var f = failure(res);
+      setStatus(
+        f.warn ? f.text : "Could not open a session: " + f.text,
+        f.warn ? "pg-status-warn" : "pg-status-bad"
+      );
       if (res.detail) {
         var p = document.createElement("p");
         p.className = "copy-note";
@@ -834,11 +1023,17 @@ function playgroundScript(slug: string): string {
       return;
     }
     tools = res.tools || [];
+    // A LISTING THAT SUCCEEDED IS NOT ALWAYS A SERVER THAT IS SERVING. One tool,
+    // strad's own, is what a local-tunnel offers while its machine is not there
+    // — and reporting that as "1 tool(s) served to you" in the healthy tone
+    // drops the distinction this kind exists to make.
     setStatus(
-      "MCP session open · initialize answered by " + res.session.serverName +
-      " " + res.session.serverVersion + " · transport: " + res.session.transport +
-      " · " + tools.length + " tool(s) served to you",
-      "pg-status-ok"
+      res.hostUnavailable
+        ? UNAVAILABLE_NOTE
+        : "MCP session open · initialize answered by " + res.session.serverName +
+          " " + res.session.serverVersion + " · transport: " + res.session.transport +
+          " · " + tools.length + " tool(s) served to you",
+      res.hostUnavailable ? "pg-status-warn" : "pg-status-ok"
     );
     renderTools();
   }).catch(function (err) {
@@ -877,6 +1072,7 @@ const PLAYGROUND_CSS = `<style>
   border:1px solid var(--g5);background:var(--g6);color:var(--g2);margin:0 0 1.2rem;line-height:1.6}
 .pg-status-ok{border-color:color-mix(in srgb,var(--accent) 45%,var(--g5));color:var(--text-accent)}
 .pg-status-bad{border-color:color-mix(in srgb,#e8776b 45%,var(--g5));color:#e8776b}
+.pg-status-warn{border-color:color-mix(in srgb,#e0a63b 45%,var(--g5));color:#e0a63b}
 .pg-status-busy{color:var(--g3)}
 .pg-grid{display:grid;grid-template-columns:minmax(0,20rem) minmax(0,1fr);gap:1.1rem;align-items:start}
 @media (max-width:900px){.pg-grid{grid-template-columns:1fr}}
@@ -900,6 +1096,7 @@ const PLAYGROUND_CSS = `<style>
 .pg-verdict{font-family:var(--font-mono);font-size:.76rem;margin:0 0 .6rem}
 .pg-ok{color:var(--text-accent)}
 .pg-bad{color:#e8776b}
+.pg-warn{color:#e0a63b}
 .pg-block{margin:0 0 .7rem}
 .pg-block-head{font-family:var(--font-mono);font-size:.7rem;color:var(--g4);
   text-transform:uppercase;letter-spacing:.05em;margin:0 0 .3rem}
