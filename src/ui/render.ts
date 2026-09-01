@@ -1217,7 +1217,7 @@ function pathPreviewScript(namespace: string): string {
 }
 
 /** JSON for an inline `<script>`: `</script>` in a value must not close it. */
-function jsonForScript(value: string): string {
+export function jsonForScript(value: string): string {
   return JSON.stringify(value)
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")

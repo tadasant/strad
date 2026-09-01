@@ -2744,6 +2744,17 @@ such a tool is unreachable through strad, and the caller gets strad's answer
 instead of an error. The name is specific enough that no MCP server on a laptop is
 likely to have chosen it, which is the whole mitigation.
 
+**The console reads that substitution as a signal, which extends the same bet.**
+`/playground/<slug>` cannot classify by error — it runs its MCP session over an
+in-memory transport, so an adapter's error arrives as an `McpError` with a message
+and no class — so it infers "this host is unavailable" from the SURFACE: this
+kind, exactly one tool, and the tool is `<slug>__troubleshoot_host`
+(`hostUnavailable` in `src/ui/playground.ts`). A healthy local-tunnel whose
+upstream happens to serve exactly one tool of that name is therefore described in
+the console as unavailable, and its own tool is the one the page points at. The
+mitigation is the name, again — and the blast radius is one console page's
+wording, not a listing, a call, or anything `/mcp` serves.
+
 **Two failures reach it, and a 403 is now one of them.** `LocalHostUnavailableError`
 has two subclasses: offline (502/503/504, 52x, refused connections, handshake
 timeouts) and refused (401/403). The refused case USED to fail the whole listing,

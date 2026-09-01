@@ -239,6 +239,15 @@ takes the healthy servers named beside it down. An empty list is
 indistinguishable from a server that genuinely has none. A tool is the one
 channel every client already renders.
 
+The console extends the same bet one step. `/playground/<slug>` cannot classify
+by error — its MCP session runs over an in-memory transport, so an adapter's
+error reaches it as a message with no class — so it infers "this host is
+unavailable" from the surface it can see: this kind, exactly one tool, and the
+tool is `<slug>__troubleshoot_host`. A healthy local-tunnel whose upstream serves
+exactly one tool of that name is therefore described as unavailable on that page.
+The mitigation is the name, and the cost is one page's wording — nothing `/mcp`
+serves changes.
+
 It is bounded: it is **listed** only while the host is unavailable, takes no
 arguments, reaches nothing but that slug's own upstream, and returns only text
 strad and the operator wrote. It is exempt from the [`tools:`

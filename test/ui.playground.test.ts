@@ -10,12 +10,14 @@ import {
   connectUrl,
   degradedSurfaceNote,
   hostUnavailable,
+  INGRESS_STATUS_TOKEN,
   ingressTimeoutNote,
   localTunnelNote,
   originFor,
   playgroundHref,
   readable,
 } from "../src/ui/playground.ts";
+import { jsonForScript } from "../src/ui/render.ts";
 
 /**
  * `/playground/:server` — the console's human MCP client.
@@ -628,8 +630,15 @@ describe("the page's own kind-awareness", () => {
     expect(html).toContain('var KIND = "local-tunnel"');
     // As the script's own constants — the page holds no prose of its own, so
     // the sentences it can print are the ones this module builds.
-    expect(html).toContain(JSON.stringify(degradedSurfaceNote("sleepy")));
-    expect(html).toContain(JSON.stringify(ingressTimeoutNote("sleepy")));
+    expect(html).toContain(jsonForScript(degradedSurfaceNote("sleepy")));
+    expect(html).toContain(jsonForScript(ingressTimeoutNote("sleepy")));
+    // The statuses the page will word kind-awarely, pinned. A 502, a 503 and a
+    // 521/522/523 mean strad itself was not reached, and pointing at somebody's
+    // laptop for those points at the wrong machine.
+    expect(html).toContain("var TIMED_OUT = { 504: 1, 524: 1 }");
+    // The amber tone is a real rule, not a class name nothing styles.
+    expect(html).toContain(".pg-status-warn{");
+    expect(html).toContain(".pg-warn{");
   });
 
   it("gives another kind's page neither sentence", async () => {
@@ -638,8 +647,14 @@ describe("the page's own kind-awareness", () => {
     ).text();
 
     expect(html).toContain('var KIND = "builtin"');
-    expect(html).not.toContain("local-tunnel server");
+    // Empty rather than absent: the script always declares them, and a kind with
+    // no machine has nothing to say about one.
+    expect(html).toContain('var UNAVAILABLE_NOTE = ""');
+    expect(html).toContain('var TIMED_OUT_NOTE = ""');
+    expect(html).not.toContain(localTunnelNote("echo"));
     expect(html).not.toContain("is not serving its own tools");
+    // The help drawer's paragraph about the kind goes with it.
+    expect(html).not.toContain("troubleshoot_host");
   });
 });
 
@@ -679,29 +694,37 @@ describe("what counts as the degraded surface", () => {
 });
 
 describe("the sentences themselves", () => {
-  it("says which machine, and that off is expected", () => {
+  it("says there is a machine, and makes no claim about which failure", () => {
     expect(localTunnelNote("anki")).toBe(
       '"anki" is a local-tunnel server: it serves tools only while the machine hosting it is ' +
-        "awake, running the server, and holding its tunnel open. A machine that is off is the " +
-        "expected state for this kind, not a fault in strad.",
+        "awake, running the server, and holding its tunnel open.",
     );
+    // The two states have opposite remedies, so the shared sentence promises
+    // neither. Each composed note says which failure it is talking about.
+    expect(localTunnelNote("anki")).not.toContain("expected");
   });
 
-  it("says a successful listing is not a serving server", () => {
-    expect(degradedSurfaceNote("anki")).toContain(
-      "is not serving its own tools",
-    );
-    expect(degradedSurfaceNote("anki")).toContain(localTunnelNote("anki"));
-    expect(degradedSurfaceNote("anki")).toContain("call it for the diagnosis");
+  it("names BOTH unavailable states, because the flag cannot tell them apart", () => {
+    const note = degradedSurfaceNote("anki");
+    expect(note).toContain("is not serving its own tools");
+    expect(note).toContain(localTunnelNote("anki"));
+    // A machine that is off is expected. A machine that REFUSED is answering,
+    // and telling its owner to restart a tunnel would waste their afternoon.
+    expect(note).toContain("expected while it is off");
+    expect(note).toContain("refused strad's credentials");
+    expect(note).toContain("call it for the diagnosis");
   });
 
   it("names the status it got, and where it came from", () => {
     expect(ingressTimeoutNote("anki", 504)).toBe(
       "The request timed out — HTTP 504, answered in front of strad rather than by strad " +
-        `itself. ${localTunnelNote("anki")} Waiting on a machine that is not there is the ` +
-        "commonest reason for this, so check that machine before you check the gateway.",
+        `itself. ${localTunnelNote("anki")} A machine that is off is the expected state for ` +
+        "this kind, not a fault in strad, and waiting on one that is not there is the " +
+        "commonest reason for this — so check that machine before you check the gateway.",
     );
     // The page substitutes the status it actually received.
-    expect(ingressTimeoutNote("anki")).toContain("HTTP {status}");
+    expect(ingressTimeoutNote("anki")).toContain(
+      `HTTP ${INGRESS_STATUS_TOKEN}`,
+    );
   });
 });
