@@ -15,6 +15,7 @@ import {
 } from "../src/secrets/param-route.ts";
 import { storeForPath, writableTarget } from "../src/http/params.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
+import { readStoreDiagnosticsCached } from "../src/secrets/store-diagnostics.ts";
 import { parameterPath } from "../src/secrets/parameters/namespace.ts";
 
 /**
@@ -93,6 +94,21 @@ const ROTATED = "refresh-token-just-minted-by-x";
 const fake = createFakeGcp();
 
 let server: Server;
+/**
+ * The store the diagnosis reads, counting its index passes — one per pass that
+ * actually ran, none for one served from the held result.
+ */
+const diagnostic = {
+  lists: 0,
+  store: {
+    list: async (namespace: string) => {
+      diagnostic.lists += 1;
+      return fake.store.list(namespace);
+    },
+    resolveDetailed: (namespace: string) =>
+      fake.store.resolveDetailed!(namespace),
+  },
+};
 /** The runtime providers, counting how often a write tells them to re-read. */
 let invalidations = 0;
 const runtimeEnv = new EnvSecretProvider({});
@@ -136,6 +152,7 @@ beforeAll(async () => {
     // constructing a second writer.
     parametersStore: () => fake.store,
     secretProvider: runtimeProviders,
+    diagnosticStore: diagnostic.store,
   });
   server = app.listen(0);
   await new Promise((r) => server.once("listening", r));
@@ -158,6 +175,15 @@ function client(opts: { slug?: string; token?: string; base?: string } = {}) {
 describe("an allowlisted write", () => {
   it("reaches the store, and the store hands the new value back", async () => {
     const before = invalidations;
+    // Prime the diagnosis pass `/ui` and readiness reuse, so the write has
+    // something to drop.
+    await readStoreDiagnosticsCached({
+      store: diagnostic.store,
+      namespace: "/strad/test/gateway/static/",
+      ttlMs: 60_000,
+    });
+    const passes = diagnostic.lists;
+
     await client().put(VARIABLE, ROTATED);
 
     // Through `reveal()`, i.e. the store's own read of Secret Manager — so this
@@ -168,6 +194,15 @@ describe("an allowlisted write", () => {
     // `ttlSeconds`. The write went through the admin client; the gateway reads
     // through the resolver client, and nothing else tells it.
     expect(invalidations).toBe(before + 1);
+    // The held diagnosis pass went with it: the next reading runs a fresh
+    // pass instead of serving the pre-rotation verdict for the rest of the
+    // minute to whoever polls readiness.
+    await readStoreDiagnosticsCached({
+      store: diagnostic.store,
+      namespace: "/strad/test/gateway/static/",
+      ttlMs: 60_000,
+    });
+    expect(diagnostic.lists).toBe(passes + 1);
   });
 
   it("stores it base64url-encoded, and never in Parameter Manager", async () => {

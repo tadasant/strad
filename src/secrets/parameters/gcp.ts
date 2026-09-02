@@ -528,10 +528,11 @@ export function createGcpParameterStore(
    * registry reads one per `params: true` builtin, and the console's diagnosis
    * reads the gateway's again — six or seven namespaces on the production
    * config — and every one of them used to enumerate the project on its own
-   * timer. With ~34 parameters and a minute's TTL that was ~270 billed reads a
-   * minute, around the clock, to re-learn values that change a few times a
-   * month. Everything now slices this: one enumeration per TTL (P version
-   * reads), plus one render per parameter in each namespace actually asked for.
+   * timer. With 34 parameters and a minute's TTL that was 388 billed reads a
+   * minute (`test/secrets.read-accounting.test.ts`), around the clock, to
+   * re-learn values that change a few times a month. Everything now slices
+   * this: one enumeration per TTL (P version reads), plus one render per
+   * parameter in each namespace actually asked for.
    *
    * What drops it, in order of how often it happens:
    *
