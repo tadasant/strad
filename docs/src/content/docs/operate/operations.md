@@ -12,7 +12,7 @@ produce a bootable image is a failing PR.
 ## `ci.yml` — the gate on every PR
 
 Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
-of which, `servers`, is a twelve-leg matrix over the server trees:
+of which, `servers`, is a thirteen-leg matrix over the server trees:
 
 - **`lint`** — typecheck, ESLint, `prettier --check`.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
@@ -22,7 +22,11 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
   `main`, so without these legs a PR can break a server tree and merge green — a
   type error surfaces first as a failed release build, and a behavioural
   regression surfaces first in production. Each leg reports as `servers (<tree>)`,
-  and `fail-fast: false` keeps one broken tree from cancelling the other eleven.
+  and `fail-fast: false` keeps one broken tree from cancelling the other twelve.
+
+  A leg's `tree:` **is** its path under `servers/`, so a tree that is not a direct
+  child is spelled with a slash: `bundle/host` runs in `servers/bundle/host` and
+  reports as `servers (bundle/host)`.
 
   **The tree list is not maintained by hand.**
   `test/ci-server-trees.test.ts` compares the matrix against the trees
@@ -31,11 +35,17 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
   `paths:`. A hand-maintained list has already failed twice here: `onepassword`
   and `pointsyeah` were baked with no job at all, and after two more jobs were
   hand-written for them, `x-twitter` landed the same way — four functional
-  suites, baked into the image, run by nothing. Two baked trees are deliberately
-  not legs, and the test names both with the job that covers them:
-  `servers/bundle` is the host — no suite of its own, and `bundle_image` builds it
-  inside the image — and `images/bundle-google` is a supplementary image in its
-  own right, gated by [`bundle-google-ci.yml`](#the-image-workflows).
+  suites, baked into the image, run by nothing. It happened a fourth time to the
+  bundle host, and that one the comparison could not see: the Dockerfile copies
+  `servers/bundle`, the npm tree is `servers/bundle/host` one level deeper, and a
+  leg for it read as naming a tree the image does not bake. So the comparison
+  resolves each baked path to the **lockfile-owning** trees at or inside it — the
+  unit `npm ci` can address — and a nested tree that lands uncovered fails it the
+  same way a top-level one does. One baked tree is deliberately not a leg, and the
+  test names the job that covers it: `images/bundle-google` is a supplementary
+  image in its own right, gated by
+  [`bundle-google-ci.yml`](#the-image-workflows). `servers/bundle` needs no
+  exemption — it owns no lockfile, so it is not a tree; its host is.
 
   What each leg is for:
 
@@ -140,6 +150,17 @@ of which, `servers`, is a twelve-leg matrix over the server trees:
     forwarded verbatim, and that a child which dies is replaced on the next call.
     The binary's own tool count is asserted by `bundle_image`, against the real
     thing.
+  - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
+    `npm run build && vitest run` — `tsc` over `src/`, so a type error there
+    still fails the PR. The host is the process every bundle container runs: it
+    mounts every tree in the image, 21 mounts, which staging's 30
+    supplementary-image slugs resolve to. Its suite runs over its TypeScript
+    sources with no `/app/trees` to mount: the per-slug environment
+    discovery, the two `degraded` verdicts, the presence route's wiring and the
+    per-tree SDK cache. `bundle_image` does not substitute for it — that job
+    asserts the mount **set** against a booted container and exercises no branch,
+    so a dropped precedence inside one of the `degraded` verdicts is red here and
+    green everywhere else.
 
 - **`bundle_image`** — builds `servers/bundle/Dockerfile`, **boots the container**,
   and runs `scripts/smoke.mjs` against every mount of the running image, asserting

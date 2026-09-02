@@ -1,7 +1,11 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { bakedTrees, DOCKERFILE } from "./helpers/bundle-trees.js";
+import {
+  bakedTrees,
+  DOCKERFILE,
+  installableTrees,
+} from "./helpers/bundle-trees.js";
 
 /**
  * Every tree baked into the bundle image is built or tested by SOME job.
@@ -20,6 +24,13 @@ import { bakedTrees, DOCKERFILE } from "./helpers/bundle-trees.js";
  * technique, and the same reason, as `bundle-release-paths.test.ts`. This reads
  * the workflow as TEXT on purpose: it is YAML nobody imports, and the point is to
  * notice when a human adds a tree to one file and not the other.
+ *
+ * A tree is not always a direct child of `servers/`. `servers/bundle/host` is one
+ * level deeper, and for its first weeks it was exempted here — named in
+ * `COVERED_ELSEWHERE` with the reason that a leg could not be spelled for it —
+ * while its 53 tests ran nowhere. So the comparison resolves each baked path to
+ * the lockfile-owning trees inside it, and a leg's `tree:` may carry a slash. A
+ * nested tree that lands uncovered fails this the same way a top-level one does.
  */
 
 const WORKFLOW = ".github/workflows/ci.yml";
@@ -31,21 +42,39 @@ const WORKFLOW = ".github/workflows/ci.yml";
  */
 const COVERED_ELSEWHERE = new Map([
   [
-    "servers/bundle",
-    "the HOST: `ci.yml`'s `bundle_image` job builds it inside the image, which " +
-      "is the only place its build order against the other trees means " +
-      "anything. Its own vitest suite (`servers/bundle/host`) is NOT covered by " +
-      "anything here — a leg cannot be spelled for a tree one level deeper " +
-      "than `servers/<name>`, and both comparisons below would call it " +
-      "orphaned. Issue #229",
-  ],
-  [
     "images/bundle-google",
     "a supplementary image in its own right: `bundle-google-ci.yml` installs " +
       "it, runs its suite, builds the image and smoke-tests all four mounts of " +
       "the booted container",
   ],
 ]);
+
+/**
+ * The units a leg can actually address: every baked tree, resolved to the
+ * lockfile-owning trees at or inside it.
+ *
+ * `servers/bundle` is the reason this exists. The Dockerfile bakes it, but the
+ * directory itself is not an npm tree — the tree is `servers/bundle/host`, one
+ * level deeper, and it has a suite of its own. Comparing the matrix against the
+ * `COPY` paths alone can only ever call that leg orphaned, which is why the host
+ * spent its first weeks named in an exemption instead of a job.
+ *
+ * A baked path with no lockfile under it at all stands for itself, so a tree of
+ * plain files still has to be covered or exempted rather than silently dropping
+ * out of the comparison.
+ */
+function bakedUnits(): Set<string> {
+  const installable = [...installableTrees()];
+  const units = new Set<string>();
+  for (const baked of bakedTrees()) {
+    const inside = installable.filter(
+      (t) => t === baked || t.startsWith(`${baked}/`),
+    );
+    if (inside.length === 0) units.add(baked);
+    else for (const t of inside) units.add(t);
+  }
+  return units;
+}
 
 /** The `servers:` job block of `ci.yml`, as text. */
 function serversJob(): string {
@@ -59,12 +88,20 @@ function serversJob(): string {
 /**
  * The trees the `servers` matrix names, as `servers/<tree>` paths.
  *
+ * A leg's `tree:` IS its path — the job uses it verbatim as
+ * `working-directory: servers/${tree}` — so a nested tree is spelled with a
+ * slash (`bundle/host`) and needs no second key to say where it lives. One
+ * string is the identity, the working directory and the check name at once,
+ * which is what keeps this comparison honest.
+ *
  * Scoped to that job rather than the whole file: another job growing a `tree:`
  * matrix key must not read as coverage this one does not provide.
  */
 function matrixTrees(): Set<string> {
   const trees = new Set<string>();
-  for (const m of serversJob().matchAll(/^\s+- tree:\s*([a-z0-9-]+)\s*$/gm)) {
+  for (const m of serversJob().matchAll(
+    /^\s+- tree:\s*([a-z0-9-]+(?:\/[a-z0-9-]+)*)\s*$/gm,
+  )) {
     trees.add(`servers/${m[1]!}`);
   }
   return trees;
@@ -72,13 +109,14 @@ function matrixTrees(): Set<string> {
 
 describe("every baked tree is built or tested by some job", () => {
   it("bakes and tests the same set of trees", () => {
-    const baked = bakedTrees();
+    const baked = bakedUnits();
     const matrix = matrixTrees();
 
-    // Guard the guard: a regex that silently matched nothing would make this
-    // test pass by comparing two empty sets.
+    // Guard the guard: a regex — or a filesystem walk — that silently matched
+    // nothing would make this test pass by comparing two empty sets.
     expect(baked.size).toBeGreaterThan(3);
     expect(matrix.size).toBeGreaterThan(3);
+    expect(installableTrees().size).toBeGreaterThan(3);
 
     const uncovered = [...baked]
       .filter((t) => !matrix.has(t) && !COVERED_ELSEWHERE.has(t))
@@ -95,6 +133,20 @@ describe("every baked tree is built or tested by some job", () => {
       orphaned,
       `a leg of ${WORKFLOW}'s \`servers\` matrix names a tree ${DOCKERFILE} does ` +
         `not bake — it spends a runner on something the image no longer carries`,
+    ).toEqual([]);
+  });
+
+  it("exempts only trees the image still bakes", () => {
+    // An exemption is keyed on a path, and a path can be renamed or dropped. A
+    // stale key exempts nothing and is invisible — until the tree comes back
+    // under a new name, uncovered, and this file says it was someone's decision.
+    const stale = [...COVERED_ELSEWHERE.keys()]
+      .filter((t) => !bakedUnits().has(t))
+      .sort();
+    expect(
+      stale,
+      `COVERED_ELSEWHERE names a tree ${DOCKERFILE} no longer bakes — the ` +
+        `exemption outlived the tree it was written for`,
     ).toEqual([]);
   });
 
@@ -130,9 +182,29 @@ describe("every baked tree is built or tested by some job", () => {
     expect(leg?.[0]).toMatch(/^\s+test: true$/m);
   });
 
+  it("runs the bundle host's suite, which is a tree one level deeper", () => {
+    // Named explicitly, like x-twitter above and for the same reason. This one
+    // is also the case the set comparison was blind to: `servers/bundle` is what
+    // the Dockerfile's COPY says, the tree is `servers/bundle/host`, and the
+    // comparison saw only the former until it learned to resolve a baked path to
+    // the trees inside it.
+    expect(installableTrees().has("servers/bundle/host")).toBe(true);
+    expect(matrixTrees().has("servers/bundle/host")).toBe(true);
+
+    // The parent is baked and is NOT a tree — it owns no lockfile, so no leg can
+    // `npm ci` in it. It must not read as a unit needing coverage of its own.
+    expect(installableTrees().has("servers/bundle")).toBe(false);
+    expect(bakedUnits().has("servers/bundle")).toBe(false);
+
+    const leg = serversJob().match(
+      /^\s+- tree: bundle\/host\n(?:\s+[\w-]+: .*\n)+/m,
+    );
+    expect(leg?.[0]).toMatch(/^\s+test: true$/m);
+  });
+
   it("does not cancel sibling legs when one tree fails", () => {
     // Without `fail-fast: false` the first failing tree cancels the rest, and
-    // "good-eggs is broken" reports as "nine other trees have no result".
+    // "good-eggs is broken" reports as "twelve other trees have no result".
     expect(serversJob()).toMatch(/^ {6}fail-fast: false$/m);
   });
 });
