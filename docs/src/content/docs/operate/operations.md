@@ -812,10 +812,36 @@ deploy have to happen together, which is what the `build: true` dispatch does.
 ## Seeding secrets
 
 `secrets-sync.yml` is a `workflow_dispatch` job (in the `staging` environment)
-that idempotently upserts
+that upserts
 `strad-staging-{STRAD_TOKENS, STRAD_INTERNAL_TOKEN, ADMIN_BOOTSTRAP_TOKEN}` into
-GCP Secret Manager — creating the secret or adding a new version.
-`STRAD_INTERNAL_TOKEN` is auto-generated (`openssl rand -hex 24`) if you omit it.
+GCP Secret Manager — creating the secret or adding a new version — and then
+**destroys every other version of the secret it just wrote**, enabled or
+disabled, so each secret carries exactly one live version. Secret Manager bills
+every version that is not `DESTROYED` (a disabled one still counts), every
+consumer reads `versions/latest`, and nothing else ever cleans a superseded
+version up. `STRAD_INTERNAL_TOKEN` is auto-generated (`openssl rand -hex 24`) if
+you omit it.
+
+What the prune destroys, precisely: the versions of a secret this run added a
+version to, other than the one `versions add` returned. It never deletes a secret,
+never touches the version it just added, and refuses to destroy anything unless
+that version is visibly in the listing — a wrong selection here would destroy
+`latest`, and the next deploy would render without that credential. A secret the
+run created (one version) is not pruned, and a secret whose `versions add` failed
+ends the run before its prune. The log carries version numbers and states, never
+a value.
+
+If a prune fails after its add succeeded — a listing or a destroy answers an
+error — the new value is already live, so the run carries on with the remaining
+secrets and then **fails at the end** naming the secrets whose superseded versions
+remain. Re-running with the same inputs finishes the job (it adds one more
+version and destroys everything else), or destroy them by hand with
+`gcloud secrets versions destroy`. Destroying needs
+`secretmanager.versions.destroy` on the service account behind `GCP_SA_KEY`:
+`roles/secretmanager.admin` and `roles/secretmanager.secretVersionManager` carry
+it; `roles/secretmanager.secretVersionAdder` does not. The shell behind all of
+this is exercised in CI against a stub `gcloud`
+(`test/secrets-sync.prune.test.ts`).
 
 The rationale is that **an agent or a laptop cannot read GitHub Actions secrets** —
 only a workflow runs with them in scope. So `GCP_SA_KEY` never touches a terminal;
