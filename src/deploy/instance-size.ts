@@ -36,10 +36,34 @@ import type { StradConfig } from "../config/schema.ts";
  * container from starting.
  *
  * `scripts/check-config.ts` and `scripts/render-spec.ts` are where it holds
- * instead, and between them every config in either repo is checked on the PR
- * that edits it and again at the deploy boundary. `renderAppSpec` itself stays
- * permissive, as it does for image tags — it shapes specs for tests and for
- * whoever embeds it, and has no business adjudicating a vendor's price list.
+ * instead: the first on the pull request that edits a config, the second at the
+ * deploy boundary. `renderAppSpec` itself stays permissive, as it does for image
+ * tags — it shapes specs for tests and for whoever embeds it, and has no
+ * business adjudicating a vendor's price list. `assertDeployableSpec`
+ * (src/deploy/spec-file.ts) carries the same check a third time, on the bytes
+ * `doctl` reads, so a spec this renderer did not write is covered too.
+ *
+ * The PR-time half reaches `strad.prod.yaml` only through tadasant-internal's
+ * own CI, which runs this repo's `check-config` against it — so prod picks the
+ * gate up when that repo's strad ref advances past this commit, not when this
+ * commit merges.
+ *
+ * ## Two things this deliberately does not do
+ *
+ * **It does not refuse a legacy plan at the deploy boundary, even though
+ * `render-spec` is handed `--app`.** An app NAME is not a creation date, and
+ * `render-spec` is the renderer every deployment of this OSS gateway uses —
+ * hard-coding "the two apps Tadasant created on 2026-07-12" into it would
+ * refuse a legitimate deploy for anyone whose app predates 7 May 2024. The
+ * warning names the component and says what App Platform will do; the operator
+ * knows which app they are deploying.
+ *
+ * **It does not reconcile duplicate bundle names.** Nothing rejects two
+ * `bundles:` entries sharing a name (the `superRefine` in schema.ts dedups
+ * server SLUGS, not bundle names), and `renderAppSpec` takes the first match —
+ * so a config with a duplicate is reported here on a slug the render would
+ * discard. That is over-strict rather than unsafe, and the real defect is the
+ * missing duplicate-name rule rather than anything here.
  */
 
 /**
@@ -131,14 +155,14 @@ export interface BundleInstanceSize {
 export function unknownInstanceSizes(
   config: StradConfig,
 ): BundleInstanceSize[] {
-  return (config.bundles ?? [])
+  return config.bundles
     .filter((b) => !isKnownInstanceSize(b.instanceSizeSlug))
     .map((b) => ({ bundle: b.name, slug: b.instanceSizeSlug }));
 }
 
 /** Every declared bundle on a plan only a pre-7-May-2024 app may use. */
 export function legacyInstanceSizes(config: StradConfig): BundleInstanceSize[] {
-  return (config.bundles ?? [])
+  return config.bundles
     .filter((b) => isLegacyInstanceSize(b.instanceSizeSlug))
     .map((b) => ({ bundle: b.name, slug: b.instanceSizeSlug }));
 }

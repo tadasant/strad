@@ -3503,7 +3503,9 @@ successful scrape of an empty document.
 "Legacy Plans" tables at
 <https://docs.digitalocean.com/products/app-platform/details/pricing/>, read on
 2026-09-02. `check-config` and `render-spec` refuse a `bundles[].instanceSizeSlug`
-that is in neither.
+that is in neither, and `assertDeployableSpec` refuses a rendered spec whose
+`instance_size_slug` is — on the bytes `doctl` reads, so a spec strad's own
+renderer did not write is covered too.
 
 **Why it is a hack.** The list is authoritative somewhere else and static here.
 DigitalOcean publishes it as an API — `GET /v2/apps/tiers/instance_sizes` — and
@@ -3536,10 +3538,13 @@ and changes on the order of once a year.
 **How you would know.** `instanceSizeSlug "<a plan that does exist>" names no App
 Platform plan`, on a slug you just read off the pricing page.
 
-**Undo.** Delete the two `assertKnownInstanceSizes` / `unknownInstanceSizes` call
-sites in `scripts/render-spec.ts` and `scripts/check-config.ts`. Any string goes
-back to reaching `instance_size_slug` verbatim, and a name DigitalOcean does not
-sell goes back to failing at `doctl apps update` after the merge.
+**Undo.** Delete `src/deploy/instance-size.ts` and its four call sites —
+`unknownInstanceSizes` + `legacyInstanceSizes` in `scripts/check-config.ts`,
+`assertKnownInstanceSizes` + `legacyInstanceSizes` in `scripts/render-spec.ts` —
+plus the `isKnownInstanceSize` pass in `assertDeployableSpec`
+(`src/deploy/spec-file.ts`), and their imports. Any string goes back to reaching
+`instance_size_slug` verbatim, and a name DigitalOcean does not sell goes back to
+failing at `doctl apps update` after the merge.
 
 **The better fix, when it is worth building.** Generate the two arrays from
 `GET /v2/apps/tiers/instance_sizes` at build time — checked in, refreshed by a

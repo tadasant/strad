@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
+import { assertDeployableSpec } from "../src/deploy/spec-file.ts";
 import {
   APP_INSTANCE_SIZES,
   LEGACY_APP_INSTANCE_SIZES,
@@ -246,7 +247,7 @@ describe("check-config refuses a config naming no real plan", () => {
     return { status: run.status ?? -1, output: `${run.stdout}${run.stderr}` };
   }
 
-  it("exits 1 on apps-s-1vcpu-512mb, where it used to report ok", () => {
+  it("exits 1 on apps-s-1vcpu-512mb", () => {
     const { status, output } = checkConfig(
       withBundleSize("apps-s-1vcpu-512mb"),
     );
@@ -278,4 +279,109 @@ bundles:
     expect(status).toBe(0);
     expect(output).not.toContain("::warning");
   }, 30_000);
+});
+
+describe("render-spec refuses a plan that does not exist", () => {
+  // Driven as a subprocess, the same way test/render-spec.images.test.ts drives
+  // the sibling mutable-tag gate, and for the same reason: the property is about
+  // the SPEC that reaches App Platform, not about a function's return value. A
+  // reorder that moved the call below an early exit would pass every unit test
+  // above and fail nothing.
+  function render(yaml: string): {
+    stdout: string;
+    stderr: string;
+    status: number;
+  } {
+    const dir = mkdtempSync(join(tmpdir(), "strad-render-size-"));
+    const cfg = join(dir, "cfg.yaml");
+    writeFileSync(cfg, yaml);
+    const out = spawnSync(
+      process.execPath,
+      [
+        "--experimental-transform-types",
+        "scripts/render-spec.ts",
+        "--config",
+        cfg,
+        "--image",
+        `ghcr.io/tadasant/strad:sha-${"a".repeat(40)}`,
+        "--app",
+        "strad-staging",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          STRAD_TOKENS: "[]",
+          STRAD_INTERNAL_TOKEN: "internal",
+        },
+      },
+    );
+    return { stdout: out.stdout, stderr: out.stderr, status: out.status ?? 1 };
+  }
+
+  it("exits non-zero and emits no spec for apps-s-1vcpu-512mb", () => {
+    const out = render(withBundleSize("apps-s-1vcpu-512mb"));
+    expect(out.status).not.toBe(0);
+    expect(`${out.stdout}${out.stderr}`).toContain(
+      '"apps-s-1vcpu-512mb" names no App Platform plan',
+    );
+    expect(out.stdout.trim()).toBe("");
+  }, 30_000);
+
+  it("renders a current plan into instance_size_slug, silently", () => {
+    const out = render(withBundleSize("apps-s-1vcpu-0.5gb"));
+    expect(out.status).toBe(0);
+    const spec = JSON.parse(out.stdout) as {
+      services: { name: string; instance_size_slug: string }[];
+    };
+    expect(
+      spec.services.find((svc) => svc.name === "bundle-api")
+        ?.instance_size_slug,
+    ).toBe("apps-s-1vcpu-0.5gb");
+    expect(out.stderr).not.toContain("legacy App Platform plan");
+  }, 30_000);
+
+  it("renders a legacy plan but warns, naming the bundle", () => {
+    const out = render(withBundleSize("professional-xs"));
+    expect(out.status).toBe(0);
+    expect(out.stderr).toContain("::warning::");
+    expect(out.stderr).toContain('bundle "bundle-api"');
+    expect(out.stderr).toContain("before 7 May 2024");
+  }, 30_000);
+});
+
+describe("assertDeployableSpec refuses a plan on the bytes doctl reads", () => {
+  // The third holder of the check, and the only one that does not care who
+  // rendered the spec — a hand-edited spec.json, or a future second renderer.
+  function spec(slug: string): string {
+    return JSON.stringify({
+      name: "strad-staging",
+      services: [{ name: "core", instance_size_slug: slug, http_port: 8080 }],
+    });
+  }
+
+  it("throws naming the component and the slug", () => {
+    expect(() => assertDeployableSpec(spec("apps-s-1vcpu-512mb"))).toThrow(
+      /component "core" asks for instance size "apps-s-1vcpu-512mb"/,
+    );
+  });
+
+  it("accepts a current plan and a legacy one alike", () => {
+    // Legacy is the renderer's warning to make, not this one's refusal: this
+    // check sees a spec, and a spec does not say when its app was created.
+    expect(assertDeployableSpec(spec("apps-s-1vcpu-0.5gb")).components).toEqual(
+      ["core"],
+    );
+    expect(assertDeployableSpec(spec("professional-xs")).components).toEqual([
+      "core",
+    ]);
+  });
+
+  it("says nothing about a component with no instance_size_slug", () => {
+    const noSize = JSON.stringify({
+      name: "strad-staging",
+      services: [{ name: "core", http_port: 8080 }],
+    });
+    expect(assertDeployableSpec(noSize).components).toEqual(["core"]);
+  });
 });

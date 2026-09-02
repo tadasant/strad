@@ -19,7 +19,9 @@
  *   2  the script was called wrong (missing --config, unreadable file)
  *
  * Every problem is also emitted as a `::error::` workflow command, so GitHub
- * annotates the run. Output is names and structure only — never a value.
+ * annotates the run, and a finding that is worth saying but not worth failing on
+ * — a legacy App Platform plan — is a `::warning::` on an otherwise clean exit 0.
+ * Output is names and structure only — never a value.
  *
  * ## The checks
  *

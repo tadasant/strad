@@ -469,9 +469,11 @@ npm run config:check -- --config infra/strad.staging.yaml
 | `2`  | the script was called wrong (no `--config`, unreadable file)     |
 
 Every problem is emitted as a `::error file=<config>::…` workflow command on
-stderr, so GitHub annotates the run, and repeated as a list on stdout. Output is
-names and structure only — it never prints a value, and the values it renders
-with are dummies anyway.
+stderr, so GitHub annotates the run, and repeated as a list on stdout. A finding
+worth saying but not worth failing on — a legacy App Platform plan — is a
+`::warning file=<config>::…` on the same stream, and does not change the exit
+code. Output is names and structure only — it never prints a value, and the
+values it renders with are dummies anyway.
 
 Six checks, in order:
 
@@ -496,7 +498,7 @@ Six checks, in order:
    `apps-s-1vcpu-0.5gb`) sat in a prod config and then failed a deploy after the
    merge, at `doctl apps update`. The error names the bundle, the slug and every
    accepted value. A **legacy** `basic-*` / `professional-*` plan is a
-   `::warning::` rather than a failure — App Platform accepts one only from an app
+   `::warning file=<config>::` rather than a failure — App Platform accepts one only from an app
    created before 7 May 2024, and a config cannot say when its app was created.
    See [the config interface](/servers/interface/#nor-an-instancesizeslug-that-names-no-plan--and-that-is-the-same-split)
    for why the schema stays lenient about it.

@@ -123,6 +123,7 @@ not a confession.
 | `src/deploy/preflight.ts` — what a deploy demands of the store                        | `operate/secrets.md`, `limitations.md`                                                                                   |
 | `src/deploy/unseeded.ts`, `src/gateway/unconfigured.ts` — the `mayBeUnseeded:` waiver | `operate/secrets.md`, `servers/interface.md`, `servers/adding.md`, `operate/deploy-model.md`, `limitations.md`           |
 | `src/deploy/server-namespaces.ts` — the per-server/gateway resolution order           | `operate/secrets.md`, `operate/deploy-model.md`, `servers/interface.md`                                                  |
+| `src/deploy/instance-size.ts` — the closed App Platform plan set, and its two gates   | `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`                                                      |
 | `src/secrets/env-prefix.ts` — the slug → box-variable-name mangling                   | `operate/secrets.md`, `limitations.md`, and `npm run envprefix:sync`                                                     |
 | `scripts/sync-vendored.mjs` — a seam added to `VENDORED`, or the mechanism itself     | this file's vendored-modules bullet, and `operate/telemetry.md` if the telemetry entry moved                             |
 | `src/secrets/param-route.ts`, `src/http/params.ts` — the credential write-back path   | `operate/secrets.md`, `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`, and `npm run paramroute:sync` |
