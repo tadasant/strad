@@ -53,7 +53,10 @@ function upsertScript(): string {
  * Knobs: `STUB_FAIL_ADD=<secret>`, `STUB_FAIL_LIST=<secret>`,
  * `STUB_FAIL_DESTROY=<secret>:<n>`, `STUB_GARBAGE_ADD=<secret>` (prints the
  * human "Created version [n]…" line instead of a resource name),
- * `STUB_HIDE_NEWEST=<secret>` (the listing omits the newest version).
+ * `STUB_HIDE_NEWEST=<secret>` (the listing omits the newest version),
+ * `STUB_FOREIGN_ADD=<secret>` (a second writer adds a version between this
+ * run's add and its listing), `STUB_DESTROY_KEEP=<secret>` (that writer also
+ * destroyed the version this run added).
  */
 const STUB_GCLOUD = `#!/usr/bin/env bash
 set -u
@@ -96,12 +99,20 @@ case "$cmd" in
       list)
         [ "$fmt" = "value(name.basename(),state)" ] || { echo "stub: unexpected list format '$fmt'" >&2; exit 2; }
         [ "\${STUB_FAIL_LIST:-}" = "$name" ] && { echo "ERROR: PERMISSION_DENIED (stub)" >&2; exit 1; }
+        if [ "\${STUB_FOREIGN_ADD:-}" = "$name" ] && ! grep -q '^foreign' "$STUB_LOG"; then
+          echo "foreign add on $name" >> "$STUB_LOG"
+          n=$(( $(cut -f1 "$(f "$name")" | sort -n | tail -1) + 1 ))
+          printf '%s\\tENABLED\\n' "$n" >> "$(f "$name")"
+          if [ "\${STUB_DESTROY_KEEP:-}" = "$name" ]; then
+            k=$((n - 1)); awk -v v="$k" -F'\t' -v OFS='\t' '$1==v{$2="DESTROYED"}1' "$(f "$name")" > "$(f "$name").tmp" && mv "$(f "$name").tmp" "$(f "$name")"
+          fi
+        fi
         if [ "\${STUB_HIDE_NEWEST:-}" = "$name" ]; then sort -rn "$(f "$name")" | tail -n +2; else sort -rn "$(f "$name")"; fi ;;
       destroy)
         v="\${positional[1]}"; name="$secret"
         [ "\${STUB_FAIL_DESTROY:-}" = "$name:$v" ] && { echo "ERROR: PERMISSION_DENIED (stub)" >&2; exit 1; }
         grep -q "^$v	" "$(f "$name")" || { echo "ERROR: NOT_FOUND" >&2; exit 1; }
-        sed -i "s/^$v\\t.*/$v\\tDESTROYED/" "$(f "$name")"
+        awk -v v="$v" -F'\t' -v OFS='\t' '$1==v{$2="DESTROYED"}1' "$(f "$name")" > "$(f "$name").tmp" && mv "$(f "$name").tmp" "$(f "$name")"
         echo "destroy $name $v" >> "$STUB_DESTROYED" ;;
       *) echo "stub: unsupported versions $vcmd" >&2; exit 2 ;;
     esac ;;
@@ -219,14 +230,16 @@ describe("secrets-sync.yml prunes superseded versions", () => {
       // ADMIN_BOOTSTRAP_TOKEN does not exist yet: created, one version.
     });
     expect(r.status).toBe(0);
-    expect(r.destroyed).toEqual([
-      `destroy ${T} 5`,
-      `destroy ${T} 4`,
-      `destroy ${T} 3`,
-      `destroy ${T} 2`,
-      `destroy ${T} 1`,
-      `destroy ${I} 2`,
-    ]);
+    expect([...r.destroyed].sort()).toEqual(
+      [
+        `destroy ${T} 5`,
+        `destroy ${T} 4`,
+        `destroy ${T} 3`,
+        `destroy ${T} 2`,
+        `destroy ${T} 1`,
+        `destroy ${I} 2`,
+      ].sort(),
+    );
     expect(r.state[T]).toEqual([
       "1\tDESTROYED",
       "2\tDESTROYED",
@@ -265,7 +278,10 @@ describe("secrets-sync.yml prunes superseded versions", () => {
     );
     expect(r.status).not.toBe(0);
     // The secret before it was written and pruned; the failed one is untouched.
-    expect(r.destroyed).toEqual([`destroy ${T} 2`, `destroy ${T} 1`]);
+    expect([...r.destroyed].sort()).toEqual([
+      `destroy ${T} 1`,
+      `destroy ${T} 2`,
+    ]);
     expect(r.state[I]).toEqual(["1\tENABLED", "2\tDISABLED", "3\tENABLED"]);
     expect(r.state[A]).toEqual(["1\tENABLED"]);
     expect(r.stdout).not.toContain("Done.");
@@ -318,9 +334,8 @@ describe("secrets-sync.yml prunes superseded versions", () => {
     expect(r.status).toBe(1);
     expect(r.state[T]).toEqual(["1\tENABLED", "2\tENABLED", "3\tENABLED"]);
     expect(r.calls.filter((c) => c.includes(`--secret ${T}`))).toEqual([]);
-    expect(r.stdout).toContain(
-      `::error::${T}: 'versions add' returned 'Created version [3]`,
-    );
+    expect(r.stdout).toContain(`::error::${T}: 'versions add' printed `);
+    expect(r.stdout).not.toContain("Created version [3]");
     expect(r.stdout).toMatch(
       /superseded versions remain on: strad-staging-STRAD_TOKENS /,
     );
@@ -358,7 +373,78 @@ describe("secrets-sync.yml prunes superseded versions", () => {
     expect(r.status).toBe(1);
     expect(r.calls.filter((c) => c.includes(`--secret ${T}`))).toEqual([]);
     expect(r.stdout).toContain(
-      `::error::${T}: version 3 from 'versions add' is not in the listing; no version destroyed`,
+      `::error::${T}: version 3 from 'versions add' is not in the listing, not ENABLED; no version destroyed`,
+    );
+    expectNoValueLeak(r);
+  });
+
+  it("never destroys a version newer than the one it added — another writer's `latest`", () => {
+    // Run A adds 3; run B adds 4 before A lists. A must leave 4 alone; it may
+    // still destroy the versions it superseded, and ends red naming the secret.
+    const r = run(
+      {
+        [T]: ["1\tENABLED", "2\tENABLED"],
+        [I]: ["1\tENABLED"],
+        [A]: ["1\tENABLED"],
+      },
+      { STUB_FOREIGN_ADD: T },
+    );
+    expect(r.status).toBe(1);
+    expect(r.state[T]).toEqual([
+      "1\tDESTROYED",
+      "2\tDESTROYED",
+      "3\tENABLED",
+      "4\tENABLED",
+    ]);
+    expect(r.stdout).toContain(
+      `::error::${T}: version 4 is newer than the 3 this run added`,
+    );
+    expect(r.stdout).toMatch(
+      /superseded versions remain on: strad-staging-STRAD_TOKENS /,
+    );
+    expectNoValueLeak(r);
+  });
+
+  it("destroys nothing when the version it added is no longer ENABLED", () => {
+    // Run B added 4 and destroyed A's 3 before A listed: A's keep is gone, so
+    // A must not touch anything — least of all B's 4.
+    const r = run(
+      {
+        [T]: ["1\tENABLED", "2\tENABLED"],
+        [I]: ["1\tENABLED"],
+        [A]: ["1\tENABLED"],
+      },
+      { STUB_FOREIGN_ADD: T, STUB_DESTROY_KEEP: T },
+    );
+    expect(r.status).toBe(1);
+    expect(r.state[T]).toEqual([
+      "1\tENABLED",
+      "2\tENABLED",
+      "3\tDESTROYED",
+      "4\tENABLED",
+    ]);
+    expect(r.calls.filter((c) => c.includes(`--secret ${T}`))).toEqual([]);
+    expect(r.stdout).toContain(
+      `::error::${T}: version 3 from 'versions add' is DESTROYED, not ENABLED; no version destroyed`,
+    );
+    expectNoValueLeak(r);
+  });
+
+  it("does not destroy a listed version whose id is not a number", () => {
+    const r = run({
+      [T]: ["1\tENABLED", "latest\tENABLED"],
+      [I]: ["1\tENABLED"],
+      [A]: ["1\tENABLED"],
+    });
+    expect(r.status).toBe(1);
+    expect(r.state[T]).toEqual([
+      "1\tDESTROYED",
+      "2\tENABLED",
+      "latest\tENABLED",
+    ]);
+    expect(r.calls.filter((c) => c.includes("destroy latest"))).toEqual([]);
+    expect(r.stdout).toContain(
+      `::error::${T}: a listed version id is not a number; not destroyed`,
     );
     expectNoValueLeak(r);
   });

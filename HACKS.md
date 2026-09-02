@@ -3548,3 +3548,40 @@ failing at `doctl apps update` after the merge.
 `GET /v2/apps/tiers/instance_sizes` at build time — checked in, refreshed by a
 scheduled CI job — so the list stops being a snapshot without the gate ever
 touching the network.
+
+---
+
+## 76. Superseded Secret Manager versions are pruned by one writer of three
+
+**What.** `.github/workflows/secrets-sync.yml` destroys every superseded version
+of a `strad-staging-*` secret after it adds a new one, so each of those secrets
+carries exactly one live version. Secret Manager bills every version that is not
+`DESTROYED` — a disabled one still counts — and every consumer reads
+`versions/latest`, so a superseded version is pure cost and a stale copy of a
+credential (tadasant/strad#240).
+
+**Why it is a hack.** The sync workflow is one of three things in this repo that
+add Secret Manager versions, and the only one that cleans up after itself:
+
+- `src/secrets/parameters/gcp.ts` — `rotate()`, behind the console's rotate and
+  the parameter write-back route — POSTs `:addVersion` to the `strad-secrets-*`
+  project and never destroys the version it superseded.
+- `servers/secrets/shared/src/write-client.ts` — the `secrets` MCP server's
+  write tools — the same shape, the same project.
+
+So a credential rotated through the console or the MCP server accumulates one
+enabled version per rotation, and the old value stays readable by anything that
+holds `secretAccessor` on that secret. Tracked in tadasant/strad#241.
+
+**A precondition the first run depends on.** Destroying needs
+`secretmanager.versions.destroy` on the service account behind `GCP_SA_KEY`, and
+this repo does not record which role that account holds. If it is only
+`secretVersionAdder` plus `secretAccessor`, the first sync after this landed adds
+every new version (the values go live) and then fails red on every destroy,
+leaving the superseded versions in place. Tracked in tadasant/strad#242.
+
+**Undo.** Give both TypeScript clients the same post-add prune (list, destroy
+every version other than the one just added that is not already `DESTROYED`),
+teach their fakes the `:destroy` verb, and add `versions.destroy` to the custom
+console role in `docs/.../operate/secrets-iam.md`. Then record `GCP_SA_KEY`'s
+role next to the other principals on that page.

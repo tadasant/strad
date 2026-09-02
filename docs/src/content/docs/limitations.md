@@ -2213,6 +2213,34 @@ nothing at runtime reads.
 **How you would know.** `instanceSizeSlug "<a plan that does exist>" names no App
 Platform plan`, on a slug read straight off the pricing page.
 
+---
+
+### 76. Superseded Secret Manager versions are pruned by one writer of three
+
+`secrets-sync.yml` destroys every superseded version of a `strad-staging-*`
+secret after it adds a new one, so each of those secrets carries exactly one live
+version — Secret Manager bills every version that is not `DESTROYED`, a disabled
+one included, and every consumer reads `versions/latest`.
+
+That workflow is one of three writers of Secret Manager versions in this repo and
+the only one that cleans up. The console's rotate (and the parameter write-back
+route behind it) and the `secrets` MCP server's write tools both add a version to
+the `strad-secrets-*` project and leave the one they superseded enabled. A
+credential rotated through either accumulates one billed version per rotation,
+and the old value stays readable by anything holding `secretAccessor` on that
+secret.
+
+**A precondition.** Destroying needs `secretmanager.versions.destroy` on the
+service account behind `GCP_SA_KEY`, and nothing in this repo records which role
+that account holds. If it lacks the permission, a sync run adds every new version
+(the values are live) and then fails red on the destroys, naming the secrets
+whose superseded versions remain. Nothing is destroyed that should not be; the
+run is red until the grant is made.
+
+**How you would know.** `gcloud secrets versions list` on a `strad-secrets-*`
+secret shows more than one `ENABLED` version. A red `Secrets sync (staging)` run
+whose errors read `could not destroy version`.
+
 See `HACKS.md` #75.
 
 ---

@@ -824,9 +824,12 @@ you omit it.
 
 What the prune destroys, precisely: the versions of a secret this run added a
 version to, other than the one `versions add` returned. It never deletes a secret,
-never touches the version it just added, and refuses to destroy anything unless
-that version is visibly in the listing — a wrong selection here would destroy
-`latest`, and the next deploy would render without that credential. A secret the
+never touches the version it just added, refuses to destroy anything unless that
+version is visibly `ENABLED` in the listing, and never destroys a version numbered
+above it — numbers are monotonic, so a higher one is another writer's `latest`. A
+wrong selection here would destroy `latest`, and the next deploy would render
+without that credential. The workflow runs one at a time (a `concurrency` group,
+like the deploy), so that shape does not arise from two dispatches. A secret the
 run created (one version) is not pruned, and a secret whose `versions add` failed
 ends the run before its prune. The log carries version numbers and states, never
 a value.
