@@ -746,11 +746,18 @@ describe("render-spec, per-server namespaces", () => {
   // any one and a server's credential is baked onto ANOTHER server's component,
   // on a green deploy, with nothing in the log to say so.
   //
-  // FIVE servers is the smallest number that crosses a batch boundary twice at a
-  // fanout of three, so it can see a reordering of the batches as well as one
-  // inside a batch. The two-server case above cannot see either: both fit in a
-  // single batch, which is also why this is its own test rather than a bigger
-  // version of that one.
+  // FIVE servers, against a fanout of three, is a full batch plus a partial one:
+  // four is the least that splits into two batches at all, and the fifth makes
+  // the two batches different sizes, so a result appended at the wrong offset
+  // lands on the wrong server rather than cancelling out. That is what the
+  // two-server case above cannot see — one batch has no order to get wrong
+  // relative to another — and it is why this is its own test rather than a
+  // bigger version of that one. A within-batch swap it does see; the batches
+  // reordered against each other needs this.
+  //
+  // The five is coupled to a `NAMESPACE_FANOUT` this file cannot import: raise
+  // that constant to five and this collapses back into the single-batch case
+  // without failing. Whoever tunes it should widen this too.
   const FANOUT_SERVERS = [1, 2, 3, 4, 5].map((n) => ({
     slug: `fan-${n}`,
     bundle: `bundle-fan-${n}`,
@@ -794,10 +801,12 @@ describe("render-spec, per-server namespaces", () => {
       FANOUT_SERVERS.map(({ value }) => value),
     );
 
-    // And the deploy log still says which namespace served which server by name
-    // only — five values read is five more chances to print one.
+    // And the deploy log attributes each name to its own server, by name only —
+    // five values read is five more chances to print one.
     for (const { slug, value } of FANOUT_SERVERS) {
-      expect(result.stderr).toContain(`/strad/test/mcp/${slug}/static/`);
+      expect(result.stderr).toContain(
+        `server "${slug}" resolves FANOUT_TOKEN from /strad/test/mcp/${slug}/static/`,
+      );
       expect(result.stderr).not.toContain(value);
     }
   });
