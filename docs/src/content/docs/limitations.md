@@ -2241,7 +2241,7 @@ run is red until the grant is made.
 secret shows more than one `ENABLED` version. A red `Secrets sync (staging)` run
 whose errors read `could not destroy version`.
 
-See `HACKS.md` #75.
+See `HACKS.md` #76.
 
 ---
 
