@@ -736,6 +736,72 @@ describe("render-spec, per-server namespaces", () => {
     expect(result.stderr).not.toContain("fake-readwrite-hash");
   });
 
+  // INDEX ALIGNMENT, ACROSS A BATCH BOUNDARY.
+  //
+  // The renderer resolves candidate namespaces in batches of `NAMESPACE_FANOUT`
+  // and then reads the results back BY INDEX — `bags[i]` belongs to
+  // `candidates[i]`. Three separate things keep that true (batches taken in
+  // index order, `Promise.all` preserving order within a batch, results appended
+  // rather than interleaved) and none of them is stated at the call site. Break
+  // any one and a server's credential is baked onto ANOTHER server's component,
+  // on a green deploy, with nothing in the log to say so.
+  //
+  // FIVE servers is the smallest number that crosses a batch boundary twice at a
+  // fanout of three, so it can see a reordering of the batches as well as one
+  // inside a batch. The two-server case above cannot see either: both fit in a
+  // single batch, which is also why this is its own test rather than a bigger
+  // version of that one.
+  const FANOUT_SERVERS = [1, 2, 3, 4, 5].map((n) => ({
+    slug: `fan-${n}`,
+    bundle: `bundle-fan-${n}`,
+    value: `fake-fanout-value-${n}`,
+  }));
+
+  it("gives each of five servers ITS OWN value for one name, across batches", async () => {
+    // One name, five namespaces, five distinct values — so any misalignment
+    // lands a value on the wrong component instead of merely losing one.
+    for (const { slug, value } of FANOUT_SERVERS) {
+      await fake.store.create({
+        path: parameterPath("test", slug, "FANOUT_TOKEN"),
+        secret: true,
+        value,
+      });
+    }
+
+    const result = await render(
+      CONFIG_YAML(
+        FANOUT_SERVERS.map(
+          ({ slug, bundle }) => `  - slug: ${slug}
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: ${bundle}
+    entitlements: [admin]
+    env:
+      FANOUT_TOKEN: "\${FANOUT_TOKEN}"
+`,
+        ).join(""),
+        FANOUT_SERVERS.map(({ bundle }) => `  - name: ${bundle}\n`).join(""),
+      ),
+    );
+    expect(result.ok).toBe(true);
+
+    const on = (component: string) =>
+      result
+        .spec!.services.find((s) => s.name === component)
+        ?.envs.find((e) => e.key === "FANOUT_TOKEN")?.value;
+
+    expect(FANOUT_SERVERS.map(({ bundle }) => on(bundle))).toEqual(
+      FANOUT_SERVERS.map(({ value }) => value),
+    );
+
+    // And the deploy log still says which namespace served which server by name
+    // only — five values read is five more chances to print one.
+    for (const { slug, value } of FANOUT_SERVERS) {
+      expect(result.stderr).toContain(`/strad/test/mcp/${slug}/static/`);
+      expect(result.stderr).not.toContain(value);
+    }
+  });
+
   it("refuses to render two values onto ONE bundle", async () => {
     // Same two servers, one container. There is no environment that holds both.
     const result = await render(TWO_SERVERS("bundle", "bundle"));
