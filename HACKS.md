@@ -3496,29 +3496,36 @@ successful scrape of an empty document.
 
 ---
 
-## 75. The App Platform plan list is a hand-copied snapshot of DigitalOcean's
+## 75. The App Platform plan list is a hand-copied snapshot of DigitalOcean's plan table
 
 **What.** `APP_INSTANCE_SIZES` and `LEGACY_APP_INSTANCE_SIZES` in
-`src/config/schema.ts` are a transcription of the "Current Plans" and "Legacy
-Plans" tables at
+`src/deploy/instance-size.ts` are a transcription of the "Current Plans" and
+"Legacy Plans" tables at
 <https://docs.digitalocean.com/products/app-platform/details/pricing/>, read on
-2026-09-02. `bundles[].instanceSizeSlug` is a `z.enum` over their union, so a
-config naming anything else fails to parse.
+2026-09-02. `check-config` and `render-spec` refuse a `bundles[].instanceSizeSlug`
+that is in neither.
 
 **Why it is a hack.** The list is authoritative somewhere else and static here.
-DigitalOcean does publish it as an API — `GET /v2/apps/tiers/instance_sizes` —
-and nothing reads that. So the day DigitalOcean adds a plan, a config naming it
-is **rejected by strad and accepted by App Platform**: the check is wrong in the
+DigitalOcean publishes it as an API — `GET /v2/apps/tiers/instance_sizes` — and
+nothing reads that. So the day DigitalOcean adds a plan, a config naming it is
+**refused by strad and accepted by App Platform**: the check is wrong in the
 tight direction, and the operator's fix is to edit this repo rather than the
 config they were editing. The error message names every accepted value, which is
 what makes that diagnosable rather than mystifying.
 
-**Why it is this and not the API.** Calling the API from `parseConfig` would put
-a network round trip inside the config parse — which the gateway also runs at
-boot, in a container, on every start. A gateway that cannot boot because
-DigitalOcean's API is slow is a far worse failure than a list that lags a
-DigitalOcean product launch. A build-time fetch (a generated file, checked in,
-refreshed by CI) is the honest middle and is not built.
+**Why it is this and not the API.** A gate that calls a vendor API is a gate that
+fails when the vendor is slow, and `check-config` is meant to run on every pull
+request in a repo with no cloud credentials at all — reaching the network would
+cost it exactly the property that makes it cheap to run. A build-time fetch (a
+generated file, checked in, refreshed by CI) is the honest middle and is not
+built.
+
+**Why it is not in the config schema.** `parseConfig` also runs at BOOT, in every
+container, and the config versions independently of the image. A schema that
+refused a plan it had not heard of would make an older image reject the config a
+newer one wrote — a rollback turned into a crash loop, over a field nothing at
+runtime reads. Same split as `src/config/strict.ts` and `assertImmutableCoreImage`:
+lenient library, strict deploy gate.
 
 **What it is deliberately not.** `MUTABLE_TAGS` in `src/deploy/imageTag.ts` is a
 denylist for the mirror-image reason: it covers tag schemes another repo owns and
@@ -3526,9 +3533,15 @@ may extend at will, so being wrong in the tight direction there blocks a deploy
 someone else made legitimate. The plan list is DigitalOcean's own, small, public,
 and changes on the order of once a year.
 
-**How you would know.** `unknown App Platform instance size "<a plan that does
-exist>"`, on a slug you just read off the pricing page.
+**How you would know.** `instanceSizeSlug "<a plan that does exist>" names no App
+Platform plan`, on a slug you just read off the pricing page.
 
-**Undo.** Replace the two arrays with values from
-`GET /v2/apps/tiers/instance_sizes`, generated at build time rather than fetched
-at parse time, and keep the enum.
+**Undo.** Delete the two `assertKnownInstanceSizes` / `unknownInstanceSizes` call
+sites in `scripts/render-spec.ts` and `scripts/check-config.ts`. Any string goes
+back to reaching `instance_size_slug` verbatim, and a name DigitalOcean does not
+sell goes back to failing at `doctl apps update` after the merge.
+
+**The better fix, when it is worth building.** Generate the two arrays from
+`GET /v2/apps/tiers/instance_sizes` at build time — checked in, refreshed by a
+scheduled CI job — so the list stops being a snapshot without the gate ever
+touching the network.

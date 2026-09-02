@@ -492,8 +492,6 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 - A bundle holding a `supplementary-image` also holds a server of another kind.
 - A `supplementary-image` is placed in the `core` bundle.
 - A server references a `bundle` that isn't declared under `bundles:`.
-- **A bundle's `instanceSizeSlug` names an App Platform plan DigitalOcean does
-  not sell.** See below.
 - A `tools:` policy is present but sets neither `allow` nor `deny`.
 - **Two enabled servers declare the same env key with different values, in a
   scope where one would silently overwrite the other.** See below — the scope is
@@ -566,47 +564,6 @@ maps. One silently overwrites the other. Give one of them a slug-namespaced
 name (e.g. ZIMMER_SECRETS_SECRETS_PROJECT_ID).
 ```
 
-### `instanceSizeSlug` is a closed set
-
-`bundles[].instanceSizeSlug` accepts only a plan DigitalOcean actually serves —
-the fourteen [current
-plans](https://docs.digitalocean.com/products/app-platform/details/pricing/)
-plus the ten legacy `basic-*` / `professional-*` ones. Anything else fails to
-parse, and the error names every accepted value:
-
-```
-bundles.1.instanceSizeSlug: unknown App Platform instance size
-"apps-s-1vcpu-512mb". DigitalOcean rejects a size it does not sell at deploy
-time, after the merge, so the set is closed here. Current plans:
-apps-s-1vcpu-0.5gb, apps-s-1vcpu-1gb-fixed, …
-```
-
-The set is closed because the alternative failure is the worst-shaped one this
-repo has. An unchecked string reaches `instance_size_slug` verbatim, so a
-plausible-but-wrong `apps-s-1vcpu-512mb` — the 512 MiB plan is really
-`apps-s-1vcpu-0.5gb` — satisfies every gate, renders a spec, merges, and then
-fails at `doctl apps update` with `unknown instance size`. And it fails *late*: a
-bundle whose component is not yet rendered is never sent to DigitalOcean at all,
-so the wrong slug sits dormant until some unrelated change enables a server on
-that bundle, weeks later. Checking in the schema fires the moment the value is
-written.
-
-Legacy plans parse, because they are real names on an app old enough to use one —
-App Platform accepts them only for apps created before **7 May 2024**, and
-DigitalOcean intends to deprecate them. Neither strad app qualifies (both were
-created 2026-07-12), so `render-spec` emits a `::warning::` naming the component
-and the slug rather than refusing: the renderer cannot know an app's creation
-date, and refusing would make a valid old app undeployable.
-
-:::caution[The list is a snapshot, so it can be wrong in the tight direction]
-DigitalOcean publishes the plans as an API (`GET /v2/apps/tiers/instance_sizes`)
-and strad reads none of it — the two arrays in `src/config/schema.ts` were
-transcribed from the pricing page. So the day a plan is added, a config naming it
-is rejected here and would have been accepted by App Platform, and the fix is one
-line in this repo rather than in the config being edited. See
-[Known limitations](/limitations/) #75.
-:::
-
 ### What boot does *not* catch: a key that isn't a key
 
 An **unknown** key is not an error at boot. Zod strips what it does not recognise,
@@ -623,6 +580,56 @@ config. If you edit a config anywhere, run it:
 ```bash
 npm run config:check -- --config infra/strad.staging.yaml
 ```
+
+### Nor an `instanceSizeSlug` that names no plan — and that is the same split
+
+`bundles[].instanceSizeSlug` is a plain string in the schema, and `renderAppSpec`
+copies it into `instance_size_slug` verbatim. So a plausible-but-nonexistent
+`apps-s-1vcpu-512mb` — the 512 MiB plan is really `apps-s-1vcpu-0.5gb` — parses
+clean, renders clean, merges, and fails at the very last step:
+
+```
+error validating app spec field "services.instance_size_slug":
+unknown instance size "apps-s-1vcpu-512mb"
+```
+
+That is how prod deploys went down on 2026-08-30, and it fails **late twice
+over**: a bundle carrying no server renders no component, so it is never sent to
+DigitalOcean at all, and a wrong slug on one sits dormant until some unrelated
+change places a server there — weeks later, past the merge.
+
+So the closed set lives at the deploy gate, in `src/deploy/instance-size.ts`, and
+both halves of that gate check the **declaration** rather than a rendered spec —
+which is what makes an empty bundle answer for its slug on the pull request that
+writes it:
+
+- [`check-config`](/operate/deploy-model/#checking-a-config-before-it-deploys)
+  makes it a hard failure, naming the bundle, the slug and every accepted value.
+- [`render-spec`](/operate/deploy-model/) refuses before the deploy does any
+  work, beside the check that refuses a mutable core image.
+
+Accepted are the fourteen current App Platform plans plus the ten legacy
+`basic-*` / `professional-*` ones, from the two tables on the
+[pricing page](https://docs.digitalocean.com/products/app-platform/details/pricing/).
+A legacy plan is a **warning**, not a refusal: App Platform accepts one only from
+an app created before 7 May 2024, and nothing in a config says when its app was
+created — refusing would make a valid config for such an app undeployable. Both
+strad apps were created 2026-07-12, so on either one a legacy slug would fail the
+deploy, and the warning says so.
+
+Why the schema stays lenient is the same argument as for unknown keys, with one
+addition: nothing at runtime reads `instanceSizeSlug`. Only the renderer does. A
+field with no runtime meaning must not be able to stop a container from starting,
+and a schema that refused a plan it had not heard of would do exactly that to
+every container running an image older than the config.
+
+:::caution[The list is a snapshot, so it can be wrong in the tight direction]
+DigitalOcean publishes the plans as an API (`GET /v2/apps/tiers/instance_sizes`)
+and strad reads none of it — the two arrays were transcribed from the pricing
+page. So the day a plan is added, a config naming it is refused here and would
+have been accepted by App Platform, and the fix is one line in this repo rather
+than in the config being edited. See [Known limitations](/limitations/) #75.
+:::
 
 ## `gateway.secrets`
 

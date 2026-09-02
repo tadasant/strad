@@ -1,11 +1,18 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import {
   APP_INSTANCE_SIZES,
   LEGACY_APP_INSTANCE_SIZES,
+  assertKnownInstanceSizes,
+  isKnownInstanceSize,
   isLegacyInstanceSize,
-} from "../src/config/schema.ts";
-import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
+  legacyInstanceSizes,
+  unknownInstanceSizes,
+} from "../src/deploy/instance-size.ts";
 
 const BASE = `
 version: 1
@@ -14,6 +21,7 @@ auth: { staticTokens: { enabled: true } }
 roles: { admin: { servers: ["*"] } }
 `;
 
+/** A bundle carrying a server, so it renders a component. */
 function withBundleSize(slug: string): string {
   return `${BASE}
 bundles:
@@ -23,58 +31,132 @@ servers:
 `;
 }
 
-describe("instanceSizeSlug is a closed set", () => {
-  it("rejects apps-s-1vcpu-512mb — the nonexistent plan that took prod down", () => {
-    // It reads like a real name and is not one: the 512 MiB plan is
-    // `apps-s-1vcpu-0.5gb`. Before this check, the value passed parseConfig,
-    // passed check-config, rendered a spec, and failed at `doctl apps update`
-    // with `unknown instance size "apps-s-1vcpu-512mb"` — after the merge.
-    expect(() => parseConfig(withBundleSize("apps-s-1vcpu-512mb"))).toThrow(
-      /unknown App Platform instance size "apps-s-1vcpu-512mb"/,
-    );
+describe("the accepted plan list", () => {
+  // The lists are transcribed from DigitalOcean's pricing page, and the prose in
+  // servers/interface.md, HACKS.md #75 and limitations.md #75 all say "fourteen"
+  // and "ten". Counts are load-bearing in this repo, and a test that only
+  // iterates the array under test would let one silently go missing.
+  it("is 14 current plans and 10 legacy ones", () => {
+    expect(APP_INSTANCE_SIZES).toHaveLength(14);
+    expect(LEGACY_APP_INSTANCE_SIZES).toHaveLength(10);
   });
 
-  it("names the valid options in the error, so the fix is in the message", () => {
-    let message = "";
-    try {
-      parseConfig(withBundleSize("apps-s-1vcpu-512mb"));
-    } catch (err) {
-      message = (err as Error).message;
+  it("is exactly the pricing page's two tables", () => {
+    expect([...APP_INSTANCE_SIZES]).toEqual([
+      "apps-s-1vcpu-0.5gb",
+      "apps-s-1vcpu-1gb-fixed",
+      "apps-s-1vcpu-1gb",
+      "apps-s-1vcpu-2gb",
+      "apps-s-2vcpu-4gb",
+      "apps-d-1vcpu-0.5gb",
+      "apps-d-1vcpu-1gb",
+      "apps-d-1vcpu-2gb",
+      "apps-d-1vcpu-4gb",
+      "apps-d-2vcpu-4gb",
+      "apps-d-2vcpu-8gb",
+      "apps-d-4vcpu-8gb",
+      "apps-d-4vcpu-16gb",
+      "apps-d-8vcpu-32gb",
+    ]);
+    expect([...LEGACY_APP_INSTANCE_SIZES]).toEqual([
+      "basic-xxs",
+      "basic-xs",
+      "basic-s",
+      "basic-m",
+      "professional-xs",
+      "professional-s",
+      "professional-m",
+      "professional-1l",
+      "professional-l",
+      "professional-xl",
+    ]);
+  });
+
+  it("has no slug in both lists", () => {
+    const overlap = APP_INSTANCE_SIZES.filter((s: string) =>
+      (LEGACY_APP_INSTANCE_SIZES as readonly string[]).includes(s),
+    );
+    expect(overlap).toEqual([]);
+  });
+
+  it("splits current from legacy, and knows neither covers a made-up name", () => {
+    for (const slug of LEGACY_APP_INSTANCE_SIZES) {
+      expect(isLegacyInstanceSize(slug)).toBe(true);
+      expect(isKnownInstanceSize(slug)).toBe(true);
     }
-    // The real name for the size the operator wanted, plus enough of the set
-    // to pick from, plus where the set came from.
-    expect(message).toContain("apps-s-1vcpu-0.5gb");
-    expect(message).toContain("apps-d-8vcpu-32gb");
-    expect(message).toContain("basic-xxs");
-    expect(message).toContain(
-      "https://docs.digitalocean.com/products/app-platform/details/pricing/",
+    for (const slug of APP_INSTANCE_SIZES) {
+      expect(isLegacyInstanceSize(slug)).toBe(false);
+      expect(isKnownInstanceSize(slug)).toBe(true);
+    }
+    expect(isKnownInstanceSize("apps-s-1vcpu-512mb")).toBe(false);
+    expect(isLegacyInstanceSize("apps-s-1vcpu-512mb")).toBe(false);
+    expect(isKnownInstanceSize("")).toBe(false);
+  });
+});
+
+describe("unknownInstanceSizes", () => {
+  it("finds apps-s-1vcpu-512mb — the name that took prod deploys down", () => {
+    // It reads like a real name and is not one: the 512 MiB plan is
+    // `apps-s-1vcpu-0.5gb`. The config schema accepts any string, so this is the
+    // first thing between such a value and `doctl apps update`.
+    const bad = unknownInstanceSizes(
+      parseConfig(withBundleSize("apps-s-1vcpu-512mb")),
     );
+    expect(bad).toEqual([{ bundle: "bundle-api", slug: "apps-s-1vcpu-512mb" }]);
   });
 
-  it("rejects an empty string and a non-string", () => {
-    expect(() => parseConfig(withBundleSize('""'))).toThrow();
-    expect(() => parseConfig(withBundleSize("512"))).toThrow();
+  it("catches a bundle that carries no server, and so renders no component", () => {
+    // The deferred half of the failure. A declared-but-empty bundle is never
+    // sent to DigitalOcean at all, so a render-only check would stay silent
+    // until some later change placed a server on it — weeks after the merge.
+    const cfg = parseConfig(`${BASE}
+bundles:
+  - { name: bundle-empty, instanceSizeSlug: apps-s-1vcpu-512mb }
+`);
+    expect(unknownInstanceSizes(cfg)).toEqual([
+      { bundle: "bundle-empty", slug: "apps-s-1vcpu-512mb" },
+    ]);
   });
 
-  it.each(APP_INSTANCE_SIZES)("accepts the current plan %s", (slug) => {
-    const cfg = parseConfig(withBundleSize(slug));
-    expect(cfg.bundles?.[0]?.instanceSizeSlug).toBe(slug);
+  it("reports every bad bundle, not just the first", () => {
+    const cfg = parseConfig(`${BASE}
+bundles:
+  - { name: bundle-a, instanceSizeSlug: apps-s-1vcpu-512mb }
+  - { name: bundle-b, instanceSizeSlug: apps-s-1vcpu-2gb }
+  - { name: bundle-c, instanceSizeSlug: professional-xxl }
+`);
+    expect(unknownInstanceSizes(cfg).map((b) => b.bundle)).toEqual([
+      "bundle-a",
+      "bundle-c",
+    ]);
   });
 
-  it.each(LEGACY_APP_INSTANCE_SIZES)("accepts the legacy plan %s", (slug) => {
-    // A legacy name is a name DigitalOcean has, on an app old enough to use it.
-    // Rejecting one at parse time would make a valid config for such an app
-    // unparseable; renderAppSpec warns about it instead.
-    const cfg = parseConfig(withBundleSize(slug));
-    expect(cfg.bundles?.[0]?.instanceSizeSlug).toBe(slug);
+  it.each(APP_INSTANCE_SIZES)("accepts the current plan %s", (slug: string) => {
+    expect(unknownInstanceSizes(parseConfig(withBundleSize(slug)))).toEqual([]);
   });
+
+  it.each(LEGACY_APP_INSTANCE_SIZES)(
+    "accepts the legacy plan %s",
+    (slug: string) => {
+      // A legacy name is a name DigitalOcean has, on an app old enough to use
+      // it. Refusing one would make a valid config for such an app
+      // undeployable; it is reported as a warning instead.
+      expect(unknownInstanceSizes(parseConfig(withBundleSize(slug)))).toEqual(
+        [],
+      );
+      expect(legacyInstanceSizes(parseConfig(withBundleSize(slug)))).toEqual([
+        { bundle: "bundle-api", slug },
+      ]);
+    },
+  );
 
   it("accepts apps-s-1vcpu-0.5gb — the live strad-prod bundle-internal size", () => {
     const cfg = parseConfig(withBundleSize("apps-s-1vcpu-0.5gb"));
-    expect(cfg.bundles?.[0]?.instanceSizeSlug).toBe("apps-s-1vcpu-0.5gb");
+    expect(unknownInstanceSizes(cfg)).toEqual([]);
+    expect(legacyInstanceSizes(cfg)).toEqual([]);
   });
 
-  it("defaults to apps-s-1vcpu-1gb when a bundle names no size", () => {
+  it("accepts the apps-s-1vcpu-1gb default a bundle gets for free", () => {
     const cfg = parseConfig(`${BASE}
 bundles:
   - { name: bundle-api }
@@ -82,59 +164,118 @@ servers:
   - { slug: bundled, kind: builtin, module: "./servers/echo.js", bundle: bundle-api, entitlements: [admin] }
 `);
     expect(cfg.bundles?.[0]?.instanceSizeSlug).toBe("apps-s-1vcpu-1gb");
+    expect(unknownInstanceSizes(cfg)).toEqual([]);
   });
 
-  it("has no slug in both the current and the legacy list", () => {
-    const overlap = APP_INSTANCE_SIZES.filter((s) =>
-      (LEGACY_APP_INSTANCE_SIZES as readonly string[]).includes(s),
-    );
-    expect(overlap).toEqual([]);
-  });
-
-  it("isLegacyInstanceSize splits the two lists and nothing else", () => {
-    for (const slug of LEGACY_APP_INSTANCE_SIZES) {
-      expect(isLegacyInstanceSize(slug)).toBe(true);
-    }
-    for (const slug of APP_INSTANCE_SIZES) {
-      expect(isLegacyInstanceSize(slug)).toBe(false);
-    }
-    expect(isLegacyInstanceSize("apps-s-1vcpu-512mb")).toBe(false);
+  it("says nothing about a config that declares no bundles", () => {
+    const cfg = parseConfig(BASE);
+    expect(unknownInstanceSizes(cfg)).toEqual([]);
+    expect(legacyInstanceSizes(cfg)).toEqual([]);
   });
 });
 
-describe("renderAppSpec warns about a legacy plan", () => {
-  function render(cfg: ReturnType<typeof parseConfig>) {
-    const warnings: string[] = [];
-    const spec = renderAppSpec({
-      config: cfg,
-      appName: "strad-prod",
-      region: "nyc",
-      image: parseImage("ghcr.io/tadasant/strad:sha-abc"),
-      env: [],
-      onWarning: (m) => warnings.push(m),
-    });
-    return { spec, warnings };
+describe("assertKnownInstanceSizes", () => {
+  it("throws naming the bundle, the slug, and every valid option", () => {
+    let message = "";
+    try {
+      assertKnownInstanceSizes(
+        parseConfig(withBundleSize("apps-s-1vcpu-512mb")),
+      );
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('bundle "bundle-api"');
+    expect(message).toContain(
+      '"apps-s-1vcpu-512mb" names no App Platform plan',
+    );
+    // The real name for the size the operator meant, the far end of the current
+    // list, the legacy list, and where the set came from.
+    expect(message).toContain("apps-s-1vcpu-0.5gb");
+    expect(message).toContain("apps-d-8vcpu-32gb");
+    expect(message).toContain("basic-xxs");
+    expect(message).toContain("professional-xl");
+    expect(message).toContain(
+      "https://docs.digitalocean.com/products/app-platform/details/pricing/",
+    );
+  });
+
+  it("is silent on a config whose every bundle names a real plan", () => {
+    expect(() =>
+      assertKnownInstanceSizes(parseConfig(withBundleSize("apps-s-1vcpu-2gb"))),
+    ).not.toThrow();
+  });
+
+  it("does not throw on a legacy plan", () => {
+    expect(() =>
+      assertKnownInstanceSizes(parseConfig(withBundleSize("professional-xs"))),
+    ).not.toThrow();
+  });
+});
+
+describe("the boot parse stays lenient", () => {
+  // The whole reason this is a deploy gate rather than a schema rule. The
+  // gateway runs `parseConfig` at boot, in every container, and the config
+  // versions independently of the image — so a schema that refused a plan it had
+  // not heard of would make an older image reject the config a newer one wrote,
+  // over a field nothing at runtime reads.
+  it("accepts a slug it does not recognise, and keeps it verbatim", () => {
+    const cfg = parseConfig(withBundleSize("apps-s-99vcpu-1024gb"));
+    expect(cfg.bundles?.[0]?.instanceSizeSlug).toBe("apps-s-99vcpu-1024gb");
+  });
+});
+
+describe("check-config refuses a config naming no real plan", () => {
+  // End to end through the script CI actually runs, because that is the claim:
+  // a wrong slug fails on the pull request that writes it.
+  function checkConfig(yaml: string): { status: number; output: string } {
+    const dir = mkdtempSync(join(tmpdir(), "strad-instance-size-"));
+    const file = join(dir, "strad.config.yaml");
+    writeFileSync(file, yaml);
+    // Both streams, on both outcomes: the errors land on stdout in the verdict
+    // and the `::warning::` annotations only ever go to stderr.
+    const run = spawnSync(
+      process.execPath,
+      [
+        "--experimental-transform-types",
+        "scripts/check-config.ts",
+        "--config",
+        file,
+      ],
+      { encoding: "utf8" },
+    );
+    return { status: run.status ?? -1, output: `${run.stdout}${run.stderr}` };
   }
 
-  it("names the component and the slug — both apps postdate 7 May 2024", () => {
-    const { spec, warnings } = render(
-      parseConfig(withBundleSize("professional-xs")),
+  it("exits 1 on apps-s-1vcpu-512mb, where it used to report ok", () => {
+    const { status, output } = checkConfig(
+      withBundleSize("apps-s-1vcpu-512mb"),
     );
-    expect(
-      spec.services.find((s) => s.name === "bundle-api")?.instance_size_slug,
-    ).toBe("professional-xs");
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("bundle-api (professional-xs)");
-    expect(warnings[0]).toContain("before 7 May 2024");
-  });
+    expect(status).toBe(1);
+    expect(output).toContain("1 problem(s)");
+    expect(output).toContain('"apps-s-1vcpu-512mb" names no App Platform plan');
+  }, 30_000);
 
-  it("stays silent on a current plan", () => {
-    const { spec, warnings } = render(
-      parseConfig(withBundleSize("apps-s-1vcpu-0.5gb")),
+  it("exits 1 for a bundle carrying no server", () => {
+    const { status, output } = checkConfig(`${BASE}
+bundles:
+  - { name: bundle-empty, instanceSizeSlug: apps-s-1vcpu-512mb }
+`);
+    expect(status).toBe(1);
+    expect(output).toContain('bundle "bundle-empty"');
+  }, 30_000);
+
+  it("exits 0 on a legacy plan, with a warning naming it", () => {
+    const { status, output } = checkConfig(withBundleSize("professional-xs"));
+    expect(status).toBe(0);
+    expect(output).toContain("::warning");
+    expect(output).toContain("legacy App Platform plan");
+  }, 30_000);
+
+  it("exits 0 and warns about nothing on a current plan", () => {
+    const { status, output } = checkConfig(
+      withBundleSize("apps-s-1vcpu-0.5gb"),
     );
-    expect(
-      spec.services.find((s) => s.name === "bundle-api")?.instance_size_slug,
-    ).toBe("apps-s-1vcpu-0.5gb");
-    expect(warnings).toEqual([]);
-  });
+    expect(status).toBe(0);
+    expect(output).not.toContain("::warning");
+  }, 30_000);
 });

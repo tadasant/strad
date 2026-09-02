@@ -52,6 +52,15 @@ flowchart LR
   because prod renders this script against a config in another repository whose
   `image:` lines it cannot change. See [which image a deploy
   ships](/operate/operations/#which-image-a-deploy-ships).
+- **A deploy ships a compute plan DigitalOcean sells.** `render-spec` refuses a
+  config whose `bundles[].instanceSizeSlug` names no App Platform plan, in the
+  same place and for the same reason it refuses a mutable core image: the API
+  rejects one at `doctl apps update`, which is the most expensive place to find
+  out, and it happens after the merge. A legacy `basic-*` / `professional-*` plan
+  is a `::warning::` instead. The check is over the config's declared bundles, so
+  a bundle that renders no component today answers for its slug anyway — see
+  [check 3](#checking-a-config-before-it-deploys), which runs the same check one
+  merge earlier.
 - **`tadasant-internal` runs prod.** It is a separate, deliberate act with a
   different DigitalOcean token. It consumes the published image plus its **own
   internal config** — private `builtin` modules baked into its own image, or a
@@ -309,14 +318,6 @@ learn:
   `instanceCount` above 1.** The render throws rather than emit it: a credential
   that rotates on use has exactly one valid value at a time, so two replicas
   refreshing it invalidate each other at the upstream.
-- **A legacy instance size is a `::warning::`** naming the component and the
-  slug. `basic-*` / `professional-*` are real App Platform plans, accepted only
-  by apps created before 7 May 2024 — `strad-prod` and `strad-staging` were both
-  created 2026-07-12, so on either one the deploy would come back
-  `unknown instance size`. It is a warning rather than a throw because the
-  renderer cannot know an app's creation date. A slug that names no plan at all
-  never reaches here: the [config schema](/servers/interface/) rejects it at
-  parse time, which is where an unrenderable component's size gets caught too.
 - **Deploy from a registry image, not a GitHub source.** App Platform's GitHub
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.
@@ -472,7 +473,7 @@ stderr, so GitHub annotates the run, and repeated as a list on stdout. Output is
 names and structure only — it never prints a value, and the values it renders
 with are dummies anyway.
 
-Five checks, in order:
+Six checks, in order:
 
 1. **Schema.** The same `parseConfig` the gateway boots with — types, required
    fields, and the cross-field rules (an undefined role, two images in one bundle,
@@ -487,18 +488,30 @@ Five checks, in order:
    the declarer's vocabulary, not the schema's, and are never flagged: an `env:` /
    `consoleEnv:` variable name, a builtin's `options:`, and a **role name** under
    `roles:` (the role's own fields, like `servers:`, _are_ checked).
-3. **Render.** The full `renderAppSpec`, with a dummy value substituted for every
+3. **Instance sizes.** Every declared bundle must name an App Platform compute
+   plan that exists. Over the **declaration**, not the rendered spec, and that is
+   the whole point: a bundle carrying no server renders no component, so a wrong
+   slug on one is never sent to DigitalOcean until some later change places a
+   server there — which is how `apps-s-1vcpu-512mb` (the 512 MiB plan is
+   `apps-s-1vcpu-0.5gb`) sat in a prod config and then failed a deploy after the
+   merge, at `doctl apps update`. The error names the bundle, the slug and every
+   accepted value. A **legacy** `basic-*` / `professional-*` plan is a
+   `::warning::` rather than a failure — App Platform accepts one only from an app
+   created before 7 May 2024, and a config cannot say when its app was created.
+   See [the config interface](/servers/interface/#nor-an-instancesizeslug-that-names-no-plan--and-that-is-the-same-split)
+   for why the schema stays lenient about it.
+4. **Render.** The full `renderAppSpec`, with a dummy value substituted for every
    `${NAME}`. This is a smoke test — the dummy bag covers exactly the names the
    renderer resolves, so a schema-valid config essentially always renders — and it
-   is what produces the real spec check 4 inspects.
-4. **Console scope.** Two things a rendered spec can prove, and nothing else can:
+   is what produces the real spec check 5 inspects.
+5. **Console scope.** Two things a rendered spec can prove, and nothing else can:
    every key a server declares under `consoleEnv:` reaches the `core` component,
    and no two servers claim one key with different values. The first is the
    invariant `/ui` depends on. The second matters because `consoleEnvVars()` merges
    every enabled server's map into one flat environment, so a collision means the
    last declaration silently wins and the other server's console runs as the wrong
    identity.
-5. **Unseeded-secret waivers.** Every entry in a server's `mayBeUnseeded:` must
+6. **Unseeded-secret waivers.** Every entry in a server's `mayBeUnseeded:` must
    name a `${NAME}` that server actually references. `mayBeUnseeded:` is the one
    key that buys a hard failure away, so the key itself has to be typo-proof: a
    waiver that matches nothing waives nothing, and the reference it was written
