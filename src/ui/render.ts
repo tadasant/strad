@@ -448,6 +448,11 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   <div class="scope">
     <span class="scope-l">project</span><code>${esc(view.projectId)}</code>
   </div>
+  <form method="post" action="${action}/refresh" class="inline reread-form"
+        title="This process holds one reading of the store for gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s). A value written outside this console lands within that on its own; this drops the reading so the next read reaches Parameter Manager now. Nothing is written.">
+    ${nsField}
+    <button class="btn">Re-read the store</button>
+  </form>
 </section>
 
 ${deliveryBanner(config, resolver)}
@@ -1519,6 +1524,7 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 /* Namespace picker */
 .nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
 .nsgo{font-size:.76rem}
+.reread-form{margin-left:auto}
 .nscount{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
 
 /* Combobox: a free-text field whose suggestions open as a dropdown. */

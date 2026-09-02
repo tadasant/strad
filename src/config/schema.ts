@@ -700,24 +700,35 @@ const AuthConfig = z.object({
  * a rotation lands within `ttlSeconds`; a newly ADDED name lands within
  * `negativeTtlSeconds`; a change written through strad's own console is instant
  * on the process that wrote it.
+ *
+ * The defaults are long on purpose. A process holds ONE reading of the whole
+ * store (src/secrets/parameters/gcp.ts) and re-reads it only when that reading
+ * has aged past `ttlSeconds`, when a console write drops it, or when a `${NAME}`
+ * it does not hold is asked for. Every read of the store is billed per
+ * parameter, secrets change a few times a month, and the production bill for
+ * re-reading them once a minute was the largest line on the account. An hour
+ * is the trade: a rotation made outside strad's console lands within it; one
+ * made through the console lands at once.
  */
 const SecretsConfig = z
   .object({
     provider: z.enum(["env", "gcp-parameter-store"]).default("env"),
     /**
-     * Snapshot freshness. Bounds how long a ROTATION can go unnoticed.
+     * How long one reading of the store is reused, per process. Bounds how long
+     * a ROTATION made outside strad's console can go unnoticed.
      *
-     * The console's and `/api/secrets/readiness`'s store DIAGNOSIS is held for
-     * the same number — capped at 60s, because that answer is a health signal
-     * and this knob accepts an hour. See src/secrets/store-diagnostics.ts.
+     * Also the age the console's and `/api/secrets/readiness`'s store
+     * DIAGNOSIS may carry: it is answered from the same reading, and prints how
+     * old that reading is. See src/secrets/store-diagnostics.ts.
      */
-    ttlSeconds: z.number().int().positive().max(3600).default(60),
+    ttlSeconds: z.number().int().positive().max(86_400).default(3600),
     /**
-     * Minimum interval between refreshes triggered by a MISS. Bounds how long a
-     * newly ADDED secret can go unnoticed, and stops an unknown `${REF}` on a hot
-     * path from listing the store once per request.
+     * Minimum interval between re-reads triggered by a MISS. Bounds how long a
+     * newly ADDED secret can go unnoticed, and stops an unknown `${REF}` on a
+     * hot path — or a slug deployed ahead of its credential — from re-reading
+     * the store once per request.
      */
-    negativeTtlSeconds: z.number().int().positive().max(3600).default(10),
+    negativeTtlSeconds: z.number().int().positive().max(86_400).default(600),
     /**
      * Keep the process environment as a FALLBACK behind the store.
      *
@@ -746,8 +757,8 @@ const SecretsConfig = z
   })
   .default({
     provider: "env",
-    ttlSeconds: 60,
-    negativeTtlSeconds: 10,
+    ttlSeconds: 3600,
+    negativeTtlSeconds: 600,
     envFallback: true,
     paramRefreshSeconds: 300,
   });

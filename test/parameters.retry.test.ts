@@ -34,7 +34,7 @@ const PATH = parameterPath(ENV, SLUG, VAR);
 function storeOn(
   fetchImpl: typeof fetch,
   retry?: Partial<typeof DEFAULT_RETRY_BUDGET>,
-  rosterTtlMs = 0,
+  snapshotTtlMs = 0,
 ) {
   return createGcpParameterStore({
     projectId: "p",
@@ -49,7 +49,7 @@ function storeOn(
     tokenUrl: "http://token/token",
     fetchImpl,
     retry,
-    rosterTtlMs,
+    snapshotTtlMs,
   });
 }
 
@@ -329,7 +329,7 @@ describe("the retry policy itself", () => {
  * reads for P parameters, and BOTH factors grow when servers are added. Six new
  * slugs took that past the quota.
  *
- * `rosterTtlMs` makes a one-shot, read-only reader enumerate once. It stays off
+ * `snapshotTtlMs` makes a one-shot, read-only reader enumerate once. It stays off
  * everywhere that writes.
  */
 describe("enumerating the store once per deploy", () => {
@@ -354,7 +354,7 @@ describe("enumerating the store once per deploy", () => {
   /** A store on the fake's transport, counting every non-token request. */
   function counting(
     gcp: Awaited<ReturnType<typeof seeded>>,
-    rosterTtlMs: number,
+    snapshotTtlMs: number,
   ) {
     let reads = 0;
     const store = createGcpParameterStore({
@@ -371,7 +371,7 @@ describe("enumerating the store once per deploy", () => {
         if (!String(input).endsWith("/token")) reads++;
         return gcp.fetchImpl(input, init);
       },
-      rosterTtlMs,
+      snapshotTtlMs,
     });
     return { store, reads: () => reads };
   }

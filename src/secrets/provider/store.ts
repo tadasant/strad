@@ -1,5 +1,5 @@
 import type { ParameterResolver } from "../parameters/types.ts";
-import { SnapshotCache } from "./snapshot.ts";
+import { NamespaceView } from "./view.ts";
 import type { SecretProvider } from "./types.ts";
 
 /**
@@ -10,11 +10,14 @@ import type { SecretProvider } from "./types.ts";
  * the GCP backend is an implementation detail: any store that can resolve a
  * namespace into `VARIABLE -> value` plugs in here unchanged.
  *
- * Note what this file does NOT contain: a cloud client. The Parameter Manager +
- * Secret Manager client already exists (../parameters/gcp.ts — fetch plus a
- * node:crypto JWT, no SDK), and this reuses it through the interface rather than
- * standing up a second way to talk to the same two stores. All that is added
- * here is WHEN the read happens and how long its result is trusted.
+ * Note what this file does NOT contain: a cloud client, or a cache. The
+ * Parameter Manager + Secret Manager client already exists (../parameters/gcp.ts
+ * — fetch plus a node:crypto JWT, no SDK), and it is the one that holds the
+ * process's reading of the store — ONE snapshot, sliced per namespace, aged by
+ * `gateway.secrets.ttlSeconds`. This class reuses that through the interface
+ * rather than standing up a second way to talk to the same two stores or a
+ * second timer over the same values. All that is added here is what a MISS
+ * means, and what happens when the resolver throws.
  *
  * The credential is the RESOLVER identity — `parametermanager.parameterViewer`
  * plus `parametermanager.parameterAccessor`, which is the role that carries
@@ -25,40 +28,42 @@ import type { SecretProvider } from "./types.ts";
  * ../parameters/types.ts for why those three are separate, and
  * scripts/render-spec.ts for where the distinction is enforced.
  *
- * ## Why the cache is a namespace SNAPSHOT and not a per-name entry
+ * ## Why the unit is a namespace and not a name
  *
  * A parameter store's natural read is a namespace, not a name — `resolve()` is
- * one list plus one render per parameter. A per-name cache would turn a page of
- * ten `${REF}`s into ten full listings. So the cache (see snapshot.ts, shared
- * with the registry's `params:` resolution) holds ONE map of the whole namespace.
+ * one slice of the snapshot, or one list plus one render per parameter when
+ * the snapshot has expired. A per-name read would turn a page of ten `${REF}`s
+ * into ten reads. So every `get` asks the resolver for the whole namespace and
+ * picks one name out of it.
  *
  * ## What "immediately" means, precisely
  *
- * - **Rotation** of an existing secret is visible within `ttlMs` (default 60s):
- *   the snapshot is refreshed on the first `get` after it goes stale.
+ * - **Rotation** of an existing secret is visible within `ttlSeconds`: the
+ *   resolver's snapshot is re-read on the first `get` after it goes stale.
  * - **Addition** of a name that was previously absent is visible within
- *   `negativeTtlMs` (default 10s). A miss forces an out-of-band refresh, rate
- *   limited to once per `negativeTtlMs` so a genuinely unknown `${REF}` on a hot
- *   path cannot hammer the backend once per request.
+ *   `negativeTtlMs`. A miss asks the resolver to drop its snapshot and reads
+ *   again, rate limited to once per `negativeTtlMs` so a genuinely unknown
+ *   `${REF}` on a hot path cannot re-read the store once per request — and
+ *   skipped outright when the snapshot is younger than that, because a name
+ *   the store did not hold a moment ago is not going to be found by asking
+ *   again.
  * - **A change made through strad's own console** is instant on that process,
- *   because the writer calls `invalidate()`.
+ *   because the writer calls `invalidate()`, which drops the snapshot.
  *
  * ## Failure posture
  *
- * A refresh that throws does NOT propagate if we still hold a snapshot: the last
- * known good values are served and a warning is logged (name of the provider and
- * the error — never a value, never a name-to-value pairing). A store outage must
- * not take `/mcp` down; strad would otherwise trade "secrets are stale" for
- * "the gateway is offline", which is the worse failure by a wide margin.
+ * A read that throws does NOT propagate if we still hold values: the last known
+ * good ones are served and a warning is logged (name of the provider and the
+ * error — never a value, never a name-to-value pairing). A store outage must not
+ * take `/mcp` down; strad would otherwise trade "secrets are stale" for "the
+ * gateway is offline", which is the worse failure by a wide margin.
  *
- * With no snapshot at all — the very first read failed — the error DOES
- * propagate. There is nothing to serve, and pretending the secret is absent
- * would report a config error for what is an outage.
+ * With nothing held — the very first read failed — the error DOES propagate.
+ * There is nothing to serve, and pretending the secret is absent would report a
+ * config error for what is an outage.
  */
 export interface StoreSecretProviderOptions {
-  /** How long a snapshot is considered fresh. Default 60s. */
-  ttlMs?: number;
-  /** Minimum interval between miss-triggered refreshes. Default 10s. */
+  /** Minimum interval between miss-triggered re-reads. Default 10 minutes. */
   negativeTtlMs?: number;
   /** Injected in tests so the clock is not the thing under test. */
   now?: () => number;
@@ -66,19 +71,18 @@ export interface StoreSecretProviderOptions {
   onWarn?: (message: string) => void;
 }
 
-export const DEFAULT_TTL_MS = 60_000;
-export const DEFAULT_NEGATIVE_TTL_MS = 10_000;
+export const DEFAULT_NEGATIVE_TTL_MS = 600_000;
 
 export class StoreSecretProvider implements SecretProvider {
   readonly name: string;
 
-  private readonly cache: SnapshotCache;
+  private readonly view: NamespaceView;
   private readonly negativeTtlMs: number;
   private readonly now: () => number;
   private lastMissRefreshAt = -Infinity;
 
   constructor(
-    resolver: ParameterResolver,
+    private readonly resolver: ParameterResolver,
     /** The namespace this provider reads, e.g. `/strad/prod/gateway/static/`. */
     private readonly namespace: string,
     opts: StoreSecretProviderOptions = {},
@@ -86,8 +90,7 @@ export class StoreSecretProvider implements SecretProvider {
     this.name = `store:${namespace}`;
     this.negativeTtlMs = opts.negativeTtlMs ?? DEFAULT_NEGATIVE_TTL_MS;
     this.now = opts.now ?? Date.now;
-    this.cache = new SnapshotCache((ns) => resolver.resolve(ns), {
-      ttlMs: opts.ttlMs ?? DEFAULT_TTL_MS,
+    this.view = new NamespaceView((ns) => resolver.resolve(ns), {
       now: opts.now,
       onWarn: opts.onWarn,
       label: `secret provider "${this.name}"`,
@@ -95,24 +98,33 @@ export class StoreSecretProvider implements SecretProvider {
   }
 
   async get(name: string): Promise<string | null> {
-    const values = await this.cache.get(this.namespace);
+    const values = await this.view.get(this.namespace);
 
     const hit = values[name];
     if (hit !== undefined) return hit;
 
     // A MISS. The snapshot may simply predate the secret being added, which is
-    // the case this whole class exists to serve. Force one refresh — but no more
-    // often than negativeTtlMs, so an unknown ref stays cheap.
+    // the case this whole class exists to serve. Ask the resolver to drop it
+    // and read again — but no more often than negativeTtlMs, so an unknown ref
+    // stays cheap.
     //
-    // Skip it when the values we just read were fetched moments ago: on a cold
-    // start the `get` above has already done a live read, and refreshing again
-    // would list the namespace twice to learn the same thing.
+    // Skip it when the snapshot is younger than that: on a cold start the `get`
+    // above has already read the store, and dropping a reading taken moments
+    // ago would enumerate the project twice to learn the same thing. A resolver
+    // that holds no snapshot reports `Infinity`, and is asked.
     const now = this.now();
-    const justFetched = this.cache.age(this.namespace) < this.negativeTtlMs;
-    if (!justFetched && now - this.lastMissRefreshAt >= this.negativeTtlMs) {
+    const snapshotAge = this.resolver.snapshotAgeMs?.() ?? Infinity;
+    if (
+      // `Infinity` is the per-server layer's "never chase", and it has to be
+      // read as such rather than compared: Infinity >= Infinity is true.
+      Number.isFinite(this.negativeTtlMs) &&
+      snapshotAge >= this.negativeTtlMs &&
+      now - this.lastMissRefreshAt >= this.negativeTtlMs
+    ) {
       this.lastMissRefreshAt = now;
-      await this.cache.refresh(this.namespace);
-      const retry = this.cache.peek(this.namespace)?.[name];
+      this.resolver.forget?.();
+      await this.view.refresh(this.namespace);
+      const retry = this.view.peek(this.namespace)?.[name];
       if (retry !== undefined) return retry;
     }
 
@@ -120,10 +132,13 @@ export class StoreSecretProvider implements SecretProvider {
   }
 
   invalidate(): void {
-    // The snapshot is whole-namespace, so a single name cannot be dropped in
-    // isolation — and dropping the lot is correct anyway: the caller just wrote
-    // to the store, and the write may have touched more than it names.
-    this.cache.invalidate(this.namespace);
+    // Whole-namespace, and whole-snapshot: the caller just wrote to the store,
+    // and the write may have touched more than it names. Dropping the
+    // resolver's snapshot is what makes the next `get` reach the store; the
+    // view's own generation bump is what stops a read already in flight from
+    // installing what it captured before the write.
+    this.resolver.forget?.();
+    this.view.invalidate(this.namespace);
     this.lastMissRefreshAt = -Infinity;
   }
 }

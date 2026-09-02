@@ -366,7 +366,7 @@ if (!storeBacked) {
 // and 429'd a production deploy. This render is one-shot and reads only, so
 // reusing the enumeration is safe here in a way it is not for the gateway or the
 // console, both of which write.
-const store = resolverFromEnv(process.env, { rosterTtlMs: 10 * 60_000 });
+const store = resolverFromEnv(process.env, { snapshotTtlMs: 10 * 60_000 });
 if (storeBacked && !store) {
   console.error(
     `::error::gateway.secrets.provider is "gcp-parameter-store" but ` +

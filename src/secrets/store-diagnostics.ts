@@ -1,6 +1,6 @@
 import type { ParameterStore } from "./parameters/index.ts";
 import { variableOf } from "./parameters/wire.ts";
-import { errorSummary } from "./provider/snapshot.ts";
+import { errorSummary } from "./provider/view.ts";
 import { event } from "../telemetry/index.ts";
 
 /**
@@ -52,14 +52,16 @@ export interface StoreDiagnostics {
   /** True when the per-parameter render ran, so `unrenderable` is complete. */
   renderRead: boolean;
   /**
-   * How long ago the reads above actually happened, in milliseconds. Zero on a
-   * pass that just ran.
+   * How old the facts above are, in milliseconds.
    *
-   * A cached diagnosis is a claim about the store AS OF a moment, and the moment
-   * is part of the claim. Every surface that prints one prints this with it —
-   * `readStoreDiagnosticsCached` is what makes it non-zero, and a console that
-   * showed a minute-old "healthy" without saying so would be the failure mode
-   * that caching introduces.
+   * A diagnosis is a claim about the store AS OF a moment, and the moment is
+   * part of the claim. Two things make it non-zero: `readStoreDiagnosticsCached`
+   * holding a pass, and the store client answering the pass from the snapshot
+   * it holds (`gateway.secrets.ttlSeconds`, see parameters/gcp.ts) — a pass
+   * that just ran against a fifty-minute-old snapshot is fifty minutes old, and
+   * says so. Every surface that prints a diagnosis prints this with it; a
+   * console that showed an hour-old "healthy" without saying so would be the
+   * failure mode that holding one introduces.
    */
   ageMs: number;
 }
@@ -69,6 +71,8 @@ export interface ReadDiagnosticsOptions {
   namespace: string;
   /** One deadline for the pair. A slow store degrades the page, never hangs it. */
   timeoutMs?: number;
+  /** Injected in tests so the clock is not the thing under test. */
+  now?: () => number;
 }
 
 const DEFAULT_TIMEOUT_MS = 6000;
@@ -120,7 +124,13 @@ export async function readStoreDiagnostics(
     }
   }
 
-  return { indexed, unrenderable, rendered, indexRead, renderRead, ageMs: 0 };
+  // The render pass says when the reading it answered from was taken. A
+  // resolver that reads live carries no `readAt`, and the facts are as fresh
+  // as this call.
+  const now = opts.now ?? Date.now;
+  const ageMs =
+    resolved?.readAt === undefined ? 0 : Math.max(0, now() - resolved.readAt);
+  return { indexed, unrenderable, rendered, indexRead, renderRead, ageMs };
 }
 
 // ---------------------------------------------------------------------------
@@ -128,22 +138,25 @@ export async function readStoreDiagnostics(
 // ---------------------------------------------------------------------------
 
 /**
- * No diagnosis is served older than this, whatever `ttlSeconds` says.
+ * No PASS is reused for longer than this, whatever `ttlSeconds` says.
  *
- * `gateway.secrets.ttlSeconds` answers "how stale may a store READ be", and it
- * accepts up to an hour — a deployment that rotates rarely can reasonably set it
- * there. That number cannot govern this cache unbounded, because a diagnosis is
- * a HEALTH signal: an hour-old "the store answers and everything renders" said
- * about a store that broke fifty minutes ago is a worse failure than the reads
- * this cache exists to save. So the config knob is followed downward and capped
- * upward, at the default it already carries.
+ * A pass is a `list()` plus a `resolveDetailed()` against the store client,
+ * which answers both from the snapshot it holds for `gateway.secrets.ttlSeconds`
+ * — so a pass inside that TTL is memory, and one past it is what re-reads the
+ * store. Holding the pass's RESULT for a minute keeps the failure path bounded:
+ * a store that is down costs one attempted pass per backoff, not one per
+ * request. It is capped rather than following the knob all the way up because
+ * that knob accepts a day, and the pass is what notices the snapshot has aged
+ * out and the store has stopped answering. What the cap does NOT do is make the
+ * diagnosis fresher than the snapshot under it: its facts are as old as that
+ * snapshot, and `ageMs` says so.
  */
 export const MAX_DIAGNOSIS_TTL_MS = 60_000;
 
 /**
  * How long a pass that did NOT fully read suppresses the next one.
  *
- * Matches `snapshot.ts`'s `FAILURE_BACKOFF_MS`, and for the same reason: a store
+ * Matches `view.ts`'s `FAILURE_BACKOFF_MS`, and for the same reason: a store
  * that is down must not cost one full pass per request. It is capped by the
  * success TTL as well (see `holdFor`), so it is never the LONGEST thing held: a
  * failed pass is cached as a SHRUG — `indexRead` false, which every consumer
@@ -169,7 +182,14 @@ type CacheEntry =
       pass?: undefined;
       done: {
         value: StoreDiagnostics;
-        /** When the reads STARTED, so `ageMs` counts from the fact, not its arrival. */
+        /** When the pass STARTED — what `goodFor` is measured from. */
+        passAt: number;
+        /**
+         * When the FACTS were read: the pass start, less however old the
+         * store's own reading already was when the pass ran. `ageMs` counts
+         * from here, so a pass served from a snapshot reports the snapshot's
+         * age and not its own.
+         */
         readAt: number;
         /** How long this entry may be served: the TTL, or the failure backoff. */
         goodFor: number;
@@ -193,8 +213,6 @@ export interface CachedDiagnosticsOptions extends ReadDiagnosticsOptions {
    * `MAX_DIAGNOSIS_TTL_MS`; a shorter value is honoured as given.
    */
   ttlMs: number;
-  /** Injected in tests so the clock is not the thing under test. */
-  now?: () => number;
 }
 
 /**
@@ -248,17 +266,19 @@ export async function readStoreDiagnosticsCached(
   const held = entries.get(opts.namespace);
   if (held?.pass) return held.pass;
   if (held) {
-    const ageMs = now() - held.done.readAt;
-    if (ageMs < held.done.goodFor) return { ...held.done.value, ageMs };
+    if (now() - held.done.passAt < held.done.goodFor) {
+      return { ...held.done.value, ageMs: now() - held.done.readAt };
+    }
   }
 
-  const readAt = now();
+  const passAt = now();
   const pass = (async () => {
     try {
       const value = await readStoreDiagnostics(opts);
       const complete = value.indexRead && value.renderRead;
+      const readAt = passAt - value.ageMs;
       entries.set(opts.namespace, {
-        done: { value, readAt, goodFor: holdFor(complete, ttlMs) },
+        done: { value, passAt, readAt, goodFor: holdFor(complete, ttlMs) },
       });
       return { ...value, ageMs: now() - readAt };
     } catch (err) {
@@ -307,7 +327,7 @@ async function withDeadline<T>(
       }),
     ]);
   } catch (err) {
-    // Logged by class, never by message, for the reason snapshot.ts states: a
+    // Logged by class, never by message, for the reason view.ts states: a
     // failure on this path can embed a window of a rendered secret.
     event({
       evt: "strad.store_diagnostics_failed",

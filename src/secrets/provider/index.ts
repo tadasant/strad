@@ -12,7 +12,6 @@ export { EnvSecretProvider } from "./env.ts";
 export { ChainSecretProvider } from "./chain.ts";
 export {
   StoreSecretProvider,
-  DEFAULT_TTL_MS,
   DEFAULT_NEGATIVE_TTL_MS,
   type StoreSecretProviderOptions,
 } from "./store.ts";
@@ -62,11 +61,15 @@ export interface ServerSecretProviders {
    * The provider one server's own `${NAME}` refs resolve against: that server's
    * `/strad/{env}/mcp/{slug}/static/` namespace FIRST, `shared` second.
    *
-   * Memoised per slug — the layer holds a namespace snapshot cache, and a fresh
-   * one per call would read the store on every request.
+   * Memoised per slug — the layer holds the last good values for its
+   * namespace, and a fresh one per call would have nothing to serve through a
+   * store outage.
    */
   forServer(slug: string): SecretProvider;
-  /** Drop every cached snapshot, shared and per-server alike. */
+  /**
+   * Drop the process's reading of the store, so the next `get` anywhere reaches
+   * it. What a write through strad's own console calls.
+   */
   invalidate(name?: string): void;
 }
 
@@ -104,6 +107,16 @@ export function sharedSecretProviders(
  * and quietly got env vars instead would look healthy while serving whatever
  * stale values happened to be baked in.
  *
+ * ## One reading of the store, however many providers
+ *
+ * Every provider built here — the shared one and each per-server one — asks
+ * the SAME resolver, and the resolver holds ONE snapshot of the whole store for
+ * `gateway.secrets.ttlSeconds` (parameters/gcp.ts). A provider is a slice of
+ * that, not a reader of its own: adding a slug adds a namespace to slice and
+ * not a timer that enumerates the project. The resolver handed in is built with
+ * that TTL by the caller (src/index.ts); the one built here from the
+ * environment is too.
+ *
  * ## The per-server layer
  *
  *     1. /strad/{env}/mcp/{slug}/static/{NAME}   — this server's own namespace
@@ -125,19 +138,19 @@ export function sharedSecretProviders(
  *
  * It costs nothing where nobody uses it. The layer is LAZY — a `StoreSecretProvider`
  * reads on first `get`, and `forServer` is only asked for a slug that references
- * a `${NAME}` at all — and an empty namespace resolves to an empty snapshot, so
- * layer 1 misses and layer 2 answers exactly as it did before.
+ * a `${NAME}` at all — and an empty namespace is an empty slice of the snapshot,
+ * so layer 1 misses and layer 2 answers exactly as it did before.
  *
  * ## Why the per-server layer does not chase a miss
  *
  * `negativeTtlMs: Infinity` turns off `StoreSecretProvider`'s miss-triggered
- * refresh for layer 1 only. A miss there is the NORMAL case — most names live in
- * the shared namespace and always will — and `resolve()` lists the whole project
- * per call, so chasing every one of them would re-enumerate the store for each
- * gateway-resolved name on each slug. The ordinary TTL still refreshes the
- * snapshot, so a newly seeded per-server value takes effect within `ttlSeconds`
- * rather than `negativeTtlSeconds`. The shared layer keeps its miss refresh,
- * which is where a brand-new name actually shows up.
+ * re-read for layer 1 only. A miss there is the NORMAL case — most names live in
+ * the shared namespace and always will — and chasing one drops the whole
+ * snapshot and enumerates the project again, so chasing every one of them would
+ * re-read the store for each gateway-resolved name on each slug. The ordinary
+ * TTL still re-reads it, so a newly seeded per-server value takes effect within
+ * `ttlSeconds` rather than `negativeTtlSeconds`. The shared layer keeps its miss
+ * re-read, which is where a brand-new name actually shows up.
  */
 export function buildSecretProviders(
   opts: BuildProviderOptions,
@@ -149,7 +162,9 @@ export function buildSecretProviders(
   if (settings.provider === "env") return sharedSecretProviders(envProvider);
 
   const resolver =
-    opts.resolver === undefined ? resolverFromEnv(env) : opts.resolver;
+    opts.resolver === undefined
+      ? resolverFromEnv(env, { snapshotTtlMs: settings.ttlSeconds * 1000 })
+      : opts.resolver;
   if (!resolver) {
     throw new Error(
       'gateway.secrets.provider is "gcp-parameter-store" but no store ' +
@@ -162,10 +177,7 @@ export function buildSecretProviders(
   const store = new StoreSecretProvider(
     resolver,
     gatewayNamespace(opts.config.gateway.env),
-    {
-      ttlMs: settings.ttlSeconds * 1000,
-      negativeTtlMs: settings.negativeTtlSeconds * 1000,
-    },
+    { negativeTtlMs: settings.negativeTtlSeconds * 1000 },
   );
 
   const shared: SecretProvider = settings.envFallback
@@ -179,7 +191,7 @@ export function buildSecretProviders(
     const own = new StoreSecretProvider(
       resolver,
       staticNamespace(opts.config.gateway.env, slug),
-      { ttlMs: settings.ttlSeconds * 1000, negativeTtlMs: Infinity },
+      { negativeTtlMs: Infinity },
     );
     // ChainSecretProvider unchanged, including its rule that a THROW does not
     // fall through. An unreachable store must not silently demote a server to

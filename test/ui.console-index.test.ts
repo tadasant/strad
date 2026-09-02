@@ -388,13 +388,13 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
     expect(lists).toBe(1);
     expect(renders).toBe(1);
 
-    // And the cached verdict is not presented as a fresh one. The console's
+    // And the held verdict is not presented as a fresh one. The console's
     // posture is that it says what it established and WHEN. Matched as a shape
     // rather than as "just now": the exact age depends on a real clock over two
     // real renders, and what is under test is that an age is printed at all.
     for (const html of [first, second]) {
       expect(html).toMatch(/was read (just now|\d+s ago)/);
-      expect(html).toContain("cached for up to 60s");
+      expect(html).toContain("reused for up to 60s");
     }
   });
 
@@ -407,14 +407,14 @@ describe("GET /ui — the store diagnosis is cached, and the page says so", () =
     expect(lists).toBe(1);
     expect(renders).toBe(1);
     expect(first).toContain("its per-parameter render did not answer");
-    expect(first).toContain("cached for up to 5s");
-    expect(first).not.toContain("cached for up to 60s");
+    expect(first).toContain("reused for up to 5s");
+    expect(first).not.toContain("reused for up to 60s");
   });
 
   it("says nothing about a diagnosis when there is no store to diagnose", async () => {
     // No resolver credential means the distinction was never drawn, and an age
     // sentence about an absent reading would be noise.
-    expect(html).not.toContain("cached for up to");
+    expect(html).not.toContain("reused for up to");
   });
 });
 

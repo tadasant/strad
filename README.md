@@ -202,9 +202,11 @@ deploy runs again.
 
 **`gcp-parameter-store`.** `${NAME}` resolves from the parameter store while the
 gateway is **running**. Add or rotate a secret a server references on the request
-path and it reaches production with no deploy — a rotation within `ttlSeconds`
-(default 60s), an addition within `negativeTtlSeconds` (default 10s), and
-instantly for a change written through strad's own console. The gateway then
+path and it reaches production with no deploy — instantly for a change written
+through strad's own console, and for a change made outside it a rotation within
+`ttlSeconds` (default 1 hour), an addition within `negativeTtlSeconds` (default
+10 minutes). Each process reads the store once and holds that reading for the
+TTL, so the bill does not grow with the number of servers. The gateway then
 needs exactly **one** secret in the app spec: the key it uses to reach the store.
 A key cannot be kept behind the lock it opens; that is the only exception.
 

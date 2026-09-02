@@ -252,6 +252,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     "note",
     "reveal",
     "delete",
+    "refresh",
   ] as const) {
     app.post(`/ui/:server/${action}`, gate, form, async (req, res) => {
       try {
@@ -458,22 +459,30 @@ async function handleServerView(
 // The parameters page, and the five actions that mutate it.
 // ---------------------------------------------------------------------------
 
-type SecretAction = "create" | "rotate" | "note" | "reveal" | "delete";
+type SecretAction =
+  "create" | "rotate" | "note" | "reveal" | "delete" | "refresh";
 
 /**
  * A write just changed what the store holds, so drop what it told us.
  *
- * The index's store diagnosis is cached for `ttlSeconds` (see
- * secrets/store-diagnostics.ts), and the state it establishes — "the parameter
- * EXISTS and its value cannot be produced, rotate it" — is checked BEFORE the
- * live read. Without this, a human who does exactly what the row told them to do
- * lands back on `/ui` and is told to do it again, for up to a minute, one click
- * after the console flashed that it worked.
+ * Two things hold the old answer, and both are dropped here. The runtime
+ * providers read through the resolver client, which holds ONE reading of the
+ * store for `gateway.secrets.ttlSeconds` (an hour by default): without the
+ * `invalidate()`, a credential rotated through this console would keep being
+ * served to `/mcp`, from this very process, until that reading aged out — the
+ * one promise the console makes that a TTL is not allowed to break. And the
+ * index's store diagnosis (see secrets/store-diagnostics.ts) establishes a
+ * state — "the parameter EXISTS and its value cannot be produced, rotate it" —
+ * that is checked BEFORE the live read, so without the forget a human who does
+ * exactly what the row told them to do lands back on `/ui` and is told to do it
+ * again, one click after the console flashed that it worked.
  *
- * Called for the three actions that change the store's answer. `note` does not:
- * it writes metadata the diagnosis never reads. `reveal` writes nothing at all.
+ * Called for the three actions that change the store's answer, and for the
+ * explicit `refresh` action. `note` does not: it writes metadata neither reads.
+ * `reveal` writes nothing at all.
  */
-function forgetDiagnosis(opts: ConsoleUiOptions): void {
+function forgetStoreReading(opts: ConsoleUiOptions): void {
+  opts.secretProvider?.invalidate();
   forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
 }
 
@@ -588,7 +597,7 @@ async function handleSecretAction(
           value,
           note: note || undefined,
         });
-        forgetDiagnosis(opts);
+        forgetStoreReading(opts);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           namespace,
@@ -607,7 +616,7 @@ async function handleSecretAction(
         }
         assertWellFormed(path);
         await store.rotate(path, value);
-        forgetDiagnosis(opts);
+        forgetStoreReading(opts);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           namespace,
@@ -679,13 +688,36 @@ async function handleSecretAction(
       case "delete": {
         assertWellFormed(path);
         await store.destroy(path);
-        forgetDiagnosis(opts);
+        forgetStoreReading(opts);
         await renderSecretsPage(res, view, opts, {
           signedInAs,
           namespace,
           flash: {
             tone: "ok",
             message: `Deleted ${variableOf(path)} and all of its versions.`,
+          },
+        });
+        return;
+      }
+
+      case "refresh": {
+        // The explicit signal. A value written by anything OTHER than this
+        // console — `gcloud`, the seed script, another deployment's console —
+        // reaches this process within `gateway.secrets.ttlSeconds` on its own,
+        // which is an hour by default. This is the way to not wait: it drops
+        // the process's reading of the store, and the next `${NAME}` read, the
+        // next tool call on a `params: true` builtin and the next `/ui` load
+        // all reach Parameter Manager. Nothing is written.
+        forgetStoreReading(opts);
+        await renderSecretsPage(res, view, opts, {
+          signedInAs,
+          namespace,
+          flash: {
+            tone: "ok",
+            message:
+              "Dropped this process's reading of the store. The next read reaches " +
+              "Parameter Manager, so a value written outside this console is " +
+              "current now rather than within gateway.secrets.ttlSeconds.",
           },
         });
         return;

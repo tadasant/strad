@@ -148,11 +148,28 @@ const env: NodeJS.ProcessEnv = {
 let server: Server;
 let baseUrl: string;
 
+/**
+ * The RUNTIME providers, as the console sees them: the thing a write has to
+ * tell. The console writes through the admin client; the gateway reads
+ * through the resolver client, which holds its own reading of the store for
+ * `ttlSeconds`. Counting `invalidate()` is how this suite proves a console
+ * write reaches `/mcp` at once rather than an hour later.
+ */
+let invalidations = 0;
+const runtime = new EnvSecretProvider(SECRETS);
+const runtimeProviders = sharedSecretProviders({
+  name: runtime.name,
+  get: (name: string) => runtime.get(name),
+  invalidate: () => {
+    invalidations += 1;
+  },
+});
+
 beforeAll(async () => {
   fake = createFakeGcp();
   const registry = await Registry.build({
     config: CONFIG,
-    secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
+    secrets: runtimeProviders,
     mode: "core",
     env,
   });
@@ -163,6 +180,7 @@ beforeAll(async () => {
     mode: "core",
     env,
     secrets: SECRETS,
+    secretProvider: runtimeProviders,
     parametersStore: () => fake.store,
     capabilities: () => Promise.resolve(ADMIN_CAPABILITIES),
   });
@@ -290,6 +308,60 @@ describe("the parameters console, end to end", () => {
     const html = await res.text();
     expect(html).toContain("Note saved on SEEDED_KEY.");
     expect(html).not.toContain("rotated-secret");
+  });
+
+  it("a write drops the gateway's reading of the store; a note does not", async () => {
+    // The promise the console makes that a TTL is not allowed to break: a value
+    // rotated HERE is what `/mcp` serves next, from this process, now. Before
+    // this was wired the console only dropped its own diagnosis cache, and the
+    // runtime provider kept the old value for the rest of its TTL.
+    await resetStore();
+    const before = invalidations;
+    await post("/ui/secrets/rotate", {
+      path: `${NS}SEEDED_KEY`,
+      value: "rotated-value",
+      ns: NS,
+    });
+    expect(invalidations).toBe(before + 1);
+    await post("/ui/secrets/create", {
+      variable: "ADDED",
+      value: "v",
+      secret: "false",
+      ns: NS,
+    });
+    expect(invalidations).toBe(before + 2);
+    await post("/ui/secrets/delete", { path: `${NS}ADDED`, ns: NS });
+    expect(invalidations).toBe(before + 3);
+    // A note is metadata the gateway never reads.
+    await post("/ui/secrets/note", {
+      path: `${NS}SEEDED_KEY`,
+      note: "still the same value",
+      ns: NS,
+    });
+    expect(invalidations).toBe(before + 3);
+  });
+
+  it("REFRESH: drops the reading with no write, and says so", async () => {
+    // The explicit signal for a value written outside this console — gcloud,
+    // the seed script — which otherwise lands within `ttlSeconds`.
+    await resetStore();
+    const before = invalidations;
+    const payloads = fake.pmPayloads().length;
+    const res = await post("/ui/secrets/refresh", { ns: NS });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Dropped this process&#39;s reading of the store");
+    expect(invalidations).toBe(before + 1);
+    // Nothing was written.
+    expect(fake.pmPayloads()).toHaveLength(payloads);
+    // And the page offers it: one button, next to the namespace picker.
+    expect(html).toContain('action="/ui/secrets/refresh"');
+    expect(html).toContain("Re-read the store");
+  });
+
+  it("REFRESH is behind the SSO gate like every other action", async () => {
+    const res = await post("/ui/secrets/refresh", { ns: NS }, {});
+    expect(res.status).toBe(401);
   });
 
   it("DELETE: removes the parameter from both stores", async () => {

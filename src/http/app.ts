@@ -222,6 +222,8 @@ export function createApp(opts: AppOptions): Express {
       env,
       secrets: opts.secrets ?? {},
       parametersStore: opts.parametersStore,
+      secretProvider: opts.secretProvider,
+      diagnosticStore: opts.diagnosticStore,
     };
     const paramRoute = `${PARAM_ROUTE_PREFIX}/:slug/:variable`;
     app.get(paramRoute, createParamReadHandler(paramsOptions));

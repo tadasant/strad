@@ -63,6 +63,15 @@ export interface FakeGcp {
    * `secrets` MCP credential, and must not be able to read a secret value.
    */
   storeAs(callerPermissions: readonly string[]): ParameterStore;
+  /**
+   * A second admin client over the SAME store state, holding no snapshot.
+   *
+   * What a write from `gcloud`, the seed script or another process looks like
+   * to `store`: the state changes and nothing tells the client that holds a
+   * reading of it. A test asserting "a rotation lands within the TTL" writes
+   * through this one — a write through `store` drops its own snapshot.
+   */
+  another(): ParameterStore;
   /** Every payload string ever written to Parameter Manager (for canary checks). */
   pmPayloads(): string[];
 }
@@ -172,7 +181,19 @@ const ACCOUNT: ServiceAccount = {
 const RAW_REF_RE =
   /__REF__\(\\?"\/\/secretmanager\.googleapis\.com\/projects\/[^/]+\/secrets\/([^/"\\]+)\/versions\/[^"\\]+\\?"\)/g;
 
-export function createFakeGcp(): FakeGcp {
+export interface FakeGcpOptions {
+  /**
+   * The snapshot TTL and clock the fake's `store` is built with.
+   *
+   * Off by default, as every client that writes is. A test standing in for the
+   * running gateway sets both, so "a rotation lands within the TTL" can be
+   * asserted by moving a clock rather than by sleeping.
+   */
+  snapshotTtlMs?: number;
+  now?: () => number;
+}
+
+export function createFakeGcp(opts: FakeGcpOptions = {}): FakeGcp {
   const parameters = new Map<string, FakeParameter>();
   const secrets = new Map<string, string[]>();
   const secretPolicies = new Map<string, FakeBinding[]>();
@@ -543,7 +564,7 @@ export function createFakeGcp(): FakeGcp {
     return json(404, { error: { code: 404 } });
   }
 
-  const storeWith = (impl: FetchLike): ParameterStore =>
+  const storeWith = (impl: FetchLike, snapshot = true): ParameterStore =>
     createGcpParameterStore({
       projectId: PROJECT,
       location: LOCATION,
@@ -552,6 +573,8 @@ export function createFakeGcp(): FakeGcp {
       smApiBase: SM_BASE,
       tokenUrl: TOKEN_URL,
       fetchImpl: impl,
+      snapshotTtlMs: snapshot ? opts.snapshotTtlMs : 0,
+      now: opts.now,
     });
 
   const store = storeWith(fetchImpl);
@@ -560,6 +583,7 @@ export function createFakeGcp(): FakeGcp {
     store,
     storeAs: (callerPermissions) =>
       storeWith(fetchImplFor(new Set(callerPermissions))),
+    another: () => storeWith(fetchImpl, false),
     fetchImpl,
     endpoints: {
       projectId: PROJECT,

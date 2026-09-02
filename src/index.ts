@@ -50,13 +50,20 @@ async function main(): Promise<void> {
   // The runtime secret provider, built from what the config declares. With
   // `gateway.secrets.provider: env` (the default) this is a wrapper around
   // process.env and no cloud client is constructed; with `gcp-parameter-store`
-  // it is a cached, TTL'd reader over the parameter store, and the container
-  // holds exactly one credential — the one that reaches the store.
+  // it is a reader over the parameter store, and the container holds exactly
+  // one credential — the one that reaches the store.
+  //
+  // ONE store client for the process, holding ONE reading of the store for
+  // `ttlSeconds`. The providers, the registry's `params:` resolution and the
+  // console's store diagnosis all slice it — that is what keeps the store's
+  // bill from scaling with the number of namespaces this process reads.
   //
   // This is built BEFORE telemetry because hydration below supplies
   // OTEL_EXPORTER_OTLP_HEADERS, which the OpenTelemetry SDK reads from the
   // environment on its own terms.
-  const resolver = resolverFromEnv(env);
+  const resolver = resolverFromEnv(env, {
+    snapshotTtlMs: config.gateway.secrets.ttlSeconds * 1000,
+  });
   const secretProviders = buildSecretProviders({ config, env, resolver });
   // The deployment-wide half. Boot hydration, the console roster and the
   // readiness route all ask about names with no server to attribute them to.
@@ -174,6 +181,11 @@ async function main(): Promise<void> {
     env,
     secrets,
     secretProvider: secretProviders,
+    // The SAME client the providers read through, so the console's and the
+    // readiness route's diagnosis is answered from the snapshot this process
+    // already holds rather than from a second client with a reading of its
+    // own. A write through the console drops both by dropping one.
+    diagnosticStore: resolver,
     toolSurfaces: () => toolSurfaces.snapshot(),
   });
 

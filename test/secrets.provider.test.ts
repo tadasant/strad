@@ -27,26 +27,60 @@ import {
  *      is the enforcement.
  */
 
-/** A resolver whose namespace contents a test can change mid-flight. */
+/**
+ * A resolver whose namespace contents a test can change mid-flight.
+ *
+ * It models the store CLIENT, snapshot and all: `resolve()` answers from what
+ * it holds until `forget()` is called, exactly as parameters/gcp.ts does inside
+ * its TTL. `reads` counts the times it went to the "store" — the number the
+ * provider is supposed to keep small — and `resolves` the times it was asked
+ * at all, which is one per `get` and is not the thing being defended.
+ */
 function fakeResolver(initial: Record<string, string> = {}) {
   let values = { ...initial };
-  let calls = 0;
+  let held: Record<string, string> | undefined;
+  let heldAt = -Infinity;
+  let reads = 0;
+  let resolves = 0;
   let fail: Error | null = null;
+  let clock = () => 0;
   return {
     resolver: {
       async resolve(): Promise<Record<string, string>> {
-        calls += 1;
-        if (fail) throw fail;
-        return { ...values };
+        resolves += 1;
+        if (!held) {
+          reads += 1;
+          if (fail) throw fail;
+          held = { ...values };
+          heldAt = clock();
+        }
+        return { ...held };
+      },
+      forget() {
+        held = undefined;
+      },
+      snapshotAgeMs() {
+        return held ? clock() - heldAt : Infinity;
       },
     } satisfies ParameterResolver,
+    /** Change the STORE. The held reading does not move until it is dropped. */
     set(next: Record<string, string>) {
       values = { ...next };
     },
+    /** Change the store AND drop the reading — what a write through the client does. */
+    write(next: Record<string, string>) {
+      values = { ...next };
+      held = undefined;
+    },
     failWith(err: Error | null) {
       fail = err;
+      if (err) held = undefined;
     },
-    calls: () => calls,
+    onClock(now: () => number) {
+      clock = now;
+    },
+    reads: () => reads,
+    resolves: () => resolves,
   };
 }
 
@@ -70,43 +104,37 @@ describe("EnvSecretProvider", () => {
 });
 
 describe("StoreSecretProvider", () => {
-  it("serves from a snapshot without re-reading the store inside the TTL", async () => {
-    const c = clock();
+  it("re-slices the resolver's reading on every get, and never re-reads the store on its own", async () => {
+    // The provider holds no TTL. How long a value is reused is the store
+    // client's decision (parameters/gcp.ts), and a second timer here would only
+    // smear that bound. So: many gets, one store read.
     const f = fakeResolver({ TOKEN: "v1" });
-    const p = new StoreSecretProvider(f.resolver, "/ns/", {
-      ttlMs: 60_000,
-      now: c.now,
-    });
+    const p = new StoreSecretProvider(f.resolver, "/ns/");
 
     expect(await p.get("TOKEN")).toBe("v1");
     expect(await p.get("TOKEN")).toBe("v1");
-    c.advance(59_000);
     expect(await p.get("TOKEN")).toBe("v1");
-    expect(f.calls()).toBe(1);
+    expect(f.reads()).toBe(1);
+    expect(f.resolves()).toBe(3);
   });
 
-  it("picks up a ROTATION once the TTL has elapsed — no restart", async () => {
-    const c = clock();
+  it("serves the reading the resolver holds until the resolver drops it", async () => {
     const f = fakeResolver({ TOKEN: "v1" });
-    const p = new StoreSecretProvider(f.resolver, "/ns/", {
-      ttlMs: 60_000,
-      now: c.now,
-    });
+    const p = new StoreSecretProvider(f.resolver, "/ns/");
 
     expect(await p.get("TOKEN")).toBe("v1");
-    f.set({ TOKEN: "v2" }); // a human rotates it in the store
+    f.set({ TOKEN: "v2" }); // rotated outside strad; nothing told this process
+    expect(await p.get("TOKEN")).toBe("v1");
 
-    c.advance(59_999);
-    expect(await p.get("TOKEN")).toBe("v1"); // still inside the TTL
-    c.advance(2);
+    f.resolver.forget(); // what the store client does when its TTL elapses
     expect(await p.get("TOKEN")).toBe("v2");
   });
 
-  it("picks up an ADDITION within the negative TTL, well before the full TTL", async () => {
+  it("picks up an ADDITION within the negative TTL by dropping the reading", async () => {
     const c = clock();
     const f = fakeResolver({ OTHER: "x" });
+    f.onClock(c.now);
     const p = new StoreSecretProvider(f.resolver, "/ns/", {
-      ttlMs: 60_000,
       negativeTtlMs: 10_000,
       now: c.now,
     });
@@ -114,15 +142,34 @@ describe("StoreSecretProvider", () => {
     expect(await p.get("NEW")).toBeNull();
     f.set({ OTHER: "x", NEW: "added" });
 
-    // Inside the negative TTL the miss is not re-checked: an unknown ref on a
-    // hot path must not list the store once per request.
-    const before = f.calls();
+    // Inside the negative TTL the miss is not chased: an unknown ref on a hot
+    // path must not re-read the store once per request.
+    const before = f.reads();
     expect(await p.get("NEW")).toBeNull();
-    expect(f.calls()).toBe(before);
+    expect(f.reads()).toBe(before);
 
-    // Past it — and long before the 60s snapshot TTL — the addition is visible.
+    // Past it, the reading is dropped and the addition is visible.
     c.advance(10_001);
     expect(await p.get("NEW")).toBe("added");
+    expect(f.reads()).toBe(before + 1);
+  });
+
+  it("does not chase a miss against a reading younger than the negative TTL", async () => {
+    // On a cold start the get has just read the store. A name it did not hold
+    // a moment ago is not going to be found by reading it again.
+    const c = clock();
+    const f = fakeResolver({ OTHER: "x" });
+    f.onClock(c.now);
+    const p = new StoreSecretProvider(f.resolver, "/ns/", {
+      negativeTtlMs: 10_000,
+      now: c.now,
+    });
+
+    expect(await p.get("NOPE")).toBeNull();
+    expect(f.reads()).toBe(1);
+    c.advance(5_000);
+    expect(await p.get("NOPE")).toBeNull();
+    expect(f.reads()).toBe(1);
   });
 
   it("collapses concurrent cold reads into ONE store call (single-flight)", async () => {
@@ -133,22 +180,20 @@ describe("StoreSecretProvider", () => {
       Array.from({ length: 25 }, () => p.get("TOKEN")),
     );
     expect(all.every((v) => v === "v1")).toBe(true);
-    expect(f.calls()).toBe(1);
+    expect(f.resolves()).toBe(1);
   });
 
-  it("serves the last known good snapshot when a refresh fails", async () => {
+  it("serves the last known good values when a read fails", async () => {
     const c = clock();
     const warnings: string[] = [];
     const f = fakeResolver({ TOKEN: "v1" });
     const p = new StoreSecretProvider(f.resolver, "/ns/", {
-      ttlMs: 1_000,
       now: c.now,
       onWarn: (m) => warnings.push(m),
     });
 
     expect(await p.get("TOKEN")).toBe("v1");
     f.failWith(new Error("503 backend unavailable"));
-    c.advance(2_000);
 
     // A store outage must not take /mcp down.
     expect(await p.get("TOKEN")).toBe("v1");
@@ -163,13 +208,13 @@ describe("StoreSecretProvider", () => {
     await expect(p.get("TOKEN")).rejects.toThrow("403");
   });
 
-  it("invalidate() is not undone by a refresh that was already in flight", async () => {
-    // The race this closes: a request triggers a refresh whose read captures the
+  it("invalidate() is not undone by a read that was already in flight", async () => {
+    // The race this closes: a request triggers a read whose result captures the
     // PRE-write state; the console then writes and calls invalidate(); the
     // in-flight read lands afterwards. Without a generation check it installs
-    // the values it captured before the write, the snapshot looks fresh, and
+    // the values it captured before the write as the last known good map, and
     // "a console write is instant" quietly becomes "a console write is ignored"
-    // for a full TTL.
+    // the next time the store hiccups.
     let release!: () => void;
     const gate = new Promise<void>((r) => {
       release = r;
@@ -199,38 +244,71 @@ describe("StoreSecretProvider", () => {
     p.invalidate(); // ...and tells the provider about it
 
     release(); // the stale read finally returns "v1"
-    await inflight;
 
-    // It must NOT have been installed. The next read sees the write.
+    // It must NOT have been installed — and the caller whose read was
+    // discarded is not handed nothing either: it re-reads and gets the write.
+    expect(await inflight).toBe("v2");
     expect(await p.get("TOKEN")).toBe("v2");
   });
 
-  it("invalidate() forces the next read to hit the store", async () => {
-    const c = clock();
-    const f = fakeResolver({ TOKEN: "v1" });
-    const p = new StoreSecretProvider(f.resolver, "/ns/", {
-      ttlMs: 60_000,
-      now: c.now,
+  it("a read discarded by invalidate() re-reads rather than reporting a miss, even with no miss-chase", async () => {
+    // The per-server layer is built with `negativeTtlMs: Infinity`, so a miss
+    // there is never chased: an empty map handed to the raced caller would be
+    // read as "not in this server's namespace", fall through to the gateway's,
+    // and turn a live per-server credential into a SecretNotFoundError on that
+    // one request — precisely when a console write is what raced it.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
     });
+    let values: Record<string, string> = { TOKEN: "v1" };
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        const captured = { ...values };
+        if (reads === 1) await gate;
+        return captured;
+      },
+    };
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      negativeTtlMs: Infinity,
+    });
+
+    const inflight = p.get("TOKEN");
+    await Promise.resolve();
+    values = { TOKEN: "v2" };
+    p.invalidate();
+    release();
+
+    expect(await inflight).toBe("v2");
+    // Exactly one extra read, for the caller that was raced — not a loop.
+    expect(reads).toBe(2);
+    expect(await p.get("TOKEN")).toBe("v2");
+    expect(reads).toBe(3);
+  });
+
+  it("invalidate() drops the resolver's reading, so the next get reaches the store", async () => {
+    const f = fakeResolver({ TOKEN: "v1" });
+    const p = new StoreSecretProvider(f.resolver, "/ns/");
 
     expect(await p.get("TOKEN")).toBe("v1");
     f.set({ TOKEN: "v2" });
     p.invalidate(); // what a write through strad's own console does
     expect(await p.get("TOKEN")).toBe("v2");
+    expect(f.reads()).toBe(2);
   });
 
-  it("recovers from a failed refresh once the store comes back", async () => {
+  it("recovers from a failed read once the store comes back", async () => {
     const c = clock();
     const f = fakeResolver({ TOKEN: "v1" });
     const p = new StoreSecretProvider(f.resolver, "/ns/", {
-      ttlMs: 1_000,
       now: c.now,
       onWarn: () => {},
     });
 
     await p.get("TOKEN");
     f.failWith(new Error("boom"));
-    c.advance(2_000);
     expect(await p.get("TOKEN")).toBe("v1");
 
     f.failWith(null);
@@ -447,7 +525,6 @@ describe("no value ever reaches an error or a log", () => {
       f.resolver,
       "/strad/test/gateway/static/",
       {
-        ttlMs: 1_000,
         now: c.now,
         onWarn: (m) => warnings.push(m),
       },
@@ -456,7 +533,6 @@ describe("no value ever reaches an error or a log", () => {
     expect(await p.get("TOKEN")).toBe(VALUE);
     // An upstream error that itself tries to smuggle the value out.
     f.failWith(new Error(`bad payload: ${VALUE}`));
-    c.advance(2_000);
     await p.get("TOKEN");
 
     // The message is one line, and the flattening does not reproduce the value
@@ -488,17 +564,26 @@ describe("no value ever reaches an error or a log", () => {
  * A resolver that answers PER NAMESPACE, and counts what it was asked.
  *
  * The other fake in this file ignores its argument, which is fine while there is
- * one namespace. The whole point below is that there are two.
+ * one namespace. The whole point below is that there are two. Like the other
+ * one it holds a reading: `asked` records the namespaces that cost a READ of
+ * the store, not every slice handed out, and `forget()` drops it.
  */
 function namespacedResolver(
   byNamespace: Record<string, Record<string, string>>,
 ) {
   const asked: string[] = [];
+  let held: Record<string, Record<string, string>> | undefined;
   return {
     resolver: {
       async resolve(namespace: string): Promise<Record<string, string>> {
-        asked.push(namespace);
-        return { ...(byNamespace[namespace] ?? {}) };
+        if (!held) {
+          asked.push(namespace);
+          held = structuredClone(byNamespace);
+        }
+        return { ...(held[namespace] ?? {}) };
+      },
+      forget() {
+        held = undefined;
       },
     } satisfies ParameterResolver,
     asked,
@@ -580,13 +665,14 @@ gateway:
     expect(providers.forServer("anki")).toBe(providers.forServer("anki"));
     await providers.forServer("anki").get("TOKEN");
     await providers.forServer("anki").get("TOKEN");
-    expect(f.asked.filter((ns) => ns === ANKI_NS)).toHaveLength(1);
+    expect(f.asked).toHaveLength(1);
   });
 
-  it("does not re-list the store chasing a miss on the per-server layer", async () => {
+  it("does not re-read the store chasing a miss on the per-server layer", async () => {
     // A miss on layer 1 is the NORMAL case — most names live in the shared
-    // namespace — and `resolve()` enumerates the project. Chasing every one of
-    // them would cost a full listing per gateway-resolved name per slug.
+    // namespace — and chasing one drops the whole reading of the store.
+    // Chasing every one of them would cost a full re-read per gateway-resolved
+    // name per slug.
     const f = namespacedResolver({
       [GATEWAY_NS]: { SHARED: "s" },
       [ANKI_NS]: {},
@@ -599,7 +685,7 @@ gateway:
     for (let i = 0; i < 3; i += 1) {
       expect(await providers.forServer("anki").get("SHARED")).toBe("s");
     }
-    expect(f.asked.filter((ns) => ns === ANKI_NS)).toHaveLength(1);
+    expect(f.asked).toHaveLength(1);
   });
 
   it("reports a name no layer holds as null, not as a throw", async () => {

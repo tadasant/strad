@@ -85,13 +85,19 @@ export interface GcpParameterStoreConfig {
    */
   retry?: Partial<RetryBudget>;
   /**
-   * How long an enumeration of the whole store may be reused, in ms.
+   * How long one reading of the whole store may be reused, in ms.
    *
-   * `0` — the default — means never, and that is the right answer for anything
-   * that writes: a cached roster reports a parameter someone just created as
-   * absent. Deploy-time readers set it; see `roster()`.
+   * `0` — the default — means never: every `list()` and `resolve()` reaches
+   * the store. That is the right answer for a client that WRITES and then
+   * re-lists in the same breath (the console's admin client), because a held
+   * reading reports a parameter someone else just created as absent.
+   *
+   * The runtime resolver and the two deploy-time readers set it. See
+   * `snapshot()` for what is held and what drops it.
    */
-  rosterTtlMs?: number;
+  snapshotTtlMs?: number;
+  /** Injected in tests so the snapshot's age is not measured on the wall clock. */
+  now?: () => number;
 }
 
 const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
@@ -145,9 +151,10 @@ export function createGcpParameterStore(
   const smParent = `projects/${cfg.projectId}`;
   const timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const budget: RetryBudget = { ...DEFAULT_RETRY_BUDGET, ...cfg.retry };
-  const rosterTtlMs = cfg.rosterTtlMs ?? 0;
+  const snapshotTtlMs = cfg.snapshotTtlMs ?? 0;
+  const now = cfg.now ?? Date.now;
   let cached: MintedToken | undefined;
-  let cachedRoster: { at: number; entries: Promise<RosterEntry[]> } | undefined;
+  let held: Snapshot | undefined;
 
   /**
    * The bearer every call carries, minted once per hour and shared.
@@ -280,6 +287,22 @@ export function createGcpParameterStore(
     envelope: ParameterEnvelope;
     versionId: string;
     createTime?: string;
+  }
+
+  /**
+   * One reading of the store, as this process holds it.
+   *
+   * `roster` is the enumeration — every managed parameter's envelope, which is
+   * what a namespace filter runs over. `rendered` memoises the render of each
+   * namespace that has been asked for against THIS roster, so a namespace read
+   * twice inside the TTL costs no second `:render` per parameter. `at` is when
+   * the enumeration began, and it is the age every reader of the snapshot
+   * reports: a value served from here is a claim about the store as of `at`.
+   */
+  interface Snapshot {
+    at: number;
+    roster: Promise<RosterEntry[]>;
+    rendered: Map<string, Promise<ResolvedNamespace>>;
   }
 
   interface RawVersion {
@@ -454,8 +477,9 @@ export function createGcpParameterStore(
    *
    * The namespace is INSIDE the envelope, not on a label, so there is no way to
    * ask the store for one namespace: enumerating means reading a version of
-   * every parameter and filtering afterwards. That is what makes this expensive,
-   * and why `roster()` exists.
+   * every parameter and filtering afterwards. That is what makes this expensive
+   * — P billed `GetParameterVersion` calls for P parameters, however small the
+   * namespace asked for — and why `snapshot()` exists.
    */
   async function enumerate(): Promise<RosterEntry[]> {
     const params: { id: string }[] = [];
@@ -497,43 +521,78 @@ export function createGcpParameterStore(
   }
 
   /**
-   * The enumeration above, optionally reused for `rosterTtlMs`.
+   * The one reading of the store this process works from, for `snapshotTtlMs`.
    *
-   * Off by default, because a store that answers from a cache is a store that
-   * can report a parameter someone just wrote as absent — and the console writes
-   * and re-lists in the same breath. It is opted into by the two DEPLOY-TIME
-   * readers (`render-spec`, `store:check`), which are one-shot, read-only, and
-   * the reason the cache exists at all: each resolves N namespaces, `resolve()`
-   * enumerates the whole project once per namespace, and the cost is therefore
-   * N x P version reads for P parameters. Adding six server slugs took that past
-   * Parameter Manager's per-project read quota and 429'd a production deploy.
-   * One enumeration per process makes it P.
+   * ONE per process, whatever the namespace count. The runtime provider reads a
+   * namespace per `${NAME}`-referencing slug plus the gateway's own, the
+   * registry reads one per `params: true` builtin, and the console's diagnosis
+   * reads the gateway's again — six or seven namespaces on the production
+   * config — and every one of them used to enumerate the project on its own
+   * timer. With 34 parameters and a minute's TTL that was 388 billed reads a
+   * minute (`test/secrets.read-accounting.test.ts`), around the clock, to
+   * re-learn values that change a few times a month. Everything now slices
+   * this: one enumeration per TTL (P version reads), plus one render per
+   * parameter in each namespace actually asked for.
    *
-   * The PROMISE is cached, not its result, so namespaces resolved concurrently
-   * share one enumeration instead of racing to start several. A rejection is
-   * evicted — a refused enumeration must not be the answer for a whole minute.
+   * What drops it, in order of how often it happens:
+   *
+   *   - a WRITE through this client (`writing()` below) — the console's admin
+   *     client and the write-back route both write and re-read in one breath;
+   *   - `forget()`, which the runtime provider calls on `invalidate()` — the
+   *     path a console write takes to reach the resolver, which is a different
+   *     client instance holding a different credential — and on a MISS, so a
+   *     name seeded outside strad is found within `negativeTtlSeconds`;
+   *   - the TTL, on the next read after it elapses.
+   *
+   * Nothing refreshes it on its own. A process that is never asked never reads.
+   *
+   * The PROMISE is held, not its result, so namespaces resolved concurrently
+   * share one enumeration instead of racing to start several. A rejected
+   * enumeration is evicted — a refused read must not be the answer for an hour.
+   * With the TTL off, every call is a fresh snapshot, and the memo it carries
+   * lives exactly as long as the call.
    */
-  async function roster(): Promise<RosterEntry[]> {
-    if (rosterTtlMs <= 0) return enumerate();
-    const held = cachedRoster;
-    if (held && Date.now() - held.at < rosterTtlMs) return held.entries;
-    const entries = enumerate();
-    const fresh = { at: Date.now(), entries };
-    cachedRoster = fresh;
-    entries.catch(() => {
-      if (cachedRoster === fresh) cachedRoster = undefined;
-    });
-    return entries;
+  function snapshot(): Snapshot {
+    if (snapshotTtlMs > 0 && held && now() - held.at < snapshotTtlMs) {
+      return held;
+    }
+    const fresh: Snapshot = {
+      at: now(),
+      roster: enumerate(),
+      rendered: new Map(),
+    };
+    if (snapshotTtlMs > 0) {
+      held = fresh;
+      fresh.roster.catch(() => {
+        if (held === fresh) held = undefined;
+      });
+    }
+    return fresh;
   }
 
-  /** Drop the roster. Every write calls this; a stale roster is a wrong answer. */
-  function forgetRoster(): void {
-    cachedRoster = undefined;
+  /**
+   * Drop the snapshot, so the next read reaches the store.
+   *
+   * Every write through this client calls it. The runtime provider calls it on
+   * `invalidate()` and when a `${NAME}` it was asked for is absent — the two
+   * signals, besides the TTL, on which a running gateway re-reads the store.
+   */
+  function forget(): void {
+    held = undefined;
   }
 
-  async function list(namespace: string): Promise<ParameterMeta[]> {
+  /** How old the held snapshot is, in ms. `Infinity` when nothing is held. */
+  function snapshotAgeMs(): number {
+    return held ? now() - held.at : Infinity;
+  }
+
+  /** The roster's slice under `namespace`, as the console sees it. */
+  async function listFrom(
+    roster: Promise<RosterEntry[]>,
+    namespace: string,
+  ): Promise<ParameterMeta[]> {
     const out: ParameterMeta[] = [];
-    for (const { envelope, versionId, createTime } of await roster()) {
+    for (const { envelope, versionId, createTime } of await roster) {
       const { path, secret, note } = envelope;
       if (!path.startsWith(namespace)) continue;
       out.push({
@@ -548,6 +607,10 @@ export function createGcpParameterStore(
     }
     out.sort((a, b) => a.path.localeCompare(b.path));
     return out;
+  }
+
+  async function list(namespace: string): Promise<ParameterMeta[]> {
+    return listFrom(snapshot().roster, namespace);
   }
 
   async function create(input: CreateParameterInput): Promise<ParameterMeta> {
@@ -824,9 +887,39 @@ export function createGcpParameterStore(
    * The reason attached to a failure is `errorSummary`-shaped — method and
    * resource, never a body. A `:render` failure's payload IS the dereferenced
    * secret, and a raw message is how it would reach a page.
+   *
+   * Memoised on the snapshot, per namespace. The second reader of a namespace
+   * inside the TTL — the provider's next `${NAME}`, the console's diagnosis,
+   * the registry's next tool call — gets the render already made. A render
+   * that met a TRANSIENT failure (a 429, a 5xx, a timeout) on any parameter is
+   * not kept: the outcome is still returned, so the caller degrades exactly as
+   * it did, but the next reader re-renders rather than inheriting one bad
+   * moment for the length of the TTL. A `400` is kept — it is the store's
+   * settled answer about that parameter, and a rotate that fixes it drops the
+   * snapshot on its own.
    */
   async function renderAll(namespace: string): Promise<ResolvedNamespace> {
-    const metas = await list(namespace);
+    const snap = snapshot();
+    const memo = snap.rendered.get(namespace);
+    if (memo) return memo;
+    const pending = renderFrom(snap, namespace);
+    snap.rendered.set(namespace, pending);
+    pending.then(
+      (out) => {
+        if (out.unrenderable.some((u) => u.transient)) {
+          snap.rendered.delete(namespace);
+        }
+      },
+      () => snap.rendered.delete(namespace),
+    );
+    return pending;
+  }
+
+  async function renderFrom(
+    snap: Snapshot,
+    namespace: string,
+  ): Promise<ResolvedNamespace> {
+    const metas = await listFrom(snap.roster, namespace);
     const values: Record<string, string> = {};
     const unrenderable: ResolvedNamespace["unrenderable"] = [];
 
@@ -847,12 +940,12 @@ export function createGcpParameterStore(
         else unrenderable.push(outcome);
       }
     }
-    return { values, unrenderable };
+    return { values, unrenderable, readAt: snap.at };
   }
 
   type RenderOutcome =
     | { variable: string; value: string }
-    | { variable: string; hard: boolean; reason: string };
+    | { variable: string; hard: boolean; reason: string; transient?: boolean };
 
   /**
    * One parameter: its value, or the shape of why it has none.
@@ -899,7 +992,12 @@ export function createGcpParameterStore(
       )) as { renderedPayload?: string; payload?: { data?: string } };
       data = rendered.renderedPayload ?? rendered.payload?.data;
     } catch (err) {
-      return { variable, hard: true, reason: renderFailureReason(err) };
+      return {
+        variable,
+        hard: true,
+        reason: renderFailureReason(err),
+        transient: isTransient(err),
+      };
     }
     if (data == null) {
       return {
@@ -955,7 +1053,10 @@ export function createGcpParameterStore(
         500,
       );
     }
-    return values;
+    // A copy: the map is memoised on the snapshot and handed to several
+    // callers, and one of them spreading its own keys over it must not be
+    // visible to the next.
+    return { ...values };
   }
 
   async function resolveDetailed(
@@ -965,11 +1066,11 @@ export function createGcpParameterStore(
   }
 
   /**
-   * A write, with the roster dropped either way.
+   * A write, with the snapshot dropped either way.
    *
    * `finally`, not "on success": a write that throws may still have landed —
    * `create()` rolls back with best-effort DELETEs that are allowed to fail — so
-   * the only safe assumption after any write is that the enumeration is stale.
+   * the only safe assumption after any write is that the snapshot is stale.
    */
   function writing<A extends unknown[], T>(
     fn: (...args: A) => Promise<T>,
@@ -978,7 +1079,7 @@ export function createGcpParameterStore(
       try {
         return await fn(...args);
       } finally {
-        forgetRoster();
+        forget();
       }
     };
   }
@@ -993,7 +1094,23 @@ export function createGcpParameterStore(
     destroy: writing(destroy),
     resolve,
     resolveDetailed,
+    forget,
+    snapshotAgeMs,
   };
+}
+
+/**
+ * Is this failure one the next reader might not meet?
+ *
+ * A throttle, a server error and a request that never answered are moments;
+ * a `400` (the reference will not dereference) and a `403` (the credential may
+ * not) are the store's settled view of that parameter until something changes.
+ * Same partition `retry.ts` uses to decide what is worth trying again, applied
+ * here to decide what is worth REMEMBERING.
+ */
+function isTransient(err: unknown): boolean {
+  const status = statusOf(err);
+  return status === undefined || status === 429 || status >= 500;
 }
 
 /**
@@ -1003,7 +1120,7 @@ export function createGcpParameterStore(
  * stripped, so its message is known value-free and passes through. Anything else
  * is reduced to its class name — a `SyntaxError` from a malformed response body
  * embeds a window of that body, and on THIS path the body is the dereferenced
- * secret. Same rule as snapshot.ts's `errorSummary`, restated here rather than
+ * secret. Same rule as view.ts's `errorSummary`, restated here rather than
  * imported so this file keeps no dependency on the provider layer above it.
  *
  * The 400 is called out by name because it is the one an operator can act on:

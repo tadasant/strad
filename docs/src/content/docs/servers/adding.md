@@ -157,7 +157,8 @@ this slug comes up `unconfigured`: named on `/healthz`, chipped `awaiting
 credential` in the console, and refusing a `?servers=apify` listing with a
 message naming the credential. Seed the value and — under
 `gcp-parameter-store`, for a `url:`/`headers:`/`options:` ref — it starts serving
-within `negativeTtlSeconds`, with no redeploy and no second PR. A
+within `negativeTtlSeconds` (default 10 minutes; at once if you seed it through
+strad's console), with no redeploy and no second PR. A
 `supplementary-image`'s `env:` is baked onto its container instead, so that half
 takes the next deploy. Full behaviour is in
 [Secrets](/operate/secrets/#maybeunseeded--deploying-a-server-ahead-of-its-credential).
@@ -267,9 +268,11 @@ The example above is a `supplementary-image`, where resolution happens once, at
 deploy time, into another container's environment. On a **`builtin`** the same
 flag means something meaningfully different: the namespace is resolved
 **in-process, on every tool call**, and merged over the builtin's `options:` —
-through a TTL cache keyed by `gateway.secrets.ttlSeconds` (`gateway/registry.ts`).
+sliced from the process's one reading of the store, which is held for
+`gateway.secrets.ttlSeconds` (`gateway/registry.ts`, `secrets/parameters/gcp.ts`).
 A parameter changed in the store therefore reaches a running gateway within the
-TTL, with no redeploy. That makes a `params: true` builtin the only thing in a
+TTL, with no redeploy — at once, if it was changed through strad's console. That
+makes a `params: true` builtin the only thing in a
 config that can *demonstrate* runtime rotation from outside the process;
 `infra/strad.staging.yaml` uses `echo` for exactly that.
 

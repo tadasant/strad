@@ -18,8 +18,8 @@ config rather than inferred.
 gateway:
   secrets:
     provider: env # or: gcp-parameter-store
-    ttlSeconds: 60
-    negativeTtlSeconds: 10
+    ttlSeconds: 3600
+    negativeTtlSeconds: 600
     envFallback: true
 ```
 
@@ -114,29 +114,85 @@ have parameters that predate this, run the one-time backfill in
 
 Not instant. The numbers, and where they come from:
 
-| Change                                                                                                           | Visible within                                    | Why                                                                                                                                                                                                                                          |
-| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Rotating** a secret read on the request path                                                                   | `ttlSeconds` (default 60s)                        | The namespace snapshot is refreshed on the first read after it goes stale. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
-| **Adding** a name that was absent                                                                                | `negativeTtlSeconds` (default 10s)                | A miss forces one out-of-band refresh, rate limited so an unknown `${REF}` on a hot path can't list the store once per request.                                                                                                              |
-| A change written through strad's own console                                                                     | immediately                                       | The writer calls `invalidate()` on the process that wrote it. Other components converge within the TTL.                                                                                                                                      |
-| **Seeding** a name a slug declared [`mayBeUnseeded`](#maybeunseeded--deploying-a-server-ahead-of-its-credential) | `negativeTtlSeconds`, then one reachability probe | The same mechanism as any newly-added name. The slug goes from `unconfigured` to serving with no redeploy.                                                                                                                                   |
-| A brand-new **secret** parameter                                                                                 | up to ~2 minutes                                  | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                  |
+| Change                                                                                                           | Visible within                                    | Why                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A change written through strad's own console, or the console's **Re-read the store** button                      | immediately                                       | The writer drops the process's reading of the store, so the next read reaches it. This is the route to rotate by. Other components converge within the TTL.                                                                                                    |
+| **Rotating** a secret read on the request path, from outside strad                                               | `ttlSeconds` (default 1 hour)                     | The process's reading of the store is replaced on the first read after it ages past the TTL. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
+| **Adding** a name that was absent, from outside strad                                                            | `negativeTtlSeconds` (default 10 minutes)         | A miss drops the reading and reads again, rate limited so an unknown `${REF}` on a hot path — or a slug deployed ahead of its credential — cannot re-read the store once per request.                                                                          |
+| **Seeding** a name a slug declared [`mayBeUnseeded`](#maybeunseeded--deploying-a-server-ahead-of-its-credential) | `negativeTtlSeconds`, then one reachability probe | The same mechanism as any newly-added name. The slug goes from `unconfigured` to serving with no redeploy.                                                                                                                                                     |
+| A brand-new **secret** parameter                                                                                 | up to ~2 minutes                                  | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                                    |
 
-Two behaviours matter more than the numbers:
+The defaults are long on purpose, and the next section says why. A deployment
+that rotates by hand and wants a shorter bound can set either knob lower; the
+cost is stated there too.
 
-- **Concurrent reads are single-flighted.** A burst of requests on a cold cache
-  opens one connection to the store, not one each.
-- **A failed refresh serves the last known good values** and logs a warning
+Three behaviours matter more than the numbers:
+
+- **Concurrent reads are single-flighted.** A burst of requests on a cold
+  process opens one read of the store, not one each — and every namespace the
+  process serves shares that one read.
+- **A failed read serves the last known good values** and logs a warning
   naming the provider and the error — never a secret, never a value. A store
   outage must not take `/mcp` down. Only the very first read propagates its
   error, because there is nothing to serve and reporting a config problem for
-  what is an outage would be a lie.
-- **Every store read carries a 10s deadline**, and a failed refresh backs off for
+  what is an outage would be a lie. A render that failed on a throttle, a server
+  error or a timeout is not remembered either: the next reader renders again,
+  rather than inheriting one bad moment for an hour.
+- **Every store read carries a 10s deadline**, and a failed read backs off for
   5s before being retried. Both exist for the same reason: a request that HANGS
   is worse than one that fails, because a never-settling read pins every
   concurrent reader behind the single-flight it shares — the availability claim
   above rests on reads eventually settling. The backoff keeps an outage from
   costing one failed call and one log line per request.
+
+### One reading of the store per process
+
+A process reads the store **once**, and holds that reading for `ttlSeconds`.
+Every namespace it serves — the gateway's own, each server's
+`/mcp/{slug}/static/`, a `params: true` builtin's, the one the console's
+diagnosis asks about — is a slice of the same reading. Nothing re-reads the
+store on its own cadence: not the reachability poller, not a `/ui` reload, not
+a poll of `/api/secrets/readiness`. The store is read again when the reading
+has aged past the TTL and something asks, when a write goes through the console
+or the parameter write-back route, when the console's **Re-read the store**
+button is pressed, or when a `${NAME}` the reading does not hold is asked for
+(at most once per `negativeTtlSeconds`).
+
+That is the whole cost model, and it is why the defaults are an hour and ten
+minutes rather than a minute and ten seconds. Parameter Manager bills every
+`GetParameterVersion` and every `RenderParameterVersion`; a namespace is not
+addressable, so reading one means reading a version of **every** parameter in
+the project ([limitation #69](/limitations/#69-a-namespace-is-not-addressable-so-reading-one-means-reading-the-whole-store)).
+Production's August bill was ~3.2M billed reads — the largest line on the
+account, flat around the clock, growing with every server added — because each
+of the six or seven namespaces the gateway read had its own 60-second timer and
+each refresh cost the project's full parameter count. Secrets there change a
+few times a month.
+
+Counted against the in-memory fake at production's shape (34 parameters, one
+gateway namespace, six server namespaces, a `params: true` builtin and the
+console's diagnosis; `test/secrets.read-accounting.test.ts`), one reachability
+tick costs:
+
+| Shape                                                       | Enumerations per tick | Billed reads per tick | Billed reads per day                             |
+| ----------------------------------------------------------- | --------------------- | --------------------- | ------------------------------------------------ |
+| One reading per namespace, `ttlSeconds: 60` (what prod ran) | 10                    | 388                   | 558,720 per core process, re-driven every minute |
+| One reading per process, `ttlSeconds: 3600` (the default)   | 1                     | 68 (2 x 34)           | 1,632                                            |
+
+Per process: a deployment with two bundle components that host `params: true`
+builtins reads once per process on each. The bill no longer moves when a server
+is added — a new namespace is a new slice, not a new timer — and moves by one
+`GetParameterVersion` plus one `RenderParameterVersion` per TTL when a parameter
+is. At the default TTL that is inside Parameter Manager's free monthly
+allowance for most of the month and cents after it.
+
+What the long default costs is the bound on a rotation made **outside** the
+console: an hour, not a minute. The console is the route to rotate by — a write
+through it lands at once on the process that wrote it — and its **Re-read the
+store** button is the way to make a rotation made elsewhere land now, with no
+write. The shared parameter write-back route drops the reading too, so a
+credential a container rotated on use is current on core the moment it is
+persisted.
 
 ## Adding a secret
 
@@ -334,18 +390,19 @@ request path.
 ```
 
 Because a runtime ref is read on the request path rather than baked, **rotating
-one of these needs no redeploy** — a new value is picked up within
-`gateway.secrets.ttlSeconds`. That is the one behavioural difference from the
-render-time half, where a supplementary `env:` still reaches its container only at
-the next deploy.
+one of these needs no redeploy** — a new value is picked up at once through the
+console, and within `gateway.secrets.ttlSeconds` from anywhere else. That is the
+one behavioural difference from the render-time half, where a supplementary
+`env:` still reaches its container only at the next deploy.
 
 :::note[A newly _seeded_ per-server name takes up to `ttlSeconds`, not `negativeTtlSeconds`]
-The per-server layer deliberately does not chase a cache miss. A miss there is the
+The per-server layer deliberately does not chase a miss. A miss there is the
 normal case — most names live in the shared namespace and always will — and
-resolving a namespace enumerates the store, so chasing every miss would cost a
-full listing per gateway-resolved name per slug. The ordinary TTL still refreshes
-it. The shared layer keeps its miss-driven refresh, which is where a brand-new
-name usually appears.
+chasing one drops the process's whole reading of the store, so chasing every
+miss would cost a full re-read per gateway-resolved name per slug. The ordinary
+TTL still replaces it, and the console's **Re-read the store** button replaces
+it now. The shared layer keeps its miss-driven re-read, which is where a
+brand-new name usually appears.
 :::
 
 ### Under `gateway.secrets.provider: env` there is no second layer
@@ -596,11 +653,11 @@ credential is one the container would try to use.
 
 That depends on where the value is read, and the two are not close.
 
-| The reference                                                         | Activates                                                                              |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| A `url:`, `headers:` or builtin `options:` ref, `gcp-parameter-store` | within `negativeTtlSeconds` (default 10s) of the store write. No redeploy, no restart. |
-| The same, seeded in the server's own `/mcp/{slug}/static/` namespace  | within `ttlSeconds` (default 60s) — that layer does not chase a miss.                  |
-| A `supplementary-image`'s `env:`, or anything under `provider: env`   | **next deploy.** It is baked onto a container strad does not run.                      |
+| The reference                                                         | Activates                                                                                                                                          |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A `url:`, `headers:` or builtin `options:` ref, `gcp-parameter-store` | at once if seeded through strad's console; otherwise within `negativeTtlSeconds` (default 10 minutes) of the store write. No redeploy, no restart. |
+| The same, seeded in the server's own `/mcp/{slug}/static/` namespace  | at once through the console; otherwise within `ttlSeconds` (default 1 hour) — that layer does not chase a miss.                                    |
+| A `supplementary-image`'s `env:`, or anything under `provider: env`   | **next deploy.** It is baked onto a container strad does not run.                                                                                  |
 
 `/healthz` and the console follow within one reachability probe (60s) of the
 value resolving. In every case it is a store write and a wait — never a PR.
@@ -665,13 +722,16 @@ reads** for P parameters, and both factors grow every time a server is added. Th
 is what put a deploy over the quota, and adding a retry would only have made it fail
 more slowly.
 
-`render-spec` and `store:check` are one-shot processes that only read, so they set
-`rosterTtlMs` and enumerate **once per process**. Counted against the in-memory GCP
-fake for the shape a render actually has — one store-wide `list()` followed by
-fourteen namespace `resolve()`s over 56 parameters — that is **1751 requests
-before, 169 after**. Namespaces resolved concurrently
-share the enumeration already in flight rather than starting their own, and a
-refused enumeration is never cached.
+Every reader that resolves more than one namespace therefore holds **one
+reading per process** (`snapshotTtlMs` on the store client). `render-spec` and
+`store:check` are one-shot and read-only, and hold it for the length of the run:
+counted against the in-memory GCP fake for the shape a render actually has — one
+store-wide `list()` followed by fourteen namespace `resolve()`s over 56
+parameters — that is **1751 requests before, 169 after**. The running gateway
+holds it for `gateway.secrets.ttlSeconds`; [what that costs and
+buys](#one-reading-of-the-store-per-process) is above. Namespaces resolved
+concurrently share the enumeration already in flight rather than starting their
+own, and a refused enumeration is never held.
 
 The gateway and the console leave it **off**, which is the default. They write, and
 a store that answers from a cache reports a parameter someone just created as
@@ -781,14 +841,15 @@ of the store:
 | A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                |
 
 `ttlSeconds` is the answer for **request-path references and nothing else** —
-plus one thing that is not a rotation at all: it also bounds how stale the
-console's and the readiness endpoint's
-[store diagnosis](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read)
-may be, capped at 60s there. A
-deployment whose config has no request-path `${NAME}`, no `params: true` server
-and no `paramsRefresh:` entry has no name that rotates live, however the TTL is
-set. That is a real deployment shape, not a hypothetical: check your own config
-before promising anyone a rotation that lands without a deploy.
+plus one thing that is not a rotation at all: it is also how old the console's
+and the readiness endpoint's
+[store diagnosis](#the-diagnosis-is-answered-from-the-processs-reading-of-the-store-and-says-how-old-it-is)
+may be, because both are answered from the same reading. And it bounds a
+rotation made **outside** strad only: one made through the console lands at
+once. A deployment whose config has no request-path `${NAME}`, no `params: true`
+server and no `paramsRefresh:` entry has no name that rotates live, however the
+TTL is set. That is a real deployment shape, not a hypothetical: check your own
+config before promising anyone a rotation that lands without a deploy.
 
 ### Why the bundle boot env is baked rather than hydrated
 
@@ -1357,42 +1418,48 @@ This diagnosis runs wherever core holds a resolver credential, **including on a
 the store at deploy time, and a parameter that cannot render fails that deploy.
 It turns "you find out during the deploy" into a row on a page.
 
-### The diagnosis is cached for up to a minute, and says when it was read
+### The diagnosis is answered from the process's reading of the store, and says how old it is
 
 Those two questions are not free. `resolveDetailed()` renders every parameter
 rather than stopping at the first failure, so a namespace-wide refusal costs a
-full pass — bounded at a fan-out of ten, so N/10 round trips. Performed per
-request, that makes a caller polling `/api/secrets/readiness` hard an amplifier
-against Parameter Manager, and a reloaded console a smaller one.
+full pass — bounded at a fan-out of ten, so N/10 round trips. Performed against
+the store per request, that would make a caller polling `/api/secrets/readiness`
+hard an amplifier against Parameter Manager, and a reloaded console a smaller
+one.
 
-So the result is held for `gateway.secrets.ttlSeconds`, **capped at 60s**. The
-config knob is the one this deployment already uses to mean "how stale may a
-store read be", and the cap is there because that knob accepts up to an hour:
-an hour-old "the store answers and everything renders" is not a health signal.
-Concurrent callers share one pass rather than each starting their own, and the
-pass keeps the six-second deadline it always had — the cache can never make a slow
-store hang a page that would otherwise have degraded.
+It is not performed against the store. The diagnosis reads through the **same
+store client the gateway resolves `${NAME}` through**, and that client holds
+[one reading of the store per process](#one-reading-of-the-store-per-process)
+for `gateway.secrets.ttlSeconds`. Inside the TTL the pair of reads is memory. The
+pass's result is additionally held for up to a minute, so a hard poller does
+not re-slice it per request, and so a store that is _down_ — a reading that has
+aged out and cannot be replaced — costs one attempted pass per backoff rather
+than one per request. Concurrent callers share one pass, and the pass keeps the
+six-second deadline it always had — nothing here can make a slow store hang a
+page that would otherwise have degraded.
 
-What that costs is freshness, so the age is printed rather than hidden:
+What that costs is freshness, so the age is printed rather than hidden — and
+the age printed is the age of the **reading**, not of the pass:
 
 - the console footnote says when the store was read, and how long the pass is
-  cached for;
+  reused for;
 - `/api/secrets/readiness` carries `store.diagnosis.ageSeconds` alongside
   `indexRead` and `renderRead`.
 
-A value written by something other than this console can therefore take up to a
-minute to change a row — the same bound the running gateway's own `${NAME}` reads
-already carry — and a store that breaks can look healthy for up to a minute. A
-write **through the console** is not in that window: `create`, `rotate` and
-`delete` drop the diagnosis outright, so the row a rotation was performed from is
-correct on the next page load rather than a minute later.
+A value written by something other than this console can therefore take up to
+`ttlSeconds` to change a row — the same bound the running gateway's own `${NAME}`
+reads carry — and a store that breaks can look healthy for that long. A write
+**through the console** is not in that window: `create`, `rotate` and `delete`
+drop the reading and the pass outright, so the row a rotation was performed from
+is correct on the next page load. The **Re-read the store** button does the same
+with no write.
 
 A pass whose index or render half did **not** answer is held for five seconds
-only (or the TTL, if that is shorter). Caching a shrug for a full minute would
+only (or the TTL, if that is shorter). Holding a shrug for a full minute would
 extend an outage past its end; re-reading it per request would leave a broken
-store getting hammered by exactly the poller this cache exists to bound. A
+store getting hammered by exactly the poller this exists to bound. A
 namespace-wide render **refusal** is not that case — the store answered,
-completely, from the expensive pass — and it is cached for the whole TTL.
+completely, from the expensive pass — and it is held for the whole TTL.
 
 **Seeded is not working, and the page does not pretend otherwise.** strad never
 calls an upstream to prove a credential is accepted, so the good state is `ready`
@@ -1706,10 +1773,10 @@ failures (`401`) and an unhandled crash (`500`) are non-200. `cache-control:
 no-store`, because the answer changes the moment someone seeds a value. What is
 bounded rather than instant is the store reading behind it, and by one number:
 `ttlSeconds`. Each `${NAME}` lookup happens per request and is answered from the
-runtime provider's namespace snapshot, which that TTL governs; the store's own
-account of itself is held for the same TTL,
-[capped at a minute](#the-diagnosis-is-cached-for-up-to-a-minute-and-says-when-it-was-read),
-and reports its own age in `store.diagnosis`.
+process's one reading of the store, which that TTL governs; the store's own
+account of itself is
+[answered from the same reading](#the-diagnosis-is-answered-from-the-processs-reading-of-the-store-and-says-how-old-it-is),
+and reports its age in `store.diagnosis`.
 
 **`ready` means observed.** It is `true` only when the store is wired, every
 enabled server's secrets resolved, _and_ every required boot key is present. A
@@ -2053,7 +2120,8 @@ scopes answers, not permissions.
 src/secrets/provider/
   types.ts    SecretProvider — get(name) -> value | null, invalidate()
   env.ts      EnvSecretProvider    — process.env; the vendor-neutral default
-  store.ts    StoreSecretProvider  — a parameter store, cached with the TTLs above
+  store.ts    StoreSecretProvider  — a parameter store: one namespace, sliced from the resolver's reading
+  view.ts     NamespaceView        — single-flight and last-known-good over one namespace; no TTL of its own
   chain.ts    ChainSecretProvider  — store first, environment behind it
   hydrate.ts  boot-key hydration, scoped by core/bundle
   resolve.ts  ${NAME} resolution against a provider

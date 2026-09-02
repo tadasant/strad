@@ -9,7 +9,7 @@ import {
   staticNamespace,
   type ParameterResolver,
 } from "../secrets/parameters/index.ts";
-import { SnapshotCache } from "../secrets/provider/snapshot.ts";
+import { NamespaceView } from "../secrets/provider/view.ts";
 import { waiversBySlug } from "../deploy/unseeded.ts";
 import { BuiltinServerAdapter, loadBuiltin } from "./adapters/builtin.ts";
 import { HttpServerAdapter } from "./adapters/http.ts";
@@ -113,10 +113,13 @@ export class Registry {
     // a `params:` builtin's options at a credential only when the builtin is
     // known not to echo them.
     //
-    // `params:` resolution is a NETWORK read — one list plus a render per
-    // parameter — and the thunk below runs on every tool call, so it must not
-    // reach the store every time. This is the same TTL/single-flight/stale-on-
-    // error cache the secret provider uses, keyed by namespace.
+    // `params:` resolution is a slice of the resolver's one snapshot of the
+    // store — a NETWORK read only when that snapshot has aged past
+    // `gateway.secrets.ttlSeconds` — and the thunk below runs on every tool
+    // call. The view over it is the same single-flight, last-known-good layer
+    // the secret provider uses: a store that starts failing mid-flight leaves
+    // the builtin on the parameters it last had, with a warning, rather than
+    // failing every call.
     // Which `${NAME}`s each slug declared it may deploy without. A miss on one of
     // these is `unconfigured` — a deploy that shipped ahead of a token on purpose
     // — rather than an upstream failure, and every consumer downstream of here
@@ -131,8 +134,7 @@ export class Registry {
 
     const resolver = opts.resolver;
     const paramCache = resolver
-      ? new SnapshotCache((namespace) => resolver.resolve(namespace), {
-          ttlMs: config.gateway.secrets.ttlSeconds * 1000,
+      ? new NamespaceView((namespace) => resolver.resolve(namespace), {
           label: "server parameters",
         })
       : null;

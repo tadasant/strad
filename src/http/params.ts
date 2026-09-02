@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
+import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import { authorizePresence } from "../secrets/presence.ts";
 import {
   parseParamWriteRequest,
@@ -15,6 +16,7 @@ import {
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import { resolveServerView, serverLooksSecrets } from "../ui/resolve.ts";
 import { storeFor } from "../ui/index.ts";
+import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
 
 /**
@@ -83,6 +85,21 @@ export interface ParamsHandlerOptions {
    * credential from the one the security note describes.
    */
   parametersStore?: Parameters<typeof storeFor>[1]["parametersStore"];
+  /**
+   * The runtime providers, so a write here is visible to THIS process at once.
+   *
+   * The write goes through the admin client; the gateway reads through the
+   * resolver client, which holds its own reading of the store for
+   * `gateway.secrets.ttlSeconds`. Without this the rotated credential would
+   * reach a `${NAME}` on core, or a `params: true` builtin, an hour later.
+   */
+  secretProvider?: ServerSecretProviders;
+  /**
+   * The store the console's and the readiness route's diagnosis reads, so the
+   * pass held over it is dropped with the reading. Same seam `mountConsoleUi`
+   * takes; defaults to the resolver built from the environment.
+   */
+  diagnosticStore?: Parameters<typeof forgetDeploymentDiagnosis>[0]["store"];
 }
 
 /** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
@@ -336,6 +353,16 @@ export function createParamWriteHandler(
         // per-parameter `secretAccessor` grant survives. A second write path
         // here would be a second chance to get both of those wrong.
         await resolved.store.rotate(found.path, parsed.value);
+        // Both halves of what this process holds about the store, exactly as
+        // a console write drops them: the runtime providers' reading, and the
+        // diagnosis pass `/ui` and `/api/secrets/readiness` reuse for up to a
+        // minute. Without the second, a connector that has just healed itself
+        // through this route keeps reading as broken to whoever polls readiness.
+        opts.secretProvider?.invalidate();
+        forgetDeploymentDiagnosis({
+          env: opts.env,
+          store: opts.diagnosticStore,
+        });
         event({
           evt: "strad.param_written",
           slug: found.slug,
