@@ -57,31 +57,44 @@ export const SENSITIVE_DESCRIPTION =
  *
  * From a real incident: a working URL was published to a human bolded in markdown
  * with everything after the `?` dropped. The human got a 403, and that 403 was
- * escalated as "the bucket named -public is not public, every artifact tonight is
- * unreachable" — a false infrastructure incident caused by a formatting bug, with
- * someone sent to look at a bucket ACL. The last clause is the load-bearing one.
+ * escalated as "the bucket is not public, every artifact tonight is unreachable"
+ * — a false infrastructure incident caused by a formatting bug, with someone sent
+ * to look at a bucket ACL. The last clause is the load-bearing one.
  *
- * The three codes are observed, not inferred: `AccessDenied`,
- * `SignatureDoesNotMatch` and `MissingSecurityHeader` were each reproduced
- * against the production bucket, and expiry is GCS's separate `ExpiredToken`.
+ * SCOPED TO `access: "link"`, deliberately. A restricted artifact's URL carries no
+ * signature at all — its query string is the `?authuser=` account selector, which
+ * `signInHint()` tells the reader to REPLACE with their own address. Unscoped,
+ * this text would forbid the one fix that hint prescribes, and would send someone
+ * debugging a restricted 403 hunting for a truncation bug.
+ *
+ * The codes are observed against a production bucket, not inferred: `AccessDenied`,
+ * `SignatureDoesNotMatch` and `MissingSecurityHeader` were each reproduced. The
+ * framing is the CODE rather than the status because the statuses disagree — a
+ * partly-kept query string is a 400, not a 403.
+ *
+ * Names no bucket. The bucket differs per deployment (production's happens to end
+ * in `-public`, staging's does not), and a description asserting one deployment's
+ * name is wrong everywhere else.
  */
-export const LINK_HANDLING_DESCRIPTION = `**The query string IS the credential — pass the URL through verbatim.** The signature
-after \`?\` is most of the URL's length, and altering it fails silently. Do not truncate
-at the \`?\`, do not wrap it across lines, and do not put markdown emphasis on a bare URL
-(\`**<url>**\` glues the trailing asterisks onto the signature). Never rebuild a URL from
-\`path\` — there is no signature to rebuild, and only refresh_link can mint one. Prefer
-\`[text](url)\`, which nothing can attach itself to the end of; Slack renders that
-literally, so there post the bare URL or \`<url|text>\`.
+export const LINK_HANDLING_DESCRIPTION = `**For a signed link (\`access: "link"\`), the query string IS the credential — pass the
+URL through verbatim.** The signature after \`?\` is most of the URL's length, and dropping
+it is loud for the reader and silent for you: the link still looks like a link. Do not
+truncate at the \`?\`, do not wrap it across lines, and do not put markdown emphasis on a
+bare URL (\`**<url>**\` glues the trailing asterisks onto the signature). A \`path\` cannot be
+turned back into a URL — only a tool can mint the signature. Prefer \`[text](url)\`, which
+nothing can attach itself to the end of; Slack renders that literally, so there post the
+bare URL or \`<url|text>\`.
 
-**Check it before you publish it:** \`curl -sS -o /dev/null -w '%{http_code}' "<url>"\`
-must print \`200\`.
+**Check it before you publish it:** \`curl -sS -o /dev/null -w '%{http_code}' "<url>"\` must
+print \`200\`.
 
-**Reading a 403:** \`AccessDenied\` means the request carried no signature at all — the
-query string was dropped or cut at the \`?\` (a partly-kept one gives \`400
-MissingSecurityHeader\` instead). \`SignatureDoesNotMatch\` means characters were added or
-removed. \`ExpiredToken\` means the link aged out, and refresh_link mints a fresh one.
-**None of them means the bucket is misconfigured** — objects here are private by design,
-and a bucket named \`-public\` is no exception.`;
+**Read the error code, not the status** — they disagree. \`AccessDenied\`: the request
+carried no signature (dropped, or cut at the \`?\`). \`SignatureDoesNotMatch\`: characters
+were added or removed. \`MissingSecurityHeader\`: the query string was only partly kept.
+\`ExpiredToken\`: the link aged out, and refresh_link mints a fresh one. **None of them
+means the bucket is misconfigured** — these objects are private by design, whatever the
+bucket or the mount is called. A \`restricted\` artifact fails differently and carries no
+signature; \`sign_in_hint\` diagnoses that one.`;
 
 export const EXPIRES_DESCRIPTION =
   `How many days the returned link stays valid (1-${MAX_LINK_DAYS}). Default: ${DEFAULT_LINK_DAYS}. ` +

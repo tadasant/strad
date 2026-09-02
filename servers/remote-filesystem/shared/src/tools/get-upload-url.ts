@@ -49,6 +49,10 @@ The returned URL is unguessable, expires quickly, accepts exactly one successful
 curl -fsS -X POST -H 'Content-Type: image/png' --data-binary @/tmp/screenshot.png 'https://strad.example/mcp-upload/remote-filesystem-tmp-public/<token>'
 \`\`\`
 
+The guidance below is about the browser link the POST hands back — **not** the upload
+target above, which is a strad route (\`/mcp-upload/<slug>/<token>\`), carries no
+signature, and answers only POST.
+
 ${LINK_HANDLING_DESCRIPTION}
 
 **Use cases:**
