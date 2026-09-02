@@ -643,3 +643,156 @@ test("the capability probe is memoised across registerHandlers calls", async () 
     globalThis.fetch = realFetch;
   }
 });
+
+// ---------------------------------------------------------------------------
+// refresh_gateway — the agent's copy of the console's "Re-read the store"
+// ---------------------------------------------------------------------------
+
+/**
+ * The gateway holds one reading of the store per process for its TTL. A write
+ * through THIS server goes through a client of its own, so the gateway learns
+ * nothing until the reading ages out — unless it is told. The host hands in a
+ * hook that can tell it; these tests pin what the surface does with it.
+ */
+async function fixtureWithRefresh(opts) {
+  // No store behind it: the tools under test never read one, and the writer
+  // is a stub that records what landed. What is under test is the seam
+  // between a write and the gateway, not the write itself.
+  const writes = [];
+  const writer = {
+    create: async (input) => void writes.push(["create", input.path]),
+    rotate: async (path) => void writes.push(["rotate", path]),
+    setNote: async (path) => void writes.push(["note", path]),
+    destroy: async (path) => void writes.push(["destroy", path]),
+    readValue: async () => {
+      throw new Error("not under test");
+    },
+  };
+  const config = {
+    projectId: "test-project",
+    namespaces: [NS],
+    account: VIEWER_ACCOUNT,
+    consoleUrl: "https://strad.example/ui/secrets",
+  };
+  const { server, registerHandlers } = createMCPServer({
+    version: "0.0.0-test",
+    config,
+    capabilities: () => Promise.resolve(opts.caps ?? CAPS.none),
+    refreshGateway: opts.refresh,
+    writerFactory: () => writer,
+  });
+  await registerHandlers(server);
+  const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  return { client, writes, close: () => client.close() };
+}
+
+test("refresh_gateway is offered only when the host can reach core", async () => {
+  // Without a hook the surface is exactly what it was: a listed tool that
+  // fails on every call is worse than none.
+  const without = await fixtureWithRefresh({});
+  const before = (await without.client.listTools()).tools.map((t) => t.name);
+  assert.ok(!before.includes("refresh_gateway"));
+  await without.close();
+
+  // With one, it is offered on the read-only credential too: it reads and
+  // writes nothing in the store, it only makes the gateway's next read reach it.
+  const withHook = await fixtureWithRefresh({
+    refresh: async () => ({ refreshed: true }),
+  });
+  const after = (await withHook.client.listTools()).tools;
+  const tool = after.find((t) => t.name === "refresh_gateway");
+  assert.ok(tool, "refresh_gateway must be listed when the host can reach core");
+  assert.equal(tool.annotations?.readOnlyHint, true);
+  assert.match(tool.description, /once every 30 seconds/);
+  await withHook.close();
+});
+
+test("refresh_gateway calls the hook and reports what the gateway did", async () => {
+  let calls = 0;
+  let outcome = { refreshed: true };
+  const { client, close } = await fixtureWithRefresh({
+    refresh: async () => {
+      calls += 1;
+      return outcome;
+    },
+  });
+
+  const ok = await client.callTool({ name: "refresh_gateway", arguments: {} });
+  assert.equal(ok.isError, undefined);
+  assert.equal(calls, 1);
+  assert.equal(JSON.parse(ok.content[0].text).refreshed, true);
+
+  // A floored or failed refresh is an error the agent can read, never a throw
+  // and never a claim that it landed.
+  outcome = { refreshed: false, reason: "core re-read the store 4s ago" };
+  const held = await client.callTool({ name: "refresh_gateway", arguments: {} });
+  assert.equal(held.isError, true);
+  assert.match(held.content[0].text, /did not re-read the store: core re-read the store 4s ago/);
+  assert.match(held.content[0].text, /within gateway\.secrets\.ttlSeconds/);
+  assert.equal(calls, 2);
+  await close();
+});
+
+test("a write through this server tells the gateway, and says whether it listened", async () => {
+  let calls = 0;
+  const { client, close } = await fixtureWithRefresh({
+    caps: CAPS.readWrite,
+    refresh: async () => {
+      calls += 1;
+      return calls === 1
+        ? { refreshed: true }
+        : { refreshed: false, reason: "core re-read the store 1s ago" };
+    },
+  });
+  const path = `${NS}wired/static/ROTATES`;
+
+  const created = await client.callTool({
+    name: "create_parameter",
+    arguments: { name: path, value: "v1", secret: false },
+  });
+  assert.equal(created.isError, undefined);
+  assert.equal(calls, 1);
+  assert.match(JSON.parse(created.content[0].text).gateway, /dropped its reading/);
+
+  const rotated = await client.callTool({
+    name: "set_parameter_value",
+    arguments: { name: path, value: "v2" },
+  });
+  assert.equal(rotated.isError, undefined, "a floored refresh must not fail the write");
+  assert.equal(calls, 2);
+  assert.match(
+    JSON.parse(rotated.content[0].text).gateway,
+    /was not made to re-read it now \(core re-read the store 1s ago\)/,
+  );
+
+  // A note is metadata the gateway never reads: no call.
+  await client.callTool({
+    name: "set_parameter_note",
+    arguments: { name: path, note: "n" },
+  });
+  assert.equal(calls, 2);
+
+  const deleted = await client.callTool({
+    name: "delete_parameter",
+    arguments: { name: path },
+  });
+  assert.equal(deleted.isError, undefined);
+  assert.equal(calls, 3);
+  await close();
+});
+
+test("a write with no hook says the TTL will land it, and claims no more", async () => {
+  const { client, close } = await fixtureWithRefresh({ caps: CAPS.readWrite });
+  const res = await client.callTool({
+    name: "create_parameter",
+    arguments: { name: `${NS}wired/static/QUIET`, value: "v", secret: false },
+  });
+  assert.equal(res.isError, undefined);
+  assert.match(
+    JSON.parse(res.content[0].text).gateway,
+    /within gateway\.secrets\.ttlSeconds; this server cannot reach it/,
+  );
+  await close();
+});

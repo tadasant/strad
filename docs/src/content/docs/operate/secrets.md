@@ -114,13 +114,13 @@ have parameters that predate this, run the one-time backfill in
 
 Not instant. The numbers, and where they come from:
 
-| Change                                                                                                           | Visible within                                    | Why                                                                                                                                                                                                                                                            |
-| ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A change written through strad's own console, or the console's **Re-read the store** button                      | immediately                                       | The writer drops the process's reading of the store, so the next read reaches it. This is the route to rotate by. Other components converge within the TTL.                                                                                                    |
-| **Rotating** a secret read on the request path, from outside strad                                               | `ttlSeconds` (default 1 hour)                     | The process's reading of the store is replaced on the first read after it ages past the TTL. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
-| **Adding** a name that was absent, from outside strad                                                            | `negativeTtlSeconds` (default 10 minutes)         | A miss drops the reading and reads again, rate limited so an unknown `${REF}` on a hot path — or a slug deployed ahead of its credential — cannot re-read the store once per request.                                                                          |
-| **Seeding** a name a slug declared [`mayBeUnseeded`](#maybeunseeded--deploying-a-server-ahead-of-its-credential) | `negativeTtlSeconds`, then one reachability probe | The same mechanism as any newly-added name. The slug goes from `unconfigured` to serving with no redeploy.                                                                                                                                                     |
-| A brand-new **secret** parameter                                                                                 | up to ~2 minutes                                  | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                                    |
+| Change                                                                                                                                                                      | Visible within                                    | Why                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A change written through strad's own console or the `secrets` MCP server's write tools; the console's **Re-read the store** button; the MCP server's `refresh_gateway` tool | immediately                                       | The writer drops the process's reading of the store, so the next read reaches it. These are the routes to rotate by. Other components converge within the TTL.                                                                                                 |
+| **Rotating** a secret read on the request path, from outside strad                                                                                                          | `ttlSeconds` (default 1 hour)                     | The process's reading of the store is replaced on the first read after it ages past the TTL. Only request-path `${NAME}` references — a boot key or a baked one is [a restart or a deploy](#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy). |
+| **Adding** a name that was absent, from outside strad                                                                                                                       | `negativeTtlSeconds` (default 10 minutes)         | A miss drops the reading and reads again, rate limited so an unknown `${REF}` on a hot path — or a slug deployed ahead of its credential — cannot re-read the store once per request.                                                                          |
+| **Seeding** a name a slug declared [`mayBeUnseeded`](#maybeunseeded--deploying-a-server-ahead-of-its-credential)                                                            | `negativeTtlSeconds`, then one reachability probe | The same mechanism as any newly-added name. The slug goes from `unconfigured` to serving with no redeploy.                                                                                                                                                     |
+| A brand-new **secret** parameter                                                                                                                                            | up to ~2 minutes                                  | Its `__REF__` resolves only once the IAM binding `create()` made has propagated. Until then `:render` answers `400 SECRET_REFERENCE_ERROR` — see the caution above; that window looks exactly like the bug.                                                    |
 
 The defaults are long on purpose, and the next section says why. A deployment
 that rotates by hand and wants a shorter bound can set either knob lower; the
@@ -155,8 +155,9 @@ store on its own cadence: not the reachability poller, not a `/ui` reload, not
 a poll of `/api/secrets/readiness`. The store is read again when the reading
 has aged past the TTL and something asks, when a write goes through the console
 or the parameter write-back route, when the console's **Re-read the store**
-button is pressed, or when a `${NAME}` the reading does not hold is asked for
-(at most once per `negativeTtlSeconds`).
+button is pressed or the `secrets` MCP server's `refresh_gateway` tool is called
+(which its write tools do for you), or when a `${NAME}` the reading does not
+hold is asked for (at most once per `negativeTtlSeconds`).
 
 That is the whole cost model, and it is why the defaults are an hour and ten
 minutes rather than a minute and ten seconds. Parameter Manager bills every
@@ -186,13 +187,15 @@ is added — a new namespace is a new slice, not a new timer — and moves by on
 is. At the default TTL that is inside Parameter Manager's free monthly
 allowance for most of the month and cents after it.
 
-What the long default costs is the bound on a rotation made **outside** the
-console: an hour, not a minute. The console is the route to rotate by — a write
-through it lands at once on the process that wrote it — and its **Re-read the
-store** button is the way to make a rotation made elsewhere land now, with no
-write. The shared parameter write-back route drops the reading too, so a
-credential a container rotated on use is current on core the moment it is
-persisted.
+What the long default costs is the bound on a rotation made **outside** strad:
+an hour, not a minute. The console and the `secrets` MCP server's write tools
+are the routes to rotate by — a write through either lands at once — and each
+has an explicit re-read for a rotation made elsewhere, with no write: the
+console's **Re-read the store** button, and the MCP server's `refresh_gateway`
+tool, which reaches core over the parameter write-back wire and is held to one
+re-read per 30 seconds so an agent in a loop cannot recreate the old bill. The
+write-back route drops the reading too, so a credential a container rotated on
+use is current on core the moment it is persisted.
 
 ## Adding a secret
 
@@ -400,8 +403,8 @@ The per-server layer deliberately does not chase a miss. A miss there is the
 normal case — most names live in the shared namespace and always will — and
 chasing one drops the process's whole reading of the store, so chasing every
 miss would cost a full re-read per gateway-resolved name per slug. The ordinary
-TTL still replaces it, and the console's **Re-read the store** button replaces
-it now. The shared layer keeps its miss-driven re-read, which is where a
+TTL still replaces it, and the console's **Re-read the store** button — or the
+`secrets` MCP server's `refresh_gateway` tool — replaces it now. The shared layer keeps its miss-driven re-read, which is where a
 brand-new name usually appears.
 :::
 
@@ -940,9 +943,13 @@ authenticated with the shared `STRAD_INTERNAL_TOKEN`:
 ```
 POST /_strad/params/{slug}/{VARIABLE}   body: { value }   -> rotate
 GET  /_strad/params/{slug}/{VARIABLE}                     -> current value
+POST /_strad/store/refresh                                -> drop core's reading of the store
 ```
 
-No new credential, no new IAM, no new encoding path.
+No new credential, no new IAM, no new encoding path. The third route carries no
+path and no value: it is what the `secrets` MCP server's `refresh_gateway` tool
+calls (and its write tools call after a write), the agent's copy of the console's
+**Re-read the store** button, and core holds it to one re-read per 30 seconds.
 
 This is the **first bundle → core call** in strad; every other authenticated call
 runs the other way. So every non-core component now gets `STRAD_CORE_URL`, bound
@@ -1451,8 +1458,8 @@ A value written by something other than this console can therefore take up to
 reads carry — and a store that breaks can look healthy for that long. A write
 **through the console** is not in that window: `create`, `rotate` and `delete`
 drop the reading and the pass outright, so the row a rotation was performed from
-is correct on the next page load. The **Re-read the store** button does the same
-with no write.
+is correct on the next page load. The **Re-read the store** button and the
+`secrets` MCP server's `refresh_gateway` tool do the same with no write.
 
 A pass whose index or render half did **not** answer is held for five seconds
 only (or the TTL, if that is shorter). Holding a shrug for a full minute would

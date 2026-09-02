@@ -33,8 +33,15 @@ import type { ConsoleUiOptions } from "../ui/index.ts";
 import { createReadinessHandler } from "./readiness.ts";
 import { createPresenceHandler } from "./presence.ts";
 import { PRESENCE_ROUTE } from "../secrets/presence.ts";
-import { createParamReadHandler, createParamWriteHandler } from "./params.ts";
-import { PARAM_ROUTE_PREFIX } from "../secrets/param-route.ts";
+import {
+  createParamReadHandler,
+  createParamWriteHandler,
+  createStoreRefreshHandler,
+} from "./params.ts";
+import {
+  PARAM_ROUTE_PREFIX,
+  STORE_REFRESH_ROUTE,
+} from "../secrets/param-route.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -69,6 +76,8 @@ export interface AppOptions {
   presence?: ConsoleUiOptions["presence"];
   /** Test seam: the store the four-state diagnosis reads. */
   diagnosticStore?: ConsoleUiOptions["diagnosticStore"];
+  /** Test seam: the clock the store re-read route's floor is measured on. */
+  now?: () => number;
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
   /** Test seam: substitute the parameter store behind the console UI. */
@@ -224,10 +233,16 @@ export function createApp(opts: AppOptions): Express {
       parametersStore: opts.parametersStore,
       secretProvider: opts.secretProvider,
       diagnosticStore: opts.diagnosticStore,
+      now: opts.now,
     };
     const paramRoute = `${PARAM_ROUTE_PREFIX}/:slug/:variable`;
     app.get(paramRoute, createParamReadHandler(paramsOptions));
     app.post(paramRoute, createParamWriteHandler(paramsOptions));
+    // The store re-read, over the same wire and the same token: what the
+    // `secrets` MCP server calls so an agent's rotation reaches `/mcp` now
+    // rather than within `ttlSeconds` — the counterpart of the console's
+    // "Re-read the store" button. See src/http/params.ts.
+    app.post(STORE_REFRESH_ROUTE, createStoreRefreshHandler(paramsOptions));
 
     // Resolved ONCE and shared: /console begins the login and mints the session,
     // /ui verifies it. Two independent readings of "is Google usable?" is how

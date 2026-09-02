@@ -444,10 +444,12 @@ flowchart LR
 - The **viewer** is the `secrets` MCP server, mounted on the bundle. It lists
   parameters, reads notes, and reads non-secret values — and **cannot read a secret
   value**, because its service account lacks `secretmanager.versions.access`, so
-  Google answers `403` to the only call that would return one. Its four tools are
-  `list_managed_namespaces`, `list_parameters`, `get_parameter` (non-secret values
-  only; it refuses a secret), and `open_secrets_manager` (a deep link that hands a
-  human the console URL).
+  Google answers `403` to the only call that would return one. Its four read
+  tools are `list_managed_namespaces`, `list_parameters`, `get_parameter`
+  (non-secret values only; it refuses a secret), and `open_secrets_manager` (a
+  deep link that hands a human the console URL); a fifth, `refresh_gateway`, makes
+  the gateway [re-read the store now](/operate/secrets/#one-reading-of-the-store-per-process)
+  and touches nothing in it.
 - The **admin** is the SSO-gated console (`/ui/secrets`), on the core component
   only. It reads and writes both kinds. Its credential arrives via `consoleEnv:`,
   which the deploy layer puts on core and nowhere else — the bundle never sees it.

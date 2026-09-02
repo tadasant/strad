@@ -11,12 +11,22 @@ import {
   type Capabilities,
 } from "./capabilities.js";
 import { createWriteClient, type ParametersWriter } from "./write-client.js";
+import type { GatewayRefresh } from "./tools.js";
 
 export interface CreateMCPServerOptions {
   version: string;
   /** Injected in tests; production reads the environment. */
   config?: SecretsConfig;
   readerFactory?: () => ParametersReader;
+  /**
+   * How to make the strad gateway re-read the store now.
+   *
+   * Supplied by the bundle host, which is the process that can reach core
+   * (`STRAD_CORE_URL` + `STRAD_INTERNAL_TOKEN`); this tree cannot. Absent
+   * means the `refresh_gateway` tool is not offered and a write's result says
+   * the gateway will pick the value up within its TTL — never that it did.
+   */
+  refreshGateway?: GatewayRefresh;
   /**
    * Test seam: override the capability probe. Production asks Google on the
    * first listing that needs an answer and caches it for the lifetime of the
@@ -119,6 +129,7 @@ export function createMCPServer(options: CreateMCPServerOptions) {
       reader: factory,
       capabilities,
       writer: writerFactory,
+      refreshGateway: options.refreshGateway,
     });
   };
 

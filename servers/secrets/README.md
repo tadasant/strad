@@ -20,6 +20,11 @@ value, because the credential it runs as could not fetch one if it tried**:
 tools:  list_managed_namespaces   list_parameters   get_parameter   open_secrets_manager
 ```
 
+Plus one that touches nothing in the store: `refresh_gateway`, which makes the
+strad gateway [re-read the store now](#refresh_gateway--make-the-gateway-re-read-the-store-now).
+It is offered wherever the bundle host can reach core, which is every deployed
+bundle, and withheld where it cannot (a local run, the CI smoke container).
+
 In **staging** the credential is read+write, so the same image additionally offers
 `create_parameter`, `set_parameter_value`, `set_parameter_note`,
 `delete_parameter` and `get_secret_value`. That is deliberate and scoped to
@@ -209,6 +214,42 @@ link**:
 The agent hands the human a URL. The human signs in and does the thing. The value
 never crosses the agent channel.
 
+## `refresh_gateway` — make the gateway re-read the store now
+
+The gateway holds **one reading of the parameter store per process**, for
+`gateway.secrets.ttlSeconds` (an hour by default), and every `${NAME}` it
+resolves is a slice of it. A write through strad's own console drops that
+reading, so a human's rotation reaches `/mcp` at once. A write through THIS
+server does not on its own: it goes through a client of this server's, in a
+different process, and the gateway learns nothing until the reading ages out.
+The console has a **Re-read the store** button for the same gap; this tool is
+the agent's copy of it.
+
+Two ways it is used, and the first needs no action:
+
+- **After a write.** `create_parameter`, `set_parameter_value` and
+  `delete_parameter` call it for you once the write has landed, and report the
+  outcome in a `gateway` field — "dropped its reading" or the reason it was not
+  made to. `set_parameter_note` does not: a note is metadata the gateway never
+  reads.
+- **After a rotation made elsewhere.** A value rotated with `gcloud`, the seed
+  script or another tool reaches the gateway within the TTL on its own; calling
+  `refresh_gateway` makes it now.
+
+It reads nothing and writes nothing in the store: the only effect is that the
+gateway's next resolution reaches Parameter Manager, which costs the gateway one
+enumeration plus one render per parameter. To keep an agent in a loop from
+recreating the bill that one reading per process exists to end, **the gateway
+refuses to re-read more than once every 30 seconds** and says so; the tool
+reports that as an error rather than a refresh, and the TTL lands the value
+regardless.
+
+How it reaches core: over the same private-network wire and the same shared
+`STRAD_INTERNAL_TOKEN` as the parameter write-back (`src/secrets/param-route.ts`
+in strad, vendored into the bundle host), which the bundle host builds and hands
+to this tree — this tree holds no URL and no token of its own. It is the mirror
+of the console action, not a widening of what this server's credential can do.
+
 ## Logging
 
 No secret value is logged, anywhere, on any path: the MCP server never holds one
@@ -227,7 +268,7 @@ servers/secrets/
                                    # src/secrets/parameters/wire.ts by `npm run wire:sync`.
                                    # Edit the source; CI fails on drift.
   shared/src/config.ts             # env -> config; fails closed with no namespace
-  shared/src/tools.ts              # the four tools
+  shared/src/tools.ts              # the four read tools, the staging write tools, refresh_gateway
   shared/src/server.ts             # createMCPServer({ server, registerHandlers })
   shared/test/                     # incl. a fake Parameter Manager that models the two-store split
 ```
