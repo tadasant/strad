@@ -437,10 +437,11 @@ describe("secrets-sync.yml prunes superseded versions", () => {
       [A]: ["1\tENABLED"],
     });
     expect(r.status).toBe(1);
+    // The stub appends the added version after the seeded rows.
     expect(r.state[T]).toEqual([
       "1\tDESTROYED",
-      "2\tENABLED",
       "latest\tENABLED",
+      "2\tENABLED",
     ]);
     expect(r.calls.filter((c) => c.includes("destroy latest"))).toEqual([]);
     expect(r.stdout).toContain(
