@@ -64,7 +64,11 @@ bundles:
     instanceSizeSlug: apps-s-1vcpu-2gb
 ```
 
-Referencing an undeclared bundle is a boot-time validation error.
+Referencing an undeclared bundle is a boot-time validation error, and so is an
+`instanceSizeSlug` that names no App Platform plan — it is a
+[closed set](/servers/interface/#instancesizeslug-is-a-closed-set), because a
+plausible-but-wrong name would otherwise be rejected by DigitalOcean at deploy
+time rather than here.
 
 In practice you are probably adding to the **existing** bundle rather than making
 a new one: strad's own deployment is `core` plus one bundle

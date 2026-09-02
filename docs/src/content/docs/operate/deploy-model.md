@@ -309,6 +309,14 @@ learn:
   `instanceCount` above 1.** The render throws rather than emit it: a credential
   that rotates on use has exactly one valid value at a time, so two replicas
   refreshing it invalidate each other at the upstream.
+- **A legacy instance size is a `::warning::`** naming the component and the
+  slug. `basic-*` / `professional-*` are real App Platform plans, accepted only
+  by apps created before 7 May 2024 — `strad-prod` and `strad-staging` were both
+  created 2026-07-12, so on either one the deploy would come back
+  `unknown instance size`. It is a warning rather than a throw because the
+  renderer cannot know an app's creation date. A slug that names no plan at all
+  never reaches here: the [config schema](/servers/interface/) rejects it at
+  parse time, which is where an unrenderable component's size gets caught too.
 - **Deploy from a registry image, not a GitHub source.** App Platform's GitHub
   integration needs an interactive OAuth handshake and can't be driven headlessly
   from CI.

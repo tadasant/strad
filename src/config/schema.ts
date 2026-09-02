@@ -559,6 +559,107 @@ export function isUnhosted(
 // ---------------------------------------------------------------------------
 
 /**
+ * Every App Platform instance size DigitalOcean currently sells, exactly as the
+ * API spells it.
+ *
+ * Source: the "Current Plans" table at
+ * https://docs.digitalocean.com/products/app-platform/details/pricing/
+ *
+ * This is a closed set on purpose, and the parse is where it closes. An
+ * unchecked string here reaches `instance_size_slug` verbatim, so a
+ * plausible-but-nonexistent `apps-s-1vcpu-512mb` (the real name for that size
+ * is `apps-s-1vcpu-0.5gb`) satisfies `parseConfig`, satisfies `check-config`,
+ * satisfies CI and renders a spec happily — and fails at `doctl apps update`
+ * with `unknown instance size "apps-s-1vcpu-512mb"`, which is how production
+ * deploys went down on 2026-08-30. That failure is also DEFERRED: a bundle
+ * whose component is not yet rendered is never sent to DigitalOcean at all, so
+ * a wrong slug can sit dormant and detonate weeks later on an unrelated change.
+ * Validating at render time shortens that fuse; validating at parse time cuts
+ * it, because the check fires the moment the value is written.
+ *
+ * The `MUTABLE_TAGS` denylist in src/deploy/imageTag.ts is the opposite shape
+ * for a reason that does not apply here: that list covers tag schemes another
+ * repo owns and may extend at will. The plan list is DigitalOcean's own —
+ * small, public and stable — so an allowlist is the honest encoding, and the
+ * cost of a new plan appearing is one line here.
+ */
+export const APP_INSTANCE_SIZES = [
+  "apps-s-1vcpu-0.5gb",
+  "apps-s-1vcpu-1gb-fixed",
+  "apps-s-1vcpu-1gb",
+  "apps-s-1vcpu-2gb",
+  "apps-s-2vcpu-4gb",
+  "apps-d-1vcpu-0.5gb",
+  "apps-d-1vcpu-1gb",
+  "apps-d-1vcpu-2gb",
+  "apps-d-1vcpu-4gb",
+  "apps-d-2vcpu-4gb",
+  "apps-d-2vcpu-8gb",
+  "apps-d-4vcpu-8gb",
+  "apps-d-4vcpu-16gb",
+  "apps-d-8vcpu-32gb",
+] as const;
+
+/**
+ * The legacy plans, from the same page's "Legacy Plans" table.
+ *
+ * The API accepts these ONLY for apps created before 7 May 2024, and
+ * DigitalOcean says it intends to deprecate them. `strad-prod` and
+ * `strad-staging` were both created 2026-07-12, so neither can use one.
+ *
+ * They are in the accepted set anyway. What this schema is for is catching a
+ * name DigitalOcean does not have; a legacy name is a name it does have, on an
+ * app old enough to use it. Rejecting one at parse time would make a legitimate
+ * config for such an app unparseable — a strictly worse failure than the
+ * render-time warning `renderAppSpec` emits instead (src/deploy/appspec.ts),
+ * which says what is wrong and lets the operator decide. A config flag to admit
+ * them was the alternative and buys nothing: it would be a key no deployment
+ * here sets, guarding a value the API already adjudicates.
+ */
+export const LEGACY_APP_INSTANCE_SIZES = [
+  "basic-xxs",
+  "basic-xs",
+  "basic-s",
+  "basic-m",
+  "professional-xs",
+  "professional-s",
+  "professional-m",
+  "professional-1l",
+  "professional-l",
+  "professional-xl",
+] as const;
+
+const ACCEPTED_INSTANCE_SIZES = [
+  ...APP_INSTANCE_SIZES,
+  ...LEGACY_APP_INSTANCE_SIZES,
+] as const;
+
+/** A slug DigitalOcean serves, current or legacy. */
+export type AppInstanceSize = (typeof ACCEPTED_INSTANCE_SIZES)[number];
+
+/** True for a plan only an app created before 7 May 2024 may use. */
+export function isLegacyInstanceSize(slug: string): boolean {
+  return (LEGACY_APP_INSTANCE_SIZES as readonly string[]).includes(slug);
+}
+
+const InstanceSize = z.enum(ACCEPTED_INSTANCE_SIZES, {
+  errorMap: (issue, ctx) => {
+    if (issue.code !== z.ZodIssueCode.invalid_enum_value) {
+      return { message: ctx.defaultError };
+    }
+    return {
+      message:
+        `unknown App Platform instance size ${JSON.stringify(issue.received)}. ` +
+        `DigitalOcean rejects a size it does not sell at deploy time, after the ` +
+        `merge, so the set is closed here. Current plans: ` +
+        `${APP_INSTANCE_SIZES.join(", ")}. Legacy plans, accepted only by apps ` +
+        `created before 7 May 2024: ${LEGACY_APP_INSTANCE_SIZES.join(", ")}. ` +
+        `See https://docs.digitalocean.com/products/app-platform/details/pricing/`,
+    };
+  },
+});
+
+/**
  * A bundle is one App Platform component.
  *
  * `core` is implicit: the public gateway. Every other bundle is internal-only
@@ -590,7 +691,7 @@ export function isUnhosted(
  */
 const BundleConfig = z.object({
   name: SLUG,
-  instanceSizeSlug: z.string().default("apps-s-1vcpu-1gb"),
+  instanceSizeSlug: InstanceSize.default("apps-s-1vcpu-1gb"),
   instanceCount: z.number().int().positive().default(1),
 });
 

@@ -115,6 +115,14 @@ bundles:
     # rendering while the same box answers every Slack call. If the telemetry
     # shows event-loop lag, the next move is a dedicated CPU (apps-d-1vcpu-2gb),
     # not more memory.
+    #
+    # The value is checked against the plans DigitalOcean actually sells (the
+    # "Current Plans" table at
+    # https://docs.digitalocean.com/products/app-platform/details/pricing/, plus
+    # the legacy `basic-*` / `professional-*` names). A name it does not have —
+    # `apps-s-1vcpu-512mb`, say, when the 512 MiB plan is `apps-s-1vcpu-0.5gb` —
+    # fails to parse here rather than at `doctl apps update`, weeks later, on
+    # whichever change first renders the component.
     instanceSizeSlug: apps-s-1vcpu-2gb
 
 servers:

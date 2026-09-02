@@ -492,6 +492,8 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 - A bundle holding a `supplementary-image` also holds a server of another kind.
 - A `supplementary-image` is placed in the `core` bundle.
 - A server references a `bundle` that isn't declared under `bundles:`.
+- **A bundle's `instanceSizeSlug` names an App Platform plan DigitalOcean does
+  not sell.** See below.
 - A `tools:` policy is present but sets neither `allow` nor `deny`.
 - **Two enabled servers declare the same env key with different values, in a
   scope where one would silently overwrite the other.** See below — the scope is
@@ -563,6 +565,47 @@ one container with one environment, which is the union of its servers' env:
 maps. One silently overwrites the other. Give one of them a slug-namespaced
 name (e.g. ZIMMER_SECRETS_SECRETS_PROJECT_ID).
 ```
+
+### `instanceSizeSlug` is a closed set
+
+`bundles[].instanceSizeSlug` accepts only a plan DigitalOcean actually serves —
+the fourteen [current
+plans](https://docs.digitalocean.com/products/app-platform/details/pricing/)
+plus the ten legacy `basic-*` / `professional-*` ones. Anything else fails to
+parse, and the error names every accepted value:
+
+```
+bundles.1.instanceSizeSlug: unknown App Platform instance size
+"apps-s-1vcpu-512mb". DigitalOcean rejects a size it does not sell at deploy
+time, after the merge, so the set is closed here. Current plans:
+apps-s-1vcpu-0.5gb, apps-s-1vcpu-1gb-fixed, …
+```
+
+The set is closed because the alternative failure is the worst-shaped one this
+repo has. An unchecked string reaches `instance_size_slug` verbatim, so a
+plausible-but-wrong `apps-s-1vcpu-512mb` — the 512 MiB plan is really
+`apps-s-1vcpu-0.5gb` — satisfies every gate, renders a spec, merges, and then
+fails at `doctl apps update` with `unknown instance size`. And it fails *late*: a
+bundle whose component is not yet rendered is never sent to DigitalOcean at all,
+so the wrong slug sits dormant until some unrelated change enables a server on
+that bundle, weeks later. Checking in the schema fires the moment the value is
+written.
+
+Legacy plans parse, because they are real names on an app old enough to use one —
+App Platform accepts them only for apps created before **7 May 2024**, and
+DigitalOcean intends to deprecate them. Neither strad app qualifies (both were
+created 2026-07-12), so `render-spec` emits a `::warning::` naming the component
+and the slug rather than refusing: the renderer cannot know an app's creation
+date, and refusing would make a valid old app undeployable.
+
+:::caution[The list is a snapshot, so it can be wrong in the tight direction]
+DigitalOcean publishes the plans as an API (`GET /v2/apps/tiers/instance_sizes`)
+and strad reads none of it — the two arrays in `src/config/schema.ts` were
+transcribed from the pricing page. So the day a plan is added, a config naming it
+is rejected here and would have been accepted by App Platform, and the fix is one
+line in this repo rather than in the config being edited. See
+[Known limitations](/limitations/) #75.
+:::
 
 ### What boot does *not* catch: a key that isn't a key
 

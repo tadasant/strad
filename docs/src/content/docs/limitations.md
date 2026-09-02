@@ -2184,6 +2184,34 @@ See `HACKS.md` #74.
 
 ---
 
+### 75. The App Platform plan list is a hand-copied snapshot of DigitalOcean's
+
+`bundles[].instanceSizeSlug` is a closed set — the fourteen current App Platform
+plans plus the ten legacy `basic-*` / `professional-*` ones — transcribed into
+`src/config/schema.ts` from the [pricing
+page](https://docs.digitalocean.com/products/app-platform/details/pricing/) on
+2026-09-02. That is what stops a plausible-but-nonexistent name from parsing
+clean, rendering clean, merging, and only then failing at `doctl apps update`.
+
+The list is authoritative at DigitalOcean and static here. DigitalOcean publishes
+it as an API (`GET /v2/apps/tiers/instance_sizes`) and nothing reads it, so the
+day a plan is added, a config naming it is **rejected by strad and accepted by
+App Platform** — wrong in the tight direction, with the fix in this repo rather
+than in the config being edited. The error names every accepted value, so the
+diagnosis is one read of the message.
+
+Reading the API from `parseConfig` is not the fix: the gateway runs that parse at
+boot, in a container, on every start, and a gateway that cannot boot because a
+vendor API is slow is a worse failure than a list that lags a product launch. A
+generated file refreshed by CI is the honest middle and is not built.
+
+**How you would know.** `unknown App Platform instance size "<a plan that does
+exist>"`, on a slug read straight off the pricing page.
+
+See `HACKS.md` #75.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

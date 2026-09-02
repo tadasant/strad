@@ -1,5 +1,9 @@
-import { isUnhosted } from "../config/schema.ts";
-import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import { isLegacyInstanceSize, isUnhosted } from "../config/schema.ts";
+import type {
+  AppInstanceSize,
+  ServerConfig,
+  StradConfig,
+} from "../config/schema.ts";
 import { connectorVariables } from "./server-namespaces.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
@@ -141,7 +145,13 @@ export interface RenderOptions {
   onWarning?: (message: string) => void;
   /** Custom domains, if any. Omit to use the default *.ondigitalocean.app. */
   domains?: { domain: string; type?: "PRIMARY" | "ALIAS" }[];
-  coreInstanceSizeSlug?: string;
+  /**
+   * Size for the `core` component. No caller sets it today; it is typed to the
+   * accepted set so that one cannot hand the API a plan it does not sell —
+   * `bundles:` gets that guarantee from the config schema, and this is the same
+   * guarantee for the one component no config entry names.
+   */
+  coreInstanceSizeSlug?: AppInstanceSize;
 }
 
 /**
@@ -1299,6 +1309,27 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     throw new Error(
       `supplementaryImage "${opts.supplementaryImage}" matched no supplementary server in the config. ` +
         `Check the registry and repository — only the tag is meant to differ.`,
+    );
+  }
+
+  // A LEGACY PLAN IS A REAL SLUG ON THE WRONG APP.
+  //
+  // The schema accepts `basic-*` / `professional-*` because DigitalOcean still
+  // serves them — to apps created before 7 May 2024, and to nothing else. Both
+  // strad apps were created 2026-07-12, so a legacy slug here is an App
+  // Platform 400 waiting for the next deploy. It is a warning rather than a
+  // throw because the renderer cannot know the app's creation date, and being
+  // wrong in the throwing direction would make a valid old app undeployable.
+  const legacySized = services
+    .filter((s) => isLegacyInstanceSize(s.instance_size_slug))
+    .map((s) => `${s.name} (${s.instance_size_slug})`);
+  if (legacySized.length > 0) {
+    opts.onWarning?.(
+      `legacy App Platform plan on: ${legacySized.join(", ")}. Legacy plans are ` +
+        `accepted only by apps created before 7 May 2024 and DigitalOcean ` +
+        `intends to deprecate them; on a newer app the deploy fails with ` +
+        `"unknown instance size". Move to a current plan — see ` +
+        `https://docs.digitalocean.com/products/app-platform/details/pricing/`,
     );
   }
 
