@@ -56,10 +56,13 @@ const EXPECT = {
   "google-sheets": 8,
   onepassword: 9,
   // Four tools, and not one of them can return a SECRET value. This is the
-  // CREDENTIAL-FREE count: the probe fails closed here, so it is the floor of
-  // the surface rather than the whole of it. A deployment whose credential can
-  // write lists more, by design. If this number grows in CI — where there is no
-  // credential to widen it — someone added a tool to the read-only surface.
+  // CREDENTIAL-FREE, CORE-LESS count: the probe fails closed here, so it is the
+  // floor of the surface rather than the whole of it. A deployment whose
+  // credential can write lists more, by design, and one whose host can reach
+  // core (STRAD_CORE_URL + STRAD_INTERNAL_TOKEN, every deployed bundle) lists
+  // `refresh_gateway` as well — five on prod, ten on staging. If this number
+  // grows in CI — where there is neither — someone added a tool to the
+  // read-only floor.
   secrets: 4,
   "good-eggs": null, // browser servers vary with their app surface; just list
   fetchpet: null,
@@ -95,7 +98,7 @@ const EXPECT = {
  */
 const PARTIAL_SURFACES = {
   secrets:
-    "surface comes from a capability PROBE; with no credential here it is the read-only floor",
+    "surface comes from a capability PROBE and from whether the host can reach core; with neither here it is the read-only floor",
   gcs: "GCS_BUCKET is set in CI, which hides the 4 bucket-level tools",
   "good-eggs": "browser server; its surface follows the app it drives",
   fetchpet: "browser server; its surface follows the app it drives",

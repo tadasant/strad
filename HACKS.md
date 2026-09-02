@@ -3242,7 +3242,10 @@ drops the reading and lands at once — which it did NOT before this change: the
 console only ever dropped the diagnosis cache, so the "instant on the process
 that wrote it" the docs promised was never true of the runtime provider. The
 console also grew a **Re-read the store** button, the explicit signal for a
-value written elsewhere. A render that met a transient failure is not held (the
+value written elsewhere — and the `secrets` MCP server its counterpart,
+`refresh_gateway`, over the parameter write-back wire with a 30-second floor on
+core, so an agent's rotation lands at once too and an agent in a loop cannot
+recreate the bill. A render that met a transient failure is not held (the
 next reader renders again); a `400` is, until the TTL or a write. The console's
 diagnosis is now as old as the reading and prints that age rather than the
 pass's.

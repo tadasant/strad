@@ -68,6 +68,7 @@ import {
 import { PRESENCE_ROUTE } from "./presence.js";
 import { presenceResponse } from "./presence-route.js";
 import { paramStoreFor, startParamRefresh } from "./param-store.js";
+import { CORE_URL_ENV, createStoreRefreshClient } from "./param-route.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -865,7 +866,25 @@ async function loadSecrets(): Promise<Mount | null> {
     return null;
   }
 
-  const created = mod.createMCPServer({ version: VERSION, config });
+  // The gateway re-read: the agent's copy of the console's "Re-read the store"
+  // button. This process can reach core — it already does, for the parameter
+  // write-back — and the secrets tree cannot, so the hook is built here and
+  // handed in. Handed in only when it can work: with no core URL or no token
+  // (a local run, the CI smoke container) the tool is not offered, the same
+  // posture as a tool the credential cannot back.
+  const refresh = createStoreRefreshClient({
+    baseUrl: process.env[CORE_URL_ENV],
+    token: process.env.STRAD_INTERNAL_TOKEN,
+  });
+  const unconfigured = refresh.unconfigured();
+  if (unconfigured) {
+    log(`secrets: refresh_gateway not offered (${unconfigured})`);
+  }
+  const created = mod.createMCPServer({
+    version: VERSION,
+    config,
+    refreshGateway: unconfigured ? undefined : () => refresh.refresh(),
+  });
   const hasKey = Boolean(process.env.SECRETS_SERVICE_ACCOUNT_KEY_JSON);
 
   return {

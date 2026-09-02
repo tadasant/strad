@@ -546,3 +546,180 @@ export async function refreshParamsOnce(
   }
   return changed;
 }
+
+// ---------------------------------------------------------------------------
+// STORE RE-READ — the same wire, asking core to drop its reading of the store
+// ---------------------------------------------------------------------------
+
+/**
+ * ## Why an agent needs this at all
+ *
+ * Core holds ONE reading of the parameter store per process, for
+ * `gateway.secrets.ttlSeconds` (src/secrets/parameters/gcp.ts). A write through
+ * strad's own console drops it, so a human's rotation reaches `/mcp` at once.
+ * A write through the `secrets` MCP server does not: that server runs in a
+ * bundle, writes through a client of its own, and core learns nothing until
+ * the reading ages out — an hour, by default. The console grew a "Re-read the
+ * store" button for exactly this; this is the agent's copy of that button.
+ *
+ * ## Why it is on this wire
+ *
+ * The bundle already reaches core here — `CORE_URL_ENV`, the shared
+ * `STRAD_INTERNAL_TOKEN`, the same `authorizePresence` gate — for the parameter
+ * write-back. The re-read is the same direction, the same credential and the
+ * same trust: an internal token holder may make core spend one enumeration
+ * plus one render per parameter, and nothing more. It carries no path and no
+ * value, so there is nothing to validate beyond the token.
+ *
+ * ## What bounds it
+ *
+ * Core applies a FLOOR (`STORE_REFRESH_FLOOR_MS`): a reading younger than that
+ * is left alone and the response says so. Without it a caller in a loop — a
+ * prompt-injected agent, a retrying client — could re-create the per-minute
+ * bill that one reading per process exists to end. With it the worst case is
+ * one refresh per floor, which is a bounded number an operator can multiply
+ * out.
+ */
+
+/** The route. No slug, no variable: it addresses the process, not a parameter. */
+export const STORE_REFRESH_ROUTE = "/_strad/store/refresh";
+
+/**
+ * How young a reading core will refuse to drop again, in ms.
+ *
+ * Thirty seconds is longer than any burst a client retrying a write would
+ * produce, and short enough that an agent rotating three values in a row and
+ * calling `refresh_gateway` after each sees the last one land within the
+ * minute rather than waiting out the TTL.
+ */
+export const STORE_REFRESH_FLOOR_MS = 30_000;
+
+/** What core answers. `refreshed: false` means the floor held it off. */
+export interface StoreRefreshResponse {
+  protocol: number;
+  ok: true;
+  refreshed: boolean;
+  /** When the floor held it off: how old the reading core kept is, in seconds. */
+  ageSeconds?: number;
+}
+
+/**
+ * Validate core's answer, the way `parseParamReadResponse` does for the read.
+ *
+ * An unfamiliar protocol is treated as "not usable" rather than guessed at;
+ * the caller reports it and moves on — a refresh is best-effort by nature, the
+ * TTL still lands the value.
+ */
+export function parseStoreRefreshResponse(
+  body: unknown,
+):
+  | { ok: true; refreshed: boolean; ageSeconds?: number }
+  | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null) {
+    return { ok: false, error: "response is not an object" };
+  }
+  const b = body as Record<string, unknown>;
+  if (b.protocol !== PARAM_PROTOCOL) {
+    return { ok: false, error: `unknown protocol ${String(b.protocol)}` };
+  }
+  if (b.ok !== true) return { ok: false, error: "core did not report ok" };
+  if (typeof b.refreshed !== "boolean") {
+    return { ok: false, error: "response carries no `refreshed`" };
+  }
+  return {
+    ok: true,
+    refreshed: b.refreshed,
+    ageSeconds: typeof b.ageSeconds === "number" ? b.ageSeconds : undefined,
+  };
+}
+
+/** One attempt's outcome. `refreshed: false` carries the reason, always. */
+export type StoreRefreshOutcome =
+  { refreshed: true } | { refreshed: false; reason: string };
+
+export interface StoreRefreshClientOptions {
+  /** Core's private URL — `CORE_URL_ENV`. Absent means "not configured". */
+  baseUrl: string | undefined;
+  /** The shared `STRAD_INTERNAL_TOKEN`. Absent means "not configured". */
+  token: string | undefined;
+  /** Injectable for tests; defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+  /** How long the call may take. Same bound as the parameter client. */
+  timeoutMs?: number;
+}
+
+export interface StoreRefreshClient {
+  /**
+   * Why this client cannot reach core, or null when it can.
+   *
+   * What the host reads to decide whether to OFFER the tool: a tool that would
+   * answer "not configured" on every call is not listed, the same way a tool
+   * the credential cannot back is not listed.
+   */
+  unconfigured(): string | null;
+  /**
+   * Ask core to drop its reading. NEVER THROWS: a refresh is best-effort, and
+   * the value lands within the TTL either way, so every failure is a reason in
+   * the outcome rather than an exception in a tool result.
+   */
+  refresh(): Promise<StoreRefreshOutcome>;
+}
+
+export function createStoreRefreshClient(
+  opts: StoreRefreshClientOptions,
+): StoreRefreshClient {
+  const base = (opts.baseUrl ?? "").replace(/\/$/, "");
+  const token = opts.token ?? "";
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+
+  const unconfigured = (): string | null => {
+    if (!base) return `${CORE_URL_ENV} is not set`;
+    if (!token) return "STRAD_INTERNAL_TOKEN is not set";
+    return null;
+  };
+
+  return {
+    unconfigured,
+    async refresh() {
+      const why = unconfigured();
+      if (why) return { refreshed: false, reason: why };
+      try {
+        const res = await fetchImpl(`${base}${STORE_REFRESH_ROUTE}`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!res.ok) {
+          // The status and nothing else. Core's error word is short and
+          // value-free, but this string ends up in a tool result an agent reads.
+          return {
+            refreshed: false,
+            reason: `core answered HTTP ${res.status}`,
+          };
+        }
+        const parsed = parseStoreRefreshResponse(await res.json());
+        if (!parsed.ok) {
+          return {
+            refreshed: false,
+            reason: `core's answer was not usable (${parsed.error})`,
+          };
+        }
+        if (!parsed.refreshed) {
+          return {
+            refreshed: false,
+            reason:
+              `core re-read the store ${parsed.ageSeconds ?? "a few"}s ago and ` +
+              `will not again inside ${STORE_REFRESH_FLOOR_MS / 1000}s`,
+          };
+        }
+        return { refreshed: true };
+      } catch (err) {
+        return {
+          refreshed: false,
+          reason: `could not reach core (${err instanceof Error ? err.message : String(err)})`,
+        };
+      }
+    },
+  };
+}

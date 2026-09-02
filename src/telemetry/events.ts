@@ -171,6 +171,13 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.param_written": ["slug", "variable"],
     "strad.param_write_failed": ["slug", "variable"],
     /**
+     * A component asked core to drop its reading of the parameter store — the
+     * `secrets` MCP server's `refresh_gateway` tool, or its write tools after a
+     * write. `refreshed` is false when the floor held the request off: the
+     * reading was younger than the floor and was left alone.
+     */
+    "strad.store_refreshed": ["refreshed"],
+    /**
      * A hosted server read the CURRENT value of one of its own parameters —
      * either the once-at-boot read a `paramsWritable:` server does, or a
      * `paramsRefresh:` poll.

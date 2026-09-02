@@ -657,9 +657,10 @@ and every namespace it serves — the providers, a `params: true` builtin, the
 console's diagnosis — is a slice of it: one enumeration plus one render per
 parameter per TTL, ~68 billed reads at production's 34 parameters, whatever the
 server count. The console's own admin client holds nothing, because it writes
-and re-lists in one breath; instead every write through it, and the console's
-**Re-read the store** button, drops the gateway's reading so the next read
-reaches the store. See [what "immediately"
+and re-lists in one breath; instead every write through it, the console's
+**Re-read the store** button, and the `secrets` MCP server's `refresh_gateway`
+tool (which its write tools call for you) drop the gateway's reading so the
+next read reaches the store. See [what "immediately"
 means](/operate/secrets/#what-immediately-means) for the resulting bounds and
 [the cost model](/operate/secrets/#one-reading-of-the-store-per-process) for the
 numbers.

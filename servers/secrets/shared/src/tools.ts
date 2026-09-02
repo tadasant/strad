@@ -32,9 +32,27 @@ import type { ParametersWriter } from "./write-client.js";
  * reaches this process.
  */
 
+/**
+ * Ask the strad gateway to drop its reading of the store, so the next `${NAME}`
+ * it resolves reaches Parameter Manager rather than the reading it holds.
+ *
+ * NEVER THROWS. A refresh is best-effort: the gateway re-reads the store within
+ * `gateway.secrets.ttlSeconds` regardless, so a failure is a reason in the
+ * outcome, reported to the agent, and not a failed write.
+ */
+export type GatewayRefresh = () => Promise<
+  { refreshed: true } | { refreshed: false; reason: string }
+>;
+
 interface ToolDeps {
   config: SecretsConfig;
   reader: () => ParametersReader;
+  /**
+   * Present when the host can reach core. Decides whether `refresh_gateway` is
+   * OFFERED — a tool that would fail on every call is not listed — and what a
+   * write tool does after it lands.
+   */
+  refreshGateway?: GatewayRefresh;
   /**
    * What this server's credential may actually do, as reported by Google. The
    * tool surface is DERIVED from it — see capabilities.ts for why a probe rather
@@ -50,6 +68,7 @@ const ANNOTATIONS = { readOnlyHint: true, openWorldHint: false } as const;
 export function toolDefinitions(
   config: SecretsConfig,
   caps: Capabilities = NO_CAPABILITIES,
+  opts: { refreshGateway?: boolean } = {},
 ) {
   const nsList = config.namespaces.map((n) => `"${n}"`).join(", ");
   const readOnly = [
@@ -247,7 +266,50 @@ export function toolDefinitions(
     });
   }
 
-  return [...readOnly, ...gated];
+  // The gateway re-read. Offered whenever the host can reach core, on every
+  // credential: it reads nothing and writes nothing in the store, it only
+  // makes the gateway's next read reach it. Withheld when the host cannot
+  // reach core, for the same reason a tool the credential cannot back is
+  // withheld — a listed tool that fails on every call is worse than none.
+  const refresh = opts.refreshGateway
+    ? [
+        {
+          name: "refresh_gateway",
+          description:
+            "Make the strad gateway re-read the parameter store NOW. The gateway holds one reading of " +
+            "the store per process for gateway.secrets.ttlSeconds (an hour by default), so a value " +
+            "written outside strad's console — including through this server's write tools — reaches " +
+            "a running server within that window on its own. This drops the reading so the next read " +
+            "reaches Parameter Manager. The write tools call it for you after a successful write; call " +
+            "it yourself after a rotation made elsewhere (gcloud, another tool). Nothing is written. " +
+            "The gateway refuses to re-read more than once every 30 seconds and says so.",
+          inputSchema: { type: "object", properties: {} },
+          annotations: { readOnlyHint: true, openWorldHint: false },
+        },
+      ]
+    : [];
+  return [...readOnly, ...gated, ...refresh];
+}
+
+/**
+ * What a write tool says about the gateway, after the write landed.
+ *
+ * Calls the refresh when the host gave us one, and reports what happened —
+ * never throws, never hides: a write that landed but did not reach the gateway
+ * yet is still a write that landed, and the agent should know both halves.
+ */
+async function gatewayNote(deps: ToolDeps): Promise<string> {
+  if (!deps.refreshGateway) {
+    return (
+      "Stored. The gateway re-reads the store within gateway.secrets.ttlSeconds; this " +
+      "server cannot reach it to make that sooner."
+    );
+  }
+  const outcome = await deps.refreshGateway();
+  return outcome.refreshed
+    ? "Stored, and the gateway has dropped its reading of the store: the next read reaches this value."
+    : `Stored. The gateway was not made to re-read it now (${outcome.reason}); it picks the value up ` +
+        "within gateway.secrets.ttlSeconds, or call refresh_gateway.";
 }
 
 export function registerTools(server: Server, deps: ToolDeps): void {
@@ -256,7 +318,9 @@ export function registerTools(server: Server, deps: ToolDeps): void {
   const caps = deps.capabilities ?? (() => Promise.resolve(NO_CAPABILITIES));
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDefinitions(config, await caps()),
+    tools: toolDefinitions(config, await caps(), {
+      refreshGateway: Boolean(deps.refreshGateway),
+    }),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -413,7 +477,8 @@ export function registerTools(server: Server, deps: ToolDeps): void {
             created: path,
             variable: variableOf(path),
             secret,
-            note: "Stored. Whether a running server RESOLVES this path depends on that server's `params: true` and the deployment's resolver credential — see the console.",
+            gateway: await gatewayNote(deps),
+            note: "Whether a running server RESOLVES this path depends on that server's `params: true` and the deployment's resolver credential — see the console.",
           });
         }
 
@@ -433,7 +498,11 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           const writer = deps.writer?.();
           if (!writer) return error("no client is configured for writes");
           await writer.rotate(path, a.value);
-          return text({ rotated: path, variable: variableOf(path) });
+          return text({
+            rotated: path,
+            variable: variableOf(path),
+            gateway: await gatewayNote(deps),
+          });
         }
 
         case "set_parameter_note": {
@@ -469,7 +538,41 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           const writer = deps.writer?.();
           if (!writer) return error("no client is configured for writes");
           await writer.destroy(path);
-          return text({ deleted: path, variable: variableOf(path) });
+          return text({
+            deleted: path,
+            variable: variableOf(path),
+            gateway: await gatewayNote(deps),
+          });
+        }
+
+        case "refresh_gateway": {
+          if (!deps.refreshGateway) {
+            return error(
+              "This server cannot reach the strad gateway (no STRAD_CORE_URL / STRAD_INTERNAL_TOKEN " +
+                "in its environment). The gateway re-reads the store within gateway.secrets.ttlSeconds.",
+            );
+          }
+          // A refresh the gateway held off — inside its 30-second floor, or
+          // core not answering — is a plain outcome, not a tool error: nothing
+          // is broken, the value lands within the TTL, and the write tools
+          // report the same outcome the same way. The one error above is a
+          // capability gap, which is different in kind.
+          const outcome = await deps.refreshGateway();
+          if (!outcome.refreshed) {
+            return text({
+              refreshed: false,
+              reason: outcome.reason,
+              note:
+                "The gateway kept the reading it holds. It re-reads the store on its own within " +
+                "gateway.secrets.ttlSeconds; call again after the floor if it must be sooner.",
+            });
+          }
+          return text({
+            refreshed: true,
+            note:
+              "The gateway dropped its reading of the store. Its next resolution of any ${NAME} " +
+              "reaches Parameter Manager. Nothing was written.",
+          });
         }
 
         default:

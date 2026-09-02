@@ -7,6 +7,8 @@ import { authorizePresence } from "../secrets/presence.ts";
 import {
   parseParamWriteRequest,
   PARAM_PROTOCOL,
+  STORE_REFRESH_FLOOR_MS,
+  type StoreRefreshResponse,
 } from "../secrets/param-route.ts";
 import {
   parameterPath,
@@ -100,6 +102,8 @@ export interface ParamsHandlerOptions {
    * takes; defaults to the resolver built from the environment.
    */
   diagnosticStore?: Parameters<typeof forgetDeploymentDiagnosis>[0]["store"];
+  /** Injected in tests so the re-read floor is not measured on the wall clock. */
+  now?: () => number;
 }
 
 /** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
@@ -457,5 +461,68 @@ export function createParamReadHandler(
           .json({ error: "read_failed", message });
       }
     })();
+  };
+}
+
+/**
+ * `POST /_strad/store/refresh` — drop this process's reading of the store.
+ *
+ * The agent's copy of the console's "Re-read the store" button, over the same
+ * wire and the same token as the parameter write-back (see param-route.ts for
+ * why it is here). It drops exactly what a console write drops — the runtime
+ * providers' reading and the diagnosis pass held over it — and writes nothing.
+ *
+ * The FLOOR is the whole of what makes this safe to expose to an agent: a
+ * reading younger than `STORE_REFRESH_FLOOR_MS` is left alone and the answer
+ * says so, so a caller in a loop cannot make core enumerate the project more
+ * than once per floor. The floor is measured from the last refresh THIS route
+ * performed, not from the reading's own age — the route cannot see that, and
+ * a console write between two calls is not something it should be charged for.
+ *
+ * It is a PER-PROCESS floor, and it is global only because core runs as one
+ * instance (`instance_count: 1` for the core service in
+ * src/deploy/appspec.ts). A core that scaled out would hold one floor per
+ * replica, and a caller's bound would multiply by the replica count; the
+ * bundle path guards its own single-writer assumption in the renderer, and
+ * this one is worth the same guard on the day core grows a second instance.
+ */
+export function createStoreRefreshHandler(
+  opts: ParamsHandlerOptions,
+): RequestHandler {
+  const now = opts.now ?? Date.now;
+  let lastRefreshAt = -Infinity;
+  return (req: Request, res: Response) => {
+    const auth = authorizePresence(
+      req.get("authorization"),
+      opts.env.STRAD_INTERNAL_TOKEN,
+      constantTimeEquals,
+    );
+    if (!auth.ok) {
+      res.status(auth.status).json({ error: auth.error });
+      return;
+    }
+
+    const at = now();
+    const sinceMs = at - lastRefreshAt;
+    if (sinceMs < STORE_REFRESH_FLOOR_MS) {
+      event({ evt: "strad.store_refreshed", refreshed: false });
+      res.status(200).json({
+        protocol: PARAM_PROTOCOL,
+        ok: true,
+        refreshed: false,
+        ageSeconds: Math.round(sinceMs / 1000),
+      } satisfies StoreRefreshResponse);
+      return;
+    }
+
+    lastRefreshAt = at;
+    opts.secretProvider?.invalidate();
+    forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
+    event({ evt: "strad.store_refreshed", refreshed: true });
+    res.status(200).json({
+      protocol: PARAM_PROTOCOL,
+      ok: true,
+      refreshed: true,
+    } satisfies StoreRefreshResponse);
   };
 }
