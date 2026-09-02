@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 
 /**
  * The trees `servers/bundle/Dockerfile` bakes, read as TEXT.
@@ -31,5 +31,41 @@ export function bakedTrees(): Set<string> {
   )) {
     trees.add(m[1]!);
   }
+  return trees;
+}
+
+/**
+ * Every directory under `servers/` or `images/` that npm can install on its own
+ * — one carrying its own `package-lock.json`.
+ *
+ * That lockfile is what makes a directory a TREE rather than a workspace of one:
+ * `servers/onepassword/shared` has a `package.json` and is installed by its
+ * parent, while `servers/bundle/host` has a lockfile and is installed by nobody
+ * else. It is also exactly what a CI leg needs — `npm ci` is the first step of
+ * every leg, and it refuses a directory without one.
+ *
+ * The `COPY` scan above cannot make this distinction: `COPY
+ * servers/bundle/host/package.json` and `COPY servers/bundle-api/fork/slack/…`
+ * read identically, and only one of the two names a tree. So the Dockerfile says
+ * WHICH trees ship and this says WHAT unit a leg can address, and
+ * `ci-server-trees.test.ts` uses the two together.
+ *
+ * The walk does not stop at a lockfile it finds. npm workspaces share their
+ * root's lockfile, so a lockfile INSIDE a tree is not part of that tree — it is
+ * another one, installed by nobody, which is exactly the shape that put
+ * `servers/bundle/host` outside CI for its first weeks.
+ */
+export function installableTrees(): Set<string> {
+  const trees = new Set<string>();
+
+  const walk = (dir: string): void => {
+    if (existsSync(`${dir}/package-lock.json`)) trees.add(dir);
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && e.name !== "node_modules")
+        walk(`${dir}/${e.name}`);
+    }
+  };
+
+  for (const root of ["servers", "images"]) walk(root);
   return trees;
 }

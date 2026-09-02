@@ -2421,12 +2421,10 @@ envprefix:sync`), like `presence.ts` and `wire.ts` — one entry each in the
   slug colliding with a mount this image already serves, and the two loaders that
   build a per-slug instance. Those are still reached only by the `bundle_image`
   job, which asserts the mount SET against a booted container and exercises no
-  branch. AND THE SUITE RUNS NOWHERE IN CI: `ci.yml`'s `servers` matrix names a
-  leg `servers/<tree>`, and `test/ci-server-trees.test.ts` reads those names to
-  check the matrix against the Dockerfile — so `servers/bundle/host`, one level
-  deeper, cannot be spelled as a leg without changing how the matrix addresses a
-  nested tree. Issue #229. Until then a broken assertion here goes red locally and
-  green in CI, which is the failure #154 was filed about.
+  branch. The suite itself runs on every PR, as the `servers (bundle/host)` leg:
+  a leg's `tree:` is its path, so a nested tree is spelled `bundle/host`, and
+  `test/ci-server-trees.test.ts` resolves each baked path to the lockfile-owning
+  trees inside it rather than comparing the `COPY` paths alone. Issue #229.
 
 **Undo.** Delete the per-slug post-pass in `src/deploy/appspec.ts` (the path-group
 loop and the two checks after it) and restore the unconditional throw; drop `env:`
