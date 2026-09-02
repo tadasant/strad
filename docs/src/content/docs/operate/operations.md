@@ -38,7 +38,7 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
   suites, baked into the image, run by nothing. It happened a fourth time to the
   bundle host, and that one the comparison could not see: the Dockerfile copies
   `servers/bundle`, the npm tree is `servers/bundle/host` one level deeper, and a
-  leg for it read as naming a tree the image does not bake. So the comparison now
+  leg for it read as naming a tree the image does not bake. So the comparison
   resolves each baked path to the **lockfile-owning** trees at or inside it — the
   unit `npm ci` can address — and a nested tree that lands uncovered fails it the
   same way a top-level one does. One baked tree is deliberately not a leg, and the
@@ -151,9 +151,11 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
     The binary's own tool count is asserted by `bundle_image`, against the real
     thing.
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
-    `npm run build && vitest run`. The host is the process that mounts every tree
-    above and serves 18 of the deployment's 30 slugs, and its suite runs over its
-    TypeScript sources with no `/app/trees` to mount: the per-slug environment
+    `npm run build && vitest run` — `tsc` over `src/`, so a type error there
+    still fails the PR. The host is the process every bundle container runs: it
+    mounts every tree in the image, 21 mounts, which staging's 30
+    supplementary-image slugs resolve to. Its suite runs over its TypeScript
+    sources with no `/app/trees` to mount: the per-slug environment
     discovery, the two `degraded` verdicts, the presence route's wiring and the
     per-tree SDK cache. `bundle_image` does not substitute for it — that job
     asserts the mount **set** against a booted container and exercises no branch,

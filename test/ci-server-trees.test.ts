@@ -136,6 +136,20 @@ describe("every baked tree is built or tested by some job", () => {
     ).toEqual([]);
   });
 
+  it("exempts only trees the image still bakes", () => {
+    // An exemption is keyed on a path, and a path can be renamed or dropped. A
+    // stale key exempts nothing and is invisible — until the tree comes back
+    // under a new name, uncovered, and this file says it was someone's decision.
+    const stale = [...COVERED_ELSEWHERE.keys()]
+      .filter((t) => !bakedUnits().has(t))
+      .sort();
+    expect(
+      stale,
+      `COVERED_ELSEWHERE names a tree ${DOCKERFILE} no longer bakes — the ` +
+        `exemption outlived the tree it was written for`,
+    ).toEqual([]);
+  });
+
   it("reads every directory under servers/ out of the Dockerfile", () => {
     // The comparison above is only as good as the `COPY` scan feeding it: a tree
     // the regex misses is absent from BOTH sides and reads as covered. The
@@ -190,7 +204,7 @@ describe("every baked tree is built or tested by some job", () => {
 
   it("does not cancel sibling legs when one tree fails", () => {
     // Without `fail-fast: false` the first failing tree cancels the rest, and
-    // "good-eggs is broken" reports as "nine other trees have no result".
+    // "good-eggs is broken" reports as "twelve other trees have no result".
     expect(serversJob()).toMatch(/^ {6}fail-fast: false$/m);
   });
 });

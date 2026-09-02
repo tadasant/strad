@@ -2413,7 +2413,7 @@ envprefix:sync`), like `presence.ts` and `wire.ts` — one entry each in the
   or trailing `-`. Without it `a--b` + `C` and `a` + `B__C` are one variable. No
   slug in staging or prod has ever used either shape.
 - **The bundle host's suite covers the discovery, not the mounting.**
-  `servers/bundle/host` now has one (`npm test`, vitest over its TypeScript
+  `servers/bundle/host` has one (`npm test`, vitest over its TypeScript
   sources), and `extraSlugs` is in it: the complete-set rule, the default slug,
   the sort, the discovery log line, and remote-filesystem's double prefix. What
   is still uncovered is everything that needs `/app/trees` to exist —
@@ -2424,7 +2424,7 @@ envprefix:sync`), like `presence.ts` and `wire.ts` — one entry each in the
   branch. The suite itself runs on every PR, as the `servers (bundle/host)` leg:
   a leg's `tree:` is its path, so a nested tree is spelled `bundle/host`, and
   `test/ci-server-trees.test.ts` resolves each baked path to the lockfile-owning
-  trees inside it rather than comparing the `COPY` paths alone. Issue #229.
+  trees inside it rather than comparing the `COPY` paths alone.
 
 **Undo.** Delete the per-slug post-pass in `src/deploy/appspec.ts` (the path-group
 loop and the two checks after it) and restore the unconditional throw; drop `env:`

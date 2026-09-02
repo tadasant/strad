@@ -35,6 +35,12 @@ export function bakedTrees(): Set<string> {
 }
 
 /**
+ * Memoized: the walk is the only reader here that touches the filesystem rather
+ * than a file, several tests call it, and nothing writes a lockfile mid-run.
+ */
+let installable: Set<string> | undefined;
+
+/**
  * Every directory under `servers/` or `images/` that npm can install on its own
  * — one carrying its own `package-lock.json`.
  *
@@ -50,12 +56,18 @@ export function bakedTrees(): Set<string> {
  * WHICH trees ship and this says WHAT unit a leg can address, and
  * `ci-server-trees.test.ts` uses the two together.
  *
- * The walk does not stop at a lockfile it finds. npm workspaces share their
- * root's lockfile, so a lockfile INSIDE a tree is not part of that tree — it is
- * another one, installed by nobody, which is exactly the shape that put
- * `servers/bundle/host` outside CI for its first weeks.
+ * The walk does not stop at a lockfile it finds. A workspace shares its root's
+ * lockfile, so a second lockfile deeper in usually means a tree the root does
+ * not install — which is exactly the shape that put `servers/bundle/host`
+ * outside CI for its first weeks. The exception is a vendored upstream copy that
+ * brings its own lockfile along: that one is not a tree anybody may `npm ci`
+ * in, and it reads as one here. It fails loudly rather than quietly, and
+ * `COVERED_ELSEWHERE` in `ci-server-trees.test.ts` is where that gets written
+ * down — which is the right amount of ceremony for vendoring a lockfile into a
+ * tree that already has one.
  */
 export function installableTrees(): Set<string> {
+  if (installable) return installable;
   const trees = new Set<string>();
 
   const walk = (dir: string): void => {
@@ -67,5 +79,6 @@ export function installableTrees(): Set<string> {
   };
 
   for (const root of ["servers", "images"]) walk(root);
+  installable = trees;
   return trees;
 }
