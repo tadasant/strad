@@ -56,7 +56,11 @@ export {
   type ToolGroup,
 } from "./tools.js";
 
-export { SENSITIVE_DESCRIPTION, type ToolDefinition } from "./tools/shared.js";
+export {
+  LINK_HANDLING_DESCRIPTION,
+  SENSITIVE_DESCRIPTION,
+  type ToolDefinition,
+} from "./tools/shared.js";
 
 export {
   UploadLeaseSchema,

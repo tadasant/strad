@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createMCPServer,
   createUploadLeaseStore,
+  LINK_HANDLING_DESCRIPTION,
   loadConfig,
   toolDefinitions,
   UploadLeaseStore,
@@ -476,6 +477,57 @@ test("the is_sensitive copy steers away from itself, identically in both tools",
   assert.match(uploadCopy, /security findings/i);
   assert.match(uploadCopy, /screenshots/i);
   assert.equal(upload.inputSchema.properties.is_sensitive.default, false);
+});
+
+/**
+ * A signed URL's query string IS the credential, and altering it fails silently.
+ * The incident this guards: a working URL published bolded in markdown with
+ * everything after the `?` dropped, whose 403 was then escalated as "the bucket
+ * named -public is not public" — a false infrastructure incident from a
+ * formatting bug. The last assertion is the one that would have stopped it, so it
+ * is asserted separately rather than folded into a single regex over the block.
+ */
+test("every tool that mints a link says how to hand it on, identically", () => {
+  const definitions = toolDefinitions(
+    () => new FakeStore(),
+    new UploadLeaseStore({ slug: "remote-filesystem-tmp-public" }),
+  );
+  const minters = ["upload_file", "get_upload_url", "refresh_link"];
+  for (const name of minters) {
+    const { description } = definitions.find((t) => t.name === name);
+    assert.ok(
+      description.includes(LINK_HANDLING_DESCRIPTION),
+      `${name} does not carry the link-handling guidance verbatim`,
+    );
+  }
+  // No other tool repeats it — a second, drifting copy is how this guidance rots.
+  for (const tool of definitions) {
+    if (minters.includes(tool.name)) continue;
+    assert.ok(
+      !tool.description.includes("query string IS the credential"),
+      `${tool.name} carries a stray copy of the link-handling guidance`,
+    );
+  }
+});
+
+test("the link-handling guidance keeps the three points and the three codes", () => {
+  const copy = LINK_HANDLING_DESCRIPTION;
+  // 1. verbatim: no emphasis, no wrapping, no truncation, no rebuilding from path.
+  assert.match(copy, /query string IS the credential/);
+  assert.match(copy, /verbatim/);
+  assert.match(copy, /\[text\]\(url\)/);
+  assert.match(copy, /Slack/);
+  assert.match(copy, /never rebuild a URL from/i);
+  // 2. fetch it before publishing it.
+  assert.match(copy, /%\{http_code\}/);
+  assert.match(copy, /200/);
+  // 3. how to read a 403 — the codes are observed against the production bucket.
+  assert.match(copy, /AccessDenied/);
+  assert.match(copy, /SignatureDoesNotMatch/);
+  assert.match(copy, /ExpiredToken/);
+  assert.match(copy, /refresh_link/);
+  // The clause that would have prevented the false incident. Do not delete it.
+  assert.match(copy, /None of them means the bucket is misconfigured/);
 });
 
 test("every tool description carries the sections the house style requires", () => {

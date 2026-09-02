@@ -50,6 +50,39 @@ export const SENSITIVE_DESCRIPTION =
   "from a private repo or an internal admin page. A non-sensitive artifact gets an " +
   "unguessable, time-limited link that opens instantly with no account.";
 
+/**
+ * How to hand a signed URL onward. It lives here because upload_file,
+ * get_upload_url and refresh_link all mint the same kind of URL, and the mistake
+ * it prevents is made AFTER the tool returns — in whatever the agent writes next.
+ *
+ * From a real incident: a working URL was published to a human bolded in markdown
+ * with everything after the `?` dropped. The human got a 403, and that 403 was
+ * escalated as "the bucket named -public is not public, every artifact tonight is
+ * unreachable" — a false infrastructure incident caused by a formatting bug, with
+ * someone sent to look at a bucket ACL. The last clause is the load-bearing one.
+ *
+ * The three codes are observed, not inferred: `AccessDenied`,
+ * `SignatureDoesNotMatch` and `MissingSecurityHeader` were each reproduced
+ * against the production bucket, and expiry is GCS's separate `ExpiredToken`.
+ */
+export const LINK_HANDLING_DESCRIPTION = `**The query string IS the credential — pass the URL through verbatim.** The signature
+after \`?\` is most of the URL's length, and altering it fails silently. Do not truncate
+at the \`?\`, do not wrap it across lines, and do not put markdown emphasis on a bare URL
+(\`**<url>**\` glues the trailing asterisks onto the signature). Never rebuild a URL from
+\`path\` — there is no signature to rebuild, and only refresh_link can mint one. Prefer
+\`[text](url)\`, which nothing can attach itself to the end of; Slack renders that
+literally, so there post the bare URL or \`<url|text>\`.
+
+**Check it before you publish it:** \`curl -sS -o /dev/null -w '%{http_code}' "<url>"\`
+must print \`200\`.
+
+**Reading a 403:** \`AccessDenied\` means the request carried no signature at all — the
+query string was dropped or cut at the \`?\` (a partly-kept one gives \`400
+MissingSecurityHeader\` instead). \`SignatureDoesNotMatch\` means characters were added or
+removed. \`ExpiredToken\` means the link aged out, and refresh_link mints a fresh one.
+**None of them means the bucket is misconfigured** — objects here are private by design,
+and a bucket named \`-public\` is no exception.`;
+
 export const EXPIRES_DESCRIPTION =
   `How many days the returned link stays valid (1-${MAX_LINK_DAYS}). Default: ${DEFAULT_LINK_DAYS}. ` +
   "Links of 7 days or less are signed with GCS V4; longer ones use V2, which is the " +

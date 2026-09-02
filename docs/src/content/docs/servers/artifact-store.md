@@ -113,6 +113,41 @@ downgrades a 14-day request to 7; handing back a link that expires in half the
 time the caller asked for is the failure this design exists to avoid. See [Known
 limitations](/limitations/).
 
+## The query string is the credential
+
+A signed URL's signature lives in its query string, and that query string is most
+of the URL's length. **Altering it fails silently** — the link still looks like a
+link, and it 403s.
+
+That has already cost an incident. An agent uploaded an artifact, got a working
+URL, and published it to a human bolded in markdown with everything after the `?`
+dropped. The human got a 403. The 403 was misdiagnosed and escalated as *"the
+bucket named `-public` is not public, every artifact tonight has been
+unreachable"* — a false infrastructure incident, from a formatting bug, with
+someone sent to look at a bucket ACL.
+
+So `upload_file`, `get_upload_url` and `refresh_link` all carry the same guidance
+in their tool descriptions, from one shared constant: pass the URL through
+verbatim, check it with `curl` before publishing it, and read a 403 correctly.
+`[text](url)` is the safe markdown form because nothing can be glued to the end of
+it; Slack renders that literally, so there the bare URL or `<url|text>`.
+
+Never rebuild a URL from `path`. There is no signature to rebuild — `refresh_link`
+is the only thing that can mint one.
+
+**What a 403 actually means.** Observed against the production bucket:
+
+| Code | Cause |
+| --- | --- |
+| `AccessDenied` | The request carried no signature at all — the query string was dropped, or cut at the `?` |
+| `SignatureDoesNotMatch` | Characters were added or removed (markdown `**` glued onto the end, a line wrap) |
+| `ExpiredToken` | The link aged out. `refresh_link` mints a fresh one |
+| `MissingSecurityHeader` (400) | A partly-kept query string — some signing parameters survived, some did not |
+
+**None of them means the bucket is misconfigured.** Objects here are private by
+design; the bucket's name ends in `-public` because its *links* are shareable, not
+because its objects are world-readable.
+
 ## Expiry kills the link, never the artifact
 
 `refresh_link` takes an artifact's `path` and mints a fresh URL. Nothing is
@@ -276,8 +311,6 @@ The two credentials come from the parameters system, not from hand-written
 
 ## Tools
 
-| tool              | group     | what it does                               |
-| ----------------- | --------- | ------------------------------------------ |
 | tool             | group     | what it does                                      |
 | ---------------- | --------- | ------------------------------------------------- |
 | `upload_file`    | readwrite | store bytes from the MCP call, return a link      |

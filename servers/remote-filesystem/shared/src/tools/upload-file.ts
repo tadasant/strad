@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_LINK_DAYS, MAX_LINK_DAYS } from "../config.js";
 import {
   EXPIRES_DESCRIPTION,
+  LINK_HANDLING_DESCRIPTION,
   SENSITIVE_DESCRIPTION,
   artifactPayload,
   fail,
@@ -89,6 +90,8 @@ in-memory payloads or files already visible to this server through file://.
   accounts, not a missing grant.
 - \`public\` — world-readable forever. This tool never creates one; you will only see
   it from set_sensitivity or refresh_link on an object made public long ago.
+
+${LINK_HANDLING_DESCRIPTION}
 
 **Use cases:**
 - Share a Playwright screenshot as PR evidence
