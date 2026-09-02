@@ -590,6 +590,22 @@ export function isUnhosted(
  */
 const BundleConfig = z.object({
   name: SLUG,
+  /**
+   * An App Platform compute plan, e.g. `apps-s-1vcpu-2gb`.
+   *
+   * A plain string HERE and a closed set at the deploy gate
+   * (`src/deploy/instance-size.ts`), which is the same split as the strict
+   * config parse and for the same reason: this parse runs at BOOT, in every
+   * container, and the config versions independently of the image, so a schema
+   * that rejected a plan it had not heard of would make an older image refuse
+   * the config a newer one wrote. Nothing at runtime reads this field — only
+   * the renderer does — and a field with no runtime meaning must not be able to
+   * stop a container from starting.
+   *
+   * `check-config` and `render-spec` are strict about it, so a name
+   * DigitalOcean does not sell fails on the pull request that writes it rather
+   * than at `doctl apps update`, weeks later, after the merge.
+   */
   instanceSizeSlug: z.string().default("apps-s-1vcpu-1gb"),
   instanceCount: z.number().int().positive().default(1),
 });

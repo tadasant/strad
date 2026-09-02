@@ -19,9 +19,11 @@
  *   2  the script was called wrong (missing --config, unreadable file)
  *
  * Every problem is also emitted as a `::error::` workflow command, so GitHub
- * annotates the run. Output is names and structure only — never a value.
+ * annotates the run, and a finding that is worth saying but not worth failing on
+ * — a legacy App Platform plan — is a `::warning::` on an otherwise clean exit 0.
+ * Output is names and structure only — never a value.
  *
- * ## The four checks
+ * ## The checks
  *
  *   1. SCHEMA. The same `parseConfig` the gateway boots with: types, required
  *      fields, and the cross-field rules in `superRefine` (an undefined role, two
@@ -29,14 +31,21 @@
  *   2. UNKNOWN KEYS. The check the others cannot do. Zod strips what it does not
  *      recognise, so `consoleEnvs:` for `consoleEnv:` passes every other check in
  *      this list and does nothing at runtime. See src/config/strict.ts.
- *   3. RENDER. The full `renderAppSpec` — a smoke test that the config the schema
- *      accepted can actually produce a spec, and the step that gives checks 4 a
+ *   3. INSTANCE SIZES. Every declared bundle must name an App Platform plan that
+ *      exists. Over the DECLARATION, not the rendered spec: a bundle carrying no
+ *      server renders no component, so a wrong slug on one reaches DigitalOcean
+ *      only when some later change places a server there — after the merge. See
+ *      src/deploy/instance-size.ts.
+ *   4. RENDER. The full `renderAppSpec` — a smoke test that the config the schema
+ *      accepted can actually produce a spec, and the step that gives check 5 a
  *      real spec to inspect rather than an assumption about one.
- *   4. CONSOLE SCOPE. Every key a server declares under `consoleEnv:` must reach
+ *   5. CONSOLE SCOPE. Every key a server declares under `consoleEnv:` must reach
  *      the `core` component, and no two servers may claim one key with different
  *      values. Both are silent failures with a visible symptom much later: the
  *      first is a console reporting a credential missing that the config plainly
  *      declares, the second is a console running as the wrong identity.
+ *   6. UNSEEDED-SECRET WAIVERS. A `mayBeUnseeded:` naming something the server
+ *      does not reference waives nothing. See src/deploy/unseeded.ts.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -53,6 +62,12 @@ import {
   bakedSecretNames,
   consoleScopeProblems,
 } from "../src/deploy/preflight.ts";
+import {
+  formatLegacyInstanceSize,
+  formatUnknownInstanceSize,
+  legacyInstanceSizes,
+  unknownInstanceSizes,
+} from "../src/deploy/instance-size.ts";
 import { unusedWaivers } from "../src/deploy/unseeded.ts";
 
 function usage(message: string): never {
@@ -130,7 +145,26 @@ for (const unknown of unknownConfigKeys(raw, config)) {
   );
 }
 
-// --- 3. render --------------------------------------------------------------
+// --- 3. instance sizes ------------------------------------------------------
+//
+// Over `config.bundles`, BEFORE the render and independently of it. A bundle
+// carrying no server renders no component, so a wrong slug on one is never sent
+// to DigitalOcean until some later change places a server there — which is how
+// `apps-s-1vcpu-512mb` sat in a prod config for a day and then failed a deploy
+// after the merge. Checking the declaration rather than the spec is what makes
+// this fire on the PR that writes the value.
+for (const bad of unknownInstanceSizes(config)) {
+  problem(formatUnknownInstanceSize(bad));
+}
+// Never a problem: a legacy plan is a real plan on an app old enough to use it,
+// and a config cannot say when its app was created. See instance-size.ts.
+for (const old of legacyInstanceSizes(config)) {
+  console.error(
+    `::warning file=${values.config}::${formatLegacyInstanceSize(old)}`,
+  );
+}
+
+// --- 4. render --------------------------------------------------------------
 //
 // Dummy values, one per referenced name. The point is to exercise the renderer's
 // structure — the real values change nothing about whether a spec can be built,
@@ -157,12 +191,12 @@ try {
   problem(`the config does not render: ${(err as Error).message}`);
 }
 
-// --- 4. console scope -------------------------------------------------------
+// --- 5. console scope -------------------------------------------------------
 if (spec) {
   for (const message of consoleScopeProblems(config, spec)) problem(message);
 }
 
-// --- 5. unseeded-secret waivers ---------------------------------------------
+// --- 6. unseeded-secret waivers ---------------------------------------------
 //
 // `mayBeUnseeded:` is the one config key that BUYS a hard failure away, so the
 // key itself has to be typo-proof: a waiver naming something this server does

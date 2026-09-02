@@ -113,6 +113,8 @@ export interface SpecSummary {
  */
 export const LARGEST_ACCEPTED_SPEC_BYTES = 131_010;
 
+import { isKnownInstanceSize } from "./instance-size.ts";
+
 /**
  * The share of `LARGEST_ACCEPTED_SPEC_BYTES` above which the size is worth a
  * sentence in the deploy log. 80% of it is ~105 KB — far enough below the
@@ -292,6 +294,21 @@ export function assertDeployableSpec(
       fail(`component ${i} has no "name".`);
     }
     components.push(svcName);
+    // The size, on the bytes doctl reads. `render-spec` already refuses a
+    // config naming a plan DigitalOcean does not sell, but this check sits on
+    // the FILE rather than on the renderer, so it holds for a spec whoever
+    // wrote it — a hand-edited `spec.json`, or a future second renderer. An
+    // unknown slug here is the one defect in this list the API reports
+    // clearly, and it still costs a full deploy to find out.
+    const svcSize = (svc as Record<string, unknown>).instance_size_slug;
+    if (typeof svcSize === "string" && !isKnownInstanceSize(svcSize)) {
+      fail(
+        `component "${svcName}" asks for instance size "${svcSize}", which ` +
+          `names no App Platform plan. DigitalOcean answers the update with ` +
+          `\`unknown instance size\`, and the deploy fails at its last step. ` +
+          `See src/deploy/instance-size.ts for the plans it sells.`,
+      );
+    }
     // Re-serialised rather than measured against the source text: the file's
     // own formatting is the renderer's choice (it writes with indent 2) and is
     // not what the API weighs. A component's compact JSON is the closest thing

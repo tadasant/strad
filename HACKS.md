@@ -3491,3 +3491,60 @@ navigation menu. `cleanScrape: false` shows what was served.
 `acceptSingleIfReadable` helpers in `scraping-strategies.ts`. The chain goes back
 to accepting any 200 with a body, and a client-rendered page goes back to being a
 successful scrape of an empty document.
+
+---
+
+## 75. The App Platform plan list is a hand-copied snapshot of DigitalOcean's plan table
+
+**What.** `APP_INSTANCE_SIZES` and `LEGACY_APP_INSTANCE_SIZES` in
+`src/deploy/instance-size.ts` are a transcription of the "Current Plans" and
+"Legacy Plans" tables at
+<https://docs.digitalocean.com/products/app-platform/details/pricing/>, read on
+2026-09-02. `check-config` and `render-spec` refuse a `bundles[].instanceSizeSlug`
+that is in neither, and `assertDeployableSpec` refuses a rendered spec whose
+`instance_size_slug` is — on the bytes `doctl` reads, so a spec strad's own
+renderer did not write is covered too.
+
+**Why it is a hack.** The list is authoritative somewhere else and static here.
+DigitalOcean publishes it as an API — `GET /v2/apps/tiers/instance_sizes` — and
+nothing reads that. So the day DigitalOcean adds a plan, a config naming it is
+**refused by strad and accepted by App Platform**: the check is wrong in the
+tight direction, and the operator's fix is to edit this repo rather than the
+config they were editing. The error message names every accepted value, which is
+what makes that diagnosable rather than mystifying.
+
+**Why it is this and not the API.** A gate that calls a vendor API is a gate that
+fails when the vendor is slow, and `check-config` is meant to run on every pull
+request in a repo with no cloud credentials at all — reaching the network would
+cost it exactly the property that makes it cheap to run. A build-time fetch (a
+generated file, checked in, refreshed by CI) is the honest middle and is not
+built.
+
+**Why it is not in the config schema.** `parseConfig` also runs at BOOT, in every
+container, and the config versions independently of the image. A schema that
+refused a plan it had not heard of would make an older image reject the config a
+newer one wrote — a rollback turned into a crash loop, over a field nothing at
+runtime reads. Same split as `src/config/strict.ts` and `assertImmutableCoreImage`:
+lenient library, strict deploy gate.
+
+**What it is deliberately not.** `MUTABLE_TAGS` in `src/deploy/imageTag.ts` is a
+denylist for the mirror-image reason: it covers tag schemes another repo owns and
+may extend at will, so being wrong in the tight direction there blocks a deploy
+someone else made legitimate. The plan list is DigitalOcean's own, small, public,
+and changes on the order of once a year.
+
+**How you would know.** `instanceSizeSlug "<a plan that does exist>" names no App
+Platform plan`, on a slug you just read off the pricing page.
+
+**Undo.** Delete `src/deploy/instance-size.ts` and its four call sites —
+`unknownInstanceSizes` + `legacyInstanceSizes` in `scripts/check-config.ts`,
+`assertKnownInstanceSizes` + `legacyInstanceSizes` in `scripts/render-spec.ts` —
+plus the `isKnownInstanceSize` pass in `assertDeployableSpec`
+(`src/deploy/spec-file.ts`), and their imports. Any string goes back to reaching
+`instance_size_slug` verbatim, and a name DigitalOcean does not sell goes back to
+failing at `doctl apps update` after the merge.
+
+**The better fix, when it is worth building.** Generate the two arrays from
+`GET /v2/apps/tiers/instance_sizes` at build time — checked in, refreshed by a
+scheduled CI job — so the list stops being a snapshot without the gate ever
+touching the network.

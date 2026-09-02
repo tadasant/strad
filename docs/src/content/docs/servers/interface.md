@@ -581,6 +581,56 @@ config. If you edit a config anywhere, run it:
 npm run config:check -- --config infra/strad.staging.yaml
 ```
 
+### Nor an `instanceSizeSlug` that names no plan — and that is the same split
+
+`bundles[].instanceSizeSlug` is a plain string in the schema, and `renderAppSpec`
+copies it into `instance_size_slug` verbatim. So a plausible-but-nonexistent
+`apps-s-1vcpu-512mb` — the 512 MiB plan is really `apps-s-1vcpu-0.5gb` — parses
+clean, renders clean, merges, and fails at the very last step:
+
+```
+error validating app spec field "services.instance_size_slug":
+unknown instance size "apps-s-1vcpu-512mb"
+```
+
+That is how prod deploys went down on 2026-08-30, and it fails **late twice
+over**: a bundle carrying no server renders no component, so it is never sent to
+DigitalOcean at all, and a wrong slug on one sits dormant until some unrelated
+change places a server there — weeks later, past the merge.
+
+So the closed set lives at the deploy gate, in `src/deploy/instance-size.ts`, and
+both halves of that gate check the **declaration** rather than a rendered spec —
+which is what makes an empty bundle answer for its slug on the pull request that
+writes it:
+
+- [`check-config`](/operate/deploy-model/#checking-a-config-before-it-deploys)
+  makes it a hard failure, naming the bundle, the slug and every accepted value.
+- [`render-spec`](/operate/deploy-model/) refuses before the deploy does any
+  work, beside the check that refuses a mutable core image.
+
+Accepted are the fourteen current App Platform plans plus the ten legacy
+`basic-*` / `professional-*` ones, from the two tables on the
+[pricing page](https://docs.digitalocean.com/products/app-platform/details/pricing/).
+A legacy plan is a **warning**, not a refusal: App Platform accepts one only from
+an app created before 7 May 2024, and nothing in a config says when its app was
+created — refusing would make a valid config for such an app undeployable. Both
+strad apps were created 2026-07-12, so on either one a legacy slug would fail the
+deploy, and the warning says so.
+
+Why the schema stays lenient is the same argument as for unknown keys, with one
+addition: nothing at runtime reads `instanceSizeSlug`. Only the renderer does. A
+field with no runtime meaning must not be able to stop a container from starting,
+and a schema that refused a plan it had not heard of would do exactly that to
+every container running an image older than the config.
+
+:::caution[The list is a snapshot, so it can be wrong in the tight direction]
+DigitalOcean publishes the plans as an API (`GET /v2/apps/tiers/instance_sizes`)
+and strad reads none of it — the two arrays were transcribed from the pricing
+page. So the day a plan is added, a config naming it is refused here and would
+have been accepted by App Platform, and the fix is one line in this repo rather
+than in the config being edited. See [Known limitations](/limitations/) #75.
+:::
+
 ## `gateway.secrets`
 
 Where `${NAME}` resolves from, and when. One block, one provider, per deployment.

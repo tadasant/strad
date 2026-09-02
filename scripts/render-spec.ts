@@ -88,6 +88,11 @@ import {
   assertImmutableCoreImage,
   mutableImageComponents,
 } from "../src/deploy/imageTag.ts";
+import {
+  assertKnownInstanceSizes,
+  formatLegacyInstanceSize,
+  legacyInstanceSizes,
+} from "../src/deploy/instance-size.ts";
 import { unusedWaivers, waivedNames } from "../src/deploy/unseeded.ts";
 
 const { values } = parseArgs({
@@ -121,6 +126,19 @@ assertImmutableCoreImage(values.image, coreImage.tag);
 
 const raw = readFileSync(values.config, "utf8");
 const config = parseConfig(raw, values.config);
+
+// And refuse a compute plan DigitalOcean does not sell, for the same reason and
+// with the same split. The config schema stays lenient because `parseConfig`
+// also runs at boot in every container, where a slug an older image has not
+// heard of would turn a rollback into a crash loop over a field nothing at
+// runtime reads. Here there is no such cost: this is the last thing between a
+// config and `doctl apps update`, which is where `apps-s-1vcpu-512mb` was
+// caught the expensive way. A legacy plan is warned about, not refused — see
+// src/deploy/instance-size.ts.
+assertKnownInstanceSizes(config);
+for (const old of legacyInstanceSizes(config)) {
+  console.error(`::warning::${formatLegacyInstanceSize(old)}`);
+}
 
 // The server list, inline, WITHOUT the prose. The stock image ships zero
 // servers by design, and this variable is what makes the spec *this* deployment
