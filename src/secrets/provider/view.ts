@@ -80,6 +80,18 @@ export class NamespaceView {
    */
   async get(key: string): Promise<Record<string, string>> {
     await this.refresh(key);
+    const entry = this.entries.get(key);
+    // The read this caller waited on was DISCARDED: an `invalidate` landed
+    // while it was in flight, so what it captured predates a write. Discarding
+    // it is right (see `invalidate`), but this caller has been handed nothing —
+    // and a per-server provider reads a miss here as "not in my namespace" and
+    // falls through to the gateway's, so a request racing a console rotation
+    // would see a live credential as absent. Read once more, against the
+    // post-write state. Once, not until it sticks: a write racing every read is
+    // not a shape worth looping on, and the next `get` reads again anyway.
+    if (entry && entry.fetchedAt === -Infinity && !entry.inflight) {
+      await this.refresh(key);
+    }
     return this.entries.get(key)?.values ?? {};
   }
 

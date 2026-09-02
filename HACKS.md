@@ -1341,7 +1341,7 @@ reverts to the `unverified` shrug, which is what it said before.
 
 **What.** `resolve()` in `src/secrets/parameters/gcp.ts` lists a namespace and
 then calls `:render` on every parameter in it. Any hard render failure makes the
-whole call fail. Above it, `SnapshotCache` treats that as a failed refresh —
+whole call fail. Above it, `NamespaceView` treats that as a failed read —
 which is the right posture for an outage (serve the last known good map, warn)
 but means that with NO snapshot yet held, the error propagates and `${NAME}`
 resolves for nothing in that namespace, not merely for the parameter at fault.

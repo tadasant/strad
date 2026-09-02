@@ -244,10 +244,48 @@ describe("StoreSecretProvider", () => {
     p.invalidate(); // ...and tells the provider about it
 
     release(); // the stale read finally returns "v1"
-    await inflight;
 
-    // It must NOT have been installed. The next read sees the write.
+    // It must NOT have been installed — and the caller whose read was
+    // discarded is not handed nothing either: it re-reads and gets the write.
+    expect(await inflight).toBe("v2");
     expect(await p.get("TOKEN")).toBe("v2");
+  });
+
+  it("a read discarded by invalidate() re-reads rather than reporting a miss, even with no miss-chase", async () => {
+    // The per-server layer is built with `negativeTtlMs: Infinity`, so a miss
+    // there is never chased: an empty map handed to the raced caller would be
+    // read as "not in this server's namespace", fall through to the gateway's,
+    // and turn a live per-server credential into a SecretNotFoundError on that
+    // one request — precisely when a console write is what raced it.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let values: Record<string, string> = { TOKEN: "v1" };
+    let reads = 0;
+    const resolver: ParameterResolver = {
+      async resolve() {
+        reads += 1;
+        const captured = { ...values };
+        if (reads === 1) await gate;
+        return captured;
+      },
+    };
+    const p = new StoreSecretProvider(resolver, "/ns/", {
+      negativeTtlMs: Infinity,
+    });
+
+    const inflight = p.get("TOKEN");
+    await Promise.resolve();
+    values = { TOKEN: "v2" };
+    p.invalidate();
+    release();
+
+    expect(await inflight).toBe("v2");
+    // Exactly one extra read, for the caller that was raced — not a loop.
+    expect(reads).toBe(2);
+    expect(await p.get("TOKEN")).toBe("v2");
+    expect(reads).toBe(3);
   });
 
   it("invalidate() drops the resolver's reading, so the next get reaches the store", async () => {
