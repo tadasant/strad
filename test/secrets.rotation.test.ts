@@ -19,6 +19,7 @@ import { HttpServerAdapter } from "../src/gateway/adapters/http.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
+import type { ParameterStore } from "../src/secrets/parameters/types.ts";
 import { gatewayParameterPath } from "../src/secrets/parameters/namespace.ts";
 import { StoreSecretProvider } from "../src/secrets/provider/index.ts";
 
@@ -143,6 +144,8 @@ let fake: ReturnType<typeof createFakeGcp>;
 let accepted = OLD_TOKEN;
 let now = 1_000_000;
 let provider: StoreSecretProvider;
+/** A second admin client over the SAME store state — a write nobody told us about. */
+let foreign: ParameterStore;
 const PATH = gatewayParameterPath(ENV, "UPSTREAM_TOKEN");
 
 beforeAll(async () => {
@@ -150,7 +153,11 @@ beforeAll(async () => {
 
   // The secret, in the store. `create` with secret:true puts the VALUE in the
   // Secret Manager map and only a `__REF__` pointer in Parameter Manager.
-  fake = createFakeGcp();
+  // The store client the container would hold: ONE reading of the store for
+  // the TTL, on a clock the test controls so a TTL assertion does not have to
+  // sleep for a minute.
+  fake = createFakeGcp({ snapshotTtlMs: 60_000, now: () => now });
+  foreign = fake.another();
   await fake.store.create({ path: PATH, secret: true, value: OLD_TOKEN });
 
   const config = parseConfig(`
@@ -178,12 +185,12 @@ servers:
     STRAD_TOKENS: JSON.stringify([clientToken.record]),
   };
 
-  // The provider the container would build, with a clock the test controls so a
-  // TTL assertion does not have to sleep for a minute.
+  // The provider the container would build over it. It holds no TTL of its
+  // own: how long a value is reused is the store client's decision.
   provider = new StoreSecretProvider(
     fake.store,
     `/strad/${ENV}/gateway/static/`,
-    { ttlMs: 60_000, now: () => now },
+    { now: () => now },
   );
 
   const registry = await Registry.build({
@@ -243,8 +250,11 @@ describe("a secret rotated in the store reaches a running gateway", () => {
   });
 
   it("keeps working on the OLD value for the length of the TTL", async () => {
-    await fake.store.rotate(PATH, NEW_TOKEN);
-    // The upstream has NOT switched yet, so the cached value is still correct.
+    // Rotated through a DIFFERENT client — `gcloud`, another deployment's
+    // console — so nothing tells this process. The fake's `store` is the one
+    // the gateway holds; a write through it would drop the snapshot itself.
+    await foreign.rotate(PATH, NEW_TOKEN);
+    // The upstream has NOT switched yet, so the held value is still correct.
     expect(await call()).toBe("pong");
   });
 
@@ -264,10 +274,10 @@ describe("a secret rotated in the store reaches a running gateway", () => {
     // the difference between "within the TTL" and "now".
     const V3 = "upstream-token-v3";
     accepted = V3;
-    await fake.store.rotate(PATH, V3);
+    await foreign.rotate(PATH, V3);
 
     const before = now;
-    await expect(call()).rejects.toThrow(); // still serving the cached v2
+    await expect(call()).rejects.toThrow(); // still serving the held v2
 
     provider.invalidate();
     expect(await call()).toBe("pong");

@@ -104,8 +104,9 @@ export interface ConsoleIndexOptions {
   /**
    * The store diagnosis behind the rows, so the page can say when it was read.
    *
-   * The pair of store reads is TTL-cached, which means a row can be derived from
-   * an answer that is up to a minute old. Absent (or null) when there was no
+   * The pair of store reads is answered from the process's reading of the
+   * store, which means a row can be derived from an answer as old as
+   * `gateway.secrets.ttlSeconds`. Absent (or null) when there was no
    * diagnosis at all — no resolver credential — and then the page says nothing,
    * because there is nothing whose age it would be describing.
    */
@@ -255,12 +256,14 @@ ${INDEX_CSS}`;
 /**
  * WHEN the store was asked, appended to the page's own footnote.
  *
- * The rows above can be derived from a store diagnosis that is up to a minute
- * old, because the index + render pass is cached (see
- * `secrets/store-diagnostics.ts`). Printing the verdict without its age would
- * make this page claim something fresher than it holds, which is the one thing
- * a cache in front of a health signal must not be allowed to do — the console's
- * whole posture is that it says what it established, and when.
+ * The rows above are derived from the process's one reading of the store,
+ * which is held for `gateway.secrets.ttlSeconds` (see `secrets/parameters/gcp.ts`)
+ * and over which the index + render pass is itself reused for up to a minute
+ * (see `secrets/store-diagnostics.ts`). Printing the verdict without the
+ * reading's age would make this page claim something fresher than it holds,
+ * which is the one thing a cache in front of a health signal must not be
+ * allowed to do — the console's whole posture is that it says what it
+ * established, and when.
  */
 function diagnosisNote(
   diagnosis: StoreDiagnostics | null | undefined,
@@ -281,7 +284,7 @@ function diagnosisNote(
       : `${Math.round(diagnosis.ageMs / 1000)}s ago`;
 
   // Assembled by concatenation rather than as one wrapped template literal: a
-  // newline inside "cached for up to 60s" is invisible in the rendered HTML and
+  // newline inside "reused for up to 60s" is invisible in the rendered HTML and
   // makes the sentence unfindable to anything that reads the markup.
   const subject =
     " The store's own account of itself — which parameters exist," +
@@ -303,8 +306,9 @@ function diagnosisNote(
 
   return (
     `${subject} was read ${age}${complete ? "" : halfDown};` +
-    ` that pass is cached for up to ${windowSeconds}s,` +
-    ` so a value seeded since is not necessarily reflected above yet.`
+    ` that pass is reused for up to ${windowSeconds}s over a reading of the store` +
+    ` this process holds for up to ${config.gateway.secrets.ttlSeconds}s,` +
+    ` so a value seeded since, outside this console, is not necessarily reflected above yet.`
   );
 }
 

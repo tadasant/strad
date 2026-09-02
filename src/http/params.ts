@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
+import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import { authorizePresence } from "../secrets/presence.ts";
 import {
   parseParamWriteRequest,
@@ -83,6 +84,15 @@ export interface ParamsHandlerOptions {
    * credential from the one the security note describes.
    */
   parametersStore?: Parameters<typeof storeFor>[1]["parametersStore"];
+  /**
+   * The runtime providers, so a write here is visible to THIS process at once.
+   *
+   * The write goes through the admin client; the gateway reads through the
+   * resolver client, which holds its own reading of the store for
+   * `gateway.secrets.ttlSeconds`. Without this the rotated credential would
+   * reach a `${NAME}` on core, or a `params: true` builtin, an hour later.
+   */
+  secretProvider?: ServerSecretProviders;
 }
 
 /** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
@@ -336,6 +346,7 @@ export function createParamWriteHandler(
         // per-parameter `secretAccessor` grant survives. A second write path
         // here would be a second chance to get both of those wrong.
         await resolved.store.rotate(found.path, parsed.value);
+        opts.secretProvider?.invalidate();
         event({
           evt: "strad.param_written",
           slug: found.slug,

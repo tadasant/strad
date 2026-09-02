@@ -175,7 +175,9 @@ beforeAll(async () => {
   // GRANOLA_TOKEN is seeded. APIFY_TOKEN is NOT — that absence is the subject
   // of the whole file, and it is the state prod is in the moment a new server's
   // PR merges ahead of its token.
-  fake = createFakeGcp();
+  // The store client the container would hold: ONE reading of the store, aged
+  // on a clock the test controls so a TTL assertion does not have to sleep.
+  fake = createFakeGcp({ snapshotTtlMs: 60_000, now: () => clock });
   await fake.store.create({
     path: gatewayParameterPath(ENV, "GRANOLA_TOKEN"),
     secret: true,
@@ -190,7 +192,7 @@ beforeAll(async () => {
   const provider = new StoreSecretProvider(
     fake.store,
     `/strad/${ENV}/gateway/static/`,
-    { ttlMs: 60_000, negativeTtlMs: 10_000, now: () => clock },
+    { negativeTtlMs: 10_000, now: () => clock },
   );
 
   registry = await Registry.build({
@@ -361,8 +363,9 @@ describe("seeding the value, with the gateway still running", () => {
       value: APIFY_TOKEN,
     });
 
-    // The only thing that moves is the clock, past both the snapshot TTL and the
-    // miss-refresh floor. In prod that is `negativeTtlSeconds` of wall time.
+    // The only thing that moves is the clock, past both the store client's
+    // snapshot TTL and the miss re-read floor. In prod that is
+    // `negativeTtlSeconds` of wall time.
     clock += 61_000;
 
     const { snapshot } = await probeToolSurfaces({ registry });
@@ -418,9 +421,9 @@ servers:
     mayBeUnseeded: [APIFY_TOKEN]
 `);
     const provider = new StoreSecretProvider(
-      createFakeGcp().store,
+      createFakeGcp({ snapshotTtlMs: 60_000, now: () => clock }).store,
       `/strad/${ENV}/gateway/static/`,
-      { ttlMs: 60_000, now: () => clock },
+      { now: () => clock },
     );
     const env: NodeJS.ProcessEnv = {
       STRAD_TOKENS: JSON.stringify([clientToken.record]),
@@ -472,9 +475,9 @@ describe("without the waiver, nothing about today changes", () => {
     // provider, same store — only the `mayBeUnseeded:` line is gone.
     const config = parseConfig(yaml(""));
     const provider = new StoreSecretProvider(
-      createFakeGcp().store,
+      createFakeGcp({ snapshotTtlMs: 60_000, now: () => clock }).store,
       `/strad/${ENV}/gateway/static/`,
-      { ttlMs: 60_000, now: () => clock },
+      { now: () => clock },
     );
     const bare = await Registry.build({
       config,

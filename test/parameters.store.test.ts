@@ -456,7 +456,7 @@ describe("resolveDetailed keeps the failures apart from the values", () => {
     const gcp = createFakeGcp();
     expect(
       await gcp.store.resolveDetailed!(staticNamespace(ENV, SLUG)),
-    ).toEqual({ values: {}, unrenderable: [] });
+    ).toEqual({ values: {}, unrenderable: [], readAt: expect.any(Number) });
   });
 });
 

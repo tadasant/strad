@@ -34,6 +34,13 @@ gateway:
     #   the store (STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON). A key cannot
     #   be kept behind the lock it opens; that is the only exception.
     provider: env
+    # A process reads the store ONCE and holds that reading for ttlSeconds; every
+    # namespace it serves is a slice of it. A change written through strad's own
+    # console lands at once. One made outside it lands within ttlSeconds (a
+    # rotation) or negativeTtlSeconds (a new name). Both are long on purpose:
+    # every read is billed per parameter and secrets change a few times a month.
+    # ttlSeconds: 3600 # max 86400
+    # negativeTtlSeconds: 600 # max 86400
 
     # Bounds how long a ROTATION can go unnoticed. The snapshot of the namespace
     # is refreshed on the first read after it goes stale. It also bounds how

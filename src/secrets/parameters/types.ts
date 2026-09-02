@@ -104,6 +104,23 @@ export interface ParameterResolver {
    * down", which are the same symptom and opposite responses.
    */
   resolveDetailed?(namespace: string): Promise<ResolvedNamespace>;
+  /**
+   * Drop whatever reading of the store this resolver holds, so the next read
+   * reaches it.
+   *
+   * Optional because a resolver that holds nothing has nothing to drop. Where
+   * it exists it is the runtime provider's `invalidate()` and its miss-driven
+   * refresh — the two signals, besides the TTL, on which a running gateway
+   * re-reads the store. See `snapshot()` in gcp.ts.
+   */
+  forget?(): void;
+  /**
+   * How old the held reading is, in ms; `Infinity` when nothing is held.
+   *
+   * What lets a caller chasing a miss tell "the store was read a moment ago
+   * and the name is not there" from "the name may have been added since".
+   */
+  snapshotAgeMs?(): number;
 }
 
 export interface ResolvedNamespace {
@@ -119,7 +136,25 @@ export interface ResolvedNamespace {
    * (it resolves to nothing, which the console should say) but is NOT hard,
    * because `resolve()` has always skipped it and returned the rest.
    */
-  unrenderable: { variable: string; hard: boolean; reason: string }[];
+  unrenderable: {
+    variable: string;
+    hard: boolean;
+    reason: string;
+    /**
+     * The failure was a moment — a throttle, a server error, a timeout — and
+     * not the store's settled answer about the parameter. A resolver holding a
+     * snapshot does not remember a render that carries one.
+     */
+    transient?: boolean;
+  }[];
+  /**
+   * When the reading these values came from was taken, epoch ms.
+   *
+   * A resolver that holds a snapshot answers from it, so a value is a claim
+   * about the store AS OF this moment rather than as of the call. Absent from a
+   * resolver that reads live.
+   */
+  readAt?: number;
 }
 
 /** A store that provides both admin and resolver surfaces. */

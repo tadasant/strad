@@ -525,7 +525,7 @@ describe("observe", () => {
     // THE leak the fresh-eyes review caught. A store read ends in JSON.parse over
     // a `:render`ed payload, which is the dereferenced secret in plaintext. A
     // corrupted envelope throws a SyntaxError whose message embeds a ~30-char
-    // window of that body, and on a cold cache snapshot.ts re-throws it raw. A
+    // window of that body, and on a cold view view.ts re-throws it raw. A
     // 200-char cap does not help — the window sits well inside it. Only reducing
     // a non-ParameterStoreError to its CLASS NAME does.
     const secret = "SUPERSECRETTOKENVALUE1234567890";

@@ -17,7 +17,7 @@ import {
 } from "../secrets/parameters/index.ts";
 import { mcpNamespace } from "../deploy/server-namespaces.ts";
 import { waiversBySlug } from "../deploy/unseeded.ts";
-import { errorSummary } from "../secrets/provider/snapshot.ts";
+import { errorSummary } from "../secrets/provider/view.ts";
 import {
   placeholderReason,
   reasonFor,
@@ -420,7 +420,7 @@ const DEFAULT_TIMEOUT_MS = 4000;
  *
  * The fan-out is deliberately unbounded, and that is safe rather than lucky:
  * `StoreSecretProvider` reads a whole NAMESPACE and caches it behind
- * `snapshot.ts`, which is single-flighted — so twenty concurrent `get()`s on a
+ * `view.ts`, which is single-flighted — so twenty concurrent `get()`s on a
  * cold cache open ONE connection to the store, not twenty. A future provider that
  * reads per name would need a semaphore here.
  */
@@ -467,12 +467,12 @@ async function withDeadline(
     // over a `:render`ed payload — which is the dereferenced secret, in plaintext.
     // A truncated or corrupted envelope throws a `SyntaxError` whose message
     // embeds a window of the body it choked on, and on a COLD cache
-    // `snapshot.ts` re-throws it raw rather than serving stale values. That
+    // `view.ts` re-throws it raw rather than serving stale values. That
     // message would land in `detail` and render, as visible text, on a page whose
     // entire claim is that it never prints bytes. Truncating to 200 characters
     // does not help: the window is ~30 characters and sits well inside the cap.
     //
-    // `errorSummary` is the defence snapshot.ts already wrote for exactly this,
+    // `errorSummary` is the defence view.ts already wrote for exactly this,
     // and reusing it is the point — a `ParameterStoreError` message is known safe
     // (method + resource, query and `:verb` stripped) and passes through; anything
     // else is reduced to its class name. The cap stays as a second belt.

@@ -46,17 +46,20 @@ export const RESOLVER_ENV = {
  */
 export interface ResolverOptions {
   /**
-   * How long an enumeration of the store may be reused, in ms. `0` (the
-   * default) means never.
+   * How long one reading of the store may be reused, in ms. `0` (the default)
+   * means never.
    *
-   * A one-shot, READ-ONLY deploy reader sets this. `render-spec` and
-   * `store:check` each resolve every namespace, and `resolve()` enumerates the
-   * whole project once per namespace — so the cost is N x P version reads for P
-   * parameters, and it grows with the server count. The gateway and the console
-   * leave it off: they write, and a cached roster answers a freshly-written
-   * parameter with "absent".
+   * The running gateway sets it to `gateway.secrets.ttlSeconds`: every
+   * namespace it reads — the gateway's own, each `${NAME}`-referencing slug's,
+   * each `params: true` builtin's — slices ONE snapshot, so the store is read
+   * once per TTL per process rather than once per TTL per namespace. The two
+   * deploy-time readers, `render-spec` and `store:check`, set it too: each
+   * resolves every namespace in one shot. The console's ADMIN client leaves it
+   * off, because it writes and re-lists in the same breath.
    */
-  rosterTtlMs?: number;
+  snapshotTtlMs?: number;
+  /** Test seam: the clock the snapshot's age is measured on. */
+  now?: () => number;
 }
 
 export function resolverFromEnv(
@@ -77,6 +80,7 @@ export function resolverFromEnv(
     pmApiBase: env[RESOLVER_ENV.pmApiBase],
     smApiBase: env[RESOLVER_ENV.smApiBase],
     tokenUrl: env[RESOLVER_ENV.tokenUrl],
-    rosterTtlMs: opts.rosterTtlMs,
+    snapshotTtlMs: opts.snapshotTtlMs,
+    now: opts.now,
   });
 }

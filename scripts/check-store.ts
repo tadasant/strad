@@ -66,7 +66,7 @@ import { checkStore } from "../src/deploy/store-check.ts";
 import { resolverFromEnv } from "../src/secrets/parameters/index.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
-import { errorSummary } from "../src/secrets/provider/snapshot.ts";
+import { errorSummary } from "../src/secrets/provider/view.ts";
 
 function usage(message: string): never {
   console.error(`::error::${message}`);
@@ -128,8 +128,8 @@ const config = (() => {
 // running as the console admin would answer a question nobody asked.
 // Same one-shot, read-only enumeration reuse as `render-spec`: this check
 // resolves every namespace, and without it each one re-reads a version of every
-// parameter in the project. See `resolverFromEnv`'s `rosterTtlMs`.
-const store = resolverFromEnv(process.env, { rosterTtlMs: 10 * 60_000 });
+// parameter in the project. See `resolverFromEnv`'s `snapshotTtlMs`.
+const store = resolverFromEnv(process.env, { snapshotTtlMs: 10 * 60_000 });
 if (!store) {
   // Two different failures, and telling someone to set a variable they have
   // already set is how a corrupt key gets diagnosed as a missing one.

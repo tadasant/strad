@@ -155,9 +155,11 @@ name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace) and
 Where a running strad resolves `${NAME}` from, and **when**. `env` (the default)
 reads the process environment, so a secret is fixed for the life of the container
 and changing one needs a deploy. `gcp-parameter-store` reads the parameter store
-while the gateway runs, so a rotation lands within `ttlSeconds` and an addition
-within `negativeTtlSeconds` — no deploy. One provider per deployment, because two
-ways to manage a credential means one is stale and nobody knows which.
+while the gateway runs — once per process, held for `ttlSeconds` — so a change
+made through strad's console lands at once, a rotation made outside it within
+`ttlSeconds`, and an addition within `negativeTtlSeconds`. No deploy. One
+provider per deployment, because two ways to manage a credential means one is
+stale and nobody knows which.
 
 ## `consoleEnv`
 

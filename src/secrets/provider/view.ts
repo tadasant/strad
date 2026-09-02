@@ -1,33 +1,37 @@
 /**
- * A TTL'd, single-flighted, stale-on-error cache of named maps.
+ * A single-flighted, last-known-good view of one named map over a resolver.
  *
  * Two callers need exactly this and would otherwise each grow their own copy:
  *
- *   - `StoreSecretProvider`, caching one gateway namespace, so `${NAME}` can be
- *     resolved on the request path without a round trip per reference.
- *   - the registry, caching a `params: true` server's namespace, so a builtin's
- *     options can be re-resolved per tool call without a round trip per call.
+ *   - `StoreSecretProvider`, over one namespace, so `${NAME}` resolution on the
+ *     request path survives a resolver that has started failing.
+ *   - the registry, over a `params: true` server's namespace, so a builtin's
+ *     options can be re-resolved per tool call with the same property.
  *
- * The unit is a whole map rather than a single entry because that is the grain
- * the backing store actually reads at: resolving a namespace is one list plus a
- * render per parameter, so caching per name would turn a page of ten references
- * into ten full listings.
+ * It holds NO TTL. How long a value may be reused is decided one layer down, by
+ * the resolver's own snapshot (`gateway.secrets.ttlSeconds`, see
+ * parameters/gcp.ts): every `get` asks the resolver, and the resolver answers
+ * from what it holds or reads the store, on its own clock. A second timer here
+ * would only smear that bound — a rotation could land anywhere up to twice the
+ * TTL depending on which timer expired first — and would give the operator two
+ * knobs for one decision. So this class is about what happens when the
+ * resolver THROWS, and nothing else.
  *
  * ## Failure posture
  *
- * A refresh that throws does NOT propagate if a previous value is held: the last
+ * A read that throws does NOT propagate if a previous value is held: the last
  * known good map is served and the caller is warned. A secret store going down
  * must not take the gateway down with it — trading "secrets are stale" for "the
- * gateway is offline" is the worse deal by a wide margin.
+ * gateway is offline" is the worse deal by a wide margin. The retry is backed
+ * off, so an outage costs one failed read per `FAILURE_BACKOFF_MS`, not per
+ * request.
  *
- * With nothing held — the very first load failed — the error DOES propagate.
+ * With nothing held — the very first read failed — the error DOES propagate.
  * There is nothing to serve, and reporting an empty namespace would turn an
  * outage into a silent misconfiguration.
  */
 
-export interface SnapshotCacheOptions {
-  /** How long an entry is fresh. */
-  ttlMs: number;
+export interface NamespaceViewOptions {
   /** Injected in tests so the clock is not the thing under test. */
   now?: () => number;
   /** Injected in tests to assert we never log a value. */
@@ -39,28 +43,28 @@ export interface SnapshotCacheOptions {
 interface Entry {
   values: Record<string, string>;
   fetchedAt: number;
-  /** Set while a refresh is in flight, so concurrent readers share one read. */
+  /** Set while a read is in flight, so concurrent readers share one read. */
   inflight?: Promise<void>;
   /** Identity of the in-flight refresh, so it only clears its own. */
   token?: object;
-  /** Bumped by `invalidate`; a refresh started earlier will not commit. */
+  /** Bumped by `invalidate`; a read started earlier will not commit. */
   generation: number;
-  /** When the last refresh failed, so an outage is not retried per request. */
+  /** When the last read failed, so an outage is not retried per request. */
   lastFailureAt?: number;
 }
 
-/** How long to wait before retrying after a failed refresh. */
+/** How long a failed read is not retried, with the last good map served instead. */
 const FAILURE_BACKOFF_MS = 5_000;
 
-export class SnapshotCache {
+export class NamespaceView {
   private readonly entries = new Map<string, Entry>();
   private readonly now: () => number;
   private readonly warn: (message: string) => void;
 
   constructor(
-    /** Load one key's map from the backing store. */
+    /** Read one key's map from the resolver. */
     private readonly load: (key: string) => Promise<Record<string, string>>,
-    private readonly opts: SnapshotCacheOptions,
+    private readonly opts: NamespaceViewOptions = {},
   ) {
     this.now = opts.now ?? Date.now;
     this.warn =
@@ -70,36 +74,30 @@ export class SnapshotCache {
       });
   }
 
-  /** The cached map for `key`, refreshing it if stale. */
+  /**
+   * The map for `key`: the resolver's current answer, or the last good one if
+   * the resolver is failing and one is held.
+   */
   async get(key: string): Promise<Record<string, string>> {
-    const entry = this.entries.get(key);
-    if (entry && this.now() - entry.fetchedAt < this.opts.ttlMs) {
-      return entry.values;
-    }
     await this.refresh(key);
     return this.entries.get(key)?.values ?? {};
   }
 
-  /** The cached map, without refreshing. `undefined` when nothing is held. */
+  /** The held map, without reading. `undefined` when nothing is held. */
   peek(key: string): Record<string, string> | undefined {
     return this.entries.get(key)?.values;
   }
 
-  /** Age of the held map in ms, or `Infinity` when nothing is held. */
-  age(key: string): number {
-    const entry = this.entries.get(key);
-    return entry ? this.now() - entry.fetchedAt : Infinity;
-  }
-
   /**
-   * Drop what is held, and make any in-flight refresh discard its result.
+   * Drop what is held, and make any in-flight read discard its result.
    *
-   * The generation bump is what makes this STICK. Without it: a reader triggers a
-   * refresh whose read captures the pre-write state, a writer then writes and
+   * The generation bump is what makes this STICK. Without it: a reader starts a
+   * read that captures the pre-write state, a writer then writes and
    * invalidates, and the in-flight read lands afterwards and installs what it
-   * captured BEFORE the write. The entry would look fresh, be stale, and stay
-   * that way for a full TTL — quietly turning "a write is visible immediately"
-   * into "a write is ignored".
+   * captured BEFORE the write. It would be served as the last good map on the
+   * next failure, and until then every read would carry the resolver's own
+   * (already dropped) snapshot forward — quietly turning "a write is visible
+   * immediately" into "a write is ignored".
    */
   invalidate(key?: string): void {
     if (key === undefined) {
@@ -107,7 +105,7 @@ export class SnapshotCache {
       return;
     }
     const entry = this.entries.get(key);
-    // The entry survives so an in-flight refresh has a generation to compare
+    // The entry survives so an in-flight read has a generation to compare
     // against, but `fetchedAt: -Infinity` marks it as holding nothing: it is
     // stale for `get`, and `held()` reads false so a failure cannot serve it.
     this.entries.set(key, {
@@ -125,6 +123,10 @@ export class SnapshotCache {
     return entry !== undefined && entry.fetchedAt !== -Infinity;
   }
 
+  /**
+   * Read `key` through the resolver, sharing the read with any caller already
+   * waiting on it. Public so a miss can force one; `get` is the ordinary path.
+   */
   async refresh(key: string): Promise<void> {
     const existing = this.entries.get(key);
     if (existing?.inflight) return existing.inflight;
@@ -142,7 +144,7 @@ export class SnapshotCache {
 
     const generation = existing?.generation ?? 0;
     // A token rather than the promise itself: the `finally` below has to know
-    // whether the entry still belongs to THIS refresh, and it cannot reference
+    // whether the entry still belongs to THIS read, and it cannot reference
     // the promise it is part of before that promise exists.
     const token = {};
 
@@ -169,12 +171,12 @@ export class SnapshotCache {
         });
         // Names the subsystem and the failure. Never a secret, never a value.
         this.warn(
-          `[strad] ${this.opts.label ?? "snapshot"} refresh failed for "${key}"; ` +
+          `[strad] ${this.opts.label ?? "namespace"} read failed for "${key}"; ` +
             `serving the last known good values: ${errorSummary(err)}`,
         );
       } finally {
         const current = this.entries.get(key);
-        // Clear only OUR refresh. A blanket clear would also wipe a newer one
+        // Clear only OUR read. A blanket clear would also wipe a newer one
         // that an invalidate started while this was in flight.
         if (current?.token === token) {
           this.entries.set(key, {

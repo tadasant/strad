@@ -980,9 +980,9 @@ only free-form string on the page that strad does not author, and rendering
 `err.message` raw LEAKS A SECRET: a store read ends in `JSON.parse` over a
 `:render`ed payload — the dereferenced secret in plaintext — and a corrupted
 envelope throws a `SyntaxError` whose message embeds a window of that body. On a
-cold cache `snapshot.ts` re-throws it raw rather than serving stale values.
+cold view `view.ts` re-throws it raw rather than serving stale values.
 Truncating does not help; the window is ~30 characters. `withDeadline` therefore
-reuses `errorSummary()` from `snapshot.ts`, which passes a `ParameterStoreError`
+reuses `errorSummary()` from `view.ts`, which passes a `ParameterStoreError`
 message through (method + resource, query and `:verb` stripped) and reduces
 anything else to its class name. `test/ui.secret-status.test.ts` builds the real
 `SyntaxError` and asserts the value is absent from the rendered detail.
@@ -1307,17 +1307,19 @@ namespace the render pass can exceed that, and then the whole diagnosis returns
 null and `cannot render` is simply not drawn — the console degrades to the states
 it had without it rather than to a wrong one.
 
-**And it is bounded by a TTL, which is the trade that stops the amplification.**
-The resolver client is cached per process so the pass does not re-mint an OAuth
-token per page load, and `readStoreDiagnosticsCached` holds the RESULT for
-`gateway.secrets.ttlSeconds`, capped at one minute — so a `/ui` reload and a hard
-poller on `/api/secrets/readiness` cost one pass per minute rather than one per
-request. What that buys in cost it pays for in freshness: a parameter seeded by
-anything other than this console can take up to a minute to change a row, and the
-store can be broken for up to a minute before the diagnosis says so. The
-staleness is therefore printed rather than hidden — `StoreDiagnostics.ageMs`, the
-console's "was read 12s ago", and `store.diagnosis.ageSeconds` in the readiness
-JSON — and a write THROUGH the console drops the cache, so a rotation is not
+**And it is answered from the process's one reading of the store, which is what
+stops the amplification.** The diagnosis reads through the SAME store client the
+gateway resolves through (`diagnosticStore` is the runtime resolver, from
+`src/index.ts`), and that client holds one reading for `gateway.secrets.ttlSeconds`
+(#69). `readStoreDiagnosticsCached` additionally holds the pass's RESULT for up to
+one minute, so a hard poller does not re-slice per request and a store that is
+DOWN costs one attempted pass per backoff. What that buys in cost it pays for in
+freshness: a parameter seeded by anything other than this console can take up to
+the TTL to change a row, and the store can be broken for that long before the
+diagnosis says so. The staleness is therefore printed rather than hidden —
+`StoreDiagnostics.ageMs` is the age of the READING, not of the pass; the
+console's "was read 12s ago"; and `store.diagnosis.ageSeconds` in the readiness
+JSON — and a write THROUGH the console drops the reading, so a rotation is not
 contradicted by the row it was performed from. A pass whose index or render half
 did NOT read is held for five seconds instead of the full TTL, because a shrug
 cached for a minute would extend an outage; a namespace-wide render REFUSAL is
@@ -2831,12 +2833,14 @@ broken under that slug.
 **Two smaller costs of the same layer, recorded here rather than as entries of
 their own:**
 
-- A newly SEEDED per-server name appears within `ttlSeconds` (60s) rather than
-  `negativeTtlSeconds` (10s). The layer sets `negativeTtlMs: Infinity`, because a
-  miss on it is the normal case — most names live in the shared namespace — and
-  `list()` enumerates the whole project, so chasing every miss would cost a full
-  listing per gateway-resolved name per slug. Rotation of an existing per-server
-  value is unaffected; the shared layer keeps its miss refresh.
+- A newly SEEDED per-server name appears within `ttlSeconds` (an hour) rather
+  than `negativeTtlSeconds` (ten minutes), unless it was seeded through the
+  console. The layer sets `negativeTtlMs: Infinity`, because a miss on it is the
+  normal case — most names live in the shared namespace — and chasing a miss
+  drops the process's whole reading of the store (#69), so chasing every miss
+  would cost a full re-read per gateway-resolved name per slug. Rotation of an
+  existing per-server value is unaffected; the shared layer keeps its miss
+  re-read.
 - A fleet pays one namespace read per TTL per slug that both references a
   `${NAME}` and is actually called, on top of the one shared read. Same shape as
   the render-time cost in limitation #52, moved to the request path and cached.
@@ -3204,18 +3208,50 @@ grow when servers are added. Six new `google-sheets-*` slugs took that past
 Parameter Manager's per-project read quota: the render 429'd and a production deploy
 died before `doctl` was called.
 
-The shape is unchanged. What changed is that the two DEPLOY-TIME readers —
-`render-spec` and `store:check` — are one-shot and read-only, so they set
-`rosterTtlMs` and enumerate once per process instead of once per namespace. At
-the shape a render actually has — one store-wide `list()` then fourteen namespace
-`resolve()`s over 56 parameters, counted against the in-memory fake — that is 1751
-requests down to 169.
+The shape is unchanged. What changed, twice, is how often it is paid.
 
-**What is still true.** The gateway and the console leave the reuse OFF, because
-they write, and a cached roster answers a freshly-written parameter with "absent".
-They still pay N x P. Nothing bounds P either: a store that grew to 500 parameters
-would cost 1000 version reads for one enumeration, per process, however few
-namespaces it needed.
+First the two DEPLOY-TIME readers — `render-spec` and `store:check` — which are
+one-shot and read-only, so they hold one reading of the store for the run
+(`snapshotTtlMs` on the client) and enumerate once per process instead of once
+per namespace. At the shape a render actually has — one store-wide `list()` then
+fourteen namespace `resolve()`s over 56 parameters, counted against the in-memory
+fake — that is 1751 requests down to 169.
+
+Then the RUNNING GATEWAY (#239). It read six or seven namespaces — the gateway's
+own, every `${NAME}`-referencing slug's, every `params: true` builtin's, the
+console diagnosis's — each on its own 60-second `SnapshotCache`, and the
+reachability poller kept every one of them hot. Cost was namespaces x P x 1440 a
+day: ~3.2M billed reads in August, ~665k API calls a day flat around the clock
+on September 1, the largest line on the account, and growing by P every time a
+server was added. Secrets change a few times a month. So the gateway's store
+client now holds ONE reading for `gateway.secrets.ttlSeconds` — an hour by
+default, and the schema allows a day — and every namespace slices it: the
+providers, the registry's `params:` resolution and the console's diagnosis,
+which reads through the same client instance rather than one of its own. The
+provider layer's own TTL is gone (`SnapshotCache` became `NamespaceView`, a
+single-flight, last-known-good view with no timer), because two timers over one
+value only smear the bound. Counted at production's shape
+(`test/secrets.read-accounting.test.ts`): one reachability tick cost 10
+enumerations and 388 billed reads before, and now costs one enumeration and 68 —
+once per hour rather than once per minute, 1,632 reads a day instead of 558,720
+per core process.
+
+**What that costs.** A rotation made OUTSIDE strad lands within an hour, not a
+minute. A write through the console, or through the parameter write-back route,
+drops the reading and lands at once — which it did NOT before this change: the
+console only ever dropped the diagnosis cache, so the "instant on the process
+that wrote it" the docs promised was never true of the runtime provider. The
+console also grew a **Re-read the store** button, the explicit signal for a
+value written elsewhere. A render that met a transient failure is not held (the
+next reader renders again); a `400` is, until the TTL or a write. The console's
+diagnosis is now as old as the reading and prints that age rather than the
+pass's.
+
+**What is still true.** The console's ADMIN client leaves the reuse OFF, because
+it writes and re-lists in one breath, and a held reading answers a freshly-written
+parameter with "absent". A single read still costs P, and nothing bounds P: a
+store that grew to 500 parameters would cost 1000 version reads for one
+enumeration, per process, however few namespaces it needed.
 
 **Why not.** The real fix is to put the namespace on a parameter LABEL so the
 listing can filter server-side. That means a schema change plus a backfill of every
@@ -3239,8 +3275,10 @@ by every call in a store-wide read. A `Retry-After` longer than the remaining bu
 gives up immediately rather than sleeping past the bound.
 
 **Undo.** Label a parameter with its namespace at `create()`, backfill the existing
-ones, and filter the listing server-side. Then `rosterTtlMs` can go back to zero
-everywhere and the retry stops being load-bearing.
+ones, and filter the listing server-side. Then an enumeration costs the namespace
+rather than the project, the deploy readers can drop their reuse, and the retry
+stops being load-bearing. The gateway's one-reading-per-process stays worth
+having regardless: it is what makes the read rate independent of the poller.
 
 ## 70. Nothing escalates a slug that sits `unconfigured` forever
 
