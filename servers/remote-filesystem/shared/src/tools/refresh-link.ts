@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_LINK_DAYS, MAX_LINK_DAYS } from "../config.js";
 import {
   EXPIRES_DESCRIPTION,
+  LINK_HANDLING_DESCRIPTION,
   PATH_DESCRIPTION,
   artifactPayload,
   fail,
@@ -64,6 +65,8 @@ link 403s — the usual cause is their browser opening it as the wrong one of se
 signed-in Google accounts, not a missing grant. And note the inverse: \`access: "link"\`
 on something you believe is sensitive means the domain grant is gone, so it 403s for
 everyone; set_sensitivity puts it back.
+
+${LINK_HANDLING_DESCRIPTION}
 
 **Use cases:**
 - A link in an old PR comment or Slack message has expired

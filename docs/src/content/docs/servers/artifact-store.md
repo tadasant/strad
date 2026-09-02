@@ -16,10 +16,10 @@ than left to the caller.
 
 One boolean picks between them.
 
-| `is_sensitive` | object state                             | link                                       | expires                                 |
-| -------------- | ---------------------------------------- | ------------------------------------------ | --------------------------------------- |
-| `false`        | private                                  | signed URL on `storage.googleapis.com`     | after `expires_in_days`, default **14** |
-| `true`         | private + `domain-<viewer>` `READER` ACL | `storage.cloud.google.com/<bucket>/<path>`, plus `?authuser=` when an account is configured | never |
+| `is_sensitive` | object state                             | link                                                                                        | expires                                 |
+| -------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `false`        | private                                  | signed URL on `storage.googleapis.com`                                                      | after `expires_in_days`, default **14** |
+| `true`         | private + `domain-<viewer>` `READER` ACL | `storage.cloud.google.com/<bucket>/<path>`, plus `?authuser=` when an account is configured | never                                   |
 
 A **signed** link opens instantly for whoever holds it, with no Google account.
 That is the good experience and it is what a screenshot should get.
@@ -113,6 +113,50 @@ downgrades a 14-day request to 7; handing back a link that expires in half the
 time the caller asked for is the failure this design exists to avoid. See [Known
 limitations](/limitations/).
 
+## The query string is the credential
+
+A signed URL's signature lives in its query string, and that query string is most
+of the URL's length. **Altering it is loud for the reader and silent for whoever
+published it** — the link still looks like a link, and it 403s in someone else's
+browser.
+
+That has already cost an incident. An agent uploaded an artifact, got a working
+URL, and published it to a human bolded in markdown with everything after the `?`
+dropped. The human got a 403. The 403 was misdiagnosed and escalated as _"the
+bucket is not public, every artifact tonight has been unreachable"_ — a false
+infrastructure incident, from a formatting bug, with someone sent to look at a
+bucket ACL.
+
+So `upload_file`, `get_upload_url` and `refresh_link` all carry the same guidance
+in their tool descriptions, from one shared constant: pass the URL through
+verbatim, check it with `curl` before publishing it, and read the error code
+correctly. `[text](url)` is the safe markdown form because nothing can be glued to
+the end of it; Slack renders that literally, so there the bare URL or `<url|text>`.
+
+A `path` cannot be turned back into a URL. There is no signature to reconstruct —
+only a tool can mint one.
+
+**This is about signed links only.** A `restricted` artifact's URL carries no
+signature at all: its query string is the `?authuser=` account selector, and
+[`sign_in_hint`](#a-restricted-link-names-an-account) is what diagnoses a 403 on
+one — by telling the reader to _replace_ that value, which is the opposite of the
+advice above.
+
+**What the error actually means.** Observed against a production bucket. Read the
+code rather than the status, because the two disagree:
+
+| Code                    | HTTP | Cause                                                                                     |
+| ----------------------- | ---- | ----------------------------------------------------------------------------------------- |
+| `AccessDenied`          | 403  | The request carried no signature at all — the query string was dropped, or cut at the `?` |
+| `SignatureDoesNotMatch` | 403  | Characters were added or removed (markdown `**` glued onto the end, a line wrap)          |
+| `MissingSecurityHeader` | 400  | A partly-kept query string — some signing parameters survived, some did not               |
+| `ExpiredToken`          | 400  | The link aged out. `refresh_link` mints a fresh one                                       |
+
+**None of them means the bucket is misconfigured.** Objects here are private by
+design, whatever the bucket or the mount is called — and the mount being called
+`remote-filesystem-tmp-public` refers to its _links_ being shareable without a
+sign-in, not to its objects being world-readable.
+
 ## Expiry kills the link, never the artifact
 
 `refresh_link` takes an artifact's `path` and mints a fresh URL. Nothing is
@@ -205,7 +249,7 @@ contains some — written before this server existed, by a tool that set `allUse
   into an anonymous URL mintable by a read-only tool. The call fails and names
   UBLA instead.
 
-The same reasoning runs one level down. An ACL change that GCS *refuses* — a `403`
+The same reasoning runs one level down. An ACL change that GCS _refuses_ — a `403`
 on removing an `allUsers` grant, say — fails the call rather than being swallowed:
 the alternative is `upload_file` reporting `restricted` for an object it did not
 manage to make private.
@@ -276,17 +320,15 @@ The two credentials come from the parameters system, not from hand-written
 
 ## Tools
 
-| tool              | group     | what it does                               |
-| ----------------- | --------- | ------------------------------------------ |
-| tool             | group     | what it does                                      |
-| ---------------- | --------- | ------------------------------------------------- |
-| `upload_file`    | readwrite | store bytes from the MCP call, return a link      |
-| `get_upload_url` | readwrite | mint a temporary curl-friendly POST upload target |
-| `refresh_link`   | readonly  | mint a fresh link for an existing artifact        |
-| `list_files`     | readonly  | browse one directory level, to find a path        |
-| `download_file`  | readonly  | read an artifact's bytes back                     |
+| tool              | group     | what it does                                      |
+| ----------------- | --------- | ------------------------------------------------- |
+| `upload_file`     | readwrite | store bytes from the MCP call, return a link      |
+| `get_upload_url`  | readwrite | mint a temporary curl-friendly POST upload target |
+| `refresh_link`    | readonly  | mint a fresh link for an existing artifact        |
+| `list_files`      | readonly  | browse one directory level, to find a path        |
+| `download_file`   | readonly  | read an artifact's bytes back                     |
 | `set_sensitivity` | readwrite | re-classify an artifact and re-link it            |
-| `delete_file`    | readwrite | permanently delete (the only true revoke)         |
+| `delete_file`     | readwrite | permanently delete (the only true revoke)         |
 
 `refresh_link` is `readonly` even though it mints a credential-bearing URL: it
 changes nothing about the object, and withholding it from a read-only role would

@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createMCPServer,
   createUploadLeaseStore,
+  LINK_HANDLING_DESCRIPTION,
   loadConfig,
   toolDefinitions,
   UploadLeaseStore,
@@ -476,6 +477,82 @@ test("the is_sensitive copy steers away from itself, identically in both tools",
   assert.match(uploadCopy, /security findings/i);
   assert.match(uploadCopy, /screenshots/i);
   assert.equal(upload.inputSchema.properties.is_sensitive.default, false);
+});
+
+/**
+ * A signed URL's query string IS the credential, and altering it fails silently
+ * for the publisher. The incident this guards: a working URL published bolded in
+ * markdown with everything after the `?` dropped, whose 403 was then escalated as
+ * a bucket that "is not public" — a false infrastructure incident from a
+ * formatting bug. The last assertion is the one that would have stopped it, so it
+ * is asserted separately rather than folded into a single regex over the block.
+ */
+test("the three tools the guidance is written for carry it verbatim", () => {
+  const definitions = toolDefinitions(
+    () => new FakeStore(),
+    new UploadLeaseStore({ slug: "remote-filesystem-tmp-public" }),
+  );
+  for (const name of ["upload_file", "get_upload_url", "refresh_link"]) {
+    const definition = definitions.find((t) => t.name === name);
+    assert.ok(definition, `${name} is not in the tool definitions`);
+    assert.ok(
+      definition.description.includes(LINK_HANDLING_DESCRIPTION),
+      `${name} does not carry the link-handling guidance verbatim`,
+    );
+  }
+
+  // The tools that hand back no link at all must not grow a copy — a second,
+  // drifting copy is how this guidance rots. `set_sensitivity` is deliberately
+  // NOT on this list: it re-links an artifact through the same artifactPayload,
+  // so adding the guidance there later is a fix, not a regression, and a test
+  // that forbade it would stand in the way of its own point.
+  for (const name of ["list_files", "download_file", "delete_file"]) {
+    const definition = definitions.find((t) => t.name === name);
+    assert.ok(definition, `${name} is not in the tool definitions`);
+    assert.ok(
+      !/query string IS the credential/i.test(definition.description),
+      `${name} hands back no link but carries the link-handling guidance`,
+    );
+  }
+});
+
+test("the link-handling guidance keeps the three points and the four codes", () => {
+  const copy = LINK_HANDLING_DESCRIPTION;
+
+  // 1. Verbatim: no truncation, no wrapping, no emphasis, no rebuilding from path.
+  assert.match(copy, /query string IS the credential/);
+  assert.match(copy, /pass the\s+URL through verbatim/);
+  assert.match(copy, /`\*\*<url>\*\*` glues the trailing asterisks/);
+  assert.match(copy, /`path` cannot be\s+turned back into a URL/);
+  assert.match(copy, /\[text\]\(url\)/);
+  assert.match(copy, /Slack renders that literally/);
+
+  // 2. Fetch it before publishing it — the whole command, not a stray "200".
+  assert.match(copy, /curl -sS -o \/dev\/null -w '%\{http_code\}' "<url>"/);
+  assert.match(copy, /must\s+print `200`/);
+
+  // 3. The codes, each observed against a production bucket. Framed on the CODE
+  // because the statuses disagree: MissingSecurityHeader is a 400, not a 403.
+  assert.match(copy, /Read the error code, not the status/);
+  assert.match(copy, /`AccessDenied`: the request\s+carried no signature/);
+  assert.match(copy, /`SignatureDoesNotMatch`: characters\s+were added or removed/);
+  assert.match(copy, /`MissingSecurityHeader`: the query string was only partly kept/);
+  assert.match(copy, /`ExpiredToken`: the link aged out, and refresh_link mints a fresh one/);
+
+  // The clause that would have prevented the false incident. Do not delete it.
+  assert.match(copy, /None of them\s+means the bucket is misconfigured/);
+
+  // Scoping. Unscoped, this text contradicts sign_in_hint, which tells a reader to
+  // REPLACE the ?authuser= value in a restricted URL's query string.
+  assert.match(copy, /For a signed link \(`access: "link"`\)/);
+  assert.match(copy, /`restricted` artifact fails differently and carries no\s+signature/);
+  assert.match(copy, /`sign_in_hint` diagnoses that one/);
+
+  // It must not name a bucket: production's ends in -public, staging's does not.
+  assert.ok(
+    !/-public/.test(copy),
+    "the guidance names a deployment-specific bucket, and is wrong on the others",
+  );
 });
 
 test("every tool description carries the sections the house style requires", () => {
