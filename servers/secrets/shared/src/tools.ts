@@ -552,12 +552,20 @@ export function registerTools(server: Server, deps: ToolDeps): void {
                 "in its environment). The gateway re-reads the store within gateway.secrets.ttlSeconds.",
             );
           }
+          // A refresh the gateway held off — inside its 30-second floor, or
+          // core not answering — is a plain outcome, not a tool error: nothing
+          // is broken, the value lands within the TTL, and the write tools
+          // report the same outcome the same way. The one error above is a
+          // capability gap, which is different in kind.
           const outcome = await deps.refreshGateway();
           if (!outcome.refreshed) {
-            return error(
-              `The gateway did not re-read the store: ${outcome.reason}. It re-reads on its own within ` +
-                "gateway.secrets.ttlSeconds.",
-            );
+            return text({
+              refreshed: false,
+              reason: outcome.reason,
+              note:
+                "The gateway kept the reading it holds. It re-reads the store on its own within " +
+                "gateway.secrets.ttlSeconds; call again after the floor if it must be sooner.",
+            });
           }
           return text({
             refreshed: true,

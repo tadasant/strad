@@ -724,13 +724,16 @@ test("refresh_gateway calls the hook and reports what the gateway did", async ()
   assert.equal(calls, 1);
   assert.equal(JSON.parse(ok.content[0].text).refreshed, true);
 
-  // A floored or failed refresh is an error the agent can read, never a throw
-  // and never a claim that it landed.
+  // A floored or failed refresh is an OUTCOME the agent can read — not a
+  // throw, not a tool error, and never a claim that it landed. Nothing is
+  // broken when the gateway keeps a reading it took a moment ago.
   outcome = { refreshed: false, reason: "core re-read the store 4s ago" };
   const held = await client.callTool({ name: "refresh_gateway", arguments: {} });
-  assert.equal(held.isError, true);
-  assert.match(held.content[0].text, /did not re-read the store: core re-read the store 4s ago/);
-  assert.match(held.content[0].text, /within gateway\.secrets\.ttlSeconds/);
+  assert.equal(held.isError, undefined);
+  const payload = JSON.parse(held.content[0].text);
+  assert.equal(payload.refreshed, false);
+  assert.equal(payload.reason, "core re-read the store 4s ago");
+  assert.match(payload.note, /within gateway\.secrets\.ttlSeconds/);
   assert.equal(calls, 2);
   await close();
 });

@@ -537,7 +537,9 @@ drift from the grant.
 
 It fails closed. If `cloudresourcemanager.googleapis.com` is not enabled, or the
 probe is refused, or it times out, the server reports no capabilities and serves
-the four read-only tools.
+the four read-only tools — plus `refresh_gateway`, which the probe does not
+govern because it touches nothing in the store: it is offered wherever the
+bundle host can reach core, and only there.
 
 Two honest limits on "cannot drift". `projects:testIamPermissions` answers at
 **project** level, so a grant bound to an individual secret or parameter reads as

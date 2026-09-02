@@ -478,6 +478,13 @@ export function createParamReadHandler(
  * than once per floor. The floor is measured from the last refresh THIS route
  * performed, not from the reading's own age — the route cannot see that, and
  * a console write between two calls is not something it should be charged for.
+ *
+ * It is a PER-PROCESS floor, and it is global only because core runs as one
+ * instance (`instance_count: 1` for the core service in
+ * src/deploy/appspec.ts). A core that scaled out would hold one floor per
+ * replica, and a caller's bound would multiply by the replica count; the
+ * bundle path guards its own single-writer assumption in the renderer, and
+ * this one is worth the same guard on the day core grows a second instance.
  */
 export function createStoreRefreshHandler(
   opts: ParamsHandlerOptions,
