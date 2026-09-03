@@ -107,7 +107,10 @@ jobs:
   # Why each leg is shaped the way it is:
   #
   #   good-eggs   build + test. The build typechecks shared + remote; the tests are
-  #               the browser-free MCP-App gating suite.
+  #               browser-free: the MCP-App gating, the basket read, what a cart
+  #               result may claim, the favorites read, the login wait, and that a
+  #               failed login is retried on the next tool call rather than cached
+  #               for the life of the container.
   #
   #   fetchpet    test, which builds first. fetchpet drives a login form nobody in
   #               this repo controls, and when Fetch redesigned it the server timed
