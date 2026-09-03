@@ -18,8 +18,14 @@
 # runtime needs none of them. `npm prune --omit=dev` alone would not be enough
 # here: in a single stage the pruned files stay in the published `npm ci`
 # layer, so the toolchain still ships — deleted from the container's
-# filesystem, present in the image. The runtime stage copies the pruned tree
-# and nothing else.
+# filesystem, present in the image. The runtime stage takes the pruned tree
+# and nothing that built it.
+#
+# The prune is safe for the telemetry bootstrap because `otel/instrument.mjs`
+# imports node: builtins and @opentelemetry/* only, and remote/ declares every
+# one of those as a `dependency`. Keep it that way: an OTel package that
+# drifts into devDependencies breaks every boot of this image, at `--import`,
+# before the server runs.
 
 # --- build stage --------------------------------------------------------------
 FROM node:22-slim AS build
@@ -59,9 +65,17 @@ LABEL org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
 
-# The built, pruned tree: compiled JS, runtime dependencies, the telemetry
-# bootstrap. No compiler and no test runner.
-COPY --from=build /app /app
+# The built, pruned tree, in the layers it changes in: `node_modules` is decided
+# by the lockfile and stays byte-identical across a source-only commit, so a
+# release that changes only sources re-pushes the workspaces and not the
+# dependency tree. The TypeScript sources ride along inside the workspaces —
+# they are text, not a toolchain.
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/fork ./fork
+COPY --from=build /app/upstream ./upstream
+COPY --from=build /app/remote ./remote
+COPY --from=build /app/otel ./otel
 
 ENV NODE_ENV=production
 ENV PORT=8080
