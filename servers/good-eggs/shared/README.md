@@ -37,6 +37,7 @@ defending the fork's deltas against a careless re-vendor, so a change to the
 cart read, the add reconciliation, the removal path, the login or the favorites
 read belongs with one. `login.test.ts` and `favorites-truthfulness.test.ts`
 both drive the real client over a fake page, through the
-`setSharedBrowserProvider` seam, so the post-login wait, the verdict it feeds and
-the favorites read that follows are covered without either. The in-page DOM
+`setSharedBrowserProvider` seam, so the post-login wait, the verdict it feeds,
+the retry that follows a failed login and the favorites read are covered without
+either. The in-page DOM
 scrape is the one part stubbed, because it runs in a browser.

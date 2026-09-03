@@ -275,14 +275,10 @@ The failure message carries the page WITHOUT its query string, and without the
 `setSharedBrowserProvider`, with no browser and no credentials: the `waitUntil`
 argument, the predicate against the real observed URL and the logged-out forms,
 each verdict, and that the password and the query string stay out of the error.
-Seven of its fifteen cases fail against the code above.
+Seven of its twenty cases fail against the code above.
 
-**What this delta does NOT fix.** The wait is why that login failed; it is not
-why the failure lasted. `createMCPServer()` runs the login once, at container
-boot, latches the failure in `loginFailed`, and returns that cached error from
-every later call — and the bundle host degrades the mount rather than exiting, so
-nothing restarts it. A transient blip at boot still bricks the mount until a
-redeploy. Tracked as [strad#196](https://github.com/tadasant/strad/issues/196).
+**What this delta does not cover.** The wait is why that login failed; it is not
+why the failure lasted. That is delta 9.
 
 ## 7. An unconfirmed favorites page is "unknown", never "you have none"
 
@@ -353,6 +349,66 @@ selectors inside it.
 Only `shared/` came across. `remote/` is strad's own Express +
 `StreamableHTTPServerTransport` front door over the same `createMCPServer()`
 factory — see the README.
+
+## 9. A failed login is retried, not cached for the life of the container
+
+**Upstream (and this tree until this delta).** `createMCPServer()` runs the login
+once and latches its outcome:
+
+```ts
+loginPromise = activeClient!.initialize().catch((error) => {
+  loginFailed = true;
+  loginError = error instanceof Error ? error : new Error(String(error));
+  ...
+```
+
+and `getReadyClient()` short-circuits on that latch forever:
+
+```ts
+if (loginFailed && loginError) {
+  throw new Error(`Login failed: ${loginError.message}`);
+}
+```
+
+Only `cleanup()` clears it.
+
+**Here.** There is one piece of state — `loginAttempt`, the attempt in flight or
+the one that succeeded — and a failed attempt sets it back to null. `attemptLogin()`
+closes and discards the client that failed, so the next caller starts from a clean
+browser context rather than inheriting a page parked on the sign-in form, and
+`getReadyClient()` starts a fresh attempt whenever none is running. Concurrent
+callers share the one attempt. `startBackgroundLogin` takes a second callback,
+`onRecovered`, invoked when an attempt succeeds after a failure.
+
+**Why.** The standalone `remote/` entrypoint exits on a login failure and the
+platform restarts it, so the next boot retries. strad's collapsed bundle is the
+production path and it deliberately does the opposite: with twenty other servers
+on board, it marks the one mount `degraded` and keeps serving. It never calls
+`cleanup()`, the only thing that cleared the latch — so every `get_cart`,
+`get_favorites` and `add_to_cart` on that container answered with the same cached
+error until a redeploy
+([strad#196](https://github.com/tadasant/strad/issues/196)). Login failures are
+very often transient (a slow page, a cold browser, a form that took too long),
+and this turned every one of them into a permanent one.
+
+`servers/fetchpet/shared/src/server.ts` had the same defect and fixed it first;
+this is that shape, so the two browser servers in the bundle behave alike. The
+host passes `onRecovered` for both, clearing `degraded` when a retry logs in
+— otherwise `/healthz` keeps naming a mount that is serving.
+
+The error `getReadyClient()` raises carries `(retry the call)`. That is an
+instruction to the caller rather than a promise about the process: a host that
+treats a failed login as fatal — the standalone image does — may be on its way
+down, and the retry then belongs to its replacement.
+
+`shared/test/login.test.ts` pins it over the same fake browser the wait tests
+use: a login that fails and then works again recovers on the next tool call
+without a restart, on a FRESH context and with `onRecovered` fired exactly once;
+two failures produce two attempts and two reports rather than one replayed; three
+concurrent calls open one context; and a missing credential leaves through the
+callback rather than as a synchronous throw at the host, and is retried once the
+credential arrives. Four of its twenty cases fail against the code above (the
+fifth, the shared attempt, already held).
 
 ## Deltas that predate this fork
 

@@ -968,7 +968,10 @@ async function loadBrowserMounts(): Promise<Mount[]> {
     createMCPServer: (opts: Record<string, unknown>) => {
       registerHandlers: (server: unknown, opts?: { appUi: boolean }) => Promise<void>;
       cleanup: () => Promise<void>;
-      startBackgroundLogin: (onFail: (e: Error) => void) => void;
+      startBackgroundLogin: (
+        onFail: (e: Error) => void,
+        onRecovered?: () => void,
+      ) => void;
     };
     setSharedBrowserProvider: (p: (() => Promise<unknown>) | null) => void;
     clientSupportsApps: (caps: unknown) => boolean;
@@ -994,10 +997,21 @@ async function loadBrowserMounts(): Promise<Mount[]> {
   goodEggsSupportsApps = ge.clientSupportsApps;
 
   if (process.env.GOOD_EGGS_USERNAME && process.env.GOOD_EGGS_PASSWORD) {
-    geCreated.startBackgroundLogin((error: Error) => {
-      geMount.degraded = `login failed: ${error.message}`;
-      logWarn(`good-eggs: ${geMount.degraded} (this mount is degraded; the container keeps serving)`);
-    });
+    // good-eggs retries its login on the next tool call, so `degraded` here is a
+    // report on the LAST attempt, not a verdict. It has to be cleared when an
+    // attempt succeeds — otherwise /healthz keeps naming a mount that is serving.
+    geCreated.startBackgroundLogin(
+      (error: Error) => {
+        geMount.degraded = `login failed: ${error.message}`;
+        logWarn(
+          `good-eggs: ${geMount.degraded} (this mount is degraded; the container keeps serving, and the next tool call retries the login)`,
+        );
+      },
+      () => {
+        geMount.degraded = null;
+        log("good-eggs: login recovered on retry (mount is no longer degraded)");
+      },
+    );
   } else {
     geMount.degraded = "GOODEGGS_EMAIL / GOODEGGS_PASSWORD are not set";
     logWarn(`good-eggs: ${geMount.degraded}`);

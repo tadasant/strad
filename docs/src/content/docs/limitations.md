@@ -1267,7 +1267,8 @@ The copies have since taken strad-local edits, and every one of them is a thing
 the upstream stdio server cannot know about: the shared-browser seam
 (`setSharedBrowserProvider`) that gives three servers one Chromium, browser
 telemetry, and — in `fetchpet` — login selectors that match the form Fetch serves
-today plus a login that retries instead of caching its first failure. Each tree's
+today plus a login that retries instead of caching its first failure (good-eggs,
+which is a fork rather than a vendor copy, carries the same retry; see #10). Each tree's
 README lists its deltas. The debt is real: a re-vendor is a merge, not a copy.
 
 **Why:** the upstream packages publish stdio servers, not libraries strad could
@@ -1312,9 +1313,13 @@ now stops at `domcontentloaded` like every other navigation in that server,
 decides on the landing PATH rather than an exact URL, and takes the page's own
 `storeData.user` as the evidence — a signed-in payload is a successful login
 however the wait ended, and an anonymous one is a failed login however the URL
-looks. What made that outage last a day rather than a call is not fixed: the
-login runs once at container boot and its failure is cached for the life of the
-container, so a transient blip still bricks the mount until a redeploy.
+looks. A failed login is retried rather than latched: the failed attempt is
+discarded, the half-initialized client is closed, and the next tool call starts a
+fresh attempt on a fresh browser context — with the bundle host clearing the
+mount's `degraded` mark when one succeeds. That second half is what decides how
+long an outage lasts: the host degrades this mount instead of exiting, so nothing
+else would ever restart a login it had cached, and a transient blip at boot would
+disable the slug until a redeploy.
 
 **Undo:** if upstream ever publishes `shared` as a library carrying these fixes,
 depend on it and delete the fork.

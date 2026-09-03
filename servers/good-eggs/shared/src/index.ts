@@ -11,6 +11,8 @@ export {
   type SharedBrowserProvider,
   type IGoodEggsClient,
   type ClientFactory,
+  type LoginFailedCallback,
+  type LoginRecoveredCallback,
   type CreateMCPServerOptions,
   type RegisterHandlersOptions,
 } from './server.js';

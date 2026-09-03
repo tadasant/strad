@@ -94,6 +94,13 @@ async function main(): Promise<void> {
   // Launch Chromium and log in now, in the background, so the first real tool
   // call doesn't also pay for a cold browser + a full sign-in flow. On failure,
   // mirror the stdio server: log, clean up, and exit non-zero.
+  //
+  // This container serves ONE server, so a process that cannot log in has
+  // nothing to offer, and a failed health check is louder than a server that
+  // lists eleven tools and errors on all of them. (Inside strad's bundle, where
+  // twenty other servers are on board, the host takes the other option the
+  // shared factory offers: mark the mount degraded and let the next tool call
+  // retry the login.)
   startBackgroundLogin((error: Error) => {
     logError('login', `Background login to Good Eggs failed: ${error.message}`);
     cleanup()
