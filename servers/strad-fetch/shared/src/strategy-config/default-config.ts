@@ -25,7 +25,7 @@ This file defines which scraping strategy to use for different URL prefixes (fir
  *
  * FORK DELTA — the env var is NAMESPACED (upstream reads a bare
  * `STRATEGY_CONFIG_PATH`, which is not a name to claim on a container shared with
- * nineteen other mounts), and the "copy the packaged default in" branch is gone:
+ * twenty other mounts), and the "copy the packaged default in" branch is gone:
  * it resolved a path three directories above the built module, which no layout
  * this tree ships has ever contained, so every deployment took the fallback. The
  * fallback IS the default now, written out plainly.

@@ -75,7 +75,7 @@ test("a swapped id/hash pair is caught by name", () => {
 });
 
 test("with no credentials the server still mounts and lists its tools", async () => {
-  // The bundle hosts sixteen other servers in this process. A missing session
+  // The bundle hosts twenty other servers in this process. A missing session
   // string must cost this server its calls, not the container its boot.
   const { server, registerHandlers } = createMCPServer({ version: "test", env: {} });
   await registerHandlers(server);

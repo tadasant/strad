@@ -686,10 +686,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Nineteen servers now share one process, and one Chromium
+## 24. Twenty-one servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty MCP servers and one
-headless Chromium. An OOM there is a twenty-server outage; it used to be a
+The collapsed bundle is one container running twenty-one MCP servers and one
+headless Chromium. An OOM there is a twenty-one-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -1704,7 +1704,7 @@ V4 cap, delete the V2 branch instead.
 ## 44. `upload_file` reads any local path outside a small denylist
 
 **What.** `servers/remote-filesystem`'s `upload_file` accepts a `file://` URI and
-uploads whatever it reads. It runs in the bundle, whose environment holds eighteen
+uploads whatever it reads. It runs in the bundle, whose environment holds twenty
 other servers' credentials — one of them a whole Telegram account — so
 `file:///proc/self/environ` was a one-call way to publish all of them. `readSource` now refuses `/proc`, `/sys`, `/dev`, `/app`,
 `/root` and `/etc`.

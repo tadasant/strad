@@ -296,7 +296,7 @@ test("a file:// source cannot reach process state or container internals", async
   };
   const upload = toolDefinitions(() => store).find((t) => t.name === "upload_file");
 
-  // This server shares a container with fifteen others, so /proc/self/environ is
+  // This server shares a container with twenty others, so /proc/self/environ is
   // a one-call exfiltration of every credential in the bundle.
   for (const path of [
     "file:///proc/self/environ",

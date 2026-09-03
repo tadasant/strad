@@ -31,7 +31,7 @@ import { type Env, upstreamEnv } from "./config.js";
  * pointing at two Grafanas are two children — the same shape telegram and
  * google-sheets take for the same reason. The child is not started at boot: a
  * mount nobody calls costs nothing, and a bundle that spawned every child at
- * boot would turn one unconfigured Grafana into 20 servers' worth of restart
+ * boot would turn one unconfigured Grafana into 21 servers' worth of restart
  * noise.
  */
 
@@ -216,7 +216,7 @@ export class GrafanaUpstream {
       // allowlist precisely so the bundle's other credentials stay out of it.
       env: upstreamEnv(this.#env),
       // mcp-grafana logs to stderr and speaks JSON-RPC on stdout. Piping keeps
-      // its lines attributable to this slug in a container that has 20 mounts;
+      // its lines attributable to this slug in a container that has 21 mounts;
       // inheriting would interleave them namelessly with the host's own.
       stderr: "pipe",
     });

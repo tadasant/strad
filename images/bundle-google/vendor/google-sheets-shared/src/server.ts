@@ -292,7 +292,7 @@ export interface CreateMCPServerOptions {
  * Builds the client from an environment, LAZILY.
  *
  * Lazily is load-bearing: the image is credential-free, and a missing token must
- * be one mount's failed tool call rather than a boot failure for the eighteen
+ * be one mount's failed tool call rather than a boot failure for the twenty
  * servers sharing the process. So this throws when a tool is CALLED, never when
  * the server is built or its tools are listed.
  */

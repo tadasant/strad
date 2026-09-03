@@ -12,7 +12,7 @@ const CONTAINER_ENV = {
   HOME: process.env.HOME,
   GRAFANA_URL: "https://grafana.example.com",
   GRAFANA_SERVICE_ACCOUNT_TOKEN: "glsa-test-token",
-  // The other nineteen mounts' credentials, which share this process's
+  // The other twenty mounts' credentials, which share this process's
   // environment and must not share the child's.
   SLACK_BOT_TOKEN: "xoxb-not-for-grafana",
   OP_SERVICE_ACCOUNT_TOKEN: "ops_not-for-grafana",

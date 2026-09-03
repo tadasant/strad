@@ -585,7 +585,7 @@ export function isUnhosted(
  * Sizing: a bundle that hosts a browser server runs a real Chromium (~1.06s per
  * launch, ~545MB peak RSS) and CPU — not RAM — is what binds it, because 1 vCPU
  * serialises page rendering. Co-locating everything in one bundle means that box
- * also runs `op` and 18 other upstream servers (which the config names as 28 slugs), so
+ * also runs `op` and 20 other upstream servers (which the config names as 28 slugs), so
  * size it up, not down.
  */
 const BundleConfig = z.object({
