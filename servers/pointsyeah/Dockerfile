@@ -18,17 +18,22 @@
 # the constraint is CPU (1 vCPU serialises rendering), not RAM — hence a 1GB
 # bundle. Unlike upstream (which launched a browser per search), remote/ launches
 # ONE browser at startup and opens a fresh context per search.
-FROM mcr.microsoft.com/playwright:v1.61.1-noble
+#
+# TWO STAGES, and the split is the point. The build needs devDependencies
+# (typescript, @types, and vitest at the workspace root); the runtime needs
+# none of them. `npm prune --omit=dev` alone would not be enough here: in a
+# single stage the pruned files stay in the published `npm ci` layer, so the
+# toolchain still ships — deleted from the container's filesystem, present in
+# the image. The runtime stage copies the pruned tree and nothing else.
 
-LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
-LABEL org.opencontainers.image.description="PointsYeah MCP server — strad supplementary-image bundle (browser-driven, streamable-HTTP)."
-LABEL org.opencontainers.image.licenses="MIT"
+# --- build stage --------------------------------------------------------------
+FROM mcr.microsoft.com/playwright:v1.61.1-noble AS build
 
 WORKDIR /app
 
 # Manifests + lockfile first so a source-only change re-uses the install layer.
-# NODE_ENV is intentionally unset here: the build needs devDependencies
-# (typescript, @types). It is pinned to production below, for the runtime.
+# NODE_ENV is intentionally unset: the build needs devDependencies. The
+# runtime stage pins it to production.
 COPY package.json package-lock.json ./
 COPY shared/package.json ./shared/package.json
 COPY remote/package.json ./remote/package.json
@@ -42,7 +47,20 @@ COPY remote ./remote
 # The telemetry bootstrap. Vendored (each image is its own build context, so it
 # cannot COPY from the repo root); keep it in sync with `npm run telemetry:sync`.
 COPY otel ./otel
-RUN npm run build
+RUN npm run build && npm prune --omit=dev
+
+# --- runtime stage ------------------------------------------------------------
+FROM mcr.microsoft.com/playwright:v1.61.1-noble
+
+LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
+LABEL org.opencontainers.image.description="PointsYeah MCP server — strad supplementary-image bundle (browser-driven, streamable-HTTP)."
+LABEL org.opencontainers.image.licenses="MIT"
+
+WORKDIR /app
+
+# The built, pruned tree: compiled JS, runtime dependencies, the telemetry
+# bootstrap. No compiler and no test runner.
+COPY --from=build /app /app
 
 ENV NODE_ENV=production
 ENV PORT=8080

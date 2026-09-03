@@ -16,6 +16,43 @@
 # The image is CREDENTIAL-FREE. `op` reads its service-account token from
 # OP_SERVICE_ACCOUNT_TOKEN in the environment at runtime; strad injects it as a
 # per-bundle SECRET. Nothing secret is baked into the image.
+#
+# TWO STAGES, and the split is the point. The build needs devDependencies
+# (typescript, @types, and vitest via elicitation/); the runtime needs none of
+# them. `npm prune --omit=dev` alone would not be enough here: in a single stage
+# the pruned files stay in the published `npm ci` layer, so the compiler and the
+# test runner still ship — deleted from the container's filesystem, present in
+# the image. The runtime stage copies the pruned tree and nothing else.
+
+# --- build stage --------------------------------------------------------------
+FROM node:22-bookworm-slim AS build
+
+WORKDIR /app
+
+# Manifests + lockfile first so a source-only change re-uses the install layer.
+# NODE_ENV is intentionally unset: the build needs devDependencies.
+COPY package.json package-lock.json ./
+COPY elicitation/package.json ./elicitation/package.json
+COPY shared/package.json ./shared/package.json
+COPY remote/package.json ./remote/package.json
+RUN npm ci --no-audit --no-fund
+
+# Sources, then build in dependency order: elicitation -> shared -> remote.
+COPY elicitation ./elicitation
+COPY shared ./shared
+COPY remote ./remote
+
+# The telemetry bootstrap. Vendored (each image is its own build context, so it
+# cannot COPY from the repo root); keep it in sync with `npm run telemetry:sync`.
+# It imports only @opentelemetry/* packages, which remote/ declares as
+# `dependencies` — so it still resolves after the prune below.
+COPY otel ./otel
+
+# Build, then drop the toolchain that built it. What is left in /app is exactly
+# what the runtime stage takes.
+RUN npm run build && npm prune --omit=dev
+
+# --- runtime stage ------------------------------------------------------------
 FROM node:22-bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/tadasant/strad"
@@ -44,24 +81,9 @@ RUN set -eux; \
 
 WORKDIR /app
 
-# Manifests + lockfile first so a source-only change re-uses the install layer.
-# NODE_ENV is intentionally unset here: the build needs devDependencies
-# (typescript, @types). It is pinned to production below, for the runtime.
-COPY package.json package-lock.json ./
-COPY elicitation/package.json ./elicitation/package.json
-COPY shared/package.json ./shared/package.json
-COPY remote/package.json ./remote/package.json
-RUN npm ci --no-audit --no-fund
-
-# Sources, then build in dependency order: elicitation -> shared -> remote.
-COPY elicitation ./elicitation
-COPY shared ./shared
-COPY remote ./remote
-
-# The telemetry bootstrap. Vendored (each image is its own build context, so it
-# cannot COPY from the repo root); keep it in sync with `npm run telemetry:sync`.
-COPY otel ./otel
-RUN npm run build
+# The built, pruned tree: compiled JS, runtime dependencies, the telemetry
+# bootstrap. No compiler, no test runner, no TypeScript sources' toolchain.
+COPY --from=build /app /app
 
 ENV NODE_ENV=production
 ENV PORT=8080
