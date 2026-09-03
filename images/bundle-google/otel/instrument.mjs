@@ -6,7 +6,7 @@
  *
  * ⚠️  DO NOT EDIT THE COPIES. This file is vendored, byte-identical, into every
  *     supplementary image's `otel/` directory by `npm run telemetry:sync`, and
- *     `test/telemetry.sync.test.ts` fails CI if a copy drifts. Edit THIS file,
+ *     `test/vendored.sync.test.ts` fails CI if a copy drifts. Edit THIS file,
  *     run the sync, commit the result.
  *
  * ── Why a vendored copy instead of an import ─────────────────────────────────
