@@ -36,11 +36,30 @@ payload does not — which is why the scrape they replaced reported an empty car
 against a 43-item basket. `shared/src/basketState.ts` is that read, and FORK.md
 #1 is the evidence.
 
+## Login
+
+A failed login is **retried on the next tool call**. It is not cached for the life
+of the process: the failed attempt closes its browser context, and the next caller
+starts a fresh one. Concurrent callers share one attempt. Inside the bundle, the
+host marks the mount `degraded` on a failure and clears the mark when an attempt
+succeeds. The standalone container takes the other option the factory offers —
+one server per process has nothing to serve without a login, so `remote/` exits
+and lets App Platform restart it.
+
+The cost, stated: while the login is broken, a tool call pays a whole login
+attempt — up to `TIMEOUT`, 30s by default — before it fails, where a remembered
+error failed instantly. On a container that shares one vCPU and one ~545MB
+Chromium with twenty other mounts, that attempt is not free. It is the trade for
+not needing a redeploy to recover, and `shared/src/server.ts` plus FORK.md #9 are
+the evidence.
+
 ## Browser lifecycle (proven on App Platform gVisor)
 
 `chromium.launch()` costs ~1s every time with no cold-start to warm away, so the
 browser is launched **once** at startup (background login) and kept alive;
-`shared/` holds a single logged-in Good Eggs page and reuses it. Per HTTP request
+`shared/` holds a single logged-in Good Eggs page and reuses it. A failed login
+closes its browser CONTEXT rather than the browser, and the retry opens a fresh
+one. Per HTTP request
 we mint a cheap, stateless MCP `Server` + transport that share that one browser.
 Chromium runs `--no-sandbox --disable-dev-shm-usage` (set by `shared/`), peaks
 ~545MB RSS (→ size the bundle at 1GB), and is CPU-bound (1 vCPU serialises

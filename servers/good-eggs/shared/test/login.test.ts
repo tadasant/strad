@@ -23,7 +23,13 @@
 // over a fake page.
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { GoodEggsClient, isPostSignInUrl, setSharedBrowserProvider } from '../src/index.js';
+import {
+  createMCPServer,
+  GoodEggsClient,
+  isPostSignInUrl,
+  setSharedBrowserProvider,
+} from '../src/index.js';
+import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 // The URL Good Eggs actually landed on during the outage.
 const POST_LOGIN_URL = 'https://www.goodeggs.com/home?recently-logged-in=true';
@@ -328,4 +334,213 @@ test('a failed login never puts the password or the query string in its error', 
     assert.doesNotMatch(error.message, /email=/);
     return true;
   });
+});
+
+// ---------------------------------------------------------------------------
+// A failed login is retried, not cached for the life of the container
+// ---------------------------------------------------------------------------
+//
+// The second half of the same incident. The wait above is why that login
+// failed; this is why the failure lasted. `createMCPServer()` ran the login once
+// at boot and returned the cached error from every later call, and strad's
+// collapsed bundle marks the mount degraded rather than exiting — so nothing
+// restarted it and one transient blip disabled `good-eggs` until a redeploy
+// (strad#196). fetchpet fixed the same defect one tree over; these pin the same
+// behaviour here.
+
+/** The MCP `Server` surface `registerHandlers` touches. */
+class FakeServer {
+  constructor() {
+    this.handlers = new Map();
+  }
+  setRequestHandler(schema, handler) {
+    this.handlers.set(schema, handler);
+  }
+  call(name, args = {}) {
+    return this.handlers.get(CallToolRequestSchema)({ params: { name, arguments: args } });
+  }
+}
+
+/**
+ * A browser whose pages read from a mutable `world`, so a test can fix what
+ * Good Eggs serves BETWEEN login attempts — the transient failure this is all
+ * about. Contexts are counted: a retry that reuses the context of the attempt
+ * that failed is a page still parked on the sign-in form.
+ */
+class CountingFakeBrowser {
+  constructor(world) {
+    this.world = world;
+    this.contextsOpened = 0;
+    this.contextsClosed = 0;
+    this.pages = [];
+  }
+  async newContext() {
+    this.contextsOpened += 1;
+    return {
+      newPage: async () => {
+        const page = new FakePage({ landsAt: this.world.landsAt, session: this.world.session });
+        this.pages.push(page);
+        return page;
+      },
+      close: async () => {
+        this.contextsClosed += 1;
+      },
+    };
+  }
+}
+
+/** Boot the factory the bundle boots, over the fake browser. */
+async function bootGoodEggs(world) {
+  process.env.GOOD_EGGS_USERNAME = USERNAME;
+  process.env.GOOD_EGGS_PASSWORD = PASSWORD;
+  process.env.TIMEOUT = '300';
+
+  const browser = new CountingFakeBrowser(world);
+  setSharedBrowserProvider(async () => browser);
+
+  const created = createMCPServer({ version: 'test' });
+  const server = new FakeServer();
+  await created.registerHandlers(server);
+  return { created, server, browser };
+}
+
+async function teardown(created) {
+  await created.cleanup();
+  setSharedBrowserProvider(null);
+  delete process.env.GOOD_EGGS_USERNAME;
+  delete process.env.GOOD_EGGS_PASSWORD;
+  delete process.env.TIMEOUT;
+}
+
+/** What Good Eggs serves when the login fails, and when it works. */
+const LOGIN_FAILS = { landsAt: SIGN_IN_URL, session: 'anonymous' };
+const LOGIN_WORKS = { landsAt: POST_LOGIN_URL, session: 'signed-in' };
+
+test('a failed boot login does not brick the mount: the next tool call retries it', async () => {
+  // The regression, stated as the incident would state it. Against the cached
+  // implementation the SECOND call returns the first call's error verbatim,
+  // even though Good Eggs is serving a login that works again.
+  const world = { ...LOGIN_FAILS };
+  const { created, server, browser } = await bootGoodEggs(world);
+  const failures = [];
+  const recoveries = [];
+
+  try {
+    created.startBackgroundLogin(
+      (error) => failures.push(error.message),
+      () => recoveries.push('recovered')
+    );
+
+    const failed = await server.call('get_cart');
+    assert.equal(failed.isError, true);
+    assert.equal(failures.length, 1);
+
+    // The blip passes — a slow page, a cold browser, a form that came back. No
+    // redeploy, no container restart.
+    Object.assign(world, LOGIN_WORKS);
+
+    const recovered = await server.call('get_cart');
+    assert.notEqual(
+      recovered.isError,
+      true,
+      `the retried login should have succeeded; got: ${recovered.content[0].text}`
+    );
+    assert.doesNotMatch(recovered.content[0].text, /Login failed/);
+    assert.equal(browser.contextsOpened, 2, 'the retry logged in on a FRESH context');
+    assert.equal(recoveries.length, 1, 'the host is told the mount is no longer degraded');
+    // And the recovery is not reported as another failure.
+    assert.equal(failures.length, 1);
+    // The client that failed did not stay behind holding a context on the form.
+    assert.equal(browser.contextsClosed, 1);
+  } finally {
+    await teardown(created);
+  }
+});
+
+test('a login failure tells the caller it is worth retrying', async () => {
+  // This text becomes the body of every tool error the degraded mount returns,
+  // so it has to say that the next call is a real attempt rather than a replay.
+  const world = { ...LOGIN_FAILS };
+  const { created, server } = await bootGoodEggs(world);
+
+  try {
+    created.startBackgroundLogin(() => {});
+    const failed = await server.call('get_cart');
+    assert.equal(failed.isError, true);
+    assert.match(failed.content[0].text, /Login failed/);
+    assert.match(failed.content[0].text, /retry the call/);
+    // The diagnosis survives the wrapping — this is what named the outage.
+    assert.match(failed.content[0].text, /not signed in/);
+    // And the password never rides along in it.
+    assert.doesNotMatch(failed.content[0].text, new RegExp(PASSWORD));
+  } finally {
+    await teardown(created);
+  }
+});
+
+test('a login that fails twice reports each failure and retries again', async () => {
+  const world = { ...LOGIN_FAILS };
+  const { created, server, browser } = await bootGoodEggs(world);
+  const failures = [];
+
+  try {
+    created.startBackgroundLogin((error) => failures.push(error.message));
+
+    const first = await server.call('get_cart');
+    const second = await server.call('get_cart');
+    for (const result of [first, second]) {
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /Login failed/);
+    }
+    // Two attempts, two reports — not one attempt reported once and replayed.
+    assert.equal(browser.contextsOpened, 2);
+    assert.equal(failures.length, 2);
+  } finally {
+    await teardown(created);
+  }
+});
+
+test('concurrent tool calls share one login attempt', async () => {
+  const world = { ...LOGIN_WORKS };
+  const { created, server, browser } = await bootGoodEggs(world);
+
+  try {
+    created.startBackgroundLogin(() => {});
+    const results = await Promise.all([
+      server.call('get_cart'),
+      server.call('get_cart'),
+      server.call('get_cart'),
+    ]);
+    for (const result of results) assert.notEqual(result.isError, true);
+    assert.equal(browser.contextsOpened, 1, 'one login, not one per call');
+  } finally {
+    await teardown(created);
+  }
+});
+
+test('a missing credential is reported to the host, not thrown at it', async () => {
+  // `createClient()` THROWS on an incomplete env rather than rejecting, so a
+  // host that starts the login before checking its own env would otherwise get
+  // an exception where it expected a callback. Every failure leaves through the
+  // same door, and the next call retries it — which is what makes a credential
+  // that arrives later (a rotation written back to the store) take effect.
+  const world = { ...LOGIN_WORKS };
+  const { created, server, browser } = await bootGoodEggs(world);
+  const failures = [];
+
+  try {
+    delete process.env.GOOD_EGGS_PASSWORD;
+    created.startBackgroundLogin((error) => failures.push(error.message));
+
+    assert.equal(failures.length, 1);
+    assert.match(failures[0], /GOOD_EGGS_USERNAME and GOOD_EGGS_PASSWORD/);
+    assert.equal(browser.contextsOpened, 0, 'no browser is opened without credentials');
+
+    process.env.GOOD_EGGS_PASSWORD = PASSWORD;
+    const recovered = await server.call('get_cart');
+    assert.notEqual(recovered.isError, true);
+    assert.equal(browser.contextsOpened, 1);
+  } finally {
+    await teardown(created);
+  }
 });
