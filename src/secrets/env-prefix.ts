@@ -37,7 +37,8 @@
  * that is present on the box and invisible to the server that needs it, with
  * nothing in any log. `test/vendored.sync.test.ts` is what stands between us and
  * a drift in the RULE, and `test/env-prefix.markers.test.ts` between us and the
- * other way in: the two trees spelling a marker variable differently.
+ * other way in: the host and a server tree spelling a marker variable
+ * differently.
  */
 
 /** Separates a slug's mangled prefix from the variable name. Two characters, deliberately — see above. */

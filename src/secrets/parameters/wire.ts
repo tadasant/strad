@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
  * `test/vendored.sync.test.ts` fails CI when the copy drifts.
  * `test/parameter-wire.ownership.test.ts` is the seam's other half: byte
  * identity cannot see that tree growing a SECOND implementation beside the
- * copy, and that test can.
+ * copy.
  *
  * Edit this file. Never edit the copy.
  *
