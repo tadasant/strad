@@ -1317,9 +1317,9 @@ looks. A failed login is retried rather than latched: the failed attempt is
 discarded, the half-initialized client is closed, and the next tool call starts a
 fresh attempt on a fresh browser context — with the bundle host clearing the
 mount's `degraded` mark when one succeeds. That second half is what decides how
-long an outage lasts: the host degrades this mount instead of exiting, so nothing
-else would ever restart a login it had cached, and a transient blip at boot would
-disable the slug until a redeploy.
+long an outage lasts. Without it, a latched failure has nothing to clear it —
+this mount degrades rather than exiting, so no restart comes — and one transient
+blip at boot disables the slug until a redeploy.
 
 **Undo:** if upstream ever publishes `shared` as a library carrying these fixes,
 depend on it and delete the fork.

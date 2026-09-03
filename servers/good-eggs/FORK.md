@@ -275,7 +275,7 @@ The failure message carries the page WITHOUT its query string, and without the
 `setSharedBrowserProvider`, with no browser and no credentials: the `waitUntil`
 argument, the predicate against the real observed URL and the logged-out forms,
 each verdict, and that the password and the query string stay out of the error.
-Seven of its twenty cases fail against the code above.
+Seven of its twenty cases pin this delta, and fail against the code above.
 
 **What this delta does not cover.** The wait is why that login failed; it is not
 why the failure lasted. That is delta 9.

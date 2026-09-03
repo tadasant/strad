@@ -255,10 +255,12 @@ whose bugs return confident wrong answers becomes first-party.
 The fork has taken a second defect on the same reasoning: the post-login wait
 used Playwright's default `waitUntil: 'load'`, an event the page Good Eggs lands
 on does not fire, so on 2026-08-28 every authenticated call on every tool timed
-out after 30 seconds (strad#195). What made that outage LAST is a separate,
-unfixed thing — `createMCPServer()` logs in once at container boot and latches
-the failure, and the bundle host degrades the mount rather than restarting it, so
-a transient blip bricks the mount until a redeploy (strad#196).
+out after 30 seconds (strad#195). And a third, on what made that outage LAST:
+`createMCPServer()` latched the failure of its one boot login, and the bundle
+host degrades the mount rather than restarting it, so nothing cleared the latch
+and a transient blip bricked the mount until a redeploy (strad#196). A failed
+attempt is discarded and the next tool call starts a fresh one, with the host
+clearing `degraded` when one succeeds.
 
 **Cost.** A fork has no upstream to argue with it and no sync script to notice a
 loss, so `shared/test/` is the only thing defending the deltas. CI runs it as

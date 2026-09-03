@@ -1836,8 +1836,12 @@ export function createMCPServer(options: CreateMCPServerOptions) {
         if (activeClient === client) {
           activeClient = null;
         }
-        await client.close().catch(() => {});
+        // Reported BEFORE the teardown is awaited. Clearing `loginAttempt` above
+        // opens the retry, and a host reads these two callbacks as one flag: a
+        // retry that got in during the close would otherwise clear `degraded`
+        // and then have this failure set it again on a mount that is serving.
         onLoginFailed?.(failure);
+        await client.close().catch(() => {});
         throw failure;
       });
 
