@@ -35,8 +35,9 @@
  * across an npm boundary (`npm run envprefix:sync`). The renderer names the
  * variable and the host reads it; a drift between the two halves is a credential
  * that is present on the box and invisible to the server that needs it, with
- * nothing in any log. `test/env-prefix.sync.test.ts` is what stands between us
- * and that.
+ * nothing in any log. `test/vendored.sync.test.ts` is what stands between us and
+ * a drift in the RULE, and `test/env-prefix.markers.test.ts` between us and the
+ * other way in: the two trees spelling a marker variable differently.
  */
 
 /** Separates a slug's mangled prefix from the variable name. Two characters, deliberately — see above. */

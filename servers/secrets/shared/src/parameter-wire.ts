@@ -15,7 +15,10 @@ import { createHash } from "node:crypto";
  * write to. Every rule below is therefore duplicated across the boundary by
  * VENDORING: `npm run wire:sync` copies this file verbatim into
  * `servers/secrets/shared/src/parameter-wire.ts`, and
- * `test/parameter-wire.sync.test.ts` fails CI when the copy drifts.
+ * `test/vendored.sync.test.ts` fails CI when the copy drifts.
+ * `test/parameter-wire.ownership.test.ts` is the seam's other half: byte
+ * identity cannot see that tree growing a SECOND implementation beside the
+ * copy, and that test can.
  *
  * Edit this file. Never edit the copy.
  *

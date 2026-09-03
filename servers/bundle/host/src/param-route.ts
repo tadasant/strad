@@ -58,7 +58,7 @@
  * close.
  *
  * This file is VENDORED into the bundle host tree (`npm run paramroute:sync`,
- * `test/param-route.sync.test.ts`), so it must stay import-free. It carries BOTH
+ * `test/vendored.sync.test.ts`), so it must stay import-free. It carries BOTH
  * ends — the shapes core validates AND the client the host calls with — for the
  * same reason presence.ts carries both the request parser and the report
  * builder: the half that lives only in the tree with no test runner is the half

@@ -29,7 +29,7 @@
  * that tree is a separate npm project with its own lockfile and its own compiler
  * settings, and it cannot import across the boundary. Zero imports is what makes
  * one file compile in both. `npm run presence:sync` writes the copy and
- * `test/presence.sync.test.ts` fails CI if it drifts.
+ * `test/vendored.sync.test.ts` fails CI if it drifts.
  */
 
 /**
