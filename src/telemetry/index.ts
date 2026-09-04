@@ -35,6 +35,7 @@ export {
   type StartErrorReporterOptions,
 } from "./errors.ts";
 export {
+  elapsedSeconds,
   errorAttrs,
   instruments,
   resetInstruments,

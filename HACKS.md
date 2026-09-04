@@ -1010,10 +1010,15 @@ only free-form string on the page that strad does not author, and rendering
 `:render`ed payload — the dereferenced secret in plaintext — and a corrupted
 envelope throws a `SyntaxError` whose message embeds a window of that body. On a
 cold view `view.ts` re-throws it raw rather than serving stale values.
-Truncating does not help; the window is ~30 characters. `withDeadline` therefore
-reuses `errorSummary()` from `view.ts`, which passes a `ParameterStoreError`
-message through (method + resource, query and `:verb` stripped) and reduces
-anything else to its class name. `test/ui.secret-status.test.ts` builds the real
+Truncating does not help; the window is ~30 characters. The catch that turns a
+failed read into a printable row therefore reuses `errorSummary()` from
+`view.ts`, which passes a `ParameterStoreError` message through (method +
+resource, query and `:verb` stripped) and reduces anything else to its class
+name. That catch sits in `src/ui/secret-status.ts` — in the caller, NOT inside
+the shared deadline wrapper in `src/util/deadline.ts`, which is generic and
+knows nothing about secrets. The defence is the caller's, and it is written at
+the site that needs it so that a second caller of the same wrapper cannot
+inherit it by accident or omit it by accident. `test/ui.secret-status.test.ts` builds the real
 `SyntaxError` and asserts the value is absent from the rendered detail.
 
 **Undo.** Delete `src/ui/secret-status.ts`, `src/http/readiness.ts`,

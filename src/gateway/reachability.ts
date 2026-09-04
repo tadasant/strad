@@ -7,6 +7,7 @@ import {
 import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 import { ServerUnconfiguredError } from "./unconfigured.ts";
+import { DeadlineError, withDeadline } from "../util/deadline.ts";
 
 /**
  * Does each mounted server actually serve tools?
@@ -185,7 +186,16 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
         return { slug, state: "unreachable", tools: 0, kind: "unmounted" };
       }
       try {
-        const tools = await withDeadline(adapter.listTools(), timeoutMs);
+        // A deadline the adapter does not impose on itself.
+        // `HttpServerAdapter` passes `timeoutMs` to the MCP SDK, but a builtin
+        // has no timeout at all and a transport can wedge before the SDK's timer
+        // is armed. A monitor that can hang is a monitor that stops reporting,
+        // which is the failure mode it exists to catch.
+        const tools = await withDeadline(
+          () => adapter.listTools(),
+          timeoutMs,
+          "tools/list",
+        );
         return {
           slug,
           state: tools.length > 0 ? "ok" : "empty",
@@ -249,35 +259,6 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
     refused,
     unconfigured,
   };
-}
-
-/**
- * A deadline the adapter does not impose on itself.
- *
- * `HttpServerAdapter` passes `timeoutMs` to the MCP SDK, but a builtin has no
- * timeout at all and a transport can wedge before the SDK's timer is armed. A
- * monitor that can hang is a monitor that stops reporting, which is the failure
- * mode it exists to catch.
- */
-class DeadlineError extends Error {}
-
-function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: NodeJS.Timeout;
-  return Promise.race([
-    work,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(
-            new DeadlineError(
-              `tools/list did not answer within ${timeoutMs}ms`,
-            ),
-          ),
-        timeoutMs,
-      );
-      timer.unref?.();
-    }),
-  ]).finally(() => clearTimeout(timer));
 }
 
 export interface MonitorOptions extends ProbeOptions {

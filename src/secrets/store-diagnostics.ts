@@ -2,6 +2,7 @@ import type { ParameterStore } from "./parameters/index.ts";
 import { variableOf } from "./parameters/wire.ts";
 import { errorSummary } from "./provider/view.ts";
 import { event } from "../telemetry/index.ts";
+import { withDeadline } from "../util/deadline.ts";
 
 /**
  * What the parameter store holds, and what it cannot hand over.
@@ -97,11 +98,12 @@ export async function readStoreDiagnostics(
   let renderRead = false;
 
   const [listed, resolved] = await Promise.all([
-    withDeadline(() => opts.store.list(opts.namespace), timeoutMs),
+    orNull(() => opts.store.list(opts.namespace), timeoutMs, "the store index"),
     opts.store.resolveDetailed
-      ? withDeadline(
+      ? orNull(
           () => opts.store.resolveDetailed!(opts.namespace),
           timeoutMs,
+          "the store render",
         )
       : Promise.resolve(null),
   ]);
@@ -310,22 +312,21 @@ export function forgetStoreDiagnosis(store: object): void {
   CACHES.delete(store);
 }
 
-/** Resolve to the value, or to null on a throw or a timeout. Never rejects. */
-async function withDeadline<T>(
+/**
+ * Resolve to the value, or to null on a throw or a timeout. Never rejects.
+ *
+ * The swallow is what makes `readStoreDiagnostics` safe to call from a page
+ * render, and the summary is why the log line it leaves behind is safe to
+ * export. Both stay here rather than inside `withDeadline`, which is generic and
+ * has no business deciding either.
+ */
+async function orNull<T>(
   read: () => Promise<T>,
   timeoutMs: number,
+  label: string,
 ): Promise<T | null> {
-  let timer: NodeJS.Timeout | undefined;
   try {
-    return await Promise.race([
-      read(),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
+    return await withDeadline(read, timeoutMs, label);
   } catch (err) {
     // Logged by class, never by message, for the reason view.ts states: a
     // failure on this path can embed a window of a rendered secret.
@@ -334,7 +335,5 @@ async function withDeadline<T>(
       error: errorSummary(err),
     });
     return null;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }

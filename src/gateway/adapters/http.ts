@@ -23,6 +23,7 @@ import {
 import type { ServerKind } from "../../config/schema.ts";
 import { GATEWAY_UPSTREAM_CAPABILITIES } from "../clientCapabilities.ts";
 import {
+  elapsedSeconds,
   errorKind,
   instruments,
   tracer,
@@ -841,11 +842,6 @@ function fingerprintOf(endpoint: HttpEndpoint): string {
   return createHash("sha256")
     .update(JSON.stringify([endpoint.url, headers]))
     .digest("hex");
-}
-
-/** Seconds elapsed since an `hrtime.bigint()` mark. */
-function elapsedSeconds(startedAt: bigint): number {
-  return Number(process.hrtime.bigint() - startedAt) / 1e9;
 }
 
 /**
