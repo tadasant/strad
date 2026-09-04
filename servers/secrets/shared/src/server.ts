@@ -64,6 +64,11 @@ export interface CreateMCPServerOptions {
  * The bound is also the cost ceiling under a sustained outage: one mint plus one
  * round trip per store per fifteen seconds, not one per request. Zero would be
  * the regression this memo exists to prevent; Infinity was the bug.
+ *
+ * It covers the no-credential answer too, which cannot change without a restart.
+ * Re-deciding it costs an object and no I/O, and one rule over every non-answer
+ * is worth more than the allocation: the special case would be a second place
+ * for this lifetime to be decided.
  */
 const UNANSWERED_CAPABILITY_TTL_MS = 15_000;
 
@@ -84,24 +89,43 @@ const UNANSWERED_CAPABILITY_TTL_MS = 15_000;
  * unknown". A healthy probe answers in well under a second, so this is only ever
  * reached by something that is already broken.
  *
- * The probe is abandoned rather than cancelled — its own abort still fires — and
- * the answer it eventually produces is dropped. That costs one round trip;
- * holding callers open for a stalled mint costs the listing.
+ * The abandoned probe is CANCELLED, not merely dropped. `probeCapabilities`
+ * builds its own AbortController after the mint returns, so on the stalled-mint
+ * path — the one this deadline exists for — nothing of its own ever fires, and a
+ * fresh socket every fifteen seconds would pile up until undici timed each one
+ * out. `ProbeConfig` takes a `fetchImpl`, so the deadline supplies one that
+ * carries a signal of its own; that is a caller's choice about its own request,
+ * and it leaves what the probe MAKES of an answer alone.
  */
 const PROBE_DEADLINE_MS = 6_000;
 
 /**
- * Fail closed on time. Resolves to `NO_CAPABILITIES` if the probe has not
- * answered by the deadline, which — being unprobed — is memoised only for
- * UNANSWERED_CAPABILITY_TTL_MS.
+ * A probe bounded by the deadline, in both directions: the caller stops waiting
+ * and the request stops running.
+ *
+ * `run` is handed the `fetchImpl` to build the probe with. Resolves to
+ * `NO_CAPABILITIES` if no answer arrives in time — and being unprobed, that is
+ * memoised for UNANSWERED_CAPABILITY_TTL_MS rather than kept.
  */
 function withDeadline(
-  answer: Promise<Capabilities>,
   project: string,
+  run: (fetchImpl: typeof fetch) => Promise<Capabilities>,
 ): Promise<Capabilities> {
+  const abandon = new AbortController();
+  // Every fetch the probe makes joins this signal. The CRM leg passes one of its
+  // own (its ten-second abort), so the two are combined rather than replaced.
+  const fetchImpl: typeof fetch = (input, init) =>
+    fetch(input, {
+      ...init,
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, abandon.signal])
+        : abandon.signal,
+    });
+
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<Capabilities>((resolve) => {
     timer = setTimeout(() => {
+      abandon.abort();
       resolve({
         ...NO_CAPABILITIES,
         reason:
@@ -112,7 +136,9 @@ function withDeadline(
     // A pending probe must not be the reason a process refuses to exit.
     timer.unref?.();
   });
-  return Promise.race([answer, deadline]).finally(() => clearTimeout(timer));
+  return Promise.race([run(fetchImpl), deadline]).finally(() =>
+    clearTimeout(timer),
+  );
 }
 
 /** A memoised capability answer, and when to stop believing it. */
@@ -230,16 +256,17 @@ export function createMCPServer(options: CreateMCPServerOptions) {
         const held = probed.get(project);
         if (held && Date.now() < held.expiresAt) return held.answer;
 
+        const account = store.account;
         const memo: ProbeMemo = {
           expiresAt: Number.POSITIVE_INFINITY,
-          answer: store.account
-            ? withDeadline(
+          answer: account
+            ? withDeadline(project, (fetchImpl) =>
                 probeCapabilities({
                   projectId: store.project,
-                  account: store.account,
+                  account,
                   tokenUrl: config.tokenUrl,
+                  fetchImpl,
                 }),
-                project,
               )
             : Promise.resolve({
                 ...NO_CAPABILITIES,
@@ -266,19 +293,20 @@ export function createMCPServer(options: CreateMCPServerOptions) {
             // the news. A store with no credential says nothing at all; that is
             // a config fact rather than a fault.
             const reason = caps.reason ?? "no reason given";
-            if (store.account && loggedFault.get(project) !== reason) {
+            if (account && loggedFault.get(project) !== reason) {
               loggedFault.set(project, reason);
               console.error(
                 `[secrets] capability probe for "${project}" did not complete ` +
-                  `(${reason}); failing closed, re-asking in ` +
-                  `${UNANSWERED_CAPABILITY_TTL_MS / 1000}s`,
+                  `(${reason}); failing closed, and the next call after ` +
+                  `${UNANSWERED_CAPABILITY_TTL_MS / 1000}s re-asks`,
               );
             }
           },
-          // probeCapabilities does not throw, and the branch above cannot. A
-          // rejection here would therefore be a bug, and a bug must not be the
-          // cached answer either: drop it and let the next call re-ask. The
-          // rejection still reaches the caller, which fails closed on it.
+          // probeCapabilities does not throw, and neither other branch can, so
+          // this is unreachable today and kept deliberately: a rejected promise
+          // left at `Infinity` would be handed to every later caller unchanged,
+          // which is this issue's bug in its other clothes. Expiring it costs a
+          // line. The rejection still reaches the caller, which fails closed.
           () => {
             memo.expiresAt = 0;
           },

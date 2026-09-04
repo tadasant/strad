@@ -2124,11 +2124,13 @@ Three consequences worth knowing:
   reach Google lists the read-only surface, and lists the real one once a probe
   gets through. A client holding the earlier listing keeps it until it lists
   again — which is why every handler re-checks the capability per call.
-- **A caller waits six seconds for a probe, not indefinitely.** The token mint
-  passes no abort signal, so a connection that hangs rather than fails would
-  otherwise park every concurrent listing on it. Six is under the gateway's
-  ten-second reachability timeout on purpose: a slow probe should leave the slug
-  reporting unknown capabilities, not reporting itself unreachable.
+- **A caller waits six seconds for a probe, not indefinitely**, and the abandoned
+  request is cancelled rather than left running. The token mint passes no abort
+  signal of its own, so a connection that hangs rather than fails would otherwise
+  park every concurrent listing on it and pile a fresh socket up every fifteen
+  seconds. Six is under the gateway's ten-second reachability timeout on purpose:
+  a slow probe should leave the slug reporting unknown capabilities, not
+  reporting itself unreachable.
 
 A persistent fault says so on stderr **once** — on the first failure and on any
 change of reason — rather than once per retry.

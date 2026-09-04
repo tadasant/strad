@@ -753,7 +753,9 @@ async function askTheServer(created) {
   const tools = (await client.listTools()).tools.map((t) => t.name);
   await client.close();
   await server.close();
-  return { store: JSON.parse(res.content[0].text).stores[0], tools };
+  const report = JSON.parse(res.content[0].text);
+  const byProject = new Map(report.stores.map((s) => [s.project, s]));
+  return { store: report.stores[0], byProject, tools };
 }
 
 function jsonResponse(body) {
@@ -858,7 +860,7 @@ test("a probe that never reached Google is not remembered as the answer", async 
     );
     assert.match(logged[0], /\[secrets\] capability probe for "p"/);
     assert.match(logged[0], /could not mint an access token/);
-    assert.match(logged[0], /failing closed, re-asking in 15s/);
+    assert.match(logged[0], /failing closed, and the next call after 15s re-asks/);
   } finally {
     vi.useRealTimers();
     globalThis.fetch = realFetch;
@@ -930,9 +932,11 @@ test("a probe that never settles fails closed on a deadline", async () => {
   // expire either: `expiresAt` stays Infinity until the probe settles, so the
   // retry this whole change is about would never fire.
   const realFetch = globalThis.fetch;
-  globalThis.fetch = async (url) => {
+  const signals = [];
+  globalThis.fetch = async (url, init) => {
     const href = String(url);
     if (href.startsWith("http://token.invalid")) {
+      signals.push(init?.signal);
       // Never settles. Not a rejection — a stall.
       return new Promise(() => {});
     }
@@ -967,6 +971,17 @@ test("a probe that never settles fails closed on a deadline", async () => {
     assert.ok(
       tools.includes("list_parameters"),
       "and the read-only surface is served rather than withheld",
+    );
+
+    // The request is cancelled, not merely abandoned. `probeCapabilities` builds
+    // its own AbortController only AFTER the mint returns, so on this path
+    // nothing of its own ever fires: a fresh socket every fifteen seconds would
+    // pile up until undici timed each one out.
+    assert.equal(signals.length, 1);
+    assert.equal(
+      signals[0]?.aborted,
+      true,
+      "the abandoned mint must be aborted, not left running",
     );
   } finally {
     vi.useRealTimers();
@@ -1029,6 +1044,81 @@ test("a persistent probe fault is logged once, not once per retry", async () => 
     await askTheServer(created);
     assert.equal(logged.length, 2);
     assert.match(logged[1], /testIamPermissions returned 500/);
+  } finally {
+    vi.useRealTimers();
+    globalThis.fetch = realFetch;
+    console.error = realErr;
+  }
+});
+
+test("one store's absence expiring does not disturb another's answer", async () => {
+  // The lifetime is a SECOND axis on the guarantee this file's multi-store
+  // sibling is about: not just "one store's answer is never served for another",
+  // but "one store's retry is never another's". Both maps — the memo and the
+  // logged-fault map — are keyed by project id, and this is what says so.
+  const probes = [];
+  let aWorks = false;
+  const realFetch = globalThis.fetch;
+  const realErr = console.error;
+  console.error = () => {};
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      return jsonResponse({ access_token: "at", expires_in: 3600 });
+    }
+    if (href.includes(":testIamPermissions")) {
+      const project = href.includes("pa") ? "pa" : "pb";
+      probes.push(project);
+      if (project === "pb") return jsonResponse({ permissions: [] });
+      return aWorks
+        ? jsonResponse({ permissions: Object.values(PROBE_PERMISSIONS) })
+        : new Response("nope", { status: 500 });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const t0 = Date.now();
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        stores: [
+          { ...MEMO_STORE, project: "pa", namespaces: ["/strad/a/mcp/"] },
+          {
+            ...MEMO_STORE,
+            project: "pb",
+            namespaces: ["/strad/b/mcp/"],
+            account: {
+              client_email: "second@example.iam.gserviceaccount.com",
+              private_key: VIEWER_ACCOUNT.private_key,
+            },
+          },
+        ],
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+
+    const first = await askTheServer(created);
+    assert.equal(first.byProject.get("pa").capabilitiesProbed, false);
+    assert.equal(first.byProject.get("pb").capabilitiesProbed, true);
+    assert.equal(first.byProject.get("pb").canWrite, false);
+
+    // pa's absence expires and is re-asked; pb's answer is an answer and is not.
+    aWorks = true;
+    vi.setSystemTime(t0 + 16_000);
+    const second = await askTheServer(created);
+    assert.equal(second.byProject.get("pa").capabilitiesProbed, true);
+    assert.equal(second.byProject.get("pa").canWrite, true);
+    assert.equal(second.byProject.get("pb").capabilitiesProbed, true);
+    assert.equal(
+      second.byProject.get("pb").canWrite,
+      false,
+      "pa recovering must not hand pb a capability Google never granted",
+    );
+    assert.deepEqual(probes, ["pa", "pb", "pa"]);
   } finally {
     vi.useRealTimers();
     globalThis.fetch = realFetch;
