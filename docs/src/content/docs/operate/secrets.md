@@ -1609,6 +1609,37 @@ The panel is still not a green. Nothing here was observed, the state stays
 `unverified`, and the badge stays `ISSUE` — the change is that the badge now
 leads somewhere.
 
+#### A name declared twice is two claims, and both are ranked
+
+Nothing stops a `params: true` server from declaring `${FOO}` in its `env:` while
+its component manifests a managed parameter also called `FOO` — naming a managed
+parameter after the credential the config already references is the natural thing
+to write, and neither the schema nor `config:check` says a word about it.
+
+Those are two observations about two different things. The `${NAME}` row says
+this deployment can **resolve** a value for that reference out of the gateway
+namespace. The managed-parameter row says whether the **running container** holds
+a variable of that name, as the component itself reported it. So the entry
+carries **both rows**, and the same worst-first ranking that grades everything
+else decides the badge. The store resolving `${FOO}` does not outrank a
+component saying it holds no `FOO`: a green earned by discarding the
+contradicting evidence is the false green this whole page exists to avoid. The
+reverse holds too — a container holding `FOO` does not cover for a reference that
+does not resolve.
+
+There is deliberately **no precedence** between them. Either direction would have
+to throw away a live observation, and whichever way it pointed it would buy a
+false green in that direction. Ranking both is the only reading under which no
+source's bad news is thrown away.
+
+The popout tells them apart: a reference renders as `${FOO}`, and a managed
+parameter renders as the variable it is — `FOO`, with a `managed parameter` chip
+— because their remediation is different and offering the wrong one sends a
+reader to create a resource that changes nothing about the row they are looking
+at. Summaries and counts are **by name**, not by row: two rows about one
+colliding name are one secret to seed, so the entry reads "1 of 1 required
+secret", never "1 of 2".
+
 ### The presence route: a component answering for itself
 
 `POST /_strad/presence`, on every component that holds secrets in its own process

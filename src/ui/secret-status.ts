@@ -1638,11 +1638,33 @@ export function deriveServerStatuses(
   return config.servers
     .filter((s) => s.enabled)
     .map((server) => {
-      const seen = new Set<string>();
+      // TWO PASSES, TWO DEDUP SETS, AND THAT SEPARATION IS LOAD-BEARING.
+      // Deduplicating WITHIN a pass is what a `seen` set is for: one name
+      // declared twice in one `env:` block is one requirement, and one
+      // component manifesting a variable twice is one parameter. Arbitrating
+      // BETWEEN the passes is a different job, and a single set did it by
+      // accident — first pass claims the name, second pass skips it (#280).
+      //
+      // The two passes do not make the same claim about the same thing. A
+      // `${NAME}` row says this deployment can resolve a value for that
+      // reference out of the gateway namespace. A managed-parameter row says
+      // whether the RUNNING CONTAINER holds a variable of that name, as the
+      // component itself reported it. When a `params: true` server declares
+      // `${FOO}` and its component manifests a managed parameter also called
+      // `FOO`, both are true observations and either one can be the bad news.
+      //
+      // So both go to the worst-first reduce below and IT decides. A stated
+      // precedence was the alternative and it is the wrong shape here: whichever
+      // way it pointed, it would discard a live observation and buy a false
+      // green in that direction — the store resolves `${FOO}` while the
+      // container holds nothing (today's bug), or the container holds `FOO`
+      // while the reference the deploy renders from does not resolve. Worst-first
+      // ranking exists precisely so no source's bad news has to be thrown away.
+      const seenRefs = new Set<string>();
       const requirements: SecretObservation[] = [];
       for (const { name } of requirementsOf(server)) {
-        if (seen.has(name)) continue;
-        seen.add(name);
+        if (seenRefs.has(name)) continue;
+        seenRefs.add(name);
         const observation = byName.get(name);
         if (observation) requirements.push(observation);
       }
@@ -1654,9 +1676,10 @@ export function deriveServerStatuses(
       // graded on them like anything else instead of being filed under "not
       // checked".
       const managedParams = managedParamObservations(server, presence);
+      const seenManaged = new Set<string>();
       for (const observation of managedParams) {
-        if (seen.has(observation.requirement.name)) continue;
-        seen.add(observation.requirement.name);
+        if (seenManaged.has(observation.requirement.name)) continue;
+        seenManaged.add(observation.requirement.name);
         requirements.push(observation);
       }
 
@@ -1779,7 +1802,11 @@ export function deriveServerStatuses(
         server,
         state,
         label: STATE_LABEL[state],
-        summary: summarise(state, requirements.length, bad),
+        // COUNTED BY NAME, not by row. A colliding name contributes two rows —
+        // the reference and the component's report — and they are one secret to
+        // a reader. "All 2 required secrets resolve" over a single `FOO` would
+        // be the summary inventing a requirement.
+        summary: summarise(state, distinctNames(requirements).length, bad),
         requirements,
         // Reported even when worse news labels the row: the gap is true, and the
         // panel has room for it under the requirement rows. `managedGap`, not
@@ -1790,36 +1817,54 @@ export function deriveServerStatuses(
     });
 }
 
+/**
+ * The NAMES a set of rows is about, in row order, each one once.
+ *
+ * Rows and names stopped being the same count when a `${NAME}` reference and a
+ * managed parameter of the same name were both allowed through (#280). Every
+ * sentence the console prints is about secrets, so it counts names; the rows are
+ * how many claims were established about them.
+ */
+function distinctNames(observations: SecretObservation[]): string[] {
+  return [...new Set(observations.map((o) => o.requirement.name))];
+}
+
 function summarise(
   state: ServerState,
   total: number,
   bad: SecretObservation[],
 ): string {
-  const names = bad.map((b) => b.requirement.name).join(", ");
+  // BY NAME on both sides of the "N of M", because `total` is by name. Two rows
+  // about one colliding name are one secret in this sentence, and listing it
+  // twice ("not seeded: FOO, FOO") is how a count-of-rows reads out loud.
+  const badNames = distinctNames(bad);
+  const names = badNames.join(", ");
   // The NOUN agrees with `total` (it is "N required secrets" either way) and the
   // VERB agrees with whichever count the clause is about — `total` for the
-  // all-of-them sentence, `bad.length` for the N-of-M ones. Getting those from one
-  // variable is how the page ended up printing "All 1 required secret resolve".
+  // all-of-them sentence, `badNames.length` for the N-of-M ones. Getting those
+  // from one variable is how the page ended up printing "All 1 required secret
+  // resolve".
   const plural = total === 1 ? "secret" : "secrets";
-  const badIs = bad.length === 1 ? "is" : "are";
+  const badCount = badNames.length;
+  const badIs = badCount === 1 ? "is" : "are";
   switch (state) {
     case "ready":
       return `All ${total} required ${plural} ${total === 1 ? "resolves" : "resolve"}. strad has not verified that any upstream accepts them.`;
     case "missing":
-      return `${bad.length} of ${total} required ${plural} not seeded: ${names}.`;
+      return `${badCount} of ${total} required ${plural} not seeded: ${names}.`;
     case "unconfigured":
       return (
-        `${bad.length} of ${total} required ${plural} not seeded yet: ${names}. ` +
-        `This server declares \`mayBeUnseeded\` for ${bad.length === 1 ? "it" : "them"}, ` +
+        `${badCount} of ${total} required ${plural} not seeded yet: ${names}. ` +
+        `This server declares \`mayBeUnseeded\` for ${badCount === 1 ? "it" : "them"}, ` +
         `so the deploy shipped it INACTIVE instead of failing — it starts serving ` +
         `on its own within a TTL of the value landing, with no redeploy.`
       );
     case "unrenderable":
-      return `${bad.length} of ${total} required ${plural} ${badIs} in the store and cannot be read: ${names}. Not absent — rotate the value.`;
+      return `${badCount} of ${total} required ${plural} ${badIs} in the store and cannot be read: ${names}. Not absent — rotate the value.`;
     case "placeholder":
       return `Seeded but evidently placeholder: ${names}. The upstream will reject calls while listing tools normally.`;
     case "unverified":
-      return `${bad.length} of ${total} required ${plural} cannot be checked from the console: ${names}.`;
+      return `${badCount} of ${total} required ${plural} cannot be checked from the console: ${names}.`;
     case "unknown":
       return `The secret backend could not be consulted for: ${names}. Status unknown, not absent.`;
     case "no-secrets":
