@@ -368,6 +368,26 @@ plus two that shape how this server gets its values:
   behind one identity is a strictly larger blast radius than the two identities it
   replaces, so the collapse is inexpressible rather than merely discouraged.
 
+  Two entries whose **different** names resolve to one `${REF}` is the same
+  collapse, and it is a **warning** rather than a refusal — because that shape is
+  sometimes right. One service account granted on `strad-secrets-prod` and
+  `strad-secrets-staging` is two projects inside one system, and a ban would
+  reject it. `check-config` and `render-spec` name the projects and the ref, and a
+  reviewer decides whether they are one system or two. The `mcpStores:` twin
+  below **refuses** the same shape, deliberately: a shared viewer key collapses
+  the per-store capability probe, and there is no correct form of that.
+
+  Two entries may not declare **overlapping namespaces**. A path both stores could
+  claim is a console write — create, rotate, delete — landing in whichever project
+  was declared first; `storeForPath` refuses such a path at request time, so
+  without this rule the first symptom is a write failing on a deployment that
+  rendered and deployed clean.
+
+  A `SECRETS_PROJECT_ID` left over from the single-store shape is **warned** about
+  when it names a project other than the first store. It outvotes `consoleStores:`
+  in the console index, so the roster's copy-pasteable `gcloud` commands would
+  target one project while the store page defaults to another.
+
   `adminKeyVar` names a **`consoleEnv:` key**, not a `${REF}` of its own, and
   `check-config` enforces three things about it. The key must be declared under
   this server's `consoleEnv:`. It must **not** be a key of any server's `env:`.

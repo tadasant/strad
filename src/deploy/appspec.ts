@@ -258,6 +258,126 @@ function mcpStoresEnv(
 }
 
 /**
+ * `consoleStores:` entries on one server whose `adminKeyVar`s resolve to the
+ * SAME `${NAME}`. See the call site.
+ *
+ * A WARNING and not a refusal, and that is a deliberate asymmetry with the two
+ * hard errors next to it in `src/config/schema.ts`. Two entries naming one
+ * `adminKeyVar` is refused there, and so is an `adminKeyVar` whose ref any
+ * server's `env:` carries. Two DIFFERENT names carrying one ref is the same
+ * credential on two projects — but unlike those two it is sometimes correct: one
+ * service account granted on `strad-secrets-prod` and `strad-secrets-staging`,
+ * two projects inside one system, is a shape production deliberately runs. A ban
+ * would reject it. So this reports rather than refuses, and a reviewer decides
+ * whether the two projects are one system or two.
+ *
+ * The `mcpStores:` twin (`seenViewerRef`) stays a hard ERROR, and the difference
+ * is not an oversight either: a shared viewer key collapses the per-store
+ * CAPABILITY probe, so production's "you may not read a secret value" would be
+ * answered by staging's key. That has no legitimate form. Sharing an admin
+ * credential costs blast radius, which a human can weigh; sharing a viewer
+ * credential costs a guarantee, which nobody can.
+ *
+ * A key holding no `${REF}` — an inline literal — is not compared: two stores
+ * both carrying a literal are already refused by the `consoleEnv:` collision
+ * rules if the names collide, and are two separate strings otherwise.
+ */
+function sharedConsoleAdminCredential(config: StradConfig): string[] {
+  const messages: string[] = [];
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    if (server.consoleStores.length < 2) continue;
+
+    /** `${NAME}` -> the projects already resolving their admin key from it. */
+    const byRef = new Map<string, string[]>();
+    for (const store of server.consoleStores) {
+      for (const ref of refsIn(server.consoleEnv[store.adminKeyVar] ?? "")) {
+        const projects = byRef.get(ref) ?? [];
+        if (!projects.includes(store.project)) projects.push(store.project);
+        byRef.set(ref, projects);
+      }
+    }
+
+    for (const [ref, projects] of byRef) {
+      if (projects.length < 2) continue;
+      messages.push(
+        `server "${server.slug}": consoleStores ${projects.map((p) => `"${p}"`).join(", ")} ` +
+          `all resolve their admin credential from \${${ref}}, under different ` +
+          `consoleEnv: keys — so ONE service account reaches ${projects.length} projects, ` +
+          `and a leaked key for any of them is a leaked key for all of them. That is ` +
+          `right when the projects are one system (prod and staging of the same ` +
+          `product) and wrong when they cross a system boundary. If they cross one, ` +
+          `give each store its own service account and its own \${REF}.`,
+      );
+    }
+  }
+  return messages;
+}
+
+/**
+ * Servers whose `SECRETS_PROJECT_ID` names a project other than the one their
+ * `consoleStores:` list defaults to. See the call site.
+ *
+ * `storeProject()` (src/ui/secret-status.ts) answers "which project holds the
+ * store" for the console INDEX, and it reads `consoleEnv.SECRETS_PROJECT_ID`,
+ * then `env.SECRETS_PROJECT_ID`, then the first `consoleStores:` entry. On a
+ * single-store deployment those agree and the order is invisible. On a
+ * multi-store one a LEFTOVER `SECRETS_PROJECT_ID` — the single-store shape the
+ * list replaced — wins over the list, so the roster prints copy-pasteable
+ * `gcloud` commands naming one project while the store page defaults to another.
+ *
+ * A warning rather than an error for the reason the `mcpStores:` half MOVES that
+ * name instead of deleting it: the console's single-store fallback still reads
+ * it, and a config mid-migration may legitimately carry both for a deploy. It
+ * fails legibly — a command against the wrong `--project` errors rather than
+ * writing anywhere — so the cost is a wrong answer handed to a human, not a
+ * wrong write.
+ *
+ * The ORDERING itself is not changed here; that is issue #261, which wants the
+ * index to resolve per-namespace through `storeForPath()` rather than off a
+ * config field at all. This says the two disagree.
+ */
+function consoleProjectDisagreement(config: StradConfig): string[] {
+  const messages: string[] = [];
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    if (server.consoleStores.length === 0) continue;
+
+    const scope = server.consoleEnv.SECRETS_PROJECT_ID
+      ? "consoleEnv"
+      : server.env.SECRETS_PROJECT_ID
+        ? "env"
+        : undefined;
+    if (!scope) continue;
+    const declared =
+      scope === "consoleEnv"
+        ? server.consoleEnv.SECRETS_PROJECT_ID
+        : server.env.SECRETS_PROJECT_ID;
+    // A project id written as a `${REF}` is not a project id this can compare.
+    if (!declared || refsIn(declared).length > 0) continue;
+
+    const projects = server.consoleStores.map((store) => store.project);
+    if (declared === projects[0]) continue;
+
+    const known = projects.includes(declared);
+    messages.push(
+      `server "${server.slug}": ${scope}: SECRETS_PROJECT_ID names "${declared}", ` +
+        `but consoleStores: defaults to "${projects[0]}"` +
+        (known
+          ? ` and lists "${declared}" second or later`
+          : ` and does not list "${declared}" at all`) +
+        `. SECRETS_PROJECT_ID wins in storeProject(), so the console index and the ` +
+        `roster's copy-pasteable gcloud commands target "${declared}" while the ` +
+        `store page defaults to "${projects[0]}". Drop the leftover ` +
+        `SECRETS_PROJECT_ID, or make it name the default store.`,
+    );
+  }
+  return messages;
+}
+
+/**
  * `mcpStores:` entries whose project no console page fronts. See the call site.
  *
  * The console resolves its stores from `consoleStores:` when it has one, and
@@ -1082,6 +1202,21 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   // `SECRETS_PROJECT_ID` out of a merged environment at runtime, so what is
   // visible here is a config-shaped approximation of it rather than the answer.
   for (const message of storesWithNoConsole(config)) opts.onWarning?.(message);
+
+  // ONE ADMIN CREDENTIAL BEHIND TWO CONSOLE STORES.
+  //
+  // The schema refuses two entries that NAME one `adminKeyVar`, and refuses one
+  // whose `${REF}` any server's `env:` carries. It cannot refuse two different
+  // names carrying one ref, because that shape is sometimes correct — see
+  // `sharedConsoleAdminCredential` above. So it is said here instead.
+  for (const message of sharedConsoleAdminCredential(config)) {
+    opts.onWarning?.(message);
+  }
+
+  // A LEFTOVER `SECRETS_PROJECT_ID` OUTVOTING THE STORE LIST IT REPLACED.
+  for (const message of consoleProjectDisagreement(config)) {
+    opts.onWarning?.(message);
+  }
 
   for (const [bundle, slugs] of unnameable) {
     opts.onWarning?.(

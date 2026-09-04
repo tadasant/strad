@@ -205,12 +205,19 @@ const OAuthConnector = z.object({
  * ONE parameter store the SSO console can browse: a GCP project, the namespaces
  * it manages, and the admin credential that reaches it.
  *
- * PER-STORE CREDENTIALS ARE THE POINT. There is deliberately no way to say "use
- * the same service account for all of these". Two stores on one page is two
- * projects, and one identity granted on both is a strictly larger blast radius
- * than the two identities it replaces — a leaked key for project A would become
- * a leaked key for project B. `adminKeyVar` is required on every entry for that
- * reason, and each entry may name a different one.
+ * PER-STORE CREDENTIALS ARE THE POINT. Two stores on one page is two projects,
+ * and one identity granted on both is a strictly larger blast radius than the
+ * two identities it replaces — a leaked key for project A would become a leaked
+ * key for project B. `adminKeyVar` is required on every entry for that reason,
+ * and there is no way to say "use the same service account for all of these".
+ *
+ * WHAT THAT IS AND IS NOT. Naming one `adminKeyVar` twice is REFUSED, and so is
+ * an `adminKeyVar` whose `${REF}` any server's `env:` carries. Two different
+ * names resolving to one `${REF}` is the same collapse and is only WARNED
+ * about, because it is sometimes correct — one service account on
+ * `strad-secrets-prod` and `strad-secrets-staging` is two projects in one
+ * system. The `superRefine` below says why the `mcpStores:` twin goes the other
+ * way, and `sharedConsoleAdminCredential` in src/deploy/appspec.ts emits it.
  *
  * PER-STORE BOUNDS, likewise. `namespacesStrict` and `reveal` live HERE and not
  * on the page, because a page-level union is a bound that does not bind: a
@@ -236,6 +243,11 @@ const ConsoleStore = z.object({
    * At least one is required, for the same reason the MCP half refuses to mount
    * without one (servers/secrets/shared/src/config.ts): an empty prefix matches
    * every parameter the credential can see.
+   *
+   * Two stores on one server may not declare OVERLAPPING prefixes — the
+   * `superRefine` below refuses it, because a path both could claim is a write
+   * whose project depends on declaration order, and `storeForPath` would refuse
+   * it at request time rather than at config time.
    */
   namespaces: z.array(z.string().min(1)).min(1),
   /**
@@ -1334,6 +1346,7 @@ export const StradConfig = z
 
       const seen = new Set<string>();
       const seenAdminKeyVar = new Map<string, string>();
+      const claimed: { ns: string; project: string }[] = [];
       for (const store of s.consoleStores) {
         // The `?project=` selector addresses a store by its project id. Two
         // entries with the same id is one store the page can never reach, and
@@ -1415,7 +1428,63 @@ export const StradConfig = z
             path: ["servers"],
           });
         }
+
+        // TWO STORES MAY NOT CLAIM ONE PATH — the console's version of the
+        // `mcpStores:` rule below, refused here for the same reason and one
+        // worse consequence. On `/mcp` an ambiguous path is a path whose
+        // CAPABILITY depends on declaration order; on the console it is a
+        // WRITE — create, rotate, delete — and the two candidate stores are two
+        // different GCP projects holding two different credentials.
+        //
+        // `storeForPath` (src/http/params.ts) does refuse it at request time,
+        // and that refusal is the reason this is not merely cosmetic: without
+        // this rule the first symptom of an overlapping config is a console
+        // write failing on a path a human just typed, in a deployment that
+        // rendered, deployed and looked healthy. `namespacesStrict` does not
+        // change it either way — it bounds CREATE within a store and says
+        // nothing about which store a path selects.
+        for (const ns of store.namespaces) {
+          for (const prior of claimed) {
+            if (prior.project === store.project) continue;
+            if (!ns.startsWith(prior.ns) && !prior.ns.startsWith(ns)) continue;
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}": namespace "${ns}" ("${store.project}") and ` +
+                `"${prior.ns}" ("${prior.project}") overlap under consoleStores:, ` +
+                `so a parameter path could address either store. The console ` +
+                `refuses such a path at write time (storeForPath), so the first ` +
+                `symptom would be a console write failing rather than a config ` +
+                `error. Narrow one of them.`,
+              path: ["servers"],
+            });
+          }
+          claimed.push({ ns, project: store.project });
+        }
       }
+
+      // AND THE SAME CHECK BY REF IS DELIBERATELY *NOT* HERE.
+      //
+      // Two `consoleEnv:` keys may carry one `${NAME}`, which is one service
+      // account on two projects — the very thing the by-name rule above calls
+      // "the exact simplification `consoleStores:` exists to refuse". The
+      // `mcpStores:` half DOES refuse that by ref (`seenViewerRef` below), and
+      // the difference between the two is a decision rather than an oversight:
+      //
+      //   - a shared VIEWER key collapses the per-store capability probe, so
+      //     production's "you may not read a secret value" gets answered by
+      //     staging's key. There is no correct form of it.
+      //   - a shared ADMIN key costs blast radius, and blast radius is
+      //     sometimes an acceptable price. One service account granted on
+      //     `strad-secrets-prod` and `strad-secrets-staging` — two projects
+      //     inside ONE system — is a shape production deliberately runs, and a
+      //     ban here would refuse a config that is deployed today.
+      //
+      // So the console side REPORTS it instead, on the `onWarning` channel, and
+      // lets a reviewer say "yes, both strad projects" or "no, that crosses a
+      // system boundary": see `sharedConsoleAdminCredential` in
+      // src/deploy/appspec.ts. Do not "fix" the inconsistency by promoting it to
+      // an error here.
     }
 
     // MCP STORES: the credential may only travel by THIS server's `env:`, and no
