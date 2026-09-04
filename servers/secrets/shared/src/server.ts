@@ -30,13 +30,127 @@ export interface CreateMCPServerOptions {
   refreshGateway?: GatewayRefresh;
   /**
    * Test seam: override the capability probe, PER PROJECT. Production asks
-   * Google once per store, on the first listing that needs an answer, and caches
-   * each for the lifetime of the factory — an IAM grant does not change
+   * Google once per store, on the first listing that needs an answer, and keeps
+   * each ANSWER for the lifetime of the factory — an IAM grant does not change
    * mid-request, and the tool LIST must be stable within a session or a client's
-   * cached listing goes stale in a confusing way.
+   * cached listing goes stale in a confusing way. A probe that never reached
+   * Google is not an answer and is not kept; see UNANSWERED_CAPABILITY_TTL_MS.
    */
   capabilities?: CapabilityLookup;
   writerFactory?: (store: SecretsStore) => ParametersWriter;
+}
+
+/**
+ * How long an answer that is NOT an observation is remembered before the next
+ * caller re-asks.
+ *
+ * `probed: true` is the only thing that means "Google answered". Everything else
+ * — a token mint that never completed, a `testIamPermissions` that did not come
+ * back, a store with no credential yet — is an ABSENCE of an answer, and an
+ * absence must not be remembered for the life of the container. It was: one
+ * transient mint failure at the first listing pinned a production store to
+ * `NO_CAPABILITIES` for the whole process, with `list_parameters` working
+ * perfectly on the same container and the only cure a redeploy
+ * (tadasant/strad#270).
+ *
+ * FIFTEEN SECONDS IS THE CONSOLE'S NUMBER, deliberately. `cachedProbe` in
+ * src/secrets/parameters/capabilities.ts has drawn this distinction since it was
+ * written — a probed answer for five minutes, an unprobed one for fifteen
+ * seconds, "because a network blip is not an answer" — and it is the same probe
+ * about the same credential. The two doors disagreeing on how long a blip counts
+ * is the defect, not a tuning question, so this is the same bound rather than a
+ * new one.
+ *
+ * The bound is also the cost ceiling under a sustained outage: one mint plus one
+ * round trip per store per fifteen seconds, not one per request. Zero would be
+ * the regression this memo exists to prevent; Infinity was the bug.
+ *
+ * It covers the no-credential answer too, which cannot change without a restart.
+ * Re-deciding it costs an object and no I/O, and one rule over every non-answer
+ * is worth more than the allocation: the special case would be a second place
+ * for this lifetime to be decided.
+ */
+const UNANSWERED_CAPABILITY_TTL_MS = 15_000;
+
+/**
+ * How long ONE caller waits on a probe before it is treated as unanswered.
+ *
+ * The probe's two legs are bounded differently and one of them is not bounded at
+ * all: `probeCapabilities` aborts the `testIamPermissions` fetch after ten
+ * seconds, but the token mint underneath it passes no signal, so a connection
+ * that hangs rather than fails hangs for as long as the socket does. Every
+ * concurrent listing shares that one promise — which is right when it settles
+ * and is a stall when it does not.
+ *
+ * Six seconds, because the number this has to stay under is the gateway's
+ * reachability timeout (`DEFAULT_TIMEOUT_MS`, ten seconds): a `tools/list` that
+ * outlives it makes the `secrets` slug read as UNREACHABLE on `/healthz`, which
+ * is a different and less true statement than "this store's capabilities are
+ * unknown". A healthy probe answers in well under a second, so this is only ever
+ * reached by something that is already broken.
+ *
+ * The abandoned probe is CANCELLED, not merely dropped. `probeCapabilities`
+ * builds its own AbortController after the mint returns, so on the stalled-mint
+ * path — the one this deadline exists for — nothing of its own ever fires, and a
+ * fresh socket every fifteen seconds would pile up until undici timed each one
+ * out. `ProbeConfig` takes a `fetchImpl`, so the deadline supplies one that
+ * carries a signal of its own; that is a caller's choice about its own request,
+ * and it leaves what the probe MAKES of an answer alone.
+ */
+const PROBE_DEADLINE_MS = 6_000;
+
+/**
+ * A probe bounded by the deadline, in both directions: the caller stops waiting
+ * and the request stops running.
+ *
+ * `run` is handed the `fetchImpl` to build the probe with. Resolves to
+ * `NO_CAPABILITIES` if no answer arrives in time — and being unprobed, that is
+ * memoised for UNANSWERED_CAPABILITY_TTL_MS rather than kept.
+ */
+function withDeadline(
+  project: string,
+  run: (fetchImpl: typeof fetch) => Promise<Capabilities>,
+): Promise<Capabilities> {
+  const abandon = new AbortController();
+  // Every fetch the probe makes joins this signal. The CRM leg passes one of its
+  // own (its ten-second abort), so the two are combined rather than replaced.
+  const fetchImpl: typeof fetch = (input, init) =>
+    fetch(input, {
+      ...init,
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, abandon.signal])
+        : abandon.signal,
+    });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<Capabilities>((resolve) => {
+    timer = setTimeout(() => {
+      abandon.abort();
+      resolve({
+        ...NO_CAPABILITIES,
+        reason:
+          `the capability probe for "${project}" did not answer within ` +
+          `${PROBE_DEADLINE_MS / 1000}s`,
+      });
+    }, PROBE_DEADLINE_MS);
+    // A pending probe must not be the reason a process refuses to exit.
+    timer.unref?.();
+  });
+  return Promise.race([run(fetchImpl), deadline]).finally(() =>
+    clearTimeout(timer),
+  );
+}
+
+/** A memoised capability answer, and when to stop believing it. */
+interface ProbeMemo {
+  answer: Promise<Capabilities>;
+  /**
+   * Epoch ms after which the next caller re-asks. `Infinity` while the probe is
+   * still in flight — so concurrent callers share ONE round trip rather than
+   * stampeding Google — and `Infinity` once it comes back `probed: true`, which
+   * is the case the memo was always right about.
+   */
+  expiresAt: number;
 }
 
 /**
@@ -71,9 +185,11 @@ export function createMCPServer(options: CreateMCPServerOptions) {
   // Keyed by PROJECT ID, all three. Two stores are two projects, two
   // credentials, two capabilities and two clients; the key is what keeps them
   // apart.
-  const probed = new Map<string, Promise<Capabilities>>();
+  const probed = new Map<string, ProbeMemo>();
   const writers = new Map<string, ParametersWriter>();
   const readers = new Map<string, ParametersReader>();
+  /** The last probe fault logged per project — see the `console.error` below. */
+  const loggedFault = new Map<string, string>();
 
   const registerHandlers = async (
     target: Server,
@@ -103,11 +219,25 @@ export function createMCPServer(options: CreateMCPServerOptions) {
         return client;
       });
 
-    // ONE PROBE PER STORE per process. Memoised rather than per-request: the
-    // answer is a property of one credential on one project, and re-asking on
-    // every tools/list would add a round trip per store to every listing for a
-    // value that changes when a human edits IAM. A revoked permission still
-    // fails closed at Google.
+    // ONE PROBE PER STORE per process — for as long as there is an ANSWER to
+    // memoise. A completed probe is a property of one credential on one project,
+    // and re-asking on every tools/list would add a round trip per store to
+    // every listing for a value that changes when a human edits IAM. A revoked
+    // permission still fails closed at Google.
+    //
+    // That reasoning covers a probe that REACHED Google. It does not cover one
+    // that never did, and the memo used to cache both identically, so a single
+    // failed token mint was remembered as the permanent answer. So the lifetime
+    // now follows `probed`, exactly as the console's `cachedProbe` already made
+    // it: an observation is kept, an absence expires after
+    // UNANSWERED_CAPABILITY_TTL_MS and the next caller asks again. Fail-closed
+    // is untouched — an unanswered probe still yields NO_CAPABILITIES for the
+    // call it was made on; it just stops being the last word.
+    //
+    // The cost is that this mount's tool LIST can widen mid-session, when a
+    // store that could not be reached at boot is reached moments later. That is
+    // the recovery, not a regression: the narrow listing was the wrong answer,
+    // and every handler re-checks the capability per call anyway.
     //
     // A project this server does not front never reaches here — tools.ts asks
     // only about a store it resolved a path to — but the lookup fails closed on
@@ -123,21 +253,65 @@ export function createMCPServer(options: CreateMCPServerOptions) {
             reason: `"${project}" is not a store this server fronts`,
           });
         }
-        let answer = probed.get(project);
-        if (!answer) {
-          answer = store.account
-            ? probeCapabilities({
-                projectId: store.project,
-                account: store.account,
-                tokenUrl: config.tokenUrl,
-              })
+        const held = probed.get(project);
+        if (held && Date.now() < held.expiresAt) return held.answer;
+
+        const account = store.account;
+        const memo: ProbeMemo = {
+          expiresAt: Number.POSITIVE_INFINITY,
+          answer: account
+            ? withDeadline(project, (fetchImpl) =>
+                probeCapabilities({
+                  projectId: store.project,
+                  account,
+                  tokenUrl: config.tokenUrl,
+                  fetchImpl,
+                }),
+              )
             : Promise.resolve({
                 ...NO_CAPABILITIES,
                 reason: `no credential is configured for "${project}" (${store.viewerKeyVar} is unset)`,
-              });
-          probed.set(project, answer);
-        }
-        return answer;
+              }),
+        };
+        probed.set(project, memo);
+        void memo.answer.then(
+          (caps) => {
+            if (caps.probed) {
+              loggedFault.delete(project);
+              return;
+            }
+            memo.expiresAt = Date.now() + UNANSWERED_CAPABILITY_TTL_MS;
+            // The degraded state nothing used to say out loud. On stderr, which
+            // is where the bundle host's own lines go; stdout belongs to any
+            // client that mounts this tree over a stdio transport.
+            //
+            // ON THE TRANSITION, not on every retry. A store whose probe fails
+            // deterministically — Cloud Resource Manager not enabled on the
+            // project, a revoked key — fails every fifteen seconds for the life
+            // of the container, and a line each time is 5,000 a day saying one
+            // thing. So: the first failure, and any CHANGE of reason, which is
+            // the news. A store with no credential says nothing at all; that is
+            // a config fact rather than a fault.
+            const reason = caps.reason ?? "no reason given";
+            if (account && loggedFault.get(project) !== reason) {
+              loggedFault.set(project, reason);
+              console.error(
+                `[secrets] capability probe for "${project}" did not complete ` +
+                  `(${reason}); failing closed, and the next call after ` +
+                  `${UNANSWERED_CAPABILITY_TTL_MS / 1000}s re-asks`,
+              );
+            }
+          },
+          // probeCapabilities does not throw, and neither other branch can, so
+          // this is unreachable today and kept deliberately: a rejected promise
+          // left at `Infinity` would be handed to every later caller unchanged,
+          // which is this issue's bug in its other clothes. Expiring it costs a
+          // line. The rejection still reaches the caller, which fails closed.
+          () => {
+            memo.expiresAt = 0;
+          },
+        );
+        return memo.answer;
       });
 
     // The mutating client is built LAZILY and only ever reached through that

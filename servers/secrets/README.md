@@ -46,6 +46,15 @@ from](#namespaces-and-where-the-blast-radius-actually-comes-from).
 not enabled, a network fault — yields no capabilities, and the surface is the
 read-only four. Nothing is opened by a failure.
 
+**And it is asked again.** A `testIamPermissions` that came back with a permission
+set — a denial included — is the answer, and is kept for the life of the
+container. Anything else is an absence of one, and expires after fifteen seconds:
+the console's bound, for the same reason. So a transient token-mint failure costs
+seconds of the read-only surface rather than the whole life of the process (#270).
+The call that hit the failure still fails closed — the retry changes what the next
+call sees, not what that one may do — and one caller waits at most six seconds on
+a probe, because the token mint underneath it has no abort of its own.
+
 Secret values are added, rotated, revealed and deleted by a **human**, in strad's
 SSO-gated console, using a **different service account that never reaches the MCP
 container**. A separate runtime **resolver** assembles each server's env from these

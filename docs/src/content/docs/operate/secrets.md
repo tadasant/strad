@@ -2084,6 +2084,57 @@ Every handler re-checks the capability rather than trusting that it was listed �
 `tools/list` a client cached a minute ago is not an authorization. A probe that
 cannot run yields the read-only surface; nothing is opened by a failure.
 
+### An answer is remembered; an absence is not
+
+The probe runs once per store and the answer is kept for the life of the
+container — it is a property of one credential on one project, and re-asking on
+every `tools/list` would put an OAuth mint and a round trip per store on every
+listing.
+
+**What counts as the answer is `probed`, and nothing else.** A
+`testIamPermissions` that came back with a permission set is one — including the
+denial that is prod's normal state, a credential told it holds none of them. That
+is kept for the life of the container, because it changes when a human edits IAM
+and not before.
+
+Everything else is an **absence** of an answer, and an absence expires after
+fifteen seconds so the next call asks again: a token mint that failed, a
+`testIamPermissions` that did not come back, and — deliberately — the ones that
+look permanent, a 403 because Cloud Resource Manager is not enabled on the
+project or a 401 on a revoked key. The probe reports whether it got an answer, not
+why it did not, and reading a cause out of the reason string would be this code
+second-guessing Google's; `testIamPermissions` stays the only authority. The cost
+of not guessing is one probe per store per fifteen seconds while a fault persists,
+and it is worth paying — the cost of guessing wrong is the bug this replaced.
+
+Fifteen seconds is the same bound the console has always used for the same thing,
+and for the reason it was written down with: a network blip is not an answer.
+Before the `/mcp` side had it, one failed mint at the first listing pinned a store
+to no capabilities for the whole life of the container, with the read path working
+perfectly beside it and a redeploy the only cure
+([#270](https://github.com/tadasant/strad/issues/270)).
+
+Three consequences worth knowing:
+
+- **The call that hit the failure still fails closed.** An unestablished
+  capability is never a yes. `list_managed_namespaces` reports
+  `capabilitiesProbed: false` with the reason, exactly as before; the retry
+  changes what the _next_ call sees, not what this one is allowed to do.
+- **The tool list can widen mid-session.** A container whose first probe could not
+  reach Google lists the read-only surface, and lists the real one once a probe
+  gets through. A client holding the earlier listing keeps it until it lists
+  again — which is why every handler re-checks the capability per call.
+- **A caller waits six seconds for a probe, not indefinitely**, and the abandoned
+  request is cancelled rather than left running. The token mint passes no abort
+  signal of its own, so a connection that hangs rather than fails would otherwise
+  park every concurrent listing on it and pile a fresh socket up every fifteen
+  seconds. Six is under the gateway's ten-second reachability timeout on purpose:
+  a slow probe should leave the slug reporting unknown capabilities, not
+  reporting itself unreachable.
+
+A persistent fault says so on stderr **once** — on the first failure and on any
+change of reason — rather than once per retry.
+
 The exact grants, per environment, with audit assertions, are in
 [`servers/secrets/README.md`](https://github.com/tadasant/strad/blob/main/servers/secrets/README.md).
 
@@ -2258,7 +2309,9 @@ convention.
 
 A **capability** is a property of one credential on one project.
 `projects:testIamPermissions` answers about exactly one of each, so the secrets
-server probes **once per store** and memoises the answer **by project id**. Every
+server probes **once per store** and memoises the answer **by project id** (an
+answer, not a failure to get one — see
+[above](#an-answer-is-remembered-an-absence-is-not)). Every
 tool that takes a canonical path resolves it to exactly one store first, and from
 then on uses that store's namespaces, that store's viewer credential and that
 store's probed capability. There is no union anywhere on a call path.
