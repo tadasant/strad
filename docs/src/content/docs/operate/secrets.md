@@ -2335,18 +2335,33 @@ and the NAME of each store's key) and the container reads that. Declaring both
 shapes is refused by `check-config` rather than resolved to one of them.
 
 `SECRETS_CONSOLE_URL` is where `open_secrets_manager` sends a human, and the link
-it hands back is that value with the canonical path appended as `param=`. The
-value may carry a query string of its own — `.../ui/secrets?project=zimmer-secrets-prod`
-is how one console page fronting several stores addresses a particular one — and
-`param=` is joined onto it with `&`, so both survive. A value with no scheme, such
-as a bare `/ui/secrets`, is used as written.
+it hands back is that value carrying two keys: `param=`, the canonical path, and
+`project=`, **the store that path resolved to**. The value may carry a query string
+of its own — `.../ui/secrets?project=zimmer-secrets-prod` is how one console page
+fronting several stores addresses a particular one — and both keys are joined onto
+it with `&`, replacing rather than duplicating a key it already carried. A value
+with no scheme, such as a bare `/ui/secrets`, is used as written.
 
-Two things that link does not do yet, both filed: the console reads `project` and
-`ns` off the query string and **not** `param`, so a human lands on the slug's page
-rather than on the parameter ([#273](https://github.com/tadasant/strad/issues/273)),
-and the server does not resolve the path to its store, so `project` is whatever the
-operator wrote rather than the store the parameter lives in
-([#274](https://github.com/tadasant/strad/issues/274)).
+**The resolved store beats the configured one.** One container fronts N stores
+behind ONE `SECRETS_CONSOLE_URL`, so a `?project=` written into that variable is
+right for at most one of them, and a link naming no store at all falls back to
+whichever store the console lists first — the same failure with a different
+constant. The path addresses exactly one store, and that answer is the one the link
+carries. This is `open_secrets_manager` calling the same `storeForPath` every other
+path-taking tool calls, for the only case where the answer is a label rather than a
+gate: the tool reads nothing, so an argument that resolves to no store — a bare
+variable name, which the tool accepts — costs the link its `project` and a `note`
+saying so, not the call.
+
+The console's `consoleStores:` is configured separately from the MCP server's
+`mcpStores:`, so a resolved project id can name a store this console does not front.
+There `selectStore` falls back to the first store rather than erroring, which is
+exactly what a link naming no store would have done.
+
+One thing that link does not do yet, and it is filed: the console reads `project`
+and `ns` off the query string and **not** `param`, so a human lands on the right
+store's page rather than on the parameter
+([#273](https://github.com/tadasant/strad/issues/273)).
 
 ##### The path selects the store, and the store selects the capability
 
