@@ -265,6 +265,20 @@ opening any PR.
 - Lowercase `strad` everywhere in prose, including sentence-initial.
 - No temporal comments ("now", "used to be") — write code and docs as the
   canonical current state.
+- A backticked repo-relative path in a comment is a CLAIM, and
+  `test/comment-paths.test.ts` checks it: under `src/`, `scripts/` and `test/`,
+  every one has to resolve. The same header named a suite that had been deleted
+  and then one that never existed (#178, #252), in both cases telling a reader
+  where a leak rule is asserted. Two forms resolve as conventions rather than
+  errors — an elided `docs/.../operate/secrets.md`, and the doc-site route
+  `docs/operate/secrets.md` (or `docs/operate/secrets`, the route Starlight
+  actually serves) for a page whose file is
+  `docs/src/content/docs/operate/secrets.md`. A trailing `:174` line reference
+  and a `#heading` fragment are stripped before resolving, so both are fine to
+  write. A comment that must name a file
+  which is NOT there writes it without backticks; the backticks are the claim.
+  `servers/**` is not walked, because each tree there has its own root — the
+  vendored copies are checked at their source under `src/`.
 - Don't add backwards-compat shims during refactors; update all call sites.
 - Never commit secrets. How they reach the container depends on
   `gateway.secrets.provider` (see `docs/.../operate/secrets.md`), and there is one
