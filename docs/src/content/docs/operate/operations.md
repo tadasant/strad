@@ -425,12 +425,13 @@ line carries its own: the per-component figures are compact, so they add up to
 that one and not to the first.
 
 Past ~80% of the largest spec this deployment is known to have deployed, that
-becomes a `::warning::`. It is a warning and never an error: DigitalOcean
-publishes no app-spec size limit, so the figure it compares against is an
-observation with a range around it, and a hard gate on an inferred number would
-fail deploys that would have worked. What it is for is the state prod was
-actually in on 2026-08-30 — headroom nobody had measured, somewhere between 1 and
-10,332 bytes, until the API started answering `size limit exceeded`. See
+becomes a `::warning::`. Here it stays a warning, because the refusal has already
+happened by then: `render-spec` gates on the same number before it writes the
+file, and a spec that reaches `assert-spec` past the ceiling got there because
+someone passed `--max-spec-bytes` — a deliberate act this script has no business
+overruling. What this line is for is the state prod was actually in on 2026-08-30
+— headroom nobody had measured, somewhere between 1 and 10,332 bytes, until the
+API started answering `size limit exceeded`. See
 [Known limitations](/limitations/) #72.
 
 ### Which image a deploy ships

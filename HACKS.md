@@ -3547,8 +3547,15 @@ limit:
   round trip does not hold or does not shrink. Prod's spec: 141,342 → ~96,238.
 - **`assert-spec` reports the size and where it is** — the total, plus bytes per
   component — and warns past ~80% of the largest spec known to have deployed.
-  A **warning**, never an error: a hard gate on an inferred number fails deploys
-  that would have worked.
+- **`render-spec` refuses to emit a spec past 131,010 bytes**
+  (`src/deploy/spec-size.ts`), naming the count, the ceiling, the overshoot and
+  the components and variables the bytes are in. A hard gate on an inferred
+  number would fail deploys that would have worked — so this one is not on an
+  inferred number. It is on the largest spec `strad-prod` is OBSERVED to have
+  deployed, across all 176 prod renders that logged their own size, which means
+  no size known to work is refused and every size above it is one nobody has
+  evidence about. `--max-spec-bytes` raises it without a PR to this repo, which
+  matters because prod renders this script straight from `main`.
 
 **What it does NOT fix.** The other 45% of the spec is `bundle`'s 93 credential
 variables, roughly half of them the per-slug aliases of #56. That is real
@@ -3557,8 +3564,10 @@ credentials reach a container — tadasant/tadasant-internal#213, which injects 
 bootstrap credential instead of baking a set. This entry buys that redesign time;
 it does not remove the need for it.
 
-**Undo.** Delete `src/deploy/config-inline.ts` and bake `raw` again. The spec goes
-back to carrying every comment in the config file.
+**Undo.** Delete `src/deploy/config-inline.ts` and bake `raw` again, and delete the
+`specSizeReport` call at the end of `scripts/render-spec.ts`. The spec goes back
+to carrying every comment in the config file, and to being refused by
+DigitalOcean rather than by the renderer.
 
 ## 73. The release path executes on a pull request, but only as far as the push
 

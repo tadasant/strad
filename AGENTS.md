@@ -129,6 +129,7 @@ not a confession.
 | `src/connectors/**`, `src/ui/connector.ts` — the console's Google consent flow        | `operate/connectors.md`, `auth/overview.md`, `servers/interface.md`, `operate/secrets.md`, `operate/deploy-model.md`     |
 | `src/deploy/appspec.ts`, `scripts/render-spec.ts`                                     | `operate/deploy-model.md`                                                                                                |
 | `src/deploy/spec-file.ts`, `scripts/assert-spec.ts` — the pre-`doctl` spec check      | `operate/operations.md`, `limitations.md`                                                                                |
+| `src/deploy/spec-size.ts` — the size ceiling, the warn band, what the refusal says    | `operate/deploy-model.md`, `operate/operations.md`, `limitations.md`                                                     |
 | `src/deploy/config-inline.ts` — what `STRAD_CONFIG_YAML` carries, and the spec's size | `operate/deploy-model.md`, `servers/interface.md`, `limitations.md`                                                      |
 | `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts`   | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md`                                                        |
 | `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope      | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`                                                          |

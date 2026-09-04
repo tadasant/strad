@@ -384,6 +384,29 @@ ceiling is somewhere in `(131010, 141342]` and nothing knows where. Which means
 production had been deploying on headroom nobody had measured — somewhere between
 1 and 10,332 bytes. See [Known limitations](/limitations/) #72.
 
+**So the renderer refuses to emit a spec past 131,010 bytes**
+(`src/deploy/spec-size.ts`). That number is not a guess at DigitalOcean's limit —
+it is the largest spec `strad-prod` has been observed to deploy, across every
+prod render that logged its own size. Putting the ceiling exactly there is what
+makes a hard gate safe: it cannot refuse a size that is known to work, and every
+size above it is one nobody has evidence about. The refusal names the byte count,
+the ceiling, how far over, and the components and variables the bytes are in —
+which is the whole point, because the 400 it replaces names none of those and
+arrives three steps later. Inside the top 20% of the ceiling the render says so
+and emits anyway.
+
+```
+::error::the rendered app spec is 152,295 bytes, 21,285 over the 131,010-byte
+ceiling this deploy will emit. […]
+Where the bytes are:
+  core: 151,081 bytes of env over 9 var(s) — largest: STRAD_CONFIG_YAML (150,411), …
+```
+
+`--max-spec-bytes <n>` raises the ceiling. It exists because prod renders this
+script straight from `main`: if App Platform is found to accept more, an operator
+says so on the spot rather than waiting on a strad PR. Raising the constant is
+the follow-up, and it is a better measurement rather than a weakening.
+
 The bytes are dominated by whole-document values, not by the number of servers.
 For prod's spec at the moment it was refused:
 
