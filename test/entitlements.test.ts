@@ -129,7 +129,7 @@ describe("resolveSelection — the query proposes, the token disposes", () => {
     );
     if (got.ok) throw new Error("unreachable");
     expect(got.unavailable[0]?.authorize_url).toBe(
-      "https://s.example/console/servers/nosuch",
+      "https://s.example/ui/nosuch",
     );
   });
 });

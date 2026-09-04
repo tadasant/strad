@@ -5,6 +5,7 @@ import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { resolveSelection } from "../src/gateway/entitlements.ts";
 import type { GcsLister } from "../src/ui/gcs-client.ts";
 import {
   resolveServerView,
@@ -270,5 +271,44 @@ describe("/ui/:server GCS browse", () => {
     const res = await fetch(`${baseUrl}/ui/echo`, { headers: auth });
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("No browser view");
+  });
+});
+
+/**
+ * The 424's remediation link, followed.
+ *
+ * `resolveSelection()` emits `authorize_url` and this app serves it, and the two
+ * are separate modules that nothing else joins up: a unit test on either side
+ * passes while the link points at a path no route mounts, and the only symptom
+ * is a client landing on Express's stock error page. So assert the join, over
+ * the real router, by fetching the URL the gateway itself handed out.
+ */
+describe("the 424's authorize_url resolves to a console route", () => {
+  const auth = { authorization: `Bearer ${BOOTSTRAP}` };
+
+  /** The `authorize_url` a 424 would carry for `slug`, against this server. */
+  function authorizeUrl(slug: string): string {
+    const got = resolveSelection([slug], new Set<string>(), CONFIG, baseUrl);
+    if (got.ok) throw new Error("expected an unavailable server");
+    const url = got.unavailable[0]?.authorize_url;
+    if (!url) throw new Error("expected an authorize_url");
+    return url;
+  }
+
+  it("lands on the server's own console page when the slug is configured", async () => {
+    const res = await fetch(authorizeUrl("gcs"), { headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("demo-bucket");
+  });
+
+  it("lands on the console's own not-found — not Express's — for an invented slug", async () => {
+    const res = await fetch(authorizeUrl("nosuch"), { headers: auth });
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("No such server");
+    // The console page, with the server list one click away — the whole reason
+    // a per-slug link beats a flat one for a slug that names nothing.
+    expect(html).toContain(`href="/ui"`);
+    expect(html).not.toContain("Cannot GET");
   });
 });

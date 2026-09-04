@@ -35,6 +35,7 @@ import {
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
+import { SERVER_ROUTE } from "./paths.ts";
 import {
   connectorFlash,
   mountConnector,
@@ -246,7 +247,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     res.redirect(302, "/ui");
   });
 
-  app.get("/ui/:server", gate, async (req, res) => {
+  app.get(SERVER_ROUTE, gate, async (req, res) => {
     // Express 4 does not catch a rejected async handler, so guard it here: any
     // unexpected error becomes a 500 page rather than a hung request.
     try {
@@ -264,7 +265,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     "delete",
     "refresh",
   ] as const) {
-    app.post(`/ui/:server/${action}`, gate, form, async (req, res) => {
+    app.post(`${SERVER_ROUTE}/${action}`, gate, form, async (req, res) => {
       try {
         await handleSecretAction(action, req, res, opts);
       } catch (err) {

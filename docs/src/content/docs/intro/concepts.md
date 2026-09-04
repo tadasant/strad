@@ -70,8 +70,9 @@ is reachable by nobody — strad fails closed. The final selection for a request
 When a requested server is not in the entitled set, strad returns **`424 Failed
 Dependency`** rather than dropping it silently or returning `401`. The body names
 each unavailable server with a `status` (`not_configured`, `not_entitled`, or
-`disabled`) and an `authorize_url`. This is the fail-closed contract: a client
-always learns _which_ server it couldn't get and _where_ to fix it.
+`disabled`) and an `authorize_url` — that server's console page,
+`${publicUrl}/ui/<slug>`. This is the fail-closed contract: a client always learns
+_which_ server it couldn't get and _where_ to fix it.
 
 ```mermaid
 flowchart TD
