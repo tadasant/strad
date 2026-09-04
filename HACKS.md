@@ -407,17 +407,22 @@ otherwise-verbatim `shared/`.
 same unpublished package for its send-email confirmation, and it is its own
 Docker build context (`servers/bundle/Dockerfile`, the `build-google` stage), so
 it cannot reach into `servers/onepassword/`. Both trees land in the SAME bundle
-image under `/app/trees`, and both copies gate an irreversible act: the google
-one confirms before an email is sent, the onepassword one backs
-`checkElicitationSafety()`, which decides whether 1Password may mount at all. A
-timeout tightened in one tree and not the other would be two confirmation
-semantics under one `/mcp` with nothing saying so, so the seam is in the
-`VENDORED` manifest (`npm run elicitation:sync`, checked by
-`test/vendored.sync.test.ts`) with `servers/onepassword/elicitation/src` as the
-source — the copy whose consumer can refuse to mount a server is the one someone
-edits deliberately. The seam covers the four `src/*.ts` modules; the trees'
-`package.json`, `tsconfig.json` and markdown are identical too and stay out,
-because none of them can carry a `//` banner.
+image under `/app/trees`, and both copies gate an irreversible act through the
+library's `requestConfirmation()`: the google one before an email is sent, the
+onepassword one before `get_item`, `create_login`, `create_secure_note`,
+`share_item` and `create_api_credential` reveal or mint a credential. Its
+`readElicitationConfig()` is what decides whether they prompt at all. (What
+refuses to MOUNT 1Password is `checkElicitationSafety()` in `shared/`, and that
+one reads env vars only — it does not go through this library.) A timeout
+tightened in one tree and not the other would be two confirmation semantics under
+one `/mcp` with nothing saying so, so the seam is in the `VENDORED` manifest
+(`npm run elicitation:sync`, checked by `test/vendored.sync.test.ts`) with
+`servers/onepassword/elicitation/src` as the source — the copy a deliberate
+change arrives at, since `servers/onepassword/test/` exercises it. The seam
+covers the four `src/*.ts` modules, and the same test asserts that list is every
+`.ts` file in the source directory; the trees' `package.json`, `tsconfig.json`
+and markdown are identical too and stay out, because none of them can carry a
+`//` banner.
 
 **Why.** Reusing the upstream tool logic (nine tools, credential redaction,
 elicitation gating) without forking it. `op` itself is not an npm dependency at

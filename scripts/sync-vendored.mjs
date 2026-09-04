@@ -126,19 +126,22 @@ export const VENDORED = [
     // ONE library, built into ONE image, out of two independently-built trees:
     // `build-google` and `build-op` in `servers/bundle/Dockerfile` each COPY
     // their own context, so neither can reach the other's copy. Both consumers
-    // gate an IRREVERSIBLE act — the google copy confirms before an email is
-    // sent, the onepassword copy backs `checkElicitationSafety()`, which decides
-    // whether 1Password may mount at all and stands between a `tools/call` and a
-    // revealed secret. A timeout tightened in one tree and not the other is two
+    // gate an IRREVERSIBLE act through `requestConfirmation()` — the google copy
+    // before an email is SENT, the onepassword copy before five tools reveal or
+    // mint a credential — and `readElicitationConfig()` decides whether they
+    // prompt at all. A timeout tightened in one tree and not the other is two
     // confirmation semantics under one `/mcp`, with nothing saying so.
     //
-    // The onepassword copy is the SOURCE because its consumer can refuse to
-    // mount a server, so it is the one someone edits deliberately.
+    // The onepassword copy is the SOURCE because it is the one a deliberate
+    // change arrives at: `servers/onepassword/test/` exercises it, and the tools
+    // whose prompts it draws stand between a `tools/call` and a revealed secret.
     //
-    // Scope is the four `src/*.ts` modules. The tree's `package.json`,
-    // `tsconfig.json`, `README.md` and `CHANGELOG.md` are identical too and stay
-    // out: none of them can carry a `//` banner, and a banner-less check is a
-    // different mechanism, not a longer `files:` list.
+    // Scope is the four `src/*.ts` modules, and `test/vendored.sync.test.ts`
+    // asserts that list is every `.ts` file in the source directory — a name
+    // this array does not carry is a fifth module vendored by hand. The tree's
+    // `package.json`, `tsconfig.json`, `README.md` and `CHANGELOG.md` are
+    // identical too and stay out: none of them can carry a `//` banner, and a
+    // banner-less check is a different mechanism, not a longer `files:` list.
     id: "elicitation",
     source: "servers/onepassword/elicitation/src",
     files: ["config.ts", "elicitation.ts", "index.ts", "types.ts"],
@@ -221,7 +224,7 @@ const USAGE = "usage: sync-vendored.mjs [--check] [--only <id>]";
  *
  * An argument this does not understand THROWS. Ignoring one would make `--chek`
  * fall through to the write path and rewrite every copy on behalf of someone who
- * asked to verify them, and `--only=wire --check` silently check all five.
+ * asked to verify them, and `--only=wire --check` silently check all six.
  */
 export function parseArgs(argv) {
   let check = false;

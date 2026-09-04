@@ -31,6 +31,11 @@ injected downstream (tadasant-internal) as App Platform SECRET env vars.
   plus `@pulsemcp/mcp-elicitation`. Wired as npm workspaces. The only edit to
   vendored code is one dependency line (gmail's elicitation dep → the vendored
   workspace) and a `types` field so the entrypoint typechecks.
+- `vendor/mcp-elicitation/src/` — **generated. Do not edit it here.** The same
+  library is also in `servers/onepassword/elicitation`, both copies are built
+  into one bundle image, and that copy is the source: `npm run elicitation:sync`
+  writes this one and `test/vendored.sync.test.ts` fails CI if they drift. Each
+  file carries the banner saying so.
 - `vendor/google-sheets-shared/` — **not** vendored from anywhere. It is strad's
   own server, written here, following the same shape as its neighbours so this
   entrypoint and the collapsed bundle host can load all four identically. It has

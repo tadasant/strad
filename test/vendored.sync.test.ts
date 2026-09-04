@@ -9,10 +9,11 @@ const { copies, drifted, repoPath, select, VENDORED } = manifest;
 /**
  * Vendored copies rot. This is the thing that notices — for every seam at once.
  *
- * Six modules cross an npm-tree boundary, because a supplementary image is its
- * own Docker build context and `servers/bundle/host` and `servers/secrets` are
- * their own npm projects. Each has to exist twice, and the only thing standing
- * between that and slowly-diverging copies is this file.
+ * Six seams cross an npm-tree boundary — nine files, since one of them is a
+ * library that spans four — because a supplementary image is its own Docker
+ * build context and `servers/bundle/host` and `servers/secrets` are their own
+ * npm projects. Each has to exist twice, and the only thing standing between
+ * that and slowly-diverging copies is this file.
  *
  * If it fails: edit the SOURCE named in the failure (never a copy), run
  * `npm run vendor:sync`, and commit both halves.
@@ -106,13 +107,24 @@ describe("the vendored-module manifest", () => {
     }
   });
 
-  it("gives every multi-file entry at least one file", () => {
-    // `files: []` is the same fail-open as a lost target, one level down: the
-    // entry still has a source and a target, `drifted()` still returns [], and
-    // the seam is checked over nothing.
+  it("names every module in a multi-file entry's source directory", () => {
+    // `files:` is hand-maintained, and nothing else compares it to the tree. A
+    // module ADDED to the source and hand-copied to the target is the one drift
+    // this seam cannot see from the other side: the copy carries no stamp, so
+    // the scan below does not claim it, and `--check` keeps reporting four
+    // copies in sync while a fifth diverges forever. `files: []` is the same
+    // fail-open with nothing named at all.
+    //
+    // Dropping a name is already caught — the orphaned target keeps its stamp
+    // and "claims every generated copy" sees it — so this closes the direction
+    // that was invisible.
     for (const entry of entries) {
       if (entry.files === undefined) continue;
       expect(entry.files.length, entry.id).toBeGreaterThan(0);
+      const onDisk = readdirSync(repoPath(entry.source))
+        .filter((name) => /\.ts$/.test(name))
+        .sort();
+      expect([...entry.files].sort(), entry.id).toEqual(onDisk);
     }
   });
 
@@ -151,10 +163,10 @@ describe("the vendored-module manifest", () => {
 describe.each(entries)("the vendored $id module", (entry) => {
   it("has a source to vendor from", () => {
     expect(existsSync(repoPath(entry.source)), entry.source).toBe(true);
-    // For a `files:` entry that only says the directory is there. A name that
-    // does not resolve is the seam checking three files and calling it four,
-    // so name each one — `rendered()` throws on the write path but `drifted()`
-    // would report the missing member as drift and never say why.
+    // For a `files:` entry that only says the directory is there. Name each
+    // member too: a name that does not resolve makes `rendered()` throw ENOENT
+    // from inside the check loop, which reaches CI as a raw stack trace with no
+    // `::error::` line and no seam named.
     for (const copy of copies(entry) as Copy[]) {
       expect(existsSync(repoPath(copy.source)), copy.source).toBe(true);
     }
