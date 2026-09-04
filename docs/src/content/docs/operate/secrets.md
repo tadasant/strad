@@ -1399,12 +1399,13 @@ badge.
 
 **No badge is ever a control that does nothing.** The button and the `<dialog>`
 are rendered by two different pieces of `src/ui/index-page.ts`, and they ask one
-predicate — `hasFixDialog()` — rather than each deciding for itself. They used to
-decide separately, and the two rules drifted: an entry with an `ISSUE` badge and
-no requirement rows got the button and not the panel, so the click was swallowed
-in silence. That is the `params: true` shape below, and it was live on
-`craigslist` in production. One predicate is what makes the pairing structural
-instead of a convention two functions have to keep.
+predicate — `hasFixDialog()` — rather than each deciding for itself. It is
+derived from what the popout will actually render, requirement rows or an
+unobservable scope, so the two cannot disagree about a state neither anticipated,
+and **both** badge colours consult it. They used to decide separately and only
+the `READY` branch asked: an entry with an `ISSUE` badge and no requirement rows
+got the button and not the panel, so the click was swallowed in silence. That is
+the `params: true` shape below, and it was live on `craigslist` in production.
 
 ### `cannot render`: the parameter is there and the value will not come out
 

@@ -1296,7 +1296,8 @@ so `FIX_DIALOG_SCRIPT` found no element and swallowed the click. It was live on
 component holds the value, which of the four ways the question went unanswered
 (`unwired`, `unsupported`, `unreachable`, `silent`), and the
 `/strad/<env>/mcp/<slug>/static/*` prefix to look under — and the badge and the
-dialog ask ONE predicate, `hasFixDialog()`, so the pairing is structural rather
+dialog ask ONE predicate, `hasFixDialog()`, derived from what the popout will
+render and consulted on BOTH badge branches, so the pairing is structural rather
 than a convention two functions have to keep. None of that is an observation: the
 state stays `unverified`, and making it green is the same pin bump, on that
 component's image.

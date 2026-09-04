@@ -616,6 +616,25 @@ describe("GET /ui — an ISSUE badge is never a dead control", () => {
     }
   });
 
+  it("asks the SAME predicate on both badge branches", () => {
+    // The half that was missing. `openable` was consulted only on the READY
+    // branch, so an ISSUE entry with nothing behind it got the button anyway —
+    // which is the drift, not a symptom of it. Asserted as a property of the
+    // rendered page: no chip-button anywhere without its dialog, on either
+    // colour, across both fixtures.
+    for (const page of [managed, html]) {
+      const buttons = [
+        ...page.matchAll(
+          /<button class="chip chip-(ok|bad) chip-badge chip-button"[\s\S]*?data-fix-open="([^"]+)"/g,
+        ),
+      ];
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const [, , id] of buttons) {
+        expect(page).toContain(`<dialog class="fixdlg" id="${id}"`);
+      }
+    }
+  });
+
   it("keeps the ISSUE chip a BUTTON rather than degrading it to inert text", () => {
     // The other way to close the gap, and the wrong one: an inert chip asserts
     // "this needs attention" and offers no way to find out why — while the

@@ -538,15 +538,16 @@ document.addEventListener("click", function (e) {
  * `params: true` server. Two copies of the rule is what let them drift; one
  * function is what stops it, and the drift is the bug rather than either copy.
  *
- * `no-secrets` is the one entry with genuinely nothing behind it — it is READY
- * and it references nothing — so it alone stays inert. Every other state has
- * either requirement rows or an `unobservable` scope to render, and both of them
- * are worth a panel.
+ * It is derived from WHAT fixDialog() WILL RENDER rather than from the state —
+ * requirement rows, or an `unobservable` scope — so the two cannot disagree
+ * about a state neither of them anticipated. `no-secrets` is the one entry that
+ * has neither today: it is READY, it references nothing, and it alone stays
+ * inert.
  */
 function hasFixDialog(entry: Entry): boolean {
   const status = entry.status;
   if (!status) return false;
-  return status.requirements.length > 0 || status.state !== "no-secrets";
+  return status.requirements.length > 0 || status.unobservable !== undefined;
 }
 
 /**
@@ -560,10 +561,16 @@ function hasFixDialog(entry: Entry): boolean {
  * A READY entry with no requirements (`no-secrets`) still has nothing behind it
  * and stays inert. A control that opens an empty panel is worse than no control.
  *
- * An `ISSUE` entry never takes that branch, and deliberately: an inert chip that
- * asserts "this needs attention" and offers no way to find out why is the worse
- * of the two failures. It gets a panel with something true in it instead — see
- * fixDialog().
+ * BOTH branches consult `hasFixDialog`, and that is the half that was missing.
+ * The ISSUE branch returned a `<button>` unconditionally, so an entry with the
+ * badge and nothing behind it named a `<dialog>` id nobody emitted and swallowed
+ * the click. Asking on one branch only is what let the two rules drift.
+ *
+ * The inert ISSUE chip is a floor, not the fix. An entry that asserts "this
+ * needs attention" and offers no way to find out why is the worse of the two
+ * failures, so the real answer is that the popout is given something true to say
+ * — see unobservableBlock(). Nothing reachable today takes this branch; it is
+ * here so that a state nobody anticipated degrades instead of going dead.
  */
 function badgeMarkup(entry: Entry): string {
   if (!entry.badge) return "";
@@ -575,6 +582,9 @@ function badgeMarkup(entry: Entry): string {
     return `<button class="chip chip-ok chip-badge chip-button" type="button"
         data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
         title="Which secrets resolve, from which source, and which process established it">READY<span class="chip-caret">▾</span></button>`;
+  }
+  if (!openable) {
+    return `<span class="chip chip-bad chip-badge" title="Something is outstanding for this server and this page holds no detail about it.">ISSUE</span>`;
   }
   return `<button class="chip chip-bad chip-badge chip-button" type="button"
         data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
