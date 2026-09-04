@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec, type ImageRef } from "../src/deploy/appspec.ts";
 import {
   BUNDLE_IMAGE_SOURCE,
+  BUNDLE_REHEAL_WORKFLOW,
   BUNDLE_RELEASE_WORKFLOW,
   isOutsidePathFilter,
   matchesPathFilter,
@@ -483,11 +485,15 @@ describe("resolveDeployTag, when the run that owes the image has concluded", () 
     ).rejects.toThrow(/dispatch release-bundle-image\.yml on `main`/);
   });
 
-  it("counts a cancelled run as dead too", async () => {
+  it("counts a SECOND cancelled attempt as dead too", async () => {
+    // A first cancellation of a push build is held open for the self-heal (its
+    // own describe below). A second one means that heal has spent its attempt,
+    // so the run is as over as any failure.
     await expect(
       resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
         source: BUNDLE_IMAGE_SOURCE,
-        releaseRun: async () => run({ conclusion: "cancelled" }),
+        releaseRun: async () =>
+          run({ conclusion: "cancelled", runAttempt: 2, event: "push" }),
       }),
     ).rejects.toThrow(/CONCLUDED for it \(cancelled\)/);
   });
@@ -628,6 +634,218 @@ describe("resolveDeployTag, when the run that owes the image has concluded", () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// waiting for a build that was interrupted
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-04, and the difference between a verdict and an interruption.
+ *
+ * The self-hosted runner host restarted mid-build. `a278b5ed`'s bundle build
+ * was cancelled 100 seconds in — three unrelated jobs on two other runners died
+ * in the same second — and nothing was wrong with the commit at all. But the
+ * walk read `cancelled` the way it reads `failure`, hard-stopped the staging
+ * deploy nine minutes later, and left `main` undeployable until a human re-ran
+ * the build by hand.
+ *
+ * `reheal-bundle-image.yml` now re-runs that first cancellation on its own. The
+ * walk has to meet it halfway: a deploy already inside its fifteen-minute wait
+ * polls every twenty seconds, so it would otherwise reach the cancellation and
+ * stop in the minute before the re-run it is waiting for even starts.
+ */
+describe("resolveDeployTag, when the run that owes the image was interrupted", () => {
+  const RUN_URL = "https://github.com/tadasant/strad/actions/runs/33845688614";
+  const cancelled = (over: Partial<ReleaseRun> = {}): ReleaseRun => ({
+    status: "completed",
+    conclusion: "cancelled",
+    runAttempt: 1,
+    event: "push",
+    url: RUN_URL,
+    ...over,
+  });
+  const live = (): ReleaseRun => ({
+    status: "in_progress",
+    conclusion: null,
+    runAttempt: 2,
+    event: "push",
+    url: RUN_URL,
+  });
+
+  it("keeps waiting through a FIRST cancellation, and takes the re-run's image", async () => {
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false) // cancelled mid-build
+      .mockResolvedValueOnce(false) // the self-heal has re-run it
+      .mockResolvedValueOnce(true); // and it landed
+    const releaseRun = vi
+      .fn()
+      .mockResolvedValueOnce(cancelled())
+      .mockResolvedValue(live());
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun,
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+  });
+
+  it("stops at once on a cancellation the self-heal has already spent", async () => {
+    // Attempt 2 cancelled again is a CI host that is not healthy, and burning
+    // the budget on it buys the same error fifteen minutes later.
+    const sleep = vi.fn(async () => {});
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+        releaseRun: async () => cancelled({ runAttempt: 2 }),
+      }),
+    ).rejects.toThrow(/CANCELLED, not failed[\s\S]*re-run it/);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("stops at once on a DISPATCHED build, which the listener declines to heal", async () => {
+    // reheal-bundle-image.yml will not re-run a workflow_dispatch build — a
+    // human may have stopped that one on purpose. A walk that could not see the
+    // difference would spend 900 seconds on a build nothing is bringing back,
+    // which is worse than the hard stop it replaced.
+    const sleep = vi.fn(async () => {});
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+        releaseRun: async () => cancelled({ event: "workflow_dispatch" }),
+      }),
+    ).rejects.toThrow(/CONCLUDED for it \(cancelled\)/);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("wants POSITIVE evidence: an attempt or an event it could not read is no heal", async () => {
+    // `releaseRunLookup` passes both fields through rather than defaulting
+    // them, so an API that stopped reporting one must not manufacture a wait
+    // for a listener whose own `if:` would read the same absence as "decline".
+    const sleep = vi.fn(async () => {});
+    for (const over of [{ runAttempt: undefined }, { event: undefined }]) {
+      await expect(
+        resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+          source: BUNDLE_IMAGE_SOURCE,
+          waitMs: 900_000,
+          sleep,
+          releaseRun: async () => cancelled(over),
+        }),
+      ).rejects.toThrow(/CONCLUDED for it \(cancelled\)/);
+    }
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("does not promise the CORE a self-heal that does not watch it", async () => {
+    // reheal-bundle-image.yml listens to `Release bundle image` and nothing
+    // else, so a cancelled `release-image.yml` run gets the re-run advice
+    // WITHOUT a listener's name, and no wait at all.
+    const sleep = vi.fn(async () => {});
+    const err: unknown = await resolveDeployTag(
+      [{ sha: A, mayLackImage: () => false }],
+      vi.fn().mockResolvedValue(false),
+      { waitMs: 900_000, sleep, releaseRun: async () => cancelled() },
+    ).then(
+      () => new Error("resolved, but the walk should have stopped"),
+      (e: unknown) => e,
+    );
+    expect((err as Error).message).toMatch(/CANCELLED, not failed/);
+    expect((err as Error).message).not.toMatch(/reheal-bundle-image\.yml/);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("says re-run, not dispatch, when the run was cancelled", async () => {
+    // `republish` exists for a build the COMMIT broke, where a re-run is the
+    // loop. Printing it here sends a reader past the one move that works.
+    const err: unknown = await resolveDeployTag(
+      [baked(A)],
+      vi.fn().mockResolvedValue(false),
+      {
+        source: BUNDLE_IMAGE_SOURCE,
+        releaseRun: async () => cancelled({ runAttempt: 2 }),
+      },
+    ).then(
+      () => new Error("resolved, but the walk should have stopped"),
+      (e: unknown) => e,
+    );
+    expect((err as Error).message).toMatch(/CANCELLED, not failed/);
+    expect((err as Error).message).not.toMatch(
+      /dispatch release-bundle-image\.yml on `main`/,
+    );
+  });
+
+  it("names the interruption when the budget runs out on a first cancellation", async () => {
+    // The heal did not fire. "is slower than that, or it failed" would be two
+    // wrong guesses about a run whose state the step has just read.
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 60_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun: async () => cancelled(),
+      }),
+    ).rejects.toThrow(
+      /none appeared in 60s of waiting\. \S*release-bundle-image\.yml was interrupted before it could publish it[\s\S]*CANCELLED, not failed[\s\S]*re-run it/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the two halves of the self-heal, pinned to each other
+// ---------------------------------------------------------------------------
+
+/**
+ * `reheal-bundle-image.yml` selects its trigger by workflow NAME, not filename,
+ * and `deadRun` holds a deploy's wait open on the promise that it fires. So a
+ * rename of `release-bundle-image.yml`'s `name:` would disable the heal
+ * silently — and the only symptom would be the wedge this PR removed, now
+ * arriving 900 seconds later than it used to.
+ *
+ * The guards are pinned for the same reason from the other side: `healIsComing`
+ * restates all three, and a guard relaxed here without the walk being told
+ * would have the walk wait on a run the listener declines.
+ */
+describe("reheal-bundle-image.yml, against the release it heals", () => {
+  const reheal = parse(readFileSync(BUNDLE_REHEAL_WORKFLOW, "utf8")) as {
+    on: { workflow_run: { workflows: string[]; types: string[] } };
+    permissions: Record<string, string>;
+    jobs: Record<string, { "runs-on": string; if: string }>;
+  };
+  const release = parse(readFileSync(BUNDLE_RELEASE_WORKFLOW, "utf8")) as {
+    name: string;
+  };
+
+  it("listens for the release workflow's own `name:`", () => {
+    expect(reheal.on.workflow_run.workflows).toEqual([release.name]);
+    expect(reheal.on.workflow_run.types).toEqual(["completed"]);
+  });
+
+  it("carries the three guards `healIsComing` assumes", () => {
+    const condition = reheal.jobs.rerun?.if ?? "";
+    expect(condition).toContain(
+      "github.event.workflow_run.conclusion == 'cancelled'",
+    );
+    expect(condition).toContain("github.event.workflow_run.run_attempt == 1");
+    expect(condition).toContain("github.event.workflow_run.event == 'push'");
+  });
+
+  it("holds `actions: write` and nothing else, and runs off the self-hosted box", () => {
+    // `actions: write` is what POST /actions/runs/:id/rerun needs. ubuntu-latest
+    // is the point: the self-hosted runners going down is the event it heals.
+    expect(reheal.permissions).toEqual({ actions: "write" });
+    expect(reheal.jobs.rerun?.["runs-on"]).toBe("ubuntu-latest");
+  });
+});
+
 describe("releaseRunLookup", () => {
   const okJson = (body: unknown): Response =>
     new Response(JSON.stringify(body), {
@@ -672,6 +890,8 @@ describe("releaseRunLookup", () => {
           {
             status: "in_progress",
             conclusion: null,
+            run_attempt: 2,
+            event: "push",
             html_url: "the-push-that-is-building",
             created_at: "2026-08-11T14:01:45Z", // older
           },
@@ -688,6 +908,8 @@ describe("releaseRunLookup", () => {
     ).resolves.toEqual({
       status: "in_progress",
       conclusion: null,
+      runAttempt: 2,
+      event: "push",
       url: "the-push-that-is-building",
     });
   });
@@ -705,6 +927,8 @@ describe("releaseRunLookup", () => {
           {
             status: "completed",
             conclusion: "success",
+            run_attempt: 1,
+            event: "push",
             html_url: "new",
             created_at: "2026-08-11T15:30:00Z",
           },
@@ -721,6 +945,8 @@ describe("releaseRunLookup", () => {
     ).resolves.toEqual({
       status: "completed",
       conclusion: "success",
+      runAttempt: 1,
+      event: "push",
       url: "new",
     });
   });

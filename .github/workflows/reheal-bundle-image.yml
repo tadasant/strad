@@ -1,0 +1,105 @@
+name: Bundle image self-heal
+
+# Re-run a `Release bundle image` build that was CANCELLED rather than judged.
+#
+# The bundle is the one image whose absence cannot heal itself. The core's
+# release builds every non-docs commit, so the next commit republishes and the
+# walk in `scripts/resolve-image-tag.ts` stops there; the bundle's release is
+# `paths:`-filtered, so most commits cut no bundle image and the commit that
+# owes one stays the newest commit owing one, forever. Every staging deploy from
+# then on hard-stops on it. See "the bundle image" in docs/operate/operations.md.
+#
+# A build that FAILED and a build that was CANCELLED are not the same event, and
+# this workflow exists because only one of them is the commit's fault:
+#
+#   failure    the tree at that commit does not build. A re-run checks out the
+#              same tree and fails identically — which is why the hard stop
+#              tells a human to dispatch the release on `main` instead. Nothing
+#              here touches that case.
+#   cancelled  the build was INTERRUPTED. Nothing was learned about the commit,
+#              and the same tree that was building fine a second earlier will
+#              build fine again. A re-run is the whole remedy, and a human
+#              should not have to be the one to notice.
+#
+# On 2026-09-04 the self-hosted runner host restarted mid-build: `a278b5ed`'s
+# bundle build was cancelled 100 seconds in, three unrelated jobs on two other
+# runners died in the same second, and `main` was left undeployable until
+# somebody re-ran it by hand nine minutes later. Nothing had gone wrong with the
+# commit. Nothing alerted, either — `alert-ci-failure.yml` deliberately stays
+# quiet on `cancelled`, because ci.yml's `cancel-in-progress` makes cancellation
+# routine — so the first anyone heard of it was the deploy failing.
+#
+# Two things to know while working on this file:
+#
+#   - workflow_run only fires from the copy of this file on the DEFAULT branch.
+#     Edits on a feature branch change nothing until they merge.
+#   - It runs on ubuntu-latest, NOT the self-hosted runners, for the same reason
+#     alert-ci-failure.yml does: the self-hosted runners going down is precisely
+#     the event this heals, and a heal that runs on the broken thing cannot run.
+
+on:
+  workflow_run:
+    workflows: ["Release bundle image"]
+    types: [completed]
+
+permissions:
+  # The re-run itself. Nothing else — this workflow reads no code and holds no
+  # registry credential.
+  actions: write
+
+jobs:
+  rerun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Three guards, and each one is load-bearing:
+    #
+    #   conclusion == 'cancelled'  the ONE conclusion that says nothing about the
+    #                              commit. `failure`, `timed_out` and
+    #                              `startup_failure` are verdicts on the tree and
+    #                              a re-run of any of them is the loop the header
+    #                              describes.
+    #   run_attempt == 1           the loop guard, and it is exact: a re-run adds
+    #                              an ATTEMPT to the same run, so this workflow
+    #                              fires again when that attempt ends. One heal
+    #                              per run — an attempt 2 that is cancelled again
+    #                              is a box that is not healthy, and hammering it
+    #                              would not make it so.
+    #   event == 'push'            a `workflow_dispatch` build is one a human
+    #                              started and may deliberately stop. Undoing
+    #                              that is worse than leaving it; the push path
+    #                              is the automatic one, and the one whose
+    #                              absence blocks deploys.
+    #
+    # `head_branch` is deliberately NOT among them: release-bundle-image.yml
+    # already refuses every ref but `main` in its first step, so a push build
+    # that got far enough to be cancelled was on `main`.
+    #
+    # `healIsComing` in src/deploy/imageTag.ts restates all three, because the
+    # tag walk holds a deploy's wait open on the promise that this job fires —
+    # so a guard relaxed here without the walk being told would have the walk
+    # wait on a run this job declines. Both sides read a field they cannot see
+    # as "decline" (here, `null == 1` is false), so neither invents a heal.
+    # `test/image-tag.bundle.test.ts` reads this file and pins the pair.
+    if: >-
+      github.event.workflow_run.conclusion == 'cancelled' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.event == 'push'
+
+    steps:
+      - name: Re-run the cancelled bundle build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          echo "Bundle build for ${HEAD_SHA} was cancelled, not failed: ${RUN_URL}"
+          # `rerun-failed-jobs` would be wrong: a cancelled job is not a failed
+          # one, and the endpoint has nothing to select. Re-run the whole run.
+          gh api --method POST \
+            "repos/${REPO}/actions/runs/${RUN_ID}/rerun" \
+            -H "Accept: application/vnd.github+json"
+          echo "::notice title=Bundle build re-run::${RUN_URL} was cancelled mid-build and has been re-run automatically. The deploy waiting on sha-${HEAD_SHA} will pick the image up when it lands."

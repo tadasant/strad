@@ -521,7 +521,10 @@ The wait assumes the image is **coming**. When it is not — the run that owed i
 has already finished without publishing — the step asks the Actions API for that
 run's state and stops immediately, with the run's URL, rather than spending the
 budget on a build that ended before the deploy began. A run still queued or in
-flight is exactly what the wait is for, and is left alone. The lookup needs
+flight is exactly what the wait is for, and is left alone; so is a run
+[the self-heal](#when-the-bundle-build-was-cancelled-it-re-runs-itself) is about
+to re-run, which the step decides by restating that listener's three guards
+rather than by assuming it fires. The lookup needs
 `actions: read`, which `deploy-staging.yml` requests and every caller of it has
 to grant as well; without it the step falls back to waiting out the budget, which
 is what it did before. Either way the deploy stays stopped until an image exists —
@@ -597,6 +600,60 @@ tree, so no bundle build fired. `450ad5cb` stayed the newest commit owing a
 bundle image, and every `Deploy strad production` walked back to it, waited out
 the full fifteen minutes, and hard-stopped — until `release-bundle-image.yml` was
 dispatched on `main`.
+
+##### When the bundle build was CANCELLED, it re-runs itself
+
+A cancellation is not a verdict. `failure` says the tree at that commit does not
+build; `cancelled` says something interrupted the build, and the tree that was
+building a second earlier still builds. So the re-run the section above talks you
+out of is the _whole_ remedy here — and `reheal-bundle-image.yml` makes it
+without a human.
+
+It listens for `Release bundle image` completing and re-runs the run when all
+three of these hold:
+
+| Guard                       | Why                                                                                                                  |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `conclusion == 'cancelled'` | the one conclusion that says nothing about the commit. A `failure` re-run is the loop above.                         |
+| `run_attempt == 1`          | a re-run adds an attempt to the _same_ run, so this listener fires again when that attempt ends. One heal per run.   |
+| `event == 'push'`           | a `workflow_dispatch` build is one a human started and may deliberately stop. Undoing that is worse than leaving it. |
+
+It runs on `ubuntu-latest`, not the self-hosted runners, for the same reason
+`alert-ci-failure.yml` does: the runners going down is precisely the event it
+heals, and a heal that runs on the broken thing cannot run.
+
+The tag walk meets it halfway. A deploy already inside its fifteen-minute wait
+polls every twenty seconds, so a cancellation landing mid-wait would otherwise
+hard-stop the deploy in the minute before the re-run it is waiting for even
+starts. So it holds the wait open for a cancellation this listener will heal —
+and it decides that by asking the Actions API for the same three facts the
+guards above test, rather than by assuming. A cancellation the listener
+**declines** — a second attempt, a dispatched build, an attempt number or
+trigger the API did not report — is dead like any other verdict: waiting on it
+would spend the whole budget on a build nothing is bringing back, which is worse
+than the hard stop it replaced. Either way the message says _re-run it_ rather
+than _dispatch it_ — the advice for a failure is the wrong advice for an
+interruption.
+
+The core image gets that wording too, and nothing else. This listener watches
+`Release bundle image` and no other workflow, so a cancelled `release-image.yml`
+run is never held open and its message names no heal. `ImageSource.reheal` is
+what carries the difference — beside the walk-back rule, which until now was the
+only thing separating the two images.
+
+**Two things this deliberately does not do.** It never re-runs a `failure`, so
+the loop above stays impossible. And it heals once — an attempt 2 that is
+cancelled again means the CI host is unhealthy, and hammering it would not make
+it healthy.
+
+**Why.** On 2026-09-04 the self-hosted runner host restarted mid-build.
+`a278b5ed`'s bundle build was cancelled 100 seconds in; three unrelated jobs on
+two other runners died in the same second; nothing was wrong with the commit.
+`main` was left undeployable — every staging deploy hard-stopped on the missing
+`sha-a278b5ed…` — until somebody re-ran the build by hand nine minutes later.
+Nothing alerted either: `alert-ci-failure.yml` stays quiet on `cancelled` on
+purpose, because `ci.yml`'s `cancel-in-progress` makes cancellation routine, so
+the first anyone heard of it was the deploy failing.
 
 That split is deliberate: an automatic release shouldn't turn red just because the
 account isn't seeded yet, but a human asking for a deploy should hear "no." When
