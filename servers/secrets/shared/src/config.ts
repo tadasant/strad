@@ -8,9 +8,8 @@ import type { ServiceAccount } from "./parameter-manager.js";
  * `mcpStores:`). The image itself is credential-free, like every other server in
  * this repo.
  *
- * ONE CONTAINER, N STORES. This server used to read one `SECRETS_PROJECT_ID` and
- * hold one credential; it now holds a LIST of stores, each with its own GCP
- * project, its own namespaces and its own viewer service account. Nothing is
+ * ONE CONTAINER, N STORES. This server holds a LIST of stores, each with its own
+ * GCP project, its own namespaces and its own viewer service account. Nothing is
  * shared between two stores — not a client, not a credential, and not a
  * capability. See `capabilities.ts` for why the last of those is the load-bearing
  * one.
@@ -39,16 +38,24 @@ export interface SecretsStore {
    * boundary. The IAM boundary is the PROJECT — point each store at a project
    * that holds only its own parameters. See the README.
    *
-   * What the prefix DOES buy, and it buys more now than it did with one store:
-   * it is what BINDS a path to a store. Every tool resolves the path it was
+   * What the prefix DOES buy, beyond bounding one store's answers: it is what
+   * BINDS a path to a store. Every tool resolves the path it was
    * given to exactly one store and then uses that store's credential and that
    * store's capability. A namespace list is therefore never consulted as a
    * union — `storeForPath` refuses a path no store claims, and the load below
    * refuses a configuration in which two stores could claim one path.
    */
   namespaces: string[];
-  /** The viewer service account for THIS project. Null when it is not seeded. */
+  /** The viewer service account for THIS project. Null when it is not usable. */
   account: ServiceAccount | null;
+  /**
+   * Why `account` is null, when the variable held something this could not read.
+   *
+   * SHAPE, NEVER CONTENT — the content is a private key (see `parseAccount`).
+   * Absent when the variable is simply unset, which is the ordinary "nobody has
+   * seeded this yet" state and needs no explaining.
+   */
+  credentialError?: string;
   /**
    * The environment variable this store's credential was read from.
    *
@@ -150,11 +157,29 @@ function storesFromDescriptor(
           `namespace would scope this store to EVERY parameter in the project.`,
       );
     }
+    // A KEY THIS CANNOT READ DEGRADES ITS OWN STORE, NOT THE MOUNT.
+    //
+    // `parseAccount` throws on malformed JSON, and letting that out of here
+    // would fail `loadConfig`, which the bundle host answers by not mounting the
+    // server at all — so one typo'd key would take every OTHER store down with
+    // it, production included. That is the opposite of the posture the rest of
+    // this file keeps: a store with no credential is a store that answers
+    // nothing, while its siblings go on answering. The reason is carried so the
+    // host can name it, and it is shape-only.
+    let account: ServiceAccount | null = null;
+    let credentialError: string | undefined;
+    try {
+      account = parseAccount(env[viewerKeyVar], viewerKeyVar);
+    } catch (err) {
+      credentialError = err instanceof Error ? err.message : String(err);
+    }
+
     return {
       project,
       label: typeof d.label === "string" && d.label ? d.label : undefined,
       namespaces,
-      account: parseAccount(env[viewerKeyVar], viewerKeyVar),
+      account,
+      ...(credentialError ? { credentialError } : {}),
       viewerKeyVar,
     };
   });
@@ -227,6 +252,30 @@ function assertAddressable(stores: SecretsStore[]): void {
       );
     }
     byKeyVar.set(store.viewerKeyVar, store.project);
+  }
+
+  // AND THE SAME RULE BY IDENTITY, which is what the name is a proxy for.
+  //
+  // strad's config gate refuses two stores whose `viewerKeyVar`s name one key
+  // OR carry one `${REF}`. This is the half that holds for a descriptor written
+  // some other way: two DIFFERENT variables may still hold the same service
+  // account, and then the two stores' probes ask Google about one identity and
+  // cannot come back with different answers. Every other fence in this file
+  // would pass; the capability would be collapsed anyway.
+  const byIdentity = new Map<string, string>();
+  for (const store of stores) {
+    if (!store.account) continue;
+    const twin = byIdentity.get(store.account.client_email);
+    if (twin) {
+      throw new Error(
+        `${ENV.stores}: "${twin}" and "${store.project}" hold the SAME service ` +
+          `account, under different variables. One identity on two projects is ` +
+          `two stores that probe one capability — which is the collapse this ` +
+          `server's per-project probe exists to prevent. Give each store its own ` +
+          `viewer credential.`,
+      );
+    }
+    byIdentity.set(store.account.client_email, store.project);
   }
 
   for (const a of stores) {

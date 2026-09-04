@@ -17,13 +17,13 @@
  * of this sees exactly the twenty-one it saw before.
  *
  * TWENTY-NINE of those are on one component. The other one, `zimmer-secrets`,
- * runs this same image as a SECOND component, because it is a second SLUG with a
- * second entitlement and a second console page. It is no longer a second
- * component because of the STORE: `loadSecrets()` below hands the tree a LIST of
- * stores (`SECRETS_STORES`, derived from `mcpStores:`), each with its own
+ * runs this same image as a SECOND component, and what makes it one is the SLUG
+ * rather than the store: a second entitlement and a second console page. A
+ * second STORE needs no second component — `loadSecrets()` below hands the tree
+ * a LIST of them (`SECRETS_STORES`, derived from `mcpStores:`), each with its own
  * project, namespaces, viewer credential and probed capability, so one container
- * can front several. Nothing here knows which; it reads the descriptor and mounts
- * /secrets against all of them.
+ * fronts as many as the config names. Nothing here knows which; it reads the
+ * descriptor and mounts /secrets against all of them.
  *
  * WHAT THIS REPLACES. Eleven components: bundle-api, bundle-api-ro, bundle-gcs,
  * bundle-google-{ro,rw,rw-external}, bundle-op-{ro,rw}, bundle-goodeggs,
@@ -858,7 +858,9 @@ interface SecretsTreeConfig {
   stores: {
     project: string;
     viewerKeyVar: string;
-    account: unknown | null;
+    account: { client_email: string } | null;
+    /** Why `account` is null, by SHAPE. Absent when the variable is just unset. */
+    credentialError?: string;
   }[];
 }
 
@@ -913,7 +915,7 @@ async function loadSecrets(): Promise<Mount | null> {
   // read and (where their own credential allows) write. Naming the variable is
   // the whole point of the message — with N stores, "the key is missing" without
   // saying WHICH key is not an actionable sentence.
-  const unseeded = config.stores.filter((store) => !store.account);
+  const unusable = config.stores.filter((store) => !store.account);
 
   return {
     slug: "secrets",
@@ -921,12 +923,17 @@ async function loadSecrets(): Promise<Mount | null> {
     serverName: "secrets-mcp-server",
     capabilities: { tools: {} },
     degraded:
-      unseeded.length === 0
+      unusable.length === 0
         ? null
-        : `${unseeded
-            .map((store) => `${store.viewerKeyVar} (store "${store.project}")`)
-            .join(", ")} ${unseeded.length === 1 ? "is" : "are"} not set; tools ` +
-          `will list but calls against ${unseeded.length === 1 ? "that store" : "those stores"} will fail`,
+        : `${unusable
+            .map((store) =>
+              store.credentialError
+                ? `${store.credentialError} (store "${store.project}")`
+                : `${store.viewerKeyVar} is not set (store "${store.project}")`,
+            )
+            .join("; ")}. Tools will list, and calls against ` +
+          `${unusable.length === 1 ? "that store" : "those stores"} will fail; ` +
+          `every other store answers normally.`,
     register: (s) => created.registerHandlers(s),
   };
 }

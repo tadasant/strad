@@ -2211,13 +2211,24 @@ store's probed capability. There is no union anywhere on a call path.
 Three config rules keep that resolution unambiguous, and `check-config` enforces
 all three, so each is inexpressible rather than merely discouraged:
 
-- **two stores may not name one `viewerKeyVar`.** One service account on two
-  projects is two stores that probe the same answer — the collapse the
-  per-project probe exists to prevent.
+- **two stores may not share one viewer credential** — not under one
+  `viewerKeyVar`, and not under two `env:` keys carrying one `${REF}`. The key
+  name is the variable; the ref is the credential, and it is the credential this
+  is about: one service account on two projects is two stores that probe **one
+  answer**, which is the collapse the per-project probe exists to prevent. The
+  container checks it a third way at boot, by `client_email`, for a descriptor
+  that reached it some other way.
 - **two stores may not name one project id.** It is the store's address, in a
   refusal and in the capability report.
 - **two stores may not declare overlapping namespaces.** A path both could claim
   is a path whose capability depends on declaration order.
+
+Two more fences sit around the field rather than inside it. `SECRETS_STORES` may
+never be written by hand under `env:` — it is derived, and a hand-written one
+would reach the container having passed none of the rules above. And only **one**
+server per bundle may declare `mcpStores:`, because the tree reads that variable
+by its bare name out of a container's single environment, so two would put one
+list on the box under both slugs.
 
 `viewerKeyVar` names an `env:` key rather than carrying a `${REF}`, exactly as
 `adminKeyVar` names a `consoleEnv:` one. An admin key cannot be borrowed here:
@@ -2268,8 +2279,8 @@ because an agent-only store is a posture a deployment may choose.
 ### One bundle, one `process.env`
 
 A bundle is a component, which is a container, which is one `process.env`. That is
-why a **store** no longer needs a bundle of its own — `mcpStores:` puts the list
-in one variable — but two secrets **slugs** in one bundle still cannot work:
+why a **store** needs no bundle of its own — `mcpStores:` puts the list in one
+variable — while two secrets **slugs** in one bundle cannot work:
 `renderAppSpec` merges a bundle's servers' `env:` maps last-wins, with no error,
 so both slugs would answer from whichever store won. That is a wrong answer, not
 a failure, which is why `scripts/check-config.ts`

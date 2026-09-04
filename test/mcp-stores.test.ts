@@ -292,6 +292,85 @@ describe("mcpStores: the collapses the schema refuses", () => {
     );
   });
 
+  it("refuses two stores sharing one credential under two different env: keys", () => {
+    // THE NAME IS NOT THE CREDENTIAL, THE REF IS. Two keys, one ${REF}: one
+    // service account on two projects, two probes asking Google about the same
+    // identity, and a per-store gate that faithfully reports staging's answer
+    // for production because it genuinely IS production's answer for that key.
+    // A name-only check waves this through; `consoleStores:` learned the same
+    // lesson in #263.
+    const oneIdentity = TWO_STORES.replace(
+      '      STRAD_PROD_SECRETS_VIEWER_KEY_JSON: "${PROD_VIEWER_KEY}"',
+      '      STRAD_PROD_SECRETS_VIEWER_KEY_JSON: "${STAGING_VIEWER_KEY}"',
+    );
+    expect(problems(oneIdentity).join("\n")).toContain(
+      "both resolve their viewer credential from ${STAGING_VIEWER_KEY}",
+    );
+  });
+
+  it("refuses a hand-written SECRETS_STORES under env:", () => {
+    // The descriptor is DERIVED. Written by hand it reaches the container having
+    // passed none of the rules in this block — including the one that keeps a
+    // console admin key out of the /mcp container.
+    const handWritten = TWO_STORES.replace(
+      '      SECRETS_CONSOLE_URL: "https://strad.example/ui/secrets"',
+      '      SECRETS_CONSOLE_URL: "https://strad.example/ui/secrets"\n' +
+        `      SECRETS_STORES: '[{"project":"rogue","namespaces":["/rogue/"],"viewerKeyVar":"SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON"}]'`,
+    );
+    expect(problems(handWritten).join("\n")).toContain(
+      "declares SECRETS_STORES under env:",
+    );
+
+    // …and refused on a server that declares no mcpStores: at all, which is the
+    // shape a "only when the typed field is absent" rule would wave through.
+    const noTypedField = `
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle
+servers:
+  - slug: secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /secrets
+    entitlements: [admin]
+    env:
+      SECRETS_STORES: '[{"project":"rogue","namespaces":["/rogue/"],"viewerKeyVar":"K"}]'
+      K: "\${STAGING_VIEWER_KEY}"
+`;
+    expect(problems(noTypedField).join("\n")).toContain(
+      "declares SECRETS_STORES under env:",
+    );
+  });
+
+  it("refuses two servers on one bundle both declaring mcpStores:", () => {
+    // One container is one process.env, and the secrets tree reads
+    // SECRETS_STORES by the BARE name — so the renderer's first-wins pass would
+    // put one slug's store list on the box under both slugs, silently. Two slugs
+    // on one PATH already throw at render time; this is the other half.
+    const twoServers =
+      TWO_STORES +
+      `  - slug: zimmer-secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /zimmer-secrets
+    entitlements: [admin]
+    env:
+      ZIMMER_VIEWER_KEY_JSON: "\${PROD_ADMIN_KEY}"
+    mcpStores:
+      - project: zimmer-secrets-prod
+        namespaces: ["/zimmer/production/mcp/"]
+        viewerKeyVar: ZIMMER_VIEWER_KEY_JSON
+`;
+    expect(problems(twoServers).join("\n")).toContain(
+      'both declare mcpStores: on bundle "bundle"',
+    );
+  });
+
   it("refuses a viewerKeyVar this server's env: does not declare", () => {
     const typo = TWO_STORES.replace(
       "        viewerKeyVar: STRAD_PROD_SECRETS_VIEWER_KEY_JSON",

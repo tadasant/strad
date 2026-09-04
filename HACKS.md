@@ -3714,8 +3714,10 @@ worth saying so rather than letting the two be conflated.
 
 What keeps the refusal honest is that a capability is never shared: the probe
 runs once per store, memoised by project id; `storeForPath` binds a path to
-exactly one store; and `check-config` refuses two stores sharing a
-`viewerKeyVar`, a project id, or overlapping namespaces. `list_managed_namespaces`
+exactly one store; and `check-config` refuses two stores sharing a viewer
+credential (by key name AND by `${REF}`), a project id, or overlapping
+namespaces — with the container checking the credential a third way, by
+`client_email`, at boot. `list_managed_namespaces`
 reports capabilities per store, so the union listing is not the only thing an
 agent is told.
 

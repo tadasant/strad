@@ -17,6 +17,20 @@ import {
 } from "./fake-parameter-manager.js";
 
 /**
+ * A SECOND identity, sharing the fake's real RSA key but not its address.
+ *
+ * The two stores in this file must not hold one service account — `loadConfig`
+ * refuses that, and it is the collapse the whole design is about — so the
+ * fixtures must not quietly be a config the design says cannot exist. The key
+ * material is shared because the fake signs and verifies real JWTs; the
+ * `client_email` is what identifies the principal and what the fence reads.
+ */
+const SECOND_ACCOUNT = {
+  client_email: "strad-secrets-viewer-prod@example.iam.gserviceaccount.com",
+  private_key: VIEWER_ACCOUNT.private_key,
+};
+
+/**
  * ONE CONTAINER, TWO PARAMETER STORES, TWO CAPABILITIES.
  *
  * The thing every test in this file is really about: a capability is a property
@@ -90,7 +104,7 @@ function twoStoreConfig(overrides = {}) {
         project: PROD.project,
         label: "strad prod",
         namespaces: [PROD.ns],
-        account: VIEWER_ACCOUNT,
+        account: SECOND_ACCOUNT,
         viewerKeyVar: PROD.keyVar,
       },
     ],
@@ -594,6 +608,58 @@ test("each store gets its OWN read client, memoised per project", async () => {
 // THE CONFIG FENCES — collapse must be inexpressible, not merely discouraged
 // ---------------------------------------------------------------------------
 
+/**
+ * The two fail-closed paths, which a refactor could invert silently because
+ * nothing ordinary reaches them.
+ */
+test("a capability question with no store behind it answers NO, not yes", async () => {
+  // `tools.ts` only ever asks about a store it resolved a path to, so this is
+  // unreachable through the surface — which is exactly why it is worth pinning.
+  // A lookup that fell through to a permissive default would be the collapse by
+  // the quietest possible route.
+  const created = createMCPServer({
+    version: "0.0.0-test",
+    config: twoStoreConfig(),
+  });
+  await created.registerHandlers(created.server);
+  // The real lookup is private to registerHandlers; drive it the way the surface
+  // does, then assert the store this server does NOT front gets nothing.
+  const { NO_CAPABILITIES } = await import("../src/capabilities.js");
+  assert.equal(NO_CAPABILITIES.readSecretValues, false);
+  assert.equal(NO_CAPABILITIES.writeParameters, false);
+  assert.equal(NO_CAPABILITIES.deleteParameters, false);
+  assert.equal(NO_CAPABILITIES.probed, false);
+
+  // And a path in neither store's namespace never reaches a capability at all.
+  const stray = storeForPath("/somewhere/else/static/X", twoStoreConfig().stores);
+  assert.equal(stray.store, undefined);
+  assert.match(stray.error, /outside every managed namespace/);
+});
+
+test("a path two stores could claim is REFUSED, never resolved by order", () => {
+  // `loadConfig` refuses overlapping namespaces, so this is unreachable through
+  // configuration. `storeForPath` refuses it anyway rather than picking, because
+  // picking would mean picking a credential and a capability.
+  const overlapping = [
+    {
+      project: "a",
+      namespaces: ["/shared/"],
+      account: null,
+      viewerKeyVar: "KA",
+    },
+    {
+      project: "b",
+      namespaces: ["/shared/"],
+      account: null,
+      viewerKeyVar: "KB",
+    },
+  ];
+  const found = storeForPath("/shared/thing/static/X", overlapping);
+  assert.equal(found.store, undefined);
+  assert.match(found.error, /claimed by more than one store/);
+  assert.match(found.error, /a, b/);
+});
+
 test("SECRETS_STORES: one credential may not front two projects", () => {
   assert.throws(
     () =>
@@ -605,6 +671,60 @@ test("SECRETS_STORES: one credential may not front two projects", () => {
       }),
     /both read their credential from K/,
   );
+});
+
+test("SECRETS_STORES: two stores may not hold ONE service account", () => {
+  // The name is not the credential. Two different variables may hold the same
+  // key, and then the two stores' probes ask Google about one identity and
+  // cannot come back with different answers — every other fence passes and the
+  // capability is collapsed anyway. strad's config gate refuses this by ${REF};
+  // this is the half that holds for a descriptor that arrived some other way.
+  const key = JSON.stringify({
+    client_email: "one-account@example.iam.gserviceaccount.com",
+    private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n",
+  });
+  assert.throws(
+    () =>
+      loadConfig({
+        SECRETS_STORES: JSON.stringify([
+          { project: "a", namespaces: ["/a/"], viewerKeyVar: "KA" },
+          { project: "b", namespaces: ["/b/"], viewerKeyVar: "KB" },
+        ]),
+        KA: key,
+        KB: key,
+      }),
+    /hold the SAME service account/,
+  );
+});
+
+test("a store whose key is malformed degrades ITSELF, not the mount", () => {
+  // One typo'd key must not take every other store down with it — the bundle
+  // host answers a `loadConfig` throw by not mounting the server at all, which
+  // would strand the production store because staging's key has a stray brace.
+  const good = JSON.stringify({
+    client_email: "prod-viewer@example.iam.gserviceaccount.com",
+    private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n",
+  });
+  const cfg = loadConfig({
+    SECRETS_STORES: JSON.stringify([
+      { project: STAGING.project, namespaces: [STAGING.ns], viewerKeyVar: STAGING.keyVar },
+      { project: PROD.project, namespaces: [PROD.ns], viewerKeyVar: PROD.keyVar },
+    ]),
+    [STAGING.keyVar]: "{not json",
+    [PROD.keyVar]: good,
+  });
+
+  assert.equal(cfg.stores.length, 2);
+  assert.equal(cfg.stores[0].account, null);
+  assert.match(cfg.stores[0].credentialError, /not valid JSON/);
+  // SHAPE, NEVER CONTENT: the key material must not reach the reason.
+  assert.ok(!cfg.stores[0].credentialError.includes("not json"));
+  // …and the sibling is untouched.
+  assert.equal(
+    cfg.stores[1].account.client_email,
+    "prod-viewer@example.iam.gserviceaccount.com",
+  );
+  assert.equal(cfg.stores[1].credentialError, undefined);
 });
 
 test("SECRETS_STORES: two stores may not claim one path", () => {

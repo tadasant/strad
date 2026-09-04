@@ -624,10 +624,10 @@ servers:
     # server probes projects:testIamPermissions once per store and gates every
     # read, write and delete on the capability of the store the requested PATH
     # resolves to. The tool LIST is the union (an MCP listing is static per
-    # container), the enforcement is not. Two entries may not name one
-    # viewerKeyVar, one project id, or overlapping namespaces — each is refused
-    # by check-config, because each would make two stores' capabilities
-    # indistinguishable.
+    # container), the enforcement is not. Two entries may not share a viewer
+    # credential — by key name OR by ${REF} — nor name one project id, nor
+    # declare overlapping namespaces. Each is refused by check-config, because
+    # each would make two stores' capabilities indistinguishable.
     #
     # Uncommenting it means DELETING the SECRETS_PROJECT_ID and SECRETS_NAMESPACES
     # lines from `env:` above — the container would ignore them, so leaving them
@@ -646,9 +646,10 @@ servers:
     #   - project: zimmer-secrets-staging
     #     label: zimmer staging
     #     namespaces: ["/zimmer/staging/mcp/static/"]
-    #     # ONE VIEWER KEY PER STORE. Sharing one is two projects behind one
-    #     # identity AND one probed capability answering for both, which is the
-    #     # collapse the per-project probe exists to prevent. Declare it under
+    #     # ONE VIEWER CREDENTIAL PER STORE. Sharing one is two projects behind
+    #     # one identity AND one probed capability answering for both, which is
+    #     # the collapse the per-project probe exists to prevent — so a second
+    #     # env: key carrying the same ${REF} is refused too. Declare it under
     #     # `env:` above alongside the first.
     #     viewerKeyVar: ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON
 

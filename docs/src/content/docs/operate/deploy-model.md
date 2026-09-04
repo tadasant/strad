@@ -543,8 +543,13 @@ An [`mcpStores:`](/servers/interface/) entry names its VIEWER credential by
 **be** declared under this server's `env:` — the scope rendered onto the bundle,
 which is the component that answers `/mcp` — so an `adminKeyVar` cannot be
 borrowed here without failing one of the `consoleStores:` rules above first. Two
-entries may not name the same `viewerKeyVar`, the same **project id**, or
-**overlapping namespaces**. All three are about the same property: the secrets
+entries may not share a viewer credential — not by naming one `viewerKeyVar`, and
+not by naming two `env:` keys that carry one `${REF}` — nor name the same
+**project id**, nor declare **overlapping namespaces**. `SECRETS_STORES` itself is
+refused under `env:`: it is derived from `mcpStores:`, and a hand-written one
+reaches the container having passed none of these. Only one server per bundle may
+declare `mcpStores:`, since the tree reads that variable by its bare name out of a
+container's one environment. All three are about the same property: the secrets
 server derives what each store may do from a `projects:testIamPermissions` probe
 of that store's own credential, resolved from the namespace the requested path
 starts with. One key on two projects is two stores that cannot have different

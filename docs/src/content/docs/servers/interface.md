@@ -417,16 +417,21 @@ plus two that shape how this server gets its values:
 
   **Every store carries its own VIEWER credential.** `viewerKeyVar` names an
   `env:` key — the scope rendered onto this server's bundle, which is the
-  component that answers `/mcp` — and `check-config` rejects two entries naming
-  the same one. That is a stronger rule here than on the console side: the
-  secrets server derives what each store may do from a
-  `projects:testIamPermissions` probe of that store's own credential, so one key
-  on two projects is two stores that cannot have different capabilities.
+  component that answers `/mcp` — and `check-config` rejects two entries that
+  name the same key **or** whose keys carry the same `${REF}`. That is a stronger
+  rule here than on the console side: the secrets server derives what each store
+  may do from a `projects:testIamPermissions` probe of that store's own
+  credential, so one identity on two projects is two stores that cannot have
+  different capabilities. The container checks the same thing at boot by
+  `client_email`.
 
   It also rejects two entries naming one **project id** (the store's address in
-  every refusal and in the capability report) and two entries with **overlapping
+  every refusal and in the capability report), two entries with **overlapping
   namespaces** (a path both could claim is a path whose capability depends on
-  declaration order).
+  declaration order), a hand-written `SECRETS_STORES` under `env:` (it is derived
+  from this field, and one written by hand passes none of these rules), and a
+  second server on the same bundle declaring `mcpStores:` (one container, one
+  bare `SECRETS_STORES`, so one list would answer under both slugs).
 
   An admin key cannot be borrowed here. `viewerKeyVar` must be a key of this
   server's own `env:`, and the `consoleStores:` rules above already refuse an

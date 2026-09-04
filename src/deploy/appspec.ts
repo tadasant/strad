@@ -261,9 +261,12 @@ function mcpStoresEnv(
  * `mcpStores:` entries whose project no console page fronts. See the call site.
  *
  * The console resolves its stores from `consoleStores:` when it has one, and
- * otherwise from a single `SECRETS_PROJECT_ID` read out of `env:` merged with
- * `consoleEnv:` (src/ui/resolve.ts). Both are read here; a `${REF}` is not, since
- * a project id written as a ref is not a project id this can compare.
+ * otherwise from a single `SECRETS_PROJECT_ID`, which it reads out of `env:`
+ * merged with `consoleEnv:` (src/ui/resolve.ts). Only `consoleEnv:` is read
+ * here: a server declaring `mcpStores:` may not also carry that name under
+ * `env:`, so the `env:` half is unreachable on exactly the servers this walks.
+ * A `${REF}` is not read at all — a project id written as a ref is not a project
+ * id this can compare.
  */
 function storesWithNoConsole(config: StradConfig): string[] {
   const messages: string[] = [];
@@ -276,8 +279,7 @@ function storesWithNoConsole(config: StradConfig): string[] {
       server.consoleStores.map((store) => store.project),
     );
     if (visible.size === 0) {
-      const fallback =
-        server.consoleEnv.SECRETS_PROJECT_ID ?? server.env.SECRETS_PROJECT_ID;
+      const fallback = server.consoleEnv.SECRETS_PROJECT_ID;
       if (fallback && refsIn(fallback).length === 0) visible.add(fallback);
     }
 

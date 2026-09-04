@@ -2332,8 +2332,8 @@ but a runtime refusal is a different kind of thing from an absent tool.
 
 Nothing about the capability itself is shared: the probe runs once per store and
 is memoised by project id, a parameter path binds to exactly one store, and
-`check-config` refuses two stores sharing a `viewerKeyVar`, a project id, or
-overlapping namespaces. `list_managed_namespaces` reports capabilities per store,
+`check-config` refuses two stores sharing a viewer credential (by key name and by
+`${REF}` alike), a project id, or overlapping namespaces. `list_managed_namespaces` reports capabilities per store,
 so an agent is never told only the union.
 
 **How you would know.** `tools/list` on a mixed-posture container offers
