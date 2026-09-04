@@ -726,21 +726,33 @@ function writeDenial(
  * than duplicates a `param` the configured URL already carries (a duplicate is
  * read as the first one, which is the configured one, not ours).
  *
- * An UNPARSEABLE `consoleUrl` falls back to concatenation, because free-form
- * config is not this function's to reject: `new URL()` throws where a
- * concatenation returns a string, and a relative value like `/ui/secrets` — a
- * usable link for a human on the same host — is exactly what throws. The only
- * value that yields no link at all is no value.
+ * An UNPARSEABLE `consoleUrl` is concatenated instead, because free-form config
+ * is not this function's to reject: `new URL()` throws where a concatenation
+ * returns a string, and a relative value like `/ui/secrets` — a usable link for
+ * a human on the same host — is exactly what throws. The only value that yields
+ * no link at all is no value. THAT BRANCH PICKS ITS OWN SEPARATOR for the same
+ * reason the parsed one does: `/ui/secrets?project=zimmer-secrets-prod` is the
+ * relative spelling of the URL above, and a fallback that hardcoded `?` would
+ * reproduce the defect on exactly the values it exists to keep working.
  */
 function consoleLink(config: SecretsConfig, param?: string): string | undefined {
   if (!config.consoleUrl) return undefined;
-  const base = config.consoleUrl.replace(/\/+$/, "");
+  const raw = config.consoleUrl;
   let url: URL;
   try {
-    url = new URL(base);
+    url = new URL(raw);
   } catch {
-    return param ? `${base}?param=${encodeURIComponent(param)}` : base;
+    // Nothing here is structure — it is a string an operator wrote — so the
+    // trailing-slash strip is the whole string's, and the separator is decided
+    // by looking for a query the URL parser is not available to find.
+    const base = raw.replace(/\/+$/, "");
+    if (!param) return base;
+    return `${base}${base.includes("?") ? "&" : "?"}param=${encodeURIComponent(param)}`;
   }
+  // Strip the trailing slash from the PATH rather than the string: a `?` or a
+  // `#` may follow it, and eating the last character of a query value or a
+  // hash route is not what this ever meant.
+  url.pathname = url.pathname.replace(/\/+$/, "");
   if (param) url.searchParams.set("param", param);
   return url.toString();
 }

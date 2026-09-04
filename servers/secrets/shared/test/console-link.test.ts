@@ -145,11 +145,26 @@ test("with no parameter the link is the console URL, query string intact", async
   );
 });
 
-test("a trailing slash is still stripped", async () => {
+test("the trailing slash is stripped from the PATH, not from the string", async () => {
   assert.equal(
     (await link("https://strad.tadasant.com/ui/secrets///", PARAM)).url,
     `https://strad.tadasant.com/ui/secrets?param=${encodeURIComponent(PARAM)}`,
   );
+  // A `?` or a `#` can follow the path, and the last character of a query value
+  // or a hash route is not a trailing slash to eat.
+  const q = await link("https://strad.tadasant.com/ui/secrets?project=prod/", PARAM);
+  assert.equal(new URL(q.url!).searchParams.get("project"), "prod/");
+});
+
+test("the parameter lands before a fragment, not inside it", async () => {
+  // Concatenated, `?param=` landed after the `#` — inside the fragment, which
+  // never reaches the server at all.
+  const { url } = await link("https://strad.tadasant.com/ui/secrets#top", PARAM);
+  assert.equal(
+    url,
+    `https://strad.tadasant.com/ui/secrets?param=${encodeURIComponent(PARAM)}#top`,
+  );
+  assert.equal(new URL(url!).searchParams.get("param"), PARAM);
 });
 
 test("an unparseable console URL yields a link, not a thrown tool call", async () => {
@@ -167,6 +182,18 @@ test("an unparseable console URL yields a link, not a thrown tool call", async (
 
   assert.equal((await link("/ui/secrets", undefined)).url, "/ui/secrets");
   assert.equal(await advertised("/ui/secrets"), "/ui/secrets");
+
+  // AND IT MUST NOT REPRODUCE THE DEFECT IT FELL BACK FROM. A relative value
+  // carrying a query string is the relative spelling of the very URL this file
+  // is about, and it is the one the URL parser cannot help with.
+  const relativeWithQuery = await link("/ui/secrets?project=zimmer-secrets-prod", PARAM);
+  assert.equal(
+    relativeWithQuery.url,
+    `/ui/secrets?project=zimmer-secrets-prod&param=${encodeURIComponent(PARAM)}`,
+  );
+  const parsed = new URL(relativeWithQuery.url!, "https://strad.tadasant.com").searchParams;
+  assert.equal(parsed.get("project"), "zimmer-secrets-prod");
+  assert.equal(parsed.get("param"), PARAM);
 });
 
 test("no console URL at all is the one case with no link", async () => {
