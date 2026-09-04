@@ -254,8 +254,11 @@ opening any PR.
   and then one that never existed (#178, #252), in both cases telling a reader
   where a leak rule is asserted. Two forms resolve as conventions rather than
   errors — an elided `docs/.../operate/secrets.md`, and the doc-site route
-  `docs/operate/secrets.md` for a page whose file is
-  `docs/src/content/docs/operate/secrets.md`. A comment that must name a file
+  `docs/operate/secrets.md` (or `docs/operate/secrets`, the route Starlight
+  actually serves) for a page whose file is
+  `docs/src/content/docs/operate/secrets.md`. A trailing `:174` line reference
+  and a `#heading` fragment are stripped before resolving, so both are fine to
+  write. A comment that must name a file
   which is NOT there writes it without backticks; the backticks are the claim.
   `servers/**` is not walked, because each tree there has its own root — the
   vendored copies are checked at their source under `src/`.

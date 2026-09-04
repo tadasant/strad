@@ -36,9 +36,9 @@ import { describe, expect, it } from "vitest";
  * parameterViewer`, `@google-cloud/storage`, `versions/latest` and `owner/name`
  * are all "paths", and the guard is 55 false positives instead of a check.
  *
- * Two forms are read rather than reported, because both are conventions this
- * repo really uses and an allowlist of instances would go stale the moment a
- * fourth one was written:
+ * Several forms are READ rather than reported, because each is a convention this
+ * repo really uses and an allowlist of instances would go stale the moment one
+ * more was written. Reading a form still checks it; an allowlist would exempt it:
  *
  * - **Elision.** A `...` segment stands for zero or more segments, so
  *   `docs/.../operate/secrets.md` — the form CLAUDE.md and HACKS.md use
@@ -47,12 +47,19 @@ import { describe, expect, it } from "vitest";
  * - **The doc-site route.** `docs/operate/secrets.md` is how the console and the
  *   renderer refer to a page whose file is
  *   `docs/src/content/docs/operate/secrets.md`. That is the route the Starlight
- *   site serves, it is the stable name, and it is what a human types. Resolved
- *   as a first-class second form, so renaming the page still reddens every
- *   comment that names it — which an allowlist would not.
+ *   site serves, it is the stable name, and it is what a human types — and the
+ *   route it really serves has no extension at all, so `docs/operate/secrets`
+ *   is the same page and resolves too. Because the form is resolved rather than
+ *   allowlisted, renaming the page still reddens every comment that names it.
+ * - **A place inside a file.** A trailing `:174` line reference and a `#heading`
+ *   fragment are stripped before resolving. Both point INTO a file without
+ *   changing which file is claimed, and both are ordinary — issue #279 names
+ *   `src/ui/resolve.ts:174` in exactly that form.
  *
- * A token carrying `*`, `<`, `>` or whitespace is a pattern or a placeholder —
- * `docs/**`, `servers/<tree>` — not a claim about a file, and is not a candidate.
+ * A token carrying `*`, `<`, `>`, `?` or whitespace is a pattern or a
+ * placeholder — `docs/**`, `servers/<tree>` — not a claim about a file, and is
+ * not a candidate. Neither is one with a `.` or `..` segment, which would walk
+ * out of the repo and so is not a repo-relative path at all.
  *
  * ## Two things this deliberately does not check
  *
@@ -157,72 +164,127 @@ function resolveFrom(base: string, segments: readonly string[]): boolean {
   return existsSync(next) && resolveFrom(next, rest);
 }
 
-/** Does this path name something in the repo, under either accepted form? */
-export function resolvesInRepo(path: string): boolean {
-  const segments = path.split("/").filter((segment) => segment.length > 0);
+/**
+ * Does this path name something in the repo, under any accepted form?
+ *
+ * A `:174` line reference and a `#heading` fragment are stripped first. Both are
+ * ordinary ways to point at a place IN a file — issue #279 names
+ * `src/ui/resolve.ts:174` in exactly that form — and neither changes which file
+ * is being claimed.
+ *
+ * The doc-site route is tried with the page's extension supplied, because the
+ * route Starlight actually serves has none: `docs/operate/secrets` and
+ * `docs/operate/secrets.md` are the same page, and a guard that took only the
+ * second would redden the first for spelling the route correctly.
+ */
+function resolvesInRepo(path: string): boolean {
+  const bare = path.replace(/#.*$/, "").replace(/:\d+(?::\d+)?$/, "");
+  const segments = bare.split("/").filter((segment) => segment.length > 0);
   if (segments.length === 0) return false;
+  // `.` and `..` would walk out of the repo, which is not a repo-relative path.
+  if (segments.some((segment) => segment === "." || segment === ".."))
+    return false;
   const forms = [segments];
   if (segments[0] === "docs" && segments.length > 1) {
-    forms.push([...DOC_SITE_ROOT, ...segments.slice(1)]);
+    const route = [...DOC_SITE_ROOT, ...segments.slice(1)];
+    const last = route[route.length - 1] ?? "";
+    forms.push(route);
+    if (!/\.[a-z]+$/.test(last)) {
+      for (const suffix of [".md", ".mdx", "/index.md", "/index.mdx"]) {
+        forms.push([...route.slice(0, -1), ...`${last}${suffix}`.split("/")]);
+      }
+    }
   }
   return forms.some((form) => resolveFrom("", form));
 }
 
 /** Is this backticked token a claim about a file, rather than prose? */
-export function isPathClaim(token: string): boolean {
+function isPathClaim(token: string): boolean {
   if (!token.includes("/")) return false;
   if (/[*<>?\s]/.test(token)) return false;
-  if (token.includes("://")) return false;
   return ROOTS.has(token.split("/")[0] ?? "");
 }
 
 /**
- * The comments in a source file, each with the line it starts on.
+ * The comments in a source file, each with the line its text starts on.
  *
- * Strings and template literals are skipped so that the `//` in a URL is not read
- * as a comment. A regex literal is not tracked: one cannot BEGIN `//` (that is a
- * comment) and this repo writes `\/` inside them, so the sequences that open a
- * comment do not occur in one. The failure mode if that ever stopped holding is a
- * visible false positive, not a silent pass.
+ * Read a line at a time, and this is the load-bearing property rather than a
+ * simplification: quote state is dropped at every newline, so a `"` inside a
+ * regex literal — `/["\\{}[\]]/` is a real one in
+ * `src/secrets/parameters/wire.ts` — costs the rest of THAT LINE and nothing
+ * more. A whole-file scanner that tracked strings without also tracking regexes
+ * read that `"` as opening a string, ran to the next one hundreds of lines away,
+ * and silently swallowed every comment in between. A guard that fails open is
+ * worse than no guard, so the scan is built to be unable to fail that way: the
+ * only state crossing a line boundary is whether a block comment is open, and
+ * that is anchored on `/*` and `*` + `/` rather than on a quote.
+ *
+ * Consecutive `//` lines are one comment, so a claim wrapped across two of them
+ * rejoins exactly as it does inside a block comment.
  */
-export function commentsOf(source: string): { line: number; text: string }[] {
+function commentsOf(source: string): { line: number; text: string }[] {
   const found: { line: number; text: string }[] = [];
-  let line = 1;
-  let i = 0;
-  while (i < source.length) {
-    const pair = source.slice(i, i + 2);
-    if (pair === "//") {
-      const start = i + 2;
-      while (i < source.length && source[i] !== "\n") i++;
-      found.push({ line, text: source.slice(start, i) });
-      continue;
-    }
-    if (pair === "/*") {
-      const start = i + 2;
-      const startLine = line;
-      i += 2;
-      while (i < source.length && source.slice(i, i + 2) !== "*/") {
-        if (source[i] === "\n") line++;
-        i++;
+  let open: { line: number; text: string } | null = null;
+  let lastLineComment = -1;
+  const flush = () => {
+    if (open) found.push(open);
+    open = null;
+  };
+  source.split("\n").forEach((raw, index) => {
+    const line = index + 1;
+    let rest = raw;
+    if (open) {
+      const end = rest.indexOf("*/");
+      if (end === -1) {
+        open.text += `\n${rest}`;
+        return;
       }
-      found.push({ line: startLine, text: source.slice(start, i) });
-      i += 2;
-      continue;
+      open.text += `\n${rest.slice(0, end)}`;
+      flush();
+      rest = rest.slice(end + 2);
     }
-    const quote = source[i];
-    if (quote === '"' || quote === "'" || quote === "`") {
-      i++;
-      while (i < source.length && source[i] !== quote) {
-        if (source[i] === "\\") i++;
-        else if (source[i] === "\n") line++;
+    let quote = "";
+    let i = 0;
+    while (i < rest.length) {
+      const c = rest[i];
+      if (quote !== "") {
+        if (c === "\\") i += 2;
+        else {
+          if (c === quote) quote = "";
+          i++;
+        }
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        quote = c;
         i++;
+        continue;
+      }
+      if (c === "/" && rest[i + 1] === "/") {
+        const text = rest.slice(i + 2);
+        const previous = found[lastLineComment];
+        if (previous !== undefined && lastLineComment === found.length - 1) {
+          previous.text += `\n${text}`;
+        } else {
+          found.push({ line, text });
+          lastLineComment = found.length - 1;
+        }
+        return;
+      }
+      if (c === "/" && rest[i + 1] === "*") {
+        const end = rest.indexOf("*/", i + 2);
+        if (end === -1) {
+          open = { line, text: rest.slice(i + 2) };
+          return;
+        }
+        found.push({ line, text: rest.slice(i + 2, end) });
+        i = end + 2;
+        continue;
       }
       i++;
-      continue;
     }
-    if (source[i] === "\n") line++;
-    i++;
-  }
+  });
+  flush();
   return found;
 }
 
@@ -230,16 +292,20 @@ export function commentsOf(source: string): { line: number; text: string }[] {
  * Every path claim in a file, with the line each one is written on.
  *
  * A backticked span may WRAP. Prettier does not reflow a comment, so a long path
- * gets broken by hand across two ` * ` lines, and a scan that required the span
- * to sit on one line would skip exactly the longest names — the ones most worth
- * checking. The continuation markers are stripped from the span so the two halves
- * rejoin; nothing outside a span is touched.
+ * gets broken by hand across two lines, and a scan that required the span to sit
+ * on one line would skip exactly the longest names — the ones most worth
+ * checking. A hand-broken path breaks at a `/`, so ONLY a newline that follows
+ * one is closed up; any other newline survives into the token, where the
+ * whitespace rule rejects it. That is what keeps a fenced list of two files in a
+ * doc comment from fusing into one nonexistent path.
  */
-export function claimsIn(file: string, source: string): Claim[] {
+function claimsIn(file: string, source: string): Claim[] {
   const claims: Claim[] = [];
   for (const comment of commentsOf(source)) {
     for (const match of comment.text.matchAll(/`([^`]+)`/g)) {
-      const token = (match[1] ?? "").replace(/\n\s*\*?[ \t]?/g, "").trim();
+      const token = (match[1] ?? "")
+        .replace(/\/[ \t]*\n[ \t]*\*?[ \t]*/g, "/")
+        .trim();
       if (!isPathClaim(token)) continue;
       const before = comment.text.slice(0, match.index);
       claims.push({
@@ -252,10 +318,19 @@ export function claimsIn(file: string, source: string): Claim[] {
   return claims;
 }
 
-const CLAIMS: readonly Claim[] = TREES.flatMap((tree) =>
-  sourceFiles(tree).flatMap((file) =>
-    claimsIn(file, readFileSync(file, "utf8")),
-  ),
+/** CRLF is normalised on read so a Windows checkout scans identically to CI. */
+function claimsUnder(tree: string): Claim[] {
+  return sourceFiles(tree).flatMap((file) =>
+    claimsIn(file, readFileSync(file, "utf8").replace(/\r\n/g, "\n")),
+  );
+}
+
+const BY_TREE: ReadonlyMap<string, readonly Claim[]> = new Map(
+  TREES.map((tree) => [tree, claimsUnder(tree)]),
+);
+
+const CLAIMS: readonly Claim[] = TREES.flatMap(
+  (tree) => BY_TREE.get(tree) ?? [],
 );
 
 describe("every repo-relative path a comment names", () => {
@@ -267,28 +342,41 @@ describe("every repo-relative path a comment names", () => {
   });
 
   /**
-   * A scan that found nothing would pass this file forever. These are the claims
-   * the walk has to still be seeing for the green above to mean anything — the
-   * first of them being the header both #178 and #252 got wrong.
+   * A scan that found nothing would pass this file forever, and a scan that
+   * silently lost HALF the corpus would too. These are the claims the walk has to
+   * still be seeing — the first of them being the header both #178 and #252 got
+   * wrong, and the second written 200 lines past a regex literal carrying a `"`,
+   * which is what a scanner desync eats first.
    */
   it("is actually being found", () => {
     const seen = CLAIMS.map((claim) => `${claim.file} → ${claim.path}`);
     expect(seen).toContain(
       "src/secrets/presence.ts → test/presence.route.test.ts",
     );
+    expect(seen).toContain(
+      "src/deploy/imageTag.ts → .github/actions/build-push/action.yml",
+    );
     expect(seen).toContain("src/config/schema.ts → scripts/render-spec.ts");
     expect(seen).toContain(
       "src/secrets/parameters/wire.ts → servers/secrets/shared/src/parameter-wire.ts",
     );
-    expect(CLAIMS.length).toBeGreaterThan(60);
   });
 
-  it("comes from every tree this walks", () => {
-    for (const tree of TREES) {
-      expect(CLAIMS.some((claim) => claim.file.startsWith(`${tree}/`))).toBe(
-        true,
-      );
-    }
+  /**
+   * Floors, not exact counts: a claim comes and goes with ordinary editing, but
+   * a tree dropping to a fraction of its real total is a scanner that stopped
+   * reading rather than a repo that stopped claiming. The real numbers when this
+   * was written were 69, 7 and 76.
+   */
+  it("in a quantity that says the scan is still reading", () => {
+    const floors: Record<string, number> = { src: 55, scripts: 5, test: 55 };
+    const counted = TREES.map(
+      (tree) => `${tree}: ${(BY_TREE.get(tree) ?? []).length}`,
+    );
+    const thin = TREES.filter(
+      (tree) => (BY_TREE.get(tree) ?? []).length < (floors[tree] ?? 1),
+    );
+    expect({ thin, counted }).toEqual({ thin: [], counted });
   });
 });
 
@@ -319,6 +407,26 @@ describe("a path claim resolves", () => {
       true,
     );
     expect(resolvesInRepo("docs/operate/secrets-that-moved.md")).toBe(false);
+  });
+
+  it("past a line reference and a heading fragment", () => {
+    expect(resolvesInRepo("src/ui/resolve.ts:174")).toBe(true);
+    expect(resolvesInRepo("src/ui/resolve.ts:174:12")).toBe(true);
+    expect(resolvesInRepo("src/ui/resolev.ts:174")).toBe(false);
+    expect(resolvesInRepo("docs/operate/secrets.md#the-resolver")).toBe(true);
+    expect(resolvesInRepo("docs/operate/no-page.md#the-resolver")).toBe(false);
+  });
+
+  /** The route Starlight serves has no extension. Both spellings are one page. */
+  it("for the extensionless doc-site route", () => {
+    expect(resolvesInRepo("docs/operate/secrets")).toBe(true);
+    expect(resolvesInRepo("docs/operate/secrets/")).toBe(true);
+    expect(resolvesInRepo("docs/operate/no-page")).toBe(false);
+  });
+
+  it("never by walking out of the repo", () => {
+    expect(resolvesInRepo("src/../src/secrets/presence.ts")).toBe(false);
+    expect(resolvesInRepo("src/./secrets/presence.ts")).toBe(false);
   });
 
   it("through an elision, and not past a page that moved", () => {
@@ -396,6 +504,40 @@ describe("the comment scan", () => {
     expect(claimsIn("f.ts", source)).toEqual([
       { file: "f.ts", line: 2, path: "docs/src/content/docs/operate/gone.md" },
     ]);
+  });
+
+  /**
+   * The desync that made a whole-file scanner fail open. Quote state is dropped
+   * at every newline, so the `"` inside the regex costs its own line and nothing
+   * after it.
+   */
+  it("keeps reading past a regex literal that carries a quote", () => {
+    const source = [
+      'const RENDER_UNSAFE = /["\\{}[\\]]/;',
+      "// A claim written after it, naming `src/gone.ts`.",
+    ].join("\n");
+    expect(claimsIn("f.ts", source)).toEqual([
+      { file: "f.ts", line: 2, path: "src/gone.ts" },
+    ]);
+  });
+
+  it("rejoins a wrap across two // lines, and fuses nothing else", () => {
+    const wrapped = [
+      "// A page at `docs/src/content/docs/operate/",
+      "// gone.md`.",
+    ].join("\n");
+    expect(claimsIn("f.ts", wrapped)).toEqual([
+      { file: "f.ts", line: 1, path: "docs/src/content/docs/operate/gone.md" },
+    ]);
+
+    // Two paths listed one per line are two tokens, not one fused non-path.
+    const listed = [
+      "/**",
+      " * `src/deploy/appspec.ts",
+      " * src/deploy/preflight.ts`",
+      " */",
+    ].join("\n");
+    expect(claimsIn("f.ts", listed)).toEqual([]);
   });
 
   it("does not read a string, a template literal, or the // in a URL", () => {
