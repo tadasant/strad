@@ -1,7 +1,7 @@
 /**
  * One log format for the whole bundle, on stderr.
  *
- * Every line names the mount it came from. With 19 upstream servers in one
+ * Every line names the mount it came from. With 21 upstream servers in one
  * container, "which server did that" is the first question anyone asks — of a
  * crash, a slow call, or a memory spike. (The OpenTelemetry instrumentation
  * carries the same identity as a `server` attribute; these lines are what you

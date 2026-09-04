@@ -1240,7 +1240,7 @@ existed — but restricting one of those means "no new readers", not "no readers
 ### `upload_file` reads from the bundle container's filesystem
 
 The artifact store takes a `file://` URI, and it runs in the bundle — a container
-that also holds sixteen other servers' credentials in its environment, one of them
+that also holds twenty other servers' credentials in its environment, one of them
 a session string that IS a Telegram account. An agent that can call `upload_file`
 can therefore ask it to read a local path and publish a link to whatever came
 back.

@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   // On failure, mirror the stdio server: log, clean up, and exit non-zero. This
   // container serves ONE server, so a process that cannot log in has nothing to
   // offer, and a failed health check is louder than a server that lists four
-  // tools and errors on all of them. (Inside strad's bundle, where fifteen
+  // tools and errors on all of them. (Inside strad's bundle, where twenty
   // other servers are on board, the host takes the other option the shared
   // factory offers: mark the mount degraded and let the next tool call retry.)
   startBackgroundLogin((error: Error) => {

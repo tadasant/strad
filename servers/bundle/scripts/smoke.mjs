@@ -189,7 +189,7 @@ let failed = 0;
 // buildMounts() and left out of EXPECT ships with no tool-count coverage and no
 // complaint — the loop below only walks what EXPECT already names. Each side is
 // named rather than counted, because a rename moves a mount without moving the
-// count, and "20 mounted, 20 in EXPECT" would otherwise read like a pass.
+// count, and "21 mounted, 21 in EXPECT" would otherwise read like a pass.
 const mounted = new Set(health.servers.map((s) => s.slug));
 const expectedSlugs = new Set(Object.keys(EXPECT));
 const unchecked = [...mounted].filter((s) => !expectedSlugs.has(s));
@@ -206,7 +206,7 @@ if (unchecked.length || absent.length) {
 
 // Two trees registering the SAME slug is the collision a twelve-tree single process
 // invites, and it collapses to one route — the set above cannot see it, because a
-// Set of 20 mounts' slugs is 19 entries wide and matches EXPECT exactly.
+// Set of 22 mounts' slugs is 21 entries wide and matches EXPECT exactly.
 if (health.servers.length !== mounted.size) {
   failed += 1;
   console.log(

@@ -368,7 +368,7 @@ async function loadApiTree(): Promise<ApiTree> {
   };
 
   // Warm monarch's session in the BACKGROUND: it may perform a real network
-  // login, and a slow login must not delay the other nineteen servers' readiness.
+  // login, and a slow login must not delay the other twenty servers' readiness.
   const sessionStore = monarchMod.createFileSessionStore();
   void monarchMod
     .resolveSession({ sessionStore })
@@ -653,7 +653,7 @@ function loadGoogleSheets(sheets: GoogleSheetsModule, slug: string): Mount {
  *
  * Config is resolved LAZILY inside the server (on the first tool call), so a
  * missing bucket is one server's error, not a boot failure for the other
- * eighteen — the same posture as secrets and 1Password.
+ * twenty — the same posture as secrets and 1Password.
  */
 const REMOTE_FS_ENV_PREFIX = "REMOTE_FILESYSTEM_TMP_PUBLIC";
 
@@ -762,7 +762,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all nineteen mounts down
+    // configured at all, and a throw at boot would take all twenty-one mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -809,7 +809,7 @@ async function loadXTwitter(): Promise<Mount> {
  * agent's tools/list — rather than lose the slug entirely. Every call then fails
  * with an error naming the three variables. Same posture as remote-filesystem,
  * and for the same reason: one server's missing config must not cost the other
- * eighteen their boot.
+ * twenty their boot.
  *
  * ONE INSTANCE PER SLUG. `telegram-ro` and `telegram-rw` are two strad slugs, and
  * for as long as they were two names for one mount they were also one MTProto
@@ -846,7 +846,7 @@ async function loadTelegram(slug: string): Promise<Mount> {
 
 /**
  * secrets. Not mounted when it is not configured — the same posture as
- * 1Password: one server's missing config must not take the other nineteen down.
+ * 1Password: one server's missing config must not take the other twenty down.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
@@ -912,7 +912,7 @@ async function loadOnePassword(): Promise<Mount | null> {
   const safety = mod.checkElicitationSafety();
   if (!safety.safe) {
     // Fail closed — but only for 1Password. The upstream exits the process here;
-    // in a 16-server container that would be an outage caused by one server's
+    // in a 21-server container that would be an outage caused by one server's
     // config. Refuse to MOUNT it instead: strad's gateway then reports it as
     // unavailable, and every other server keeps serving.
     logWarn(
@@ -954,7 +954,7 @@ async function loadOnePassword(): Promise<Mount | null> {
  * Each keeps its own login, its own context and its own cookies; only the
  * browser PROCESS is shared (browser.ts). And unlike their standalone images,
  * a login failure here degrades the one mount instead of exiting the process:
- * with nineteen other servers on board, `process.exit(1)` is no longer a
+ * with twenty other servers on board, `process.exit(1)` is no longer a
  * proportionate response to Good Eggs changing a form field.
  */
 async function loadBrowserMounts(): Promise<Mount[]> {
@@ -1313,7 +1313,7 @@ async function main(): Promise<void> {
   app.disable("x-powered-by");
 
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 17 servers behind one health check, "ok: true" alone is not information.
+  // with 21 servers behind one health check, "ok: true" alone is not information.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -1391,8 +1391,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of nineteen servers must not kill the other
-  // eighteen. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of twenty-one servers must not kill the other
+  // twenty. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

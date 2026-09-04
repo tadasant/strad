@@ -31,7 +31,7 @@ export interface CreateMCPServerOptions {
  *
  * CREDENTIALS AND THE CONNECTION ARE BOTH LAZY. The image ships neither, strad
  * injects them onto the component at deploy time, and this server shares a
- * process with nineteen others — so a missing session string must be one server's
+ * process with twenty others — so a missing session string must be one server's
  * failed tool call, not a boot failure for the whole bundle. `tools/list` works
  * with no credentials at all, which is what lets the console and an agent see
  * what this deployment WOULD offer.

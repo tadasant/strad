@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>20 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>21 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -95,7 +95,7 @@ Three numbers, three different things:
 | Number | What it counts                                                                               |
 | ------ | -------------------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                          |
-| **20** | MCP servers mounted inside the bundle image                                                  |
+| **21** | MCP servers mounted inside the bundle image                                                  |
 | **32** | server slugs in `infra/strad.staging.yaml` (29 supplementary + `echo` + `deepwiki` + `anki`) |
 
 ### The two modes
@@ -358,7 +358,7 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (20 mounted servers,
+  serialises rendering. strad's own deployment puts everything (21 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and

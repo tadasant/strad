@@ -18,7 +18,7 @@ import { log, logWarn } from "./log.js";
  * Self-healing: if the browser process dies (OOM, crash), the next caller gets a
  * fresh one rather than a dead handle. A crash is therefore a degraded call, not
  * a dead container — which matters a great deal more now that the container also
- * holds the other 17 servers (20 mounts in all, of which 3 drive a browser).
+ * holds the other 18 servers (21 mounts in all, of which 3 drive a browser).
  *
  * TELEMETRY. The launch is wrapped in the bootstrap's `instrumentLaunch` hook, so
  * it is timed, counted, and its `disconnected` event reports a Chromium crash

@@ -12,7 +12,7 @@ strad ran this server as `npx -y @pulsemcp/pulse-fetch@latest` inside every agen
 session before this fork. That is the deployment these deltas are about: one
 process per session, per-session memory, and a credential handed to every session
 that starts. Behind strad it is one long-lived mount in a container shared with
-nineteen other servers, reached through the gateway with a strad token. Most of
+twenty other servers, reached through the gateway with a strad token. Most of
 what follows is that difference.
 
 ## 1. No stdio entrypoint, and no boot-time credential probe
@@ -85,7 +85,7 @@ The parameter — and the tool's advertised input schema — **appear only when
 **Why**, three reasons that point the same way:
 
 - `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL` and `LLM_API_BASE_URL` are names no
-  server should claim on a container shared by nineteen others.
+  server should claim on a container shared by twenty others.
 - A tool whose schema depends on its container's environment advertises one
   surface in CI and another in production. strad's pre-deploy tool-policy gate
   reads the surface out of the built image; a surface that varies is a gate that
@@ -128,7 +128,7 @@ reading is not evicted by a burst of one-off scrapes.
 
 **Why.** Unbounded is correct for a subprocess the OS reclaims when a session
 ends. In a long-lived container it is the one failure the bundle cannot degrade
-around — an OOM kill takes all twenty mounts with it. The filesystem backend
+around — an OOM kill takes all twenty-one mounts with it. The filesystem backend
 went with it because App Platform gives this container no persistent volume, so it
 was memory with extra steps and a slower way to fail.
 

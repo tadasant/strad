@@ -6,7 +6,7 @@ import { ResourceStorageFactory } from '../src/storage/factory.js';
  * The resource cache is the other thing the hosting model changed.
  *
  * Upstream's store grows for the life of the process, which is right for a stdio
- * subprocess and an out-of-memory kill in a container that also hosts eighteen
+ * subprocess and an out-of-memory kill in a container that also hosts twenty
  * other mounts. These tests pin the bounds and the eviction order — the failure
  * they guard against has no symptom short of the container dying.
  */
