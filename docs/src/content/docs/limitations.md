@@ -1459,13 +1459,20 @@ harder to debug than a call that says what it needs.
 ### 11. Playwright is pinned to the base image's Chromium
 
 The browser images build `FROM mcr.microsoft.com/playwright:v1.61.1-noble` and pin
-Playwright to `1.61.1` with an `overrides` block, rather than downloading a browser
-at build time — `cdn.playwright.dev` was flaky from the build environment, and the
-base image's Chromium revision matches 1.61.1 exactly.
+Playwright to `1.61.1` rather than downloading a browser at build time:
+`cdn.playwright.dev` was flaky from the build environment, and the base image's
+Chromium revision matches 1.61.1 exactly. The three server trees pin it with an
+`overrides` block; the bundle host declares it directly.
 
 **Cost:** the base image is large, and the bundle image lands around 3.9GB, ~85% of
 which is that base. **When bumping Playwright,** bump the base image tag and the
-`overrides` version together, or the browser revision stops matching.
+`overrides` version together, or the browser revision stops matching. That version
+is written in four Dockerfiles, four `package.json` files, four lockfiles, this page
+and `HACKS.md`, and the bundle collapses three of those trees into one container
+sharing one browser — so `test/playwright-pin.test.ts` reads every one of them and
+fails the PR that leaves a sibling behind. Nothing else would: listing a browser
+server's tools never launches Chromium, so a mismatched pin builds, boots and lists
+green, then fails on the first browser-driven tool call.
 
 ### 5. GHCR pull tokens are shared with zimmer
 

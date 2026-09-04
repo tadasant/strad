@@ -272,19 +272,23 @@ it, depend on it and delete the fork.
 
 ---
 
-## 11. good-eggs pins Playwright to the base image's Chromium
+## 11. The browser images pin Playwright to the base image's Chromium
 
-**What.** `servers/good-eggs` builds `FROM mcr.microsoft.com/playwright:v1.61.1-noble`
-(Chromium already bundled) and pins Playwright to `1.61.1` via an `overrides`
-block in `servers/good-eggs/package.json`, instead of the PoC's
-`node:22-bookworm` + `npx playwright install --with-deps chromium`.
+**What.** `servers/good-eggs`, `servers/fetchpet`, `servers/pointsyeah` and
+`servers/bundle` all build `FROM mcr.microsoft.com/playwright:v1.61.1-noble`
+(Chromium already bundled) and pin Playwright to `1.61.1` — via an `overrides`
+block in the three server trees, and a direct dependency in
+`servers/bundle/host` — instead of the PoC's `node:22-bookworm` +
+`npx playwright install --with-deps chromium`.
 
 **Why.** `cdn.playwright.dev` was flaky from the build environment (repeated
 30s download timeouts), and downloading a browser at image-build time is a
 needless point of failure. The Playwright base image carries a Chromium whose
 revision (1228) matches Playwright 1.61.1 exactly, so the build never downloads a
-browser. The `overrides` keeps `shared/package.json` verbatim (it declares
-`^1.49.1`) while guaranteeing the installed Playwright matches the image.
+browser. The `overrides` keeps each tree's `shared/package.json` verbatim (they
+declare `^1.49.1`, `^1.49.1` and `^1.58.2`) while guaranteeing the installed
+Playwright matches the image; `servers/bundle/host` has no workspace to keep
+verbatim, so it declares the version directly.
 
 **Cost.** The base image is large (~3.7GB — it ships Chromium, Firefox, and
 WebKit). Only Chromium is used.
@@ -293,7 +297,9 @@ WebKit). Only Chromium is used.
 `npx playwright install --with-deps chromium` (drop the base image and the
 `overrides`), accepting the CDN dependency; or build a slimmer custom base that
 carries only Chromium. When bumping Playwright, bump the base image tag and the
-`overrides` version together so the browser revision stays matched.
+`overrides` version together so the browser revision stays matched —
+`test/playwright-pin.test.ts` fails the PR that misses one, and it reads the
+versions in this entry too.
 
 ---
 
