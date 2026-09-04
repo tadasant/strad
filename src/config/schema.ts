@@ -1435,6 +1435,7 @@ export const StradConfig = z
     // value — is exactly that answer being "no" for the production project. It
     // must not be possible to write a config in which staging's "yes" is
     // production's answer too.
+    //
     // `SECRETS_STORES` IS DERIVED, AND ONLY DERIVED.
     //
     // `renderAppSpec` composes it from `mcpStores:`, which is what subjects it to
@@ -1499,8 +1500,10 @@ export const StradConfig = z
       // ONE SHAPE OR THE OTHER, never both. The tree reads `SECRETS_STORES` and
       // ignores the single-store variables when it is present, so a leftover
       // `SECRETS_PROJECT_ID` under `env:` is a project a reader would reasonably
-      // believe this server fronts and which it does not. (The console's own
-      // fallback reads the same name out of `consoleEnv:`, which is untouched.)
+      // believe this server fronts and which it does not. MOVED rather than
+      // deleted, though: the console resolves its single-store fallback from
+      // this name in `env:` and `consoleEnv:` alike (src/ui/resolve.ts), so
+      // "delete it" would take the console page with it.
       for (const legacy of ["SECRETS_PROJECT_ID", "SECRETS_NAMESPACES"]) {
         if (!(legacy in s.env)) continue;
         ctx.addIssue({
