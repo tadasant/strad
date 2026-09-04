@@ -2221,9 +2221,56 @@ here nobody would diagnose.
 
 **One admin key per store, always.** `adminKeyVar` is required on every entry, and
 `check-config` rejects two entries naming the same one — so "the same service
-account for all of these" is inexpressible, not merely discouraged. Two projects
+account for all of these" cannot be written as one shared key name. Two projects
 behind one identity is a strictly larger blast radius than the two identities it
 replaces, and the two-identity split on this deployment was chosen deliberately.
+
+**Two names carrying one `${REF}` is warned about, not refused.** The key name is
+the variable; the `${NAME}` behind it is the credential, so two separate
+`consoleEnv:` keys can still be one service account on two projects. That is the
+same collapse — and unlike the rules above it is sometimes correct: one identity
+granted on `strad-secrets-prod` and `strad-secrets-staging` is two projects inside
+one system, which this deployment runs on purpose. `check-config` and
+`render-spec` therefore emit a `::warning::` naming both projects and the ref
+rather than failing, and a reviewer says "yes, both strad projects" or "no, that
+crosses a system boundary":
+
+```
+::warning::server "secrets": consoleStores "strad-secrets-prod", "zimmer-secrets-prod"
+all resolve their admin credential from ${SECRETS_ADMIN_KEY_JSON}, under different
+consoleEnv: keys — so ONE service account reaches 2 projects, and a leaked key for
+any of them is a leaked key for all of them. …
+```
+
+The [`/mcp` half](#the-mcp-half-mcpstores) **refuses** the identical shape, and
+the asymmetry is deliberate: a shared viewer credential collapses the per-store
+capability probe, so production's "you may not read a secret value" would be
+answered by staging's key. Sharing an admin credential costs blast radius, which a
+human can weigh; sharing a viewer credential costs a guarantee, which nobody can.
+
+**Two stores may not claim one path.** Overlapping `namespaces:` is refused at
+parse time, exactly as it is on the `/mcp` half. The console's version of the
+hazard is a write: `storeForPath` refuses an ambiguous path at request time, so
+without the config rule the first symptom would be a create or rotate failing on a
+path a human just typed, in a deployment that rendered and deployed clean.
+
+**A leftover `SECRETS_PROJECT_ID` is warned about.** `storeProject()` prefers it
+over a server's own `consoleStores:`, so on a multi-store page a stale one — the
+single-store shape this list replaced — makes the console index and the roster's
+copy-pasteable `gcloud` commands describe a different project from the one the
+store page defaults to. The annotation fires only for the server the roster would
+actually answer from, since `storeProject()` consults the first candidate and
+stops; a deployment whose resolver sets `STRAD_PARAMS_PROJECT_ID` overrides the
+whole order anyway. It fails legibly rather than writing anywhere wrong, which is
+why it is a warning; drop it, or make it name the first store.
+
+**Two stores sharing one `${REF}` is reported across the whole deployment**, not
+one server's list — a bundle carries one secrets slug, so a strad store and a
+Zimmer store sharing an admin credential arrive as two slugs, and that is the
+crossing worth seeing. An overlapping namespace across two slugs is warned about
+too: `storeForPath` resolves a write against every secrets slug's stores at once,
+so the ambiguity is real, but a path nobody writes to could be sitting in a config
+that works today — which is why that half reports rather than refuses.
 
 It names a `consoleEnv:` key rather than carrying a `${REF}` of its own, and
 `check-config` fences that name on three sides: the key **is** declared under this

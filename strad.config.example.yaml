@@ -599,12 +599,25 @@ servers:
     #     # not declared there, one that is ALSO an env: key on any server, one
     #     # whose ${REF} any server's env: carries under ANY key, and two stores
     #     # naming the same one.
+    #     #
+    #     # Two stores whose DIFFERENT names carry one ${REF} is the same
+    #     # identity on both projects, and check-config WARNS rather than
+    #     # refusing: one service account on strad-secrets-prod and
+    #     # strad-secrets-staging is two projects in one system, and that is a
+    #     # judgement a reviewer makes. The mcpStores: block below refuses the
+    #     # same shape, because a shared viewer key collapses the capability
+    #     # probe and has no correct form.
     #     adminKeyVar: SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
     #     # Per STORE, not per page. A union list checked against whichever
     #     # project happens to be selected is a bound that does not bind.
     #     namespacesStrict: true
     #   - project: zimmer-secrets-staging
     #     label: zimmer staging
+    #     # No two stores may declare OVERLAPPING namespaces: a path both could
+    #     # claim is a console write landing in whichever project was declared
+    #     # first. Refused here rather than by storeForPath at write time, which
+    #     # is where it would otherwise first be noticed. Across two SLUGS the
+    #     # same overlap is a warning, not a refusal.
     #     namespaces: ["/zimmer/staging/mcp/static/"]
     #     # ONE ADMIN KEY PER STORE. Never one identity granted on both projects:
     #     # that is a strictly larger blast radius than the two it replaces.

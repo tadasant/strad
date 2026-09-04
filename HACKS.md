@@ -3740,8 +3740,15 @@ role next to the other principals on that page.
 **What.** `consoleStores:` puts N parameter stores on one `/ui/<slug>` page. The
 console INDEX at `/ui` did not change with it: it still renders one card per
 secrets slug, and `storeProject()` in `src/ui/secret-status.ts` answers "which
-GCP project holds the parameter store" with a single id. For a slug declaring
-`consoleStores:` that answer is the FIRST entry's project.
+GCP project holds the parameter store" with a single id. The order is: the
+RESOLVER's own `STRAD_PARAMS_PROJECT_ID` if this process holds one, else the
+first enabled supplementary server that declares a project at all — and within
+that server `consoleEnv.SECRETS_PROJECT_ID`, then `env.SECRETS_PROJECT_ID`, then
+`consoleStores[0]`. So a slug declaring `consoleStores:` is described by its
+first entry only when nothing earlier in that order answered; a leftover
+`SECRETS_PROJECT_ID` outvotes the list entirely. `check-config` now emits a
+`::warning::` when that name and the first store disagree, which makes the
+mismatch visible without changing the order.
 
 **Why it is a hack.** `storeProject()` feeds the copy-pasteable `gcloud`
 commands the roster prints for a missing secret. On a multi-store slug whose

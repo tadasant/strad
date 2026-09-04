@@ -537,6 +537,20 @@ secrets server undone by one line of YAML — and none of it is checkable at
 runtime, because by then the value is just a string in an environment. Two stores
 naming the same `adminKeyVar` is refused here too: one service account granted on
 two projects is the simplification `consoleStores:` exists to make inexpressible.
+Overlapping `namespaces:` between two of its stores is refused as well — the
+console's version of an ambiguous path is a write landing in whichever project was
+declared first.
+
+Two entries whose different `adminKeyVar` names resolve to one `${REF}` is that
+same one-identity-on-two-projects collapse, and it produces a **`::warning::`**
+rather than a failure. It has a legitimate form — one service account on
+`strad-secrets-prod` and `strad-secrets-staging`, two projects inside one system —
+which the `mcpStores:` equivalent below does not, so this is the one place the two
+halves deliberately differ. A `SECRETS_PROJECT_ID` still declared alongside
+`consoleStores:` and naming a different project warns for the same reason: it
+outvotes the list in the console index, so the roster's `gcloud` commands would
+name a project the store page does not default to. Both reach the run as
+annotations and leave the exit code alone, the way a legacy instance size does.
 
 An [`mcpStores:`](/servers/interface/) entry names its VIEWER credential by
 `env:` KEY, and the fences are the same shape for a sharper reason. The key must

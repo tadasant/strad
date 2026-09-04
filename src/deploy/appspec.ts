@@ -5,6 +5,7 @@ import { bundleUrlEnvName } from "../gateway/registry.ts";
 import { prefixedEnvName, slugEnvPrefix } from "../secrets/env-prefix.ts";
 import { resolveMap } from "../secrets/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
+import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 import { PARAM_KEYS_ENV } from "../secrets/presence.ts";
 import {
   PARAM_REFRESH_ENV,
@@ -255,6 +256,235 @@ function mcpStoresEnv(
       })),
     ),
   };
+}
+
+/**
+ * `consoleStores:` entries whose `adminKeyVar`s resolve to the SAME `${NAME}`.
+ * See the call site.
+ *
+ * ACROSS THE WHOLE DEPLOYMENT, not one server's list, and that is the case the
+ * issue this closes was actually about. Two stores on ONE server sharing a
+ * credential is the shape that reads wrong in a diff; two SLUGS sharing one is
+ * the shape production can reach, because a bundle may carry only one secrets
+ * slug and a second store therefore arrives as a second component
+ * (`bundle-zimmer-secrets`). One admin key on both is the same service account
+ * across the strad/Zimmer boundary either way, and a per-server walk would be
+ * blind to exactly the arrangement prod runs.
+ *
+ * A WARNING and not a refusal, and that is a deliberate asymmetry with the two
+ * hard errors next to it in `src/config/schema.ts`. Two entries naming one
+ * `adminKeyVar` is refused there, and so is an `adminKeyVar` whose ref any
+ * server's `env:` carries. Two DIFFERENT names carrying one ref is the same
+ * credential on two projects — but unlike those two it is sometimes correct: one
+ * service account granted on `strad-secrets-prod` and `strad-secrets-staging`,
+ * two projects inside one system, is a shape production deliberately runs. A ban
+ * would reject it. So this reports rather than refuses, and a reviewer decides
+ * whether the two projects are one system or two.
+ *
+ * The `mcpStores:` twin (`seenViewerRef`) stays a hard ERROR, and the difference
+ * is not an oversight either: a shared viewer key collapses the per-store
+ * CAPABILITY probe, so production's "you may not read a secret value" would be
+ * answered by staging's key. That has no legitimate form. Sharing an admin
+ * credential costs blast radius, which a human can weigh; sharing a viewer
+ * credential costs a guarantee, which nobody can.
+ *
+ * DISABLED SERVERS ARE SKIPPED, which the schema's by-name twin does not do —
+ * see the block comment there for why the two differ. A key holding no `${REF}`
+ * is not compared either: two stores both carrying an inline literal are two
+ * separate strings, and identical ones collide under the `consoleEnv:` rules
+ * first.
+ */
+function sharedConsoleAdminCredential(config: StradConfig): string[] {
+  /** `${NAME}` -> the stores resolving their admin key from it, in order. */
+  const byRef = new Map<string, { slug: string; project: string }[]>();
+  /** Whether more than one slug is involved anywhere, which decides labelling. */
+  const slugs = new Set<string>();
+
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    for (const store of server.consoleStores) {
+      slugs.add(server.slug);
+      // A value with SEVERAL refs would otherwise report the same pair of
+      // stores once per shared ref. One line per store pair is the finding;
+      // which of the refs it travels under is not a second one.
+      for (const ref of new Set(
+        refsIn(server.consoleEnv[store.adminKeyVar] ?? ""),
+      )) {
+        const stores = byRef.get(ref) ?? [];
+        stores.push({ slug: server.slug, project: store.project });
+        byRef.set(ref, stores);
+      }
+    }
+  }
+
+  const messages: string[] = [];
+  const reported = new Set<string>();
+  for (const [ref, stores] of byRef) {
+    if (stores.length < 2) continue;
+    // One line per SET of stores, whichever ref carried them there.
+    const label = (s: { slug: string; project: string }) =>
+      slugs.size > 1 ? `"${s.slug}"/"${s.project}"` : `"${s.project}"`;
+    const key = stores.map(label).join(",");
+    if (reported.has(key)) continue;
+    reported.add(key);
+
+    const crossSlug = new Set(stores.map((s) => s.slug)).size > 1;
+    messages.push(
+      `consoleStores ${stores.map(label).join(", ")} all resolve their admin ` +
+        `credential from \${${ref}}, under different consoleEnv: keys — so ONE ` +
+        `service account reaches ${stores.length} projects, and a leaked key for ` +
+        `any of them is a leaked key for all of them.` +
+        (crossSlug
+          ? ` They are on DIFFERENT slugs, which is two console pages and two ` +
+            `entitlements answering as one identity.`
+          : "") +
+        ` That is right when the projects are one system (prod and staging of ` +
+        `the same product) and wrong when they cross a system boundary. If they ` +
+        `cross one, give each store its own service account and its own \${REF}.`,
+    );
+  }
+  return messages;
+}
+
+/**
+ * The server whose `SECRETS_PROJECT_ID` outvotes its own `consoleStores:` list
+ * in `storeProject()`. See the call site.
+ *
+ * `storeProject()` (src/ui/secret-status.ts) answers "which project holds the
+ * store" for the console INDEX, and the roster's copy-pasteable `gcloud`
+ * commands are built from the answer. Its order is: the RESOLVER's own project
+ * id if this process holds one, else the FIRST enabled supplementary server that
+ * declares a project at all — and within that server, `consoleEnv.`, then `env.`,
+ * then `consoleStores[0]`, then `mcpStores[0]`.
+ *
+ * Both of those preambles matter, and getting either wrong would make this
+ * annotation assert something false:
+ *
+ *   - only the FIRST candidate server is ever consulted, so a disagreement on a
+ *     later one changes nothing and is not reported. That is why this walks to
+ *     the first candidate and then stops.
+ *   - `STRAD_PARAMS_PROJECT_ID` outranks the whole loop, and `render-spec` sets
+ *     it on every `gcp-parameter-store` deployment where the deploy environment
+ *     supplies one. Whether it does is not a config fact, so this cannot know —
+ *     hence the message says what the ORDER is rather than promising what the
+ *     page will show.
+ *
+ * A warning rather than an error for the reason the `mcpStores:` half MOVES that
+ * name instead of deleting it: the console's single-store fallback still reads
+ * it, and a config mid-migration may legitimately carry both. It fails legibly —
+ * a command against the wrong `--project` errors rather than writing anywhere —
+ * so the cost is a wrong answer handed to a human, not a wrong write.
+ *
+ * The ORDERING itself is not changed here; that is issue #261, which wants the
+ * index to resolve per-namespace through `storeForPath()` rather than off a
+ * config field at all. This says the two disagree.
+ */
+function consoleProjectDisagreement(config: StradConfig): string[] {
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+
+    const scope = server.consoleEnv.SECRETS_PROJECT_ID
+      ? "consoleEnv"
+      : server.env.SECRETS_PROJECT_ID
+        ? "env"
+        : undefined;
+    const declared =
+      scope === "consoleEnv"
+        ? server.consoleEnv.SECRETS_PROJECT_ID
+        : scope === "env"
+          ? server.env.SECRETS_PROJECT_ID
+          : (server.consoleStores[0]?.project ?? server.mcpStores[0]?.project);
+    // A project id written as a `${REF}` is not one `storeProject` accepts
+    // either — it keeps walking. So does this.
+    if (!declared || refsIn(declared).length > 0) continue;
+
+    // THE FIRST CANDIDATE, and the only one. Whatever this server answers is
+    // what the index shows; a later server's disagreement is unobservable.
+    const projects = server.consoleStores.map((store) => store.project);
+    if (!scope || projects.length === 0 || declared === projects[0]) return [];
+
+    const known = projects.includes(declared);
+    return [
+      `server "${server.slug}": ${scope}: SECRETS_PROJECT_ID names "${declared}", ` +
+        `but consoleStores: defaults to "${projects[0]}"` +
+        (known
+          ? ` and lists "${declared}" second or later`
+          : ` and does not list "${declared}" at all`) +
+        `. storeProject() prefers SECRETS_PROJECT_ID over this server's ` +
+        `consoleStores:, and this is the first server it asks — so the console ` +
+        `index and the roster's copy-pasteable gcloud commands describe ` +
+        `"${declared}" while the store page defaults to "${projects[0]}". (A ` +
+        `deployment whose resolver sets STRAD_PARAMS_PROJECT_ID overrides both.) ` +
+        `Drop the leftover SECRETS_PROJECT_ID, or make it name the default store.`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * `consoleStores:` namespaces that overlap ACROSS two secrets slugs. See the
+ * call site.
+ *
+ * The schema refuses an overlap between two stores on ONE server. It cannot see
+ * this one, and `storeForPath` cannot tell them apart: it flattens every enabled
+ * secrets-looking server's stores into one candidate list and refuses a path two
+ * of them cover, whichever slugs those came from. So the identical runtime
+ * failure — a console write refused as ambiguous — is reachable across slugs,
+ * and prod is the shape that reaches it, since a bundle carries one secrets slug
+ * and a second store arrives as a second component.
+ *
+ * A WARNING and not the schema's hard error, and the reason is which config each
+ * would reject. Within one server the overlap is visible in one `consoleStores:`
+ * block and no deployment can plausibly want it. Across servers it is spread
+ * over two slugs written at different times, and a path both cover only fails
+ * when somebody writes to it — so a config could carry one today, work, and be
+ * refused by a new error at the next deploy. That is the failure this whole
+ * change is written to avoid, so it reports instead.
+ *
+ * Normalised before matching, for the reason the schema's version is: the
+ * trailing slash is what ends a path segment, and `storeForPath` normalises too.
+ */
+function crossServerNamespaceOverlap(config: StradConfig): string[] {
+  const claimed: {
+    ns: string;
+    written: string;
+    slug: string;
+    project: string;
+  }[] = [];
+  const messages: string[] = [];
+
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    for (const store of server.consoleStores) {
+      for (const written of store.namespaces) {
+        const ns = normaliseNamespace(written);
+        for (const prior of claimed) {
+          // Same server is the schema's job, and it errors on it.
+          if (prior.slug === server.slug) continue;
+          if (!ns.startsWith(prior.ns) && !prior.ns.startsWith(ns)) continue;
+          messages.push(
+            `namespace "${written}" ("${server.slug}"/"${store.project}") and ` +
+              `"${prior.written}" ("${prior.slug}"/"${prior.project}") overlap, ` +
+              `on different slugs. storeForPath resolves a console write against ` +
+              `EVERY secrets slug's stores at once, so a path both cover is ` +
+              `refused as ambiguous at write time — the config parses, the ` +
+              `deploy is healthy, and a human typing that path gets a refusal. ` +
+              `Narrow one of them.`,
+          );
+        }
+        claimed.push({
+          ns,
+          written,
+          slug: server.slug,
+          project: store.project,
+        });
+      }
+    }
+  }
+  return messages;
 }
 
 /**
@@ -1082,6 +1312,26 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   // `SECRETS_PROJECT_ID` out of a merged environment at runtime, so what is
   // visible here is a config-shaped approximation of it rather than the answer.
   for (const message of storesWithNoConsole(config)) opts.onWarning?.(message);
+
+  // ONE ADMIN CREDENTIAL BEHIND TWO CONSOLE STORES.
+  //
+  // The schema refuses two entries that NAME one `adminKeyVar`, and refuses one
+  // whose `${REF}` any server's `env:` carries. It cannot refuse two different
+  // names carrying one ref, because that shape is sometimes correct — see
+  // `sharedConsoleAdminCredential` above. So it is said here instead.
+  for (const message of sharedConsoleAdminCredential(config)) {
+    opts.onWarning?.(message);
+  }
+
+  // A LEFTOVER `SECRETS_PROJECT_ID` OUTVOTING THE STORE LIST IT REPLACED.
+  for (const message of consoleProjectDisagreement(config)) {
+    opts.onWarning?.(message);
+  }
+
+  // AN OVERLAP THE SCHEMA CANNOT SEE, because it spans two slugs.
+  for (const message of crossServerNamespaceOverlap(config)) {
+    opts.onWarning?.(message);
+  }
 
   for (const [bundle, slugs] of unnameable) {
     opts.onWarning?.(
