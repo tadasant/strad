@@ -366,7 +366,7 @@ plus two that shape how this server gets its values:
   **Every store carries its own credential.** `adminKeyVar` is required per entry,
   and `check-config` rejects two entries that name the **same** one: two projects
   behind one identity is a strictly larger blast radius than the two identities it
-  replaces, so the collapse is inexpressible rather than merely discouraged.
+  replaces, so the collapse cannot be written as one shared key name.
 
   Two entries whose **different** names resolve to one `${REF}` is the same
   collapse, and it is a **warning** rather than a refusal — because that shape is

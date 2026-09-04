@@ -356,6 +356,58 @@ describe("consoleStores: two stores may not claim one path", () => {
     ).toEqual([]);
   });
 
+  it("does not mistake a shared string prefix for a shared path", () => {
+    // `/strad/prod` and `/strad/production/` share a string prefix and no PATH:
+    // the trailing slash is what ends a segment, and `storeForPath` normalises
+    // before it matches. A raw startsWith here would refuse a config the
+    // console resolves perfectly well.
+    expect(
+      problems(
+        config({
+          stores: [
+            {
+              project: "strad-secrets-prod",
+              namespaces: ["/strad/prod"],
+              adminKeyVar: "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+            },
+            {
+              project: "zimmer-secrets-prod",
+              namespaces: ["/strad/production/"],
+              adminKeyVar:
+                "ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+            },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("still catches an overlap written with an inconsistent trailing slash", () => {
+    // The other half of normalising: `/strad/prod` (no slash) and
+    // `/strad/prod/mcp/` DO share a path, and the missing slash must not hide
+    // it. The message quotes the namespaces as WRITTEN, not as normalised.
+    const [message] = problems(
+      config({
+        stores: [
+          {
+            project: "strad-secrets-prod",
+            namespaces: ["/strad/prod"],
+            adminKeyVar: "SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+          },
+          {
+            project: "zimmer-secrets-prod",
+            namespaces: ["/strad/prod/mcp/"],
+            adminKeyVar:
+              "ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON",
+          },
+        ],
+      }),
+    );
+    expect(message).toContain("overlap under consoleStores:");
+    expect(message).toContain('"/strad/prod"');
+    expect(message).toContain('"/strad/prod/mcp/"');
+  });
+
   it("allows sibling namespaces that merely share a parent", () => {
     expect(
       problems(

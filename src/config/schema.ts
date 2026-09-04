@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { refsIn } from "../secrets/provider/resolve.ts";
+import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 
 /**
  * The strad configuration interface.
@@ -1346,7 +1347,8 @@ export const StradConfig = z
 
       const seen = new Set<string>();
       const seenAdminKeyVar = new Map<string, string>();
-      const claimed: { ns: string; project: string }[] = [];
+      /** `ns` is normalised for comparison; `written` is what to quote back. */
+      const claimed: { ns: string; written: string; project: string }[] = [];
       for (const store of s.consoleStores) {
         // The `?project=` selector addresses a store by its project id. Two
         // entries with the same id is one store the page can never reach, and
@@ -1443,15 +1445,26 @@ export const StradConfig = z
         // rendered, deployed and looked healthy. `namespacesStrict` does not
         // change it either way — it bounds CREATE within a store and says
         // nothing about which store a path selects.
+        //
+        // COMPARED AS `storeForPath` COMPARES THEM, i.e. normalised. A raw
+        // prefix test on the written strings answers a different question:
+        // `/strad/prod` and `/strad/production/` share a string prefix and
+        // share no PATH, because the trailing slash is what ends a segment.
+        // Refusing that pair would be this rule rejecting a config the console
+        // resolves perfectly well — the failure mode a new hard error can least
+        // afford. `storeForPath` normalises before it matches; so does this.
         for (const ns of store.namespaces) {
+          const here = normaliseNamespace(ns);
           for (const prior of claimed) {
             if (prior.project === store.project) continue;
-            if (!ns.startsWith(prior.ns) && !prior.ns.startsWith(ns)) continue;
+            if (!here.startsWith(prior.ns) && !prior.ns.startsWith(here)) {
+              continue;
+            }
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message:
                 `server "${s.slug}": namespace "${ns}" ("${store.project}") and ` +
-                `"${prior.ns}" ("${prior.project}") overlap under consoleStores:, ` +
+                `"${prior.written}" ("${prior.project}") overlap under consoleStores:, ` +
                 `so a parameter path could address either store. The console ` +
                 `refuses such a path at write time (storeForPath), so the first ` +
                 `symptom would be a console write failing rather than a config ` +
@@ -1459,7 +1472,7 @@ export const StradConfig = z
               path: ["servers"],
             });
           }
-          claimed.push({ ns, project: store.project });
+          claimed.push({ ns: here, written: ns, project: store.project });
         }
       }
 

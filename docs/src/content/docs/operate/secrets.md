@@ -2170,7 +2170,7 @@ here nobody would diagnose.
 
 **One admin key per store, always.** `adminKeyVar` is required on every entry, and
 `check-config` rejects two entries naming the same one — so "the same service
-account for all of these" is inexpressible, not merely discouraged. Two projects
+account for all of these" cannot be written as one shared key name. Two projects
 behind one identity is a strictly larger blast radius than the two identities it
 replaces, and the two-identity split on this deployment was chosen deliberately.
 
