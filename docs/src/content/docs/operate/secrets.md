@@ -1402,10 +1402,10 @@ are rendered by two different pieces of `src/ui/index-page.ts`, and they ask one
 predicate — `hasFixDialog()` — rather than each deciding for itself. It is
 derived from what the popout will actually render, requirement rows or an
 unobservable scope, so the two cannot disagree about a state neither anticipated,
-and **both** badge colours consult it. They used to decide separately and only
-the `READY` branch asked: an entry with an `ISSUE` badge and no requirement rows
-got the button and not the panel, so the click was swallowed in silence. That is
-the `params: true` shape below, and it was live on `craigslist` in production.
+and **both** badge colours consult it. One predicate rather than two is the whole
+of the guarantee: a button whose `data-fix-open` names an id nobody emitted is a
+click into silence, which is what a badge over an empty panel degrades to. See
+[limitation #35](/limitations/) for the shape that hit it in production.
 
 ### `cannot render`: the parameter is there and the value will not come out
 
@@ -1557,10 +1557,8 @@ manifest, or a deploy that resolved none — the `unverified` sentence stands,
 because nothing established anything.
 
 That entry has **zero requirement rows**, and it is the one the console can say
-the least about — which for a long time meant its popout was empty, and then that
-it had no popout at all while still rendering the button. It now opens on a panel
-built from the probe outcome rather than from a row, and it answers the three
-questions a reader has:
+the least about. Its popout is built from the probe outcome rather than from a
+row, and it answers the three questions a reader has:
 
 | The panel says               | Where it comes from                                                                                                               |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -1568,14 +1566,19 @@ questions a reader has:
 | **why** it went unanswered   | the probe outcome, in four flavours (below). A pin bump and an outage are not the same news.                                      |
 | **where to look instead**    | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix. |
 
-The four reasons, which want four different responses:
+The reasons, which want different responses — three about the component, and two about what it said:
 
-| Reason        | The probe outcome                                           | What closes it                                                          |
-| ------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `unwired`     | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked    | bind it in the app spec                                                 |
-| `unsupported` | the component answered `404` — an image predating the route | rebuild and repin that component's image                                |
-| `unreachable` | the component could not be reached at all                   | an outage to chase on its own account; it serves nothing either         |
-| `silent`      | it answered and named no parameters for this slug           | nothing is seeded under the namespace, or the last deploy resolved none |
+| Reason         | The probe outcome                                                                                                                                                | What closes it                                                                                                           |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `unwired`      | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked                                                                                                         | bind it in the app spec                                                                                                  |
+| `unsupported`  | the component answered `404` or `405` — an image predating the presence route                                                                                    | rebuild and repin that component's image                                                                                 |
+| `unreachable`  | it did not answer, or refused. Not always an outage: a `401`/`403` is core and the component holding different `STRAD_INTERNAL_TOKEN`s, and the panel says which | chase the component itself first — one core cannot talk to is not answering core's requests either                       |
+| `unmanifested` | it answered and named no managed parameters for this slug at all — no entry, not an empty list                                                                   | redeploy that component; its `STRAD_PARAM_KEYS` predates this slug's `params: true`, and it says nothing about the store |
+| `silent`       | it manifested its parameters and listed none under this slug                                                                                                     | seed the namespace — the last render found nothing beneath it                                                            |
+
+The last two look alike and want opposite first moves, which is why they are two. Telling an operator to seed a value on the strength of a stale manifest is how a working credential gets rewritten.
+
+The scope is only ever set for a `supplementary-image` server, because it is the only kind whose managed parameters live on a component this process is not. A `params: true` **builtin** runs inside core and resolves its own through the resolver's TTL, per call — there is no `${core.PRIVATE_URL}` to bind and no container to redeploy, so every sentence above would be false about it. It gets no panel, and its badge degrades to inert text rather than opening one that lies. Explaining that shape honestly is [#264](https://github.com/tadasant/strad/issues/264).
 
 The panel is still not a green. Nothing here was observed, the state stays
 `unverified`, and the badge stays `ISSUE` — the change is that the badge now

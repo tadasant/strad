@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
+import type { BundleProbeOutcome } from "../src/gateway/bundle-presence.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import {
@@ -1366,6 +1367,127 @@ describe("GET /secrets in bundle mode", () => {
     });
     expect(res.status).toBe(404);
     s.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The scope behind a zero-requirement ISSUE entry
+// ---------------------------------------------------------------------------
+
+/**
+ * A `params: true` server produces NO requirement rows when nothing manifested
+ * its parameters, and the popout behind its `ISSUE` badge is built entirely from
+ * `status.unobservable`. Every sentence in that panel is a claim about a
+ * component, so each probe outcome has to map to the right one — a panel that
+ * says "redeploy" where the answer is "seed it" is worse than the dead control
+ * it replaced.
+ */
+describe("deriveServerStatuses — the unobservable scope", () => {
+  const cfg = (extra = "") =>
+    parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+${extra}`);
+
+  const report = (paramKeys: Record<string, string[]> | null) => ({
+    protocol: 1,
+    component: "bundle-internal",
+    image: null,
+    bootedAt: "2026-01-01T00:00:00.000Z",
+    observedAt: "2026-01-01T00:00:00.000Z",
+    keys: {},
+    paramKeys,
+  });
+
+  const scopeFor = (probe?: BundleProbeOutcome) => {
+    const presence = probe
+      ? { probes: new Map([["bundle-internal", probe]]) }
+      : undefined;
+    const [s] = deriveServerStatuses(cfg(), [], presence);
+    expect(s!.state).toBe("unverified");
+    expect(s!.requirements).toHaveLength(0);
+    return s!.unobservable;
+  };
+
+  it("is `unwired` when no private URL was bound", () => {
+    const scope = scopeFor({ kind: "unwired" });
+    expect(scope?.reason).toBe("unwired");
+    expect(scope?.component).toBe("bundle-internal");
+    expect(scope?.namespace).toBe("/strad/test/mcp/craigslist/static/");
+    expect(scope?.detail).toContain("PRIVATE_URL");
+  });
+
+  it("is `unsupported` — a pin bump, explicitly not an outage", () => {
+    const scope = scopeFor({ kind: "unsupported", detail: "404" });
+    expect(scope?.reason).toBe("unsupported");
+    expect(scope?.detail).toContain("PIN BUMP");
+    expect(scope?.detail).toContain("up and serving");
+  });
+
+  it("is `unreachable`, and carries the probe's own diagnosis", () => {
+    const scope = scopeFor({
+      kind: "unreachable",
+      detail: "REFUSED the token",
+    });
+    expect(scope?.reason).toBe("unreachable");
+    expect(scope?.detail).toContain("REFUSED the token");
+  });
+
+  it("distinguishes a component that manifested NOTHING from one that listed none HERE", () => {
+    // The distinction that matters, because the two want opposite first moves.
+    // No manifest at all — a stale spec — must never tell anyone to seed.
+    for (const paramKeys of [null, { other: ["OTHER_KEY"] }]) {
+      const scope = scopeFor({ kind: "ok", report: report(paramKeys) });
+      expect(scope?.reason).toBe("unmanifested");
+      expect(scope?.detail).toContain("Redeploy");
+      expect(scope?.detail).toContain("do NOT seed");
+    }
+    // An empty list FOR THIS SLUG is the store being empty, and that one does.
+    const scope = scopeFor({ kind: "ok", report: report({ craigslist: [] }) });
+    expect(scope?.reason).toBe("silent");
+    expect(scope?.detail).toContain("nothing is seeded");
+    expect(scope?.detail).not.toContain("Redeploy");
+  });
+
+  it("treats a bundle that was never probed as unwired, not as an answer", () => {
+    expect(scopeFor(undefined)?.reason).toBe("unwired");
+  });
+
+  it("is ABSENT for a `params: true` builtin, whose params core resolves itself", () => {
+    // The panel's every sentence is about a component core is not. A builtin's
+    // bundle defaults to `core`, its managed parameters are resolved in-process
+    // through the resolver TTL, and there is no ${core.PRIVATE_URL} to bind and
+    // no container to redeploy — so a scope here would be confidently wrong.
+    const builtin = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+`);
+    const [s] = deriveServerStatuses(builtin, []);
+    expect(s!.state).toBe("unverified");
+    expect(s!.requirements).toHaveLength(0);
+    expect(s!.unobservable).toBeUndefined();
   });
 });
 

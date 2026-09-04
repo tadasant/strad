@@ -624,8 +624,11 @@ describe("GET /ui — an ISSUE badge is never a dead control", () => {
     // colour, across both fixtures.
     for (const page of [managed, html]) {
       const buttons = [
+        // `[^>]*?` keeps the match INSIDE the opening tag. `[\s\S]*?` would run
+        // past it, so a chip-button rendered with no data-fix-open would pair
+        // with the NEXT button's id and this assertion would pass anyway.
         ...page.matchAll(
-          /<button class="chip chip-(ok|bad) chip-badge chip-button"[\s\S]*?data-fix-open="([^"]+)"/g,
+          /<button class="chip chip-(ok|bad) chip-badge chip-button"[^>]*?data-fix-open="([^"]+)"/g,
         ),
       ];
       expect(buttons.length).toBeGreaterThan(0);

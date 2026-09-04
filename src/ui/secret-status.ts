@@ -1354,16 +1354,26 @@ export interface ServerSecretStatus {
 /**
  * Why an entry could not be checked, said in specifics rather than as a shrug.
  *
- * `reason` is the probe outcome, and the four are not one problem: `unsupported`
- * is a pin to bump, `unreachable` is an outage, `unwired` is a spec that never
- * bound the component's private URL, and `silent` is a component that answered
- * and named no parameters for this slug — which is the one that means the deploy
- * resolved none, i.e. the namespace is probably empty.
+ * `reason` is the probe outcome, and the five are not one problem. Three are
+ * about the component: `unwired` is a spec that never bound its private URL,
+ * `unsupported` is a pin to bump, `unreachable` is a component core cannot talk
+ * to. Two are about what it said, and they want OPPOSITE first moves —
+ * `unmanifested` is a component that named no parameters AT ALL for anyone, so
+ * the answer is to redeploy it; `silent` is one that named none for THIS slug
+ * while manifesting others, so the answer is that the namespace is empty and
+ * wants seeding. Collapsing those two sends an operator to seed a value that is
+ * already there.
+ *
+ * ONLY EVER SET FOR A `supplementary-image` SERVER, which is the only kind whose
+ * managed parameters live on a component this process is not. A `params: true`
+ * builtin resolves its own in-process, per call, through the resolver — every
+ * sentence below would be false about it, and a confidently wrong panel is worse
+ * than the dead control this replaced.
  */
 export interface UnobservableScope {
   /** The App Platform component that holds the value. Never `core`. */
   component: string;
-  reason: "unwired" | "unsupported" | "unreachable" | "silent";
+  reason: "unwired" | "unsupported" | "unreachable" | "unmanifested" | "silent";
   /** One sentence: what was asked, what answered, and what would change it. */
   detail: string;
   /** The static namespace this server's managed parameters live under. */
@@ -1516,30 +1526,37 @@ function managedParamObservations(
 }
 
 /**
- * WHICH of the four ways the managed-parameter question went unanswered.
+ * WHICH of the ways the managed-parameter question went unanswered.
  *
  * `managedParamObservations` returns nothing in every one of these cases and the
  * entry falls back to the shrug. The shrug is still the right STATE — none of
  * these is evidence a value resolves — but it is not the whole of what this
  * process knows, and the difference between "bump the pin" and "the component is
  * down" is the entire content of the panel a reader opens the badge for.
+ *
+ * `supplementary-image` ONLY, and the guard is the load-bearing line rather than
+ * a type narrowing. `params:` is also a field on a builtin, whose bundle
+ * defaults to `core` — and a builtin's managed parameters are resolved by THIS
+ * process, per call, through the resolver's TTL. There is no `${core.PRIVATE_URL}`
+ * to bind, no component to redeploy, and no sense in which the value is invisible
+ * from here, so every sentence below would be false about it. It gets no scope,
+ * and `hasFixDialog` degrades its badge to inert text rather than opening a panel
+ * that lies. Explaining that shape honestly is #264.
  */
 function unobservableScope(
   config: StradConfig,
   server: ServerConfig,
   presence?: BundlePresence,
 ): UnobservableScope | undefined {
-  if (isUnhosted(server)) return undefined;
+  if (server.kind !== "supplementary-image") return undefined;
   const component = server.bundle;
   const namespace = staticNamespace(config.gateway.env, server.slug);
-  const base = {
-    component,
-    namespace,
-  };
+  const base = { component, namespace };
+  // `expectedKeys` enumerates every bundle holding a supplementary image, so a
+  // server of this kind is always probed and a missing entry means the same
+  // thing the outcome does: no private URL was bound for it.
   const outcome = presence?.probes.get(component);
 
-  // No probe at all is the same fact as a component with no private URL bound:
-  // nothing asked, and the reason is the spec rather than the component.
   if (!outcome || outcome.kind === "unwired") {
     return {
       ...base,
@@ -1569,19 +1586,39 @@ function unobservableScope(
       reason: "unreachable",
       detail:
         `"${component}" could not be reached from this process, so nothing about it was ` +
-        `established. That is an outage or a network fault to chase on its own account — ` +
-        `whatever it says about the secrets, a component core cannot reach is not serving ` +
-        `requests either. (${outcome.detail})`,
+        `established. Chase that on its own account before the secrets: whatever it says ` +
+        `about them, a component core cannot talk to is not answering core's requests ` +
+        `either. (${outcome.detail})`,
+    };
+  }
+
+  // It answered. Two very different silences, and they want opposite first
+  // moves: a component that manifested NO parameters for anyone has a stale
+  // spec, and one that manifested others but none for this slug has an empty
+  // namespace. Telling the first to seed a value is how a present credential
+  // gets rewritten.
+  const manifest = outcome.report.paramKeys;
+  if (!manifest || !manifest[server.slug]) {
+    return {
+      ...base,
+      reason: "unmanifested",
+      detail:
+        `"${component}" answered and named no managed parameters for this server — not an ` +
+        `empty list, no entry at all. The deploy bakes what it resolved into ` +
+        `STRAD_PARAM_KEYS, so the running component is holding a spec rendered before this ` +
+        `slug had \`params: true\`, or one whose manifest it cannot read. Redeploy that ` +
+        `component; do NOT seed on the strength of this, because it says nothing about ` +
+        `what the store holds.`,
     };
   }
   return {
     ...base,
     reason: "silent",
     detail:
-      `"${component}" answered and named NO parameters for this server. The deploy bakes ` +
-      `every managed parameter it resolved into STRAD_PARAM_KEYS, so an empty list is the ` +
-      `component saying the last render found nothing under this namespace — which usually ` +
-      `means nothing is seeded there yet, and always means nothing was injected.`,
+      `"${component}" answered, manifested its managed parameters, and listed NONE under ` +
+      `this server. That is the component reporting that the last render found nothing ` +
+      `beneath this namespace — so nothing was injected, and the usual reason is that ` +
+      `nothing is seeded there yet.`,
   };
 }
 

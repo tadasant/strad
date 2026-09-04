@@ -684,19 +684,20 @@ ${
  * thing instead — WHICH component holds the value, WHY this process could not
  * ask it, and WHERE to look rather than here.
  *
- * Empty for an entry that has rows: those say it better, per name.
+ * Keyed off `unobservable` alone rather than off the row count as well: the
+ * scope is only ever set on the zero-row branch, and asking twice is the same
+ * rule in two places, which is what `hasFixDialog` exists to stop.
  */
 function unobservableBlock(
   status: ServerSecretStatus,
   config: StradConfig,
   env: NodeJS.ProcessEnv,
 ): string {
-  if (status.requirements.length > 0) return "";
   const scope = status.unobservable;
   if (!scope) return "";
   return `      <div class="sec-req">
         <div class="sec-req-head">
-          <code class="sec-var">${esc(scope.component)}</code>
+          <code class="sec-component">${esc(scope.component)}</code>
           <span class="chip chip-plain chip-route">not visible here</span>
           <span class="sec-delivery">${esc(UNOBSERVABLE_LABEL[scope.reason])}</span>
         </div>
@@ -710,12 +711,13 @@ ${fixBlock(
       </div>`;
 }
 
-/** The probe outcome, in the two or three words that go beside the chip. */
+/** The probe outcome, in the few words that go beside the chip. */
 const UNOBSERVABLE_LABEL: Record<UnobservableScope["reason"], string> = {
   unwired: "no private URL bound",
   unsupported: "image predates the presence route",
-  unreachable: "component unreachable",
-  silent: "component named no parameters",
+  unreachable: "component did not answer",
+  unmanifested: "component manifested no parameters",
+  silent: "component listed none for this slug",
 };
 
 const SECRET_CHIP_CLASS: Record<SecretState, string> = {
@@ -1157,6 +1159,10 @@ const INDEX_CSS = `<style>
 .sec-req{border-top:1px solid var(--g6);padding:.85rem 0 .3rem}
 .sec-req-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
 .sec-var{color:#e0a63b;font-size:.8rem}
+/* A COMPONENT name, not a variable. Deliberately not .sec-var's amber: that slot
+   holds a variable everywhere else on this page, and a reader who has opened one
+   popout would read this one as a secret nobody named. */
+.sec-component{color:var(--g3);font-size:.8rem}
 .sec-delivery{font-family:var(--font-mono);font-size:.7rem;color:var(--g4);
   text-transform:uppercase;letter-spacing:.05em}
 /* The secret-source badge. Same two labels Zimmer's Connectors page uses, so the
