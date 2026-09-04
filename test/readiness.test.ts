@@ -471,6 +471,90 @@ servers:
   });
 });
 
+describe("readiness on a name that is both a reference and a parameter", () => {
+  // TWO CLAIMS, TWO ENTRIES, AND THEY MUST NOT BE INDISTINGUISHABLE. A `params:
+  // true` server can declare `${FOO}` while its component manifests a managed
+  // parameter also called `FOO`, and both reach the roster (#280). In the JSON
+  // that is two objects under one `name`, so `managed` discriminates them and
+  // carries the only route that is true for a parameter: its server's static
+  // namespace, never the gateway namespace and never `strad-<env>-FOO`.
+  const cfg = parseConfig(`
+version: 1
+gateway: { name: strad, env: ${ENV_NAME} }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    env: { SOME_KEY: "\${FOO}" }
+`);
+
+  it("tells the two entries apart, and routes each to its own resource", () => {
+    const [status] = deriveServerStatuses(
+      cfg,
+      [
+        {
+          requirement: {
+            name: "FOO",
+            deliveries: ["bundle"],
+            slugs: ["craigslist"],
+            consoleKeys: [],
+            paramsSlugs: ["craigslist"],
+          },
+          state: "missing",
+          source: "GSM",
+          detail: "not seeded",
+          evidence: { by: "store" },
+        },
+      ],
+      {
+        probes: new Map([
+          [
+            "bundle-internal",
+            {
+              kind: "ok",
+              report: {
+                protocol: 1,
+                component: "bundle-internal",
+                image: null,
+                bootedAt: "2026-01-01T00:00:00.000Z",
+                observedAt: "2026-01-01T00:00:00.000Z",
+                keys: { FOO: { presence: "absent", reason: null } },
+                paramKeys: { craigslist: ["FOO"] },
+              },
+            },
+          ],
+        ]),
+      },
+    );
+    const report = buildReadiness({
+      config: cfg,
+      env: ENV,
+      reading: { statuses: [status!], boot: [], storeDiagnosis: null },
+    });
+
+    const secrets = report.issues[0]!.secrets;
+    expect(secrets).toHaveLength(2);
+    const reference = secrets.find((x) => !x.managed)!;
+    const managed = secrets.find((x) => x.managed)!;
+    expect(reference.name).toBe("FOO");
+    expect(managed.name).toBe("FOO");
+    // The reference keeps both of its real routes.
+    expect(reference.path).toBe("/strad/test/gateway/static/FOO");
+    expect(reference.secretManagerName).toBe("strad-test-FOO");
+    // The parameter has exactly one home, and neither of those is it.
+    expect(managed.path).toBe("/strad/test/mcp/craigslist/static/FOO");
+    expect(managed.secretManagerName).toBeUndefined();
+  });
+});
+
 describe("readiness when the backend is down", () => {
   it("degrades to ready:false with `unknown`, NOT to a wall of 'not seeded'", async () => {
     // The one failure mode that would make this endpoint worse than nothing: a

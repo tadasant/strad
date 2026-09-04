@@ -1821,6 +1821,271 @@ servers:
   });
 });
 
+describe("deriveServerStatuses — a managed parameter that shares a name", () => {
+  // TWO CLAIMS ABOUT ONE NAME, AND ONE OF THEM USED TO BE DISCARDED (#280).
+  //
+  // A `params: true` server declares `${FOO}` and its component manifests a
+  // managed parameter also called `FOO`. Those are not the same claim: the
+  // reference row says this deployment can resolve a value out of the gateway
+  // namespace, and the component's row says whether the running container holds
+  // a variable of that name. One `seen` set shared between the two passes let
+  // the reference row claim the name and dropped the component's report, so the
+  // entry read READY over a component saying it holds nothing.
+  const cfg = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    env: { SOME_KEY: "\${FOO}" }
+`);
+
+  /** The `${FOO}` reference, as the store answered for it. */
+  const ref = (state: SecretObservation["state"]): SecretObservation => ({
+    requirement: requirement("FOO", {
+      deliveries: ["bundle"],
+      slugs: ["craigslist"],
+      paramsSlugs: ["craigslist"],
+    }),
+    state,
+    source: "GSM",
+    detail: "",
+    evidence: { by: "store" },
+  });
+
+  /** The component, manifesting `FOO` as a managed parameter of this slug. */
+  const manifesting = (presence: "present" | "absent") => ({
+    probes: new Map<string, BundleProbeOutcome>([
+      [
+        "bundle-internal",
+        {
+          kind: "ok",
+          report: {
+            protocol: 1,
+            component: "bundle-internal",
+            image: null,
+            bootedAt: "2026-01-01T00:00:00.000Z",
+            observedAt: "2026-01-01T00:00:00.000Z",
+            keys: { FOO: { presence, reason: null } },
+            paramKeys: { craigslist: ["FOO"] },
+          },
+        },
+      ],
+    ]),
+  });
+
+  it("does not read READY when the component contradicts the resolving ref", () => {
+    // The costly direction, and the one this whole entry exists for: the store
+    // resolves `${FOO}`, the component reports no `FOO` at all, and the badge
+    // used to be green off the first of those.
+    const [s] = deriveServerStatuses(
+      cfg,
+      [ref("present")],
+      manifesting("absent"),
+    );
+    expect(s!.state).toBe("missing");
+    expect(badgeFor(s!.state)).toBe("ISSUE");
+    // BOTH rows survive: the resolving reference is still true and still shown.
+    expect(s!.requirements).toHaveLength(2);
+    expect(s!.requirements.map((r) => r.state).sort()).toEqual([
+      "missing",
+      "present",
+    ]);
+    expect(s!.requirements.filter((r) => r.requirement.managed)).toHaveLength(
+      1,
+    );
+    // TWO requirements, and the bad one says which claim it is. Two values at
+    // two paths is what a reader is being told to seed, and "FOO, FOO" would
+    // read as the page repeating itself.
+    expect(s!.summary).toBe(
+      "1 of 2 required secrets not seeded: FOO (managed parameter).",
+    );
+  });
+
+  it("ranks the contradiction the other way round too", () => {
+    // The mirror: the component holds a value and the reference the deploy
+    // renders from does not resolve. A precedence that trusted the container
+    // would have discarded this one, which is why neither side gets one.
+    const [s] = deriveServerStatuses(
+      cfg,
+      [ref("missing")],
+      manifesting("present"),
+    );
+    expect(s!.state).toBe("missing");
+    expect(s!.requirements).toHaveLength(2);
+  });
+
+  it("does NOT over-demote when both sources agree the value is there", () => {
+    // The guard against the fix becoming its own false red: two agreeing
+    // observations are still two `present` rows, and the entry is READY.
+    const [s] = deriveServerStatuses(
+      cfg,
+      [ref("present")],
+      manifesting("present"),
+    );
+    expect(s!.state).toBe("ready");
+    expect(badgeFor(s!.state)).toBe("READY");
+    expect(s!.requirements).toHaveLength(2);
+    expect(s!.unobservable).toBeUndefined();
+    // Two requirements, because there are two values: the reference resolved
+    // from the gateway namespace and the parameter under this server's own.
+    expect(s!.summary).toContain("All 2 required secrets resolve");
+  });
+
+  it("keeps a `mayBeUnseeded` waiver off the component's report", () => {
+    // A WAIVER IS ABOUT A `${NAME}`. `mayBeUnseeded:` is validated against the
+    // names a server REFERENCES, so a waived name can only ever collide with a
+    // managed parameter — and every clause of the `unconfigured` sentence would
+    // be false about that row: nothing was deferred, no TTL activates it, and it
+    // lands at the next deploy rather than on write. Relabelling it a deferral
+    // would also sort it BELOW real absences in /api/secrets/readiness.
+    const waived = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    mayBeUnseeded: [FOO]
+    env: { SOME_KEY: "\${FOO}" }
+`);
+    const [s] = deriveServerStatuses(
+      waived,
+      [ref("present")],
+      manifesting("absent"),
+    );
+    expect(s!.state).toBe("missing");
+    expect(s!.summary).toContain("FOO (managed parameter)");
+    expect(s!.summary).not.toContain("mayBeUnseeded");
+  });
+
+  it("counts the two claims apart from an unrelated name", () => {
+    // The count is of CLAIMS, and it has to stay one: a name whose reference
+    // resolves must not be swept into "N of N not seeded" by its managed
+    // namesake, and the name that IS unseeded on both counts must say so twice.
+    const two = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    env: { SOME_KEY: "\${FOO}", OTHER_KEY: "\${BAR}" }
+`);
+    const bar: SecretObservation = {
+      requirement: requirement("BAR", {
+        deliveries: ["bundle"],
+        slugs: ["craigslist"],
+      }),
+      state: "missing",
+      source: "GSM",
+      detail: "",
+      evidence: { by: "store" },
+    };
+    const [s] = deriveServerStatuses(
+      two,
+      [ref("present"), bar],
+      manifesting("absent"),
+    );
+    expect(s!.state).toBe("missing");
+    expect(s!.requirements).toHaveLength(3);
+    // THREE requirements, TWO of them outstanding — and `${FOO}`, which
+    // demonstrably resolves, is not one of them.
+    expect(s!.summary).toBe(
+      "2 of 3 required secrets not seeded: BAR, FOO (managed parameter).",
+    );
+  });
+
+  it("sends the two rows to two different resources when both are unseeded", () => {
+    // The load-bearing claim behind rendering both: they are seeded in two
+    // different places. The reference is a gateway-namespace name with a Secret
+    // Manager route; the managed parameter lives only under this server's static
+    // namespace and has neither.
+    const [status] = deriveServerStatuses(
+      cfg,
+      [ref("missing")],
+      manifesting("absent"),
+    );
+    const html = renderIndex({
+      config: cfg,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: {},
+      boot: [],
+    });
+    const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
+    expect(dialog).toContain("/strad/test/mcp/craigslist/static/FOO");
+    expect(dialog).toContain("strad-test-FOO");
+    expect(status!.summary).toBe(
+      "2 of 2 required secrets not seeded: FOO, FOO (managed parameter).",
+    );
+  });
+
+  it("tells the two rows apart in the popout", () => {
+    // Two rows under one name are only useful if a reader can see WHICH claim
+    // each one is making. The reference renders as `${FOO}`; the managed
+    // parameter renders as the variable it is, with a chip saying so.
+    const [status] = deriveServerStatuses(
+      cfg,
+      [ref("present")],
+      manifesting("absent"),
+    );
+    const html = renderIndex({
+      config: cfg,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: {},
+      boot: [],
+    });
+    const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
+    expect(dialog).toContain('<code class="sec-var">${FOO}</code>');
+    expect(dialog).toContain('<code class="sec-var">FOO</code>');
+    expect(dialog).toContain("managed parameter");
+    // Worst first: the component's bad news is the row a reader hits first.
+    expect(dialog.indexOf('<code class="sec-var">FOO</code>')).toBeLessThan(
+      dialog.indexOf('<code class="sec-var">${FOO}</code>'),
+    );
+    // And it is guided to the namespace that actually holds it, not to the
+    // gateway namespace a `${NAME}` would be seeded in.
+    expect(dialog).toContain("/strad/test/mcp/craigslist/static/FOO");
+  });
+});
+
 describe("the console cards on /", () => {
   it("offers ONE console card, not a second one for the secrets", async () => {
     const body = await (await fetch(`${baseUrl}/`, { headers: AUTH })).text();

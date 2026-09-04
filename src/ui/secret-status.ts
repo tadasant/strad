@@ -1336,7 +1336,12 @@ export interface ServerSecretStatus {
   label: string;
   /** One sentence for the row, derived from the worst requirement. */
   summary: string;
-  /** This server's requirements, deduplicated within the server. */
+  /**
+   * This server's requirements, deduplicated within each PASS rather than across
+   * the entry: one name can carry both a `${NAME}` reference row and a managed
+   * parameter row, which are two claims about two different things. Tell them
+   * apart by `requirement.managed`.
+   */
   requirements: SecretObservation[];
   /**
    * Present when a `params: true` server's managed parameters went UNCHECKED —
@@ -1638,11 +1643,33 @@ export function deriveServerStatuses(
   return config.servers
     .filter((s) => s.enabled)
     .map((server) => {
-      const seen = new Set<string>();
+      // TWO PASSES, TWO DEDUP SETS, AND THAT SEPARATION IS LOAD-BEARING.
+      // Deduplicating WITHIN a pass is what a `seen` set is for: one name
+      // declared twice in one `env:` block is one requirement, and one
+      // component manifesting a variable twice is one parameter. Arbitrating
+      // BETWEEN the passes is a different job, and a single set did it by
+      // accident — first pass claims the name, second pass skips it (#280).
+      //
+      // The two passes do not make the same claim about the same thing. A
+      // `${NAME}` row says this deployment can resolve a value for that
+      // reference out of the gateway namespace. A managed-parameter row says
+      // whether the RUNNING CONTAINER holds a variable of that name, as the
+      // component itself reported it. When a `params: true` server declares
+      // `${FOO}` and its component manifests a managed parameter also called
+      // `FOO`, both are true observations and either one can be the bad news.
+      //
+      // So both go to the worst-first reduce below and IT decides. A stated
+      // precedence was the alternative and it is the wrong shape here: whichever
+      // way it pointed, it would discard a live observation and buy a false
+      // green in that direction — the store resolving `${FOO}` while the
+      // container holds nothing, or the container holding `FOO` while the
+      // reference the deploy renders from does not resolve. Worst-first
+      // ranking exists precisely so no source's bad news has to be thrown away.
+      const seenRefs = new Set<string>();
       const requirements: SecretObservation[] = [];
       for (const { name } of requirementsOf(server)) {
-        if (seen.has(name)) continue;
-        seen.add(name);
+        if (seenRefs.has(name)) continue;
+        seenRefs.add(name);
         const observation = byName.get(name);
         if (observation) requirements.push(observation);
       }
@@ -1654,9 +1681,10 @@ export function deriveServerStatuses(
       // graded on them like anything else instead of being filed under "not
       // checked".
       const managedParams = managedParamObservations(server, presence);
+      const seenManaged = new Set<string>();
       for (const observation of managedParams) {
-        if (seen.has(observation.requirement.name)) continue;
-        seen.add(observation.requirement.name);
+        if (seenManaged.has(observation.requirement.name)) continue;
+        seenManaged.add(observation.requirement.name);
         requirements.push(observation);
       }
 
@@ -1769,9 +1797,21 @@ export function deriveServerStatuses(
       // undeclared one is the news and the row has to be labelled by the
       // strongest bad news it carries.
       const waived = waivers.get(server.slug) ?? new Set<string>();
+      //
+      // A WAIVER IS A STATEMENT ABOUT A `${NAME}`, NEVER ABOUT A MANIFESTED
+      // PARAMETER. `mayBeUnseeded:` is validated against the names a server
+      // REFERENCES (see waiversBySlug), so a waived name can only ever collide
+      // with a managed parameter of the same name — and every clause the
+      // `unconfigured` sentence goes on to make would be false about that row:
+      // nothing was deferred at deploy time, no TTL activates it, and it reaches
+      // the container at the next deploy rather than on write. So a managed row
+      // is never waivable, and a server whose only bad news is one stays
+      // `missing`.
       const state: ServerState =
         worst.state === "missing" &&
-        bad.every((r) => waived.has(r.requirement.name))
+        bad.every(
+          (r) => !r.requirement.managed && waived.has(r.requirement.name),
+        )
           ? "unconfigured"
           : FROM_SECRET_STATE[worst.state];
 
@@ -1790,36 +1830,53 @@ export function deriveServerStatuses(
     });
 }
 
+/**
+ * How a row's name reads in a summary sentence.
+ *
+ * A colliding name is TWO requirements, not one written twice: the `${NAME}` a
+ * deployment resolves out of the gateway namespace, and the managed parameter
+ * under this server's own — two values, at two paths, with two remediations
+ * (see fixTargets). So the count stays a count of ROWS, and the managed one
+ * says which it is. A bare "not seeded: FOO, FOO" would read as the page
+ * repeating itself over a name a reader then seeds once.
+ */
+function summaryName(observation: SecretObservation): string {
+  return observation.requirement.managed
+    ? `${observation.requirement.name} (managed parameter)`
+    : observation.requirement.name;
+}
+
 function summarise(
   state: ServerState,
   total: number,
   bad: SecretObservation[],
 ): string {
-  const names = bad.map((b) => b.requirement.name).join(", ");
+  const names = bad.map(summaryName).join(", ");
   // The NOUN agrees with `total` (it is "N required secrets" either way) and the
   // VERB agrees with whichever count the clause is about — `total` for the
-  // all-of-them sentence, `bad.length` for the N-of-M ones. Getting those from one
+  // all-of-them sentence, `badCount` for the N-of-M ones. Getting those from one
   // variable is how the page ended up printing "All 1 required secret resolve".
   const plural = total === 1 ? "secret" : "secrets";
-  const badIs = bad.length === 1 ? "is" : "are";
+  const badCount = bad.length;
+  const badIs = badCount === 1 ? "is" : "are";
   switch (state) {
     case "ready":
       return `All ${total} required ${plural} ${total === 1 ? "resolves" : "resolve"}. strad has not verified that any upstream accepts them.`;
     case "missing":
-      return `${bad.length} of ${total} required ${plural} not seeded: ${names}.`;
+      return `${badCount} of ${total} required ${plural} not seeded: ${names}.`;
     case "unconfigured":
       return (
-        `${bad.length} of ${total} required ${plural} not seeded yet: ${names}. ` +
-        `This server declares \`mayBeUnseeded\` for ${bad.length === 1 ? "it" : "them"}, ` +
+        `${badCount} of ${total} required ${plural} not seeded yet: ${names}. ` +
+        `This server declares \`mayBeUnseeded\` for ${badCount === 1 ? "it" : "them"}, ` +
         `so the deploy shipped it INACTIVE instead of failing — it starts serving ` +
         `on its own within a TTL of the value landing, with no redeploy.`
       );
     case "unrenderable":
-      return `${bad.length} of ${total} required ${plural} ${badIs} in the store and cannot be read: ${names}. Not absent — rotate the value.`;
+      return `${badCount} of ${total} required ${plural} ${badIs} in the store and cannot be read: ${names}. Not absent — rotate the value.`;
     case "placeholder":
       return `Seeded but evidently placeholder: ${names}. The upstream will reject calls while listing tools normally.`;
     case "unverified":
-      return `${bad.length} of ${total} required ${plural} cannot be checked from the console: ${names}.`;
+      return `${badCount} of ${total} required ${plural} cannot be checked from the console: ${names}.`;
     case "unknown":
       return `The secret backend could not be consulted for: ${names}. Status unknown, not absent.`;
     case "no-secrets":

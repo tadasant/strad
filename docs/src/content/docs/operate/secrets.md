@@ -1609,6 +1609,46 @@ The panel is still not a green. Nothing here was observed, the state stays
 `unverified`, and the badge stays `ISSUE` — the change is that the badge now
 leads somewhere.
 
+#### A name declared twice is two claims, and both are ranked
+
+Nothing stops a `params: true` server from declaring `${FOO}` in its `env:` while
+its component manifests a managed parameter also called `FOO` — naming a managed
+parameter after the credential the config already references is the natural thing
+to write, and neither the schema nor `config:check` says a word about it.
+
+Those are two observations about two different things. The `${NAME}` row says
+this deployment can **resolve** a value for that reference out of the gateway
+namespace. The managed-parameter row says whether the **running container** holds
+a variable of that name, as the component itself reported it. So the entry
+carries **both rows**, and the same worst-first ranking that grades everything
+else decides the badge. The store resolving `${FOO}` does not outrank a
+component saying it holds no `FOO`: a green earned by discarding the
+contradicting evidence is the false green this whole page exists to avoid. The
+reverse holds too — a container holding `FOO` does not cover for a reference that
+does not resolve.
+
+There is deliberately **no precedence** between them. Either direction would have
+to throw away a live observation, and whichever way it pointed it would buy a
+false green in that direction. Ranking both is the only reading under which no
+source's bad news is thrown away.
+
+The popout tells them apart: a reference renders as `${FOO}`, and a managed
+parameter renders as the variable it is — `FOO`, with a `managed parameter` chip
+— because their remediation is different and offering the wrong one sends a
+reader to create a resource that changes nothing about the row they are looking
+at. The count follows the same logic: a colliding name is **two** requirements
+and not one written twice, because there are two values to seed at two paths, so
+an entry reads "1 of 2 required secrets not seeded: FOO (managed parameter)"
+rather than the bare "FOO, FOO" that would read as the page repeating itself.
+
+Two things a colliding name does **not** get. A `mayBeUnseeded:` waiver is a
+statement about a `${NAME}` — the schema validates it against the names a server
+references — so it never covers the managed row beside it, and a server whose
+only outstanding credential is a manifested parameter stays `missing` rather than
+being relabelled the deferral it is not. And in `/api/secrets/readiness` the two
+entries carry the same `name`, so the managed one is marked `"managed": true` and
+routed to its own namespace; see below.
+
 ### The presence route: a component answering for itself
 
 `POST /_strad/presence`, on every component that holds secrets in its own process
@@ -1815,6 +1855,14 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
   ]
 }
 ```
+
+A secret entry carries `"managed": true` when it is a **managed parameter**
+rather than a `${NAME}` reference. Its `path` is then its server's static
+namespace (`/strad/<env>/mcp/<slug>/static/<NAME>`) and it has no
+`secretManagerName`, because neither the gateway namespace nor `strad-<env>-*` is
+a route to it. That flag is also what tells two entries apart where one name
+carries both claims, which is a shape `issues[].secrets` can hold: `name` alone
+is not a key.
 
 `state` on a server and on a secret takes any of the values in the table above,
 `unrenderable` included. The field is additive: `ready` keeps its meaning (a
