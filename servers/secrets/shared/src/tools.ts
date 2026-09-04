@@ -511,7 +511,7 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           // the operator hardcoded into that variable, or on the console's first
           // store, for every parameter including the ones in the other N-1.
           const found = secret ? resolve(secret) : undefined;
-          const url = consoleLink(config, secret, found?.store?.project);
+          const url = consoleLink(config, secret, found?.store);
           if (!url) {
             return error(
               "No console URL is configured for this server (SECRETS_CONSOLE_URL).",
@@ -522,14 +522,19 @@ export function registerTools(server: Server, deps: ToolDeps): void {
             project: found?.store?.project,
             // Said only when a store was asked for and not found, because that
             // is the case where the link is weaker than it looks. It is not an
-            // error: the console still opens, on the store its own
-            // configuration selects.
+            // error and it is not a complaint about the argument: a bare
+            // variable name is documented input, so the note says what to pass
+            // to do better rather than reporting a fault. It is worded for both
+            // ways `storeForPath` declines — no namespace claims the path, and
+            // (unreachable through config, refused rather than resolved) more
+            // than one does.
             note:
               secret && !found?.store
-                ? `"${secret}" is not a canonical path in a managed namespace ` +
-                  `(${describeNamespaces(stores)}), so this link cannot name a store. ` +
-                  "The console will open on the store its own configuration selects, " +
-                  "which may not be the one holding this value."
+                ? `"${secret}" does not address exactly one managed namespace ` +
+                  `(${describeNamespaces(stores)}), so this link cannot name a store — ` +
+                  "pass the canonical path and it will open on the store the value lives in. " +
+                  "As it stands the console opens on whichever store its own configuration " +
+                  "selects, which may not be the one holding this value."
                 : undefined,
             instructions:
               "Send this link to the human. They sign in with Google Workspace SSO and can add, " +
@@ -762,8 +767,22 @@ function writeDenial(
  * that already writes `param`, not a new one. The console's `consoleStores:` is
  * configured separately from this server's `mcpStores:`, so the id may name a
  * store the console does not front — and there `selectStore` falls back to its
- * first store rather than erroring, which is exactly the behaviour of a link that
- * never named a store at all.
+ * first store rather than erroring, which is the same landing a link that named
+ * no store at all would get. The one case the override loses information is a
+ * console fronting a project set DISJOINT from this server's, where the operator's
+ * constant named a store the console does have: no config in this repo is shaped
+ * that way, and the answer if one ever is would be to reconcile the two lists,
+ * because a link that names the wrong store is what this whole function is about.
+ *
+ * A `ns=` THE OVERRIDE ORPHANS IS DROPPED. `ns` is the console's namespace
+ * selector and a namespace belongs to exactly one store, so a configured
+ * `?project=A&ns=/strad/a/mcp/` whose project is rewritten to B leaves a namespace
+ * B does not manage. `selectNamespace` accepts free text unless a store sets
+ * `namespacesStrict`, so the console would list `/strad/a/mcp/` under project B —
+ * an empty table on a page that looks entirely correct, which is the exact failure
+ * this function exists to prevent, one query key over. Kept only when the resolved
+ * store claims it verbatim; dropped otherwise, which lands on that store's own
+ * first namespace.
  *
  * `SECRETS_CONSOLE_URL` IS FREE-FORM CONFIG AND MAY ALREADY CARRY A QUERY
  * STRING: `.../ui/secrets?project=zimmer-secrets-prod` is the shape a multi-store
@@ -788,7 +807,7 @@ function writeDenial(
 function consoleLink(
   config: SecretsConfig,
   param?: string,
-  project?: string,
+  store?: SecretsStore,
 ): string | undefined {
   if (!config.consoleUrl) return undefined;
   const raw = config.consoleUrl;
@@ -796,11 +815,11 @@ function consoleLink(
   try {
     url = new URL(raw);
   } catch {
-    // Nothing here is structure — it is a string an operator wrote — so the
-    // trailing-slash strip is the whole string's. The query has to be found
-    // without the URL parser: everything after the first `#` is a fragment and
-    // never reaches the console at all, so the split happens there first, and
-    // the query is whatever follows the first `?` in what is left.
+    // The URL parser is not available here, so the structure is found by hand,
+    // and it is found in the order a URL has it: everything after the first `#`
+    // is a fragment and never reaches the console, the query is whatever follows
+    // the first `?` in what is left, and the trailing-slash strip is the PATH's —
+    // the same three rules the parsed branch below gets for free.
     const hash = raw.indexOf("#");
     const head = hash === -1 ? raw : raw.slice(0, hash);
     const fragment = hash === -1 ? "" : raw.slice(hash);
@@ -808,7 +827,12 @@ function consoleLink(
     const base = (q === -1 ? head : head.slice(0, q)).replace(/\/+$/, "");
     const search = new URLSearchParams(q === -1 ? "" : head.slice(q + 1));
     if (param) search.set("param", param);
-    if (project) search.set("project", project);
+    if (store) {
+      search.set("project", store.project);
+      if (!store.namespaces.includes(search.get("ns") ?? "")) {
+        search.delete("ns");
+      }
+    }
     const query = search.toString();
     return `${base}${query ? `?${query}` : ""}${fragment}`;
   }
@@ -817,7 +841,12 @@ function consoleLink(
   // hash route is not what this ever meant.
   url.pathname = url.pathname.replace(/\/+$/, "");
   if (param) url.searchParams.set("param", param);
-  if (project) url.searchParams.set("project", project);
+  if (store) {
+    url.searchParams.set("project", store.project);
+    if (!store.namespaces.includes(url.searchParams.get("ns") ?? "")) {
+      url.searchParams.delete("ns");
+    }
+  }
   return url.toString();
 }
 

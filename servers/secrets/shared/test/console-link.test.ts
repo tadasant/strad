@@ -260,9 +260,57 @@ test("the trailing slash is stripped from the PATH, not from the string", async 
   );
   // A `?` or a `#` can follow the path, and the last character of a query value
   // or a hash route is not a trailing slash to eat. (The value under test is a
-  // key we do not write; `project` is asserted above.)
-  const q = await link("https://strad.tadasant.com/ui/secrets?ns=prod/", PARAM);
-  assert.equal(new URL(q.url!).searchParams.get("ns"), "prod/");
+  // key we neither write nor drop; `project` is asserted above.)
+  const q = await link("https://strad.tadasant.com/ui/secrets?view=prod/", PARAM);
+  assert.equal(new URL(q.url!).searchParams.get("view"), "prod/");
+});
+
+test("a `ns` the overridden project orphans is dropped", async () => {
+  // `ns` is the console's namespace selector and a namespace belongs to exactly
+  // one store, so rewriting `project` from A to B leaves an `ns` B does not
+  // manage — and `selectNamespace` takes free text unless the store sets
+  // `namespacesStrict`, so the console would list store A's namespace under
+  // store B. An empty table on a page that looks entirely correct: the same
+  // failure as the wrong store, one query key over.
+  const stale = await link(
+    `https://strad.tadasant.com/ui/secrets?project=proj-a&ns=${encodeURIComponent(NS_A)}`,
+    PARAM_B,
+    TWO_STORES,
+  );
+  const parsed = new URL(stale.url!).searchParams;
+  assert.equal(parsed.get("project"), "proj-b");
+  assert.equal(parsed.get("ns"), null);
+
+  // Kept when the resolved store really does manage it — dropping it there
+  // would throw away a usable default for nothing.
+  const good = await link(
+    `https://strad.tadasant.com/ui/secrets?project=proj-a&ns=${encodeURIComponent(NS_B)}`,
+    PARAM_B,
+    TWO_STORES,
+  );
+  assert.equal(new URL(good.url!).searchParams.get("ns"), NS_B);
+
+  // And with no store resolved there is no override, so there is nothing to
+  // orphan: the operator's pair stands as written.
+  const unresolved = await link(
+    `https://strad.tadasant.com/ui/secrets?project=proj-a&ns=${encodeURIComponent(NS_A)}`,
+    "TELEGRAM_SESSION",
+    TWO_STORES,
+  );
+  const kept = new URL(unresolved.url!).searchParams;
+  assert.equal(kept.get("project"), "proj-a");
+  assert.equal(kept.get("ns"), NS_A);
+
+  // The unparseable branch drops it too — it is the branch a relative console
+  // URL takes, and a relative URL is what carries a hand-written query.
+  const relative = await link(
+    `/ui/secrets?project=proj-a&ns=${encodeURIComponent(NS_A)}`,
+    PARAM_B,
+    TWO_STORES,
+  );
+  const rel = new URL(relative.url!, "https://strad.tadasant.com").searchParams;
+  assert.equal(rel.get("project"), "proj-b");
+  assert.equal(rel.get("ns"), null);
 });
 
 test("the parameter lands before a fragment, not inside it", async () => {
@@ -327,6 +375,46 @@ test("an unparseable console URL yields a link, not a thrown tool call", async (
     fragment.url,
     `/ui/secrets?param=${encodeURIComponent(PARAM)}&project=${PROJECT}#top`,
   );
+
+  // The structure is read in the order a URL has it, so a `?` INSIDE a fragment
+  // is not a query — appending to it would put both keys somewhere the console
+  // never sees, which is the fragment defect the parsed branch already avoids.
+  const questionInFragment = await link("/ui/secrets#top?x=1", PARAM);
+  assert.equal(
+    questionInFragment.url,
+    `/ui/secrets?param=${encodeURIComponent(PARAM)}&project=${PROJECT}#top?x=1`,
+  );
+
+  // The trailing-slash strip is the PATH's here too, and a bare `?` carries no
+  // query to preserve.
+  assert.equal(
+    (await link("/ui/secrets/?project=stale", PARAM)).url,
+    `/ui/secrets?project=${PROJECT}&param=${encodeURIComponent(PARAM)}`,
+  );
+  assert.equal((await link("/ui/secrets?", PARAM)).url,
+    `/ui/secrets?param=${encodeURIComponent(PARAM)}&project=${PROJECT}`);
+  assert.equal((await link("/ui/secrets?", undefined)).url, "/ui/secrets");
+
+  // A key we do not write keeps its value through the round trip, `/` and all.
+  const other = await link("/ui/secrets?view=a/b", PARAM);
+  assert.equal(
+    new URL(other.url!, "https://strad.tadasant.com").searchParams.get("view"),
+    "a/b",
+  );
+});
+
+test("with no argument there is no store to report and nothing to explain", async () => {
+  // The `project` and `note` fields are answers to a question nobody asked when
+  // the tool is called bare, and a `note` on a call that did nothing wrong would
+  // read as a fault.
+  const { url, project, note } = await link(
+    "https://strad.tadasant.com/ui/secrets?project=proj-a",
+    undefined,
+    TWO_STORES,
+  );
+  assert.equal(url, "https://strad.tadasant.com/ui/secrets?project=proj-a");
+  assert.equal(project, undefined);
+  assert.equal(note, undefined);
 });
 
 test("no console URL at all is the one case with no link", async () => {

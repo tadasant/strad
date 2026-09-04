@@ -2340,7 +2340,8 @@ it hands back is that value carrying two keys: `param=`, the canonical path, and
 of its own — `.../ui/secrets?project=zimmer-secrets-prod` is how one console page
 fronting several stores addresses a particular one — and both keys are joined onto
 it with `&`, replacing rather than duplicating a key it already carried. A value
-with no scheme, such as a bare `/ui/secrets`, is used as written.
+with no scheme, such as a bare `/ui/secrets`, is used as written — apart from a
+trailing slash on its path, and a re-encoding of any query it carried.
 
 **The resolved store beats the configured one.** One container fronts N stores
 behind ONE `SECRETS_CONSOLE_URL`, so a `?project=` written into that variable is
@@ -2353,10 +2354,21 @@ gate: the tool reads nothing, so an argument that resolves to no store — a bar
 variable name, which the tool accepts — costs the link its `project` and a `note`
 saying so, not the call.
 
+A `?ns=` the override orphans is dropped with it. A namespace belongs to exactly
+one store, so rewriting `project` from A to B leaves an `ns` that B does not
+manage — and the console takes a free-text `ns` unless a store sets
+`namespacesStrict`, so it would list store A's namespace under store B: an empty
+table on a page that looks entirely correct. It is kept only when the resolved
+store claims it.
+
 The console's `consoleStores:` is configured separately from the MCP server's
 `mcpStores:`, so a resolved project id can name a store this console does not front.
-There `selectStore` falls back to the first store rather than erroring, which is
-exactly what a link naming no store would have done.
+There `selectStore` falls back to the first store rather than erroring — the same
+landing a link naming no store would have got. The one case the override loses
+information is a console whose project set is **disjoint** from the MCP server's,
+where the operator's constant named a store the console does have; no config here
+is shaped that way, and the answer if one ever is would be to reconcile the two
+lists.
 
 One thing that link does not do yet, and it is filed: the console reads `project`
 and `ns` off the query string and **not** `param`, so a human lands on the right

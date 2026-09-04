@@ -264,8 +264,10 @@ whichever store its own configuration selects.
 `SECRETS_CONSOLE_URL` may carry a query string of its own — one console page can
 front several stores and select between them with `?project=` — and both keys are
 joined onto whatever is already there with `&`, replacing rather than duplicating
-a key it already carried. A value with no scheme, such as a bare `/ui/secrets`, is
-used as written.
+a key it already carried — and a `ns=` the new `project` orphans is dropped, since
+a namespace belongs to exactly one store. A value with no scheme, such as a bare
+`/ui/secrets`, is used as written, apart from a trailing slash on its path and a
+re-encoding of any query it carried.
 
 One thing the link does not do yet, and it is filed: the console reads `project`
 and `ns` off the query string and **not** `param`, so the human lands on the right
@@ -345,7 +347,7 @@ image**, mounted like every other server there.
 | `SECRETS_NAMESPACES` | **core** | yes | The console's namespace SUGGESTIONS. Free text unless `SECRETS_NAMESPACES_STRICT`. Unset = the console reports a misconfiguration. |
 | `SECRETS_NAMESPACES_STRICT` | core | no | `true` restores the list as a hard limit on the console. Default off. |
 | `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. Under `SECRETS_STORES` this is just the default NAME — each store names the variable holding its own viewer key, and no two stores may name the same one. |
-| `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. May carry a query string of its own; `param=` and `project=` are joined onto it with `&`, before any `#fragment`, replacing rather than duplicating a key it already carried. A `?project=` written here is a constant, so the store a path resolves to overrides it. |
+| `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. May carry a query string of its own; `param=` and `project=` are joined onto it with `&`, before any `#fragment`, replacing rather than duplicating a key it already carried. A `?project=` written here is a constant, so the store a path resolves to overrides it — and a `?ns=` that override orphans is dropped. |
 | `SECRETS_PM_API_BASE` / `SECRETS_TOKEN_URL` | either | no | **Test seams.** Point at a stub Parameter Manager. Not a production knob. |
 
 The admin and resolver keys are **not** listed here — they land on `src/**`
