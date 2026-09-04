@@ -432,7 +432,7 @@ export async function observe(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return Promise.all(
     requirements.map(async (requirement) => {
-      const found = await attempt(
+      const found = await attemptRead(
         () => opts.lookup(requirement.name, requirement.slugs),
         timeoutMs,
         requirement.name,
@@ -453,7 +453,7 @@ type Attempt = { ok: string | null } | { error: string };
  * generic and knows nothing about secrets, and the defence below is about
  * exactly one thing this page does.
  */
-async function attempt(
+async function attemptRead(
   read: () => Promise<string | null>,
   timeoutMs: number,
   name: string,

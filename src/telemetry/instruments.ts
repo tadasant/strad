@@ -32,8 +32,8 @@ export const METER_NAME = "strad.gateway";
  *
  * Here because every histogram in this file takes seconds and every caller
  * marks with `hrtime` — the monotonic clock, so a duration cannot go negative
- * when NTP steps the wall clock mid-request. Three copies of this one line used
- * to sit in three gateway modules that all already import from here.
+ * when NTP steps the wall clock mid-request. Every module that records one of
+ * these durations imports it from here.
  */
 export function elapsedSeconds(startedAt: bigint): number {
   return Number(process.hrtime.bigint() - startedAt) / 1e9;

@@ -1,4 +1,5 @@
 import { metrics, type Meter } from "@opentelemetry/api";
+import { elapsedSeconds } from "./instruments.ts";
 
 /**
  * Chromium instrumentation — the memory hog we are about to co-locate.
@@ -134,7 +135,7 @@ export function installBrowserTelemetry(
         browser = await launch();
       } catch (err) {
         launches.add(1, { ...base, outcome: "error" });
-        launchDuration.record(seconds(startedAt), {
+        launchDuration.record(elapsedSeconds(startedAt), {
           ...base,
           outcome: "error",
         });
@@ -142,7 +143,10 @@ export function installBrowserTelemetry(
       }
 
       launches.add(1, { ...base, outcome: "ok" });
-      launchDuration.record(seconds(startedAt), { ...base, outcome: "ok" });
+      launchDuration.record(elapsedSeconds(startedAt), {
+        ...base,
+        outcome: "ok",
+      });
       active.add(1, base);
 
       // A launched browser that later dies is the OOM story. Playwright gives us
@@ -191,8 +195,4 @@ export function installBrowserTelemetry(
 /** Remove the hooks. Test seam. */
 export function uninstallBrowserTelemetry(): void {
   delete (globalThis as Record<string, unknown>)[BROWSER_TELEMETRY_KEY];
-}
-
-function seconds(startedAt: bigint): number {
-  return Number(process.hrtime.bigint() - startedAt) / 1e9;
 }

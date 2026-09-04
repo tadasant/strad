@@ -1018,8 +1018,9 @@ name. That catch sits in `src/ui/secret-status.ts` — in the caller, NOT inside
 the shared deadline wrapper in `src/util/deadline.ts`, which is generic and
 knows nothing about secrets. The defence is the caller's, and it is written at
 the site that needs it so that a second caller of the same wrapper cannot
-inherit it by accident or omit it by accident. `test/ui.secret-status.test.ts` builds the real
-`SyntaxError` and asserts the value is absent from the rendered detail.
+inherit it by accident or omit it by accident. `test/ui.secret-status.test.ts`
+builds the real `SyntaxError` and asserts the value is absent from the rendered
+detail, and asserts the same of the deadline's own exit.
 
 **Undo.** Delete `src/ui/secret-status.ts`, `src/http/readiness.ts`,
 `test/ui.secret-status.test.ts`, `test/ui.console-index.test.ts`,
