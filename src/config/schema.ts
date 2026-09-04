@@ -200,6 +200,71 @@ const OAuthConnector = z.object({
     .default(OAUTH_DEFAULTS.refreshTokenVariable),
 });
 
+/**
+ * ONE parameter store the SSO console can browse: a GCP project, the namespaces
+ * it manages, and the admin credential that reaches it.
+ *
+ * PER-STORE CREDENTIALS ARE THE POINT. There is deliberately no way to say "use
+ * the same service account for all of these". Two stores on one page is two
+ * projects, and one identity granted on both is a strictly larger blast radius
+ * than the two identities it replaces — a leaked key for project A would become
+ * a leaked key for project B. `adminKeyVar` is required on every entry for that
+ * reason, and each entry may name a different one.
+ *
+ * PER-STORE BOUNDS, likewise. `namespacesStrict` and `reveal` live HERE and not
+ * on the page, because a page-level union is a bound that does not bind: a
+ * union namespace list checked against whichever project happens to be selected
+ * would wave through a namespace belonging to a sibling store, and a page-level
+ * reveal flag would either offer reveal on a production store or withhold it
+ * from a staging one.
+ */
+const ConsoleStore = z.object({
+  /**
+   * The GCP project id. Also the store's ADDRESS: the console selects with
+   * `?project=<id>`, so it must be unique within one server's list.
+   */
+  project: z.string().min(1),
+  /** What the picker calls it. Defaults to the project id. */
+  label: z.string().min(1).optional(),
+  /** Parameter Manager location. `global` unless this store overrides it. */
+  location: z.string().min(1).optional(),
+  /**
+   * The canonical-path prefixes this store manages. The first is the default
+   * namespace for new parameters, and the whole list seeds the picker.
+   *
+   * At least one is required, for the same reason the MCP half refuses to mount
+   * without one (servers/secrets/shared/src/config.ts): an empty prefix matches
+   * every parameter the credential can see.
+   */
+  namespaces: z.array(z.string().min(1)).min(1),
+  /**
+   * The `consoleEnv:` KEY holding this store's admin service-account key JSON.
+   *
+   * A NAME, not a `${REF}` — see `consoleStores:` on the supplementary server
+   * for why the credential travels by the existing console-only scope instead of
+   * a second route of its own.
+   */
+  adminKeyVar: z.string().min(1),
+  /**
+   * Make `namespaces` a hard LIMIT on this store rather than a set of
+   * suggestions. Off by default, matching `SECRETS_NAMESPACES_STRICT`.
+   *
+   * It bounds CREATE and not rotate/note/delete — those address an existing
+   * parameter by its canonical path, and the store the console reads them out of
+   * is already the fence. That asymmetry is the pre-existing behaviour of the
+   * single-store flag and is preserved verbatim.
+   */
+  namespacesStrict: z.boolean().default(false),
+  /**
+   * Whether the console OFFERS reveal for this store. Off by default.
+   *
+   * Not the boundary — IAM is (src/secrets/parameters/capabilities.ts). This
+   * decides what the UI offers; the credential decides what is possible, and
+   * both must say yes.
+   */
+  reveal: z.boolean().default(false),
+});
+
 const ServerBase = z.object({
   /** Stable identifier. Tools are namespaced `<slug>__<tool>`. */
   slug: SLUG,
@@ -492,6 +557,39 @@ const SupplementaryImageServer = ServerBase.extend({
    * included. `consoleEnv:` is the only scope that reaches core and stops.)
    */
   consoleEnv: z.record(SecretRef).default({}),
+  /**
+   * The parameter STORES this server's console page can switch between.
+   *
+   * One console page, N GCP projects. Absent (the default) the page resolves a
+   * SINGLE store the old way, out of `SECRETS_PROJECT_ID` / `SECRETS_NAMESPACES`
+   * / `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON` — so every config written before
+   * this field keeps working unchanged. Present, it REPLACES that reading
+   * entirely: the console renders a store picker and every list, create, rotate,
+   * note, reveal and delete is scoped to the selected entry.
+   *
+   * WHY IT IS `console`-PREFIXED, and not merely `stores:`. This field is read by
+   * the SSO console and by nothing else. The `/mcp` half of a secrets slug is
+   * `servers/secrets`, which reads `SECRETS_PROJECT_ID` out of its own
+   * `process.env` — one container, one store, unchanged and deliberately so.
+   * There is nowhere in strad to say "role X may call list_parameters, but only
+   * for namespace Y": entitlements name SLUGS (gateway/entitlements.ts) and the
+   * `tools:` policy names TOOL NAMES (gateway/toolPolicy.ts), so a multi-project
+   * MCP secrets server would necessarily be one entitlement spanning every
+   * project it reaches. The console has a human behind an SSO gate; /mcp has an
+   * API key that lives in every agent session. They do not get the same reach.
+   *
+   * WHY THE CREDENTIAL IS NAMED AND NOT INLINED. `adminKeyVar` names a
+   * `consoleEnv:` KEY rather than carrying a `${REF}` of its own. `consoleEnv:`
+   * is the one scope appspec.ts lands on core and stops (see `consoleEnvVars`),
+   * and it is already what preflight, store-check, seed-scope and the secret
+   * roster understand a console-only name to be. A second, parallel route for
+   * store-ADMIN credentials would be a second thing to get the scoping right in
+   * — and the failure mode of getting it wrong is an admin key on a bundle,
+   * which is the whole IAM split. The `superRefine` below makes the indirection
+   * load-bearing: an `adminKeyVar` MUST be a key of this server's `consoleEnv:`,
+   * and MUST NOT be a key of any server's `env:`.
+   */
+  consoleStores: z.array(ConsoleStore).default([]),
   /** Headers strad sends when proxying to it (e.g. a shared internal token). */
   headers: HeaderMap,
 });
@@ -1089,6 +1187,83 @@ export const StradConfig = z
                 `container.`),
           path: ["servers"],
         });
+      }
+    }
+
+    // CONSOLE STORES: the credential may only travel by `consoleEnv:`.
+    //
+    // This is the rule that keeps a multi-store console from becoming a way to
+    // put a store-ADMIN key somewhere an agent can reach. `consoleStores:` names
+    // its credential rather than carrying it, and the name it may use is fenced
+    // on both sides:
+    //
+    //   - it MUST be a key of this server's `consoleEnv:`, which appspec.ts
+    //     resolves onto the CORE component alone (`consoleEnvVars`). That is the
+    //     only scope in strad that reaches core and stops.
+    //   - it MUST NOT be a key of ANY server's `env:`, because `env:` is baked
+    //     onto a bundle — the component that answers /mcp. A name in both places
+    //     is a console admin key on an agent-reachable container, which is the
+    //     entire IAM split of the secrets server undone by one line of YAML.
+    //
+    // Neither is checkable at runtime from inside the console (by then the value
+    // is just a string in an environment), so it is checked here, where
+    // `scripts/check-config.ts` runs it over every config in the repo.
+    const envKeyOwners = new Map<string, string>();
+    for (const s of cfg.servers) {
+      if (!s.enabled) continue;
+      if (s.kind !== "supplementary-image") continue;
+      for (const key of Object.keys(s.env)) {
+        if (!envKeyOwners.has(key)) envKeyOwners.set(key, s.slug);
+      }
+    }
+    for (const s of cfg.servers) {
+      if (s.kind !== "supplementary-image") continue;
+      if (s.consoleStores.length === 0) continue;
+
+      const seen = new Set<string>();
+      for (const store of s.consoleStores) {
+        // The `?project=` selector addresses a store by its project id. Two
+        // entries with the same id is one store the page can never reach, and
+        // which of them a write lands in would depend on declaration order.
+        if (seen.has(store.project)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" declares the project "${store.project}" twice ` +
+              `under consoleStores:. The console selects a store with ` +
+              `?project=<id>, so the ids must be unique.`,
+            path: ["servers"],
+          });
+        }
+        seen.add(store.project);
+
+        if (!(store.adminKeyVar in s.consoleEnv)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" store "${store.project}" names ` +
+              `adminKeyVar: ${store.adminKeyVar}, but that key is not declared ` +
+              `under this server's consoleEnv:. A store's admin credential may ` +
+              `only arrive by consoleEnv:, which is the one scope rendered onto ` +
+              `the core component alone.`,
+            path: ["servers"],
+          });
+        }
+
+        const envOwner = envKeyOwners.get(store.adminKeyVar);
+        if (envOwner) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" store "${store.project}" names ` +
+              `adminKeyVar: ${store.adminKeyVar}, and server "${envOwner}" ` +
+              `declares that same key under env:. env: is baked onto a bundle — ` +
+              `the component that answers /mcp — so the console's store-admin ` +
+              `credential would reach an agent-facing container. Rename one of ` +
+              `them.`,
+            path: ["servers"],
+          });
+        }
       }
     }
 

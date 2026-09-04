@@ -339,6 +339,52 @@ plus two that shape how this server gets its values:
   declare under `consoleEnv:` only what the console alone needs. `check-config`
   enforces the collision rules; see [Two stores, one
   gateway](/operate/secrets/#two-stores-one-gateway) for the worked example.
+- **`consoleStores`** — the parameter **stores** this server's console page can
+  switch between. One page, N GCP projects, selected with `?project=<id>`.
+
+  Absent (the default) the page resolves a single store out of
+  `SECRETS_PROJECT_ID` / `SECRETS_NAMESPACES` / the `SECRETS_*` flags, exactly as
+  before. Present, it **replaces** that reading: the page renders a store picker
+  and every list, create, rotate, note, reveal and delete is scoped to the
+  selected entry. The two shapes are not merged — a config that says what its
+  stores are does not also get an env-derived one.
+
+  ```yaml
+  consoleStores:
+    - project: strad-secrets-prod
+      label: strad prod # optional; defaults to the project id
+      namespaces: [/strad/prod/mcp/, /strad/prod/gateway/static/]
+      adminKeyVar: SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+      namespacesStrict: true
+    - project: zimmer-secrets-prod
+      label: zimmer prod
+      namespaces: [/zimmer/production/mcp/]
+      adminKeyVar: ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+      reveal: true
+  ```
+
+  **Every store carries its own credential.** `adminKeyVar` is required per entry
+  and there is deliberately no way to say "use the same service account for all of
+  these": two projects behind one identity is a strictly larger blast radius than
+  the two identities it replaces.
+
+  `adminKeyVar` names a **`consoleEnv:` key**, not a `${REF}` of its own, and
+  `check-config` enforces both halves of that: the key must be declared under this
+  server's `consoleEnv:`, and it must **not** be a key of any server's `env:`.
+  `consoleEnv:` is the one scope the renderer lands on core and stops, so naming
+  it is what keeps a store-admin credential off the component that answers `/mcp`.
+
+  `namespacesStrict` and `reveal` are **per store**, not per page. A page-level
+  `namespacesStrict` would be checked against the union of every store's
+  namespaces, so a namespace belonging to a sibling project would pass while this
+  one is selected — a bound that does not bind. `namespacesStrict` bounds
+  **create** and not rotate/note/delete, which is the single-store flag's existing
+  behaviour, unchanged.
+
+  **This is a console-only field.** The `/mcp` half of a secrets slug is
+  `servers/secrets`, which reads `SECRETS_PROJECT_ID` out of its own container's
+  environment: one container, one store. See [One console page, many
+  stores](/operate/secrets/#one-console-page-many-stores).
 - **`params`** (default `false`) — opt into parameter resolution. When `true`,
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
   system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and

@@ -86,7 +86,7 @@ export interface ParamsHandlerOptions {
    * two ways to build the writer is how one of them ends up holding a different
    * credential from the one the security note describes.
    */
-  parametersStore?: Parameters<typeof storeFor>[1]["parametersStore"];
+  parametersStore?: Parameters<typeof storeFor>[2]["parametersStore"];
   /**
    * The runtime providers, so a write here is visible to THIS process at once.
    *
@@ -184,11 +184,12 @@ function targetIn(
 /**
  * The store that owns a given parameter path, and the admin credential for it.
  *
- * A deployment can front more than one parameter store — strad's own `secrets`
- * slug and, in the Tadasant deployment, a second `zimmer-secrets` slug over a
- * different GCP project. They are told apart by `SECRETS_NAMESPACES`, which is
- * already the fence bounding each one, so the path decides which console
- * credential writes it. Picking "the first secrets server" instead would write
+ * A deployment can front more than one parameter store, and since
+ * `consoleStores:` it can do so two ways at once: several secrets SLUGS, and
+ * several stores on ONE slug's console page. Both are the same question here —
+ * a store is a (project, namespaces, credential) triple however it was declared
+ * — so the candidate list is flattened across both dimensions and the NAMESPACE
+ * decides, exactly as before. Picking "the first one" instead would write
  * strad's parameter with somebody else's admin key and 404 in a way nobody would
  * diagnose.
  *
@@ -207,7 +208,10 @@ export function storeForPath(
     .filter((s) => s.enabled && serverLooksSecrets(s))
     .map((s) => resolveServerView(config, s.slug, secrets))
     .filter((v) => v.kind === "secrets")
-    .map((v) => v as Extract<typeof v, { kind: "secrets" }>);
+    .flatMap((v) => {
+      const view = v as Extract<typeof v, { kind: "secrets" }>;
+      return view.stores.map((store) => ({ view, store }));
+    });
 
   if (candidates.length === 0) {
     return {
@@ -218,8 +222,8 @@ export function storeForPath(
     };
   }
 
-  const covering = candidates.filter((view) =>
-    view.namespaces.some((ns) => path.startsWith(normaliseNamespace(ns))),
+  const covering = candidates.filter((c) =>
+    c.store.namespaces.some((ns) => path.startsWith(normaliseNamespace(ns))),
   );
 
   // TWO COVERING STORES IS A REFUSAL, not a first-wins pick. Overlapping
@@ -231,10 +235,10 @@ export function storeForPath(
     return {
       store: null,
       reason:
-        `${covering.length} secrets servers (${covering
-          .map((v) => v.server.slug)
+        `${covering.length} parameter stores (${covering
+          .map((c) => `${c.view.server.slug}/${c.store.projectId}`)
           .sort()
-          .join(", ")}) declare a SECRETS_NAMESPACES that covers ${path}, so ` +
+          .join(", ")}) declare a namespace that covers ${path}, so ` +
         `which store owns it is ambiguous. Narrow one of them.`,
     };
   }
@@ -246,20 +250,20 @@ export function storeForPath(
     return {
       store: null,
       reason:
-        `no secrets server's SECRETS_NAMESPACES covers ${path}, and this ` +
+        `no secrets store's namespaces cover ${path}, and this ` +
         `deployment has ${candidates.length} of them, so which store owns it ` +
         `is ambiguous`,
     };
   }
 
-  const store = storeFor(chosen, opts);
+  const store = storeFor(chosen.view, chosen.store, opts);
   if (!store) {
     return {
       store: null,
       reason:
-        chosen.accountReason ??
-        `the "${chosen.server.slug}" server has no admin service account, so ` +
-          `nothing on core can write a parameter`,
+        chosen.store.accountReason ??
+        `the "${chosen.view.server.slug}" server has no admin service account ` +
+          `for ${chosen.store.projectId}, so nothing on core can write a parameter`,
     };
   }
   return { store };

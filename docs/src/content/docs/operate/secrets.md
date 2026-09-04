@@ -2048,6 +2048,85 @@ servers:
       ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
 ```
 
+### One console page, many stores
+
+The layout above gives you two consoles — `/ui/secrets` and `/ui/zimmer-secrets`
+— because for a long time the config said one console page was one project. It is
+not, and never was: it was a property of one TypeScript type, which now carries a
+**list** of stores.
+
+`consoleStores:` puts N stores on ONE page, selected with `?project=<gcp id>`:
+
+```yaml
+- slug: secrets
+  bundle: bundle
+  path: /secrets
+  env:
+    # The /mcp half. ONE store, unchanged — see below for why.
+    SECRETS_PROJECT_ID: "strad-secrets-prod"
+    SECRETS_NAMESPACES: "/strad/prod/mcp/"
+    SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+  consoleEnv:
+    # One admin key per store. Never one identity granted on both projects.
+    SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
+    ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
+  consoleStores:
+    - project: strad-secrets-prod
+      label: strad prod
+      namespaces: [/strad/prod/mcp/, /strad/prod/gateway/static/]
+      adminKeyVar: SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+      namespacesStrict: true
+    - project: zimmer-secrets-prod
+      label: zimmer prod
+      namespaces: [/zimmer/production/mcp/]
+      adminKeyVar: ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+```
+
+A store picker appears when there is more than one; with one store the page is
+byte-for-byte what it was. Every form on the page posts the selected project back,
+and a form naming a project this console does not front is **refused**, not
+quietly redirected to the first store — a create that succeeds against the wrong
+project under the wrong service account, and reports success, is the one failure
+here nobody would diagnose.
+
+**One admin key per store, always.** `adminKeyVar` is required on every entry and
+there is no way to express "the same service account for all of these". Two
+projects behind one identity is a strictly larger blast radius than the two
+identities it replaces, and the two-identity split on this deployment was chosen
+deliberately. It names a `consoleEnv:` key rather than carrying a `${REF}` of its
+own, and `check-config` enforces that the key **is** declared under `consoleEnv:`
+and is **not** a key of any server's `env:` — `consoleEnv:` is the one scope the
+renderer lands on core and stops, so the indirection is what keeps a store-admin
+credential off the container that answers `/mcp`.
+
+**`namespacesStrict` and `reveal` are per store.** They have to be. A page-level
+`namespacesStrict` is checked against the union of every store's namespaces, so
+you could type a Zimmer namespace while the strad store is selected and strict
+would wave it through. A page-level `reveal` would either offer reveal on a
+production store or withhold it from a staging one. What has **not** changed is
+what strict bounds: **create**, and not rotate/note/delete, which address an
+existing parameter by its canonical path.
+
+Because a store's namespaces come from its own entry rather than from a
+`SECRETS_NAMESPACES` that the MCP half also reads, a console store can be given a
+wider namespace list than any container — which is what the note two sections
+below used to say you could not do for a second slug.
+
+#### This is the console half only
+
+`consoleStores:` does not change what `/mcp` reaches, and that is structural
+rather than a matter of taste. `src/gateway/entitlements.ts` intersects
+role→servers with server→entitlements and **both sides name slugs**; the `tools:`
+policy is allow/deny by **tool name**. There is nowhere in strad to express _"role
+`zimmer` may call `list_parameters`, but only for `/strad/prod/mcp/`."_ So one
+multi-project MCP secrets server is necessarily one entitlement spanning every
+project it reaches — and that key lives in every agent session, including ones
+that read untrusted web pages.
+
+So the split stays: **one bundle per store for `/mcp`, one page for the human.**
+The console has a person behind an SSO gate; `/mcp` has an API key. They do not
+get the same reach.
+
 ### Why one bundle cannot hold both
 
 A bundle is a component, which is a container, which is one `process.env`. The
@@ -2087,11 +2166,14 @@ credential, the reveal flag, `SECRETS_NAMESPACES_STRICT`. The project and
 namespace come from `env:` and the console reads them there.
 
 One consequence worth knowing before you hit it: a second store's console
-therefore **cannot** be given a wider namespace list than its MCP half, the way
-`secrets` does (one namespace under `env:`, two under `consoleEnv:`). That works
-for the first slug precisely because its key is bare in both maps — and bare is
-what a second slug may not use. Making the namespaced form an override would fix
-it, and would also change the `gcs` pair, so it is not a local change.
+therefore **cannot** be given a wider namespace list than its MCP half this way,
+the way `secrets` does (one namespace under `env:`, two under `consoleEnv:`).
+That works for the first slug precisely because its key is bare in both maps — and
+bare is what a second slug may not use. Making the namespaced form an override
+would fix it, and would also change the `gcs` pair, so it is not a local change.
+[`consoleStores:`](#one-console-page-many-stores) sidesteps it instead: a store's
+namespaces are declared on the store, so they are never read through the fallback
+at all.
 
 ### The credential, which is IAM and not markup
 

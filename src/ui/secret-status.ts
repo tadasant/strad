@@ -1682,7 +1682,12 @@ export function storeProject(
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
     const declared =
-      server.consoleEnv.SECRETS_PROJECT_ID ?? server.env.SECRETS_PROJECT_ID;
+      server.consoleEnv.SECRETS_PROJECT_ID ??
+      server.env.SECRETS_PROJECT_ID ??
+      // A multi-store console names its projects in consoleStores: rather than
+      // in a SECRETS_PROJECT_ID. The FIRST is the page's default store, which is
+      // the one a copy-pasteable gcloud command should target.
+      server.consoleStores[0]?.project;
     if (declared && !declared.includes("${")) {
       return { project: declared, guessed: false };
     }

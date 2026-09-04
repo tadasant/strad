@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
+import { onlyStore } from "./helpers/secrets-view.ts";
 import type { SecretBag } from "../src/secrets/index.ts";
 
 /**
@@ -115,22 +116,21 @@ describe("consoleEnv: render -> run", () => {
   });
 
   it("resolves the admin account from the environment core actually gets", () => {
-    const view = resolveServerView(config, "secrets", containerEnv("core"));
-
-    expect(view.kind).toBe("secrets");
-    if (view.kind !== "secrets") return;
+    const store = onlyStore(
+      resolveServerView(config, "secrets", containerEnv("core")),
+    );
 
     // The regression: this was null on a deployment where everything was
     // configured and seeded correctly, and the console rendered
     // "The console's admin credential is not configured."
-    expect(view.accountReason).toBeUndefined();
-    expect(view.account?.client_email).toBe(
+    expect(store.accountReason).toBeUndefined();
+    expect(store.account?.client_email).toBe(
       "strad-secrets-admin@demo.iam.gserviceaccount.com",
     );
 
     // The non-secret half of consoleEnv: still comes through.
-    expect(view.projectId).toBe("strad-secrets-prod");
-    expect(view.namespaces).toEqual(["/strad/prod/mcp/"]);
+    expect(store.projectId).toBe("strad-secrets-prod");
+    expect(store.namespaces).toEqual(["/strad/prod/mcp/"]);
   });
 
   it("does not fall back to the MCP container's viewer credential", () => {
@@ -150,11 +150,9 @@ describe("consoleEnv: render -> run", () => {
     const core = { ...containerEnv("core") } as Record<string, string>;
     delete core.SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON;
 
-    const view = resolveServerView(config, "secrets", core);
-    expect(view.kind).toBe("secrets");
-    if (view.kind !== "secrets") return;
-    expect(view.account).toBeNull();
-    expect(view.accountReason).toMatch(/not injected on this deployment/);
+    const store = onlyStore(resolveServerView(config, "secrets", core));
+    expect(store.account).toBeNull();
+    expect(store.accountReason).toMatch(/not injected on this deployment/);
   });
 
   it("never hands one server's console credential to another server's view", () => {

@@ -27,7 +27,11 @@ import type { BundlePresence } from "../gateway/bundle-presence.ts";
 import type { Registry } from "../gateway/registry.ts";
 import { mountPlayground } from "./playground.ts";
 import { renderLanding } from "./landing.ts";
-import { resolveServerView, type ServerView } from "./resolve.ts";
+import {
+  resolveServerView,
+  type SecretsStore,
+  type ServerView,
+} from "./resolve.ts";
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
@@ -59,7 +63,11 @@ import { mountPwa } from "./pwa.ts";
  *   GET  /secrets               — 302 to /ui. The secret roster was a page of its
  *                                 own; it is now part of the index it describes.
  *   GET  /ui/:server            — the per-server view (GCS browser, parameters
- *                                 manager, or a "no view yet" notice)
+ *                                 manager, or a "no view yet" notice). The
+ *                                 parameters manager takes `?project=<gcp id>`:
+ *                                 ONE page fronts N parameter stores, each with
+ *                                 its own project, namespaces, bounds and admin
+ *                                 credential. See consoleStores: in schema.ts.
  *   POST /ui/:server/create     — ┐
  *   POST /ui/:server/rotate     — │ the `secrets` WRITE surface. Humans only.
  *   POST /ui/:server/note       — │ There is no MCP equivalent of any of these,
@@ -112,6 +120,7 @@ export interface ConsoleUiOptions {
   /** Override the parameter store. Defaults to the real Parameter/Secret Manager client. */
   parametersStore?: (
     view: Extract<ServerView, { kind: "secrets" }>,
+    store: SecretsStore,
   ) => ParameterStore;
   /**
    * Override the capability probe. Defaults to asking Google what the console's
@@ -122,6 +131,7 @@ export interface ConsoleUiOptions {
    */
   capabilities?: (
     view: Extract<ServerView, { kind: "secrets" }>,
+    store: SecretsStore,
   ) => Promise<Capabilities>;
   /**
    * The RUNTIME secret provider — the same one the router resolves `${NAME}` with.
@@ -387,12 +397,21 @@ async function handleServerView(
   }
 
   if (view.kind === "secrets") {
-    await renderSecretsPage(res, view, opts, {
+    // A GET is a NAVIGATION, so an unrecognised `?project=` falls back to the
+    // first store rather than erroring — a stale bookmark from before a store
+    // was renamed should land somewhere useful. A POST does not get this
+    // latitude; see handleSecretAction.
+    const store = selectStore(view, req.query.project);
+    if (!store) {
+      await renderNoStores(res, view, signedInAs);
+      return;
+    }
+    await renderSecretsPage(res, view, store, opts, {
       signedInAs,
       namespace: selectNamespace(
         req.query.ns,
-        view.namespaces,
-        view.namespacesStrict,
+        store.namespaces,
+        store.namespacesStrict,
       ),
     });
     return;
@@ -514,13 +533,53 @@ async function handleSecretAction(
   }
 
   const body = req.body as Record<string, unknown>;
+
+  // WHICH STORE THIS WRITE LANDS IN. Every form on the page posts `project` back
+  // for the same reason it posts `ns` back — an action must return where it was
+  // — but the two are not treated the same when the value is unrecognised.
+  //
+  // A namespace falls back (a stale link is a navigation). A PROJECT does not:
+  // it names the GCP project and the credential a create, rotate or delete will
+  // use, and silently falling back to the first store would write a value into a
+  // project the human did not name, using a different service account, and
+  // report success. That is unrecoverable by inspection — the write succeeded,
+  // just not where anyone will look for it.
+  const rawProject = body.project;
+  const chosen = selectStoreStrict(view, rawProject);
+  if (!chosen) {
+    const fallback = view.stores[0];
+    if (!fallback) {
+      await renderNoStores(res, view, signedInAs);
+      return;
+    }
+    res
+      .status(400)
+      .type("html")
+      .send(
+        renderMessage({
+          title: `${slug} · unknown store`,
+          serverSlug: slug,
+          signedInAs,
+          heading: "That store is not configured on this console",
+          sub:
+            `This form named a parameter store this console does not front, so ` +
+            `nothing was written. Configured stores: ` +
+            `${view.stores.map((st) => st.projectId).join(", ")}.`,
+          tone: "warn",
+          breadcrumbToIndex: true,
+        }),
+      );
+    return;
+  }
+  const store_ = chosen;
+
   // Which namespace the human was looking at. It comes back on every form so an
   // action does not silently bounce them to the first namespace. Its SHAPE is
   // checked, not its membership — see selectNamespace.
   const namespace = selectNamespace(
     body.ns,
-    view.namespaces,
-    view.namespacesStrict,
+    store_.namespaces,
+    store_.namespacesStrict,
   );
   // A TYPED namespace that is malformed must not silently write somewhere else.
   // selectNamespace falls back for a stale link; a submitted form is an
@@ -535,15 +594,19 @@ async function handleSecretAction(
       : typedNs === ""
         ? null
         : (validateNamespace(typedNs) ??
-          (view.namespacesStrict &&
-          !view.namespaces.includes(normaliseNamespace(typedNs))
-            ? `"${normaliseNamespace(typedNs)}" is not one of this console's configured namespaces ` +
-              `(${view.namespaces.join(", ")}), and SECRETS_NAMESPACES_STRICT is on.`
+          // STRICT IS CHECKED AGAINST THE SELECTED STORE, never a union across
+          // the page. A union would let a namespace belonging to a sibling
+          // project pass while THIS project is selected — a bound that does not
+          // bind, which is worse than no bound because it reads like one.
+          (store_.namespacesStrict &&
+          !store_.namespaces.includes(normaliseNamespace(typedNs))
+            ? `"${normaliseNamespace(typedNs)}" is not one of the configured namespaces for ` +
+              `${store_.label} (${store_.namespaces.join(", ")}), and this store is strict.`
             : null));
 
-  const store = storeFor(view, opts);
+  const store = storeFor(view, store_, opts);
   if (!store) {
-    await renderSecretsPage(res, view, opts, { signedInAs, namespace });
+    await renderSecretsPage(res, view, store_, opts, { signedInAs, namespace });
     return;
   }
 
@@ -557,7 +620,7 @@ async function handleSecretAction(
   const path = typeof body.path === "string" ? body.path.trim() : "";
 
   const fail = (message: string, status = 400) =>
-    renderSecretsPage(res, view, opts, {
+    renderSecretsPage(res, view, store_, opts, {
       signedInAs,
       namespace,
       flash: { tone: "error", message },
@@ -598,7 +661,7 @@ async function handleSecretAction(
           note: note || undefined,
         });
         forgetStoreReading(opts);
-        await renderSecretsPage(res, view, opts, {
+        await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           flash: {
@@ -617,7 +680,7 @@ async function handleSecretAction(
         assertWellFormed(path);
         await store.rotate(path, value);
         forgetStoreReading(opts);
-        await renderSecretsPage(res, view, opts, {
+        await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           flash: {
@@ -636,7 +699,7 @@ async function handleSecretAction(
         }
         assertWellFormed(path);
         await store.setNote(path, note);
-        await renderSecretsPage(res, view, opts, {
+        await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           flash: {
@@ -665,8 +728,8 @@ async function handleSecretAction(
         const isSecret = listed.find((p) => p.path === path)?.secret ?? true;
 
         const posture = revealPosture(
-          view.revealEnabled,
-          await capabilitiesFor(view, opts),
+          store_.revealEnabled,
+          await capabilitiesFor(view, store_, opts),
           isSecret,
         );
         if (!posture.allowed) {
@@ -677,7 +740,7 @@ async function handleSecretAction(
           return;
         }
         const revealed = await store.reveal(path);
-        await renderSecretsPage(res, view, opts, {
+        await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           revealed: { name: variableOf(path), value: revealed },
@@ -689,7 +752,7 @@ async function handleSecretAction(
         assertWellFormed(path);
         await store.destroy(path);
         forgetStoreReading(opts);
-        await renderSecretsPage(res, view, opts, {
+        await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           flash: {
@@ -709,7 +772,7 @@ async function handleSecretAction(
         // next tool call on a `params: true` builtin and the next `/ui` load
         // all reach Parameter Manager. Nothing is written.
         forgetStoreReading(opts);
-        await renderSecretsPage(res, view, opts, {
+        await renderSecretsPage(res, view, store_, opts, {
           signedInAs,
           namespace,
           flash: {
@@ -748,17 +811,18 @@ interface PageExtras {
 async function renderSecretsPage(
   res: Response,
   view: Extract<ServerView, { kind: "secrets" }>,
+  selected: SecretsStore,
   opts: ConsoleUiOptions,
   extras: PageExtras,
 ): Promise<void> {
   const slug = view.server.slug;
-  const store = storeFor(view, opts);
+  const store = storeFor(view, selected, opts);
 
   // No namespace is not "the whole project" — it is a misconfiguration. The MCP
   // half refuses to mount without one (servers/secrets/shared/src/config.ts) on
   // exactly this reasoning: an empty prefix matches every parameter the
   // credential can see, and a create would write a namespace-less path.
-  if (view.namespaces.length === 0) {
+  if (selected.namespaces.length === 0) {
     res.type("html").send(
       renderMessage({
         title: `${slug} · not configured`,
@@ -766,9 +830,10 @@ async function renderSecretsPage(
         signedInAs: extras.signedInAs,
         heading: "No managed namespace is configured",
         sub:
-          `SECRETS_NAMESPACES is empty for this server, and an empty namespace would scope the ` +
-          `console to every parameter in the project. Set it to at least one path prefix — e.g. ` +
-          `"/strad/${opts.config.gateway.env}/mcp/" — under this server's consoleEnv:.`,
+          `No namespace is configured for ${selected.label}, and an empty namespace would scope ` +
+          `the console to every parameter in the project. Set at least one path prefix — e.g. ` +
+          `"/strad/${opts.config.gateway.env}/mcp/" — under this store's namespaces: (or, on a ` +
+          `single-store config, SECRETS_NAMESPACES under this server's consoleEnv:).`,
         tone: "warn",
         breadcrumbToIndex: true,
       }),
@@ -787,7 +852,9 @@ async function renderSecretsPage(
           `This server manages parameters in Google Cloud Parameter Manager and Secret ` +
           `Manager, but the console's own service account is not injected on this deployment. ` +
           `It is deliberately a DIFFERENT credential from the one the MCP container holds — the ` +
-          `MCP one cannot read a secret value — so the console cannot fall back to it. Detail: ${view.accountReason ?? "no credential"}`,
+          `MCP one cannot read a secret value — so the console cannot fall back to it. Nor can it ` +
+          `fall back to another store's key: each store on this page carries its OWN admin ` +
+          `credential, by design. Store: ${selected.label}. Detail: ${selected.accountReason ?? "no credential"}`,
         tone: "warn",
         breadcrumbToIndex: true,
       }),
@@ -797,12 +864,12 @@ async function renderSecretsPage(
 
   const namespace = selectNamespace(
     extras.namespace,
-    view.namespaces,
-    view.namespacesStrict,
+    selected.namespaces,
+    selected.namespacesStrict,
   );
-  const caps = await capabilitiesFor(view, opts);
-  const reveal = revealPosture(view.revealEnabled, caps);
-  const revealNonSecret = revealPosture(view.revealEnabled, caps, false);
+  const caps = await capabilitiesFor(view, selected, opts);
+  const reveal = revealPosture(selected.revealEnabled, caps);
+  const revealNonSecret = revealPosture(selected.revealEnabled, caps, false);
 
   let parameters: ParameterMeta[] = [];
   let flash = extras.flash;
@@ -818,6 +885,7 @@ async function renderSecretsPage(
     .send(
       renderSecrets({
         view,
+        store: selected,
         config: opts.config,
         parameters,
         namespace,
@@ -832,29 +900,101 @@ async function renderSecretsPage(
 }
 
 /**
- * The capability probe, MEMOISED per (server, service account, project).
+ * Which STORE this request is about.
+ *
+ * `?project=<id>` addresses one entry of `view.stores`; absent or unrecognised,
+ * the first store wins. That fallback is right for a NAVIGATION and wrong for a
+ * WRITE, so the mutating path uses `selectStoreStrict` instead — see the note in
+ * handleSecretAction for why silently redirecting a write is the one failure in
+ * this subsystem nobody would diagnose.
+ *
+ * Returns undefined only when the server fronts no store at all.
+ */
+export function selectStore(
+  view: Extract<ServerView, { kind: "secrets" }>,
+  raw: unknown,
+): SecretsStore | undefined {
+  return selectStoreStrict(view, raw) ?? view.stores[0];
+}
+
+/**
+ * The same selection with NO fallback: an unrecognised id is `undefined`, not
+ * "the first one".
+ *
+ * A repeated `project=` makes Express hand us an array, which is the same class
+ * of ambiguity a repeated `ns=` is, and gets the same answer: refuse.
+ */
+export function selectStoreStrict(
+  view: Extract<ServerView, { kind: "secrets" }>,
+  raw: unknown,
+): SecretsStore | undefined {
+  if (raw === undefined) return view.stores[0];
+  if (typeof raw !== "string") return undefined;
+  const wanted = raw.trim();
+  if (wanted === "") return view.stores[0];
+  return view.stores.find((s) => s.projectId === wanted);
+}
+
+/**
+ * A secrets-shaped server that fronts no store at all.
+ *
+ * Reachable when `consoleStores:` is an empty list and no `SECRETS_PROJECT_ID`
+ * is declared either. The detector fires on the DECLARATION, so the page exists;
+ * saying so beats rendering an empty parameter table that looks like a store
+ * with nothing in it.
+ */
+function renderNoStores(
+  res: Response,
+  view: Extract<ServerView, { kind: "secrets" }>,
+  signedInAs?: string,
+): void {
+  const slug = view.server.slug;
+  res.type("html").send(
+    renderMessage({
+      title: `${slug} · not configured`,
+      serverSlug: slug,
+      signedInAs,
+      heading: "No parameter store is configured",
+      sub:
+        `The "${slug}" server is declared as a parameters console but names no store. ` +
+        `Add at least one entry under consoleStores: (project, namespaces, adminKeyVar), or ` +
+        `set SECRETS_PROJECT_ID under this server's consoleEnv:.`,
+      tone: "warn",
+      breadcrumbToIndex: true,
+    }),
+  );
+}
+
+/**
+ * The capability probe, MEMOISED per (server, project, service account).
  *
  * Keyed the same way the store is, and for the same reason: the answer is a
  * property of the CREDENTIAL, so it must be recomputed if the credential is
  * rotated under us, and must not be recomputed per request. The inner
  * `cachedProbe` adds the TTL; this map stops a fresh prober being built (and its
  * cache thrown away) on every page render.
+ *
+ * The project and the credential are in the key because one console page fronts
+ * SEVERAL stores, each with its own project and its own service account. What a
+ * key can do is answer differently per store on one page; what it must never do
+ * is answer for store A out of a probe of store B.
  */
 const probeCache = new Map<string, () => Promise<Capabilities>>();
 
 async function capabilitiesFor(
   view: Extract<ServerView, { kind: "secrets" }>,
+  selected: SecretsStore,
   opts: ConsoleUiOptions,
 ): Promise<Capabilities> {
-  if (opts.capabilities) return opts.capabilities(view);
-  if (!view.account) return NO_CAPABILITIES;
+  if (opts.capabilities) return opts.capabilities(view, selected);
+  if (!selected.account) return NO_CAPABILITIES;
 
-  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
+  const key = `${view.server.slug} ${selected.projectId} ${selected.account.client_email}`;
   let prober = probeCache.get(key);
   if (!prober) {
     prober = cachedProbe({
-      projectId: view.projectId,
-      account: view.account,
+      projectId: selected.projectId,
+      account: selected.account,
       crmApiBase: view.crmApiBase,
       tokenUrl: view.tokenUrl,
     });
@@ -864,30 +1004,33 @@ async function capabilitiesFor(
 }
 
 /**
- * The parameter store, MEMOISED per (server, service account).
+ * The parameter store, MEMOISED per (server, project, service account).
  *
  * It must not be rebuilt per request. The client caches its OAuth access token
  * for an hour (minting one costs an RSA signature and a round trip to Google),
  * and a fresh instance per call throws that cache away. It is keyed because the
- * credential can differ per server slug (and must be re-keyed if rotated under us).
+ * credential differs per STORE — one page fronts several, each addressing its own
+ * GCP project as its own identity — and must be re-keyed if one is rotated under
+ * us.
  */
 const storeCache = new Map<string, ParameterStore>();
 
 export function storeFor(
   view: Extract<ServerView, { kind: "secrets" }>,
+  selected: SecretsStore,
   opts: Pick<ConsoleUiOptions, "parametersStore">,
 ): ParameterStore | null {
-  if (opts.parametersStore) return opts.parametersStore(view);
-  if (!view.account) return null;
+  if (opts.parametersStore) return opts.parametersStore(view, selected);
+  if (!selected.account) return null;
 
-  const key = `${view.server.slug} ${view.projectId} ${view.account.client_email}`;
+  const key = `${view.server.slug} ${selected.projectId} ${selected.account.client_email}`;
   const cached = storeCache.get(key);
   if (cached) return cached;
 
   const store = createGcpParameterStore({
-    projectId: view.projectId,
-    location: view.location,
-    account: view.account,
+    projectId: selected.projectId,
+    location: selected.location,
+    account: selected.account,
     pmApiBase: view.pmApiBase,
     smApiBase: view.smApiBase,
     tokenUrl: view.tokenUrl,

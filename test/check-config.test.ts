@@ -332,6 +332,7 @@ describe("consoleScopeProblems", () => {
         SECRETS_PROJECT_ID: "other-project",
         SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${OTHER_ADMIN_KEY}",
       },
+      consoleStores: [],
     });
     const problems = consoleScopeProblems(
       twoServers,

@@ -4,6 +4,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { CORE_BOOT_ENV_KEYS } from "../src/secrets/provider/hydrate.ts";
 import { renderAppSpec } from "../src/deploy/appspec.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
+import { onlyStore } from "./helpers/secrets-view.ts";
 
 /**
  * ONE strad, TWO parameter stores.
@@ -152,11 +153,13 @@ describe("two parameter stores, one strad", () => {
   });
 
   it("renders each console page against its own store and its own admin identity", () => {
-    const strad = resolveServerView(CONFIG, "secrets", CORE_ENV);
-    const zimmer = resolveServerView(CONFIG, "zimmer-secrets", CORE_ENV);
-
-    if (strad.kind !== "secrets" || zimmer.kind !== "secrets")
-      throw new Error("both slugs must resolve to a secrets view");
+    // TWO SLUGS, one store each — the shape staging declares today, and the one
+    // `consoleStores:` does not disturb. A slug that names no consoleStores:
+    // still resolves to exactly one store, out of the same SECRETS_* env vars.
+    const strad = onlyStore(resolveServerView(CONFIG, "secrets", CORE_ENV));
+    const zimmer = onlyStore(
+      resolveServerView(CONFIG, "zimmer-secrets", CORE_ENV),
+    );
 
     expect(strad.projectId).toBe(STRAD_STORE);
     expect(zimmer.projectId).toBe(ZIMMER_STORE);
@@ -267,13 +270,14 @@ describe("two parameter stores, one strad", () => {
         .find((s) => s.name === "core")!
         .envs.map((e) => [e.key, e.value]),
     );
-    const view = resolveServerView(diverged, "zimmer-secrets", core);
-    if (view.kind !== "secrets") throw new Error("not a secrets view");
+    const store = onlyStore(
+      resolveServerView(diverged, "zimmer-secrets", core),
+    );
 
     // The namespaced flag has no bare twin under `env:`, so it DOES win.
-    expect(view.revealEnabled).toBe(false);
+    expect(store.revealEnabled).toBe(false);
     // And the project still comes from `env:`, which is the only place it is set.
-    expect(view.projectId).toBe(ZIMMER_STORE);
+    expect(store.projectId).toBe(ZIMMER_STORE);
   });
 
   it("passes the schema's env-collision rule, and the collapsed shape does not", () => {

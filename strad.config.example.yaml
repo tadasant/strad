@@ -573,6 +573,31 @@ servers:
       SECRETS_NAMESPACES: "/strad/staging/mcp/,/strad/staging/gateway/static/"
       # Parameter Manager admin + Secret Manager admin. Core only. Humans only.
       SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_ADMIN_KEY_JSON}"
+    # ONE CONSOLE PAGE, MANY STORES. Uncomment to give /ui/secrets a project
+    # picker instead of one page per GCP project. It REPLACES the SECRETS_*
+    # reading above for the console; the `env:` half — the /mcp container — keeps
+    # its single store either way, because entitlements name slugs and the tools:
+    # policy names tool names, so there is nowhere to say "this role may list
+    # parameters, but only in that namespace". See docs: /operate/secrets/.
+    #
+    # consoleStores:
+    #   - project: strad-secrets-staging
+    #     label: strad staging
+    #     namespaces: ["/strad/staging/mcp/", "/strad/staging/gateway/static/"]
+    #     # A consoleEnv: KEY, not a ${ref}: consoleEnv: is the one scope that
+    #     # lands on core and stops, and check-config refuses an adminKeyVar that
+    #     # is not declared there — or that is ALSO an env: key on any server.
+    #     adminKeyVar: SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+    #     # Per STORE, not per page. A union list checked against whichever
+    #     # project happens to be selected is a bound that does not bind.
+    #     namespacesStrict: true
+    #   - project: zimmer-secrets-staging
+    #     label: zimmer staging
+    #     namespaces: ["/zimmer/staging/mcp/static/"]
+    #     # ONE ADMIN KEY PER STORE. Never one identity granted on both projects:
+    #     # that is a strictly larger blast radius than the two it replaces.
+    #     adminKeyVar: ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+    #     reveal: true
 
   # A server that draws its credentials from the secrets system instead of from
   # hand-written `${REF}` secrets. `params: true` opts it in: at deploy time

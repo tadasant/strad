@@ -2266,6 +2266,31 @@ See `HACKS.md` #76.
 
 ---
 
+### 77. The console index describes a multi-store slug by its first store
+
+A `consoleStores:` slug puts several parameter stores on one `/ui/<slug>` page,
+selected with `?project=`. The console INDEX at `/ui` did not follow: it renders
+one card per slug, and the roster's "which project holds this store" answer is the
+FIRST store's project.
+
+**What it costs.** The roster prints copy-pasteable `gcloud` commands for a
+missing secret. If the name lives in a namespace owned by a store other than the
+first, the printed command names the wrong `--project`. It fails legibly rather
+than writing anywhere wrong — but it is a wrong answer to a question a human
+asked.
+
+**How you would know.** A `gcloud parameters ...` command copied off `/ui` returns
+`NOT_FOUND` for a parameter you can see listed on `/ui/<slug>?project=<the other
+one>`.
+
+**The fix.** `storeForPath` already resolves a path to the one store that covers
+it, across both several slugs and several stores per slug. The index should ask it
+rather than reading a project off the config.
+
+See `HACKS.md` #77.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:
