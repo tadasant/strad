@@ -1625,6 +1625,25 @@ or — when the failure is IN that commit, so a re-run only rebuilds it — disp
 `release-bundle-image.yml` on `main`, which publishes `sha-<HEAD>` and ends the
 walk before it reaches the stuck commit.
 
+**A cancelled build is the same wedge for a commit nobody broke.** On 2026-09-04
+the self-hosted runner host restarted mid-build. `a278b5ed`'s bundle build was
+cancelled 100 seconds in — three unrelated jobs on two other runners died in the
+same second — and `main` was undeployable until somebody re-ran it by hand nine
+minutes later. Nothing alerted: `alert-ci-failure.yml` stays quiet on `cancelled`
+on purpose, because `ci.yml`'s `cancel-in-progress` makes cancellation routine.
+
+`reheal-bundle-image.yml` now makes that re-run automatically, on the first
+cancellation of a `push` build and nowhere else, and the tag walk holds its wait
+open for that first cancellation so a deploy already waiting does not stop in the
+minute before the re-run starts. See
+[the self-heal](/operate/operations/#when-the-bundle-build-was-cancelled-it-re-runs-itself).
+
+**What is still open.** A `failure` wedges `main` exactly as before — that is the
+case above, and a re-run cannot fix it. So does a cancellation on attempt 2 (the
+heal spends one attempt per run) and a cancellation of a `workflow_dispatch`
+build (which a human may have stopped on purpose). And when the heal does not
+fire at all, the deploy spends its full 900-second budget before saying so.
+
 ### 57. The ghcr credential is a box-wide file, and the slowest build loses it
 
 **Resolved.** The condition behind it — one docker daemon, one `$HOME`, several

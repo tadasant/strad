@@ -8,7 +8,7 @@ name: CI failure alert
 # worth making here is worth making in all three.
 #
 # One listener for the whole repo, rather than an alert job bolted onto each of the
-# twelve workflows. `workflows: ["*"]` matches EVERY workflow in the repo, so a
+# thirteen workflows. `workflows: ["*"]` matches EVERY workflow in the repo, so a
 # workflow added later is covered the day it lands -- nobody has to remember to wire
 # it up. That matters here: over half of these workflows are image releases
 # (release-image, release-bundle-api-image, release-fetchpet-image, ...), and a
@@ -21,10 +21,11 @@ name: CI failure alert
 #     on a feature branch change nothing until they merge, and `workflow_dispatch`
 #     below only appears in the Actions UI once this is on main. Post-merge, dispatch
 #     it manually to smoke-test Slack delivery end to end.
-#   - The alert runs on ubuntu-latest, NOT the self-hosted runners that all twelve of
-#     this repo's other workflows use. Deliberate: the self-hosted runners going down
-#     is itself a failure worth alerting on, and an alert that runs on the broken
-#     thing cannot report it.
+#   - The alert runs on ubuntu-latest, NOT the self-hosted runners that twelve of this
+#     repo's other thirteen workflows use. Deliberate: the self-hosted runners going
+#     down is itself a failure worth alerting on, and an alert that runs on the broken
+#     thing cannot report it. reheal-bundle-image.yml is the other ubuntu-latest one,
+#     for the same reason.
 #
 # Requires two repo secrets (Settings -> Secrets and variables -> Actions):
 #   SLACK_BOT_TOKEN         xoxb-... for the Tadasant workspace, with chat:write.

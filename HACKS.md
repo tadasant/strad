@@ -2280,6 +2280,38 @@ would have surfaced #127's breakage sooner but changed nothing here, because the
 deploy that failed was for a LATER commit that owes no bundle image at all. The
 wedge is a property of the walk, not of the race.
 
+**A CANCELLED build is the same wedge for a build nobody broke.** On 2026-09-04
+the self-hosted runner host restarted mid-build: `a278b5ed`'s bundle build was
+cancelled 100 seconds in, three unrelated jobs on two other runners died in the
+same second, and the commit itself was fine. `main` was undeployable anyway —
+every staging deploy hard-stopped on the missing `sha-a278b5ed…` — and nothing
+alerted, because `alert-ci-failure.yml` stays quiet on `cancelled` on purpose
+(`ci.yml`'s `cancel-in-progress` makes cancellation routine). A human re-ran the
+build nine minutes later and that was the whole fix.
+
+`reheal-bundle-image.yml` makes that re-run without one. It listens for `Release
+bundle image` completing and re-runs it when the conclusion is `cancelled`, the
+attempt is the first, and the event is `push` — never a `failure` (that is the
+loop this entry's `republish` exists to break), never twice (a re-run adds an
+ATTEMPT to the same run, so one heal per run), and never a `workflow_dispatch`
+build, which is one a human may have stopped deliberately. It runs on
+`ubuntu-latest` rather than the self-hosted runners, for the reason
+`alert-ci-failure.yml` does: the runners going down is the event it heals.
+
+`deadRun` had to meet it halfway. A deploy already inside its 900-second wait
+polls every twenty seconds, so it would otherwise reach the cancellation and stop
+in the minute before the re-run it is waiting for even starts — the heal cannot
+win that race alone. So a FIRST cancellation is no longer a dead run, and
+`ReleaseRun.runAttempt` is what bounds that: a second attempt cancelled again is
+dead like any other verdict, because the heal has spent itself and a CI host that
+cancels twice is not going to publish on the third ask.
+
+**Still open in this shape.** A `failure` wedges `main` exactly as before. So
+does a cancellation on attempt 2, and so does one of a `workflow_dispatch` build.
+And when the heal does not fire at all, the deploy now spends its full budget
+before saying so — the error names the interruption and says to re-run it, which
+`ImageSource.republish` would not have.
+
 **Undo.** Drop `releaseRun` from the `resolveDeployTag` call in
 `scripts/resolve-image-tag.ts`; delete `releaseRunLookup`, `ReleaseRun`,
 `deadRun` and `ImageSource.republish` from `src/deploy/imageTag.ts`; drop
@@ -2288,7 +2320,11 @@ grants it as that workflow's caller; drop `GITHUB_TOKEN` from the two tag steps;
 and delete the corresponding tests. The walk then waits out its budget on every
 dead build again. Dropping only the caller's grant is the same undo with no
 symptom — the lookup 403s and is swallowed — which is what
-`test/image-tag.bundle.test.ts` reads both workflows to prevent.
+`test/image-tag.bundle.test.ts` reads both workflows to prevent. To undo the cancellation half:
+delete `.github/workflows/reheal-bundle-image.yml`, drop the `INTERRUPTED` branch
+from `deadRun` and `ReleaseRun.runAttempt` with it, and drop `interruptedAdvice`
+from `resolveDeployTag`. A cancelled build then wedges `main` until a human
+notices the deploy that failed because of it.
 
 ## 55. The slack server is a FORK, and nothing detects a re-vendor that reverts it
 
@@ -3484,7 +3520,7 @@ workflow shares is LOADED and RUN on every pull request. It was not, and that is
 what this entry is about; what a PR still cannot exercise is the second half of
 the release path.
 
-**Why.** Of the thirteen workflows in this repo, two ran on `pull_request`. All
+**Why.** Of the fourteen workflows in this repo, two ran on `pull_request`. All
 eight release workflows and `deploy-staging.yml` did not, and `build-push` was
 loaded by nothing else — so the first execution of a change to the release path
 was also its first production run, and its failure mode is a red `main` plus, when

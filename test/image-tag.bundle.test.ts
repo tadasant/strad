@@ -483,11 +483,14 @@ describe("resolveDeployTag, when the run that owes the image has concluded", () 
     ).rejects.toThrow(/dispatch release-bundle-image\.yml on `main`/);
   });
 
-  it("counts a cancelled run as dead too", async () => {
+  it("counts a SECOND cancelled attempt as dead too", async () => {
+    // A first cancellation is held open for the self-heal (its own describe
+    // below). A second one means that heal has spent its attempt, so the run is
+    // as over as any failure.
     await expect(
       resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
         source: BUNDLE_IMAGE_SOURCE,
-        releaseRun: async () => run({ conclusion: "cancelled" }),
+        releaseRun: async () => run({ conclusion: "cancelled", runAttempt: 2 }),
       }),
     ).rejects.toThrow(/CONCLUDED for it \(cancelled\)/);
   });
@@ -628,6 +631,133 @@ describe("resolveDeployTag, when the run that owes the image has concluded", () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// waiting for a build that was interrupted
+// ---------------------------------------------------------------------------
+
+/**
+ * 2026-09-04, and the difference between a verdict and an interruption.
+ *
+ * The self-hosted runner host restarted mid-build. `a278b5ed`'s bundle build
+ * was cancelled 100 seconds in — three unrelated jobs on two other runners died
+ * in the same second — and nothing was wrong with the commit at all. But the
+ * walk read `cancelled` the way it reads `failure`, hard-stopped the staging
+ * deploy nine minutes later, and left `main` undeployable until a human re-ran
+ * the build by hand.
+ *
+ * `reheal-bundle-image.yml` now re-runs that first cancellation on its own. The
+ * walk has to meet it halfway: a deploy already inside its fifteen-minute wait
+ * polls every twenty seconds, so it would otherwise reach the cancellation and
+ * stop in the minute before the re-run it is waiting for even starts.
+ */
+describe("resolveDeployTag, when the run that owes the image was interrupted", () => {
+  const RUN_URL = "https://github.com/tadasant/strad/actions/runs/33845688614";
+  const cancelled = (attempt: number): ReleaseRun => ({
+    status: "completed",
+    conclusion: "cancelled",
+    runAttempt: attempt,
+    url: RUN_URL,
+  });
+
+  it("keeps waiting through a FIRST cancellation, and takes the re-run's image", async () => {
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false) // cancelled mid-build
+      .mockResolvedValueOnce(false) // the self-heal has re-run it
+      .mockResolvedValueOnce(true); // and it landed
+    const releaseRun = vi
+      .fn()
+      .mockResolvedValueOnce(cancelled(1))
+      .mockResolvedValue({
+        status: "in_progress",
+        conclusion: null,
+        url: RUN_URL,
+      });
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun,
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+  });
+
+  it("treats a missing run_attempt as the first one", async () => {
+    // An API that cannot be counted on for the field reads as "attempt 1",
+    // which is the answer that keeps waiting rather than the one that stops.
+    const published = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], published, {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun: async () => ({
+          status: "completed",
+          conclusion: "cancelled",
+          url: RUN_URL,
+        }),
+      }),
+    ).resolves.toEqual({ tag: `sha-${A}`, sha: A, distance: 0 });
+  });
+
+  it("stops at once on a cancellation the self-heal has already spent", async () => {
+    // Attempt 2 cancelled again is a CI host that is not healthy, and burning
+    // the budget on it buys the same error fifteen minutes later.
+    const sleep = vi.fn(async () => {});
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 900_000,
+        sleep,
+        releaseRun: async () => cancelled(2),
+      }),
+    ).rejects.toThrow(/CANCELLED, not failed[\s\S]*Re-run it/);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("says re-run, not dispatch, when the run was cancelled", async () => {
+    // `republish` exists for a build the COMMIT broke, where a re-run is the
+    // loop. Printing it here sends a reader past the one move that works.
+    const err: unknown = await resolveDeployTag(
+      [baked(A)],
+      vi.fn().mockResolvedValue(false),
+      { source: BUNDLE_IMAGE_SOURCE, releaseRun: async () => cancelled(2) },
+    ).then(
+      () => new Error("resolved, but the walk should have stopped"),
+      (e: unknown) => e,
+    );
+    expect((err as Error).message).toMatch(/CANCELLED, not failed/);
+    expect((err as Error).message).not.toMatch(
+      /dispatch release-bundle-image\.yml on `main`/,
+    );
+  });
+
+  it("names the interruption when the budget runs out on a first cancellation", async () => {
+    // The heal did not fire. `remedy` would say "wait for that build to
+    // finish" about a build that ended fifteen minutes ago.
+    let clock = 0;
+    await expect(
+      resolveDeployTag([baked(A)], vi.fn().mockResolvedValue(false), {
+        source: BUNDLE_IMAGE_SOURCE,
+        waitMs: 60_000,
+        sleep: async () => {},
+        now: () => (clock += 20_000),
+        releaseRun: async () => cancelled(1),
+      }),
+    ).rejects.toThrow(
+      /none appeared in 60s[\s\S]*CANCELLED, not failed[\s\S]*Re-run it/,
+    );
+  });
+});
+
 describe("releaseRunLookup", () => {
   const okJson = (body: unknown): Response =>
     new Response(JSON.stringify(body), {
@@ -688,6 +818,7 @@ describe("releaseRunLookup", () => {
     ).resolves.toEqual({
       status: "in_progress",
       conclusion: null,
+      runAttempt: 1,
       url: "the-push-that-is-building",
     });
   });
@@ -721,6 +852,7 @@ describe("releaseRunLookup", () => {
     ).resolves.toEqual({
       status: "completed",
       conclusion: "success",
+      runAttempt: 1,
       url: "new",
     });
   });

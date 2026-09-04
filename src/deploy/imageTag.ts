@@ -402,6 +402,13 @@ export interface Candidate {
  * source broke the build fails again and the tag it owes can never appear. Which
  * move DOES work depends on the walk-back rule, and the two images differ.
  *
+ * All of which is about a build that FAILED. A build that was CANCELLED — a
+ * runner host restarting under it, most often — learned nothing about the
+ * commit, so the re-run this section talks a reader out of is exactly the right
+ * move there, and `reheal-bundle-image.yml` makes it without one.
+ * `interruptedAdvice` in `resolveDeployTag` is what a reader gets instead of the
+ * two strings below.
+ *
  * The core self-heals, because `release-image.yml` builds every non-docs commit:
  * the commit that fixes the build is itself a commit that publishes, and the
  * walk stops there. Its remedy therefore names the wait and the `version` pin
@@ -545,6 +552,16 @@ export interface ResolvedTag {
  * It is an optimisation on the diagnosis, never a new way to fail. A lookup that
  * throws is swallowed and reported in the error that the walk was going to
  * produce anyway.
+ *
+ * ## Waiting for a build that was interrupted
+ *
+ * A `cancelled` run is the one conclusion that is not a verdict on the commit,
+ * and `reheal-bundle-image.yml` re-runs the first one automatically. So a first
+ * cancellation is a build that is COMING BACK, and the wait is held open for it
+ * — see `deadRun`. Without that, a cancellation landing while a deploy is
+ * already waiting would hard-stop the deploy in the minute before the re-run it
+ * is waiting for even starts, which is a race the self-heal cannot win on its
+ * own. A second attempt cancelled again is dead like any other verdict.
  */
 export interface DeployTagOptions {
   source?: ImageSource;
@@ -571,9 +588,31 @@ export interface ReleaseRun {
   status: string;
   /** `success`, `failure`, `cancelled`… and `null` until it completes. */
   conclusion: string | null;
+  /**
+   * Which attempt the state above describes. A re-run adds an attempt to the
+   * SAME run rather than creating a second one, so this is the only field that
+   * distinguishes "cancelled once" from "cancelled again after a re-run" —
+   * which is the whole difference between a wait worth having and a wait that
+   * ends the same way in fifteen minutes. Defaults to 1 where a caller cannot
+   * read it.
+   */
+  runAttempt?: number;
   /** Where to go look. */
   url: string;
 }
+
+/**
+ * A conclusion that is not a verdict on the commit.
+ *
+ * `failure`, `timed_out` and `startup_failure` all say the tree at that commit
+ * does not build, and a re-run rebuilds it to the same end. `cancelled` says
+ * only that something INTERRUPTED the build — a runner host restarting under
+ * it, most often — and the tree that was building a second earlier still
+ * builds. `reheal-bundle-image.yml` re-runs exactly this case, once, so a
+ * cancelled FIRST attempt is a build that is coming back rather than one that
+ * is over.
+ */
+const INTERRUPTED = "cancelled";
 
 /**
  * The run, if it has finished without publishing: waiting for it is waiting
@@ -581,6 +620,14 @@ export interface ReleaseRun {
  * FOR — returning the run rather than a boolean keeps that distinction in the
  * type, where a `run is ReleaseRun` predicate would have narrowed a live run
  * away in the else branch.
+ *
+ * `null` too for a first attempt that was merely INTERRUPTED, and that is not a
+ * softening of the stop. The self-heal above re-runs such a run within about a
+ * minute, and this walk polls every twenty seconds — so without this, a
+ * cancellation landing while a deploy is already waiting would hard-stop that
+ * deploy in the window before the re-run it is waiting for even starts. A
+ * second attempt that is cancelled again IS dead: the self-heal declined it,
+ * nothing else is coming, and the budget would buy the same error later.
  */
 function deadRun(run: ReleaseRun | null): ReleaseRun | null {
   if (run === null) return null;
@@ -593,7 +640,10 @@ function deadRun(run: ReleaseRun | null): ReleaseRun | null {
     run.status === "completed" &&
     run.conclusion !== null &&
     run.conclusion !== "success";
-  return done ? run : null;
+  if (!done) return null;
+  if (run.conclusion === INTERRUPTED && (run.runAttempt ?? 1) === 1)
+    return null;
+  return run;
 }
 
 /** How often to re-ask while waiting. Slow enough not to hammer the registry. */
@@ -651,12 +701,25 @@ export async function resolveDeployTag(
           return null;
         }
       };
+      // Said wherever the walk reports a run that ended in a cancellation, and
+      // it replaces the source's advice rather than adding to it: `remedy` and
+      // `republish` both talk a reader out of a re-run, because both were
+      // written for a build the COMMIT broke. Here the commit is fine and the
+      // re-run is the entire fix.
+      const interruptedAdvice =
+        `That run was CANCELLED, not failed, so nothing was learned about the ` +
+        `commit and a re-run of it will publish. reheal-bundle-image.yml re-runs ` +
+        `the first such cancellation by itself; a cancellation still sitting ` +
+        `here means that heal did not fire, or has already spent its one ` +
+        `attempt on a CI host that is not healthy. Re-run it`;
+      const advice = (run: ReleaseRun): string =>
+        run.conclusion === INTERRUPTED ? interruptedAdvice : source.republish;
       const dead = (run: ReleaseRun): Error =>
         new Error(
           `${owed}, and ${source.workflow} has already CONCLUDED for it ` +
             `(${run.conclusion}): ${run.url}\n` +
             `That image is not coming, so there is nothing to wait for. ` +
-            `${skew} — ${source.republish}.`,
+            `${skew} — ${advice(run)}.`,
         );
 
       let run = await lookUp();
@@ -678,7 +741,16 @@ export async function resolveDeployTag(
       // asked minutes after the push that would have created one — is a
       // different animal: nothing is coming, and "wait for that build" names a
       // build that does not exist. Say `republish` there instead.
+      //
+      // A run still sitting on a FIRST cancellation is the third case, and it
+      // is the one this budget was spent on: `deadRun` held the wait open for a
+      // self-heal that never re-ran it. `remedy` would tell the reader to wait
+      // for a build that is already over.
       const noRun = run === null && releaseRun !== undefined;
+      const stillInterrupted =
+        run !== null &&
+        run.status === "completed" &&
+        run.conclusion === INTERRUPTED;
       throw new Error(
         `${owed}` +
           (waited
@@ -690,7 +762,13 @@ export async function resolveDeployTag(
             : noRun
               ? `${source.workflow} has no run for that commit at all.\n`
               : "") +
-          `${skew}: ${noRun ? source.republish : source.remedy}.${lookupFailure}`,
+          `${skew}: ${
+            stillInterrupted
+              ? interruptedAdvice
+              : noRun
+                ? source.republish
+                : source.remedy
+          }.${lookupFailure}`,
       );
     }
   }
@@ -765,6 +843,7 @@ export function releaseRunLookup(
       workflow_runs?: {
         status?: string | null;
         conclusion?: string | null;
+        run_attempt?: number | null;
         html_url?: string;
         created_at?: string;
       }[];
@@ -780,6 +859,9 @@ export function releaseRunLookup(
     return {
       status: chosen.status ?? "unknown",
       conclusion: chosen.conclusion ?? null,
+      // A run the API cannot count attempts for is treated as a first attempt,
+      // which is the reading that keeps waiting rather than the one that stops.
+      runAttempt: chosen.run_attempt ?? 1,
       url: chosen.html_url ?? url,
     };
   };
