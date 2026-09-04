@@ -1453,9 +1453,15 @@ export const StradConfig = z
     // sitting on DIFFERENT paths would put one of them's store list on the
     // container under both slugs, with nothing reporting it. Two slugs on ONE
     // path already throw at render time; this closes the other half.
+    //
+    // A DISABLED server is skipped for the BUNDLE claim alone, and checked for
+    // everything else. It renders no component, so it collides with nothing —
+    // but a typo'd `viewerKeyVar` or a shared credential inside its own entry is
+    // wrong whether or not it is switched on today, and a rule that goes quiet
+    // when a server is disabled is a rule that lies dormant until somebody
+    // re-enables it.
     const storesByBundle = new Map<string, string>();
     for (const s of cfg.servers) {
-      if (!s.enabled) continue;
       if (s.kind !== "supplementary-image") continue;
 
       if ("SECRETS_STORES" in s.env) {
@@ -1474,7 +1480,7 @@ export const StradConfig = z
 
       if (s.mcpStores.length === 0) continue;
 
-      const twinOnBundle = storesByBundle.get(s.bundle);
+      const twinOnBundle = s.enabled ? storesByBundle.get(s.bundle) : undefined;
       if (twinOnBundle) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -1488,7 +1494,7 @@ export const StradConfig = z
           path: ["servers"],
         });
       }
-      storesByBundle.set(s.bundle, s.slug);
+      if (s.enabled) storesByBundle.set(s.bundle, s.slug);
 
       // ONE SHAPE OR THE OTHER, never both. The tree reads `SECRETS_STORES` and
       // ignores the single-store variables when it is present, so a leftover
