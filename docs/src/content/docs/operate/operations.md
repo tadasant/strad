@@ -14,7 +14,15 @@ produce a bootable image is a failing PR.
 Runs on PRs and pushes to `main`. Nine jobs, all `runs-on: self-hosted` — one
 of which, `servers`, is a thirteen-leg matrix over the server trees:
 
-- **`lint`** — typecheck, ESLint, `prettier --check`.
+- **`lint`** — typecheck, ESLint, `prettier --check`. The typecheck is one
+  program over `src/`, `test/` and `scripts/`. `scripts/` matters because those
+  files run under `node --experimental-transform-types`, which strips types
+  without checking them, and one of them — `render-spec.ts` — emits the App
+  Platform spec a deploy applies. The `test` job spawns that renderer end to end,
+  so a type error that is also a runtime fault on a covered path reddens there —
+  but one that is invisible at runtime (a widened union, a renamed field on a
+  branch no suite walks) has nothing else to catch it, and without this job it
+  would surface first in the deploy, against the real app.
 - **`test`** — `vitest`: unit tests plus a real-MCP-client, in-process E2E.
 - **`servers`** — one matrix leg per server tree the bundle image bakes: `npm ci`
   in `servers/<tree>`, then `npm run build`, `npm test`, or both. `servers/**` is
