@@ -826,6 +826,18 @@ and repin" as the sentence, and its rows fall back to exactly the old
 actually answers until `ghcr.io/tadasant/strad-bundle` is rebuilt with
 `servers/bundle/host` and the deployed config's `image:` pins move to it.
 
+**On a `params: true` server that gap is total, not partial, and the console now
+says so rather than saying nothing.** Such a server declares no `${NAME}`
+references at all, so a component that cannot answer leaves it with **zero**
+requirement rows — not a row reading `unverified`, but no rows. That is the state
+`/ui` explains least well by construction, and for a while it explained it not at
+all: the entry rendered an `ISSUE` button over a `<dialog>` that was never
+emitted, so the click did nothing. The popout now opens on the probe outcome
+instead — which component holds the value, which of the four ways the question
+went unanswered, and the `/strad/<env>/mcp/<slug>/static/*` prefix to look under —
+so the badge leads somewhere. It is still not an observation. Making it one is the
+same pin bump, on that component's image.
+
 **The `cannot render` diagnosis can lose a race and simply not appear.**
 `readStoreDiagnostics` gives its two store reads six seconds together, and the
 per-parameter render pass is bounded at a fan-out of ten. A large namespace can

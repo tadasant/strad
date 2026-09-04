@@ -1397,6 +1397,15 @@ which source, established by which process — and that is usually what somebody
 came to the page for. Only a server with no secrets at all has nothing behind its
 badge.
 
+**No badge is ever a control that does nothing.** The button and the `<dialog>`
+are rendered by two different pieces of `src/ui/index-page.ts`, and they ask one
+predicate — `hasFixDialog()` — rather than each deciding for itself. They used to
+decide separately, and the two rules drifted: an entry with an `ISSUE` badge and
+no requirement rows got the button and not the panel, so the click was swallowed
+in silence. That is the `params: true` shape below, and it was live on
+`craigslist` in production. One predicate is what makes the pairing structural
+instead of a convention two functions have to keep.
+
 ### `cannot render`: the parameter is there and the value will not come out
 
 A secret parameter is a Parameter Manager entry whose payload holds a `__REF__`
@@ -1543,8 +1552,33 @@ console prints anyway. The component reports presence for each one on the
 presence route, and the server is graded on them like anything else.
 
 Where the component reports no parameters for a slug — an image without the
-manifest, or a deploy that resolved none — the old `unverified` sentence stands,
+manifest, or a deploy that resolved none — the `unverified` sentence stands,
 because nothing established anything.
+
+That entry has **zero requirement rows**, and it is the one the console can say
+the least about — which for a long time meant its popout was empty, and then that
+it had no popout at all while still rendering the button. It now opens on a panel
+built from the probe outcome rather than from a row, and it answers the three
+questions a reader has:
+
+| The panel says               | Where it comes from                                                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **which component** holds it | the server's `bundle:`. Never `core` — that is the whole reason the value is invisible from here.                                 |
+| **why** it went unanswered   | the probe outcome, in four flavours (below). A pin bump and an outage are not the same news.                                      |
+| **where to look instead**    | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix. |
+
+The four reasons, which want four different responses:
+
+| Reason        | The probe outcome                                           | What closes it                                                          |
+| ------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `unwired`     | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked    | bind it in the app spec                                                 |
+| `unsupported` | the component answered `404` — an image predating the route | rebuild and repin that component's image                                |
+| `unreachable` | the component could not be reached at all                   | an outage to chase on its own account; it serves nothing either         |
+| `silent`      | it answered and named no parameters for this slug           | nothing is seeded under the namespace, or the last deploy resolved none |
+
+The panel is still not a green. Nothing here was observed, the state stays
+`unverified`, and the badge stays `ISSUE` — the change is that the badge now
+leads somewhere.
 
 ### The presence route: a component answering for itself
 

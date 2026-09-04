@@ -1285,6 +1285,22 @@ first. But nothing on the fleet actually answers until
 `image:` pins in the deployed config move to it. Until then prod's console reads
 exactly as it does today, with a sentence naming the pin bump as the reason.
 
+**ON A `params: true` SERVER THE GAP IS TOTAL, NOT PARTIAL.** Such a server
+declares no `${NAME}` references at all, so a component that cannot answer leaves
+its entry with ZERO requirement rows — not a row reading `unverified`, but no
+rows. That is the state `/ui` explains least well by construction, and for a while
+it explained it not at all: `badgeMarkup()` rendered an `ISSUE` button and the
+dialog list, filtered on `requirements.length > 0`, emitted no `<dialog>` for it,
+so `FIX_DIALOG_SCRIPT` found no element and swallowed the click. It was live on
+`craigslist` in prod (#259). The popout now opens on the probe outcome — which
+component holds the value, which of the four ways the question went unanswered
+(`unwired`, `unsupported`, `unreachable`, `silent`), and the
+`/strad/<env>/mcp/<slug>/static/*` prefix to look under — and the badge and the
+dialog ask ONE predicate, `hasFixDialog()`, so the pairing is structural rather
+than a convention two functions have to keep. None of that is an observation: the
+state stays `unverified`, and making it green is the same pin bump, on that
+component's image.
+
 **Live verification is outstanding.** Every state in this feature is constructed
 in tests — `test/presence.test.ts`, `test/presence.route.test.ts`,
 `test/ui.secret-plumbing.test.ts` — including over a real socket. None of it has
