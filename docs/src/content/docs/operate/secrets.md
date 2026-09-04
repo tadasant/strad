@@ -2113,27 +2113,33 @@ posture and refuses with a 403, so a hand-crafted form post gets nowhere.
 The console memoises the probe per store — one prober per slug, project and
 service account, for the life of the process — because a token mint and a round
 trip on every page render would be latency paid for an answer that is stable for
-hours. An answer is kept for five minutes and a non-answer for fifteen seconds,
-on the same "a network blip is not an answer" reasoning the `/mcp` door uses.
+hours. An answer is kept for five minutes. A non-answer is kept for fifteen
+seconds — the bound the `/mcp` door uses for the same thing, for the reason it
+was written down with: a network blip is not an answer.
 
 Concurrent renders join one in-flight probe rather than each minting their own,
-and **that sharing is only safe because the probe is guaranteed to end.** It was
-not always: the shared entry was cleared when the probe settled, and the probe's
-token mint carries no abort signal of its own — Node's `fetch` has no overall
-timeout, so a token endpoint that accepts a connection and then stalls holds the
-request until undici gives up at 300 seconds, or forever if it trickles bytes.
-One such mint made `GET /ui/:server` for that store hang on every later request
-until core was redeployed, with nothing logged and nothing timing out. Rotating a
-credential through this console is exactly what an operator could then not do.
+and **that sharing is only safe because the probe is guaranteed to end.** Nothing
+about the probe itself guarantees it: the token mint carries no abort signal, and
+Node's `fetch` has no overall timeout, so a token endpoint that accepts a
+connection and then stalls holds the request until undici gives up at 300
+seconds, or forever if it trickles bytes. A shared entry cleared when the probe
+settles is an entry such a mint never clears, which made `GET /ui/:server` for
+that store hang on every later request until core was redeployed, with nothing
+logged and nothing timing out. Rotating a credential through this console is
+exactly what an operator could then not do.
 
-So a caller now waits at most **six seconds**, and the abandoned request is
-cancelled rather than left running. Six is the number the `/mcp` mount already
-uses for the same probe about the same credential; two doors disagreeing on how
-long a caller waits would be a difference with nothing behind it. Past the
-deadline the call gets `NO_CAPABILITIES` with a reason saying so — which is
-unprobed, so it is kept for fifteen seconds and the next render asks again. Fail
-closed is untouched: an unanswered probe never grants a capability, it just stops
-being the last word.
+So a caller waits at most **six seconds**, and the abandoned request is cancelled
+rather than left running. Six is the number the `/mcp` mount uses for the same
+probe about the same credential; two doors disagreeing on how long a caller waits
+would be a difference with nothing behind it. Past the deadline the call gets
+`NO_CAPABILITIES` with a reason saying so — which is unprobed, so it is kept for
+fifteen seconds and the next render asks again. Fail closed is untouched: an
+unanswered probe never grants a capability, it just stops being the last word.
+
+The console does not log the deadline where the `/mcp` mount logs it to stderr,
+because the two doors have different readers: the reason travels to the human in
+front of the console as the unverified-capability line on the page itself, rather
+than into a log they would have to go and read.
 
 ## The MCP tool surface is probed, not configured
 

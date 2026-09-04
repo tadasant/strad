@@ -283,7 +283,7 @@ function probeWithDeadline(
         ...NO_CAPABILITIES,
         reason:
           `the capability probe for "${cfg.projectId}" did not answer within ` +
-          `${deadlineMs}ms`,
+          `${deadlineMs / 1000}s`,
       });
     }, deadlineMs);
     // A pending probe must never be the reason the process refuses to exit.
@@ -309,17 +309,22 @@ function probeWithDeadline(
  *
  * Concurrent renders join ONE probe rather than stampeding Google, and the entry
  * is cleared when that probe settles. Sharing a promise is only safe if the
- * promise settles, and the raw probe is not guaranteed to: the entry used to
- * hold `probeCapabilities(cfg)` directly, cleared in `.finally()`, so a mint
- * that never came back was never cleared and EVERY later render of that store's
- * page joined the same hanging promise for the life of the process. Nothing
- * logged it and nothing timed it out; a redeploy was the cure, which is exactly
- * what an operator trying to rotate a credential through this console cannot
- * reach for.
+ * promise settles, and `probeCapabilities` on its own carries no guarantee that
+ * it will: its token mint passes no abort signal and Node's `fetch` has no
+ * overall timeout. A raw probe in this entry, cleared in `.finally()`, is
+ * therefore an entry a stalled mint never clears — and every later render of
+ * that store's page joins the same hanging promise for the life of the process,
+ * unlogged and untimed, with a redeploy the only cure. Which is exactly what an
+ * operator trying to rotate a credential through this console cannot reach for.
  *
- * So the entry holds a probe that is bounded by construction. The deadline is
- * what makes the memo's own claim true — an answer for `ttlMs`, a non-answer for
+ * So the entry holds a probe bounded by construction. The deadline is what makes
+ * the memo's own claim true — an answer for `ttlMs`, a non-answer for
  * `failureTtlMs`, and never a pending promise for the life of the process.
+ *
+ * The deadline is SILENT here, deliberately, where the `/mcp` mount logs the
+ * same fault to stderr: the console's caller is a human looking at the page it
+ * renders, and the reason travels to them as the unverified-capability detail on
+ * that page rather than into a log they would have to go and read.
  */
 export function cachedProbe(
   cfg: ProbeConfig,
