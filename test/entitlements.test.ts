@@ -132,6 +132,21 @@ describe("resolveSelection — the query proposes, the token disposes", () => {
       "https://s.example/ui/nosuch",
     );
   });
+
+  it("encodes the slug, which is caller-invented text on a not_configured entry", () => {
+    const got = resolveSelection(
+      ["../../admin"],
+      entitled,
+      CONFIG,
+      "https://s.example",
+    );
+    if (got.ok) throw new Error("unreachable");
+    // Not `https://s.example/ui/../../admin`, which a client resolves to
+    // `https://s.example/admin` — a path this gateway never offered them.
+    expect(got.unavailable[0]?.authorize_url).toBe(
+      "https://s.example/ui/..%2F..%2Fadmin",
+    );
+  });
 });
 
 describe("parseServersParam", () => {

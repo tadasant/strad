@@ -35,7 +35,7 @@ import {
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
-import { SERVER_ROUTE } from "./paths.ts";
+import { SERVER_ROUTE, serverConsolePath, UI_PREFIX } from "./paths.ts";
 import {
   connectorFlash,
   mountConnector,
@@ -206,7 +206,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     );
   });
 
-  app.get("/ui", gate, async (req, res) => {
+  app.get(UI_PREFIX, gate, async (req, res) => {
     // Express 4 does not catch a rejected async handler, so guard it here: any
     // unexpected error becomes a 500 page rather than a hung request.
     try {
@@ -244,7 +244,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
   // door that answers differently to an anonymous caller is one fewer thing to
   // reason about.
   app.get("/secrets", gate, (_req, res) => {
-    res.redirect(302, "/ui");
+    res.redirect(302, UI_PREFIX);
   });
 
   app.get(SERVER_ROUTE, gate, async (req, res) => {
@@ -824,7 +824,7 @@ async function renderSecretsPage(
   const otherStores = view.stores
     .filter((s) => s.projectId !== selected.projectId)
     .map((s) => ({
-      href: `/ui/${encodeURIComponent(slug)}?project=${encodeURIComponent(s.projectId)}`,
+      href: `${serverConsolePath(slug)}?project=${encodeURIComponent(s.projectId)}`,
       label: s.label,
     }));
 

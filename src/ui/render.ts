@@ -4,6 +4,7 @@ import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
 import type { SecretsStore, ServerView } from "./resolve.ts";
 import type { ParameterMeta } from "../secrets/parameters/index.ts";
+import { serverConsolePath } from "./paths.ts";
 import {
   classifyPath,
   paramsConsumers,
@@ -185,7 +186,7 @@ export function renderGcsBrowse(opts: GcsBrowseOptions): string {
     .map((full) => {
       const rel = stripRoot(full, view.prefix);
       const name = lastSegment(rel);
-      const href = `/ui/${encodeURIComponent(slug)}?prefix=${encodeURIComponent(rel)}`;
+      const href = `${serverConsolePath(slug)}?prefix=${encodeURIComponent(rel)}`;
       return `
       <a class="row folder-row" href="${href}">
         <span class="row-icon">${FOLDER_SVG}</span>
@@ -265,7 +266,7 @@ function breadcrumb(
   relPrefix: string,
 ): string {
   const slug = view.server.slug;
-  const root = `/ui/${encodeURIComponent(slug)}`;
+  const root = serverConsolePath(slug);
   const rootLabel = view.prefix ? trimSlash(view.prefix) : view.bucket;
 
   const crumbs: string[] = [
@@ -356,7 +357,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
     revealNonSecret,
   } = opts;
   const slug = view.server.slug;
-  const action = `/ui/${encodeURIComponent(slug)}`;
+  const action = serverConsolePath(slug);
   const ns = opts.namespace;
   /**
    * Every form posts the namespace AND the store back, so an action returns

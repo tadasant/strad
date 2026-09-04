@@ -433,7 +433,8 @@ avoid `__proto__` role-injection attacks.)
   requested-but-unavailable server is a hard `424` with a per-server `status`
   (`not_configured` / `not_entitled` / `disabled`) and an
   `authorize_url` of `${publicUrl}/ui/<slug>` — the console page for that
-  server. It is never silently dropped.
+  server, or, for a slug that names nothing, the console's own not-found. It is
+  never silently dropped.
 
 ## `?servers=` is a selection hint, not an auth boundary
 

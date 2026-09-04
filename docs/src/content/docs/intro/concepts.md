@@ -71,8 +71,10 @@ When a requested server is not in the entitled set, strad returns **`424 Failed
 Dependency`** rather than dropping it silently or returning `401`. The body names
 each unavailable server with a `status` (`not_configured`, `not_entitled`, or
 `disabled`) and an `authorize_url` — that server's console page,
-`${publicUrl}/ui/<slug>`. This is the fail-closed contract: a client always learns
-_which_ server it couldn't get and _where_ to fix it.
+`${publicUrl}/ui/<slug>`. A slug that names nothing lands on the console's own
+not-found rather than on a stock 404, with the server list one click away. This
+is the fail-closed contract: a client always learns _which_ server it couldn't
+get and _where_ to fix it.
 
 ```mermaid
 flowchart TD

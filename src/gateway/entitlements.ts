@@ -115,12 +115,9 @@ export function resolveSelection(
           : "not_entitled",
       ...(publicUrl
         ? {
-            // The path comes from src/ui/paths.ts — the same module the console
-            // registers its per-server route from — so this link cannot drift
-            // away from the page it names. It also does the encoding: `slug`
-            // here may be a string the caller invented (a `not_configured`
-            // entry is whatever they put in `?servers=`), and an unencoded
-            // `../` makes this URL claim a path that is not ours.
+            // Path and encoding both come from src/ui/paths.ts — the module
+            // the console registers this route from — so the link a client is
+            // sent to cannot drift away from the page that serves it.
             authorize_url: `${publicUrl.replace(/\/$/, "")}${serverConsolePath(slug)}`,
           }
         : {}),
