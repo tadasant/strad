@@ -238,24 +238,41 @@ The agent's answer to "how do I help with a secret I must never see" is a **deep
 link**:
 
 ```json
-{ "url": "https://staging.strad.tadasant.com/ui/secrets?param=%2Fstrad%2Fstaging%2Fmcp%2F..." }
+{
+  "url": "https://staging.strad.tadasant.com/ui/secrets?param=%2Fstrad%2Fstaging%2Fmcp%2F...&project=strad-secrets-staging",
+  "project": "strad-secrets-staging"
+}
 ```
 
 The agent hands the human a URL. The human signs in and does the thing. The value
 never crosses the agent channel.
 
-`SECRETS_CONSOLE_URL` may carry a query string of its own — one console page can
-front several stores and select between them with `?project=` — and `param=` is
-joined onto whatever is already there with `&`, so both survive. A value with no
-scheme, such as a bare `/ui/secrets`, is used as written.
+The link carries **two** keys, and both are the console's: `param` is the
+canonical path, and `project` is **the store the path resolved to**. This tool is
+the one place a path is resolved for something other than safety — it reads
+nothing and writes nothing, so the store it finds labels the URL rather than
+admitting a call. It matters because one container fronts several stores behind
+**one** `SECRETS_CONSOLE_URL`: a constant in that variable is right for at most
+one store, and a link naming no store at all lands on whichever store the console
+lists first. The resolved store overrides both.
 
-Two things the link does not do yet, and both are filed: the console reads
-`project` and `ns` off the query string and **not** `param`, so the human lands on
-the slug's page rather than on the parameter
-([#273](https://github.com/tadasant/strad/issues/273)); and this tool does not
-resolve the path to its store, so on a multi-store server `project` is whatever
-the operator wrote rather than the store the parameter lives in
-([#274](https://github.com/tadasant/strad/issues/274)).
+An argument that resolves to no store — a bare variable name, which this tool
+accepts, or a path outside every namespace — is not an error here. The link comes
+back without a `project`, and with a `note` saying the console will open on
+whichever store its own configuration selects.
+
+`SECRETS_CONSOLE_URL` may carry a query string of its own — one console page can
+front several stores and select between them with `?project=` — and both keys are
+joined onto whatever is already there with `&`, replacing rather than duplicating
+a key it already carried — and a `ns=` the new `project` orphans is dropped, since
+a namespace belongs to exactly one store. A value with no scheme, such as a bare
+`/ui/secrets`, is used as written, apart from a trailing slash on its path and a
+re-encoding of any query it carried.
+
+One thing the link does not do yet, and it is filed: the console reads `project`
+and `ns` off the query string and **not** `param`, so the human lands on the right
+store's page rather than on the parameter
+([#273](https://github.com/tadasant/strad/issues/273)).
 
 ## `refresh_gateway` — make the gateway re-read the store now
 
@@ -330,7 +347,7 @@ image**, mounted like every other server there.
 | `SECRETS_NAMESPACES` | **core** | yes | The console's namespace SUGGESTIONS. Free text unless `SECRETS_NAMESPACES_STRICT`. Unset = the console reports a misconfiguration. |
 | `SECRETS_NAMESPACES_STRICT` | core | no | `true` restores the list as a hard limit on the console. Default off. |
 | `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. Under `SECRETS_STORES` this is just the default NAME — each store names the variable holding its own viewer key, and no two stores may name the same one. |
-| `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. May carry a query string of its own (e.g. `?project=` on a multi-store console); `param=` is joined onto it with `&`, before any `#fragment`. |
+| `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. May carry a query string of its own; `param=` and `project=` are joined onto it with `&`, before any `#fragment`, replacing rather than duplicating a key it already carried. A `?project=` written here is a constant, so the store a path resolves to overrides it — and a `?ns=` that override orphans is dropped. |
 | `SECRETS_PM_API_BASE` / `SECRETS_TOKEN_URL` | either | no | **Test seams.** Point at a stub Parameter Manager. Not a production knob. |
 
 The admin and resolver keys are **not** listed here — they land on `src/**`

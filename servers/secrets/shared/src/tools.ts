@@ -43,6 +43,11 @@ import type { ParametersWriter } from "./write-client.js";
  * capability. There is no union anywhere on a call path. The tool LIST is a
  * union — see `anyPermits` in capabilities.ts for why it has to be, and why that
  * is safe only because these gates are per store.
+ *
+ * `open_secrets_manager` resolves too, and it is the one place where the answer
+ * is not a gate: it reads nothing and writes nothing, so the store it finds
+ * LABELS the deep link (`?project=`) rather than admitting a call. A path it
+ * cannot resolve therefore costs the link its store, not the call.
  */
 
 /**
@@ -167,14 +172,20 @@ export function toolDefinitions(
       description:
         "Get a deep link into the strad console where a HUMAN can add, rotate, reveal or delete a secret " +
         "value. This is how you help with a secret you must never see: hand the user this URL. The console " +
-        "is gated by Google Workspace SSO and is the only place a secret value can be written or read.",
+        "is gated by Google Workspace SSO and is the only place a secret value can be written or read. " +
+        (multi
+          ? "Pass the CANONICAL PATH rather than a bare variable name: the path is what selects the store, " +
+            "and the link carries that store so the console opens on the project the value actually lives in."
+          : "Pass the canonical path where you have one; the link then names the store the value lives in."),
       inputSchema: {
         type: "object",
         properties: {
           secret: {
             type: "string",
             description:
-              "Optional. A canonical path or variable name to focus in the console.",
+              "Optional. A canonical path or variable name to focus in the console. A canonical path also " +
+              `selects the store the link opens on (${nsList}); a bare variable name cannot, and the console ` +
+              "then opens on whichever store it is configured to show first.",
           },
         },
         additionalProperties: false,
@@ -486,11 +497,21 @@ export function registerTools(server: Server, deps: ToolDeps): void {
         }
 
         case "open_secrets_manager": {
-          const secret = (args as { secret?: unknown } | undefined)?.secret;
-          const url = consoleLink(
-            config,
-            typeof secret === "string" ? secret : undefined,
-          );
+          const raw = (args as { secret?: unknown } | undefined)?.secret;
+          const secret = typeof raw === "string" ? raw : undefined;
+          // THE PATH SELECTS THE STORE HERE TOO — and this is the one tool where
+          // it is not a safety gate. Nothing is read and nothing is written, so
+          // an unresolvable argument costs the link its `project`, not the call:
+          // `secret` is documented as a canonical path OR a bare variable name,
+          // and a variable name resolves to no store by construction.
+          //
+          // What resolving buys is the store. One container fronting N stores
+          // has ONE `SECRETS_CONSOLE_URL`, and the console picks its store from
+          // `?project=` — so a link that names no store lands on whichever one
+          // the operator hardcoded into that variable, or on the console's first
+          // store, for every parameter including the ones in the other N-1.
+          const found = secret ? resolve(secret) : undefined;
+          const url = consoleLink(config, secret, found?.store);
           if (!url) {
             return error(
               "No console URL is configured for this server (SECRETS_CONSOLE_URL).",
@@ -498,6 +519,23 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           }
           return text({
             url,
+            project: found?.store?.project,
+            // Said only when a store was asked for and not found, because that
+            // is the case where the link is weaker than it looks. It is not an
+            // error and it is not a complaint about the argument: a bare
+            // variable name is documented input, so the note says what to pass
+            // to do better rather than reporting a fault. It is worded for both
+            // ways `storeForPath` declines — no namespace claims the path, and
+            // (unreachable through config, refused rather than resolved) more
+            // than one does.
+            note:
+              secret && !found?.store
+                ? `"${secret}" does not address exactly one managed namespace ` +
+                  `(${describeNamespaces(stores)}), so this link cannot name a store — ` +
+                  "pass the canonical path and it will open on the store the value lives in. " +
+                  "As it stands the console opens on whichever store its own configuration " +
+                  "selects, which may not be the one holding this value."
+                : undefined,
             instructions:
               "Send this link to the human. They sign in with Google Workspace SSO and can add, " +
               "rotate, reveal or delete the value there. Do not ask them to paste the value back " +
@@ -711,49 +749,104 @@ function writeDenial(
 }
 
 /**
- * The console link, with the parameter carried as a query parameter.
+ * The console link: the parameter, and the STORE it lives in, as query keys.
  *
- * `https://strad/ui/secrets` + `/strad/staging/mcp/.../VAR`
- *   -> `https://strad/ui/secrets?param=%2Fstrad%2Fstaging%2Fmcp%2F...%2FVAR`
+ * `https://strad/ui/secrets` + `/strad/staging/mcp/.../VAR` in `proj-b`
+ *   -> `https://strad/ui/secrets?param=%2Fstrad%2Fstaging%2Fmcp%2F...%2FVAR&project=proj-b`
+ *
+ * `project` IS THE RESOLVED STORE'S AND OVERRIDES WHATEVER THE CONFIG CARRIED.
+ * One container fronts N stores behind ONE `SECRETS_CONSOLE_URL`, and the console
+ * selects its store from `?project=` (`selectStore`, `src/ui/index.ts`). An
+ * operator can only hardcode one of the N into that variable, so a link that
+ * leaves it alone lands on the right store for at most one store's parameters —
+ * and with no `?project=` at all the console falls back to its first store, which
+ * is the same failure with a different constant. The path resolved to exactly one
+ * store; that answer is strictly better than a constant, so it wins.
+ *
+ * This writes a query key the CONSOLE owns, which is a widening of the coupling
+ * that already writes `param`, not a new one. The console's `consoleStores:` is
+ * configured separately from this server's `mcpStores:`, so the id may name a
+ * store the console does not front — and there `selectStore` falls back to its
+ * first store rather than erroring, which is the same landing a link that named
+ * no store at all would get. The one case the override loses information is a
+ * console fronting a project set DISJOINT from this server's, where the operator's
+ * constant named a store the console does have: no config in this repo is shaped
+ * that way, and the answer if one ever is would be to reconcile the two lists,
+ * because a link that names the wrong store is what this whole function is about.
+ *
+ * A `ns=` THE OVERRIDE ORPHANS IS DROPPED. `ns` is the console's namespace
+ * selector and a namespace belongs to exactly one store, so a configured
+ * `?project=A&ns=/strad/a/mcp/` whose project is rewritten to B leaves a namespace
+ * B does not manage. `selectNamespace` accepts free text unless a store sets
+ * `namespacesStrict`, so the console would list `/strad/a/mcp/` under project B —
+ * an empty table on a page that looks entirely correct, which is the exact failure
+ * this function exists to prevent, one query key over. Kept only when the resolved
+ * store claims it verbatim; dropped otherwise, which lands on that store's own
+ * first namespace.
  *
  * `SECRETS_CONSOLE_URL` IS FREE-FORM CONFIG AND MAY ALREADY CARRY A QUERY
- * STRING: on a multi-store console the URL that lands a human on the right store
- * is `.../ui/secrets?project=zimmer-secrets-prod`. A bare `?` join makes that one
- * query string whose `project` value is the whole rest of the link, and the
- * console reads an unrecognised `?project=` as a stale bookmark and falls back to
- * the first store — a deep link that opens silently on the WRONG store. So the
- * join goes through `URL`: `searchParams.set` joins with `&`, and replaces rather
- * than duplicates a `param` the configured URL already carries (a duplicate is
- * read as the first one, which is the configured one, not ours).
+ * STRING: `.../ui/secrets?project=zimmer-secrets-prod` is the shape a multi-store
+ * console is configured with. A bare `?` join makes that one query string whose
+ * `project` value is the whole rest of the link, and the console reads an
+ * unrecognised `?project=` as a stale bookmark and falls back to the first store —
+ * a deep link that opens silently on the WRONG store. So the join goes through
+ * `URLSearchParams`, which joins with `&` and REPLACES rather than duplicates a key
+ * the configured URL already carries (a duplicate `param` is read as the first one,
+ * which is the configured one and not ours; a duplicate `project` reaches Express
+ * as an array, which `selectStoreStrict` refuses — the first-store fallback again).
  *
- * An UNPARSEABLE `consoleUrl` is concatenated instead, because free-form config
- * is not this function's to reject: `new URL()` throws where a concatenation
- * returns a string, and a relative value like `/ui/secrets` — a usable link for
- * a human on the same host — is exactly what throws. The only value that yields
- * no link at all is no value. THAT BRANCH PICKS ITS OWN SEPARATOR for the same
+ * An UNPARSEABLE `consoleUrl` is assembled by hand instead, because free-form
+ * config is not this function's to reject: `new URL()` throws where a string
+ * splice returns a string, and a relative value like `/ui/secrets` — a usable link
+ * for a human on the same host — is exactly what throws. The only value that
+ * yields no link at all is no value. THAT BRANCH SPLICES ITS OWN QUERY for the same
  * reason the parsed one does: `/ui/secrets?project=zimmer-secrets-prod` is the
- * relative spelling of the URL above, and a fallback that hardcoded `?` would
+ * relative spelling of the URL above, and a fallback that appended blindly would
  * reproduce the defect on exactly the values it exists to keep working.
  */
-function consoleLink(config: SecretsConfig, param?: string): string | undefined {
+function consoleLink(
+  config: SecretsConfig,
+  param?: string,
+  store?: SecretsStore,
+): string | undefined {
   if (!config.consoleUrl) return undefined;
   const raw = config.consoleUrl;
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    // Nothing here is structure — it is a string an operator wrote — so the
-    // trailing-slash strip is the whole string's, and the separator is decided
-    // by looking for a query the URL parser is not available to find.
-    const base = raw.replace(/\/+$/, "");
-    if (!param) return base;
-    return `${base}${base.includes("?") ? "&" : "?"}param=${encodeURIComponent(param)}`;
+    // The URL parser is not available here, so the structure is found by hand,
+    // and it is found in the order a URL has it: everything after the first `#`
+    // is a fragment and never reaches the console, the query is whatever follows
+    // the first `?` in what is left, and the trailing-slash strip is the PATH's —
+    // the same three rules the parsed branch below gets for free.
+    const hash = raw.indexOf("#");
+    const head = hash === -1 ? raw : raw.slice(0, hash);
+    const fragment = hash === -1 ? "" : raw.slice(hash);
+    const q = head.indexOf("?");
+    const base = (q === -1 ? head : head.slice(0, q)).replace(/\/+$/, "");
+    const search = new URLSearchParams(q === -1 ? "" : head.slice(q + 1));
+    if (param) search.set("param", param);
+    if (store) {
+      search.set("project", store.project);
+      if (!store.namespaces.includes(search.get("ns") ?? "")) {
+        search.delete("ns");
+      }
+    }
+    const query = search.toString();
+    return `${base}${query ? `?${query}` : ""}${fragment}`;
   }
   // Strip the trailing slash from the PATH rather than the string: a `?` or a
   // `#` may follow it, and eating the last character of a query value or a
   // hash route is not what this ever meant.
   url.pathname = url.pathname.replace(/\/+$/, "");
   if (param) url.searchParams.set("param", param);
+  if (store) {
+    url.searchParams.set("project", store.project);
+    if (!store.namespaces.includes(url.searchParams.get("ns") ?? "")) {
+      url.searchParams.delete("ns");
+    }
+  }
   return url.toString();
 }
 
