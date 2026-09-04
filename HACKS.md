@@ -1285,6 +1285,41 @@ first. But nothing on the fleet actually answers until
 `image:` pins in the deployed config move to it. Until then prod's console reads
 exactly as it does today, with a sentence naming the pin bump as the reason.
 
+**ON A `params: true` SERVER THE GAP IS TOTAL, NOT PARTIAL.** Such a server may
+declare no `${NAME}` references at all, and then a component that cannot answer
+leaves its entry with ZERO requirement rows — not a row reading `unverified`, but
+no rows. That is the state `/ui` explains least well by construction, and it
+produced a DEAD CONTROL in prod (#259, on `craigslist`): `badgeMarkup()` rendered
+an `ISSUE` button and the dialog list, filtered on `requirements.length > 0`,
+emitted no `<dialog>` for it, so `FIX_DIALOG_SCRIPT` found no element and
+swallowed the click. The popout is built from the probe outcome — which component
+holds the value, which of the five ways the question went unanswered (`unwired`,
+`unsupported`, `unreachable`, `unmanifested`, `silent`), and the
+`/strad/<env>/mcp/<slug>/static/*` prefix to look under — and the badge and the
+dialog ask ONE predicate, `hasFixDialog()`, derived from what the popout will
+render and consulted on BOTH badge branches, so the pairing is structural rather
+than a convention two functions have to keep. None of that is an observation: the
+state stays `unverified`, and making it green is the same pin bump, on that
+component's image.
+
+`unmanifested` and `silent` are two reasons rather than one on purpose. A
+component that named NO managed parameters for this slug is running a spec
+rendered before the slug had `params: true`, and the move is to redeploy it; one
+that manifested its parameters and listed none HERE is reporting an empty
+namespace, and the move is to seed it. Collapsing them tells an operator to
+overwrite a credential that is already in place.
+
+**TWO EDGES OF THAT SHAPE ARE OPEN.** A `params: true` server that ALSO declares a
+resolving `${NAME}` never reaches the zero-row branch, so its managed parameters
+are not graded at all and the entry can read `READY` on the strength of the other
+name — a green over a credential nothing checked (#265). And `params:` is a field
+on a BUILTIN too, whose bundle defaults to `core`: core resolves those parameters
+itself, in-process, through the resolver TTL, so the panel's whole vocabulary
+(private URL, image pin, redeploy the container) would be false about it.
+`unobservableScope()` refuses to build a scope for anything that is not a
+`supplementary-image`, and such an entry degrades to an inert `ISSUE` chip rather
+than a lying panel — a floor, not an answer (#264).
+
 **Live verification is outstanding.** Every state in this feature is constructed
 in tests — `test/presence.test.ts`, `test/presence.route.test.ts`,
 `test/ui.secret-plumbing.test.ts` — including over a real socket. None of it has

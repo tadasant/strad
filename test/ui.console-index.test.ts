@@ -108,6 +108,9 @@ const ENV: NodeJS.ProcessEnv = {
   ADMIN_BOOTSTRAP_TOKEN: BOOTSTRAP,
   STRAD_BUNDLE_URL_BUNDLE: "http://127.0.0.1:1",
   STRAD_BUNDLE_URL_BUNDLE_BAD: "http://127.0.0.1:1",
+  // Bound, and nothing is listening — which is what makes MANAGED_YAML's entry
+  // `unverified` with a REASON ("unreachable") rather than an unwired shrug.
+  STRAD_BUNDLE_URL_BUNDLE_INTERNAL: "http://127.0.0.1:1",
   STRAD_TOKENS: "[]",
 };
 
@@ -529,6 +532,150 @@ describe("GET /ui — the ISSUE popout", () => {
 
 // ---------------------------------------------------------------------------
 // The playground icon: offered only where the playground OPENS
+// ---------------------------------------------------------------------------
+// A `params: true` server nothing could answer for — the dead-control shape
+// ---------------------------------------------------------------------------
+
+/**
+ * The one entry with an `ISSUE` badge and NOT ONE requirement row.
+ *
+ * `params: true` means this server's credentials are managed parameters under
+ * `/strad/{env}/mcp/{slug}/static/` rather than `${NAME}` references, so core
+ * cannot enumerate them; the component that holds them is asked instead, and
+ * here it cannot be reached. The status is `unverified` with zero requirements —
+ * which is the exact shape that rendered a `<button data-fix-open="fix-...">`
+ * over a `<dialog>` nobody emitted, and swallowed the click.
+ */
+const MANAGED_YAML = `
+version: 1
+gateway:
+  name: strad
+  env: test
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+`;
+
+/** The other side of the rule: an entry that genuinely has nothing behind it. */
+const NO_SECRETS_YAML = `
+version: 1
+gateway:
+  name: strad
+  env: test
+auth:
+  staticTokens: { enabled: true }
+  consoleDevBypass: { enabled: true, roles: [admin] }
+roles:
+  admin: { servers: ["*"] }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+`;
+
+describe("GET /ui — an ISSUE badge is never a dead control", () => {
+  let managed: string;
+  beforeAll(async () => {
+    managed = await boot(MANAGED_YAML);
+  });
+
+  /** Every `data-fix-open` on the page, in document order. */
+  const openers = (page: string): string[] =>
+    [...page.matchAll(/data-fix-open="([^"]+)"/g)].map((m) => m[1]!);
+
+  it("emits a <dialog> for EVERY opener the page renders", () => {
+    // The invariant, stated over the whole page rather than over one slug: a
+    // control whose target id was never emitted is a click into nothing, and
+    // `FIX_DIALOG_SCRIPT` returns silently on the missing element. This is the
+    // assertion that fails without hasFixDialog() — `craigslist` renders the
+    // button and the dialog list, filtered on `requirements.length > 0`, skips
+    // it.
+    const found = openers(managed);
+    expect(found).toContain("fix-craigslist");
+    for (const id of found) {
+      expect(managed).toContain(`<dialog class="fixdlg" id="${id}"`);
+    }
+    // And the same over the main fixture, so the rule is not a special case.
+    for (const id of openers(html)) {
+      expect(html).toContain(`<dialog class="fixdlg" id="${id}"`);
+    }
+  });
+
+  it("asks the SAME predicate on both badge branches", () => {
+    // The half that was missing. `openable` was consulted only on the READY
+    // branch, so an ISSUE entry with nothing behind it got the button anyway —
+    // which is the drift, not a symptom of it. Asserted as a property of the
+    // rendered page: no chip-button anywhere without its dialog, on either
+    // colour, across both fixtures.
+    for (const page of [managed, html]) {
+      const buttons = [
+        // `[^>]*?` keeps the match INSIDE the opening tag. `[\s\S]*?` would run
+        // past it, so a chip-button rendered with no data-fix-open would pair
+        // with the NEXT button's id and this assertion would pass anyway.
+        ...page.matchAll(
+          /<button class="chip chip-(ok|bad) chip-badge chip-button"[^>]*?data-fix-open="([^"]+)"/g,
+        ),
+      ];
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const [, , id] of buttons) {
+        expect(page).toContain(`<dialog class="fixdlg" id="${id}"`);
+      }
+    }
+  });
+
+  it("keeps the ISSUE chip a BUTTON rather than degrading it to inert text", () => {
+    // The other way to close the gap, and the wrong one: an inert chip asserts
+    // "this needs attention" and offers no way to find out why — while the
+    // banner above the grid says in so many words that the popouts explain it.
+    expect(managed).toContain(
+      'data-fix-open="fix-craigslist" aria-haspopup="dialog"',
+    );
+  });
+
+  it("gives that popout something TRUE to say: which component, why, and where", () => {
+    const at = managed.indexOf('<dialog class="fixdlg" id="fix-craigslist"');
+    const body = managed.slice(at, managed.indexOf("</dialog>", at));
+    // Which component holds it, and that this process is not it.
+    expect(body).toContain("bundle-internal");
+    expect(body).toContain("not visible here");
+    // WHY it could not be checked — the probe outcome, not a shrug.
+    expect(body).toContain("could not be reached from this process");
+    // WHERE to look instead: the store, the namespace, the project, the route.
+    expect(body).toContain("/strad/test/mcp/craigslist/static/");
+    expect(body).toContain("<dt>project</dt>");
+    expect(body).toContain(
+      "/ui/secrets?ns=%2Fstrad%2Ftest%2Fmcp%2Fcraigslist%2Fstatic%2F",
+    );
+    // And it still does not pretend to know the answer.
+    expect(body).toContain("could not be checked from the console");
+  });
+
+  it("leaves a no-secrets entry inert — that one really has nothing behind it", async () => {
+    // The degradation that was always right stays right: `echo` references no
+    // ${NAME} and manages no parameters, so its READY chip is a <span> and no
+    // dialog is emitted for it. Widening the rule must not widen it to this.
+    const page = await boot(NO_SECRETS_YAML);
+    expect(page).toContain('<span class="chip chip-ok chip-badge"');
+    expect(page).not.toContain('data-fix-open="fix-echo"');
+    expect(page).not.toContain('id="fix-echo"');
+  });
+});
+
 // ---------------------------------------------------------------------------
 
 /**

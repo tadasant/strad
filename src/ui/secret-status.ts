@@ -1338,6 +1338,46 @@ export interface ServerSecretStatus {
   summary: string;
   /** This server's requirements, deduplicated within the server. */
   requirements: SecretObservation[];
+  /**
+   * Present when the entry has NO requirements to show and is still not READY.
+   *
+   * That is one shape and one only: a `params: true` server whose managed
+   * parameters no component named, so there is not a single row to render. It is
+   * the console's least explained state and its most confusing one — the badge
+   * says ISSUE and the panel behind it would otherwise be empty. This carries
+   * the three facts that make the panel worth opening: which component holds the
+   * value, why this process could not ask it, and where the value lives instead.
+   */
+  unobservable?: UnobservableScope;
+}
+
+/**
+ * Why an entry could not be checked, said in specifics rather than as a shrug.
+ *
+ * `reason` is the probe outcome, and the five are not one problem. Three are
+ * about the component: `unwired` is a spec that never bound its private URL,
+ * `unsupported` is a pin to bump, `unreachable` is a component core cannot talk
+ * to. Two are about what it said, and they want OPPOSITE first moves —
+ * `unmanifested` is a component that named no parameters AT ALL for anyone, so
+ * the answer is to redeploy it; `silent` is one that named none for THIS slug
+ * while manifesting others, so the answer is that the namespace is empty and
+ * wants seeding. Collapsing those two sends an operator to seed a value that is
+ * already there.
+ *
+ * ONLY EVER SET FOR A `supplementary-image` SERVER, which is the only kind whose
+ * managed parameters live on a component this process is not. A `params: true`
+ * builtin resolves its own in-process, per call, through the resolver — every
+ * sentence below would be false about it, and a confidently wrong panel is worse
+ * than the dead control this replaced.
+ */
+export interface UnobservableScope {
+  /** The App Platform component that holds the value. Never `core`. */
+  component: string;
+  reason: "unwired" | "unsupported" | "unreachable" | "unmanifested" | "silent";
+  /** One sentence: what was asked, what answered, and what would change it. */
+  detail: string;
+  /** The static namespace this server's managed parameters live under. */
+  namespace: string;
 }
 
 /**
@@ -1485,6 +1525,103 @@ function managedParamObservations(
   });
 }
 
+/**
+ * WHICH of the ways the managed-parameter question went unanswered.
+ *
+ * `managedParamObservations` returns nothing in every one of these cases and the
+ * entry falls back to the shrug. The shrug is still the right STATE — none of
+ * these is evidence a value resolves — but it is not the whole of what this
+ * process knows, and the difference between "bump the pin" and "the component is
+ * down" is the entire content of the panel a reader opens the badge for.
+ *
+ * `supplementary-image` ONLY, and the guard is the load-bearing line rather than
+ * a type narrowing. `params:` is also a field on a builtin, whose bundle
+ * defaults to `core` — and a builtin's managed parameters are resolved by THIS
+ * process, per call, through the resolver's TTL. There is no `${core.PRIVATE_URL}`
+ * to bind, no component to redeploy, and no sense in which the value is invisible
+ * from here, so every sentence below would be false about it. It gets no scope,
+ * and `hasFixDialog` degrades its badge to inert text rather than opening a panel
+ * that lies. Explaining that shape honestly is #264.
+ */
+function unobservableScope(
+  config: StradConfig,
+  server: ServerConfig,
+  presence?: BundlePresence,
+): UnobservableScope | undefined {
+  if (server.kind !== "supplementary-image") return undefined;
+  const component = server.bundle;
+  const namespace = staticNamespace(config.gateway.env, server.slug);
+  const base = { component, namespace };
+  // `expectedKeys` enumerates every bundle holding a supplementary image, so a
+  // server of this kind is always probed and a missing entry means the same
+  // thing the outcome does: no private URL was bound for it.
+  const outcome = presence?.probes.get(component);
+
+  if (!outcome || outcome.kind === "unwired") {
+    return {
+      ...base,
+      reason: "unwired",
+      detail:
+        `This gateway holds no private URL for "${component}", so nothing was asked. A ` +
+        `supplementary image's environment is baked onto ITS container and never broadcast ` +
+        `to core, so with no way to ask that component there is no route from this process ` +
+        `to the answer. The app spec binds it as \${${component}.PRIVATE_URL}; until it does, ` +
+        `this entry stays unverified however well the server is working.`,
+    };
+  }
+  if (outcome.kind === "unsupported") {
+    return {
+      ...base,
+      reason: "unsupported",
+      detail:
+        `"${component}" answered, and it runs an image that predates the presence route, so ` +
+        `it cannot be asked what it holds. This is a PIN BUMP rather than an outage — the ` +
+        `component is up and serving requests, and only the question is unanswerable. ` +
+        `Rebuild that image and repin the component, and these rows fill in on the next load.`,
+    };
+  }
+  if (outcome.kind === "unreachable") {
+    return {
+      ...base,
+      reason: "unreachable",
+      detail:
+        `"${component}" could not be reached from this process, so nothing about it was ` +
+        `established. Chase that on its own account before the secrets: whatever it says ` +
+        `about them, a component core cannot talk to is not answering core's requests ` +
+        `either. (${outcome.detail})`,
+    };
+  }
+
+  // It answered. Two very different silences, and they want opposite first
+  // moves: a component that manifested NO parameters for anyone has a stale
+  // spec, and one that manifested others but none for this slug has an empty
+  // namespace. Telling the first to seed a value is how a present credential
+  // gets rewritten.
+  const manifest = outcome.report.paramKeys;
+  if (!manifest || !manifest[server.slug]) {
+    return {
+      ...base,
+      reason: "unmanifested",
+      detail:
+        `"${component}" answered and named no managed parameters for this server — not an ` +
+        `empty list, no entry at all. The deploy bakes what it resolved into ` +
+        `STRAD_PARAM_KEYS, so the running component is holding a spec rendered before this ` +
+        `slug had \`params: true\`, or one whose manifest it cannot read. Redeploy that ` +
+        `component; do NOT seed on the strength of this, because it says nothing about ` +
+        `what the store holds.`,
+    };
+  }
+  return {
+    ...base,
+    reason: "silent",
+    detail:
+      `"${component}" answered, manifested its managed parameters, and listed NONE under ` +
+      `this server. That is the component reporting that the last render found nothing ` +
+      `beneath this namespace — so nothing was injected, and the usual reason is that ` +
+      `nothing is seeded there yet.`,
+  };
+}
+
 export function deriveServerStatuses(
   config: StradConfig,
   observations: SecretObservation[],
@@ -1540,6 +1677,7 @@ export function deriveServerStatuses(
               `\${NAME} references — and this page does not read that namespace. Nothing ` +
               `here says they are seeded.`,
             requirements,
+            unobservable: unobservableScope(config, server, presence),
           };
         }
         return {
@@ -1688,6 +1826,42 @@ export function storeProject(
     }
   }
   return { project: `strad-secrets-${config.gateway.env}`, guessed: true };
+}
+
+/**
+ * Where to look when the console cannot look for you.
+ *
+ * The same shape as a `fixTargets` entry and deliberately so — a reader who has
+ * opened one popout has read this layout already — but it points at a NAMESPACE
+ * rather than a resource, because nothing here knows the variable names. That is
+ * the honest end of the trail this process can follow: the store, the project,
+ * the prefix, and a console route that lists what is actually under it.
+ */
+export function unobservableTarget(
+  config: StradConfig,
+  scope: UnobservableScope,
+  env: NodeJS.ProcessEnv,
+): FixTarget {
+  const { project, guessed } = storeProject(config, env);
+  return {
+    store: "GCP Parameter Manager (index) + Secret Manager (value)",
+    resource: `${scope.namespace}*`,
+    project,
+    detail:
+      `Everything under this prefix is resolved at RENDER time and injected into ` +
+      `"${scope.component}" as environment variables — so this is where the credentials ` +
+      `are, and the parameters console reads it directly. What is listed there is the ` +
+      `answer this page could not get${
+        guessed
+          ? "; the project is inferred from the naming convention, because this deployment declares none"
+          : ""
+      }. A value written here reaches the container at the NEXT DEPLOY, not on write.`,
+    commands: [
+      `# Console: prefix "${scope.namespace}" — every managed parameter this server gets.`,
+      `# Then redeploy "${scope.component}": a supplementary image's environment is baked at render time.`,
+    ],
+    href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+  };
 }
 
 /**

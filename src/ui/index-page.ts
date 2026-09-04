@@ -20,7 +20,9 @@ import {
   SOURCE_TOOLTIP,
   STATE_RANK,
   storeProject,
+  unobservableTarget,
   type FixTarget,
+  type UnobservableScope,
   type SecretEvidence,
   type SecretObservation,
   type SecretSource,
@@ -234,7 +236,7 @@ ${opts.boot.map((o) => bootRow(o)).join("\n")}
   token.${diagnosisNote(opts.storeDiagnosis, config)}</p>
 
 ${sorted
-  .filter((e) => e.status && e.status.requirements.length > 0)
+  .filter(hasFixDialog)
   .map((e) => fixDialog(e, config, opts.env))
   .join("\n")}
 ${FIX_DIALOG_SCRIPT}
@@ -527,6 +529,28 @@ document.addEventListener("click", function (e) {
 <noscript><style>.card-icon[data-copy]{display:none}</style></noscript>`;
 
 /**
+ * Whether this entry gets a popout — asked ONCE, by both halves that care.
+ *
+ * The badge and the `<dialog>` list are rendered by different code a hundred
+ * lines apart, and this is the predicate they have to agree on: a button whose
+ * `data-fix-open` names an id nobody emitted is a control that swallows the
+ * click and says nothing, which is precisely how `ISSUE` came to be dead on a
+ * `params: true` server. Two copies of the rule is what let them drift; one
+ * function is what stops it, and the drift is the bug rather than either copy.
+ *
+ * It is derived from WHAT fixDialog() WILL RENDER rather than from the state —
+ * requirement rows, or an `unobservable` scope — so the two cannot disagree
+ * about a state neither of them anticipated. `no-secrets` is the one entry that
+ * has neither today: it is READY, it references nothing, and it alone stays
+ * inert.
+ */
+function hasFixDialog(entry: Entry): boolean {
+  const status = entry.status;
+  if (!status) return false;
+  return status.requirements.length > 0 || status.unobservable !== undefined;
+}
+
+/**
  * BOTH badges open, when there is something behind them.
  *
  * A READY entry carries a POSITIVE claim — this secret is plumbed, from this
@@ -536,10 +560,21 @@ document.addEventListener("click", function (e) {
  *
  * A READY entry with no requirements (`no-secrets`) still has nothing behind it
  * and stays inert. A control that opens an empty panel is worse than no control.
+ *
+ * BOTH branches consult `hasFixDialog`, and that is the half that was missing.
+ * The ISSUE branch returned a `<button>` unconditionally, so an entry with the
+ * badge and nothing behind it named a `<dialog>` id nobody emitted and swallowed
+ * the click. Asking on one branch only is what let the two rules drift.
+ *
+ * The inert ISSUE chip is a floor, not the fix. An entry that asserts "this
+ * needs attention" and offers no way to find out why is the worse of the two
+ * failures, so the real answer is that the popout is given something true to say
+ * — see unobservableBlock(). Nothing reachable today takes this branch; it is
+ * here so that a state nobody anticipated degrades instead of going dead.
  */
 function badgeMarkup(entry: Entry): string {
   if (!entry.badge) return "";
-  const openable = (entry.status?.requirements.length ?? 0) > 0;
+  const openable = hasFixDialog(entry);
   if (entry.badge === "READY") {
     if (!openable) {
       return `<span class="chip chip-ok chip-badge" title="This server references no \${NAME}, so there is nothing to seed.">READY</span>`;
@@ -547,6 +582,9 @@ function badgeMarkup(entry: Entry): string {
     return `<button class="chip chip-ok chip-badge chip-button" type="button"
         data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
         title="Which secrets resolve, from which source, and which process established it">READY<span class="chip-caret">▾</span></button>`;
+  }
+  if (!openable) {
+    return `<span class="chip chip-bad chip-badge" title="Something is outstanding for this server and this page holds no detail about it.">ISSUE</span>`;
   }
   return `<button class="chip chip-bad chip-badge chip-button" type="button"
         data-fix-open="${esc(fixDialogId(entry.server.slug))}" aria-haspopup="dialog"
@@ -623,6 +661,7 @@ function fixDialog(
     <p class="fix-headline">${esc(ISSUE_HEADLINE[status.state])}</p>
     <p class="sec-detail">${esc(status.summary)}</p>
 ${worstFirst.map((o) => requirementBlock(o, config, env, slug)).join("\n")}
+${unobservableBlock(status, config, env)}
 ${
   entry.hasView
     ? `    <p class="acc-foot"><a href="/ui/${encodeURIComponent(slug)}">Open this server's console view →</a></p>`
@@ -631,6 +670,55 @@ ${
   </div>
 </dialog>`;
 }
+
+/**
+ * The panel behind an `ISSUE` badge that has no requirement rows to show.
+ *
+ * A `params: true` server whose component named no parameters produces ZERO
+ * rows, and until this existed the page rendered a button over an empty panel it
+ * never emitted — the click went nowhere and the badge was a dead control. The
+ * fix is not to take the control away: the banner above this grid says in so
+ * many words that "their popouts say which process would have to be asked", and
+ * an inert chip asserting "this needs attention" with no way to find out why is
+ * the worse half of the trade. So the control stays and the panel says the true
+ * thing instead — WHICH component holds the value, WHY this process could not
+ * ask it, and WHERE to look rather than here.
+ *
+ * Keyed off `unobservable` alone rather than off the row count as well: the
+ * scope is only ever set on the zero-row branch, and asking twice is the same
+ * rule in two places, which is what `hasFixDialog` exists to stop.
+ */
+function unobservableBlock(
+  status: ServerSecretStatus,
+  config: StradConfig,
+  env: NodeJS.ProcessEnv,
+): string {
+  const scope = status.unobservable;
+  if (!scope) return "";
+  return `      <div class="sec-req">
+        <div class="sec-req-head">
+          <code class="sec-component">${esc(scope.component)}</code>
+          <span class="chip chip-plain chip-route">not visible here</span>
+          <span class="sec-delivery">${esc(UNOBSERVABLE_LABEL[scope.reason])}</span>
+        </div>
+        <p class="sec-detail">${esc(scope.detail)}</p>
+        <p class="sec-evidence">Established by: nothing. This gateway process is not the component that holds these values, and it never sees them.</p>
+${fixBlock(
+  unobservableTarget(config, scope, env),
+  "Check it here",
+  "Look in the console →",
+)}
+      </div>`;
+}
+
+/** The probe outcome, in the few words that go beside the chip. */
+const UNOBSERVABLE_LABEL: Record<UnobservableScope["reason"], string> = {
+  unwired: "no private URL bound",
+  unsupported: "image predates the presence route",
+  unreachable: "component did not answer",
+  unmanifested: "component manifested no parameters",
+  silent: "component listed none for this slug",
+};
 
 const SECRET_CHIP_CLASS: Record<SecretState, string> = {
   present: "chip-ok",
@@ -730,7 +818,12 @@ function requirementBlock(
   const guidance =
     state === "missing" || state === "placeholder" || state === "unrenderable"
       ? fixTargets(config, requirement, env)
-          .map((t) => fixBlock(t, state))
+          .map((t) =>
+            fixBlock(
+              t,
+              state === "placeholder" ? "Rotate it here" : "Set it here",
+            ),
+          )
           .join("\n")
       : "";
 
@@ -748,11 +841,21 @@ ${guidance}
       </div>`;
 }
 
-/** Where to set it. A name, a project, a path — and a command to paste. */
-function fixBlock(target: FixTarget, state: SecretState): string {
+/**
+ * Where to set it. A name, a project, a path — and a command to paste.
+ *
+ * The heading is the caller's, because the verb is not always "set": rotating a
+ * placeholder is a different act from creating a missing value, and an entry the
+ * console could not observe is not being told to write anything at all.
+ */
+function fixBlock(
+  target: FixTarget,
+  heading: string,
+  linkLabel = "Do it in the console →",
+): string {
   return `        <div class="sec-fix">
           <div class="sec-fix-head">${esc(
-            state === "placeholder" ? "Rotate it here" : "Set it here",
+            heading,
           )}<span class="sec-fix-store">${esc(target.store)}</span></div>
           <dl class="sec-fix-dl">
             <dt>resource</dt><dd><code>${esc(target.resource)}</code></dd>
@@ -766,7 +869,7 @@ ${
 }
 ${
   target.href
-    ? `          <p class="acc-foot"><a href="${esc(target.href)}">Do it in the console →</a></p>`
+    ? `          <p class="acc-foot"><a href="${esc(target.href)}">${esc(linkLabel)}</a></p>`
     : ""
 }
         </div>`;
@@ -1056,6 +1159,10 @@ const INDEX_CSS = `<style>
 .sec-req{border-top:1px solid var(--g6);padding:.85rem 0 .3rem}
 .sec-req-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
 .sec-var{color:#e0a63b;font-size:.8rem}
+/* A COMPONENT name, not a variable. Deliberately not .sec-var's amber: that slot
+   holds a variable everywhere else on this page, and a reader who has opened one
+   popout would read this one as a secret nobody named. */
+.sec-component{color:var(--g3);font-size:.8rem}
 .sec-delivery{font-family:var(--font-mono);font-size:.7rem;color:var(--g4);
   text-transform:uppercase;letter-spacing:.05em}
 /* The secret-source badge. Same two labels Zimmer's Connectors page uses, so the

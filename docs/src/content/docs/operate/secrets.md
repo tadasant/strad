@@ -1397,6 +1397,16 @@ which source, established by which process — and that is usually what somebody
 came to the page for. Only a server with no secrets at all has nothing behind its
 badge.
 
+**No badge is ever a control that does nothing.** The button and the `<dialog>`
+are rendered by two different pieces of `src/ui/index-page.ts`, and they ask one
+predicate — `hasFixDialog()` — rather than each deciding for itself. It is
+derived from what the popout will actually render, requirement rows or an
+unobservable scope, so the two cannot disagree about a state neither anticipated,
+and **both** badge colours consult it. One predicate rather than two is the whole
+of the guarantee: a button whose `data-fix-open` names an id nobody emitted is a
+click into silence, which is what a badge over an empty panel degrades to. See
+[limitation #35](/limitations/) for the shape that hit it in production.
+
 ### `cannot render`: the parameter is there and the value will not come out
 
 A secret parameter is a Parameter Manager entry whose payload holds a `__REF__`
@@ -1543,8 +1553,36 @@ console prints anyway. The component reports presence for each one on the
 presence route, and the server is graded on them like anything else.
 
 Where the component reports no parameters for a slug — an image without the
-manifest, or a deploy that resolved none — the old `unverified` sentence stands,
+manifest, or a deploy that resolved none — the `unverified` sentence stands,
 because nothing established anything.
+
+That entry has **zero requirement rows**, and it is the one the console can say
+the least about. Its popout is built from the probe outcome rather than from a
+row, and it answers the three questions a reader has:
+
+| The panel says               | Where it comes from                                                                                                               |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **which component** holds it | the server's `bundle:`. Never `core` — that is the whole reason the value is invisible from here.                                 |
+| **why** it went unanswered   | the probe outcome, in four flavours (below). A pin bump and an outage are not the same news.                                      |
+| **where to look instead**    | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix. |
+
+The reasons, which want different responses — three about the component, and two about what it said:
+
+| Reason         | The probe outcome                                                                                                                                                | What closes it                                                                                                           |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `unwired`      | no `${<bundle>.PRIVATE_URL}` bound, so nothing was asked                                                                                                         | bind it in the app spec                                                                                                  |
+| `unsupported`  | the component answered `404` or `405` — an image predating the presence route                                                                                    | rebuild and repin that component's image                                                                                 |
+| `unreachable`  | it did not answer, or refused. Not always an outage: a `401`/`403` is core and the component holding different `STRAD_INTERNAL_TOKEN`s, and the panel says which | chase the component itself first — one core cannot talk to is not answering core's requests either                       |
+| `unmanifested` | it answered and named no managed parameters for this slug at all — no entry, not an empty list                                                                   | redeploy that component; its `STRAD_PARAM_KEYS` predates this slug's `params: true`, and it says nothing about the store |
+| `silent`       | it manifested its parameters and listed none under this slug                                                                                                     | seed the namespace — the last render found nothing beneath it                                                            |
+
+The last two look alike and want opposite first moves, which is why they are two. Telling an operator to seed a value on the strength of a stale manifest is how a working credential gets rewritten.
+
+The scope is only ever set for a `supplementary-image` server, because it is the only kind whose managed parameters live on a component this process is not. A `params: true` **builtin** runs inside core and resolves its own through the resolver's TTL, per call — there is no `${core.PRIVATE_URL}` to bind and no container to redeploy, so every sentence above would be false about it. It gets no panel, and its badge degrades to inert text rather than opening one that lies. Explaining that shape honestly is [#264](https://github.com/tadasant/strad/issues/264).
+
+The panel is still not a green. Nothing here was observed, the state stays
+`unverified`, and the badge stays `ISSUE` — the change is that the badge now
+leads somewhere.
 
 ### The presence route: a component answering for itself
 
