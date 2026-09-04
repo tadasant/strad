@@ -2203,12 +2203,23 @@ hazard is a write: `storeForPath` refuses an ambiguous path at request time, so
 without the config rule the first symptom would be a create or rotate failing on a
 path a human just typed, in a deployment that rendered and deployed clean.
 
-**A leftover `SECRETS_PROJECT_ID` is warned about.** `storeProject()` reads it
-ahead of `consoleStores:`, so on a multi-store page a stale one — the single-store
-shape this list replaced — makes the console index and the roster's
-copy-pasteable `gcloud` commands name a different project from the one the store
-page defaults to. It fails legibly rather than writing anywhere wrong, which is
+**A leftover `SECRETS_PROJECT_ID` is warned about.** `storeProject()` prefers it
+over a server's own `consoleStores:`, so on a multi-store page a stale one — the
+single-store shape this list replaced — makes the console index and the roster's
+copy-pasteable `gcloud` commands describe a different project from the one the
+store page defaults to. The annotation fires only for the server the roster would
+actually answer from, since `storeProject()` consults the first candidate and
+stops; a deployment whose resolver sets `STRAD_PARAMS_PROJECT_ID` overrides the
+whole order anyway. It fails legibly rather than writing anywhere wrong, which is
 why it is a warning; drop it, or make it name the first store.
+
+**Two stores sharing one `${REF}` is reported across the whole deployment**, not
+one server's list — a bundle carries one secrets slug, so a strad store and a
+Zimmer store sharing an admin credential arrive as two slugs, and that is the
+crossing worth seeing. An overlapping namespace across two slugs is warned about
+too: `storeForPath` resolves a write against every secrets slug's stores at once,
+so the ambiguity is real, but a path nobody writes to could be sitting in a config
+that works today — which is why that half reports rather than refuses.
 
 It names a `consoleEnv:` key rather than carrying a `${REF}` of its own, and
 `check-config` fences that name on three sides: the key **is** declared under this

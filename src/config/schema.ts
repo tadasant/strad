@@ -1453,6 +1453,19 @@ export const StradConfig = z
         // Refusing that pair would be this rule rejecting a config the console
         // resolves perfectly well — the failure mode a new hard error can least
         // afford. `storeForPath` normalises before it matches; so does this.
+        //
+        // THE `mcpStores:` VERSION BELOW COMPARES RAW, AND THAT IS CORRECT
+        // THERE. Each mirrors its own runtime: the console normalises
+        // (src/http/params.ts), and the secrets tree does not
+        // (servers/secrets/shared/src/config.ts). The difference is
+        // load-bearing — do not unify them.
+        //
+        // AND IT IS ONLY WITHIN ONE SERVER. `storeForPath` flattens every
+        // enabled secrets slug's stores into one candidate list, so the same
+        // ambiguity is reachable across two slugs; that half is a WARNING
+        // (`crossServerNamespaceOverlap` in src/deploy/appspec.ts), because a
+        // cross-slug overlap on a path nobody writes to could be sitting in a
+        // config that works today.
         for (const ns of store.namespaces) {
           const here = normaliseNamespace(ns);
           for (const prior of claimed) {
@@ -1498,6 +1511,14 @@ export const StradConfig = z
       // system boundary": see `sharedConsoleAdminCredential` in
       // src/deploy/appspec.ts. Do not "fix" the inconsistency by promoting it to
       // an error here.
+      //
+      // That warning also spans the WHOLE deployment, where the by-name rule
+      // above is per server — a bundle carries one secrets slug, so two stores
+      // sharing a credential across the strad/Zimmer boundary arrive as two
+      // slugs and no per-server rule can see them. And it skips DISABLED
+      // servers, where this one does not: a name collision is wrong whether or
+      // not the server is switched on today, while the renderer that carries
+      // the warning has no disabled server to render.
     }
 
     // MCP STORES: the credential may only travel by THIS server's `env:`, and no

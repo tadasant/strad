@@ -613,14 +613,15 @@ servers:
     #     namespacesStrict: true
     #   - project: zimmer-secrets-staging
     #     label: zimmer staging
+    #     # No two stores may declare OVERLAPPING namespaces: a path both could
+    #     # claim is a console write landing in whichever project was declared
+    #     # first. Refused here rather than by storeForPath at write time, which
+    #     # is where it would otherwise first be noticed. Across two SLUGS the
+    #     # same overlap is a warning, not a refusal.
     #     namespaces: ["/zimmer/staging/mcp/static/"]
     #     # ONE ADMIN KEY PER STORE. Never one identity granted on both projects:
     #     # that is a strictly larger blast radius than the two it replaces.
     #     adminKeyVar: ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
-    #     # …and no two stores may declare OVERLAPPING namespaces: a path both
-    #     # could claim is a console write landing in whichever project was
-    #     # declared first. Refused here rather than by storeForPath at write
-    #     # time, which is where it would otherwise first be noticed.
     #     reveal: true
     #
     # ONE /mcp CONTAINER, MANY STORES. The agent-facing twin of the block above.

@@ -384,9 +384,12 @@ plus two that shape how this server gets its values:
   rendered and deployed clean.
 
   A `SECRETS_PROJECT_ID` left over from the single-store shape is **warned** about
-  when it names a project other than the first store. It outvotes `consoleStores:`
-  in the console index, so the roster's copy-pasteable `gcloud` commands would
-  target one project while the store page defaults to another.
+  when it names a project other than the first store. `storeProject()` prefers it
+  over this server's `consoleStores:`, so the roster's copy-pasteable `gcloud`
+  commands describe one project while the store page defaults to another. Both
+  the shared-`${REF}` warning and an overlapping-namespace warning also span the
+  **whole deployment**, because two secrets slugs are two components and
+  `storeForPath` resolves a write against all of their stores at once.
 
   `adminKeyVar` names a **`consoleEnv:` key**, not a `${REF}` of its own, and
   `check-config` enforces three things about it. The key must be declared under
