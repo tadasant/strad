@@ -1590,7 +1590,7 @@ this job's, so there is no transport failure left to retry — and a retry would
 cost what #51 costs, three full bundle builds for a genuinely broken
 `Dockerfile`.
 
-### 54. A bundle build that fails blocks every later deploy, not just its own
+### 54. A bundle build that fails or is cancelled blocks every later deploy, not just its own
 
 The staging deploy ships the bundle as `sha-<commit>`, resolved by walking
 first-parent history for the newest commit that published one. A commit inside
@@ -1634,15 +1634,19 @@ on purpose, because `ci.yml`'s `cancel-in-progress` makes cancellation routine.
 
 `reheal-bundle-image.yml` now makes that re-run automatically, on the first
 cancellation of a `push` build and nowhere else, and the tag walk holds its wait
-open for that first cancellation so a deploy already waiting does not stop in the
-minute before the re-run starts. See
+open for exactly the cancellations that listener will heal — it restates the same
+three guards rather than assuming — so a deploy already waiting does not stop in
+the minute before the re-run starts. See
 [the self-heal](/operate/operations/#when-the-bundle-build-was-cancelled-it-re-runs-itself).
 
 **What is still open.** A `failure` wedges `main` exactly as before — that is the
 case above, and a re-run cannot fix it. So does a cancellation on attempt 2 (the
 heal spends one attempt per run) and a cancellation of a `workflow_dispatch`
-build (which a human may have stopped on purpose). And when the heal does not
-fire at all, the deploy spends its full 900-second budget before saying so.
+build (which a human may have stopped on purpose); both of those hard-stop
+immediately, exactly as every cancellation used to. What is genuinely slower is
+the case where the heal _should_ have fired and did not: the deploy spends its
+full 900-second budget first, and the error then names the interruption and says
+to re-run it.
 
 ### 57. The ghcr credential is a box-wide file, and the slowest build loses it
 

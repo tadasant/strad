@@ -188,6 +188,16 @@ export const BUNDLE_RELEASE_WORKFLOW =
   ".github/workflows/release-bundle-image.yml";
 
 /**
+ * The listener that re-runs a bundle build that was CANCELLED rather than
+ * judged. Named here rather than spelled into a sentence, for the reason
+ * `ImageSource.remedy` interpolates its workflow: a rename that updated one and
+ * not the other sends a reader to a file that is not there.
+ * `test/image-tag.bundle.test.ts` reads both files and pins them to each other.
+ */
+export const BUNDLE_REHEAL_WORKFLOW =
+  ".github/workflows/reheal-bundle-image.yml";
+
+/**
  * The `paths:` filter a release workflow triggers on, read from the workflow.
  *
  * READ, not copied. `release-bundle-image.yml`'s list is already the answer to
@@ -449,6 +459,13 @@ export interface ImageSource {
    * is the whole of why, and it is not repeated here.
    */
   republish: string;
+  /**
+   * The workflow that re-runs a CANCELLED first attempt of `workflow`, if
+   * anything does. Its presence is what licenses the walk to keep waiting on a
+   * cancellation — see `deadRun` — so it must name a listener that really
+   * watches `workflow`, and the core has none.
+   */
+  reheal?: string;
 }
 
 export const CORE_IMAGE_SOURCE: ImageSource = {
@@ -476,6 +493,7 @@ export const BUNDLE_IMAGE_SOURCE: ImageSource = {
   // Interpolated for the same reason `remedy` is: this sentence names the
   // workflow a reader is about to go dispatch, and a rename that updated one
   // string and not the other would send them to a file that is not there.
+  reheal: BUNDLE_REHEAL_WORKFLOW,
   republish:
     `re-run that build if its tree can still build; when the failure is IN ` +
     `that commit a re-run only rebuilds it, so dispatch ` +
@@ -597,6 +615,15 @@ export interface ReleaseRun {
    * read it.
    */
   runAttempt?: number;
+  /**
+   * What triggered the run — `push`, `workflow_dispatch`, … Read for the same
+   * reason `runAttempt` is: the self-heal declines a dispatched build, because
+   * a human may have stopped that one on purpose, and a walk that could not see
+   * the difference would wait out its budget on a cancellation nothing is
+   * coming back for. Absent where a caller cannot read it, which reads as "not
+   * a push" — the conservative half of the pair.
+   */
+  event?: string;
   /** Where to go look. */
   url: string;
 }
@@ -608,11 +635,30 @@ export interface ReleaseRun {
  * does not build, and a re-run rebuilds it to the same end. `cancelled` says
  * only that something INTERRUPTED the build — a runner host restarting under
  * it, most often — and the tree that was building a second earlier still
- * builds. `reheal-bundle-image.yml` re-runs exactly this case, once, so a
- * cancelled FIRST attempt is a build that is coming back rather than one that
- * is over.
+ * builds. `ImageSource.reheal` names the listener that re-runs exactly this
+ * case, so a cancelled FIRST attempt of a PUSH build is one that is coming back
+ * rather than one that is over.
  */
 const INTERRUPTED = "cancelled";
+
+/**
+ * Whether a re-run is already on its way for this run.
+ *
+ * The three conditions are `reheal-bundle-image.yml`'s three guards, restated
+ * because both halves have to agree: a walk that waited on a cancellation the
+ * listener declines would spend its whole budget on a build nothing is bringing
+ * back, which is worse than the hard stop it replaced. So this asks for
+ * POSITIVE evidence of each — an attempt or an event the API did not report
+ * reads as "no heal", the same way the listener's `if:` reads a missing field.
+ */
+function healIsComing(run: ReleaseRun, source: ImageSource): boolean {
+  return (
+    source.reheal !== undefined &&
+    run.conclusion === INTERRUPTED &&
+    run.runAttempt === 1 &&
+    run.event === "push"
+  );
+}
 
 /**
  * The run, if it has finished without publishing: waiting for it is waiting
@@ -621,15 +667,19 @@ const INTERRUPTED = "cancelled";
  * type, where a `run is ReleaseRun` predicate would have narrowed a live run
  * away in the else branch.
  *
- * `null` too for a first attempt that was merely INTERRUPTED, and that is not a
- * softening of the stop. The self-heal above re-runs such a run within about a
- * minute, and this walk polls every twenty seconds — so without this, a
- * cancellation landing while a deploy is already waiting would hard-stop that
- * deploy in the window before the re-run it is waiting for even starts. A
- * second attempt that is cancelled again IS dead: the self-heal declined it,
- * nothing else is coming, and the budget would buy the same error later.
+ * `null` too for a run `healIsComing` vouches for, and that is not a softening
+ * of the stop. The self-heal re-runs such a run within about a minute, and this
+ * walk polls every twenty seconds — so without this, a cancellation landing
+ * while a deploy is already waiting would hard-stop that deploy in the window
+ * before the re-run it is waiting for even starts. A cancellation the listener
+ * DECLINES — a second attempt, a dispatched build, an image whose source has no
+ * listener at all — IS dead: nothing else is coming, and the budget would buy
+ * the same error later.
  */
-function deadRun(run: ReleaseRun | null): ReleaseRun | null {
+function deadRun(
+  run: ReleaseRun | null,
+  source: ImageSource,
+): ReleaseRun | null {
   if (run === null) return null;
   // A `conclusion` of null is NOT a verdict. `completed` can arrive before the
   // conclusion settles, and reading the absence of "success" as failure would
@@ -641,8 +691,7 @@ function deadRun(run: ReleaseRun | null): ReleaseRun | null {
     run.conclusion !== null &&
     run.conclusion !== "success";
   if (!done) return null;
-  if (run.conclusion === INTERRUPTED && (run.runAttempt ?? 1) === 1)
-    return null;
+  if (healIsComing(run, source)) return null;
   return run;
 }
 
@@ -706,12 +755,19 @@ export async function resolveDeployTag(
       // `republish` both talk a reader out of a re-run, because both were
       // written for a build the COMMIT broke. Here the commit is fine and the
       // re-run is the entire fix.
+      //
+      // The second sentence exists only where a listener does. Naming one on
+      // the core — which has none — would send a reader looking for a workflow
+      // that is not watching that release.
       const interruptedAdvice =
         `That run was CANCELLED, not failed, so nothing was learned about the ` +
-        `commit and a re-run of it will publish. reheal-bundle-image.yml re-runs ` +
-        `the first such cancellation by itself; a cancellation still sitting ` +
-        `here means that heal did not fire, or has already spent its one ` +
-        `attempt on a CI host that is not healthy. Re-run it`;
+        `commit and a re-run of it will publish. ` +
+        (source.reheal
+          ? `${source.reheal.split("/").pop()} re-runs the first such ` +
+            `cancellation of a push build by itself, so one still sitting here ` +
+            `is a second attempt, a dispatched build, or a heal that did not ` +
+            `fire — re-run it`
+          : `Re-run it`);
       const advice = (run: ReleaseRun): string =>
         run.conclusion === INTERRUPTED ? interruptedAdvice : source.republish;
       const dead = (run: ReleaseRun): Error =>
@@ -723,7 +779,7 @@ export async function resolveDeployTag(
         );
 
       let run = await lookUp();
-      let gone = deadRun(run);
+      let gone = deadRun(run, source);
       if (gone) throw dead(gone);
 
       const deadline = now() + waitMs;
@@ -733,7 +789,7 @@ export async function resolveDeployTag(
         await sleep(WAIT_POLL_MS);
         if (await published(tag)) return { tag, sha: candidate.sha, distance };
         run = await lookUp();
-        gone = deadRun(run);
+        gone = deadRun(run, source);
         if (gone) throw dead(gone);
       }
       // A run that exists and has not concluded is worth waiting for, so the
@@ -753,10 +809,15 @@ export async function resolveDeployTag(
         run.conclusion === INTERRUPTED;
       throw new Error(
         `${owed}` +
-          (waited
-            ? `, and none appeared in ${Math.round(waitMs / 1000)}s of waiting. ` +
-              `${source.workflow} is slower than that, or it failed.\n`
-            : `. ${source.workflow} is probably still building it, or it failed.\n`) +
+          (stillInterrupted
+            ? (waited
+                ? `, and none appeared in ${Math.round(waitMs / 1000)}s of waiting. `
+                : `. `) +
+              `${source.workflow} was interrupted before it could publish it.\n`
+            : waited
+              ? `, and none appeared in ${Math.round(waitMs / 1000)}s of waiting. ` +
+                `${source.workflow} is slower than that, or it failed.\n`
+              : `. ${source.workflow} is probably still building it, or it failed.\n`) +
           (run
             ? `Its run is ${run.status} (${run.conclusion ?? "no conclusion yet"}): ${run.url}\n`
             : noRun
@@ -844,6 +905,7 @@ export function releaseRunLookup(
         status?: string | null;
         conclusion?: string | null;
         run_attempt?: number | null;
+        event?: string | null;
         html_url?: string;
         created_at?: string;
       }[];
@@ -859,9 +921,12 @@ export function releaseRunLookup(
     return {
       status: chosen.status ?? "unknown",
       conclusion: chosen.conclusion ?? null,
-      // A run the API cannot count attempts for is treated as a first attempt,
-      // which is the reading that keeps waiting rather than the one that stops.
-      runAttempt: chosen.run_attempt ?? 1,
+      // Passed through rather than defaulted. `healIsComing` wants positive
+      // evidence that a re-run is on its way, and inventing an attempt number
+      // or a trigger is the one way to manufacture some — which would hold the
+      // wait open for a heal that structurally cannot fire.
+      runAttempt: chosen.run_attempt ?? undefined,
+      event: chosen.event ?? undefined,
       url: chosen.html_url ?? url,
     };
   };

@@ -521,10 +521,10 @@ The wait assumes the image is **coming**. When it is not — the run that owed i
 has already finished without publishing — the step asks the Actions API for that
 run's state and stops immediately, with the run's URL, rather than spending the
 budget on a build that ended before the deploy began. A run still queued or in
-flight is exactly what the wait is for, and is left alone; so is a run whose
-FIRST attempt was cancelled, because
+flight is exactly what the wait is for, and is left alone; so is a run
 [the self-heal](#when-the-bundle-build-was-cancelled-it-re-runs-itself) is about
-to re-run it. The lookup needs
+to re-run, which the step decides by restating that listener's three guards
+rather than by assuming it fires. The lookup needs
 `actions: read`, which `deploy-staging.yml` requests and every caller of it has
 to grant as well; without it the step falls back to waiting out the budget, which
 is what it did before. Either way the deploy stays stopped until an image exists —
@@ -625,11 +625,21 @@ heals, and a heal that runs on the broken thing cannot run.
 The tag walk meets it halfway. A deploy already inside its fifteen-minute wait
 polls every twenty seconds, so a cancellation landing mid-wait would otherwise
 hard-stop the deploy in the minute before the re-run it is waiting for even
-starts. A **first** cancellation therefore holds the wait open; a second attempt
-cancelled again is dead like any other verdict, because the heal has spent
-itself. Either way the hard stop's message says _re-run it_ rather than
-_dispatch it_ — the advice for a failure is the wrong advice for an
+starts. So it holds the wait open for a cancellation this listener will heal —
+and it decides that by asking the Actions API for the same three facts the
+guards above test, rather than by assuming. A cancellation the listener
+**declines** — a second attempt, a dispatched build, an attempt number or
+trigger the API did not report — is dead like any other verdict: waiting on it
+would spend the whole budget on a build nothing is bringing back, which is worse
+than the hard stop it replaced. Either way the message says _re-run it_ rather
+than _dispatch it_ — the advice for a failure is the wrong advice for an
 interruption.
+
+The core image gets that wording too, and nothing else. This listener watches
+`Release bundle image` and no other workflow, so a cancelled `release-image.yml`
+run is never held open and its message names no heal. `ImageSource.reheal` is
+what carries the difference — beside the walk-back rule, which until now was the
+only thing separating the two images.
 
 **Two things this deliberately does not do.** It never re-runs a `failure`, so
 the loop above stays impossible. And it heals once — an attempt 2 that is

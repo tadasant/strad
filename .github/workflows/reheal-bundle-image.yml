@@ -74,6 +74,13 @@ jobs:
     # `head_branch` is deliberately NOT among them: release-bundle-image.yml
     # already refuses every ref but `main` in its first step, so a push build
     # that got far enough to be cancelled was on `main`.
+    #
+    # `healIsComing` in src/deploy/imageTag.ts restates all three, because the
+    # tag walk holds a deploy's wait open on the promise that this job fires —
+    # so a guard relaxed here without the walk being told would have the walk
+    # wait on a run this job declines. Both sides read a field they cannot see
+    # as "decline" (here, `null == 1` is false), so neither invents a heal.
+    # `test/image-tag.bundle.test.ts` reads this file and pins the pair.
     if: >-
       github.event.workflow_run.conclusion == 'cancelled' &&
       github.event.workflow_run.run_attempt == 1 &&

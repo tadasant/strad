@@ -2215,7 +2215,7 @@ built three times, twelve dependency trees each.
 **Undo.** Drop `use: false` and the `builder:` inputs and delete the test. Every
 build then resolves the shared pointer again.
 
-## 54. A bundle build that fails blocks every later deploy, not just its own
+## 54. A bundle build that fails or is cancelled blocks every later deploy, not just its own
 
 **What.** `deploy-staging.yml` resolves the bundle's `sha-<commit>` tag by
 walking first-parent history and stopping at the newest commit that published
@@ -2301,10 +2301,19 @@ build, which is one a human may have stopped deliberately. It runs on
 `deadRun` had to meet it halfway. A deploy already inside its 900-second wait
 polls every twenty seconds, so it would otherwise reach the cancellation and stop
 in the minute before the re-run it is waiting for even starts — the heal cannot
-win that race alone. So a FIRST cancellation is no longer a dead run, and
-`ReleaseRun.runAttempt` is what bounds that: a second attempt cancelled again is
-dead like any other verdict, because the heal has spent itself and a CI host that
-cancels twice is not going to publish on the third ask.
+win that race alone. So a cancellation the listener WILL heal is no longer a dead
+run, and `healIsComing` decides that by restating the listener's three guards
+rather than assuming it fires: `ReleaseRun.runAttempt` and `ReleaseRun.event` are
+read from the Actions API for exactly that, and both want positive evidence, so a
+field the API stops reporting reads as "no heal" the same way the listener's
+`if:` would. A cancellation it declines is dead like any other verdict — waiting
+on one would spend the budget on a build nothing is bringing back, which is worse
+than the stop it replaced.
+
+`ImageSource.reheal` is what keeps this off the core. The listener watches
+`Release bundle image` and nothing else, so a cancelled `release-image.yml` run
+is never held open and its message names no heal — it still gets the re-run
+advice, which is right for any interruption.
 
 **Still open in this shape.** A `failure` wedges `main` exactly as before. So
 does a cancellation on attempt 2, and so does one of a `workflow_dispatch` build.
@@ -2321,9 +2330,10 @@ and delete the corresponding tests. The walk then waits out its budget on every
 dead build again. Dropping only the caller's grant is the same undo with no
 symptom — the lookup 403s and is swallowed — which is what
 `test/image-tag.bundle.test.ts` reads both workflows to prevent. To undo the cancellation half:
-delete `.github/workflows/reheal-bundle-image.yml`, drop the `INTERRUPTED` branch
-from `deadRun` and `ReleaseRun.runAttempt` with it, and drop `interruptedAdvice`
-from `resolveDeployTag`. A cancelled build then wedges `main` until a human
+delete `.github/workflows/reheal-bundle-image.yml`, drop `healIsComing` and the
+`INTERRUPTED` branch in `deadRun`, drop `ReleaseRun.runAttempt`,
+`ReleaseRun.event` and `ImageSource.reheal` with it, and drop
+`interruptedAdvice` from `resolveDeployTag`. A cancelled build then wedges `main` until a human
 notices the deploy that failed because of it.
 
 ## 55. The slack server is a FORK, and nothing detects a re-vendor that reverts it
