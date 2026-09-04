@@ -839,15 +839,20 @@ and the `/strad/<env>/mcp/<slug>/static/*` prefix to look under — so the badge
 leads somewhere. It is still not an observation. Making it one is the same pin
 bump, on that component's image.
 
-**Two edges of that shape remain.** A `params: true` server that ALSO declares a
-resolving `${NAME}` never reaches the zero-row branch, so its managed parameters
-are not graded at all and the entry can read `READY` on the strength of the other
-name — a green over a credential nothing checked
-([#265](https://github.com/tadasant/strad/issues/265)). And a `params: true`
-**builtin** runs inside core, which resolves its parameters itself: the panel's
-whole vocabulary is about a component core is not, so a builtin gets no panel and
-an inert `ISSUE` chip instead of an explanation
-([#264](https://github.com/tadasant/strad/issues/264)).
+**A server that declares something else is graded on both.** The managed
+namespace is a requirement in its own right, ranked `unobservable`, so an
+unchecked one demotes the entry to `unverified` whatever its `${NAME}` references
+did — a `params: true` server no longer reads `READY` for having checked a part
+rather than the whole ([#265](https://github.com/tadasant/strad/issues/265)).
+The popout gets its own first line there, because the `unverified` headline
+("nothing here was established either") would contradict the rows under it.
+
+**One edge of that shape remains.** A `params: true` **builtin** runs inside
+core, which resolves its parameters itself: the panel's whole vocabulary is about
+a component core is not, so a builtin gets no panel — an inert `ISSUE` chip where
+it has no rows, and its `${NAME}` rows with no explanation of the namespace where
+it has some ([#264](https://github.com/tadasant/strad/issues/264)). `echo` in
+staging is that shape.
 
 **The `cannot render` diagnosis can lose a race and simply not appear.**
 `readStoreDiagnostics` gives its two store reads six seconds together, and the

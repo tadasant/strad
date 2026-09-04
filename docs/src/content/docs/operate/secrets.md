@@ -1556,14 +1556,33 @@ Where the component reports no parameters for a slug — an image without the
 manifest, or a deploy that resolved none — the `unverified` sentence stands,
 because nothing established anything.
 
-That entry has **zero requirement rows**, and it is the one the console can say
-the least about. Its popout is built from the probe outcome rather than from a
-row, and it answers the three questions a reader has:
+**It stands whatever else the server declares**, and that is the point. The
+managed namespace is a requirement of its own, ranked `unobservable` — above
+`present`, below every piece of bad news — so an unchecked one demotes a green
+and never overwrites a red. Grading the entry on the `${NAME}` references it
+happens to declare BESIDE its parameters hands it a `READY` for having checked a
+part rather than the whole, with the credentials it takes from the store checked
+by nothing. That is worse than saying nothing: a reader investigates an `ISSUE`
+badge and nobody investigates a green one. `echo` in `infra/strad.staging.yaml`
+is that shape — `params: true` and one `${STRAD_ENV}` in its `options:` — and it
+reads `unverified`.
+
+The sentence the console prints is careful about which claim it is making. A
+resolved `${NAME}` **is** part of what the server runs on: `optionsFor` merges a
+builtin's parameters _over_ its resolved `options:`, and a supplementary image's
+`env:` is injected beside its parameters. So the entry says those names are not
+_all_ of what it needs, never that they are irrelevant — and the popout's first
+line says the same, rather than the `unverified` headline's "nothing here was
+established either" over rows that were.
+
+An entry that declares nothing else has **zero requirement rows**, and it is the
+one the console can say the least about. Its popout is built from the probe
+outcome rather than from a row, and it answers the three questions a reader has:
 
 | The panel says               | Where it comes from                                                                                                               |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | **which component** holds it | the server's `bundle:`. Never `core` — that is the whole reason the value is invisible from here.                                 |
-| **why** it went unanswered   | the probe outcome, in four flavours (below). A pin bump and an outage are not the same news.                                      |
+| **why** it went unanswered   | the probe outcome, in five flavours (below). A pin bump and an outage are not the same news.                                      |
 | **where to look instead**    | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix. |
 
 The reasons, which want different responses — three about the component, and two about what it said:
@@ -1578,7 +1597,12 @@ The reasons, which want different responses — three about the component, and t
 
 The last two look alike and want opposite first moves, which is why they are two. Telling an operator to seed a value on the strength of a stale manifest is how a working credential gets rewritten.
 
-The scope is only ever set for a `supplementary-image` server, because it is the only kind whose managed parameters live on a component this process is not. A `params: true` **builtin** runs inside core and resolves its own through the resolver's TTL, per call — there is no `${core.PRIVATE_URL}` to bind and no container to redeploy, so every sentence above would be false about it. It gets no panel, and its badge degrades to inert text rather than opening one that lies. Explaining that shape honestly is [#264](https://github.com/tadasant/strad/issues/264).
+On a server that declares `${NAME}` references too, the panel renders **below**
+those rows. The rows are about names this server references; the panel is about
+the credentials it runs on, and they are different questions — the rows cannot
+answer the second one, which is precisely why the entry is not `READY`.
+
+The scope is only ever set for a `supplementary-image` server, because it is the only kind whose managed parameters live on a component this process is not. A `params: true` **builtin** runs inside core and resolves its own through the resolver's TTL, per call — there is no `${core.PRIVATE_URL}` to bind and no container to redeploy, so every sentence above would be false about it. It gets no panel; where it has no requirement rows either, its badge degrades to inert text rather than opening one that lies, and where it has some, the popout is those rows and the sentence above them. Explaining that shape honestly is [#264](https://github.com/tadasant/strad/issues/264).
 
 The panel is still not a green. Nothing here was observed, the state stays
 `unverified`, and the badge stays `ISSUE` — the change is that the badge now
