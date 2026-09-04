@@ -160,14 +160,20 @@ A slug is not a mount, and a mount is not a component. Before you write a number
 grep for the others.
 
 `bundle-zimmer-secrets` is the third component and the only one that is not there
-for capability. Capability is config and config can be shared; a parameter STORE
-is `process.env`, and a container has one of those — so a second `secrets` slug
-fronting a second GCP project needs a second bundle. Two secrets slugs in ONE
-bundle is the obvious way to write it and is silently wrong (one store answers
-under two slugs); the `superRefine` in `src/config/schema.ts` rejects it. What that
-rule cannot see is a `params: true` variable — its NAME comes from a path in the
-store — so `renderAppSpec` throws separately when a resolved parameter would shadow
-a sibling's variable on the same bundle.
+for capability. What makes it a component is the SLUG, not the store: a second
+entitlement and a second console page. A second STORE needs no second component —
+`mcpStores:` gives one `secrets` slug a list of them, each with its own project,
+namespaces, viewer credential and probed capability, rendered onto the bundle as
+a `SECRETS_STORES` descriptor.
+
+Two secrets SLUGS in ONE bundle is still silently wrong, and for the same reason
+it always was: a bundle is a container is one `process.env`, the secrets tree
+reads it by the bare name, and one store would answer under two slugs. The
+`superRefine` in `src/config/schema.ts` rejects it — both shapes of it, a shared
+`SECRETS_PROJECT_ID` and two servers declaring `mcpStores:` on one bundle. What
+that rule cannot see is a `params: true` variable — its NAME comes from a path in
+the store — so `renderAppSpec` throws separately when a resolved parameter would
+shadow a sibling's variable on the same bundle.
 
 **Brand and voice.** All user-facing prose (docs, README, console copy) follows
 `references/BRAND.md` (what strad is and the opinions that follow) and

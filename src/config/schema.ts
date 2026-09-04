@@ -266,6 +266,73 @@ const ConsoleStore = z.object({
   reveal: z.boolean().default(false),
 });
 
+/**
+ * ONE parameter store the `/mcp` server can address: a GCP project, the
+ * namespaces it manages, and the VIEWER credential that reaches it.
+ *
+ * The agent-facing twin of `ConsoleStore` above, and it is deliberately a
+ * separate type rather than the same one wearing a different name. The two
+ * differ on the only thing that matters about them:
+ *
+ *   - a console store names an `adminKeyVar`, a `consoleEnv:` key, resolved onto
+ *     CORE alone. It can add, rotate, reveal and delete.
+ *   - an mcp store names a `viewerKeyVar`, an `env:` key, baked onto the BUNDLE.
+ *     What it can do is whatever IAM granted that key — and on production, that
+ *     is a viewer that cannot dereference a secret.
+ *
+ * There is no `reveal`, because there is nothing to offer: `/mcp` has no UI, and
+ * whether a secret value can be read is decided by a probe against THIS store's
+ * project (servers/secrets/shared/src/capabilities.ts) rather than by a flag.
+ * And there is no `namespacesStrict`, because the MCP half has no lax mode to
+ * turn off: `storeForPath` refuses every path no store's namespace claims,
+ * always, and `loadConfig` refuses a configuration in which two stores could
+ * claim one path. The console's per-store `namespacesStrict` exists because its
+ * namespaces are otherwise a set of suggestions on a free-text field; here they
+ * ARE the binding.
+ *
+ * There is no `location` either, and that one is an ABSENCE rather than a
+ * decision: the MCP tree addresses `locations/global` as a constant
+ * (parameter-manager.ts, write-client.ts). A console store on another location
+ * therefore has no MCP twin, and pointing an entry here at one would report
+ * "has no value yet" for every parameter in it — a wrong answer rather than a
+ * refusal. Give `/mcp` a location before giving it such a store.
+ */
+const McpStore = z.object({
+  /**
+   * The GCP project id, and the store's ADDRESS. It is what a refusal names and
+   * what `list_managed_namespaces` reports capabilities under, so it must be
+   * unique within one server's list.
+   */
+  project: z.string().min(1),
+  /** What a human reading a tool result calls it. Defaults to the project id. */
+  label: z.string().min(1).optional(),
+  /**
+   * The canonical-path prefixes THIS store manages.
+   *
+   * They are what BINDS a parameter path to a project, a credential and a
+   * capability, so two stores on one server may not declare overlapping
+   * prefixes — the `superRefine` below refuses it, and the server refuses it
+   * again at boot.
+   */
+  namespaces: z.array(z.string().min(1)).min(1),
+  /**
+   * The `env:` KEY holding this store's VIEWER service-account key JSON.
+   *
+   * A NAME, not a `${REF}`, for the reason `adminKeyVar` is one: the credential
+   * travels by the scope that already exists for it, so there is one place to
+   * get the scoping right rather than two. `env:` is the scope that lands on the
+   * bundle, which is the component that answers `/mcp`.
+   *
+   * NEVER AN ADMIN KEY, and that is not a convention here — it is a consequence.
+   * `viewerKeyVar` must be a key of this server's own `env:`, and the
+   * `consoleStores:` rules above already refuse an `adminKeyVar` whose key OR
+   * whose `${REF}` appears in any server's `env:` under any name. So a console
+   * admin credential cannot be reached through this field without failing one of
+   * those first.
+   */
+  viewerKeyVar: z.string().min(1),
+});
+
 const ServerBase = z.object({
   /** Stable identifier. Tools are namespaced `<slug>__<tool>`. */
   slug: SLUG,
@@ -569,15 +636,20 @@ const SupplementaryImageServer = ServerBase.extend({
    * note, reveal and delete is scoped to the selected entry.
    *
    * WHY IT IS `console`-PREFIXED, and not merely `stores:`. This field is read by
-   * the SSO console and by nothing else. The `/mcp` half of a secrets slug is
-   * `servers/secrets`, which reads `SECRETS_PROJECT_ID` out of its own
-   * `process.env` — one container, one store, unchanged and deliberately so.
-   * There is nowhere in strad to say "role X may call list_parameters, but only
-   * for namespace Y": entitlements name SLUGS (gateway/entitlements.ts) and the
-   * `tools:` policy names TOOL NAMES (gateway/toolPolicy.ts), so a multi-project
-   * MCP secrets server would necessarily be one entitlement spanning every
-   * project it reaches. The console has a human behind an SSO gate; /mcp has an
-   * API key that lives in every agent session. They do not get the same reach.
+   * the SSO console and by nothing else; `mcpStores:` below is the `/mcp` half,
+   * and the two are separate because the credential each carries is separate —
+   * an admin key that lands on core alone, and a viewer key that lands on the
+   * bundle. A deployment may declare either, both, or neither, and their
+   * namespace lists need not match: the console's may be wider.
+   *
+   * WHAT THE TWO SHARE IS ONE ENTITLEMENT. There is nowhere in strad to say
+   * "role X may call list_parameters, but only for namespace Y": entitlements
+   * name SLUGS (gateway/entitlements.ts) and the `tools:` policy names TOOL
+   * NAMES (gateway/toolPolicy.ts). So a slug whose `mcpStores:` names several
+   * projects IS one entitlement spanning all of them, and everyone entitled to
+   * that slug reaches every store on it. That is a deliberate posture decision
+   * and not an oversight — what it does NOT do is level the stores' capability,
+   * because each store is probed and called with its own credential.
    *
    * WHY THE CREDENTIAL IS NAMED AND NOT INLINED. `adminKeyVar` names a
    * `consoleEnv:` KEY rather than carrying a `${REF}` of its own. `consoleEnv:`
@@ -591,6 +663,34 @@ const SupplementaryImageServer = ServerBase.extend({
    * and MUST NOT be a key of any server's `env:`.
    */
   consoleStores: z.array(ConsoleStore).default([]),
+  /**
+   * The parameter STORES this server's `/mcp` half can address.
+   *
+   * One container, N GCP projects. Absent (the default) the secrets tree resolves
+   * a SINGLE store the old way, out of `SECRETS_PROJECT_ID` / `SECRETS_NAMESPACES`
+   * / `SECRETS_SERVICE_ACCOUNT_KEY_JSON` in its own `env:` — so every config
+   * written before this field keeps working unchanged. Present, `renderAppSpec`
+   * emits a `SECRETS_STORES` descriptor onto this server's bundle and the tree
+   * reads THAT instead, entirely: a config that says what its stores are does
+   * not also get an env-derived one under whichever `SECRETS_PROJECT_ID` was
+   * left lying around. Declaring both is refused below rather than resolved.
+   *
+   * THE DESCRIPTOR CARRIES NO CREDENTIAL. It carries project ids, namespaces and
+   * the NAME of the `env:` key each store's viewer credential arrives under, so
+   * a rendered app spec is readable and a deploy diff shows which store gained
+   * or lost a namespace. The keys themselves are ordinary `env:` refs.
+   *
+   * WHAT MAKES IT SAFE TO PUT SEVERAL PROJECTS BEHIND ONE MCP SERVER. A
+   * capability is a property of ONE credential on ONE project, and the secrets
+   * tree keys it that way: one `projects:testIamPermissions` probe per store,
+   * memoised per project id, and every gate — `get_secret_value`, all three
+   * writes, the delete — consults the capability of the store the requested PATH
+   * resolves to. The tool LIST is the union across stores, because an MCP listing
+   * is static per container and there is no way to offer a tool for one store and
+   * withhold it for another; the enforcement is not. See
+   * servers/secrets/shared/src/capabilities.ts.
+   */
+  mcpStores: z.array(McpStore).default([]),
   /** Headers strad sends when proxying to it (e.g. a shared internal token). */
   headers: HeaderMap,
 });
@@ -1314,6 +1414,205 @@ export const StradConfig = z
               `them.`,
             path: ["servers"],
           });
+        }
+      }
+    }
+
+    // MCP STORES: the credential may only travel by THIS server's `env:`, and no
+    // two stores may share one.
+    //
+    // The `/mcp` twin of the `consoleStores:` block above, and the rules are the
+    // same shape for the same reason: none of them is checkable at runtime, by
+    // which point the value is just a string in an environment.
+    //
+    // What is different is what a violation COSTS. A collapsed console
+    // credential is one admin identity on two projects. A collapsed MCP
+    // credential is that AND a collapsed capability: the secrets tree probes
+    // `projects:testIamPermissions` once per store and gates every read, write
+    // and delete on the answer for the store the path resolved to, so two stores
+    // behind one service account is two stores whose answers cannot differ. The
+    // production guarantee — that this server cannot return a production secret
+    // value — is exactly that answer being "no" for the production project. It
+    // must not be possible to write a config in which staging's "yes" is
+    // production's answer too.
+    //
+    // `SECRETS_STORES` IS DERIVED, AND ONLY DERIVED.
+    //
+    // `renderAppSpec` composes it from `mcpStores:`, which is what subjects it to
+    // every rule below. Written by hand under `env:` it reaches the container
+    // unchanged and the tree reads it — skipping the viewerKeyVar-must-be-an-
+    // `env:`-key rule, and with it the reason an `adminKeyVar` cannot be borrowed
+    // as a viewer key. Refused whether or not the server also declares
+    // `mcpStores:`, because "only when the typed field is absent" is a fence with
+    // a door in it. (A server that declares both would additionally have the
+    // hand-written value silently overwritten by the derived one.)
+    //
+    // ONE SECRETS MOUNT PER BUNDLE, likewise. A bundle is a container is one
+    // `process.env`, the bundle host calls the secrets tree's `loadConfig()`
+    // against the bare environment, and the renderer's bare-name pass is
+    // first-wins — so two servers on one bundle both declaring `mcpStores:` and
+    // sitting on DIFFERENT paths would put one of them's store list on the
+    // container under both slugs, with nothing reporting it. Two slugs on ONE
+    // path already throw at render time; this closes the other half.
+    //
+    // A DISABLED server is skipped for the BUNDLE claim alone, and checked for
+    // everything else. It renders no component, so it collides with nothing —
+    // but a typo'd `viewerKeyVar` or a shared credential inside its own entry is
+    // wrong whether or not it is switched on today, and a rule that goes quiet
+    // when a server is disabled is a rule that lies dormant until somebody
+    // re-enables it.
+    const storesByBundle = new Map<string, string>();
+    for (const s of cfg.servers) {
+      if (s.kind !== "supplementary-image") continue;
+
+      if ("SECRETS_STORES" in s.env) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares SECRETS_STORES under env:. That variable ` +
+            `is DERIVED from mcpStores: by renderAppSpec, and writing it by hand ` +
+            `bypasses every rule this config gate applies to a store — the ` +
+            `viewerKeyVar must-be-an-env:-key check, and with it the only thing ` +
+            `keeping a console admin key out of the /mcp container. Declare ` +
+            `mcpStores: instead.`,
+          path: ["servers"],
+        });
+      }
+
+      if (s.mcpStores.length === 0) continue;
+
+      const twinOnBundle = s.enabled ? storesByBundle.get(s.bundle) : undefined;
+      if (twinOnBundle) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `servers "${twinOnBundle}" and "${s.slug}" both declare mcpStores: on ` +
+            `bundle "${s.bundle}". A bundle is one container is one process.env, ` +
+            `and the secrets tree reads SECRETS_STORES out of it by the BARE name ` +
+            `— so one of these two store lists would answer under both slugs. ` +
+            `Give one of them its own bundle, or fold its stores into the other's ` +
+            `mcpStores: list.`,
+          path: ["servers"],
+        });
+      }
+      if (s.enabled) storesByBundle.set(s.bundle, s.slug);
+
+      // ONE SHAPE OR THE OTHER, never both. The tree reads `SECRETS_STORES` and
+      // ignores the single-store variables when it is present, so a leftover
+      // `SECRETS_PROJECT_ID` under `env:` is a project a reader would reasonably
+      // believe this server fronts and which it does not. MOVED rather than
+      // deleted, though: the console resolves its single-store fallback from
+      // this name in `env:` and `consoleEnv:` alike (src/ui/resolve.ts), so
+      // "delete it" would take the console page with it.
+      for (const legacy of ["SECRETS_PROJECT_ID", "SECRETS_NAMESPACES"]) {
+        if (!(legacy in s.env)) continue;
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `server "${s.slug}" declares mcpStores: AND ${legacy} under env:. ` +
+            `mcpStores: REPLACES the single-store reading — the container would ` +
+            `ignore ${legacy} entirely, so leaving it names a store this server ` +
+            `does not front. MOVE it to consoleEnv:, or declare consoleStores: — ` +
+            `the console reads this name out of env: and consoleEnv: alike, so ` +
+            `deleting it outright takes the console page with it.`,
+          path: ["servers"],
+        });
+      }
+
+      const seenProject = new Set<string>();
+      const seenViewerKeyVar = new Map<string, string>();
+      /** `${NAME}` -> the project already reading its credential from it. */
+      const seenViewerRef = new Map<string, string>();
+      const claimed: { ns: string; project: string }[] = [];
+      for (const store of s.mcpStores) {
+        if (seenProject.has(store.project)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" declares the project "${store.project}" twice ` +
+              `under mcpStores:. A store is addressed by its project id — in a ` +
+              `refusal, in the capability report — so the ids must be unique.`,
+            path: ["servers"],
+          });
+        }
+        seenProject.add(store.project);
+
+        if (!(store.viewerKeyVar in s.env)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" store "${store.project}" names ` +
+              `viewerKeyVar: ${store.viewerKeyVar}, but that key is not declared ` +
+              `under this server's env:. env: is the scope rendered onto this ` +
+              `server's bundle — the component that answers /mcp — and it is the ` +
+              `only way a credential reaches that container.`,
+            path: ["servers"],
+          });
+        }
+
+        // ONE VIEWER KEY PER STORE. See the block comment above: sharing one
+        // makes two stores' capabilities identical by construction, which is
+        // the collapse the per-project probe exists to prevent.
+        const twin = seenViewerKeyVar.get(store.viewerKeyVar);
+        if (twin) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" stores "${twin}" and "${store.project}" both ` +
+              `name viewerKeyVar: ${store.viewerKeyVar}, so one service account ` +
+              `would reach both projects — and both stores would probe the same ` +
+              `capability. Each store carries its OWN viewer credential: give ` +
+              `them separate env: keys.`,
+            path: ["servers"],
+          });
+        }
+        seenViewerKeyVar.set(store.viewerKeyVar, store.project);
+
+        // AND THE SAME CHECK BY REF, which is the one that matters. The key name
+        // is the variable; the `${NAME}` behind it is the CREDENTIAL, and two
+        // `env:` keys may carry one ref — `SECRETS_SERVICE_ACCOUNT_KEY_JSON` and
+        // `PROD_VIEWER_KEY_JSON` both `${ONE_KEY}`. A name-only check waves that
+        // through, and it is precisely the collapse: one identity, two projects,
+        // two probes that ask Google about the SAME service account. The
+        // per-store gate then works perfectly and reports staging's answer for
+        // production, because it genuinely is production's answer for that key.
+        // `consoleStores:` above learned this the same way; see `envRefOwners`.
+        for (const ref of refsIn(s.env[store.viewerKeyVar] ?? "")) {
+          const twinByRef = seenViewerRef.get(ref);
+          if (twinByRef) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}" stores "${twinByRef}" and "${store.project}" ` +
+                `both resolve their viewer credential from \${${ref}}, under ` +
+                `different env: keys, so one service account would reach both ` +
+                `projects and both stores would probe the SAME capability. Each ` +
+                `store carries its own viewer credential: use a separate one.`,
+              path: ["servers"],
+            });
+          }
+          seenViewerRef.set(ref, store.project);
+        }
+
+        // TWO STORES MAY NOT CLAIM ONE PATH. The namespace is what binds a call
+        // to a project, a credential and a capability; a path both could claim
+        // is a path whose capability depends on declaration order.
+        for (const ns of store.namespaces) {
+          for (const prior of claimed) {
+            if (prior.project === store.project) continue;
+            if (!ns.startsWith(prior.ns) && !prior.ns.startsWith(ns)) continue;
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}": namespace "${ns}" ("${store.project}") and ` +
+                `"${prior.ns}" ("${prior.project}") overlap under mcpStores:, so a ` +
+                `parameter path could address either store. The path is what ` +
+                `selects the project, the credential and the capability; it must ` +
+                `select exactly one.`,
+              path: ["servers"],
+            });
+          }
+          claimed.push({ ns, project: store.project });
         }
       }
     }

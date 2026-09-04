@@ -385,10 +385,63 @@ plus two that shape how this server gets its values:
   **create** and not rotate/note/delete, which is the single-store flag's existing
   behaviour, unchanged.
 
-  **This is a console-only field.** The `/mcp` half of a secrets slug is
-  `servers/secrets`, which reads `SECRETS_PROJECT_ID` out of its own container's
-  environment: one container, one store. See [One console page, many
-  stores](/operate/secrets/#one-console-page-many-stores).
+  **This is a console-only field.** The `/mcp` half has a list of its own —
+  `mcpStores:` below — because the credential each carries is different. See [One
+  console page, many stores](/operate/secrets/#one-console-page-many-stores).
+- **`mcpStores`** — the parameter **stores** this server's `/mcp` half can
+  address. One container, N GCP projects, selected by the **namespace a
+  parameter path starts with**.
+
+  Absent (the default) the container resolves a single store out of
+  `SECRETS_PROJECT_ID` / `SECRETS_NAMESPACES` / `SECRETS_SERVICE_ACCOUNT_KEY_JSON`
+  under `env:`, exactly as before. Present, it **replaces** that reading:
+  `renderAppSpec` emits a non-secret `SECRETS_STORES` descriptor onto this
+  server's bundle — project ids, namespaces, and the NAME of each store's key —
+  and the container reads that. Declaring both shapes is refused rather than
+  resolved to one of them.
+
+  ```yaml
+  env:
+    SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+    ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_VIEWER_KEY_JSON}"
+  mcpStores:
+    - project: strad-secrets-prod
+      label: strad prod # optional; defaults to the project id
+      namespaces: [/strad/prod/mcp/]
+      viewerKeyVar: SECRETS_SERVICE_ACCOUNT_KEY_JSON
+    - project: zimmer-secrets-prod
+      label: zimmer prod
+      namespaces: [/zimmer/production/mcp/]
+      viewerKeyVar: ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON
+  ```
+
+  **Every store carries its own VIEWER credential.** `viewerKeyVar` names an
+  `env:` key — the scope rendered onto this server's bundle, which is the
+  component that answers `/mcp` — and `check-config` rejects two entries that
+  name the same key **or** whose keys carry the same `${REF}`. That is a stronger
+  rule here than on the console side: the secrets server derives what each store
+  may do from a `projects:testIamPermissions` probe of that store's own
+  credential, so one identity on two projects is two stores that cannot have
+  different capabilities. The container checks the same thing at boot by
+  `client_email`.
+
+  It also rejects two entries naming one **project id** (the store's address in
+  every refusal and in the capability report), two entries with **overlapping
+  namespaces** (a path both could claim is a path whose capability depends on
+  declaration order), a hand-written `SECRETS_STORES` under `env:` (it is derived
+  from this field, and one written by hand passes none of these rules), and a
+  second server on the same bundle declaring `mcpStores:` (one container, one
+  bare `SECRETS_STORES`, so one list would answer under both slugs).
+
+  An admin key cannot be borrowed here. `viewerKeyVar` must be a key of this
+  server's own `env:`, and the `consoleStores:` rules above already refuse an
+  `adminKeyVar` whose key or whose `${REF}` appears in any server's `env:`.
+
+  There is no `reveal` and no `namespacesStrict`. `/mcp` has no UI to offer a
+  reveal in, and it has no lax namespace mode to turn off: a path outside every
+  store's namespaces is always refused. See [the `/mcp`
+  half](/operate/secrets/#the-mcp-half-mcpstores) for what the tool surface does
+  when two stores disagree about whether a secret value may be read.
 - **`params`** (default `false`) — opt into parameter resolution. When `true`,
   everything under `/strad/{env}/mcp/{slug}/static/*` in the [secrets and parameters
   system](/intro/architecture/#the-secrets-and-parameters-system) is resolved and

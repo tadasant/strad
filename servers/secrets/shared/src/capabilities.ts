@@ -23,6 +23,21 @@ import { tokenMinter, type ServiceAccount } from "./google-auth.js";
  * FAIL CLOSED. A probe that cannot run yields no capabilities, so an unreachable
  * Cloud Resource Manager API degrades this server to the read-only surface it has
  * always had rather than opening anything.
+ *
+ * ONE PROBE PER PROJECT, AND NEVER A SHARED ANSWER. This server fronts a LIST of
+ * stores, each a different GCP project reached with a different service account,
+ * and `projects:testIamPermissions` answers about exactly one project as exactly
+ * one identity. So a `Capabilities` is only ever meaningful ALONGSIDE the project
+ * it was asked about: `CapabilityLookup` is the only way a caller obtains one,
+ * and it takes a project id.
+ *
+ * WHY THAT IS THE WHOLE POINT. A single flat answer shared across stores would
+ * mean one over-grant on the most permissive project switching a capability on
+ * for every other project in the list — including a production store whose entire
+ * guarantee is that it cannot return a secret value. The failure would be silent:
+ * the tool would simply start working. `anyPermits` below exists for the tool
+ * LIST and for nothing else, and it is named so that a gate site reaching for it
+ * by mistake reads wrong.
  */
 
 export const PROBE_PERMISSIONS = {
@@ -173,4 +188,40 @@ export async function probeCapabilities(
 
 function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The capability of ONE store, by project id.
+ *
+ * Every gate in tools.ts goes through this, having first resolved the parameter
+ * path to the store that owns it. A project this server does not front, or one
+ * whose probe never ran, answers `NO_CAPABILITIES` — fail closed.
+ */
+export type CapabilityLookup = (project: string) => Promise<Capabilities>;
+
+/**
+ * The union, for the TOOL LIST alone.
+ *
+ * An MCP tool list is static per container and a multi-store server has a
+ * heterogeneous surface: one store may permit a secret read while another must
+ * never. There is no way to list a tool for one store and not another, so the
+ * list is the union — a tool is offered when SOME store can back it — and every
+ * handler then refuses per store using `CapabilityLookup`. Advertising the union
+ * without enforcing per store would be the collapse this module exists to
+ * prevent; the two halves ship together or not at all.
+ *
+ * `probed` is conjunctive on purpose: it means "every store answered", so a
+ * report built from this cannot claim to have established something it did not.
+ */
+export function anyPermits(caps: Iterable<Capabilities>): Capabilities {
+  const all = [...caps];
+  if (all.length === 0) return NO_CAPABILITIES;
+  return {
+    readSecretValues: all.some((c) => c.readSecretValues),
+    writeParameters: all.some((c) => c.writeParameters),
+    writeSecretValues: all.some((c) => c.writeSecretValues),
+    deleteParameters: all.some((c) => c.deleteParameters),
+    probed: all.every((c) => c.probed),
+    reason: all.find((c) => !c.probed)?.reason,
+  };
 }

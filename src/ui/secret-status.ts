@@ -1825,7 +1825,11 @@ export function storeProject(
       // A multi-store console names its projects in consoleStores: rather than
       // in a SECRETS_PROJECT_ID. The FIRST is the page's default store, which is
       // the one a copy-pasteable gcloud command should target.
-      server.consoleStores[0]?.project;
+      server.consoleStores[0]?.project ??
+      // …and a deployment may declare only the /mcp half. Its first store is a
+      // worse answer than the console's and a much better one than the GUESS
+      // below, which is a project name assembled from the gateway's env.
+      server.mcpStores[0]?.project;
     if (declared && !declared.includes("${")) {
       return { project: declared, guessed: false };
     }

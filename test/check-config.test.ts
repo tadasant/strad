@@ -333,6 +333,7 @@ describe("consoleScopeProblems", () => {
         SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${OTHER_ADMIN_KEY}",
       },
       consoleStores: [],
+      mcpStores: [],
     });
     const problems = consoleScopeProblems(
       twoServers,

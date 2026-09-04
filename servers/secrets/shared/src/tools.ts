@@ -3,33 +3,46 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { SecretsConfig } from "./config.js";
-import { inManagedNamespace } from "./config.js";
+import type { SecretsConfig, SecretsStore } from "./config.js";
+import {
+  describeNamespaces,
+  storeForNamespace,
+  storeForPath,
+} from "./config.js";
 import { variableOf } from "./parameter-wire.js";
 import type { ParametersReader } from "./parameter-manager.js";
-import { NO_CAPABILITIES, type Capabilities } from "./capabilities.js";
+import {
+  anyPermits,
+  NO_CAPABILITIES,
+  type Capabilities,
+  type CapabilityLookup,
+} from "./capabilities.js";
 import type { ParametersWriter } from "./write-client.js";
 
 /**
- * The four tools.
+ * The tools.
  *
- * THE INVARIANT: no tool returns a secret value. Not a redacted one, not a
- * truncated one, not a "safe prefix" — none. An agent can learn that a parameter
+ * THE INVARIANT: no tool returns a secret value the store's own credential
+ * cannot fetch. Not a redacted one, not a truncated one, not a "safe prefix" —
+ * none. An agent can learn that a parameter
  * `/strad/staging/mcp/<slug>/static/<VAR>` exists, whether it is secret, the note
  * a human left on it, and when its latest version landed. If the parameter is
  * NON-secret it can also read its literal value (non-secrets are configuration,
  * not credentials, and live directly in Parameter Manager). If it is SECRET, the
- * value lives in Secret Manager and no tool here — and no credential in this
- * process — can reach it.
+ * value lives in Secret Manager and `get_parameter` never returns it.
  *
  * That is enough for the thing an agent actually needs to do: tell a human WHICH
  * secret to go set, and hand them a link that lands on it — `open_secrets_manager`,
  * lifted from reframe-secrets, where the same idea is put well: the agent helps
  * without ever holding the thing.
  *
- * Writes (create a parameter, store or rotate a secret) are the console's job,
- * behind SSO, done by a person, with a DIFFERENT service account that never
- * reaches this process.
+ * ONE CONTAINER, N STORES, AND THE PATH IS WHAT BINDS A CALL TO ONE OF THEM.
+ * Every tool that takes a canonical path resolves it to exactly one store
+ * (`storeForPath`) before it does anything else, and from then on uses THAT
+ * store's namespaces, THAT store's viewer credential and THAT store's probed
+ * capability. There is no union anywhere on a call path. The tool LIST is a
+ * union — see `anyPermits` in capabilities.ts for why it has to be, and why that
+ * is safe only because these gates are per store.
  */
 
 /**
@@ -46,7 +59,8 @@ export type GatewayRefresh = () => Promise<
 
 interface ToolDeps {
   config: SecretsConfig;
-  reader: () => ParametersReader;
+  /** The read client for ONE store. Built per store, never shared. */
+  reader: (store: SecretsStore) => ParametersReader;
   /**
    * Present when the host can reach core. Decides whether `refresh_gateway` is
    * OFFERED — a tool that would fail on every call is not listed — and what a
@@ -54,33 +68,51 @@ interface ToolDeps {
    */
   refreshGateway?: GatewayRefresh;
   /**
-   * What this server's credential may actually do, as reported by Google. The
-   * tool surface is DERIVED from it — see capabilities.ts for why a probe rather
-   * than a flag. Absent means fail closed: the read-only surface.
+   * What ONE STORE's credential may actually do, as reported by Google, keyed by
+   * project id. Every gate below resolves a store first and asks about that
+   * store. Absent means fail closed: the read-only surface, everywhere.
    */
-  capabilities?: () => Promise<Capabilities>;
-  /** The mutating client. Built only when the probe says writes are permitted. */
-  writer?: () => ParametersWriter;
+  capabilities?: CapabilityLookup;
+  /** The mutating client for ONE store. Reached only through that store's gate. */
+  writer?: (store: SecretsStore) => ParametersWriter;
 }
 
 const ANNOTATIONS = { readOnlyHint: true, openWorldHint: false } as const;
 
+/**
+ * The tool list, from the capability of every store this server fronts.
+ *
+ * `caps` is per project and the union is taken HERE and nowhere else: an MCP
+ * client caches one listing per session, so a tool cannot exist for one store
+ * and be absent for another. What makes that safe is that the handlers below
+ * refuse per store — a tool listed because staging can back it still refuses a
+ * production path, and production's own credential would be refused by Google
+ * underneath that.
+ */
 export function toolDefinitions(
   config: SecretsConfig,
-  caps: Capabilities = NO_CAPABILITIES,
+  caps: ReadonlyMap<string, Capabilities> = new Map(),
   opts: { refreshGateway?: boolean } = {},
 ) {
-  const nsList = config.namespaces.map((n) => `"${n}"`).join(", ");
+  const { stores } = config;
+  const multi = stores.length > 1;
+  const nsList = describeNamespaces(stores);
+  const perStore = anyPermits(caps.values());
   const readOnly = [
     {
       name: "list_managed_namespaces",
       description:
-        "List the parameter namespaces this server manages, and report what THIS deployment's credential " +
-        "may actually do — the capabilities are probed from Google, not declared, so the answer matches " +
-        "what a call would really get. A namespace is a canonical-path prefix like \"/strad/staging/mcp/\". " +
-        "Call this first: whether a secret value can be read, and whether writes are possible, differs by " +
-        "deployment. Where a value cannot be read here, a human can set it in the strad console (see " +
-        "open_secrets_manager).",
+        (multi
+          ? "List the parameter STORES this server fronts — each a GCP project with its own " +
+            "namespaces and its own credential — and report, PER STORE, what that store's " +
+            "credential may actually do. "
+          : "List the parameter namespaces this server manages, and report what THIS deployment's " +
+            "credential may actually do. ") +
+        "The capabilities are probed from Google, not declared, so the answer matches what a call " +
+        "would really get. A namespace is a canonical-path prefix like \"/strad/staging/mcp/\", and " +
+        "it is what decides which store a parameter path addresses. Call this first: whether a " +
+        "secret value can be read, and whether writes are possible, differs by store. Where a value " +
+        "cannot be read here, a human can set it in the strad console (see open_secrets_manager).",
       inputSchema: {
         type: "object",
         properties: {},
@@ -113,7 +145,7 @@ export function toolDefinitions(
       description:
         "Read a single parameter by its canonical path. If the parameter is NON-secret, returns its literal " +
         "value — non-secrets are configuration, not credentials, and are safe to read. If the parameter is " +
-        "SECRET, this returns an error: its value lives in Secret Manager and no tool here can return it. " +
+        "SECRET, this returns an error: its value lives in Secret Manager and this tool never returns one. " +
         "Use open_secrets_manager to have a human view a secret in the console.",
       inputSchema: {
         type: "object",
@@ -121,7 +153,8 @@ export function toolDefinitions(
           name: {
             type: "string",
             description:
-              "The canonical path, e.g. \"/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL\".",
+              "The canonical path, e.g. \"/strad/staging/mcp/remote-filesystem-tmp-public/static/REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL\". " +
+              "The namespace it starts with is what selects the store.",
           },
         },
         required: ["name"],
@@ -150,19 +183,28 @@ export function toolDefinitions(
     },
   ];
 
-  // Everything below is listed only when Google says this credential can perform
-  // it. A surface that advertises what the boundary forbids is a bug that
-  // presents as an opaque 403 to whoever calls it.
+  // Everything below is listed only when Google says SOME store's credential can
+  // perform it. A surface that advertises what every boundary forbids is a bug
+  // that presents as an opaque 403 to whoever calls it; a surface that hides a
+  // tool one store can back would take a capability away from that store.
   const gated = [];
 
-  if (caps.readSecretValues) {
+  if (perStore.readSecretValues) {
     gated.push({
       name: "get_secret_value",
       description:
-        "Read the RESOLVED value of a parameter, dereferencing a secret reference. This tool is " +
-        "listed only on a deployment whose credential holds secretmanager.versions.access — on " +
-        "one that does not (production), it does not exist and Google would refuse the call " +
-        "underneath it. Use it for end-to-end verification, not to move credentials around.",
+        "Read the RESOLVED value of a parameter, dereferencing a secret reference. " +
+        (multi
+          ? "It is listed because AT LEAST ONE store this server fronts holds " +
+            "secretmanager.versions.access (or parametermanager.parameterVersions.render). Each " +
+            "call is checked against the store the PATH addresses: on a store whose credential " +
+            "holds neither — production — this refuses, and Google would refuse underneath it, " +
+            "because that store is read with its own viewer key. Call " +
+            "list_managed_namespaces to see which store permits it."
+          : "This tool is listed only on a deployment whose credential holds " +
+            "secretmanager.versions.access — on one that does not (production), it does not " +
+            "exist and Google would refuse the call underneath it.") +
+        " Use it for end-to-end verification, not to move credentials around.",
       inputSchema: {
         type: "object",
         properties: {
@@ -178,15 +220,19 @@ export function toolDefinitions(
     });
   }
 
-  if (caps.writeParameters) {
+  if (perStore.writeParameters) {
     gated.push({
       name: "create_parameter",
       description:
-        `Create a parameter inside a managed namespace (${nsList}). A NON-SECRET value is stored ` +
-        "in Parameter Manager and is readable; a SECRET value goes to Secret Manager and " +
-        (caps.writeSecretValues
-          ? "is referenced from Parameter Manager."
-          : "CANNOT be written by this credential — pass secret: false, or use the console."),
+        `Create a parameter inside a managed namespace (${nsList}). The namespace selects the store, ` +
+        "and the write is refused unless THAT store's credential permits it. A NON-SECRET value is " +
+        "stored in Parameter Manager and is readable; a SECRET value goes to Secret Manager and " +
+        (perStore.writeSecretValues
+          ? multi
+            ? "is referenced from Parameter Manager — on the stores whose credential can write one; " +
+              "elsewhere pass secret: false, or use the console."
+            : "is referenced from Parameter Manager."
+          : "CANNOT be written by this deployment's credentials — pass secret: false, or use the console."),
       inputSchema: {
         type: "object",
         properties: {
@@ -217,7 +263,8 @@ export function toolDefinitions(
       name: "set_parameter_value",
       description:
         "Rotate an existing parameter: store a new value as a new version. The previous version " +
-        "is retained by the store. The parameter must already exist and be inside a managed namespace.",
+        "is retained by the store. The parameter must already exist and be inside a managed namespace, " +
+        "and the store that namespace addresses must permit writes.",
       inputSchema: {
         type: "object",
         properties: {
@@ -248,12 +295,12 @@ export function toolDefinitions(
     });
   }
 
-  if (caps.deleteParameters) {
+  if (perStore.deleteParameters) {
     gated.push({
       name: "delete_parameter",
       description:
         "Delete a parameter and every version of it, plus its Secret Manager secret if it had " +
-        "one. This cannot be undone.",
+        "one. Refused unless the store the path addresses permits deletes. This cannot be undone.",
       inputSchema: {
         type: "object",
         properties: {
@@ -314,11 +361,32 @@ async function gatewayNote(deps: ToolDeps): Promise<string> {
 
 export function registerTools(server: Server, deps: ToolDeps): void {
   const { config } = deps;
+  const { stores } = config;
 
-  const caps = deps.capabilities ?? (() => Promise.resolve(NO_CAPABILITIES));
+  /** THE gate. Per project, fail closed, and the only way to obtain one. */
+  const capsOf: CapabilityLookup =
+    deps.capabilities ?? (() => Promise.resolve(NO_CAPABILITIES));
+
+  const allCaps = async (): Promise<Map<string, Capabilities>> =>
+    new Map(
+      await Promise.all(
+        stores.map(
+          async (s) => [s.project, await capsOf(s.project)] as const,
+        ),
+      ),
+    );
+
+  /**
+   * Resolve a path to its store, or an error naming why not.
+   *
+   * Every path-taking tool starts here — including the read-only ones, where it
+   * is what keeps one store's namespace from being read with another store's
+   * credential.
+   */
+  const resolve = (path: string) => storeForPath(path, stores);
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDefinitions(config, await caps(), {
+    tools: toolDefinitions(config, await allCaps(), {
       refreshGateway: Boolean(deps.refreshGateway),
     }),
   }));
@@ -328,25 +396,38 @@ export function registerTools(server: Server, deps: ToolDeps): void {
     try {
       switch (name) {
         case "list_managed_namespaces": {
-          // Reported from the PROBE, never from a constant. A hardcoded "no"
-          // would be a lie on a deployment whose credential can read — told to
-          // an agent, next to a listed get_secret_value tool.
-          const probed = await caps();
+          // Reported from the PROBE, never from a constant, and PER STORE. A
+          // single flat answer would be a lie on any deployment whose stores
+          // differ — told to an agent, next to a tool list that is their union.
+          const probes = await allCaps();
           return text({
-            projectId: config.projectId,
-            managedNamespaces: config.namespaces,
-            canReadSecretValues: probed.readSecretValues,
-            canWrite: probed.writeParameters,
-            canDelete: probed.deleteParameters,
-            capabilitiesProbed: probed.probed,
-            whyNot: probed.readSecretValues
-              ? undefined
-              : probed.probed
-                ? "This deployment's service account holds neither secretmanager.versions.access nor " +
-                  "parametermanager.parameterVersions.render, so a secret value cannot be read here. That " +
-                  "is denied by Google, not merely declined by this code."
-                : `This server's capabilities could not be established (${probed.reason ?? "no reason given"}), ` +
-                  "so it fails closed: the surface is read-only and no secret value can be read.",
+            stores: stores.map((store) => {
+              const probed = probes.get(store.project) ?? NO_CAPABILITIES;
+              return {
+                project: store.project,
+                label: store.label ?? store.project,
+                managedNamespaces: store.namespaces,
+                canReadSecretValues: probed.readSecretValues,
+                canWrite: probed.writeParameters,
+                canWriteSecretValues: probed.writeSecretValues,
+                canDelete: probed.deleteParameters,
+                capabilitiesProbed: probed.probed,
+                whyNot: probed.readSecretValues
+                  ? undefined
+                  : probed.probed
+                    ? "This store's service account holds neither secretmanager.versions.access nor " +
+                      "parametermanager.parameterVersions.render, so a secret value cannot be read " +
+                      "from it here. That is denied by Google, not merely declined by this code."
+                    : `This store's capabilities could not be established (${probed.reason ?? "no reason given"}), ` +
+                      "so it fails closed: no write, no delete and no secret value.",
+              };
+            }),
+            note:
+              stores.length > 1
+                ? "The tool LIST is the union of these stores — a tool is offered when any store can " +
+                  "back it. Every CALL is checked against the store its path addresses, with that " +
+                  "store's own credential, so a capability one store has is not a capability on another."
+                : undefined,
             consoleUrl: consoleLink(config),
           });
         }
@@ -355,19 +436,21 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           const namespace = String(
             (args as { namespace?: unknown } | undefined)?.namespace ?? "",
           );
-          if (!config.namespaces.includes(namespace)) {
+          const store = storeForNamespace(namespace, stores);
+          if (!store) {
             return error(
-              `"${namespace}" is not a managed namespace. Managed: ${config.namespaces.join(", ")}. ` +
+              `"${namespace}" is not a managed namespace. Managed: ${describeNamespaces(stores)}. ` +
                 `Call list_managed_namespaces first.`,
             );
           }
-          const parameters = await deps.reader().listParameters(namespace);
+          const parameters = await deps.reader(store).listParameters(namespace);
           return text({
             namespace,
+            project: store.project,
             count: parameters.length,
             parameters,
             note:
-              "Metadata only. Secret parameter values live in Secret Manager and no tool here can return one.",
+              "Metadata only. Secret parameter values live in Secret Manager and this tool never returns one.",
           });
         }
 
@@ -375,13 +458,9 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           const path = String(
             (args as { name?: unknown } | undefined)?.name ?? "",
           );
-          if (!inManagedNamespace(path, config.namespaces)) {
-            return error(
-              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}). ` +
-                `This server will not read a parameter outside them.`,
-            );
-          }
-          const record = await deps.reader().getParameter(path);
+          const found = resolve(path);
+          if (!found.store) return error(found.error);
+          const record = await deps.reader(found.store).getParameter(path);
           if (!record) {
             return error(
               `"${path}" has no value yet, or is not a managed parameter.`,
@@ -393,12 +472,13 @@ export function registerTools(server: Server, deps: ToolDeps): void {
             // Secret Manager REFERENCE, not the bytes — but we refuse even to
             // surface that; the answer is "go to the console".
             return error(
-              `"${path}" is a SECRET parameter; its value lives in Secret Manager and cannot be read over MCP. ` +
-                `Use open_secrets_manager to have a human view it in the console.`,
+              `"${path}" is a SECRET parameter; its value lives in Secret Manager and this tool never ` +
+                `returns one. Use open_secrets_manager to have a human view it in the console.`,
             );
           }
           return text({
             name: path,
+            project: found.store.project,
             secret: false,
             value: record.envelope.value,
             note: record.envelope.note,
@@ -427,22 +507,30 @@ export function registerTools(server: Server, deps: ToolDeps): void {
 
         case "get_secret_value": {
           const path = String((args as { name?: unknown } | undefined)?.name ?? "");
-          const c = await caps();
+          // THE PATH SELECTS THE STORE BEFORE ANY CAPABILITY IS CONSULTED, and
+          // the capability consulted is that store's own. This is the gate the
+          // whole multi-store design turns on: a permissive staging credential
+          // must not open a read on a production project, and here it cannot,
+          // because the answer being read is keyed by the project the path
+          // resolved to.
+          const found = resolve(path);
+          if (!found.store) return error(found.error);
+          const c = await capsOf(found.store.project);
           if (!c.readSecretValues) {
             return error(
-              "This deployment's credential cannot read secret values " +
+              `store "${found.store.project}" cannot read secret values ` +
                 `(${c.probed ? "no secretmanager.versions.access" : (c.reason ?? "capability unverified")}). ` +
+                "That store is read with its own viewer credential, so Google refuses it too. " +
                 "Use open_secrets_manager to have a human view it in the console.",
             );
           }
-          if (!inManagedNamespace(path, config.namespaces)) {
-            return error(
-              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
-            );
-          }
-          const writer = deps.writer?.();
+          const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for value reads");
-          return text({ name: path, value: await writer.readValue(path) });
+          return text({
+            name: path,
+            project: found.store.project,
+            value: await writer.readValue(path),
+          });
         }
 
         case "create_parameter": {
@@ -454,18 +542,15 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           };
           const path = String(a.name ?? "");
           const secret = a.secret === true;
-          const c = await caps();
-          const denied = writeDenial(c, secret);
+          const found = resolve(path);
+          if (!found.store) return error(found.error);
+          const c = await capsOf(found.store.project);
+          const denied = writeDenial(c, secret, found.store);
           if (denied) return error(denied);
-          if (!inManagedNamespace(path, config.namespaces)) {
-            return error(
-              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
-            );
-          }
           if (typeof a.value !== "string" || a.value === "") {
             return error("a non-empty `value` is required");
           }
-          const writer = deps.writer?.();
+          const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for writes");
           await writer.create({
             path,
@@ -475,6 +560,7 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           });
           return text({
             created: path,
+            project: found.store.project,
             variable: variableOf(path),
             secret,
             gateway: await gatewayNote(deps),
@@ -485,21 +571,20 @@ export function registerTools(server: Server, deps: ToolDeps): void {
         case "set_parameter_value": {
           const a = (args ?? {}) as { name?: unknown; value?: unknown };
           const path = String(a.name ?? "");
-          const c = await caps();
-          if (!c.writeParameters) return error(writeDenial(c, false) ?? "denied");
-          if (!inManagedNamespace(path, config.namespaces)) {
-            return error(
-              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
-            );
-          }
+          const found = resolve(path);
+          if (!found.store) return error(found.error);
+          const c = await capsOf(found.store.project);
+          const denied = writeDenial(c, false, found.store);
+          if (denied) return error(denied);
           if (typeof a.value !== "string" || a.value === "") {
             return error("a non-empty `value` is required");
           }
-          const writer = deps.writer?.();
+          const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for writes");
           await writer.rotate(path, a.value);
           return text({
             rotated: path,
+            project: found.store.project,
             variable: variableOf(path),
             gateway: await gatewayNote(deps),
           });
@@ -508,38 +593,38 @@ export function registerTools(server: Server, deps: ToolDeps): void {
         case "set_parameter_note": {
           const a = (args ?? {}) as { name?: unknown; note?: unknown };
           const path = String(a.name ?? "");
-          const c = await caps();
-          if (!c.writeParameters) return error(writeDenial(c, false) ?? "denied");
-          if (!inManagedNamespace(path, config.namespaces)) {
-            return error(
-              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
-            );
-          }
-          const writer = deps.writer?.();
+          const found = resolve(path);
+          if (!found.store) return error(found.error);
+          const c = await capsOf(found.store.project);
+          const denied = writeDenial(c, false, found.store);
+          if (denied) return error(denied);
+          const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for writes");
           await writer.setNote(path, String(a.note ?? ""));
-          return text({ noted: path, variable: variableOf(path) });
+          return text({
+            noted: path,
+            project: found.store.project,
+            variable: variableOf(path),
+          });
         }
 
         case "delete_parameter": {
           const path = String((args as { name?: unknown } | undefined)?.name ?? "");
-          const c = await caps();
+          const found = resolve(path);
+          if (!found.store) return error(found.error);
+          const c = await capsOf(found.store.project);
           if (!c.deleteParameters) {
             return error(
-              "This deployment's credential cannot delete parameters " +
+              `store "${found.store.project}" cannot delete parameters ` +
                 `(${c.probed ? "no parametermanager.parameters.delete" : (c.reason ?? "capability unverified")}).`,
             );
           }
-          if (!inManagedNamespace(path, config.namespaces)) {
-            return error(
-              `"${path}" is outside the managed namespaces (${config.namespaces.join(", ")}).`,
-            );
-          }
-          const writer = deps.writer?.();
+          const writer = deps.writer?.(found.store);
           if (!writer) return error("no client is configured for writes");
           await writer.destroy(path);
           return text({
             deleted: path,
+            project: found.store.project,
             variable: variableOf(path),
             gateway: await gatewayNote(deps),
           });
@@ -588,30 +673,38 @@ export function registerTools(server: Server, deps: ToolDeps): void {
 }
 
 /**
- * Why a write is refused, or null when it is permitted.
+ * Why a write to THIS STORE is refused, or null when it is permitted.
  *
  * Split by kind because the two failures have different fixes: a non-secret write
  * needs Parameter Manager only, a secret write needs Secret Manager too, and
  * telling someone "you cannot write" when they can in fact write configuration is
- * the kind of message that sends them to the wrong IAM page.
+ * the kind of message that sends them to the wrong IAM page. The store is named
+ * in every one of them, because on a multi-store server "which project" is the
+ * first thing the reader needs and the message is otherwise identical for all of
+ * them.
  */
-function writeDenial(caps: Capabilities, secret: boolean): string | null {
+function writeDenial(
+  caps: Capabilities,
+  secret: boolean,
+  store: SecretsStore,
+): string | null {
   if (!caps.probed) {
     return (
-      "This deployment's write capability could not be established " +
+      `store "${store.project}": write capability could not be established ` +
       `(${caps.reason ?? "no reason given"}), so writes are refused rather than attempted.`
     );
   }
   if (!caps.writeParameters) {
     return (
-      "This deployment's credential cannot write parameters (no " +
+      `store "${store.project}": this store's credential cannot write parameters (no ` +
       "parametermanager.parameters.create / parameterVersions.create). Use the console."
     );
   }
   if (secret && !caps.writeSecretValues) {
     return (
-      "This deployment's credential can write configuration but not SECRET values (no " +
-      "secretmanager.secrets.create / versions.add). Pass secret: false, or set it in the console."
+      `store "${store.project}": this store's credential can write configuration but not SECRET ` +
+      "values (no secretmanager.secrets.create / versions.add). Pass secret: false, or set it in " +
+      "the console."
     );
   }
   return null;

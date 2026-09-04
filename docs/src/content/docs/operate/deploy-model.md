@@ -474,7 +474,9 @@ stderr, so GitHub annotates the run, and repeated as a list on stdout. A finding
 worth saying but not worth failing on — a legacy App Platform plan — is a
 `::warning file=<config>::…` on the same stream, and does not change the exit
 code. Output is names and structure only — it never prints a value, and the
-values it renders with are dummies anyway.
+values it renders with are dummies anyway. The render itself contributes warnings
+too — a slug whose name cannot be mangled into per-slug variables, an
+`mcpStores:` project no console page fronts.
 
 Six checks, in order:
 
@@ -535,6 +537,28 @@ secrets server undone by one line of YAML — and none of it is checkable at
 runtime, because by then the value is just a string in an environment. Two stores
 naming the same `adminKeyVar` is refused here too: one service account granted on
 two projects is the simplification `consoleStores:` exists to make inexpressible.
+
+An [`mcpStores:`](/servers/interface/) entry names its VIEWER credential by
+`env:` KEY, and the fences are the same shape for a sharper reason. The key must
+**be** declared under this server's `env:` — the scope rendered onto the bundle,
+which is the component that answers `/mcp` — so an `adminKeyVar` cannot be
+borrowed here without failing one of the `consoleStores:` rules above first. Two
+entries may not share a viewer credential — not by naming one `viewerKeyVar`, and
+not by naming two `env:` keys that carry one `${REF}` — nor name the same
+**project id**, nor declare **overlapping namespaces**. `SECRETS_STORES` itself is
+refused under `env:`: it is derived from `mcpStores:`, and a hand-written one
+reaches the container having passed none of these. Only one server per bundle may
+declare `mcpStores:`, since the tree reads that variable by its bare name out of a
+container's one environment. All three are about the same property: the secrets
+server derives what each store may do from a `projects:testIamPermissions` probe
+of that store's own credential, resolved from the namespace the requested path
+starts with. One key on two projects is two stores that cannot have different
+capabilities; overlapping namespaces is a path whose capability depends on
+declaration order. Production's inability to return a secret value is exactly
+that probe answering "no" for the production project, so neither may be
+expressible. Declaring `mcpStores:` alongside the `SECRETS_PROJECT_ID` /
+`SECRETS_NAMESPACES` it replaces is refused too — the container would ignore
+them, so leaving them names a store the server does not front.
 
 A collision between two servers' `env:` maps in one bundle — two different
 `${REF}` _strings_ under one key — is **not** a check here: it is rejected

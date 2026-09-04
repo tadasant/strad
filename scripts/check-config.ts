@@ -186,6 +186,11 @@ try {
     image: parseImage(values.image ?? "ghcr.io/tadasant/strad:0.0.0-check"),
     env: [],
     secrets: dummySecrets,
+    // A finding worth saying and not worth failing on — an unnameable slug, an
+    // mcp store with no console page — reaches the run as an annotation and
+    // leaves the exit code alone, the same way a legacy instance size does.
+    onWarning: (message) =>
+      console.error(`::warning file=${values.config}::${message}`),
   });
 } catch (err) {
   problem(`the config does not render: ${(err as Error).message}`);

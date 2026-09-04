@@ -2100,7 +2100,7 @@ not, and never was: it was a property of one TypeScript type, which now carries 
   bundle: bundle
   path: /secrets
   env:
-    # The /mcp half. ONE store, unchanged — see below for why.
+    # The /mcp half, which has a list of its own — see mcpStores: below.
     SECRETS_PROJECT_ID: "strad-secrets-prod"
     SECRETS_NAMESPACES: "/strad/prod/mcp/"
     SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
@@ -2162,30 +2162,128 @@ Because a store's namespaces come from its own entry rather than from a
 wider namespace list than any container — which is what the note two sections
 below used to say you could not do for a second slug.
 
-#### This is the console half only
+#### The `/mcp` half: `mcpStores:`
 
-`consoleStores:` does not change what `/mcp` reaches, and that is structural
-rather than a matter of taste. `src/gateway/entitlements.ts` intersects
-role→servers with server→entitlements and **both sides name slugs**; the `tools:`
-policy is allow/deny by **tool name**. There is nowhere in strad to express _"role
-`zimmer` may call `list_parameters`, but only for `/strad/prod/mcp/`."_ So one
-multi-project MCP secrets server is necessarily one entitlement spanning every
-project it reaches — and that key lives in every agent session, including ones
-that read untrusted web pages.
+`consoleStores:` is the console's list. `mcpStores:` is the agent's, and it is a
+separate field because the credential each carries is separate — an admin key
+that lands on core alone, and a viewer key that lands on the bundle:
 
-So the split stays: **one bundle per store for `/mcp`, one page for the human.**
-The console has a person behind an SSO gate; `/mcp` has an API key. They do not
-get the same reach.
+```yaml
+- slug: secrets
+  bundle: bundle
+  path: /secrets
+  env:
+    SECRETS_CONSOLE_URL: "https://strad.tadasant.com/ui/secrets"
+    # One VIEWER key per store, each under its own name.
+    SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+    ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_VIEWER_KEY_JSON}"
+  mcpStores:
+    - project: strad-secrets-prod
+      label: strad prod
+      namespaces: [/strad/prod/mcp/]
+      viewerKeyVar: SECRETS_SERVICE_ACCOUNT_KEY_JSON
+    - project: zimmer-secrets-prod
+      label: zimmer prod
+      namespaces: [/zimmer/production/mcp/]
+      viewerKeyVar: ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON
+```
 
-### Why one bundle cannot hold both
+Absent, the container resolves ONE store the old way, out of
+`SECRETS_PROJECT_ID` / `SECRETS_NAMESPACES` / `SECRETS_SERVICE_ACCOUNT_KEY_JSON`.
+Present, it **replaces** that reading entirely — `renderAppSpec` emits a
+non-secret `SECRETS_STORES` descriptor onto the bundle (project ids, namespaces,
+and the NAME of each store's key) and the container reads that. Declaring both
+shapes is refused by `check-config` rather than resolved to one of them.
 
-A bundle is a component, which is a container, which is one `process.env`. The
-secrets server reads `SECRETS_PROJECT_ID` from it and the bundle host calls
-`loadConfig()` with no argument, so a container fronts exactly **one** store —
-and `renderAppSpec` merges a bundle's servers' `env:` maps last-wins, with no
-error. Two secrets slugs in one bundle therefore answer from one store under two
-slugs. That is a wrong answer, not a failure, which is why
-`scripts/check-config.ts` now
+##### The path selects the store, and the store selects the capability
+
+This is the part that makes several projects behind one MCP server safe, and it
+is worth stating exactly, because it is the difference between a guarantee and a
+convention.
+
+A **capability** is a property of one credential on one project.
+`projects:testIamPermissions` answers about exactly one of each, so the secrets
+server probes **once per store** and memoises the answer **by project id**. Every
+tool that takes a canonical path resolves it to exactly one store first, and from
+then on uses that store's namespaces, that store's viewer credential and that
+store's probed capability. There is no union anywhere on a call path.
+
+Three config rules keep that resolution unambiguous, and `check-config` enforces
+all three, so each is inexpressible rather than merely discouraged:
+
+- **two stores may not share one viewer credential** — not under one
+  `viewerKeyVar`, and not under two `env:` keys carrying one `${REF}`. The key
+  name is the variable; the ref is the credential, and it is the credential this
+  is about: one service account on two projects is two stores that probe **one
+  answer**, which is the collapse the per-project probe exists to prevent. The
+  container checks it a third way at boot, by `client_email`, for a descriptor
+  that reached it some other way.
+- **two stores may not name one project id.** It is the store's address, in a
+  refusal and in the capability report.
+- **two stores may not declare overlapping namespaces.** A path both could claim
+  is a path whose capability depends on declaration order.
+
+Two more fences sit around the field rather than inside it. `SECRETS_STORES` may
+never be written by hand under `env:` — it is derived, and a hand-written one
+would reach the container having passed none of the rules above. And only **one**
+server per bundle may declare `mcpStores:`, because the tree reads that variable
+by its bare name out of a container's single environment, so two would put one
+list on the box under both slugs.
+
+`viewerKeyVar` names an `env:` key rather than carrying a `${REF}`, exactly as
+`adminKeyVar` names a `consoleEnv:` one. An admin key cannot be borrowed here:
+`viewerKeyVar` must be a key of this server's own `env:`, and the
+`consoleStores:` rules already refuse an `adminKeyVar` whose key **or** whose
+`${REF}` appears in any server's `env:` under any name.
+
+##### The tool list is a union; the enforcement is not
+
+An MCP tool list is static per container — a client caches one listing per
+session — so there is no way to offer `get_secret_value` for one store and
+withhold it for another _by omission_. strad takes the **union**: the tool is
+listed when at least one store's credential can back it. Every call is then
+checked against the store its path addresses.
+
+That is a deliberate change in the shape of production's guarantee, and it should
+be read plainly. When production had a container to itself, the guarantee was
+_"the tool does not exist."_ On a container it shares with a store that can read,
+the guarantee is:
+
+1. **The handler refuses.** `get_secret_value` resolves the path to the
+   production store and reads _that store's_ probed capability. Staging's `yes`
+   is not production's answer, and cannot be.
+2. **Google refuses underneath it.** The production store is read with the
+   production store's own viewer credential, which holds neither
+   `secretmanager.versions.access` nor `parametermanager.parameterVersions.render`
+   on that project. If every line of (1) were deleted, the call would still 403.
+
+(2) is the load-bearing half, as it always was; (1) is what makes the refusal
+legible instead of an opaque 403. `list_managed_namespaces` reports capabilities
+**per store**, so the union listing is never the only thing an agent is told.
+
+What has **not** changed: entitlements name slugs and the `tools:` policy names
+tool names, so a slug whose `mcpStores:` names several projects is one entitlement
+spanning all of them — everyone entitled to that slug reaches every store on it.
+Splitting reach between two sets of parameters still means two slugs.
+
+##### The console's list and the MCP's are separate, and only one direction is loud
+
+`consoleStores:` and `mcpStores:` need not name the same projects — they carry
+different credentials, and the console's list may legitimately be the wider one.
+The **reverse** is worth a word from the renderer: a store on `mcpStores:` with no
+console page behind it is managed parameter state an agent can create, rotate and
+delete, and which a human cannot inspect or undo through `/ui`. `check-config`
+and `render-spec` emit a `::warning::` naming it — a warning and not a failure,
+because an agent-only store is a posture a deployment may choose.
+
+### One bundle, one `process.env`
+
+A bundle is a component, which is a container, which is one `process.env`. That is
+why a **store** needs no bundle of its own — `mcpStores:` puts the list in one
+variable — while two secrets **slugs** in one bundle cannot work:
+`renderAppSpec` merges a bundle's servers' `env:` maps last-wins, with no error,
+so both slugs would answer from whichever store won. That is a wrong answer, not
+a failure, which is why `scripts/check-config.ts`
 [rejects it](/operate/deploy-model/#checking-a-config-before-it-deploys) (check 5).
 
 The gateway resolves each slug's private URL **per bundle** and only then appends

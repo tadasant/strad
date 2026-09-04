@@ -174,6 +174,16 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
   "no tool returns a secret value" is what CI should catch. It also asserts the `op`
   CLI is really in the image.
 
+  It then boots a **second** container, with `SECRETS_STORES` in place of the
+  single-store `SECRETS_PROJECT_ID`, and asserts the `secrets` mount comes up
+  under it with the read-only four. That is the only place the descriptor seam is
+  exercised end to end: `renderAppSpec` composes that variable from `mcpStores:`
+  and the secrets tree — a different npm project, in a different image layer —
+  reads it back, and nothing in either type system sees both ends, so a renamed
+  field would otherwise be a green PR and a mount that declines to start.
+  Credential-free like the first container, so both stores fail closed and no
+  write tool or `get_secret_value` may appear.
+
   This job is also where the configs meet the tools. It dumps every mount's real
   tool **names** (`smoke.mjs --json`) and runs
   [`check-tool-policy`](/operate/deploy-model/#checking-a-tools-policy-against-the-tools-that-exist)

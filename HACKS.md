@@ -3696,3 +3696,45 @@ deployment: `storeForPath` in `src/http/params.ts` already resolves a path to th
 one store that covers it, across both dimensions (several slugs, several stores
 per slug), so the index can ask the same question the write-back route asks
 instead of picking a project off the config. Tracked in tadasant/strad#261.
+
+---
+
+## 78. A multi-store `/mcp` lists `get_secret_value` on every store, and refuses per store
+
+**What.** `mcpStores:` lets one secrets container front several GCP projects.
+An MCP tool list is static per container — a client caches one listing per
+session — so there is no way to offer `get_secret_value` for the staging store
+and omit it for the production one. strad lists the **union**: the tool exists
+when at least one store's credential can back it, and every call is then checked
+against the store the requested path resolves to.
+
+**Why it is a hack.** It changes the SHAPE of a guarantee that was previously
+structural. When production had a container of its own, the guarantee was "the
+tool does not exist" — no listing, no handler, nothing to get wrong. On a shared
+container it is "the handler refuses, and Google refuses underneath it". The
+outcome is the same and the second half is the one that was always load-bearing
+(the production store is read with its own viewer credential, which holds neither
+`secretmanager.versions.access` nor `parametermanager.parameterVersions.render`),
+but a runtime refusal is a different kind of thing from an absent tool, and it is
+worth saying so rather than letting the two be conflated.
+
+What keeps the refusal honest is that a capability is never shared: the probe
+runs once per store, memoised by project id; `storeForPath` binds a path to
+exactly one store; and `check-config` refuses two stores sharing a viewer
+credential (by key name AND by `${REF}`), a project id, or overlapping
+namespaces — with the container checking the credential a third way, by
+`client_email`, at boot. `list_managed_namespaces`
+reports capabilities per store, so the union listing is not the only thing an
+agent is told.
+
+**It only applies to a container that mixes postures.** A deployment whose stores
+all refuse secret reads lists no `get_secret_value` at all, exactly as before — so
+this is a property of putting a permissive store and a restrictive one in one
+container, which is a deliberate config decision.
+
+**Undo.** Two directions, neither free. Take the intersection instead (the tool
+exists only if every store permits it), which restores "absent" at the cost of
+the staging read the write surface exists to test end to end. Or give strad a way
+to express entitlement per NAMESPACE rather than per slug — `entitlements.ts`
+names slugs and `toolPolicy.ts` names tool names — at which point one store per
+container stops being the only way to split reach.

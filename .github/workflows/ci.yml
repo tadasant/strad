@@ -469,6 +469,48 @@ jobs:
             --image ghcr.io/tadasant/strad-bundle:latest \
             $(for cfg in strad.config*.yaml infra/*.yaml; do printf -- '--config %s ' "$cfg"; done)
 
+      # THE DESCRIPTOR SEAM, END TO END, IN A REAL CONTAINER.
+      #
+      # `renderAppSpec` composes SECRETS_STORES from `mcpStores:` and the secrets
+      # tree — a different npm project, in a different image layer — reads it
+      # back. Nothing in either type system sees both ends, so a renamed field is
+      # a green PR and a mount that declines to start. The container above boots
+      # the SINGLE-store reading; this one boots the multi-store one and asserts
+      # the mount is there with both stores on it.
+      #
+      # Its own container, because a store list is `process.env` and the first
+      # container already has a project id in its. Credential-free like the
+      # first: no key is set for either store, so both come up degraded and list
+      # their tools, which is exactly what this step reads.
+      - name: The multi-store descriptor really mounts
+        run: |
+          set -euo pipefail
+          MULTI="$BUNDLE_CONTAINER-multi"
+          docker run -d --name "$MULTI" --label strad-ci=1             -e DANGEROUSLY_SKIP_ELICITATIONS=true             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
+          for i in $(seq 1 60); do
+            if docker exec "$MULTI" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          docker exec "$MULTI" node /app/scripts/smoke.mjs --json > bundle-tools-multi.json
+          # The mount exists (a `loadConfig` throw would have skipped it), and it
+          # names both stores rather than one. `node -e` over the dump rather than
+          # grep, so a partial match cannot pass for a whole one.
+          node -e '
+            const dump = JSON.parse(require("fs").readFileSync("bundle-tools-multi.json", "utf8"));
+            const secrets = dump.mounts["/secrets"];
+            if (!secrets) throw new Error("the secrets mount is absent under SECRETS_STORES — the descriptor did not load");
+            if (secrets.error) throw new Error(`the secrets mount would not list: ${secrets.error}`);
+            const tools = secrets.tools ?? [];
+            for (const want of ["list_managed_namespaces", "list_parameters", "get_parameter", "open_secrets_manager"]) {
+              if (!tools.includes(want)) throw new Error(`the secrets mount is missing ${want}: ${tools.join(", ")}`);
+            }
+            // Credential-free, so every store fails closed: the read-only four
+            // and nothing else, on a container fronting TWO stores.
+            if (tools.length !== 4) throw new Error(`expected the read-only 4 with no credential on either store, got ${tools.length}: ${tools.join(", ")}`);
+            console.log(`secrets mounts under SECRETS_STORES with the read-only four: ${tools.join(", ")}`);
+          '
+          docker rm -f "$MULTI" >/dev/null
+
       - name: The `op` CLI is really in the image
         run: docker exec "$BUNDLE_CONTAINER" op --version
 
