@@ -837,7 +837,8 @@ of the store:
 | The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                            |
-| A `params: true` server's managed parameters                                                                                                     | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**). |
+| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**). |
+| A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                         |
 | The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                                                                                                                            |
 | `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                           |
 | A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                             |
@@ -1540,9 +1541,9 @@ third case to near-nothing; it does not remove it, and it must not.
 
 A server that opts into parameter resolution takes its credentials from
 `/strad/<env>/mcp/<slug>/static/*` rather than from `${NAME}` references. The
-config therefore does not name them, and core cannot enumerate them — so the
-unaided the console can only say `unverified`, "this page does not read that
-namespace", about the servers least likely to be checked by anything else.
+config therefore does not name them, and core cannot enumerate them — so unaided
+the console can only say `unverified`, "this page does not read that namespace",
+about the servers least likely to be checked by anything else.
 `remote-filesystem-tmp-public` in `infra/strad.staging.yaml` is exactly that
 shape.
 
@@ -1779,6 +1780,7 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
       "ready": 5,
       "no-secrets": 3,
       "missing": 1,
+      "unconfigured": 0,
       "unrenderable": 0,
       "placeholder": 1,
       "unverified": 2,
@@ -1821,6 +1823,21 @@ conservative presence claim, `false` whenever any server is not `ready` or
 `servers.total`/`ready`/`issues`, `issues[].slug`/`summary` or `boot[]` needs no
 change for it. A consumer that exhaustively switches on the state gets one more
 arm.
+
+**`ready: false` is the resting state of any deployment carrying an unchecked
+managed namespace, and there is no seeding that clears it.** `unverified` is a
+server state like any other, so a `params: true` server whose parameters no
+component manifested puts the deployment in `issues[]` and holds `ready` at
+`false` — with an empty `secrets[]`, because the entry has no outstanding
+`${NAME}` to list, and the sentence in `summary` carrying the whole of it. Where
+the server is a `supplementary-image` the exit is real: rebuild and repin the
+component so it manifests `STRAD_PARAM_KEYS`, and the rows fill in. Where it is a
+**builtin** there is no exit today at all — core is never probed, so the gap is
+permanent ([#264](https://github.com/tadasant/strad/issues/264)). Staging carries
+both (`remote-filesystem-tmp-public` and `echo`) and reports `ready: false` for
+that reason rather than for a missing credential. Read `servers.states` rather
+than `ready` if you need to tell "a value nobody seeded" from "a namespace nobody
+answered for": the two rank apart there and are the same boolean here.
 
 Four shape decisions, each of which could have gone the other way:
 

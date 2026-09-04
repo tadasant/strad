@@ -380,10 +380,12 @@ function banner(issues: Entry[], enabled: number): string {
   return `<p class="posture posture-warn"><strong>Nothing is known to be broken, but ${unchecked} server${
     unchecked === 1 ? "" : "s"
   } could not be checked.</strong> That is not the same as healthy. <code>unknown</code> means
-    the secret backend could not be consulted; <code>unverified</code> means nothing
-    established the value — the component holding it did not answer, it runs an image
-    without the presence route, or the server's credentials are managed parameters no
-    component named. Each row says which. Neither is evidence that anything resolves.</p>`;
+    the secret backend could not be consulted; <code>unverified</code> means the value
+    this server runs on was not established — the component holding it did not answer, it
+    runs an image without the presence route, or the server's credentials are managed
+    parameters no component named. On the last of those some other name may well have
+    resolved; it is not the one that decides. Each popout says which. Neither state is
+    evidence that anything this server needs resolves.</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,10 +636,18 @@ const ISSUE_HEADLINE: Record<ServerState, string> = {
  * headline cannot open by claiming nothing was. What it has to say instead is
  * narrower and more useful: what was checked is not the part this server takes
  * its credentials from.
+ *
+ * "THIS PAGE does not read", never "nothing could read it", and the distinction
+ * is the whole reason this string is worded the way it is. `optionsFor` resolves
+ * a `params: true` BUILTIN's namespace in this very process, per tool call,
+ * through the resolver TTL — staging's `echo` exists to be watched that way — so
+ * the wider claim would be flatly false about the one server most likely to show
+ * this line. The zero-row summary beside it makes the same narrow claim for the
+ * same reason.
  */
 const PARTIAL_UNVERIFIED_HEADLINE =
   "The rows below were established, and they are not the part that decides this. " +
-  "This server takes its credentials from a managed namespace nothing here could " +
+  "This server takes its credentials from a managed namespace THIS PAGE does not " +
   "read, so what it actually runs on was checked by nothing.";
 
 /**
@@ -677,6 +687,12 @@ function fixDialog(
   // carrying an `unobservable` row is `unverified` BECAUSE of that row, and the
   // ordinary headline is exactly right about it; only the managed-namespace gap
   // demotes an entry whose rows all resolved.
+  //
+  // Not keyed off `status.unobservable`, which would be the obvious thing and is
+  // wrong: `unobservableScope()` builds no scope for a `params: true` BUILTIN,
+  // whose parameters core resolves itself, so a builtin would silently fall back
+  // to the headline that contradicts its own rows. Every-row-`present` is the
+  // fact, and it holds for both kinds.
   const established =
     status.requirements.length > 0 &&
     status.requirements.every((o) => o.state === "present");

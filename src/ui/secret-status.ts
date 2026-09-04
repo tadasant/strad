@@ -1676,6 +1676,14 @@ export function deriveServerStatuses(
       // branch exists to prevent.
       const managed = !isUnhosted(server) && server.params;
       const managedGap = managed && managedParams.length === 0;
+      // ONE call site, so the three branches below cannot drift about which
+      // entries get a panel. Gated on `managed` rather than `managedGap` for the
+      // same reason the zero-row branch is: that branch has always built a scope
+      // whenever there IS a namespace. Only ever non-undefined for a
+      // `supplementary-image` — see unobservableScope().
+      const managedScope = managed
+        ? unobservableScope(config, server, presence)
+        : undefined;
 
       if (requirements.length === 0) {
         // `params: true` means this server's credentials are MANAGED PARAMETERS,
@@ -1699,7 +1707,7 @@ export function deriveServerStatuses(
               `\${NAME} references — and this page does not read that namespace. Nothing ` +
               `here says they are seeded.`,
             requirements,
-            unobservable: unobservableScope(config, server, presence),
+            unobservable: managedScope,
           };
         }
         return {
@@ -1747,8 +1755,7 @@ export function deriveServerStatuses(
             `references and which this page does not read. Nothing here says those are ` +
             `seeded.`,
           requirements,
-          // Only ever set on a `supplementary-image` — see unobservableScope().
-          unobservable: unobservableScope(config, server, presence),
+          unobservable: managedScope,
         };
       }
 
@@ -1775,10 +1782,10 @@ export function deriveServerStatuses(
         summary: summarise(state, requirements.length, bad),
         requirements,
         // Reported even when worse news labels the row: the gap is true, and the
-        // panel has room for it under the requirement rows.
-        unobservable: managedGap
-          ? unobservableScope(config, server, presence)
-          : undefined,
+        // panel has room for it under the requirement rows. `managedGap`, not
+        // `managed` — a namespace a component DID answer for produced rows above
+        // and wants no panel.
+        unobservable: managedGap ? managedScope : undefined,
       };
     });
 }

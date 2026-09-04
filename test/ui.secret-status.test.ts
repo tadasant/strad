@@ -1773,6 +1773,52 @@ servers:
     // row saying this gateway process established it.
     expect(dialog).not.toContain("nothing here was established either");
   });
+
+  it("says nothing false about a BUILTIN, whose namespace core DOES read", () => {
+    // The trap this test exists for. A `params: true` builtin gets no panel, so
+    // the headline and the summary are the whole of its popout — and both must
+    // stay narrow. `optionsFor` resolves that namespace in THIS process, per
+    // tool call, so "nothing could read it" would be flatly false about the one
+    // server most likely to render this line.
+    const builtin = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+    options:
+      greeting: "\${SOME_REF}"
+`);
+    const [status] = deriveServerStatuses(builtin, [observation("present")]);
+    const html = renderIndex({
+      config: builtin,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: {},
+      boot: [],
+    });
+    const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
+    expect(dialog).toContain("THIS PAGE does not");
+    expect(dialog).not.toContain("nothing here could read");
+    expect(dialog).not.toContain("nothing here was established either");
+    // No panel — `unobservableScope` builds none for a builtin — so the badge
+    // still opens on the requirement rows rather than on an empty dialog.
+    expect(dialog).not.toContain('<code class="sec-component">');
+    expect(dialog).toContain('<code class="sec-var">');
+    expect(dialog).toContain("/strad/test/mcp/echo/static/");
+  });
 });
 
 describe("the console cards on /", () => {

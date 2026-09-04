@@ -842,17 +842,22 @@ bump, on that component's image.
 **A server that declares something else is graded on both.** The managed
 namespace is a requirement in its own right, ranked `unobservable`, so an
 unchecked one demotes the entry to `unverified` whatever its `${NAME}` references
-did — a `params: true` server no longer reads `READY` for having checked a part
-rather than the whole ([#265](https://github.com/tadasant/strad/issues/265)).
-The popout gets its own first line there, because the `unverified` headline
-("nothing here was established either") would contradict the rows under it.
+did. A `READY` badge is never earned by checking a part rather than the whole
+([#265](https://github.com/tadasant/strad/issues/265)). The popout gets its own
+first line there: the `unverified` headline ("nothing here was established
+either") would contradict the rows under it.
 
 **One edge of that shape remains.** A `params: true` **builtin** runs inside
 core, which resolves its parameters itself: the panel's whole vocabulary is about
 a component core is not, so a builtin gets no panel — an inert `ISSUE` chip where
-it has no rows, and its `${NAME}` rows with no explanation of the namespace where
-it has some ([#264](https://github.com/tadasant/strad/issues/264)). `echo` in
-staging is that shape.
+it has no rows, and its `${NAME}` rows plus the summary sentence where it has
+some. The headline and the summary do name the namespace; what is missing is the
+panel's three facts — which component, why the question went unanswered, and the
+link into the parameters console
+([#264](https://github.com/tadasant/strad/issues/264)). `echo` in staging is that
+shape, and because `core` is never probed the gap is permanent for it: nothing an
+operator seeds clears the badge, and `/api/secrets/readiness` reports
+`ready: false` for as long as the deployment carries such a server.
 
 **The `cannot render` diagnosis can lose a race and simply not appear.**
 `readStoreDiagnostics` gives its two store reads six seconds together, and the

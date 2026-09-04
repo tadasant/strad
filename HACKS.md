@@ -1318,12 +1318,12 @@ overwrite a credential that is already in place.
 **THE MANAGED NAMESPACE IS A REQUIREMENT, NOT A BRANCH.** An unchecked one is
 folded into the ordinary worst-first ranking as `unobservable` — above `present`,
 below every piece of bad news — so it demotes a green and never overwrites a red,
-whatever the server declares beside it. Before that it was an all-or-nothing
-branch reached only at zero rows, and one resolving `${NAME}` in `env:` was
-enough to skip it: `requirements.length === 1`, worst `present`, badge `READY`
-over a credential nothing checked (#265). The scope rides along on the graded
-entry too, so the popout says which namespace went unchecked instead of a `READY`
-popout mentioning it nowhere.
+whatever the server declares beside it. As an all-or-nothing branch reached only
+at zero rows it was skippable by one resolving `${NAME}` in `env:`:
+`requirements.length === 1`, worst `present`, badge `READY` over a credential
+nothing checked (#265). The scope rides along on the graded entry too, so the
+popout names the namespace that went unchecked rather than mentioning it
+nowhere.
 
 Two things that entry must NOT say, and both were written and rejected. It does
 not say the resolved `${NAME}` is "not what this server runs on" — `optionsFor`
