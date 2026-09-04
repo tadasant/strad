@@ -1339,14 +1339,19 @@ export interface ServerSecretStatus {
   /** This server's requirements, deduplicated within the server. */
   requirements: SecretObservation[];
   /**
-   * Present when the entry has NO requirements to show and is still not READY.
+   * Present when a `params: true` server's managed parameters went UNCHECKED —
+   * no component named them, so not one of them produced a row.
    *
-   * That is one shape and one only: a `params: true` server whose managed
-   * parameters no component named, so there is not a single row to render. It is
-   * the console's least explained state and its most confusing one — the badge
-   * says ISSUE and the panel behind it would otherwise be empty. This carries
-   * the three facts that make the panel worth opening: which component holds the
-   * value, why this process could not ask it, and where the value lives instead.
+   * Set whether or not the entry has other requirements, because the gap is the
+   * same fact either way. On a server that declares nothing else it is the whole
+   * of the entry: the badge says ISSUE and the panel behind it would otherwise
+   * be empty. On one that also declares a `${NAME}` it is the part the rows do
+   * NOT cover, and the part a reader is owed — those rows are about names this
+   * server references, not about the credentials it runs on.
+   *
+   * Either way it carries the three facts that make the panel worth opening:
+   * which component holds the value, why this process could not ask it, and
+   * where the value lives instead.
    */
   unobservable?: UnobservableScope;
 }
@@ -1648,11 +1653,37 @@ export function deriveServerStatuses(
       // appspec.ts). Fold them in as requirements of their own, so the server is
       // graded on them like anything else instead of being filed under "not
       // checked".
-      for (const observation of managedParamObservations(server, presence)) {
+      const managedParams = managedParamObservations(server, presence);
+      for (const observation of managedParams) {
         if (seen.has(observation.requirement.name)) continue;
         seen.add(observation.requirement.name);
         requirements.push(observation);
       }
+
+      // A NAMESPACE THIS SERVER TAKES CREDENTIALS FROM, AND NOBODY ANSWERED FOR
+      // IT. That is a requirement that went unchecked, not an absence of
+      // requirements, and the distinction is the whole of this entry's honesty:
+      // the checks below grade what was observed, and this is the thing that
+      // was not.
+      //
+      // `managed` and `managedGap` are two questions, not one. The first is
+      // whether there IS a managed namespace, which is what the zero-row branch
+      // has always asked; the second is whether anything answered for it. They
+      // come apart when every parameter a component manifested is also a
+      // `${NAME}` this server declares and no observation exists for it —
+      // `requirements` is empty and `managedParams` is not — and collapsing them
+      // would drop that entry into `no-secrets`, the false green this whole
+      // branch exists to prevent.
+      const managed = !isUnhosted(server) && server.params;
+      const managedGap = managed && managedParams.length === 0;
+      // ONE call site, so the three branches below cannot drift about which
+      // entries get a panel. Gated on `managed` rather than `managedGap` for the
+      // same reason the zero-row branch is: that branch has always built a scope
+      // whenever there IS a namespace. Only ever non-undefined for a
+      // `supplementary-image` — see unobservableScope().
+      const managedScope = managed
+        ? unobservableScope(config, server, presence)
+        : undefined;
 
       if (requirements.length === 0) {
         // `params: true` means this server's credentials are MANAGED PARAMETERS,
@@ -1665,7 +1696,6 @@ export function deriveServerStatuses(
         // breaks the server while this page reports it has nothing to seed. This
         // page does not read that namespace, so the honest answer is that it did
         // not check — not that there was nothing to check.
-        const managed = !isUnhosted(server) && server.params;
         if (managed) {
           return {
             server,
@@ -1677,7 +1707,7 @@ export function deriveServerStatuses(
               `\${NAME} references — and this page does not read that namespace. Nothing ` +
               `here says they are seeded.`,
             requirements,
-            unobservable: unobservableScope(config, server, presence),
+            unobservable: managedScope,
           };
         }
         return {
@@ -1695,6 +1725,40 @@ export function deriveServerStatuses(
       const worst = requirements.reduce((a, b) =>
         STATE_RANK[b.state] > STATE_RANK[a.state] ? b : a,
       );
+
+      // AN UNCHECKED NAMESPACE RANKS LIKE ANY OTHER UNOBSERVABLE NAME — above
+      // `present`, below every piece of bad news — so it demotes a green and
+      // never overwrites a red.
+      //
+      // Without this the entry is graded on whatever it happens to declare
+      // BESIDE its parameters. One resolving `${NAME}` in `env:` made
+      // `requirements.length === 1`, the zero-row branch above was skipped, and
+      // the badge read READY for a server whose actual credentials had been
+      // checked by nothing — a green earned by an unrelated name, and strictly
+      // worse than the zero-row case it sits beside, which at least says so.
+      if (managedGap && STATE_RANK[worst.state] < STATE_RANK.unobservable) {
+        // "NOT ALL OF WHAT IT NEEDS", never "not what it runs on". A resolved
+        // `${NAME}` IS part of what this server runs on — `optionsFor` merges a
+        // builtin's parameters OVER its resolved `options:`, and a supplementary
+        // image's `env:` is injected beside its parameters — so calling the rows
+        // irrelevant would be a second false claim in place of the first one.
+        // What is true is that they are not the whole of it, and the rest went
+        // unchecked.
+        return {
+          server,
+          state: "unverified" as ServerState,
+          label: STATE_LABEL.unverified,
+          summary:
+            `Every \${NAME} this server declares resolves — and they are not all of what it ` +
+            `needs. It also sets \`params: true\`, so it takes managed parameters from ` +
+            `${staticNamespace(config.gateway.env, server.slug)}, which are not \${NAME} ` +
+            `references and which this page does not read. Nothing here says those are ` +
+            `seeded.`,
+          requirements,
+          unobservable: managedScope,
+        };
+      }
+
       const bad = requirements.filter(
         (r) => r.state === worst.state && worst.state !== "present",
       );
@@ -1717,6 +1781,11 @@ export function deriveServerStatuses(
         label: STATE_LABEL[state],
         summary: summarise(state, requirements.length, bad),
         requirements,
+        // Reported even when worse news labels the row: the gap is true, and the
+        // panel has room for it under the requirement rows. `managedGap`, not
+        // `managed` — a namespace a component DID answer for produced rows above
+        // and wants no panel.
+        unobservable: managedGap ? managedScope : undefined,
       };
     });
 }

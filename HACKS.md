@@ -1315,16 +1315,33 @@ that manifested its parameters and listed none HERE is reporting an empty
 namespace, and the move is to seed it. Collapsing them tells an operator to
 overwrite a credential that is already in place.
 
-**TWO EDGES OF THAT SHAPE ARE OPEN.** A `params: true` server that ALSO declares a
-resolving `${NAME}` never reaches the zero-row branch, so its managed parameters
-are not graded at all and the entry can read `READY` on the strength of the other
-name — a green over a credential nothing checked (#265). And `params:` is a field
-on a BUILTIN too, whose bundle defaults to `core`: core resolves those parameters
-itself, in-process, through the resolver TTL, so the panel's whole vocabulary
-(private URL, image pin, redeploy the container) would be false about it.
-`unobservableScope()` refuses to build a scope for anything that is not a
-`supplementary-image`, and such an entry degrades to an inert `ISSUE` chip rather
-than a lying panel — a floor, not an answer (#264).
+**THE MANAGED NAMESPACE IS A REQUIREMENT, NOT A BRANCH.** An unchecked one is
+folded into the ordinary worst-first ranking as `unobservable` — above `present`,
+below every piece of bad news — so it demotes a green and never overwrites a red,
+whatever the server declares beside it. As an all-or-nothing branch reached only
+at zero rows it was skippable by one resolving `${NAME}` in `env:`:
+`requirements.length === 1`, worst `present`, badge `READY` over a credential
+nothing checked (#265). The scope rides along on the graded entry too, so the
+popout names the namespace that went unchecked rather than mentioning it
+nowhere.
+
+Two things that entry must NOT say, and both were written and rejected. It does
+not say the resolved `${NAME}` is "not what this server runs on" — `optionsFor`
+merges a builtin's parameters OVER its resolved `options:`, so the reference is
+part of what it runs on and only the namespace went unchecked. And it does not
+print the `unverified` headline, whose "nothing here was established either"
+would sit directly above a row reading "PLUMBED, established by this gateway
+process"; a partially established entry gets its own first line.
+
+**ONE EDGE OF THAT SHAPE IS OPEN.** `params:` is a field on a BUILTIN too, whose
+bundle defaults to `core`: core resolves those parameters itself, in-process,
+through the resolver TTL, so the panel's whole vocabulary (private URL, image
+pin, redeploy the container) would be false about it. `unobservableScope()`
+refuses to build a scope for anything that is not a `supplementary-image`, so
+such an entry is demoted with no panel behind it — an inert `ISSUE` chip where it
+has no rows, its `${NAME}` rows and the summary sentence where it has some. A
+floor, not an answer (#264). Staging's `echo` is that shape: `params: true` with
+one `${STRAD_ENV}` in `options:`, and it reads `unverified` rather than `READY`.
 
 **Live verification is outstanding.** Every state in this feature is constructed
 in tests — `test/presence.test.ts`, `test/presence.route.test.ts`,

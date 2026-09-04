@@ -10,7 +10,9 @@ import {
   EnvSecretProvider,
   type SecretProvider,
 } from "../src/secrets/provider/index.ts";
+import { buildReadiness } from "../src/http/readiness.ts";
 import type { ReadinessReport } from "../src/http/readiness.ts";
+import { deriveServerStatuses } from "../src/ui/secret-status.ts";
 import type { ParameterStore } from "../src/secrets/parameters/index.ts";
 
 /**
@@ -396,6 +398,76 @@ describe("readiness when everything resolves", () => {
     expect(internal?.required).toBe(true);
     expect(internal?.state).toBe("missing");
     shut();
+  });
+});
+
+describe("readiness on a server whose managed namespace nobody checked", () => {
+  // `unverified` is a server state like any other, so a `params: true` entry
+  // that nothing manifested holds `ready` at false. That is the point rather
+  // than a side effect — a machine gate that answered true while the console
+  // said ISSUE would be the two doors disagreeing — but it is worth pinning,
+  // because the shape reaches `issues[]` with an EMPTY `secrets[]` and a caller
+  // reading only that array would see an issue with nothing in it.
+  const cfg = parseConfig(`
+version: 1
+gateway: { name: strad, env: ${ENV_NAME} }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    env: { SOME_KEY: "\${SOME_REF}" }
+`);
+
+  it("holds ready:false with an issue carrying no outstanding secret", () => {
+    const [status] = deriveServerStatuses(
+      cfg,
+      [
+        {
+          requirement: {
+            name: "SOME_REF",
+            deliveries: ["bundle"],
+            slugs: ["craigslist"],
+            consoleKeys: [],
+            paramsSlugs: ["craigslist"],
+          },
+          state: "present",
+          source: "ENV",
+          detail: "plumbed",
+          evidence: { by: "core" },
+        },
+      ],
+      {
+        probes: new Map([
+          ["bundle-internal", { kind: "unreachable", detail: "ECONNREFUSED" }],
+        ]),
+      },
+    );
+    const report = buildReadiness({
+      config: cfg,
+      env: ENV,
+      reading: { statuses: [status!], boot: [], storeDiagnosis: null },
+    });
+
+    expect(report.ready).toBe(false);
+    expect(report.servers.states.unverified).toBe(1);
+    expect(report.servers.states.ready).toBe(0);
+    expect(report.issues).toHaveLength(1);
+    expect(report.issues[0]!.slug).toBe("craigslist");
+    expect(report.issues[0]!.state).toBe("unverified");
+    // The resolving name is NOT an outstanding secret, so it is filtered out and
+    // the sentence in `summary` carries the whole of the answer.
+    expect(report.issues[0]!.secrets).toEqual([]);
+    expect(report.issues[0]!.summary).toContain(
+      "/strad/test/mcp/craigslist/static/",
+    );
   });
 });
 

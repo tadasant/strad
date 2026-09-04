@@ -6,6 +6,7 @@ import { parseConfig } from "../src/config/load.ts";
 import type { BundleProbeOutcome } from "../src/gateway/bundle-presence.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
+import { badgeFor, renderIndex } from "../src/ui/index-page.ts";
 import {
   EnvSecretProvider,
   type SecretProvider,
@@ -20,7 +21,9 @@ import {
   SOURCE_TOOLTIP,
   storeProject,
   tally,
+  type SecretObservation,
   type SecretRequirement,
+  type ServerState,
 } from "../src/ui/secret-status.ts";
 
 /**
@@ -1488,6 +1491,333 @@ servers:
     expect(s!.state).toBe("unverified");
     expect(s!.requirements).toHaveLength(0);
     expect(s!.unobservable).toBeUndefined();
+  });
+});
+
+describe("deriveServerStatuses — a managed namespace nobody checked", () => {
+  // THE MIXED SHAPE, and the false green it used to earn.
+  //
+  // A `params: true` server whose component named no parameters produces no
+  // requirements OF ITS OWN. When it declares nothing else, the zero-row branch
+  // says so and the badge reads ISSUE. When it also declares one ordinary
+  // `${NAME}` that resolves, the entry used to be graded on THAT alone —
+  // `requirements.length === 1`, worst `present`, badge READY — while the
+  // credentials the server actually runs on had been checked by nothing.
+  const cfg = (env = "") =>
+    parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+${env}`);
+
+  const MIXED = `    env: { SOME_KEY: "\${SOME_REF}" }`;
+
+  const observation = (
+    state: SecretObservation["state"],
+  ): SecretObservation => ({
+    requirement: requirement("SOME_REF", { deliveries: ["bundle"] }),
+    state,
+    source: "ENV",
+    detail: "",
+    evidence: { by: "none" },
+  });
+
+  const unreachable = {
+    probes: new Map<string, BundleProbeOutcome>([
+      ["bundle-internal", { kind: "unreachable", detail: "ECONNREFUSED" }],
+    ]),
+  };
+
+  it("demotes the entry instead of reading READY off an unrelated name", () => {
+    const [s] = deriveServerStatuses(
+      cfg(MIXED),
+      [observation("present")],
+      unreachable,
+    );
+    expect(s!.state).toBe("unverified");
+    expect(badgeFor(s!.state)).toBe("ISSUE");
+    // The resolving name is still shown — it IS plumbed, and "the other one
+    // resolves" is part of the answer to "what do I do about this".
+    expect(s!.requirements).toHaveLength(1);
+    expect(s!.requirements[0]!.state).toBe("present");
+    // And the panel now says which namespace went unchecked, which is the whole
+    // of what a READY entry's popout never mentioned.
+    expect(s!.summary).toContain("/strad/test/mcp/craigslist/static/");
+    expect(s!.unobservable?.reason).toBe("unreachable");
+  });
+
+  it("still says ISSUE when the server declares nothing else", () => {
+    // The zero-row shape, unchanged: the branch that was already honest stays
+    // the branch that answers.
+    const [s] = deriveServerStatuses(cfg(), [], unreachable);
+    expect(s!.state).toBe("unverified");
+    expect(badgeFor(s!.state)).toBe("ISSUE");
+    expect(s!.requirements).toHaveLength(0);
+    expect(s!.unobservable?.reason).toBe("unreachable");
+  });
+
+  it("does not bury worse news: an unseeded name still labels the row", () => {
+    // `unobservable` ranks below every piece of bad news, so the gap demotes a
+    // green and never overwrites a red. A row labelled "unverified" when a name
+    // is flatly unseeded would be a lie of omission in the other direction.
+    const [s] = deriveServerStatuses(
+      cfg(MIXED),
+      [observation("missing")],
+      unreachable,
+    );
+    expect(s!.state).toBe("missing");
+    expect(s!.summary).toContain("SOME_REF");
+    // The gap is still reported — it is true, and the panel has room for it.
+    expect(s!.unobservable?.reason).toBe("unreachable");
+  });
+
+  it("stays READY when the component DID manifest the parameters", () => {
+    // No over-demotion: the component answered, named this slug's parameters,
+    // and reports a value for each. That is an observation, so the entry is
+    // graded on it like anything else.
+    const presence = {
+      probes: new Map<string, BundleProbeOutcome>([
+        [
+          "bundle-internal",
+          {
+            kind: "ok",
+            report: {
+              protocol: 1,
+              component: "bundle-internal",
+              image: null,
+              bootedAt: "2026-01-01T00:00:00.000Z",
+              observedAt: "2026-01-01T00:00:00.000Z",
+              keys: {
+                CRAIGSLIST_TOKEN: {
+                  presence: "present" as const,
+                  reason: null,
+                },
+              },
+              paramKeys: { craigslist: ["CRAIGSLIST_TOKEN"] },
+            },
+          },
+        ],
+      ]),
+    };
+    const [s] = deriveServerStatuses(
+      cfg(MIXED),
+      [observation("present")],
+      presence,
+    );
+    expect(s!.state).toBe("ready");
+    expect(badgeFor(s!.state)).toBe("READY");
+    expect(s!.requirements).toHaveLength(2);
+    expect(s!.unobservable).toBeUndefined();
+  });
+
+  it("leaves a server WITHOUT `params: true` alone", () => {
+    // The demotion is keyed off the managed namespace, not off the probe. A
+    // server that declares no parameters has no namespace to go unchecked.
+    const plain = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    env: { SOME_KEY: "\${SOME_REF}" }
+`);
+    const [s] = deriveServerStatuses(
+      plain,
+      [observation("present")],
+      unreachable,
+    );
+    expect(s!.state).toBe("ready");
+    expect(s!.unobservable).toBeUndefined();
+  });
+
+  it("demotes a `params: true` BUILTIN too, with no scope behind it", () => {
+    // The shape `infra/strad.staging.yaml` actually ships: `echo`, `params:
+    // true`, and one `${STRAD_ENV}` in `options:`. Core never probes itself, so
+    // the gap is permanent and the demotion is the honest answer — the same one
+    // the zero-row branch has always given a bare `params: true` builtin.
+    //
+    // No scope: `unobservableScope` refuses to build one for a builtin, whose
+    // parameters core resolves itself. That is #264, and it is a floor.
+    const builtin = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+    options:
+      greeting: "\${SOME_REF}"
+`);
+    const [s] = deriveServerStatuses(builtin, [observation("present")]);
+    expect(s!.state).toBe("unverified");
+    expect(badgeFor(s!.state)).toBe("ISSUE");
+    expect(s!.requirements).toHaveLength(1);
+    expect(s!.unobservable).toBeUndefined();
+    // NOT "that is not what this server runs on": `optionsFor` merges the
+    // parameters OVER the resolved options, so the reference IS part of it.
+    expect(s!.summary).toContain("not all of what it needs");
+    expect(s!.summary).not.toContain("not what this server runs on");
+  });
+
+  it("leaves the label to the worse state, whatever kind of bad news it is", () => {
+    // The demotion is a floor under `present`, not a re-ranking. Every state
+    // that outranks `unobservable` must still label the row.
+    const cases: [SecretObservation["state"], ServerState][] = [
+      ["placeholder", "placeholder"],
+      ["unrenderable", "unrenderable"],
+      ["error", "unknown"],
+      // A requirement that is ITSELF unobservable ranks EQUAL, not below — the
+      // guard is `<`, so the row's own summary answers rather than the gap's.
+      ["unobservable", "unverified"],
+    ];
+    for (const [state, expected] of cases) {
+      const [s] = deriveServerStatuses(
+        cfg(MIXED),
+        [observation(state)],
+        unreachable,
+      );
+      expect(s!.state, `worst=${state}`).toBe(expected);
+      expect(s!.summary, `worst=${state}`).toContain("SOME_REF");
+      expect(s!.unobservable?.reason, `worst=${state}`).toBe("unreachable");
+    }
+  });
+
+  it("keeps a `mayBeUnseeded` waiver reading as a deferral, not as a gap", () => {
+    // `unconfigured` is a plan somebody has not finished and `unverified` is a
+    // question nobody answered. `missing` outranks the gap, so the waiver still
+    // decides the label.
+    const waived = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    mayBeUnseeded: [SOME_REF]
+    env: { SOME_KEY: "\${SOME_REF}" }
+`);
+    const [s] = deriveServerStatuses(
+      waived,
+      [observation("missing")],
+      unreachable,
+    );
+    expect(s!.state).toBe("unconfigured");
+  });
+
+  it("renders the namespace panel BELOW the rows, on an entry that has some", () => {
+    // The popout is the whole remedy for the false green: a `READY` entry's
+    // popout mentioned the namespace nowhere. Asserted against the MARKUP,
+    // because the field being set is not the same as the block being emitted.
+    const config = cfg(MIXED);
+    const [status] = deriveServerStatuses(
+      config,
+      [observation("present")],
+      unreachable,
+    );
+    const html = renderIndex({
+      config,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: {},
+      boot: [],
+    });
+    const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
+    // The requirement row is keyed off the `${NAME}` chip, the panel off the
+    // component chip only `unobservableBlock` emits — not off the namespace
+    // string, which the summary above both of them also names.
+    const row = dialog.indexOf('<code class="sec-var">');
+    const panel = dialog.indexOf('<code class="sec-component">');
+    expect(row).toBeGreaterThan(-1);
+    expect(panel).toBeGreaterThan(row);
+    expect(dialog).toContain("not visible here");
+    expect(dialog).toContain("/strad/test/mcp/craigslist/static/");
+    // And the headline does not claim nothing was established, directly over a
+    // row saying this gateway process established it.
+    expect(dialog).not.toContain("nothing here was established either");
+  });
+
+  it("says nothing false about a BUILTIN, whose namespace core DOES read", () => {
+    // The trap this test exists for. A `params: true` builtin gets no panel, so
+    // the headline and the summary are the whole of its popout — and both must
+    // stay narrow. `optionsFor` resolves that namespace in THIS process, per
+    // tool call, so "nothing could read it" would be flatly false about the one
+    // server most likely to render this line.
+    const builtin = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+    options:
+      greeting: "\${SOME_REF}"
+`);
+    const [status] = deriveServerStatuses(builtin, [observation("present")]);
+    const html = renderIndex({
+      config: builtin,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: {},
+      boot: [],
+    });
+    const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
+    expect(dialog).toContain("THIS PAGE does not");
+    expect(dialog).not.toContain("nothing here could read");
+    expect(dialog).not.toContain("nothing here was established either");
+    // No panel — `unobservableScope` builds none for a builtin — so the badge
+    // still opens on the requirement rows rather than on an empty dialog.
+    expect(dialog).not.toContain('<code class="sec-component">');
+    expect(dialog).toContain('<code class="sec-var">');
+    expect(dialog).toContain("/strad/test/mcp/echo/static/");
   });
 });
 

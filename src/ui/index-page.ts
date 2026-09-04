@@ -380,10 +380,12 @@ function banner(issues: Entry[], enabled: number): string {
   return `<p class="posture posture-warn"><strong>Nothing is known to be broken, but ${unchecked} server${
     unchecked === 1 ? "" : "s"
   } could not be checked.</strong> That is not the same as healthy. <code>unknown</code> means
-    the secret backend could not be consulted; <code>unverified</code> means nothing
-    established the value — the component holding it did not answer, it runs an image
-    without the presence route, or the server's credentials are managed parameters no
-    component named. Each row says which. Neither is evidence that anything resolves.</p>`;
+    the secret backend could not be consulted; <code>unverified</code> means the value
+    this server runs on was not established — the component holding it did not answer, it
+    runs an image without the presence route, or the server's credentials are managed
+    parameters no component named. On the last of those some other name may well have
+    resolved; it is not the one that decides. Each popout says which. Neither state is
+    evidence that anything this server needs resolves.</p>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -540,9 +542,11 @@ document.addEventListener("click", function (e) {
  *
  * It is derived from WHAT fixDialog() WILL RENDER rather than from the state —
  * requirement rows, or an `unobservable` scope — so the two cannot disagree
- * about a state neither of them anticipated. `no-secrets` is the one entry that
- * has neither today: it is READY, it references nothing, and it alone stays
- * inert.
+ * about a state neither of them anticipated. Two entries have neither: a
+ * `no-secrets` server, which is READY and references nothing, and a `params:
+ * true` BUILTIN that declares no `${NAME}` beside its parameters, which is
+ * `unverified` and gets no scope because core resolves those parameters itself
+ * (see unobservableScope, and #264).
  */
 function hasFixDialog(entry: Entry): boolean {
   const status = entry.status;
@@ -569,8 +573,10 @@ function hasFixDialog(entry: Entry): boolean {
  * The inert ISSUE chip is a floor, not the fix. An entry that asserts "this
  * needs attention" and offers no way to find out why is the worse of the two
  * failures, so the real answer is that the popout is given something true to say
- * — see unobservableBlock(). Nothing reachable today takes this branch; it is
- * here so that a state nobody anticipated degrades instead of going dead.
+ * — see unobservableBlock(). One shape still takes this branch: a `params: true`
+ * BUILTIN with no `${NAME}` of its own, which is `unverified` and gets no scope
+ * because every sentence the panel knows how to say is about a component core is
+ * not. Explaining that one honestly is #264.
  */
 function badgeMarkup(entry: Entry): string {
   if (!entry.badge) return "";
@@ -624,6 +630,27 @@ const ISSUE_HEADLINE: Record<ServerState, string> = {
 };
 
 /**
+ * `unverified`, for the entry where SOME of it was established.
+ *
+ * The rows below it are real observations and are about to say so, so the
+ * headline cannot open by claiming nothing was. What it has to say instead is
+ * narrower and more useful: what was checked is not the part this server takes
+ * its credentials from.
+ *
+ * "THIS PAGE does not read", never "nothing could read it", and the distinction
+ * is the whole reason this string is worded the way it is. `optionsFor` resolves
+ * a `params: true` BUILTIN's namespace in this very process, per tool call,
+ * through the resolver TTL — staging's `echo` exists to be watched that way — so
+ * the wider claim would be flatly false about the one server most likely to show
+ * this line. The zero-row summary beside it makes the same narrow claim for the
+ * same reason.
+ */
+const PARTIAL_UNVERIFIED_HEADLINE =
+  "The rows below were established, and they are not the part that decides this. " +
+  "This server takes its credentials from a managed namespace THIS PAGE does not " +
+  "read, so what it actually runs on was checked by nothing.";
+
+/**
  * What is wrong, and what to do about it.
  *
  * A `<dialog>` rather than an inline expander, for the same reason the Help
@@ -650,6 +677,29 @@ function fixDialog(
   );
 
   const ready = status.state === "ready";
+  // A FULLY ESTABLISHED SET OF ROWS UNDER AN `unverified` BADGE GETS ITS OWN
+  // FIRST LINE. The `unverified` headline says "nothing here was established
+  // either", and a reader who skims acts on the first line — so printing it over
+  // a row reading "PLUMBED, established by this gateway process" is the popout
+  // contradicting itself in two consecutive sentences.
+  //
+  // The condition is EVERY ROW `present`, not merely "has rows". An entry
+  // carrying an `unobservable` row is `unverified` BECAUSE of that row, and the
+  // ordinary headline is exactly right about it; only the managed-namespace gap
+  // demotes an entry whose rows all resolved.
+  //
+  // Not keyed off `status.unobservable`, which would be the obvious thing and is
+  // wrong: `unobservableScope()` builds no scope for a `params: true` BUILTIN,
+  // whose parameters core resolves itself, so a builtin would silently fall back
+  // to the headline that contradicts its own rows. Every-row-`present` is the
+  // fact, and it holds for both kinds.
+  const established =
+    status.requirements.length > 0 &&
+    status.requirements.every((o) => o.state === "present");
+  const headline =
+    status.state === "unverified" && established
+      ? PARTIAL_UNVERIFIED_HEADLINE
+      : ISSUE_HEADLINE[status.state];
   return `<dialog class="fixdlg" id="${esc(fixDialogId(slug))}" aria-label="${
     ready ? `What is plumbed for ${esc(slug)}` : `How to resolve ${esc(slug)}`
   }">
@@ -658,7 +708,7 @@ function fixDialog(
     <button class="btn" type="button" data-fix-close aria-label="Close">Close</button>
   </div>
   <div class="helpdlg-body">
-    <p class="fix-headline">${esc(ISSUE_HEADLINE[status.state])}</p>
+    <p class="fix-headline">${esc(headline)}</p>
     <p class="sec-detail">${esc(status.summary)}</p>
 ${worstFirst.map((o) => requirementBlock(o, config, env, slug)).join("\n")}
 ${unobservableBlock(status, config, env)}
@@ -672,21 +722,26 @@ ${
 }
 
 /**
- * The panel behind an `ISSUE` badge that has no requirement rows to show.
+ * The managed namespace nothing answered for, said in the panel that opens.
  *
- * A `params: true` server whose component named no parameters produces ZERO
- * rows, and until this existed the page rendered a button over an empty panel it
- * never emitted — the click went nowhere and the badge was a dead control. The
- * fix is not to take the control away: the banner above this grid says in so
- * many words that "their popouts say which process would have to be asked", and
- * an inert chip asserting "this needs attention" with no way to find out why is
- * the worse half of the trade. So the control stays and the panel says the true
- * thing instead — WHICH component holds the value, WHY this process could not
- * ask it, and WHERE to look rather than here.
+ * A `params: true` server whose component named no parameters produces ZERO rows
+ * for them, and until this existed the page rendered a button over an empty
+ * panel it never emitted — the click went nowhere and the badge was a dead
+ * control. The fix is not to take the control away: the banner above this grid
+ * says in so many words that "their popouts say which process would have to be
+ * asked", and an inert chip asserting "this needs attention" with no way to find
+ * out why is the worse half of the trade. So the control stays and the panel
+ * says the true thing instead — WHICH component holds the value, WHY this
+ * process could not ask it, and WHERE to look rather than here.
  *
- * Keyed off `unobservable` alone rather than off the row count as well: the
- * scope is only ever set on the zero-row branch, and asking twice is the same
- * rule in two places, which is what `hasFixDialog` exists to stop.
+ * It renders BELOW the requirement rows, and on an entry that has some. Those
+ * rows are about names this server references; this block is about the
+ * credentials it runs on, which is a different question and the one the rows
+ * cannot answer.
+ *
+ * Keyed off `unobservable` alone rather than off the row count as well: asking
+ * twice is the same rule in two places, which is what `hasFixDialog` exists to
+ * stop.
  */
 function unobservableBlock(
   status: ServerSecretStatus,
