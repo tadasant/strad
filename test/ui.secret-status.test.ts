@@ -1903,8 +1903,12 @@ servers:
     expect(s!.requirements.filter((r) => r.requirement.managed)).toHaveLength(
       1,
     );
-    // One name, named once. The summary counts secrets, not rows.
-    expect(s!.summary).toBe("1 of 1 required secret not seeded: FOO.");
+    // TWO requirements, and the bad one says which claim it is. Two values at
+    // two paths is what a reader is being told to seed, and "FOO, FOO" would
+    // read as the page repeating itself.
+    expect(s!.summary).toBe(
+      "1 of 2 required secrets not seeded: FOO (managed parameter).",
+    );
   });
 
   it("ranks the contradiction the other way round too", () => {
@@ -1932,9 +1936,119 @@ servers:
     expect(badgeFor(s!.state)).toBe("READY");
     expect(s!.requirements).toHaveLength(2);
     expect(s!.unobservable).toBeUndefined();
-    // "All 1 required secret", not "All 2": the rows are two claims about one
-    // secret, and a reader counting secrets would go looking for the other one.
-    expect(s!.summary).toContain("All 1 required secret resolves");
+    // Two requirements, because there are two values: the reference resolved
+    // from the gateway namespace and the parameter under this server's own.
+    expect(s!.summary).toContain("All 2 required secrets resolve");
+  });
+
+  it("keeps a `mayBeUnseeded` waiver off the component's report", () => {
+    // A WAIVER IS ABOUT A `${NAME}`. `mayBeUnseeded:` is validated against the
+    // names a server REFERENCES, so a waived name can only ever collide with a
+    // managed parameter — and every clause of the `unconfigured` sentence would
+    // be false about that row: nothing was deferred, no TTL activates it, and it
+    // lands at the next deploy rather than on write. Relabelling it a deferral
+    // would also sort it BELOW real absences in /api/secrets/readiness.
+    const waived = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    mayBeUnseeded: [FOO]
+    env: { SOME_KEY: "\${FOO}" }
+`);
+    const [s] = deriveServerStatuses(
+      waived,
+      [ref("present")],
+      manifesting("absent"),
+    );
+    expect(s!.state).toBe("missing");
+    expect(s!.summary).toContain("FOO (managed parameter)");
+    expect(s!.summary).not.toContain("mayBeUnseeded");
+  });
+
+  it("counts the two claims apart from an unrelated name", () => {
+    // The count is of CLAIMS, and it has to stay one: a name whose reference
+    // resolves must not be swept into "N of N not seeded" by its managed
+    // namesake, and the name that IS unseeded on both counts must say so twice.
+    const two = parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+    env: { SOME_KEY: "\${FOO}", OTHER_KEY: "\${BAR}" }
+`);
+    const bar: SecretObservation = {
+      requirement: requirement("BAR", {
+        deliveries: ["bundle"],
+        slugs: ["craigslist"],
+      }),
+      state: "missing",
+      source: "GSM",
+      detail: "",
+      evidence: { by: "store" },
+    };
+    const [s] = deriveServerStatuses(
+      two,
+      [ref("present"), bar],
+      manifesting("absent"),
+    );
+    expect(s!.state).toBe("missing");
+    expect(s!.requirements).toHaveLength(3);
+    // THREE requirements, TWO of them outstanding — and `${FOO}`, which
+    // demonstrably resolves, is not one of them.
+    expect(s!.summary).toBe(
+      "2 of 3 required secrets not seeded: BAR, FOO (managed parameter).",
+    );
+  });
+
+  it("sends the two rows to two different resources when both are unseeded", () => {
+    // The load-bearing claim behind rendering both: they are seeded in two
+    // different places. The reference is a gateway-namespace name with a Secret
+    // Manager route; the managed parameter lives only under this server's static
+    // namespace and has neither.
+    const [status] = deriveServerStatuses(
+      cfg,
+      [ref("missing")],
+      manifesting("absent"),
+    );
+    const html = renderIndex({
+      config: cfg,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: {},
+      boot: [],
+    });
+    const dialog = html.slice(html.indexOf('<dialog class="fixdlg"'));
+    expect(dialog).toContain("/strad/test/mcp/craigslist/static/FOO");
+    expect(dialog).toContain("strad-test-FOO");
+    expect(status!.summary).toBe(
+      "2 of 2 required secrets not seeded: FOO, FOO (managed parameter).",
+    );
   });
 
   it("tells the two rows apart in the popout", () => {

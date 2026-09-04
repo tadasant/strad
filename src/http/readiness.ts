@@ -9,7 +9,10 @@ import type { StradConfig } from "../config/schema.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
-import { gatewayNamespace } from "../secrets/parameters/namespace.ts";
+import {
+  gatewayNamespace,
+  staticNamespace,
+} from "../secrets/parameters/namespace.ts";
 import {
   RESOLVER_ENV,
   type ParameterStore,
@@ -162,6 +165,17 @@ export interface SecretIssue {
   /** The `${NAME}` as the config spells it. */
   name: string;
   state: SecretState;
+  /**
+   * True when this is a MANAGED PARAMETER rather than a `${NAME}` reference — a
+   * value that lives only under its server's static namespace, carried in
+   * `path`, with no Secret Manager route.
+   *
+   * It is also the discriminator between two entries with the same `name`: a
+   * `params: true` server can declare `${FOO}` while its component manifests a
+   * managed parameter `FOO`, and those are two claims with two homes (see
+   * ui/secret-status.ts).
+   */
+  managed?: true;
   /** "GSM" | "ENV", or null when the backend could not be consulted. */
   source: string | null;
   /** Which process's environment the value has to land in. */
@@ -228,18 +242,35 @@ export function buildReadiness(opts: BuildReadinessOptions): ReadinessReport {
           state: o.state,
           source: o.source,
           deliveries: o.requirement.deliveries,
-          // Both routes are named because both are real: a store-backed
-          // deployment reads the path at runtime, and every deployment can seed
-          // the Secret Manager secret the render bakes in. A `consoleEnv:`-only
-          // name gets the Secret Manager name alone — the store is deliberately
-          // not a route for it (see fixTargets).
-          ...(o.requirement.deliveries.length === 1 &&
-          o.requirement.deliveries[0] === "console"
-            ? {}
+          // A MANAGED PARAMETER HAS ONE HOME, AND IT IS NEITHER OF THE TWO
+          // BELOW. It is not a `${NAME}` reference: nothing resolves it from the
+          // gateway namespace and nothing reads `strad-<env>-<NAME>` for it, so
+          // naming those would send a caller at resources that change nothing —
+          // the same branch fixTargets() takes for the console. `managed` is
+          // also what tells two entries apart where one name carries both a
+          // reference row and a managed-parameter row.
+          ...(o.requirement.managed
+            ? {
+                managed: true as const,
+                path: `${staticNamespace(
+                  config.gateway.env,
+                  o.requirement.paramsSlugs[0] ?? s.server.slug,
+                )}${o.requirement.name}`,
+              }
             : {
-                path: `${gatewayNamespace(config.gateway.env)}${o.requirement.name}`,
+                // Both routes are named because both are real: a store-backed
+                // deployment reads the path at runtime, and every deployment can
+                // seed the Secret Manager secret the render bakes in. A
+                // `consoleEnv:`-only name gets the Secret Manager name alone —
+                // the store is deliberately not a route for it (see fixTargets).
+                ...(o.requirement.deliveries.length === 1 &&
+                o.requirement.deliveries[0] === "console"
+                  ? {}
+                  : {
+                      path: `${gatewayNamespace(config.gateway.env)}${o.requirement.name}`,
+                    }),
+                secretManagerName: `strad-${config.gateway.env}-${o.requirement.name}`,
               }),
-          secretManagerName: `strad-${config.gateway.env}-${o.requirement.name}`,
           detail: o.detail,
         })),
     }))

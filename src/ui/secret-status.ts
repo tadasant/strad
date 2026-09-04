@@ -1336,7 +1336,12 @@ export interface ServerSecretStatus {
   label: string;
   /** One sentence for the row, derived from the worst requirement. */
   summary: string;
-  /** This server's requirements, deduplicated within the server. */
+  /**
+   * This server's requirements, deduplicated within each PASS rather than across
+   * the entry: one name can carry both a `${NAME}` reference row and a managed
+   * parameter row, which are two claims about two different things. Tell them
+   * apart by `requirement.managed`.
+   */
   requirements: SecretObservation[];
   /**
    * Present when a `params: true` server's managed parameters went UNCHECKED —
@@ -1656,9 +1661,9 @@ export function deriveServerStatuses(
       // So both go to the worst-first reduce below and IT decides. A stated
       // precedence was the alternative and it is the wrong shape here: whichever
       // way it pointed, it would discard a live observation and buy a false
-      // green in that direction — the store resolves `${FOO}` while the
-      // container holds nothing (today's bug), or the container holds `FOO`
-      // while the reference the deploy renders from does not resolve. Worst-first
+      // green in that direction — the store resolving `${FOO}` while the
+      // container holds nothing, or the container holding `FOO` while the
+      // reference the deploy renders from does not resolve. Worst-first
       // ranking exists precisely so no source's bad news has to be thrown away.
       const seenRefs = new Set<string>();
       const requirements: SecretObservation[] = [];
@@ -1792,9 +1797,21 @@ export function deriveServerStatuses(
       // undeclared one is the news and the row has to be labelled by the
       // strongest bad news it carries.
       const waived = waivers.get(server.slug) ?? new Set<string>();
+      //
+      // A WAIVER IS A STATEMENT ABOUT A `${NAME}`, NEVER ABOUT A MANIFESTED
+      // PARAMETER. `mayBeUnseeded:` is validated against the names a server
+      // REFERENCES (see waiversBySlug), so a waived name can only ever collide
+      // with a managed parameter of the same name — and every clause the
+      // `unconfigured` sentence goes on to make would be false about that row:
+      // nothing was deferred at deploy time, no TTL activates it, and it reaches
+      // the container at the next deploy rather than on write. So a managed row
+      // is never waivable, and a server whose only bad news is one stays
+      // `missing`.
       const state: ServerState =
         worst.state === "missing" &&
-        bad.every((r) => waived.has(r.requirement.name))
+        bad.every(
+          (r) => !r.requirement.managed && waived.has(r.requirement.name),
+        )
           ? "unconfigured"
           : FROM_SECRET_STATE[worst.state];
 
@@ -1802,11 +1819,7 @@ export function deriveServerStatuses(
         server,
         state,
         label: STATE_LABEL[state],
-        // COUNTED BY NAME, not by row. A colliding name contributes two rows —
-        // the reference and the component's report — and they are one secret to
-        // a reader. "All 2 required secrets resolve" over a single `FOO` would
-        // be the summary inventing a requirement.
-        summary: summarise(state, distinctNames(requirements).length, bad),
+        summary: summarise(state, requirements.length, bad),
         requirements,
         // Reported even when worse news labels the row: the gap is true, and the
         // panel has room for it under the requirement rows. `managedGap`, not
@@ -1818,15 +1831,19 @@ export function deriveServerStatuses(
 }
 
 /**
- * The NAMES a set of rows is about, in row order, each one once.
+ * How a row's name reads in a summary sentence.
  *
- * Rows and names stopped being the same count when a `${NAME}` reference and a
- * managed parameter of the same name were both allowed through (#280). Every
- * sentence the console prints is about secrets, so it counts names; the rows are
- * how many claims were established about them.
+ * A colliding name is TWO requirements, not one written twice: the `${NAME}` a
+ * deployment resolves out of the gateway namespace, and the managed parameter
+ * under this server's own — two values, at two paths, with two remediations
+ * (see fixTargets). So the count stays a count of ROWS, and the managed one
+ * says which it is. A bare "not seeded: FOO, FOO" would read as the page
+ * repeating itself over a name a reader then seeds once.
  */
-function distinctNames(observations: SecretObservation[]): string[] {
-  return [...new Set(observations.map((o) => o.requirement.name))];
+function summaryName(observation: SecretObservation): string {
+  return observation.requirement.managed
+    ? `${observation.requirement.name} (managed parameter)`
+    : observation.requirement.name;
 }
 
 function summarise(
@@ -1834,18 +1851,13 @@ function summarise(
   total: number,
   bad: SecretObservation[],
 ): string {
-  // BY NAME on both sides of the "N of M", because `total` is by name. Two rows
-  // about one colliding name are one secret in this sentence, and listing it
-  // twice ("not seeded: FOO, FOO") is how a count-of-rows reads out loud.
-  const badNames = distinctNames(bad);
-  const names = badNames.join(", ");
+  const names = bad.map(summaryName).join(", ");
   // The NOUN agrees with `total` (it is "N required secrets" either way) and the
   // VERB agrees with whichever count the clause is about — `total` for the
-  // all-of-them sentence, `badNames.length` for the N-of-M ones. Getting those
-  // from one variable is how the page ended up printing "All 1 required secret
-  // resolve".
+  // all-of-them sentence, `badCount` for the N-of-M ones. Getting those from one
+  // variable is how the page ended up printing "All 1 required secret resolve".
   const plural = total === 1 ? "secret" : "secrets";
-  const badCount = badNames.length;
+  const badCount = bad.length;
   const badIs = badCount === 1 ? "is" : "are";
   switch (state) {
     case "ready":

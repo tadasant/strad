@@ -885,13 +885,13 @@ function requirementBlock(
 
   // A MANAGED PARAMETER IS NOT A `${NAME}` REFERENCE, and the row says which it
   // is rather than printing both kinds the same way. It matters most where the
-  // two collide: a `params: true` server can declare `${FOO}` and its component
-  // can manifest a managed parameter also called `FOO`, and both rows now render
-  // (#280) — one claiming the deployment resolves the reference, the other
-  // reporting what the running container holds. Identical heads would make the
-  // second look like a duplicate of the first, which is exactly the reading that
-  // has to be impossible: they can disagree, and when they do the disagreement is
-  // the news.
+  // two collide: a `params: true` server can declare `${FOO}` while its
+  // component manifests a managed parameter also called `FOO`, and both rows
+  // render (#280) — one claiming the deployment resolves the reference, the
+  // other reporting what the running container holds. Identical heads would make
+  // the second look like a duplicate of the first, which is exactly the reading
+  // that has to be impossible: they can disagree, and when they do the
+  // disagreement is the news.
   const nameHead = requirement.managed
     ? `<code class="sec-var">${esc(requirement.name)}</code>
           <span class="chip chip-plain chip-route" title="A managed parameter resolved out of this server's static namespace and injected onto its component — not a \${NAME} reference.">managed parameter</span>`

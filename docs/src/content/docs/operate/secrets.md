@@ -1636,9 +1636,18 @@ The popout tells them apart: a reference renders as `${FOO}`, and a managed
 parameter renders as the variable it is — `FOO`, with a `managed parameter` chip
 — because their remediation is different and offering the wrong one sends a
 reader to create a resource that changes nothing about the row they are looking
-at. Summaries and counts are **by name**, not by row: two rows about one
-colliding name are one secret to seed, so the entry reads "1 of 1 required
-secret", never "1 of 2".
+at. The count follows the same logic: a colliding name is **two** requirements
+and not one written twice, because there are two values to seed at two paths, so
+an entry reads "1 of 2 required secrets not seeded: FOO (managed parameter)"
+rather than the bare "FOO, FOO" that would read as the page repeating itself.
+
+Two things a colliding name does **not** get. A `mayBeUnseeded:` waiver is a
+statement about a `${NAME}` — the schema validates it against the names a server
+references — so it never covers the managed row beside it, and a server whose
+only outstanding credential is a manifested parameter stays `missing` rather than
+being relabelled the deferral it is not. And in `/api/secrets/readiness` the two
+entries carry the same `name`, so the managed one is marked `"managed": true` and
+routed to its own namespace; see below.
 
 ### The presence route: a component answering for itself
 
@@ -1846,6 +1855,14 @@ curl -H "Authorization: Bearer $STRAD_API_KEY" \
   ]
 }
 ```
+
+A secret entry carries `"managed": true` when it is a **managed parameter**
+rather than a `${NAME}` reference. Its `path` is then its server's static
+namespace (`/strad/<env>/mcp/<slug>/static/<NAME>`) and it has no
+`secretManagerName`, because neither the gateway namespace nor `strad-<env>-*` is
+a route to it. That flag is also what tells two entries apart where one name
+carries both claims, which is a shape `issues[].secrets` can hold: `name` alone
+is not a key.
 
 `state` on a server and on a secret takes any of the values in the table above,
 `unrenderable` included. The field is additive: `ready` keeps its meaning (a
