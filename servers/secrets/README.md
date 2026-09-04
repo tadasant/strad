@@ -235,6 +235,19 @@ link**:
 The agent hands the human a URL. The human signs in and does the thing. The value
 never crosses the agent channel.
 
+`SECRETS_CONSOLE_URL` may carry a query string of its own — one console page can
+front several stores and select between them with `?project=` — and `param=` is
+joined onto whatever is already there with `&`, so both survive. A value with no
+scheme, such as a bare `/ui/secrets`, is used as written.
+
+Two things the link does not do yet, and both are filed: the console reads
+`project` and `ns` off the query string and **not** `param`, so the human lands on
+the slug's page rather than on the parameter
+([#273](https://github.com/tadasant/strad/issues/273)); and this tool does not
+resolve the path to its store, so on a multi-store server `project` is whatever
+the operator wrote rather than the store the parameter lives in
+([#274](https://github.com/tadasant/strad/issues/274)).
+
 ## `refresh_gateway` — make the gateway re-read the store now
 
 The gateway holds **one reading of the parameter store per process**, for
@@ -308,7 +321,7 @@ image**, mounted like every other server there.
 | `SECRETS_NAMESPACES` | **core** | yes | The console's namespace SUGGESTIONS. Free text unless `SECRETS_NAMESPACES_STRICT`. Unset = the console reports a misconfiguration. |
 | `SECRETS_NAMESPACES_STRICT` | core | no | `true` restores the list as a hard limit on the console. Default off. |
 | `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. Under `SECRETS_STORES` this is just the default NAME — each store names the variable holding its own viewer key, and no two stores may name the same one. |
-| `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. |
+| `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. May carry a query string of its own (e.g. `?project=` on a multi-store console); `param=` is joined onto it with `&`, before any `#fragment`. |
 | `SECRETS_PM_API_BASE` / `SECRETS_TOKEN_URL` | either | no | **Test seams.** Point at a stub Parameter Manager. Not a production knob. |
 
 The admin and resolver keys are **not** listed here — they land on `src/**`

@@ -710,11 +710,51 @@ function writeDenial(
   return null;
 }
 
-/** `https://strad/ui/secrets?param=/strad/staging/mcp/.../VAR` */
+/**
+ * The console link, with the parameter carried as a query parameter.
+ *
+ * `https://strad/ui/secrets` + `/strad/staging/mcp/.../VAR`
+ *   -> `https://strad/ui/secrets?param=%2Fstrad%2Fstaging%2Fmcp%2F...%2FVAR`
+ *
+ * `SECRETS_CONSOLE_URL` IS FREE-FORM CONFIG AND MAY ALREADY CARRY A QUERY
+ * STRING: on a multi-store console the URL that lands a human on the right store
+ * is `.../ui/secrets?project=zimmer-secrets-prod`. A bare `?` join makes that one
+ * query string whose `project` value is the whole rest of the link, and the
+ * console reads an unrecognised `?project=` as a stale bookmark and falls back to
+ * the first store — a deep link that opens silently on the WRONG store. So the
+ * join goes through `URL`: `searchParams.set` joins with `&`, and replaces rather
+ * than duplicates a `param` the configured URL already carries (a duplicate is
+ * read as the first one, which is the configured one, not ours).
+ *
+ * An UNPARSEABLE `consoleUrl` is concatenated instead, because free-form config
+ * is not this function's to reject: `new URL()` throws where a concatenation
+ * returns a string, and a relative value like `/ui/secrets` — a usable link for
+ * a human on the same host — is exactly what throws. The only value that yields
+ * no link at all is no value. THAT BRANCH PICKS ITS OWN SEPARATOR for the same
+ * reason the parsed one does: `/ui/secrets?project=zimmer-secrets-prod` is the
+ * relative spelling of the URL above, and a fallback that hardcoded `?` would
+ * reproduce the defect on exactly the values it exists to keep working.
+ */
 function consoleLink(config: SecretsConfig, param?: string): string | undefined {
   if (!config.consoleUrl) return undefined;
-  const base = config.consoleUrl.replace(/\/+$/, "");
-  return param ? `${base}?param=${encodeURIComponent(param)}` : base;
+  const raw = config.consoleUrl;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Nothing here is structure — it is a string an operator wrote — so the
+    // trailing-slash strip is the whole string's, and the separator is decided
+    // by looking for a query the URL parser is not available to find.
+    const base = raw.replace(/\/+$/, "");
+    if (!param) return base;
+    return `${base}${base.includes("?") ? "&" : "?"}param=${encodeURIComponent(param)}`;
+  }
+  // Strip the trailing slash from the PATH rather than the string: a `?` or a
+  // `#` may follow it, and eating the last character of a query value or a
+  // hash route is not what this ever meant.
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  if (param) url.searchParams.set("param", param);
+  return url.toString();
 }
 
 function text(payload: unknown) {
