@@ -2108,6 +2108,33 @@ and "you are not allowed" send a reader to different pages.
 The hidden button is presentation. `POST /ui/:server/reveal` re-checks the same
 posture and refuses with a 403, so a hand-crafted form post gets nowhere.
 
+### The console's probe is bounded, and a page render cannot inherit a stall
+
+The console memoises the probe per store — one prober per slug, project and
+service account, for the life of the process — because a token mint and a round
+trip on every page render would be latency paid for an answer that is stable for
+hours. An answer is kept for five minutes and a non-answer for fifteen seconds,
+on the same "a network blip is not an answer" reasoning the `/mcp` door uses.
+
+Concurrent renders join one in-flight probe rather than each minting their own,
+and **that sharing is only safe because the probe is guaranteed to end.** It was
+not always: the shared entry was cleared when the probe settled, and the probe's
+token mint carries no abort signal of its own — Node's `fetch` has no overall
+timeout, so a token endpoint that accepts a connection and then stalls holds the
+request until undici gives up at 300 seconds, or forever if it trickles bytes.
+One such mint made `GET /ui/:server` for that store hang on every later request
+until core was redeployed, with nothing logged and nothing timing out. Rotating a
+credential through this console is exactly what an operator could then not do.
+
+So a caller now waits at most **six seconds**, and the abandoned request is
+cancelled rather than left running. Six is the number the `/mcp` mount already
+uses for the same probe about the same credential; two doors disagreeing on how
+long a caller waits would be a difference with nothing behind it. Past the
+deadline the call gets `NO_CAPABILITIES` with a reason saying so — which is
+unprobed, so it is kept for fifteen seconds and the next render asks again. Fail
+closed is untouched: an unanswered probe never grants a capability, it just stops
+being the last word.
+
 ## The MCP tool surface is probed, not configured
 
 `servers/secrets` asks Google what its own credential may do
