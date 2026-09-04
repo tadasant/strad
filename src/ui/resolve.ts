@@ -39,37 +39,78 @@ export type ServerView =
   | {
       kind: "secrets";
       server: ServerConfig;
-      projectId: string;
-      /** Parameter Manager location. `global` unless the deployment overrides it. */
-      location?: string;
-      /** The managed namespace path prefixes. The first is the default for new params. */
-      namespaces: string[];
       /**
-       * The ADMIN service account — the console's own credential, and the only
-       * one in strad that can WRITE a parameter or read a SECRET value.
+       * The parameter stores this ONE console page can switch between.
        *
-       * It is resolved from `consoleEnv:`, which appspec.ts injects onto the
-       * CORE component alone. The MCP container gets a different key (a viewer,
-       * from `env:`) and never sees this one. If this is null the console
-       * degrades to read-only-of-nothing rather than pretending: the whole point
-       * is that the two credentials are distinct, so falling back to the MCP
-       * server's key would be exactly the wrong thing to do.
+       * A page is not a project. `?project=<id>` selects an entry, and every
+       * list, create, rotate, note, reveal and delete on the page is scoped to
+       * the selected one — its project, its namespaces, its credential, its
+       * bounds. Empty only when the server declares neither `consoleStores:` nor
+       * a `SECRETS_PROJECT_ID`; the page then renders a "not configured" notice
+       * rather than guessing.
        */
-      account: ServiceAccount | null;
-      accountReason?: string;
+      stores: SecretsStore[];
       /**
-       * Whether this deployment OFFERS reveal. Independent of whether the
-       * credential could perform it — see capabilities.ts for that half.
+       * Test seams, when the deployment points at stub Parameter/Secret
+       * Managers. Shared across the stores on a page: the project is a path
+       * segment in every Google URL these replace, so one stub answers for all
+       * of them, and a per-store override would be a knob with no caller.
        */
-      revealEnabled: boolean;
-      /** When true, `namespaces` bounds the console, not just its suggestions. */
-      namespacesStrict: boolean;
-      /** Test seams, when the deployment points at stub Parameter/Secret Managers. */
       pmApiBase?: string;
       smApiBase?: string;
       crmApiBase?: string;
       tokenUrl?: string;
     };
+
+/**
+ * ONE parameter store, as the console sees it.
+ *
+ * Everything that was flat on the secrets view lives here instead, and that
+ * relocation is the substance of multi-store: `namespaces`, `namespacesStrict`
+ * and `revealEnabled` are properties OF A STORE, not of the page showing it. A
+ * page-level `namespacesStrict` checked against a union list is a bound that
+ * does not bind — it would wave through a namespace belonging to a sibling
+ * project while a different one is selected.
+ */
+export interface SecretsStore {
+  /**
+   * The GCP project id, and the store's address: the console selects with
+   * `?project=<projectId>`.
+   */
+  projectId: string;
+  /** What the picker calls it. Defaults to the project id. */
+  label: string;
+  /** Parameter Manager location. `global` unless the deployment overrides it. */
+  location?: string;
+  /** The managed namespace path prefixes. The first is the default for new params. */
+  namespaces: string[];
+  /**
+   * The ADMIN service account — the console's own credential for THIS store, and
+   * the only one in strad that can WRITE a parameter or read a SECRET value.
+   *
+   * It is resolved from `consoleEnv:`, which appspec.ts injects onto the CORE
+   * component alone. The MCP container gets a different key (a viewer, from
+   * `env:`) and never sees this one. If this is null the console degrades to
+   * read-only-of-nothing rather than pretending: the whole point is that the two
+   * credentials are distinct, so falling back to the MCP server's key would be
+   * exactly the wrong thing to do.
+   *
+   * ONE KEY PER STORE, never one key granted on several projects. Two stores
+   * sharing an identity is a strictly larger blast radius than the two
+   * identities it replaces, and it is the simplification this design exists to
+   * refuse — see `ConsoleStore` in src/config/schema.ts.
+   */
+  account: ServiceAccount | null;
+  /** Why this store's credential is missing, for a graceful empty state. */
+  accountReason?: string;
+  /**
+   * Whether this deployment OFFERS reveal for this store. Independent of whether
+   * the credential could perform it — see capabilities.ts for that half.
+   */
+  revealEnabled: boolean;
+  /** When true, `namespaces` bounds this store, not just its suggestions. */
+  namespacesStrict: boolean;
+}
 
 /** The env keys the two GCS-backed servers use (gcs and remote-filesystem-tmp-public). */
 const GCS_ENV = {
@@ -189,7 +230,7 @@ function declaredEnv(server: ServerConfig): Record<string, string> {
  * through this function, so it cannot answer differently from the resolver.
  */
 export function serverLooksSecrets(server: ServerConfig): boolean {
-  return declaresSecrets(declaredEnv(server));
+  return declaresSecrets(server, declaredEnv(server));
 }
 
 /** The GCS detector: the server declares a bucket or GCS credentials. */
@@ -197,7 +238,16 @@ export function serverLooksGcs(server: ServerConfig): boolean {
   return declaresGcs(declaredEnv(server));
 }
 
-function declaresSecrets(declared: Record<string, string>): boolean {
+function declaresSecrets(
+  server: ServerConfig,
+  declared: Record<string, string>,
+): boolean {
+  if (
+    server.kind === "supplementary-image" &&
+    server.consoleStores.length > 0
+  ) {
+    return true;
+  }
   return Boolean(declared[SECRETS_ENV.projectId]);
 }
 
@@ -218,16 +268,22 @@ export function resolveServerView(
   if (!server) return { kind: "not_found" };
 
   const declared = declaredEnv(server);
-  const value = withNamespacedFallback(
-    server.slug,
-    resolveEnv(serverEnv(server), consoleEnvKeys(server), secrets),
-  );
+  /**
+   * The env resolved under its EXACT declared names — no slug-namespaced
+   * aliasing. `consoleStores:` looks a credential up here rather than in `value`
+   * below, because `withNamespacedFallback` is last-wins in the wrong direction
+   * for this purpose (`out[bare] ??= value`, so a bare name already present
+   * beats its namespaced twin). A store's admin key must be the value filed
+   * under the exact `adminKeyVar` this server declared, or nothing.
+   */
+  const exact = resolveEnv(serverEnv(server), consoleEnvKeys(server), secrets);
+  const value = withNamespacedFallback(server.slug, exact);
 
   // Secrets view: the server declares a secrets project. Checked FIRST — a
   // `secrets` server declares no bucket, so the two detectors cannot collide,
   // but the ordering says which concept owns the slug if one ever did.
-  if (declaresSecrets(declared)) {
-    return resolveSecretsView(server, declared, value);
+  if (declaresSecrets(server, declared)) {
+    return resolveSecretsView(server, declared, value, exact);
   }
 
   // GCS view: the server declares a bucket. That's the whole detector.
@@ -238,17 +294,67 @@ export function resolveServerView(
   return { kind: "no_viewer", server };
 }
 
+/**
+ * The secrets view: N stores, one page.
+ *
+ * TWO SHAPES, and the newer one wins outright when present.
+ *
+ *   `consoleStores:` — the multi-store declaration. Each entry brings its OWN
+ *   project, namespaces, bounds and credential, and the credential arrives by
+ *   `consoleEnv:` under the name the entry gives (schema.ts enforces both that
+ *   the name is a `consoleEnv:` key and that it is not any server's `env:` key).
+ *
+ *   the `SECRETS_*` env vars — the single-store shape every config written
+ *   before `consoleStores:` uses. It resolves to exactly ONE store, with the
+ *   same project, namespaces, flags and credential it always did, so the page a
+ *   deployment gets today is byte-for-byte the page it gets after this change.
+ *   That back-compat is deliberate: prod migrates its four slugs to one in its
+ *   own PR, after this ships as a published version.
+ *
+ * They are not merged. A config that declares `consoleStores:` has said what its
+ * stores are, and quietly appending an env-derived one would give it a store it
+ * never asked for — under whichever `SECRETS_PROJECT_ID` its MCP half happens to
+ * read, which is exactly the half that is meant to stay separate.
+ */
 function resolveSecretsView(
   server: ServerConfig,
   declared: Record<string, string>,
   value: Record<string, string>,
+  exact: Record<string, string>,
 ): ServerView {
+  const seams = {
+    pmApiBase: value[SECRETS_ENV.pmApiBase] || undefined,
+    smApiBase: value[SECRETS_ENV.smApiBase] || undefined,
+    crmApiBase: value[SECRETS_ENV.crmApiBase] || undefined,
+    tokenUrl: value[SECRETS_ENV.tokenUrl] || undefined,
+  };
+
+  if (
+    server.kind === "supplementary-image" &&
+    server.consoleStores.length > 0
+  ) {
+    const stores = server.consoleStores.map((declaredStore): SecretsStore => {
+      const { account, accountReason } = resolveAdminKey(
+        server,
+        declaredStore.adminKeyVar,
+        exact,
+      );
+      return {
+        projectId: declaredStore.project,
+        label: declaredStore.label ?? declaredStore.project,
+        location: declaredStore.location,
+        namespaces: declaredStore.namespaces,
+        account,
+        accountReason,
+        revealEnabled: declaredStore.reveal,
+        namespacesStrict: declaredStore.namespacesStrict,
+      };
+    });
+    return { kind: "secrets", server, stores, ...seams };
+  }
+
   const projectId = value[SECRETS_ENV.projectId] ?? "";
-  const location = value[SECRETS_ENV.location] || undefined;
-  const namespaces = (value[SECRETS_ENV.namespaces] ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const namespaces = splitList(value[SECRETS_ENV.namespaces]);
 
   const adminRaw = declared[SECRETS_ENV.adminKeyJson];
   const adminJson = adminRaw ? value[SECRETS_ENV.adminKeyJson] : undefined;
@@ -269,21 +375,61 @@ function resolveSecretsView(
       accountReason = `${SECRETS_ENV.adminKeyJson} ${parsed.reason}`;
   }
 
-  return {
-    kind: "secrets",
-    server,
+  const store: SecretsStore = {
     projectId,
-    location,
+    label: projectId,
+    location: value[SECRETS_ENV.location] || undefined,
     namespaces,
     account,
     accountReason,
     revealEnabled: isTrue(value[SECRETS_ENV.revealEnabled]),
     namespacesStrict: isTrue(value[SECRETS_ENV.namespacesStrict]),
-    pmApiBase: value[SECRETS_ENV.pmApiBase] || undefined,
-    smApiBase: value[SECRETS_ENV.smApiBase] || undefined,
-    crmApiBase: value[SECRETS_ENV.crmApiBase] || undefined,
-    tokenUrl: value[SECRETS_ENV.tokenUrl] || undefined,
   };
+
+  return { kind: "secrets", server, stores: [store], ...seams };
+}
+
+/**
+ * One store's admin credential, out of `consoleEnv:` and nowhere else.
+ *
+ * The three ways this comes back null are told apart on purpose, because they
+ * need different fixes: the name is not declared at all (a config error the
+ * schema also catches), it is declared but the deployment never injected it (a
+ * seeding problem), or it is injected and malformed (a bad key file). A
+ * malformed key is reported by SHAPE, never content — it is a private key.
+ */
+function resolveAdminKey(
+  server: ServerConfig,
+  adminKeyVar: string,
+  exact: Record<string, string>,
+): { account: ServiceAccount | null; accountReason?: string } {
+  const declaredHere =
+    server.kind === "supplementary-image" && adminKeyVar in server.consoleEnv;
+  if (!declaredHere) {
+    return {
+      account: null,
+      accountReason: `${adminKeyVar} is not declared under this server's consoleEnv:`,
+    };
+  }
+  const json = exact[adminKeyVar];
+  if (!json) {
+    return {
+      account: null,
+      accountReason: `${adminKeyVar} is declared under consoleEnv: but is not injected on this deployment`,
+    };
+  }
+  const parsed = parseServiceAccount(json);
+  return parsed.account
+    ? { account: parsed.account }
+    : { account: null, accountReason: `${adminKeyVar} ${parsed.reason}` };
+}
+
+/** A comma-separated env list, trimmed and de-blanked. */
+function splitList(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function resolveGcsView(

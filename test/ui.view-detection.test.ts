@@ -7,6 +7,7 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import type { GcsLister } from "../src/ui/gcs-client.ts";
+import { onlyStore } from "./helpers/secrets-view.ts";
 import {
   resolveServerView,
   serverLooksGcs,
@@ -176,12 +177,13 @@ describe("index detectors and the page resolver cannot disagree", () => {
     expect(serverLooksSecrets(server)).toBe(true);
     expect(serverLooksGcs(server)).toBe(false);
 
-    const view = resolveServerView(CONFIG, server.slug, SECRETS);
-    if (view.kind !== "secrets") throw new Error("unreachable");
-    expect(view.projectId).toBe("zimmer-store");
+    const store = onlyStore(resolveServerView(CONFIG, server.slug, SECRETS));
+    expect(store.projectId).toBe("zimmer-store");
     // Through the namespaced fallback: the admin key is declared as
     // ZIMMER_SECRETS_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON.
-    expect(view.account?.client_email).toBe("svc@demo.iam.gserviceaccount.com");
+    expect(store.account?.client_email).toBe(
+      "svc@demo.iam.gserviceaccount.com",
+    );
   });
 
   it("reads a builtin's options:, which is neither env: nor consoleEnv:", () => {

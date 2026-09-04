@@ -2,7 +2,7 @@ import type { ConsoleDenial } from "../auth/dev.ts";
 import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
-import type { ServerView } from "./resolve.ts";
+import type { SecretsStore, ServerView } from "./resolve.ts";
 import type { ParameterMeta } from "../secrets/parameters/index.ts";
 import {
   classifyPath,
@@ -297,6 +297,14 @@ function breadcrumb(
 export interface SecretsViewOptions {
   view: Extract<ServerView, { kind: "secrets" }>;
   /**
+   * The store this render is scoped to — one entry of `view.stores`.
+   *
+   * The page is a page; the STORE is the project, the namespaces, the bounds and
+   * the credential. Every count, every path and every form on this render belongs
+   * to this one entry, and nothing on the page is a union across the others.
+   */
+  store: SecretsStore;
+  /**
    * The running gateway config. The page reports what will actually READ a
    * parameter, and that is a property of the config, not of the store — see
    * param-routing.ts.
@@ -340,6 +348,7 @@ export interface SecretsViewOptions {
 export function renderSecrets(opts: SecretsViewOptions): string {
   const {
     view,
+    store,
     config,
     parameters,
     resolver,
@@ -349,8 +358,19 @@ export function renderSecrets(opts: SecretsViewOptions): string {
   const slug = view.server.slug;
   const action = `/ui/${encodeURIComponent(slug)}`;
   const ns = opts.namespace;
-  /** Every write posts the namespace back, so the page returns where it was. */
-  const nsField = `<input type="hidden" name="ns" value="${esc(ns)}" />`;
+  /**
+   * Every form posts the namespace AND the store back, so an action returns
+   * where it was.
+   *
+   * The store field is not a convenience. A create, rotate or delete that
+   * arrived without it would be resolved against the page's first store, so on a
+   * multi-store console the write would land in the wrong GCP project under the
+   * wrong service account — see handleSecretAction, which refuses an
+   * unrecognised one rather than falling back.
+   */
+  const nsField =
+    `<input type="hidden" name="ns" value="${esc(ns)}" />` +
+    `<input type="hidden" name="project" value="${esc(store.projectId)}" />`;
 
   const rows = parameters
     .map((p) => {
@@ -444,10 +464,15 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 <section class="browse-head">
   <div class="stat"><span class="stat-n">${parameters.length}</span><span class="stat-l">parameters</span></div>
   <div class="stat"><span class="stat-n">${secretCount}</span><span class="stat-l">secret</span></div>
-  ${namespacePicker(action, view.namespaces, ns)}
-  <div class="scope">
-    <span class="scope-l">project</span><code>${esc(view.projectId)}</code>
-  </div>
+  ${storePicker(action, view.stores, store)}
+  ${namespacePicker(action, store.namespaces, ns, store.projectId)}
+  ${
+    view.stores.length > 1
+      ? ""
+      : `<div class="scope">
+    <span class="scope-l">project</span><code>${esc(store.projectId)}</code>
+  </div>`
+  }
   <form method="post" action="${action}/refresh" class="inline reread-form"
         title="This process holds one reading of the store for gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s). A value written outside this console lands within that on its own; this drops the reading so the next read reaches Parameter Manager now. Nothing is written.">
     ${nsField}
@@ -468,7 +493,11 @@ ${listing}
     <div class="field">
       <span class="field-l">Namespace</span>
       <code class="pathpart">${esc(ns)}</code>
-      <span class="field-h">Type or pick one above; the suggestions are a convenience, not a limit.</span>
+      <span class="field-h">${
+        store.namespacesStrict
+          ? "Pick one above. This store is strict: a namespace outside its configured list is refused on create."
+          : "Type or pick one above; the suggestions are a convenience, not a limit."
+      }</span>
     </div>
     <div class="field">
       <label class="field-l" for="pfx">Path prefix <span class="field-opt">optional</span></label>
@@ -526,12 +555,59 @@ ${comboBoxScript()}`;
       config,
       slug,
       ns,
-      view.namespaces,
+      store.namespaces,
       resolver,
       revealUi,
-      view.projectId,
+      store.projectId,
     ),
   });
+}
+
+/**
+ * The store picker: which parameter store this page is showing.
+ *
+ * A `<select>`, deliberately — and the contrast with the namespace field one
+ * function below is the reason to say so. A namespace is FREE TEXT because every
+ * namespace in a project is addressable and the configured list is only a set of
+ * suggestions. A store is not: the set is CLOSED at exactly the entries the
+ * config declares, because each one carries its own admin service account and
+ * there is no credential with which to reach a project nobody listed. A combobox
+ * would invite typing an id that cannot resolve.
+ *
+ * Rendered only when there is a choice to make. One store is the shape every
+ * config had before `consoleStores:`, and a one-option dropdown on that page
+ * would be a control that does nothing.
+ *
+ * A plain GET form, so switching is an ordinary navigation the SSO gate already
+ * covers and the result is linkable. `ns` is deliberately NOT carried across:
+ * namespaces belong to a store, and forwarding one store's namespace into
+ * another would select a prefix that store does not manage — the landing
+ * namespace is the new store's own first one.
+ */
+function storePicker(
+  action: string,
+  stores: SecretsStore[],
+  selected: SecretsStore,
+): string {
+  if (stores.length <= 1) return "";
+  const options = stores
+    .map(
+      (s) =>
+        `<option value="${esc(s.projectId)}"${
+          s.projectId === selected.projectId ? " selected" : ""
+        }>${esc(s.label)}${
+          s.label === s.projectId ? "" : ` · ${esc(s.projectId)}`
+        }</option>`,
+    )
+    .join("");
+  return `
+  <form class="storeform" method="get" action="${action}">
+    <label class="scope-l" for="store-input">store</label>
+    <select class="in in-select" id="store-input" name="project" onchange="this.form.submit()">
+      ${options}
+    </select>
+    <noscript><button class="btn nsgo">Go</button></noscript>
+  </form>`;
 }
 
 /**
@@ -548,9 +624,11 @@ function namespacePicker(
   action: string,
   namespaces: string[],
   selected: string,
+  projectId: string,
 ): string {
   return `
   <form class="nsform" method="get" action="${action}">
+    <input type="hidden" name="project" value="${esc(projectId)}" />
     <label class="scope-l" for="ns-input">namespace</label>
     ${comboBox({
       id: "ns-input",
@@ -1242,14 +1320,32 @@ export function renderMessage(opts: {
   tone?: "info" | "warn" | "error";
   icon?: string;
   breadcrumbToIndex?: boolean;
+  /**
+   * Other stores on this console page, offered as links.
+   *
+   * A multi-store secrets page whose SELECTED store is broken — an unseeded
+   * admin key, no namespace — renders this message instead of the parameter
+   * table, and the message has no store picker in it. With no `?project=` the
+   * selected store is the first one, so without these links one unseeded
+   * credential would make every OTHER store on the page reachable only by
+   * hand-typing a query string. Under the old page-per-project layout each page
+   * failed on its own; this keeps that true.
+   */
+  otherStores?: { href: string; label: string }[];
 }): string {
   const tone = opts.tone ?? "info";
+  const others = opts.otherStores?.length
+    ? `<p class="state-sub state-links">Other stores on this page: ${opts.otherStores
+        .map((s) => `<a href="${esc(s.href)}">${esc(s.label)}</a>`)
+        .join(" · ")}</p>`
+    : "";
   const body = `
 ${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a></nav>` : ""}
 <div class="state state-${tone}">
   <div class="state-icon">${opts.icon ?? INFO_SVG}</div>
   <p class="state-title">${esc(opts.heading)}</p>
   <p class="state-sub">${esc(opts.sub)}</p>
+  ${others}
 </div>`;
   return layout({
     title: opts.title,
@@ -1520,6 +1616,14 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .posture strong{color:var(--white)}
 .posture-warn{border-left-color:#e0a63b;margin-bottom:.7rem}
 .posture-reveal{margin-bottom:.7rem}
+
+.state-links{margin-top:.6rem}
+.state-links a{color:var(--text-accent);text-decoration:none}
+.state-links a:hover{text-decoration:underline}
+
+/* Store picker: which of the console's parameter stores this page is showing. */
+.storeform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
+.in-select{padding:.32rem .5rem;font-size:.8rem;min-width:14rem}
 
 /* Namespace picker */
 .nsform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}

@@ -6,6 +6,7 @@ import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { resolveServerView, serverLooksSecrets } from "../src/ui/resolve.ts";
+import { onlyStore } from "./helpers/secrets-view.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
 import { encodeSecretValue } from "../src/secrets/parameters/wire.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
@@ -110,12 +111,10 @@ async function resetStore(): Promise<void> {
 
 describe("secrets view resolution", () => {
   it("resolves the ADMIN key from consoleEnv, never the MCP container's key", () => {
-    const view = resolveServerView(CONFIG, "secrets", SECRETS);
-    expect(view.kind).toBe("secrets");
-    if (view.kind !== "secrets") throw new Error("unreachable");
-    expect(view.projectId).toBe("demo-project");
-    expect(view.namespaces).toEqual([NS]);
-    expect(view.account?.client_email).toBe(
+    const store = onlyStore(resolveServerView(CONFIG, "secrets", SECRETS));
+    expect(store.projectId).toBe("demo-project");
+    expect(store.namespaces).toEqual([NS]);
+    expect(store.account?.client_email).toBe(
       "strad-secrets-admin@demo.iam.gserviceaccount.com",
     );
   });
@@ -125,10 +124,11 @@ describe("secrets view resolution", () => {
     // fallback would silently run the console as the credential that cannot read
     // a secret value, and the "fix" for the resulting 403 would be to widen the
     // MCP server's IAM. That is the failure mode this asserts against.
-    const view = resolveServerView(CONFIG, "secrets", { VIEWER_KEY });
-    if (view.kind !== "secrets") throw new Error("unreachable");
-    expect(view.account).toBeNull();
-    expect(view.accountReason).toMatch(/ADMIN_SERVICE_ACCOUNT_KEY_JSON/);
+    const store = onlyStore(
+      resolveServerView(CONFIG, "secrets", { VIEWER_KEY }),
+    );
+    expect(store.account).toBeNull();
+    expect(store.accountReason).toMatch(/ADMIN_SERVICE_ACCOUNT_KEY_JSON/);
   });
 
   it("serverLooksSecrets detects the server for the index card", () => {

@@ -521,6 +521,21 @@ Six checks, in order:
    for still reds the deploy. Checked here as well as in `render-spec`, so a
    config in this repo answers for it one merge before a deploy asks.
 
+The schema's own rules run first, as check 1, and two of them are worth naming
+because their failure mode is a credential in the wrong place. A
+[`consoleStores:`](/servers/interface/) entry names its admin credential by
+`consoleEnv:` KEY. That key must **be** declared under this server's `consoleEnv:`,
+must **not** be a key of any server's `env:`, and the `${NAME}` behind it must not
+appear in any server's `env:` either — under any key, because the credential
+travels by ref rather than by variable name. `consoleEnv:` is the one scope the
+renderer lands on `core` and stops; `env:` is baked onto a bundle, which is the
+component that answers `/mcp`. The same credential in both places is the console's
+store-admin key on an agent-facing container, which is the entire IAM split of the
+secrets server undone by one line of YAML — and none of it is checkable at
+runtime, because by then the value is just a string in an environment. Two stores
+naming the same `adminKeyVar` is refused here too: one service account granted on
+two projects is the simplification `consoleStores:` exists to make inexpressible.
+
 A collision between two servers' `env:` maps in one bundle — two different
 `${REF}` _strings_ under one key — is **not** a check here: it is rejected
 earlier, by the schema itself, along with the `consoleEnv:`-against-`core` half.
