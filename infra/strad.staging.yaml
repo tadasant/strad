@@ -171,22 +171,29 @@ bundles:
   - name: bundle
     instanceSizeSlug: apps-s-1vcpu-2gb
 
-  # THE SECOND STORE'S BUNDLE. It exists for one reason, and the reason is
-  # `process.env`.
+  # THE SECOND SLUG'S BUNDLE. It exists because two secrets SLUGS cannot share
+  # one, and the reason is `process.env`.
   #
-  # A bundle is a component, which is a container, which is ONE environment. The
-  # secrets server reads `SECRETS_PROJECT_ID` from `process.env`
-  # (servers/secrets/shared/src/config.ts) and the bundle host calls `loadConfig()`
-  # with no argument, so a container fronts exactly one parameter store. Two
-  # secrets slugs in ONE bundle would therefore share a store — and share it
-  # SILENTLY, because `src/deploy/appspec.ts` merges a bundle's servers' `env:`
-  # maps last-wins. `?servers=zimmer-secrets` would answer with strad's
-  # parameters and nothing would report it.
+  # A bundle is a component, which is a container, which is ONE environment, and
+  # `src/deploy/appspec.ts` merges a bundle's servers' `env:` maps last-wins. Two
+  # secrets slugs in ONE bundle would therefore share whichever store won —
+  # SILENTLY: `?servers=zimmer-secrets` would answer with strad's parameters and
+  # nothing would report it. (`src/config/schema.ts` rejects that shape now, so
+  # this is a fence with a second fence behind it.)
   #
   # A second bundle is the whole fix. `src/gateway/registry.ts` resolves the
   # private URL PER BUNDLE and only then appends `path:`, and `appspec.ts` keys
   # its env map by `server.bundle` — so two bundles never merge, and the same
   # `path: /secrets` in each reaches a different container.
+  #
+  # A SECOND STORE, HOWEVER, NO LONGER NEEDS A SECOND CONTAINER. `mcpStores:`
+  # (src/config/schema.ts) gives one secrets slug a LIST of stores, each with its
+  # own project, namespaces, viewer credential and probed capability, rendered
+  # onto the bundle as a `SECRETS_STORES` descriptor. Staging keeps two slugs
+  # here because they carry two ENTITLEMENTS and two console pages, not because
+  # the container could not hold both stores; collapsing them is a config
+  # decision, and it would put every store this slug fronts behind one
+  # entitlement.
   #
   # SIZE. The default 1GB, not the bundle's 2GB. This container runs the same
   # image (so it registers every upstream at boot, ~200MB of Node) but the

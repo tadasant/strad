@@ -8,6 +8,7 @@ import {
   loadConfig,
   parseAccount,
   inManagedNamespace,
+  storeForPath,
   toolDefinitions,
   parameterId,
   ParameterManagerReadClient,
@@ -93,9 +94,14 @@ async function fixture(caps) {
   });
 
   const config = {
-    projectId: fake.projectId,
-    namespaces: [NS],
-    account: VIEWER_ACCOUNT,
+    stores: [
+      {
+        project: fake.projectId,
+        namespaces: [NS],
+        account: VIEWER_ACCOUNT,
+        viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+      },
+    ],
     consoleUrl: "https://staging.strad.tadasant.com/ui/secrets",
     apiBase: fake.apiBase,
     tokenUrl: fake.tokenUrl,
@@ -167,11 +173,25 @@ const CAPS = {
   },
 };
 
+/**
+ * The same capability on every store this config fronts.
+ *
+ * `toolDefinitions` takes a MAP of project -> capability, because a capability
+ * that is not keyed by a project is the collapse this server must not have. A
+ * single-store config has a one-entry map; multi-store discrimination is
+ * asserted in multi-store.test.ts.
+ */
+function capsMap(config, caps) {
+  return new Map(config.stores.map((s) => [s.project, caps]));
+}
+
 test("the tool surface is derived from the credential's permissions", async () => {
   const { config, close } = await fixture();
 
   // Prod's viewer: the four read-only tools and nothing else.
-  const readOnly = toolDefinitions(config, CAPS.none).map((t) => t.name);
+  const readOnly = toolDefinitions(config, capsMap(config, CAPS.none)).map(
+    (t) => t.name,
+  );
   assert.deepEqual(readOnly.sort(), [
     "get_parameter",
     "list_managed_namespaces",
@@ -180,7 +200,9 @@ test("the tool surface is derived from the credential's permissions", async () =
   ]);
 
   // Staging's read-write credential: writes AND the value read appear.
-  const full = toolDefinitions(config, CAPS.readWrite).map((t) => t.name);
+  const full = toolDefinitions(config, capsMap(config, CAPS.readWrite)).map(
+    (t) => t.name,
+  );
   for (const name of [
     "create_parameter",
     "set_parameter_value",
@@ -193,19 +215,25 @@ test("the tool surface is derived from the credential's permissions", async () =
 
   // A credential that can write configuration but not secrets: writes are
   // offered, the value read is NOT, and delete is NOT.
-  const partial = toolDefinitions(config, CAPS.writeNonSecretOnly).map((t) => t.name);
+  const partial = toolDefinitions(
+    config,
+    capsMap(config, CAPS.writeNonSecretOnly),
+  ).map((t) => t.name);
   assert.ok(partial.includes("create_parameter"));
   assert.ok(!partial.includes("get_secret_value"));
   assert.ok(!partial.includes("delete_parameter"));
   // …and the description says so, rather than letting the call fail at Google.
-  const create = toolDefinitions(config, CAPS.writeNonSecretOnly).find(
-    (t) => t.name === "create_parameter",
-  );
-  assert.match(create.description, /CANNOT be written by this credential/);
+  const create = toolDefinitions(
+    config,
+    capsMap(config, CAPS.writeNonSecretOnly),
+  ).find((t) => t.name === "create_parameter");
+  assert.match(create.description, /CANNOT be written by this deployment's credentials/);
 
   // FAIL CLOSED: an unrunnable probe yields the read-only surface, never more.
   assert.deepEqual(
-    toolDefinitions(config, CAPS.unprobed).map((t) => t.name).sort(),
+    toolDefinitions(config, capsMap(config, CAPS.unprobed))
+      .map((t) => t.name)
+      .sort(),
     readOnly.sort(),
   );
 
@@ -366,7 +394,7 @@ test("the namespace bounds the blast radius: strad's own parameters are invisibl
     arguments: { name: P_OUTSIDE },
   });
   assert.equal(badGet.isError, true);
-  assert.match(badGet.content[0].text, /outside the managed namespaces/);
+  assert.match(badGet.content[0].text, /outside every managed namespace/);
   assert.ok(!JSON.stringify(badGet).includes(CANARY_OUTSIDE));
   await close();
 });
@@ -378,9 +406,10 @@ test("list_managed_namespaces states plainly that it cannot read a secret value"
     arguments: {},
   });
   const payload = JSON.parse(res.content[0].text);
-  assert.equal(payload.canReadSecretValues, false);
-  assert.deepEqual(payload.managedNamespaces, [NS]);
-  assert.match(payload.whyNot, /secretmanager\.versions\.access/);
+  assert.equal(payload.stores.length, 1);
+  assert.equal(payload.stores[0].canReadSecretValues, false);
+  assert.deepEqual(payload.stores[0].managedNamespaces, [NS]);
+  assert.match(payload.stores[0].whyNot, /secretmanager\.versions\.access/);
   await close();
 });
 
@@ -429,7 +458,7 @@ test("open_secrets_manager returns a console deep link, not a value", async () =
 test("the read client has no value-reading method — not on the surface, not at all", async () => {
   const { config, close } = await fixture();
   const client = new ParameterManagerReadClient({
-    projectId: config.projectId,
+    projectId: config.stores[0].project,
     account: VIEWER_ACCOUNT,
     apiBase: config.apiBase,
     tokenUrl: config.tokenUrl,
@@ -473,9 +502,14 @@ test("the viewer enumerates versions and reads the greatest ENABLED one", async 
   });
 
   const config = {
-    projectId,
-    namespaces: ["/strad/staging/mcp/"],
-    account: VIEWER_ACCOUNT,
+    stores: [
+      {
+        project: projectId,
+        namespaces: ["/strad/staging/mcp/"],
+        account: VIEWER_ACCOUNT,
+        viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+      },
+    ],
     apiBase: fake.apiBase,
     tokenUrl: fake.tokenUrl,
   };
@@ -537,11 +571,22 @@ test("config fails closed: no namespaces means no server, not every parameter", 
     SECRETS_PROJECT_ID: "p",
     SECRETS_NAMESPACES: "/strad/staging/mcp/, /strad/staging/other/ ",
   });
-  assert.deepEqual(cfg.namespaces, ["/strad/staging/mcp/", "/strad/staging/other/"]);
-  assert.equal(cfg.account, null);
+  // No `mcpStores:` is still exactly one store, out of the same three variables,
+  // with the same credential — every config written before this keeps working.
+  assert.equal(cfg.stores.length, 1);
+  const only = cfg.stores[0];
+  assert.equal(only.project, "p");
+  assert.equal(only.viewerKeyVar, "SECRETS_SERVICE_ACCOUNT_KEY_JSON");
+  assert.deepEqual(only.namespaces, ["/strad/staging/mcp/", "/strad/staging/other/"]);
+  assert.equal(only.account, null);
 
-  assert.ok(inManagedNamespace("/strad/staging/mcp/x/static/Y", cfg.namespaces));
-  assert.ok(!inManagedNamespace("/strad/staging/core/static/STRAD_TOKENS", cfg.namespaces));
+  assert.ok(inManagedNamespace("/strad/staging/mcp/x/static/Y", only.namespaces));
+  assert.ok(!inManagedNamespace("/strad/staging/core/static/STRAD_TOKENS", only.namespaces));
+  assert.equal(storeForPath("/strad/staging/mcp/x/static/Y", cfg.stores).store, only);
+  assert.match(
+    storeForPath("/strad/staging/core/static/STRAD_TOKENS", cfg.stores).error,
+    /outside every managed namespace/,
+  );
 });
 
 test("a malformed service-account key is reported by SHAPE, never by content", () => {
@@ -560,7 +605,16 @@ test("a malformed service-account key is reported by SHAPE, never by content", (
 });
 
 test("the tool descriptions tell the agent it cannot have a secret value", () => {
-  const defs = toolDefinitions({ projectId: "p", namespaces: [NS], account: null });
+  const defs = toolDefinitions({
+    stores: [
+      {
+        project: "p",
+        namespaces: [NS],
+        account: null,
+        viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+      },
+    ],
+  });
   const get = defs.find((d) => d.name === "get_parameter");
   assert.match(get.description, /SECRET, this returns an error/);
   const list = defs.find((d) => d.name === "list_parameters");
@@ -610,9 +664,14 @@ test("the capability probe is memoised across registerHandlers calls", async () 
     const created = createMCPServer({
       version: "0.0.0-test",
       config: {
-        projectId: "p",
-        namespaces: [NS],
-        account: VIEWER_ACCOUNT,
+        stores: [
+          {
+            project: "p",
+            namespaces: [NS],
+            account: VIEWER_ACCOUNT,
+            viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+          },
+        ],
         consoleUrl: "https://example.invalid/ui/secrets",
         apiBase: "http://pm.invalid",
         tokenUrl: "http://token.invalid",
@@ -669,9 +728,14 @@ async function fixtureWithRefresh(opts) {
     },
   };
   const config = {
-    projectId: "test-project",
-    namespaces: [NS],
-    account: VIEWER_ACCOUNT,
+    stores: [
+      {
+        project: "test-project",
+        namespaces: [NS],
+        account: VIEWER_ACCOUNT,
+        viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+      },
+    ],
     consoleUrl: "https://strad.example/ui/secrets",
   };
   const { server, registerHandlers } = createMCPServer({

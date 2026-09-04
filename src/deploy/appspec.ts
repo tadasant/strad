@@ -228,6 +228,76 @@ export interface ServiceSpec {
 const PORT = 8080;
 
 /**
+ * `SECRETS_STORES` — the `mcpStores:` list, as the secrets tree reads it back.
+ *
+ * NO CREDENTIAL TRAVELS IN HERE. Each entry carries a project id, its
+ * namespaces, an optional label, and the NAME of the `env:` key holding that
+ * store's viewer credential; the key itself is an ordinary `env:` ref resolved a
+ * few lines above. That split is the whole design — the descriptor is safe to
+ * read in a rendered app spec, in `doctl apps spec get`, and in a deploy diff,
+ * where it shows exactly which store gained or lost a namespace. A rendered blob
+ * containing service-account keys would be none of those things.
+ *
+ * Absent for every server that declares no `mcpStores:`, which leaves the
+ * single-store `SECRETS_PROJECT_ID` reading in place untouched.
+ */
+function mcpStoresEnv(
+  server: Extract<ServerConfig, { kind: "supplementary-image" }>,
+): Record<string, string> {
+  if (server.mcpStores.length === 0) return {};
+  return {
+    SECRETS_STORES: JSON.stringify(
+      server.mcpStores.map((store) => ({
+        project: store.project,
+        ...(store.label ? { label: store.label } : {}),
+        namespaces: store.namespaces,
+        viewerKeyVar: store.viewerKeyVar,
+      })),
+    ),
+  };
+}
+
+/**
+ * `mcpStores:` entries whose project no console page fronts. See the call site.
+ *
+ * The console resolves its stores from `consoleStores:` when it has one, and
+ * otherwise from a single `SECRETS_PROJECT_ID` read out of `env:` merged with
+ * `consoleEnv:` (src/ui/resolve.ts). Both are read here; a `${REF}` is not, since
+ * a project id written as a ref is not a project id this can compare.
+ */
+function storesWithNoConsole(config: StradConfig): string[] {
+  const messages: string[] = [];
+  for (const server of config.servers) {
+    if (!server.enabled) continue;
+    if (server.kind !== "supplementary-image") continue;
+    if (server.mcpStores.length === 0) continue;
+
+    const visible = new Set<string>(
+      server.consoleStores.map((store) => store.project),
+    );
+    if (visible.size === 0) {
+      const fallback =
+        server.consoleEnv.SECRETS_PROJECT_ID ?? server.env.SECRETS_PROJECT_ID;
+      if (fallback && refsIn(fallback).length === 0) visible.add(fallback);
+    }
+
+    const blind = server.mcpStores
+      .map((store) => store.project)
+      .filter((project) => !visible.has(project));
+    if (blind.length === 0) continue;
+
+    messages.push(
+      `server "${server.slug}": mcpStores: names ${blind.map((p) => `"${p}"`).join(", ")}, ` +
+        `which no console page fronts. An agent can create, rotate and delete ` +
+        `parameters there; a human cannot see or undo them in /ui. Add a matching ` +
+        `consoleStores: entry (with its own admin credential), or leave it if the ` +
+        `store is deliberately agent-only.`,
+    );
+  }
+  return messages;
+}
+
+/**
  * Telemetry env vars that must reach EVERY component, including supplementary
  * images.
  *
@@ -709,10 +779,17 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
             ),
         ),
       );
-      const declared = resolveMap(
-        declaredEnv,
-        own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
-      );
+      const declared = {
+        ...resolveMap(
+          declaredEnv,
+          own ? { ...(opts.secrets ?? {}), ...own } : (opts.secrets ?? {}),
+        ),
+        // The multi-store descriptor, DERIVED and never written by hand. It is
+        // treated as part of this server's declared env — so it takes the same
+        // bare and per-slug names, and collides the same way — because that is
+        // exactly what it is: one more non-secret variable the container reads.
+        ...mcpStoresEnv(server),
+      };
       const resolvedEnv = {
         // A CONNECTOR'S VARIABLES ARE INJECTED, AND ONLY WHERE THEY EXIST.
         //
@@ -988,6 +1065,21 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     }
     emittedAliases.set(bundle, emitted);
   }
+
+  // A STORE THE AGENT REACHES AND THE HUMAN CANNOT SEE.
+  //
+  // The console's store list and the MCP half's are separate fields on purpose —
+  // they carry different credentials, and the console's may legitimately be the
+  // wider of the two. The reverse is the one worth saying out loud: a store on
+  // `mcpStores:` with no console page behind it is managed parameter state an
+  // agent can create, rotate and delete, and which a human cannot inspect or
+  // undo through the product's own front door.
+  //
+  // A WARNING and not an error, because it is a posture a deployment may choose
+  // deliberately — and because the console's single-store fallback reads
+  // `SECRETS_PROJECT_ID` out of a merged environment at runtime, so what is
+  // visible here is a config-shaped approximation of it rather than the answer.
+  for (const message of storesWithNoConsole(config)) opts.onWarning?.(message);
 
   for (const [bundle, slugs] of unnameable) {
     opts.onWarning?.(

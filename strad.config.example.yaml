@@ -549,6 +549,11 @@ servers:
       SECRETS_CONSOLE_URL: "https://staging.strad.tadasant.com/ui/secrets"
       # Parameter Manager viewer — NO secretmanager.versions.access. This is the lock.
       SECRETS_SERVICE_ACCOUNT_KEY_JSON: "${SECRETS_VIEWER_KEY_JSON}"
+      # The SECOND store's viewer key, for the mcpStores: block below. Its own
+      # credential, on its own project — never one identity granted on both, and
+      # never the console's admin key. Uncomment together with that block;
+      # check-config refuses a viewerKeyVar that is not declared here.
+      # ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_VIEWER_KEY_JSON}"
       # WRITE-BACK, and what it does and does not grant. A server that declares
       # `paramsWritable:` can POST a rotated credential to core, which performs
       # the write with the ADMIN key below — the container never holds one.
@@ -580,10 +585,10 @@ servers:
       # ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "${ZIMMER_SECRETS_ADMIN_KEY_JSON}"
     # ONE CONSOLE PAGE, MANY STORES. Uncomment to give /ui/secrets a project
     # picker instead of one page per GCP project. It REPLACES the SECRETS_*
-    # reading above for the console; the `env:` half — the /mcp container — keeps
-    # its single store either way, because entitlements name slugs and the tools:
-    # policy names tool names, so there is nowhere to say "this role may list
-    # parameters, but only in that namespace". See docs: /operate/secrets/.
+    # reading above for the console. `mcpStores:` below is the /mcp half — the
+    # two are separate fields because the credential each carries is separate,
+    # and the console's namespace list may be wider than the container's.
+    # See docs: /operate/secrets/.
     #
     # consoleStores:
     #   - project: strad-secrets-staging
@@ -605,6 +610,47 @@ servers:
     #     # that is a strictly larger blast radius than the two it replaces.
     #     adminKeyVar: ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
     #     reveal: true
+    #
+    # ONE /mcp CONTAINER, MANY STORES. The agent-facing twin of the block above.
+    # Absent (as here), the container resolves ONE store out of the
+    # SECRETS_PROJECT_ID / SECRETS_NAMESPACES / SECRETS_SERVICE_ACCOUNT_KEY_JSON
+    # entries under `env:`. Present, it REPLACES that reading entirely: strad
+    # renders a non-secret SECRETS_STORES descriptor onto this bundle and the
+    # container reads that — so declaring both is refused by check-config rather
+    # than resolved to one of them.
+    #
+    # WHAT KEEPS PRODUCTION UNABLE TO RETURN A SECRET VALUE when it shares a
+    # container with a store that can. Each entry names its OWN viewer key; the
+    # server probes projects:testIamPermissions once per store and gates every
+    # read, write and delete on the capability of the store the requested PATH
+    # resolves to. The tool LIST is the union (an MCP listing is static per
+    # container), the enforcement is not. Two entries may not name one
+    # viewerKeyVar, one project id, or overlapping namespaces — each is refused
+    # by check-config, because each would make two stores' capabilities
+    # indistinguishable.
+    #
+    # Uncommenting it means DELETING the SECRETS_PROJECT_ID and SECRETS_NAMESPACES
+    # lines from `env:` above — the container would ignore them, so leaving them
+    # names a store this server does not front, and check-config says so.
+    #
+    # mcpStores:
+    #   - project: strad-secrets-staging
+    #     label: strad staging
+    #     namespaces: ["/strad/staging/mcp/"]
+    #     # An `env:` KEY, not a ${ref}: `env:` is the scope rendered onto this
+    #     # server's bundle, which is the component that answers /mcp. Always a
+    #     # VIEWER credential — an adminKeyVar cannot be borrowed here, because
+    #     # the consoleStores: rules already refuse an admin key (or its ${REF})
+    #     # under any server's env:.
+    #     viewerKeyVar: SECRETS_SERVICE_ACCOUNT_KEY_JSON
+    #   - project: zimmer-secrets-staging
+    #     label: zimmer staging
+    #     namespaces: ["/zimmer/staging/mcp/static/"]
+    #     # ONE VIEWER KEY PER STORE. Sharing one is two projects behind one
+    #     # identity AND one probed capability answering for both, which is the
+    #     # collapse the per-project probe exists to prevent. Declare it under
+    #     # `env:` above alongside the first.
+    #     viewerKeyVar: ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON
 
   # A server that draws its credentials from the secrets system instead of from
   # hand-written `${REF}` secrets. `params: true` opts it in: at deploy time

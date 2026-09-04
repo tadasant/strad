@@ -24,7 +24,12 @@ export {
   loadConfig,
   parseAccount,
   inManagedNamespace,
+  storesCovering,
+  storeForPath,
+  storeForNamespace,
+  describeNamespaces,
   type SecretsConfig,
+  type SecretsStore,
 } from "./config.js";
 
 export { registerTools, toolDefinitions } from "./tools.js";
@@ -33,9 +38,11 @@ export { createMCPServer, type CreateMCPServerOptions } from "./server.js";
 
 export {
   probeCapabilities,
+  anyPermits,
   PROBE_PERMISSIONS,
   NO_CAPABILITIES,
   type Capabilities,
+  type CapabilityLookup,
   type ProbeConfig,
 } from "./capabilities.js";
 

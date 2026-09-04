@@ -17,10 +17,13 @@
  * of this sees exactly the twenty-one it saw before.
  *
  * TWENTY-NINE of those are on one component. The other one, `zimmer-secrets`,
- * runs this same image as a SECOND component, because it fronts a second
- * parameter store and `loadSecrets()` below reads `process.env` — one container,
- * one store. Nothing here knows that; it just finds a different SECRETS_PROJECT_ID
- * and mounts /secrets against it.
+ * runs this same image as a SECOND component, because it is a second SLUG with a
+ * second entitlement and a second console page. It is no longer a second
+ * component because of the STORE: `loadSecrets()` below hands the tree a LIST of
+ * stores (`SECRETS_STORES`, derived from `mcpStores:`), each with its own
+ * project, namespaces, viewer credential and probed capability, so one container
+ * can front several. Nothing here knows which; it reads the descriptor and mounts
+ * /secrets against all of them.
  *
  * WHAT THIS REPLACES. Eleven components: bundle-api, bundle-api-ro, bundle-gcs,
  * bundle-google-{ro,rw,rw-external}, bundle-op-{ro,rw}, bundle-goodeggs,
@@ -845,22 +848,42 @@ async function loadTelegram(slug: string): Promise<Mount> {
 }
 
 /**
+ * As much of the secrets tree's config as this host reads back.
+ *
+ * Structural rather than imported: the tree is loaded at runtime out of
+ * `/app/trees`, so there is no type to import at build time. It mirrors
+ * `SecretsConfig` in servers/secrets/shared/src/config.ts.
+ */
+interface SecretsTreeConfig {
+  stores: {
+    project: string;
+    viewerKeyVar: string;
+    account: unknown | null;
+  }[];
+}
+
+/**
  * secrets. Not mounted when it is not configured — the same posture as
  * 1Password: one server's missing config must not take the other twenty down.
+ *
+ * ONE MOUNT, N STORES. `loadConfig()` reads `SECRETS_STORES` when the config
+ * declares `mcpStores:` and falls back to the single-store `SECRETS_PROJECT_ID`
+ * reading otherwise; either way this host hands the whole config through and the
+ * tree does the per-store work.
  */
 async function loadSecrets(): Promise<Mount | null> {
   const mod = (await loadFromTree("secrets", "shared/build/index.js")) as {
     createMCPServer: Factory;
-    loadConfig: (env?: NodeJS.ProcessEnv) => unknown;
+    loadConfig: (env?: NodeJS.ProcessEnv) => SecretsTreeConfig;
   };
 
-  let config: unknown;
+  let config: SecretsTreeConfig;
   try {
     config = mod.loadConfig();
   } catch (err) {
     logWarn(
       `secrets NOT mounted: ${errMessage(err)}. ` +
-        `It needs SECRETS_PROJECT_ID and SECRETS_NAMESPACES; ` +
+        `It needs SECRETS_STORES, or SECRETS_PROJECT_ID and SECRETS_NAMESPACES; ` +
         `an unscoped secrets server would see every parameter in the project.`,
     );
     return null;
@@ -885,16 +908,25 @@ async function loadSecrets(): Promise<Mount | null> {
     config,
     refreshGateway: unconfigured ? undefined : () => refresh.refresh(),
   });
-  const hasKey = Boolean(process.env.SECRETS_SERVICE_ACCOUNT_KEY_JSON);
+  // PER STORE, because one container may front several. A store with no
+  // credential degrades that store and not the mount: its siblings still list,
+  // read and (where their own credential allows) write. Naming the variable is
+  // the whole point of the message — with N stores, "the key is missing" without
+  // saying WHICH key is not an actionable sentence.
+  const unseeded = config.stores.filter((store) => !store.account);
 
   return {
     slug: "secrets",
     tree: "secrets",
     serverName: "secrets-mcp-server",
     capabilities: { tools: {} },
-    degraded: hasKey
-      ? null
-      : "SECRETS_SERVICE_ACCOUNT_KEY_JSON is not set; tools will list but list_parameters will fail",
+    degraded:
+      unseeded.length === 0
+        ? null
+        : `${unseeded
+            .map((store) => `${store.viewerKeyVar} (store "${store.project}")`)
+            .join(", ")} ${unseeded.length === 1 ? "is" : "are"} not set; tools ` +
+          `will list but calls against ${unseeded.length === 1 ? "that store" : "those stores"} will fail`,
     register: (s) => created.registerHandlers(s),
   };
 }

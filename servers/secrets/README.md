@@ -97,11 +97,24 @@ back into a path — it reads the envelope and filters on the path it finds ther
 ## The posture, stated as a claim you can check
 
 > An agent talking to **production**'s `/mcp` cannot obtain a **secret** value from
-> this server. Not because we did not write the tool — because the credential in
-> that process lacks `secretmanager.versions.access`, and Google answers 403 to the
-> only call that would return one. The tool is not listed there either, because the
-> probe reports that the credential cannot back it; but the listing is the
+> this server. Not because we did not write the tool — because the credential
+> **that store is read with** lacks `secretmanager.versions.access`, and Google
+> answers 403 to the only call that would return one. Whether the tool is listed
+> at all depends on the other stores in the same container; the listing is the
 > courtesy and IAM is the reason.
+
+**One container may front several stores** (`mcpStores:` in strad's config), and
+the sentence above is deliberately about a STORE rather than about a process. Each
+store has its own GCP project, its own viewer credential and its own
+`projects:testIamPermissions` probe, memoised by project id; a parameter path
+resolves to exactly one store and every gate consults that store's answer. So a
+staging store that CAN read a secret value does not make production's answer yes —
+it cannot, because the two answers are about different credentials on different
+projects.
+
+What a mixed container does change is the LISTING. An MCP tool list is static per
+container, so `get_secret_value` is offered when at least one store can back it,
+and refused per call for the stores that cannot. See limitation #78.
 
 Three locks, in order of how much they are worth. Lock 1 is the only independent
 one: locks 2 and 3 are both derived from the capability probe, so a credential
@@ -134,13 +147,15 @@ granted `parameterAccessor` opens all three at once, with no code change.
    HTTP verb (`get`), no `render`, and no method that dereferences a `__REF__`.
    The `:render` call lives in `write-client.ts`, which is constructed only when
    the probe reports the capability.
-3. **No tool.** `get_parameter` returns NON-secret values only; on a secret
-   parameter it returns an error, not the value — on every deployment, staging
-   included. The one tool that _can_ return a secret value, `get_secret_value`,
-   is listed only where the probe reports a read capability — and its handler
-   re-checks, because a `tools/list` a client cached a minute ago must not be
-   treated as an authorization. CI's smoke test runs with no credential, so the
-   probe fails closed and the count there is 4
+3. **No tool, or no answer.** `get_parameter` returns NON-secret values only; on a
+   secret parameter it returns an error, not the value — on every deployment,
+   staging included. The one tool that _can_ return a secret value,
+   `get_secret_value`, is listed only where some store's probe reports a read
+   capability — and its handler re-checks **against the store the requested path
+   resolves to**, because a `tools/list` a client cached a minute ago must not be
+   treated as an authorization, and because on a multi-store container the
+   listing was never about the store being addressed. CI's smoke test runs with no
+   credential, so the probe fails closed and the count there is 4
    (`servers/bundle/scripts/smoke.mjs`).
 
 Lock 1 is the one that holds when 2 and 3 are wrong. That is the whole design, and
@@ -178,9 +193,15 @@ reference) in a **project of their own**, separate from the one holding strad's 
 without a caveat: the viewer SA can list every parameter in that project and read
 every non-secret one — and read the value of **no** secret in it, ever.
 
-`SECRETS_NAMESPACES` is still **required** for THIS server. An unset one would
-mean the empty prefix — every parameter in the project — so it refuses to mount
-rather than defaulting to "everything".
+A namespace list is still **required** for THIS server, per store. An unset one
+would mean the empty prefix — every parameter in the project — so it refuses to
+mount rather than defaulting to "everything".
+
+With several stores the prefix does a second job, and it is the load-bearing one:
+it **binds a path to a store**, and therefore to a project, a credential and a
+capability. Two stores may not declare overlapping prefixes — `loadConfig` refuses
+it, as does strad's config gate — because a path both could claim is a path whose
+capability would depend on declaration order.
 
 On the CONSOLE side the same variable is a list of **suggestions**: an operator
 may type any namespace in the project, because the project is the fence and a
@@ -267,7 +288,7 @@ servers/secrets/
                                    # envelope shape — vendored from
                                    # src/secrets/parameters/wire.ts by `npm run wire:sync`.
                                    # Edit the source; CI fails on drift.
-  shared/src/config.ts             # env -> config; fails closed with no namespace
+  shared/src/config.ts             # env -> config; N stores, fails closed with no namespace
   shared/src/tools.ts              # the four read tools, the staging write tools, refresh_gateway
   shared/src/server.ts             # createMCPServer({ server, registerHandlers })
   shared/test/                     # incl. a fake Parameter Manager that models the two-store split
@@ -281,11 +302,12 @@ image**, mounted like every other server there.
 
 | Var | Where | Required | Notes |
 | --- | --- | --- | --- |
-| `SECRETS_PROJECT_ID` | bundle + core | yes | The GCP project holding the parameters (and their secrets). |
-| `SECRETS_NAMESPACES` | **bundle** | yes | CSV of managed path prefixes, e.g. `/strad/staging/mcp/`. A HARD scope here. Unset = refuse to mount. |
+| `SECRETS_STORES` | **bundle** | no | The MULTI-STORE descriptor, rendered from `mcpStores:`. A JSON array of `{ project, label?, namespaces[], viewerKeyVar }` — project ids, paths and key NAMES, never a credential. When set it REPLACES the three single-store variables below; each store's key is read from the variable its entry names. |
+| `SECRETS_PROJECT_ID` | bundle + core | yes* | The GCP project holding the parameters (and their secrets). *Not required on the bundle when `SECRETS_STORES` is set; the config gate refuses both. |
+| `SECRETS_NAMESPACES` | **bundle** | yes* | CSV of managed path prefixes, e.g. `/strad/staging/mcp/`. A HARD scope here. Unset = refuse to mount. *Superseded by each store's own list under `SECRETS_STORES`. |
 | `SECRETS_NAMESPACES` | **core** | yes | The console's namespace SUGGESTIONS. Free text unless `SECRETS_NAMESPACES_STRICT`. Unset = the console reports a misconfiguration. |
 | `SECRETS_NAMESPACES_STRICT` | core | no | `true` restores the list as a hard limit on the console. Default off. |
-| `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. |
+| `SECRETS_SERVICE_ACCOUNT_KEY_JSON` | **bundle only** | yes | The **viewer** key. Parameter Manager viewer; no Secret Manager access. Under `SECRETS_STORES` this is just the default NAME — each store names the variable holding its own viewer key, and no two stores may name the same one. |
 | `SECRETS_CONSOLE_URL` | bundle | no | Deep-link target for `open_secrets_manager`. |
 | `SECRETS_PM_API_BASE` / `SECRETS_TOKEN_URL` | either | no | **Test seams.** Point at a stub Parameter Manager. Not a production knob. |
 

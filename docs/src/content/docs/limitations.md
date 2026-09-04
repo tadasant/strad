@@ -2314,6 +2314,44 @@ See `HACKS.md` #77.
 
 ---
 
+### 78. One `/mcp` container fronting several stores lists `get_secret_value` for all of them
+
+`mcpStores:` lets one secrets container front several GCP projects. An MCP tool
+list is static per container — a client caches one listing per session — so there
+is no way to offer `get_secret_value` for a staging store and omit it for a
+production one. strad lists the **union**: the tool exists when at least one
+store's credential can back it.
+
+**What it costs.** A guarantee changes shape. With one store per container,
+production's was _"the tool does not exist."_ On a container it shares with a
+store that can read, it is _"the handler refuses, and Google refuses underneath
+it."_ The second half is the one that was always load-bearing — the production
+store is read with its **own** viewer credential, which holds neither
+`secretmanager.versions.access` nor `parametermanager.parameterVersions.render` —
+but a runtime refusal is a different kind of thing from an absent tool.
+
+Nothing about the capability itself is shared: the probe runs once per store and
+is memoised by project id, a parameter path binds to exactly one store, and
+`check-config` refuses two stores sharing a `viewerKeyVar`, a project id, or
+overlapping namespaces. `list_managed_namespaces` reports capabilities per store,
+so an agent is never told only the union.
+
+**How you would know.** `tools/list` on a mixed-posture container offers
+`get_secret_value`; calling it with a production path returns
+`store "…": cannot read secret values`.
+
+**When it does not apply.** A container whose stores all refuse secret reads
+lists no `get_secret_value` at all, exactly as before.
+
+**The fix.** Either take the intersection across stores — restoring "absent" at
+the cost of the staging read the write surface exists to test end to end — or give
+strad a way to express entitlement per **namespace** rather than per slug, at
+which point one store per container stops being the only way to split reach.
+
+See `HACKS.md` #78.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:
