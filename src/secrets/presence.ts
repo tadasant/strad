@@ -14,7 +14,7 @@
  * excerpt, no hash, no length, no character class — the verdict is one of five
  * fixed words, and the reason attached to it describes the SHAPE that matched.
  * `test/presence.test.ts` asserts that across a table of hostile values, and
- * `test/bundle-presence.test.ts` asserts it again over the wire, because the
+ * `test/presence.route.test.ts` asserts it again over the wire, because the
  * bundle path is the one where a value would be leaving the process that owns
  * it.
  *
