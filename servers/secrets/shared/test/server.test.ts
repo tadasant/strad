@@ -1,4 +1,4 @@
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -12,6 +12,7 @@ import {
   toolDefinitions,
   parameterId,
   ParameterManagerReadClient,
+  PROBE_PERMISSIONS,
 } from "../src/index.js";
 import {
   startFakeParameterManager,
@@ -697,6 +698,385 @@ test("the capability probe is memoised across registerHandlers calls", async () 
       probes.length,
       1,
       `Google was asked ${probes.length} times for one process's capabilities`,
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// What the memo may remember, and for how long (tadasant/strad#270)
+// ---------------------------------------------------------------------------
+
+/**
+ * The production symptom these two tests are about.
+ *
+ * `list_managed_namespaces` against prod returned, on every call, minutes apart:
+ * `capabilitiesProbed: false`, every capability `false`, and
+ * `"could not mint an access token (fetch failed)"` — while `list_parameters`
+ * on the SAME container and the same session served 29 parameters perfectly. The
+ * credential was fine and the egress was fine; ONE probe's token mint had failed
+ * once, and the memo had remembered it as the answer for the life of the
+ * process. The only cure was a redeploy.
+ *
+ * So the two halves, one test each: an absence expires, an ANSWER does not.
+ *
+ * Neither test stubs the `capabilities` seam — that seam bypasses the memo, so
+ * using it here would assert nothing. Both drive the real probe against a faked
+ * `fetch`, and both fake `Date` only: `probeCapabilities` arms a real
+ * `setTimeout` for its abort, and faking that would hang the request.
+ */
+
+const MEMO_STORE = {
+  project: "p",
+  namespaces: [NS],
+  account: VIEWER_ACCOUNT,
+  viewerKeyVar: "SECRETS_SERVICE_ACCOUNT_KEY_JSON",
+};
+
+/** One request's worth of client: a fresh Server, exactly as the host serves it. */
+async function askTheServer(created) {
+  const { Server: SdkServer } =
+    await import("@modelcontextprotocol/sdk/server/index.js");
+  const server = new SdkServer(
+    { name: "secrets-mcp-server", version: "0.0.0-test" },
+    { capabilities: { tools: {} } },
+  );
+  await created.registerHandlers(server);
+  const client = new Client({ name: "t", version: "0" }, { capabilities: {} });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  const res = await client.callTool({
+    name: "list_managed_namespaces",
+    arguments: {},
+  });
+  const tools = (await client.listTools()).tools.map((t) => t.name);
+  await client.close();
+  await server.close();
+  return { store: JSON.parse(res.content[0].text).stores[0], tools };
+}
+
+function jsonResponse(body) {
+  return new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  });
+}
+
+test("a probe that never reached Google is not remembered as the answer", async () => {
+  const mints = [];
+  const probes = [];
+  let mintWorks = false;
+  const realFetch = globalThis.fetch;
+  const realErr = console.error;
+  const logged = [];
+  console.error = (...args) => void logged.push(args.join(" "));
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      mints.push(href);
+      // The production failure, verbatim: the mint never reaches Google.
+      if (!mintWorks) throw new TypeError("fetch failed");
+      return jsonResponse({ access_token: "at", expires_in: 3600 });
+    }
+    if (href.includes(":testIamPermissions")) {
+      probes.push(href);
+      return jsonResponse({ permissions: Object.values(PROBE_PERMISSIONS) });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const t0 = Date.now();
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        stores: [MEMO_STORE],
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+
+    // 1. The failed mint fails CLOSED for the call it happened on. That half of
+    //    the behaviour is not what changed and must not change.
+    const first = await askTheServer(created);
+    assert.equal(first.store.capabilitiesProbed, false);
+    assert.equal(first.store.canWrite, false);
+    assert.equal(first.store.canReadSecretValues, false);
+    assert.equal(first.store.canDelete, false);
+    assert.match(first.store.whyNot, /could not mint an access token/);
+    assert.ok(
+      !first.tools.includes("create_parameter"),
+      "an unestablished capability must not list a write tool",
+    );
+    assert.equal(mints.length, 1);
+    assert.equal(probes.length, 0, "the probe never got past the mint");
+
+    // 2. Within the TTL it is still a memo — an outage must not cost a mint per
+    //    request, which is the regression the memo exists to prevent.
+    vi.setSystemTime(t0 + 10_000);
+    const second = await askTheServer(created);
+    assert.equal(second.store.capabilitiesProbed, false);
+    assert.equal(
+      mints.length,
+      1,
+      `Google was asked ${mints.length} times inside one TTL`,
+    );
+
+    // 3. Past the TTL the next caller re-asks — and this time Google answers.
+    //    Before the fix this call returned the remembered failure forever.
+    mintWorks = true;
+    vi.setSystemTime(t0 + 16_000);
+    const third = await askTheServer(created);
+    assert.equal(
+      third.store.capabilitiesProbed,
+      true,
+      "a transient mint failure must not pin the store to NO_CAPABILITIES",
+    );
+    assert.equal(third.store.canWrite, true);
+    assert.equal(third.store.canDelete, true);
+    assert.equal(third.store.canReadSecretValues, true);
+    assert.equal(third.store.whyNot, undefined);
+    assert.ok(
+      third.tools.includes("create_parameter"),
+      "the recovered surface is the real one, not the fail-closed one",
+    );
+    assert.equal(probes.length, 1);
+
+    // 4. And THAT answer is kept: an observation does not expire.
+    vi.setSystemTime(t0 + 16_000 + 10 * 60_000);
+    const fourth = await askTheServer(created);
+    assert.equal(fourth.store.capabilitiesProbed, true);
+    assert.equal(probes.length, 1, "a completed answer must not be re-asked");
+
+    // 5. The degraded state says so on stderr. Nothing used to.
+    assert.equal(
+      logged.filter((line) => line.includes("did not complete")).length,
+      1,
+      `stderr carried ${logged.length} lines: ${logged.join(" | ")}`,
+    );
+    assert.match(logged[0], /\[secrets\] capability probe for "p"/);
+    assert.match(logged[0], /could not mint an access token/);
+    assert.match(logged[0], /failing closed, re-asking in 15s/);
+  } finally {
+    vi.useRealTimers();
+    globalThis.fetch = realFetch;
+    console.error = realErr;
+  }
+});
+
+test("Google's explicit denial is a completed answer, and is still cached", async () => {
+  const probes = [];
+  const mints = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      mints.push(href);
+      return jsonResponse({ access_token: "at", expires_in: 3600 });
+    }
+    if (href.includes(":testIamPermissions")) {
+      probes.push(href);
+      // Google answered. What it said is "you hold none of these" — a viewer
+      // credential, which is exactly prod's posture. `probed: true`.
+      return jsonResponse({ permissions: [] });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const t0 = Date.now();
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        stores: [MEMO_STORE],
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+
+    const first = await askTheServer(created);
+    assert.equal(first.store.capabilitiesProbed, true);
+    assert.equal(first.store.canWrite, false);
+    assert.match(first.store.whyNot, /denied by Google/);
+
+    // An hour later, over several requests: still one probe. The fix must not
+    // turn a denial into a round trip per call — a denial is an answer.
+    for (const minutes of [2, 30, 60]) {
+      vi.setSystemTime(t0 + minutes * 60_000);
+      const again = await askTheServer(created);
+      assert.equal(again.store.capabilitiesProbed, true);
+      assert.equal(again.store.canWrite, false);
+    }
+    assert.equal(
+      probes.length,
+      1,
+      `Google was asked ${probes.length} times for one answer it had already given`,
+    );
+    assert.equal(mints.length, 1);
+  } finally {
+    vi.useRealTimers();
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a probe that never settles fails closed on a deadline", async () => {
+  // The token mint passes no abort signal, so a connection that HANGS rather
+  // than fails hangs for as long as the socket does — and every concurrent
+  // listing shares that one promise. Without a deadline the memo would never
+  // expire either: `expiresAt` stays Infinity until the probe settles, so the
+  // retry this whole change is about would never fire.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      // Never settles. Not a rejection — a stall.
+      return new Promise(() => {});
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+  const realErr = console.error;
+  console.error = () => {};
+  vi.useFakeTimers();
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        stores: [MEMO_STORE],
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+
+    const inFlight = askTheServer(created);
+    await vi.advanceTimersByTimeAsync(6_000);
+    const { store, tools } = await inFlight;
+
+    assert.equal(store.capabilitiesProbed, false);
+    assert.equal(store.canWrite, false);
+    assert.match(store.whyNot, /did not answer within 6s/);
+    assert.ok(
+      !tools.includes("create_parameter"),
+      "a stalled probe must not open anything",
+    );
+    assert.ok(
+      tools.includes("list_parameters"),
+      "and the read-only surface is served rather than withheld",
+    );
+  } finally {
+    vi.useRealTimers();
+    globalThis.fetch = realFetch;
+    console.error = realErr;
+  }
+});
+
+test("a persistent probe fault is logged once, not once per retry", async () => {
+  // A store whose probe fails deterministically — Cloud Resource Manager not
+  // enabled, a revoked key — fails on every retry for the life of the container.
+  // A line each time is thousands a day saying one thing, so the log is on the
+  // transition: the first failure, and any CHANGE of reason.
+  let status = 403;
+  const realFetch = globalThis.fetch;
+  const realErr = console.error;
+  const logged = [];
+  console.error = (...args) => void logged.push(args.join(" "));
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      return jsonResponse({ access_token: "at", expires_in: 3600 });
+    }
+    if (href.includes(":testIamPermissions")) {
+      return new Response("nope", { status });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const t0 = Date.now();
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        stores: [MEMO_STORE],
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+
+    // Four probes, one reason, over a minute.
+    for (const seconds of [0, 16, 32, 48]) {
+      vi.setSystemTime(t0 + seconds * 1000);
+      const { store } = await askTheServer(created);
+      assert.equal(store.capabilitiesProbed, false);
+      assert.match(store.whyNot, /testIamPermissions returned 403/);
+    }
+    assert.equal(
+      logged.length,
+      1,
+      `stderr carried ${logged.length} lines for one unchanged fault`,
+    );
+    assert.match(logged[0], /testIamPermissions returned 403/);
+
+    // A DIFFERENT reason is news, and says so.
+    status = 500;
+    vi.setSystemTime(t0 + 64_000);
+    await askTheServer(created);
+    assert.equal(logged.length, 2);
+    assert.match(logged[1], /testIamPermissions returned 500/);
+  } finally {
+    vi.useRealTimers();
+    globalThis.fetch = realFetch;
+    console.error = realErr;
+  }
+});
+
+test("concurrent callers share one in-flight probe", async () => {
+  // A memo whose entry only becomes shareable once it RESOLVES would let every
+  // request in a cold-start burst mint its own token. The entry is installed
+  // before the probe settles, so N concurrent listings are one round trip.
+  let releaseMint;
+  const gate = new Promise((resolve) => {
+    releaseMint = resolve;
+  });
+  const mints = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.startsWith("http://token.invalid")) {
+      mints.push(href);
+      await gate;
+      throw new TypeError("fetch failed");
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  };
+
+  try {
+    const created = createMCPServer({
+      version: "0.0.0-test",
+      config: {
+        stores: [MEMO_STORE],
+        consoleUrl: "https://example.invalid/ui/secrets",
+        apiBase: "http://pm.invalid",
+        tokenUrl: "http://token.invalid",
+      },
+    });
+    const inFlight = [askTheServer(created), askTheServer(created)];
+    // Both requests are parked on the same mint before it is allowed to fail.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseMint();
+    const [a, b] = await Promise.all(inFlight);
+    assert.equal(a.store.capabilitiesProbed, false);
+    assert.equal(b.store.capabilitiesProbed, false);
+    assert.equal(
+      mints.length,
+      1,
+      `${mints.length} concurrent callers each minted their own token`,
     );
   } finally {
     globalThis.fetch = realFetch;
