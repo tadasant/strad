@@ -61,7 +61,7 @@ what's missing and where to authorize it:
     {
       "slug": "slack",
       "status": "not_entitled",
-      "authorize_url": "https://…/console/servers/slack"
+      "authorize_url": "https://…/ui/slack"
     }
   ]
 }

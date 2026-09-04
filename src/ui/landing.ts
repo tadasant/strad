@@ -1,5 +1,6 @@
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { esc, layout } from "./render.ts";
+import { serverConsolePath } from "./paths.ts";
 import { serverLooksGcs } from "./resolve.ts";
 
 /**
@@ -201,7 +202,7 @@ function serverTile(server: ServerConfig, mcpUrl: string): string {
           title="${esc(selectUrl)}">Copy URL</button>
         ${
           browsable
-            ? `<a class="card-cta" href="/ui/${encodeURIComponent(server.slug)}">Browse →</a>`
+            ? `<a class="card-cta" href="${serverConsolePath(server.slug)}">Browse →</a>`
             : ""
         }
       </div>

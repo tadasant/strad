@@ -432,8 +432,9 @@ avoid `__proto__` role-injection attacks.)
 - **Non-empty** → the requested set, **provided** each is entitled. A
   requested-but-unavailable server is a hard `424` with a per-server `status`
   (`not_configured` / `not_entitled` / `disabled`) and an
-  `authorize_url` of `${publicUrl}/console/servers/<slug>`. It is never silently
-  dropped.
+  `authorize_url` of `${publicUrl}/ui/<slug>` — the console page for that
+  server, or, for a slug that names nothing, the console's own not-found. It is
+  never silently dropped.
 
 ## `?servers=` is a selection hint, not an auth boundary
 

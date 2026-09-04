@@ -1,5 +1,6 @@
 import type { Principal } from "../auth/index.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { serverConsolePath } from "../ui/paths.ts";
 
 /**
  * The rule strad is built around:
@@ -114,10 +115,10 @@ export function resolveSelection(
           : "not_entitled",
       ...(publicUrl
         ? {
-            // ENCODED: `slug` here may be a string the caller invented (a
-            // `not_configured` entry is whatever they put in `?servers=`), and
-            // an unencoded `../` makes this URL claim a path that is not ours.
-            authorize_url: `${publicUrl.replace(/\/$/, "")}/console/servers/${encodeURIComponent(slug)}`,
+            // Path and encoding both come from src/ui/paths.ts — the module
+            // the console registers this route from — so the link a client is
+            // sent to cannot drift away from the page that serves it.
+            authorize_url: `${publicUrl.replace(/\/$/, "")}${serverConsolePath(slug)}`,
           }
         : {}),
     });

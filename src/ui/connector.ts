@@ -5,6 +5,7 @@ import type { ConsoleSessions } from "../auth/session.ts";
 import { sanitizeNext, stateMatches } from "../auth/session.ts";
 import { consolePrincipal, signedInLabel } from "./console-auth.ts";
 import { esc, layout, renderMessage } from "./render.ts";
+import { SERVER_ROUTE, serverConsolePath } from "./paths.ts";
 import { event } from "../telemetry/index.ts";
 import {
   clearConnectorTx,
@@ -112,7 +113,7 @@ export function mountConnector(
   // GET would be reachable from an <img> tag on any page in the world. The
   // session cookie is SameSite=Lax, so a cross-site POST arrives with no cookie
   // and the gate 401s it — the same CSRF posture as every other console write.
-  app.post("/ui/:server/connect", gate, (req, res) => {
+  app.post(`${SERVER_ROUTE}/connect`, gate, (req, res) => {
     void handleConnect(req, res, opts).catch((err) => {
       renderUnexpected(res, err);
     });
@@ -244,7 +245,7 @@ async function handleConnect(
       scopes,
       variable: entry.oauth.refreshTokenVariable,
       sid: consoleSessionId(consolePrincipal(res)),
-      next: `/ui/${encodeURIComponent(entry.server.slug)}`,
+      next: serverConsolePath(entry.server.slug),
     },
     opts.env,
   );
@@ -547,7 +548,7 @@ export async function renderConnectorPage(
     })
     .join("\n");
 
-  const action = `/ui/${encodeURIComponent(slug)}/connect`;
+  const action = `${serverConsolePath(slug)}/connect`;
   const button = (label: string, hint: string): string => `
 <form method="post" action="${esc(action)}" class="connect-form">
   <button class="btn btn-primary">${esc(label)}</button>

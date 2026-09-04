@@ -13,6 +13,7 @@ import {
   type StoreDiagnostics,
 } from "../secrets/store-diagnostics.ts";
 import { esc, layout } from "./render.ts";
+import { serverConsolePath } from "./paths.ts";
 import { serverLooksGcs, serverLooksSecrets } from "./resolve.ts";
 import {
   fixTargets,
@@ -412,7 +413,7 @@ function serverCard(entry: Entry, base: string, playable: boolean): string {
       : serverLooksGcs(server)
         ? "Browse the object store this server is scoped to."
         : "No browser view for this server kind yet.");
-  const href = `/ui/${encodeURIComponent(server.slug)}`;
+  const href = serverConsolePath(server.slug);
 
   return `  <div class="card server-card">
     <div class="card-head">
@@ -714,7 +715,7 @@ ${worstFirst.map((o) => requirementBlock(o, config, env, slug)).join("\n")}
 ${unobservableBlock(status, config, env)}
 ${
   entry.hasView
-    ? `    <p class="acc-foot"><a href="/ui/${encodeURIComponent(slug)}">Open this server's console view →</a></p>`
+    ? `    <p class="acc-foot"><a href="${serverConsolePath(slug)}">Open this server's console view →</a></p>`
     : ""
 }
   </div>
