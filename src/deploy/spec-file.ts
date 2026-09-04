@@ -84,10 +84,7 @@ export interface SpecSummary {
 }
 
 import { isKnownInstanceSize } from "./instance-size.ts";
-import {
-  LARGEST_ACCEPTED_SPEC_BYTES,
-  SPEC_SIZE_ADVISORY_FRACTION,
-} from "./spec-size.ts";
+import { LARGEST_ACCEPTED_SPEC_BYTES, specSizeWarnAt } from "./spec-size.ts";
 
 /**
  * A sentence about `bytes`, or `undefined` when there is nothing to say.
@@ -108,7 +105,7 @@ export function sizeAdvisory(bytes: number): string | undefined {
       `src/deploy/config-inline.ts covers where a strad spec's bytes go.`
     );
   }
-  if (bytes > LARGEST_ACCEPTED_SPEC_BYTES * SPEC_SIZE_ADVISORY_FRACTION) {
+  if (bytes >= specSizeWarnAt(LARGEST_ACCEPTED_SPEC_BYTES)) {
     return (
       `this spec is ${bytes} bytes, within ` +
       `${LARGEST_ACCEPTED_SPEC_BYTES - bytes} of the largest one known to have ` +

@@ -5,11 +5,13 @@ import { renderAppSpec, type AppSpec } from "../src/deploy/appspec.ts";
 import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
 import { bakedSecretNames } from "../src/deploy/preflight.ts";
 import { waivedNames } from "../src/deploy/unseeded.ts";
+import { sizeAdvisory } from "../src/deploy/spec-file.ts";
 import {
   formatSpecSizeError,
   formatSpecSizeWarning,
   serializeSpec,
   specSizeReport,
+  specSizeWarnAt,
   LARGEST_ACCEPTED_SPEC_BYTES,
   SPEC_SIZE_ADVISORY_FRACTION,
 } from "../src/deploy/spec-size.ts";
@@ -66,6 +68,38 @@ describe("the ceiling", () => {
     // The obvious guess, and wrong by 62 bytes in the direction that lets an
     // oversize spec through on nothing but the roundness of the number.
     expect(LARGEST_ACCEPTED_SPEC_BYTES).toBeLessThan(131_072);
+  });
+});
+
+describe("the two consumers agree on the band, not just on the ceiling", () => {
+  // `render-spec` and `assert-spec` advertise themselves as sharing one number,
+  // and a `>` on one side against a `>=` on the other would quietly give them
+  // different boundaries: one warning at exactly 104,808 bytes and the other,
+  // a step later on the same spec, saying nothing.
+  const boundary = specSizeWarnAt(LARGEST_ACCEPTED_SPEC_BYTES);
+
+  it("both speak up at exactly the band boundary", () => {
+    expect(boundary).toBe(104_808);
+    expect(sizeAdvisory(boundary)).toBeDefined();
+
+    // A spec whose size lands exactly on the boundary of its own ceiling: pick
+    // the ceiling from the bytes rather than the other way round.
+    const s = specOfAtLeast(2_000);
+    const bytes = specSizeReport(s).bytes;
+    const limit = Math.ceil(bytes / SPEC_SIZE_ADVISORY_FRACTION);
+    expect(specSizeWarnAt(limit)).toBe(bytes);
+    expect(specSizeReport(s, limit).verdict).toBe("warn");
+  });
+
+  it("both stay quiet one byte below it", () => {
+    expect(sizeAdvisory(boundary - 1)).toBeUndefined();
+
+    const s = specOfAtLeast(2_000);
+    const bytes = specSizeReport(s).bytes;
+    // One byte of band above the spec, so it sits just under the boundary.
+    const limit = Math.ceil((bytes + 1) / SPEC_SIZE_ADVISORY_FRACTION);
+    expect(specSizeWarnAt(limit)).toBeGreaterThan(bytes);
+    expect(specSizeReport(s, limit).verdict).toBe("ok");
   });
 });
 

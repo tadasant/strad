@@ -91,6 +91,19 @@ export const LARGEST_ACCEPTED_SPEC_BYTES = 131_010;
  */
 export const SPEC_SIZE_ADVISORY_FRACTION = 0.8;
 
+/**
+ * The size at or above which `limit` is worth a sentence.
+ *
+ * A function rather than a multiplication at each call site, because the two
+ * consumers advertise themselves as sharing one number and a `>` against a
+ * `>=` would quietly give them different boundaries — `render-spec` warning at
+ * exactly 104,808 bytes while `assert-spec`, one step later on the same spec,
+ * said nothing.
+ */
+export function specSizeWarnAt(limit: number): number {
+  return Math.floor(limit * SPEC_SIZE_ADVISORY_FRACTION);
+}
+
 /** One env var's share of the spec, for saying where the budget went. */
 export interface EnvContributor {
   component: string;
@@ -112,6 +125,14 @@ export interface SpecSizeReport {
    * The exact text `render-spec` writes to stdout. Measured and emitted are the
    * same string by construction — a guard that measured a second serialization
    * would be guarding a spec nobody deploys.
+   *
+   * The FILE App Platform eventually validates is a few hundred bytes larger:
+   * `scripts/attach-registry-creds.mjs` runs after the render and adds a
+   * `registry_credentials` block to every GHCR component. Both ends of the
+   * calibration are pre-attach — the deploy's `Rendered spec (N bytes)` line,
+   * which is where `LARGEST_ACCEPTED_SPEC_BYTES` was read, is printed before
+   * that step — so the two numbers are comparable, and what this omits it omits
+   * in the direction that cannot refuse a spec.
    */
   json: string;
   bytes: number;
@@ -153,7 +174,7 @@ export function specSizeReport(
 ): SpecSizeReport {
   const json = serializeSpec(spec);
   const bytes = Buffer.byteLength(json, "utf8");
-  const warnAt = Math.floor(limit * SPEC_SIZE_ADVISORY_FRACTION);
+  const warnAt = specSizeWarnAt(limit);
 
   const components: ComponentSize[] = spec.services
     .map((service) => {
@@ -236,6 +257,6 @@ export function formatSpecSizeWarning(report: SpecSizeReport): string {
     `Largest: ${componentLines(report)[0] ?? "(no components)"}. ` +
     `strad-prod has twice grown into DigitalOcean's app-spec size limit ` +
     `without anyone watching this number; a single change has added 33,772 ` +
-    `bytes before now.`
+    `bytes in one step.`
   );
 }

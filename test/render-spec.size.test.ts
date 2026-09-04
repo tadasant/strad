@@ -120,9 +120,11 @@ describe("render-spec, the size of what it emits", () => {
 
   it("puts no config text in the refusal, only names and sizes", () => {
     // A config carries secrets in some deployments and this message lands in a
-    // build log.
-    const out = render(config("x".repeat(150_000)));
-    expect(out.stderr).not.toContain("xxxx");
+    // build log. A distinctive token rather than a run of one character: a
+    // run of `x`s would be absent from any message that merely truncated the
+    // value, while this is absent only if no config text travels at all.
+    const out = render(config(`secret-${"cfgtoken".repeat(20_000)}`));
+    expect(out.stderr).not.toContain("cfgtoken");
   });
 
   it("emits the same oversize spec when --max-spec-bytes allows it", () => {
@@ -163,13 +165,26 @@ describe("render-spec, the size of what it emits", () => {
     expect(out.stdout).toBe("");
   });
 
+  it("refuses an EMPTY --max-spec-bytes rather than silently defaulting", () => {
+    // The likely shape of it: `--max-spec-bytes "${{ inputs.max_spec_bytes }}"`
+    // wired into a workflow, resolving empty because the input name drifted.
+    // Falling back to the default there would restore the ceiling with no
+    // diagnostic, during the one incident the flag exists for.
+    const out = render(config(), ["--max-spec-bytes", ""]);
+    expect(out.status).toBe(1);
+    expect(out.stderr).toMatch(
+      /::error::--max-spec-bytes must be a positive whole number of bytes/,
+    );
+    expect(out.stdout).toBe("");
+  });
+
   it("still bakes the config WITHOUT its comments, and still emits it", () => {
     // Ask 1 of issue #137, asserted here alongside ask 2 because the two are
     // one budget: the comment stripping is what keeps prod under the ceiling
     // this gate enforces (prod's config file is 77,824 bytes and inlines to
     // 21,628). test/config-inline.test.ts owns the round-trip's correctness;
-    // what this checks is that the render still reports the saving next to the
-    // size it now also reports.
+    // what this checks is that one render reports both — the saving and the
+    // size.
     const commented = `# a comment worth ${"y".repeat(400)} bytes\n${config()}`;
     const out = render(commented);
     expect(out.status).toBe(0);

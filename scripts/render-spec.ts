@@ -137,9 +137,15 @@ if (!values.config || !values.image || !values.app) {
 // where it is used: a typo'd ceiling should cost nothing, and by the bottom of
 // this script the render has already parsed a config, resolved images and made
 // several round trips to the secrets store.
-const maxSpecBytes = values["max-spec-bytes"]
-  ? Number(values["max-spec-bytes"])
-  : LARGEST_ACCEPTED_SPEC_BYTES;
+// PRESENCE, not truthiness. `--max-spec-bytes ""` is a flag that was passed and
+// meant something — a workflow input that resolved empty, most likely — and
+// falling back to the default on it would restore the ceiling silently, during
+// the one incident this hatch exists for. An empty string is `Number("") === 0`
+// and is rejected below with the rest of the nonsense.
+const maxSpecBytes =
+  values["max-spec-bytes"] !== undefined
+    ? Number(values["max-spec-bytes"])
+    : LARGEST_ACCEPTED_SPEC_BYTES;
 if (!Number.isInteger(maxSpecBytes) || maxSpecBytes <= 0) {
   console.error(
     `::error::--max-spec-bytes must be a positive whole number of bytes, ` +
