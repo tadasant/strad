@@ -2188,6 +2188,13 @@ that lands on core alone, and a viewer key that lands on the bundle:
       viewerKeyVar: ZIMMER_SECRETS_VIEWER_SERVICE_ACCOUNT_KEY_JSON
 ```
 
+`SECRETS_CONSOLE_URL` is where `open_secrets_manager` sends a human, and the link
+it hands back is that value with the canonical path on it as `param=`. The value
+may carry a query string of its own — `.../ui/secrets?project=zimmer-secrets-prod`
+is how one console page fronting several stores addresses a particular one — and
+the parameter is joined onto it with `&`, so both survive. A value with no scheme,
+such as a bare `/ui/secrets`, is passed through as written.
+
 Absent, the container resolves ONE store the old way, out of
 `SECRETS_PROJECT_ID` / `SECRETS_NAMESPACES` / `SECRETS_SERVICE_ACCOUNT_KEY_JSON`.
 Present, it **replaces** that reading entirely — `renderAppSpec` emits a
