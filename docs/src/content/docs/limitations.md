@@ -1296,6 +1296,16 @@ reused unchanged. 1Password drags one more thing along: its
 `@pulsemcp/mcp-elicitation` dependency isn't published to npm either, so that
 library is vendored as a third workspace.
 
+That library is vendored twice, because `images/bundle-google` needs it for its
+send-email confirmation and is its own Docker build context. Both copies end up
+in the same bundle image and both gate an irreversible act — sending an email,
+and `checkElicitationSafety()`, which decides whether 1Password may mount at all
+— so the seam is in the `VENDORED` manifest alongside the other five:
+`servers/onepassword/elicitation/src` is the source, `npm run elicitation:sync`
+writes the copy, and `test/vendored.sync.test.ts` fails CI on drift. The trees'
+`package.json`, `tsconfig.json` and markdown are identical too and are outside
+the seam — a banner-less check is a different mechanism.
+
 The copies have since taken strad-local edits, and every one of them is a thing
 the upstream stdio server cannot know about: the shared-browser seam
 (`setSharedBrowserProvider`) that gives three servers one Chromium, browser
@@ -1382,8 +1392,8 @@ need are [#59](#59-a-dm-needs-slack-scopes-the-channel-tools-never-asked-for).
 
 **Cost:** a fork has no upstream to diff against, so a re-vendor that pastes
 `experimental/slack/shared/src` over `fork/slack/src` reverts the fix and nothing
-reports it. The vendored modules elsewhere in strad (`presence.ts`, `wire.ts`)
-each have a sync script and a drift test; this has neither, by construction. What
+reports it. The vendored seams elsewhere in strad each have a sync script and a
+drift test; this has neither, by construction. What
 stands in for one is `fork/slack/test/mrkdwn.test.ts` and `fork/slack/test/dm.test.ts`,
 run on every PR by `ci.yml`'s `servers (bundle-api)` leg. They fail if a write tool stops
 leading with the tilde rule, if the registered set is no longer exactly the

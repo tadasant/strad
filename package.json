@@ -31,7 +31,8 @@
     "presence:sync": "node scripts/sync-vendored.mjs --only presence",
     "wire:sync": "node scripts/sync-vendored.mjs --only wire",
     "paramroute:sync": "node scripts/sync-vendored.mjs --only paramroute",
-    "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix"
+    "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix",
+    "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",
