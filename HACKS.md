@@ -387,7 +387,7 @@ it normally and images are cut only from `main`.
 
 ---
 
-## 15. onepassword `shared/` is vendored, and its elicitation lib with it
+## 15. onepassword `shared/` is vendored, and its elicitation lib with it — twice
 
 **What.** `servers/onepassword/shared/` is copied **verbatim** from
 [`pulsemcp/mcp-servers` `experimental/onepassword/shared`](https://github.com/pulsemcp/mcp-servers/tree/main/experimental/onepassword);
@@ -402,6 +402,27 @@ third workspace built before `shared/`. It has no runtime deps of its own (only
 `node:crypto`). `shared/package.json`'s dependency is repointed from the upstream
 `file:../../../libs/elicitation` to a workspace `*` — the only edit to the
 otherwise-verbatim `shared/`.
+
+**And the elicitation library exists twice.** `images/bundle-google` needs the
+same unpublished package for its send-email confirmation, and it is its own
+Docker build context (`servers/bundle/Dockerfile`, the `build-google` stage), so
+it cannot reach into `servers/onepassword/`. Both trees land in the SAME bundle
+image under `/app/trees`, and both copies gate an irreversible act through the
+library's `requestConfirmation()`: the google one before an email is sent, the
+onepassword one before `get_item`, `create_login`, `create_secure_note`,
+`share_item` and `create_api_credential` reveal or mint a credential. Its
+`readElicitationConfig()` is what decides whether they prompt at all. (What
+refuses to MOUNT 1Password is `checkElicitationSafety()` in `shared/`, and that
+one reads env vars only — it does not go through this library.) A timeout
+tightened in one tree and not the other would be two confirmation semantics under
+one `/mcp` with nothing saying so, so the seam is in the `VENDORED` manifest
+(`npm run elicitation:sync`, checked by `test/vendored.sync.test.ts`) with
+`servers/onepassword/elicitation/src` as the source — the copy a deliberate
+change arrives at, since `servers/onepassword/test/` exercises it. The seam
+covers the four `src/*.ts` modules, and the same test asserts that list is every
+`.ts` file in the source directory; the trees' `package.json`, `tsconfig.json`
+and markdown are identical too and stay out, because none of them can carry a
+`//` banner.
 
 **Why.** Reusing the upstream tool logic (nine tools, credential redaction,
 elicitation gating) without forking it. `op` itself is not an npm dependency at
@@ -2386,9 +2407,9 @@ time an agent guesses. The description fix IS worth having upstream — it is no
 strad-specific — and `pulsemcp/pulsemcp#5071` asks for it. Until it lands there,
 the running server is the only place the fix reaches a session.
 
-**The sharp edge.** The two VENDORED modules in this repo (`presence.ts`,
-`wire.ts`) each have a sync script and a drift test, because the failure of a
-silent divergence is a silent one. A FORK has the opposite problem and no such
+**The sharp edge.** The six VENDORED seams in this repo (`scripts/sync-vendored.mjs`)
+each have a sync script and a drift test, because the failure of a silent
+divergence is a silent one. A FORK has the opposite problem and no such
 guard: there is no upstream to diff against, and a re-vendor that pastes
 `experimental/slack/shared/src` over `fork/slack/src` reverts the delta with
 nothing to say so. What stands in for the drift test is

@@ -1,3 +1,6 @@
+// GENERATED — DO NOT EDIT.
+// Vendored from servers/onepassword/elicitation/src by `npm run elicitation:sync`.
+// Edit the source, run the sync, and commit both. CI fails if these drift.
 import type { ElicitationConfig } from './types.js';
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 minutes

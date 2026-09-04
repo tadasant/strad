@@ -34,7 +34,12 @@ servers/onepassword/
 - **`elicitation/`** is `@pulsemcp/mcp-elicitation`, vendored from
   [`pulsemcp/mcp-servers` `libs/elicitation`](https://github.com/pulsemcp/mcp-servers/tree/main/libs/elicitation)
   because it is not published to npm and `shared/` depends on it. It has no
-  runtime dependencies of its own (only `node:crypto`).
+  runtime dependencies of its own (only `node:crypto`). `src/` is also the
+  SOURCE of a second copy — `images/bundle-google/vendor/mcp-elicitation/src`,
+  built into the same bundle image and needed there for the same reason. Change
+  a module here and run `npm run elicitation:sync` from the repo root;
+  `test/vendored.sync.test.ts` fails CI if the two drift, or if a file is added
+  here and not named in the manifest's `files:` list.
 - **`remote/`** is the only new logic: it swaps the upstream stdio transport for
   an Express + `StreamableHTTPServerTransport` (stateless,
   `sessionIdGenerator: undefined`) front door. Mirrors the upstream

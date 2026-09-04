@@ -39,14 +39,18 @@ toward them, not away. If a change moves away from one, say so.
   the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
   typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
   Anything CI cannot enumerate is skipped WITH A REASON, never failed.
-- FIVE modules are VENDORED across an npm-tree boundary, and ONE manifest owns
-  all of them: the `VENDORED` array in `scripts/sync-vendored.mjs`. Edit the
+- SIX seams are VENDORED across an npm-tree boundary — nine files, since one of
+  them is a library that spans four — and ONE manifest owns all of them: the
+  `VENDORED` array in `scripts/sync-vendored.mjs`. Edit the
   source, never the copy; run the sync and commit both halves.
   `npm run vendor:sync` writes every copy, `-- --check` fails if any has drifted,
   `-- --only <id>` does one seam, and `test/vendored.sync.test.ts` runs the check
   over the whole manifest in CI. The per-seam aliases below are thin wrappers on
-  `--only <id>`; adding a sixth seam is one entry in the manifest, not a sixth
-  copy of the script.
+  `--only <id>`; adding a seventh seam is one entry in the manifest, not a seventh
+  copy of the script. An entry is one `source` file copied to each of its
+  `targets`, unless it declares `files:` — then `source` and every target are
+  DIRECTORIES and each name in `files` crosses between them, so a library that
+  spans several modules is still one id and one failure.
   - `npm run telemetry:sync` (`--only telemetry`) re-vendors
     `telemetry/bundle/instrument.mjs` into the seven supplementary images that
     boot through it. Each image is its own Docker build context and cannot COPY
@@ -78,6 +82,18 @@ toward them, not away. If a change moves away from one, say so.
     failing on a variable that is right there.
     `test/env-prefix.markers.test.ts` is the seam's other half: it greps both
     trees for the marker variables discovery actually looks for.
+  - `npm run elicitation:sync` (`--only elicitation`) re-vendors the four
+    `src/*.ts` modules of `servers/onepassword/elicitation` — the unpublished
+    `@pulsemcp/mcp-elicitation` — into `images/bundle-google/vendor/`. Both trees
+    are built into the SAME bundle image from separate Docker contexts, and both
+    consumers gate an irreversible act through the library's
+    `requestConfirmation()`: the google copy before an email is SENT, the
+    onepassword copy before five tools reveal or mint a credential. A drift is
+    two confirmation semantics under one `/mcp`. The seam's other half is in the
+    test: `files:` must name every `.ts` file in the source directory, because a
+    fifth module added and hand-copied is the one drift byte-identity cannot see.
+    The trees' `package.json`, `tsconfig.json` and markdown are identical too and
+    stay out of the seam — none of them can carry a `//` banner.
 - `npm run dev` starts the gateway on `:8080` against `strad.config.yaml` — the
   stock config, which has zero servers and a console nobody can enter.
 - `npm run dev:agent` (`scripts/agent-dev.sh`) is the one to reach for instead:
@@ -131,6 +147,7 @@ not a confession.
 | `src/deploy/instance-size.ts` — the closed App Platform plan set, and its two gates   | `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`                                                      |
 | `src/secrets/env-prefix.ts` — the slug → box-variable-name mangling                   | `operate/secrets.md`, `limitations.md`, and `npm run envprefix:sync`                                                     |
 | `scripts/sync-vendored.mjs` — a seam added to `VENDORED`, or the mechanism itself     | this file's vendored-modules bullet, and `operate/telemetry.md` if the telemetry entry moved                             |
+| `servers/onepassword/elicitation/src/**` — the elicitation library itself             | `limitations.md`, `servers/onepassword/README.md`, and `npm run elicitation:sync`                                        |
 | `src/secrets/param-route.ts`, `src/http/params.ts` — the credential write-back path   | `operate/secrets.md`, `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`, and `npm run paramroute:sync` |
 | `scripts/resolve-image-tag.ts`, `src/deploy/imageTag.ts`                              | `operate/operations.md`                                                                                                  |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                                 | `operate/telemetry.md`                                                                                                   |

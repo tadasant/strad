@@ -4,15 +4,16 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error — a plain .mjs script, deliberately not part of the TS program.
 import * as manifest from "../scripts/sync-vendored.mjs";
 
-const { drifted, repoPath, select, VENDORED } = manifest;
+const { copies, drifted, repoPath, select, VENDORED } = manifest;
 
 /**
  * Vendored copies rot. This is the thing that notices — for every seam at once.
  *
- * Five modules cross an npm-tree boundary, because a supplementary image is its
- * own Docker build context and `servers/bundle/host` and `servers/secrets` are
- * their own npm projects. Each has to exist twice, and the only thing standing
- * between that and slowly-diverging copies is this file.
+ * Six seams cross an npm-tree boundary — nine files, since one of them is a
+ * library that spans four — because a supplementary image is its own Docker
+ * build context and `servers/bundle/host` and `servers/secrets` are their own
+ * npm projects. Each has to exist twice, and the only thing standing between
+ * that and slowly-diverging copies is this file.
  *
  * If it fails: edit the SOURCE named in the failure (never a copy), run
  * `npm run vendor:sync`, and commit both halves.
@@ -25,12 +26,23 @@ const { drifted, repoPath, select, VENDORED } = manifest;
 interface Entry {
   id: string;
   source: string;
+  /** Present when `source` and `targets` are directories rather than files. */
+  files?: string[];
   label: string;
   banner: string;
   targets: string[];
 }
 
+/** One `{ source, target }` pair per copy the entry owns. */
+interface Copy {
+  source: string;
+  target: string;
+}
+
 const entries: Entry[] = VENDORED;
+
+/** Every copy every entry owns — the manifest's answer, not a second one. */
+const everyCopy = (): Copy[] => entries.flatMap((entry) => copies(entry));
 
 /** The first line of every banner, and the only thing a copy is known by. */
 const STAMP = "// GENERATED — DO NOT EDIT.";
@@ -65,7 +77,7 @@ function stamped(dir = ".", found: string[] = []): string[] {
  * The manifest is the check, so a misread manifest is a check over nothing.
  *
  * `drifted()` returning `[]` because an entry lost its targets — or because the
- * whole list did — looks EXACTLY like "in sync", and five drift guards would
+ * whole list did — looks EXACTLY like "in sync", and six drift guards would
  * become zero with CI green. The per-seam tests this replaced got that
  * protection for free by naming their targets as literals. Here it has to be
  * asserted out loud.
@@ -76,10 +88,11 @@ describe("the vendored-module manifest", () => {
   });
 
   it("covers every seam we expect to have one", () => {
-    // Naming them here means adding a sixth module that crosses an npm boundary
+    // Naming them here means adding a seventh module that crosses an npm boundary
     // — or dropping one — is a deliberate act, not something that silently
     // ships with a guard that guards nothing.
     expect(entries.map((entry) => entry.id).sort()).toEqual([
+      "elicitation",
       "envprefix",
       "paramroute",
       "presence",
@@ -94,10 +107,31 @@ describe("the vendored-module manifest", () => {
     }
   });
 
+  it("names every module in a multi-file entry's source directory", () => {
+    // `files:` is hand-maintained, and nothing else compares it to the tree. A
+    // module ADDED to the source and hand-copied to the target is the one drift
+    // this seam cannot see from the other side: the copy carries no stamp, so
+    // the scan below does not claim it, and `--check` keeps reporting four
+    // copies in sync while a fifth diverges forever. `files: []` is the same
+    // fail-open with nothing named at all.
+    //
+    // Dropping a name is already caught — the orphaned target keeps its stamp
+    // and "claims every generated copy" sees it — so this closes the direction
+    // that was invisible.
+    for (const entry of entries) {
+      if (entry.files === undefined) continue;
+      expect(entry.files.length, entry.id).toBeGreaterThan(0);
+      const onDisk = readdirSync(repoPath(entry.source))
+        .filter((name) => /\.ts$/.test(name))
+        .sort();
+      expect([...entry.files].sort(), entry.id).toEqual(onDisk);
+    }
+  });
+
   it("writes each copy from exactly one entry", () => {
     // Two entries claiming one path is last-write-wins on the sync and a
     // coin-flip on the check.
-    const targets = entries.flatMap((entry) => entry.targets);
+    const targets = everyCopy().map((copy) => copy.target);
     expect([...new Set(targets)].length).toBe(targets.length);
   });
 
@@ -112,7 +146,9 @@ describe("the vendored-module manifest", () => {
     // literal: every file stamped with the banner is claimed by some entry, and
     // every path an entry claims is a file that carries the stamp.
     expect(stamped().sort()).toEqual(
-      entries.flatMap((entry) => entry.targets).sort(),
+      everyCopy()
+        .map((copy) => copy.target)
+        .sort(),
     );
   });
 
@@ -127,6 +163,13 @@ describe("the vendored-module manifest", () => {
 describe.each(entries)("the vendored $id module", (entry) => {
   it("has a source to vendor from", () => {
     expect(existsSync(repoPath(entry.source)), entry.source).toBe(true);
+    // For a `files:` entry that only says the directory is there. Name each
+    // member too: a name that does not resolve makes `rendered()` throw ENOENT
+    // from inside the check loop, which reaches CI as a raw stack trace with no
+    // `::error::` line and no seam named.
+    for (const copy of copies(entry) as Copy[]) {
+      expect(existsSync(repoPath(copy.source)), copy.source).toBe(true);
+    }
   });
 
   it("names its own source in the banner it stamps", () => {

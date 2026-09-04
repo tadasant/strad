@@ -1,3 +1,6 @@
+// GENERATED — DO NOT EDIT.
+// Vendored from servers/onepassword/elicitation/src by `npm run elicitation:sync`.
+// Edit the source, run the sync, and commit both. CI fails if these drift.
 /**
  * Minimal interface for the MCP server, avoiding direct dependency on
  * @modelcontextprotocol/sdk Server type to prevent cross-package type
