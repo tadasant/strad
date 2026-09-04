@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { refsIn } from "../secrets/provider/resolve.ts";
 
 /**
  * The strad configuration interface.
@@ -1209,11 +1210,22 @@ export const StradConfig = z
     // is just a string in an environment), so it is checked here, where
     // `scripts/check-config.ts` runs it over every config in the repo.
     const envKeyOwners = new Map<string, string>();
+    // The same fence, by REF rather than by name. `consoleEnv:` carries
+    // `${SECRETS_ADMIN_KEY_JSON}` and `env:` could carry the same ref under a
+    // DIFFERENT key — `GOOGLE_APPLICATION_CREDENTIALS_JSON`, say — which a
+    // name-only check waves through while `renderAppSpec` happily bakes the
+    // resolved admin key onto that server's bundle. The key name is the
+    // variable; the ref is the credential, and it is the credential this rule
+    // is about.
+    const envRefOwners = new Map<string, string>();
     for (const s of cfg.servers) {
       if (!s.enabled) continue;
       if (s.kind !== "supplementary-image") continue;
-      for (const key of Object.keys(s.env)) {
+      for (const [key, value] of Object.entries(s.env)) {
         if (!envKeyOwners.has(key)) envKeyOwners.set(key, s.slug);
+        for (const ref of refsIn(value)) {
+          if (!envRefOwners.has(ref)) envRefOwners.set(ref, s.slug);
+        }
       }
     }
     for (const s of cfg.servers) {
@@ -1221,6 +1233,7 @@ export const StradConfig = z
       if (s.consoleStores.length === 0) continue;
 
       const seen = new Set<string>();
+      const seenAdminKeyVar = new Map<string, string>();
       for (const store of s.consoleStores) {
         // The `?project=` selector addresses a store by its project id. Two
         // entries with the same id is one store the page can never reach, and
@@ -1250,6 +1263,25 @@ export const StradConfig = z
           });
         }
 
+        // ONE ADMIN KEY PER STORE, and this is what makes that inexpressible
+        // rather than merely discouraged. Two entries naming one adminKeyVar is
+        // one service account granted on two projects — a strictly larger blast
+        // radius than the two identities it replaces, and the exact
+        // simplification `consoleStores:` exists to refuse.
+        const twin = seenAdminKeyVar.get(store.adminKeyVar);
+        if (twin) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" stores "${twin}" and "${store.project}" both ` +
+              `name adminKeyVar: ${store.adminKeyVar}, so one service account ` +
+              `would reach both projects. Each store carries its OWN admin ` +
+              `credential: give them separate consoleEnv: keys.`,
+            path: ["servers"],
+          });
+        }
+        seenAdminKeyVar.set(store.adminKeyVar, store.project);
+
         const envOwner = envKeyOwners.get(store.adminKeyVar);
         if (envOwner) {
           ctx.addIssue({
@@ -1260,6 +1292,25 @@ export const StradConfig = z
               `declares that same key under env:. env: is baked onto a bundle — ` +
               `the component that answers /mcp — so the console's store-admin ` +
               `credential would reach an agent-facing container. Rename one of ` +
+              `them.`,
+            path: ["servers"],
+          });
+        }
+
+        // And the same check by REF: a different `env:` KEY carrying the same
+        // `${NAME}` puts the identical credential on the identical container.
+        for (const ref of refsIn(s.consoleEnv[store.adminKeyVar] ?? "")) {
+          const refOwner = envRefOwners.get(ref);
+          if (!refOwner) continue;
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `server "${s.slug}" store "${store.project}" resolves its admin ` +
+              `credential from \${${ref}}, and server "${refOwner}" declares ` +
+              `that same reference under env:. env: is baked onto a bundle — ` +
+              `the component that answers /mcp — so the console's store-admin ` +
+              `credential would reach an agent-facing container under a ` +
+              `different variable name. Use a separate credential for one of ` +
               `them.`,
             path: ["servers"],
           });

@@ -2089,15 +2089,27 @@ quietly redirected to the first store — a create that succeeds against the wro
 project under the wrong service account, and reports success, is the one failure
 here nobody would diagnose.
 
-**One admin key per store, always.** `adminKeyVar` is required on every entry and
-there is no way to express "the same service account for all of these". Two
-projects behind one identity is a strictly larger blast radius than the two
-identities it replaces, and the two-identity split on this deployment was chosen
-deliberately. It names a `consoleEnv:` key rather than carrying a `${REF}` of its
-own, and `check-config` enforces that the key **is** declared under `consoleEnv:`
-and is **not** a key of any server's `env:` — `consoleEnv:` is the one scope the
+**One admin key per store, always.** `adminKeyVar` is required on every entry, and
+`check-config` rejects two entries naming the same one — so "the same service
+account for all of these" is inexpressible, not merely discouraged. Two projects
+behind one identity is a strictly larger blast radius than the two identities it
+replaces, and the two-identity split on this deployment was chosen deliberately.
+
+It names a `consoleEnv:` key rather than carrying a `${REF}` of its own, and
+`check-config` fences that name on three sides: the key **is** declared under this
+server's `consoleEnv:`, the key is **not** a key of any server's `env:`, and the
+`${NAME}` behind it does not appear in any server's `env:` either, under any key.
+That third one is the difference between a fence and the appearance of one — the
+credential travels by ref, so the same admin key under a different `env:` variable
+name lands on a bundle exactly as surely. `consoleEnv:` is the one scope the
 renderer lands on core and stops, so the indirection is what keeps a store-admin
 credential off the container that answers `/mcp`.
+
+**A degraded store does not take the page down with it.** If the selected store's
+credential is unseeded or malformed, the page says so — and offers links to the
+other stores, because with no `?project=` the selected store is the first one and
+otherwise a single unseeded key would strand every healthy sibling behind a
+hand-typed query string.
 
 **`namespacesStrict` and `reveal` are per store.** They have to be. A page-level
 `namespacesStrict` is checked against the union of every store's namespaces, so

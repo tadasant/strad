@@ -817,6 +817,15 @@ async function renderSecretsPage(
 ): Promise<void> {
   const slug = view.server.slug;
   const store = storeFor(view, selected, opts);
+  // The two degraded branches below replace the whole page, picker included, so
+  // they carry their own way back to a healthy sibling. See renderMessage's
+  // `otherStores`.
+  const otherStores = view.stores
+    .filter((s) => s.projectId !== selected.projectId)
+    .map((s) => ({
+      href: `/ui/${encodeURIComponent(slug)}?project=${encodeURIComponent(s.projectId)}`,
+      label: s.label,
+    }));
 
   // No namespace is not "the whole project" — it is a misconfiguration. The MCP
   // half refuses to mount without one (servers/secrets/shared/src/config.ts) on
@@ -836,6 +845,7 @@ async function renderSecretsPage(
           `single-store config, SECRETS_NAMESPACES under this server's consoleEnv:).`,
         tone: "warn",
         breadcrumbToIndex: true,
+        otherStores,
       }),
     );
     return;
@@ -857,6 +867,7 @@ async function renderSecretsPage(
           `credential, by design. Store: ${selected.label}. Detail: ${selected.accountReason ?? "no credential"}`,
         tone: "warn",
         breadcrumbToIndex: true,
+        otherStores,
       }),
     );
     return;
@@ -928,20 +939,29 @@ export function selectStoreStrict(
   view: Extract<ServerView, { kind: "secrets" }>,
   raw: unknown,
 ): SecretsStore | undefined {
-  if (raw === undefined) return view.stores[0];
+  // An ABSENT project is only an answer when there is one store to mean. On a
+  // multi-store page it is the same ambiguity as an unrecognised one — every
+  // form on the page posts the field, so a request without it is stale or
+  // hand-crafted, and defaulting it would write to whichever store happens to
+  // be declared first.
+  if (raw === undefined || (typeof raw === "string" && raw.trim() === "")) {
+    return view.stores.length === 1 ? view.stores[0] : undefined;
+  }
   if (typeof raw !== "string") return undefined;
-  const wanted = raw.trim();
-  if (wanted === "") return view.stores[0];
-  return view.stores.find((s) => s.projectId === wanted);
+  return view.stores.find((s) => s.projectId === raw.trim());
 }
 
 /**
  * A secrets-shaped server that fronts no store at all.
  *
- * Reachable when `consoleStores:` is an empty list and no `SECRETS_PROJECT_ID`
- * is declared either. The detector fires on the DECLARATION, so the page exists;
- * saying so beats rendering an empty parameter table that looks like a store
- * with nothing in it.
+ * DEFENSIVE, and config cannot currently reach it: `resolveSecretsView` returns
+ * a store per `consoleStores:` entry or exactly one from the `SECRETS_*` env
+ * vars, and `declaresSecrets` only says "secrets" when one of those two holds —
+ * so a `secrets` view always carries at least one store. It exists because
+ * `stores[0]` is `SecretsStore | undefined` under `noUncheckedIndexedAccess`
+ * and SOMETHING has to answer for the empty case. Saying so beats inventing a
+ * placeholder store, and beats a non-null assertion that would go quietly wrong
+ * if a third way of declaring a store is ever added.
  */
 function renderNoStores(
   res: Response,
@@ -1009,9 +1029,16 @@ async function capabilitiesFor(
  * It must not be rebuilt per request. The client caches its OAuth access token
  * for an hour (minting one costs an RSA signature and a round trip to Google),
  * and a fresh instance per call throws that cache away. It is keyed because the
- * credential differs per STORE — one page fronts several, each addressing its own
- * GCP project as its own identity — and must be re-keyed if one is rotated under
- * us.
+ * credential differs per STORE — one page fronts several, each addressing its
+ * own GCP project as its own identity — and the key is what stops one store's
+ * client answering for another's.
+ *
+ * What the key does NOT see is a rotated PRIVATE KEY under an unchanged
+ * `client_email`, which is the normal shape of a service-account key rotation:
+ * this process keeps signing with the old one until core restarts. That is
+ * pre-existing and bounded by a redeploy; it is written down here rather than
+ * implied away, because the number of keys under it grows with the number of
+ * stores on a page.
  */
 const storeCache = new Map<string, ParameterStore>();
 

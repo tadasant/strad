@@ -363,16 +363,20 @@ plus two that shape how this server gets its values:
       reveal: true
   ```
 
-  **Every store carries its own credential.** `adminKeyVar` is required per entry
-  and there is deliberately no way to say "use the same service account for all of
-  these": two projects behind one identity is a strictly larger blast radius than
-  the two identities it replaces.
+  **Every store carries its own credential.** `adminKeyVar` is required per entry,
+  and `check-config` rejects two entries that name the **same** one: two projects
+  behind one identity is a strictly larger blast radius than the two identities it
+  replaces, so the collapse is inexpressible rather than merely discouraged.
 
   `adminKeyVar` names a **`consoleEnv:` key**, not a `${REF}` of its own, and
-  `check-config` enforces both halves of that: the key must be declared under this
-  server's `consoleEnv:`, and it must **not** be a key of any server's `env:`.
-  `consoleEnv:` is the one scope the renderer lands on core and stops, so naming
-  it is what keeps a store-admin credential off the component that answers `/mcp`.
+  `check-config` enforces three things about it. The key must be declared under
+  this server's `consoleEnv:`. It must **not** be a key of any server's `env:`.
+  And the `${NAME}` it resolves from must not appear in any server's `env:`
+  **either**, under any key — the key name is the variable, but the ref is the
+  credential, and a name-only check would wave through the same admin key baked
+  onto a bundle as `GOOGLE_APPLICATION_CREDENTIALS_JSON`. `consoleEnv:` is the one
+  scope the renderer lands on core and stops, so naming it is what keeps a
+  store-admin credential off the component that answers `/mcp`.
 
   `namespacesStrict` and `reveal` are **per store**, not per page. A page-level
   `namespacesStrict` would be checked against the union of every store's

@@ -4,9 +4,10 @@ import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
-import { renderAppSpec } from "../src/deploy/appspec.ts";
+import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
 import { storeForPath } from "../src/http/params.ts";
+import { storeFor } from "../src/ui/index.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   EnvSecretProvider,
@@ -273,6 +274,61 @@ ${stores}
     ).toThrow(/would reach an agent-facing container/);
   });
 
+  it("refuses two stores sharing ONE adminKeyVar", () => {
+    // The non-negotiable, made inexpressible rather than merely discouraged.
+    // Two entries naming one key is one service account granted on two
+    // projects — a strictly larger blast radius than the two it replaces.
+    expect(() =>
+      parseConfig(
+        base(`      - project: "${STRAD_PROJECT}"
+        namespaces: ["${STRAD_NS}"]
+        adminKeyVar: SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
+      - project: "${ZIMMER_PROJECT}"
+        namespaces: ["${ZIMMER_NS}"]
+        adminKeyVar: SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`),
+      ),
+    ).toThrow(/would reach both projects/);
+  });
+
+  it("refuses an admin ${REF} that any server's env: also carries, under ANY key", () => {
+    // The name-only fence is not enough: the credential travels by REF, so a
+    // DIFFERENT env: key carrying the same ${NAME} bakes the identical admin key
+    // onto a bundle. The key name is the variable; the ref is the credential.
+    expect(() =>
+      parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: [{ name: bundle }, { name: bundle-other }]
+servers:
+  - slug: secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /secrets
+    entitlements: [admin]
+    env: { SECRETS_PROJECT_ID: "${STRAD_PROJECT}" }
+    consoleEnv:
+      STRAD_STORE_ADMIN_KEY_JSON: "\${STRAD_ADMIN_KEY}"
+    consoleStores:
+      - project: "${STRAD_PROJECT}"
+        namespaces: ["${STRAD_NS}"]
+        adminKeyVar: STRAD_STORE_ADMIN_KEY_JSON
+  - slug: other
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-other
+    path: /other
+    entitlements: [admin]
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: "\${STRAD_ADMIN_KEY}"
+`),
+    ).toThrow(
+      /reach an agent-facing container under a different variable name/,
+    );
+  });
+
   it("refuses two stores claiming the same project id", () => {
     // ?project= addresses a store by its id, so a duplicate is one store the
     // page can never reach and a write whose destination depends on order.
@@ -313,7 +369,9 @@ describe("the /mcp half of a multi-store slug", () => {
     // stores; /mcp keeps exactly one.
     const spec = renderAppSpec({
       config: CONFIG,
-      image: "ghcr.io/tadasant/strad:abc1234",
+      appName: "strad-test",
+      region: "nyc",
+      image: parseImage("ghcr.io/tadasant/strad:abc1234"),
       env: [],
       secrets: SECRETS,
     });
@@ -351,6 +409,42 @@ describe("the /mcp half of a multi-store slug", () => {
     expect(core.ZIMMER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON).toBe(
       ZIMMER_ADMIN_KEY,
     );
+  });
+
+  it("builds a DISTINCT real client per store, and memoises each", () => {
+    // Every other test here stubs `parametersStore`, so this is the one that
+    // exercises the real `storeFor` — and with it the cache key, which is the
+    // most plausible place two stores could cross-wire. No network: the client
+    // is constructed lazily and mints its token on first use.
+    const view = resolveServerView(CONFIG, "secrets", SECRETS);
+    if (view.kind !== "secrets") throw new Error("unreachable");
+    const [strad, zimmer] = view.stores;
+    if (!strad || !zimmer) throw new Error("two stores expected");
+
+    const a = storeFor(view, strad, {});
+    const b = storeFor(view, zimmer, {});
+
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    // Two stores, two clients. One shared client would sign every call for both
+    // projects with whichever credential got there first.
+    expect(a).not.toBe(b);
+    // And each is memoised, or every render mints a fresh OAuth token.
+    expect(storeFor(view, strad, {})).toBe(a);
+    expect(storeFor(view, zimmer, {})).toBe(b);
+  });
+
+  it("returns no client for a store whose credential is missing, and still one for its sibling", () => {
+    const view = resolveServerView(CONFIG, "secrets", {
+      STRAD_ADMIN_KEY,
+      VIEWER_KEY,
+    });
+    if (view.kind !== "secrets") throw new Error("unreachable");
+    const [strad, zimmer] = view.stores;
+    if (!strad || !zimmer) throw new Error("two stores expected");
+
+    expect(storeFor(view, strad, {})).not.toBeNull();
+    expect(storeFor(view, zimmer, {})).toBeNull();
   });
 
   it("routes a write-back path to the store whose namespace covers it", () => {
@@ -437,6 +531,7 @@ describe("the switcher, end to end", () => {
     await new Promise<void>((resolve) => {
       server = app.listen(0, () => resolve());
     });
+    if (!server) throw new Error("no server");
     const addr = server.address();
     if (typeof addr === "string" || !addr) throw new Error("no port");
     baseUrl = `http://127.0.0.1:${addr.port}`;
@@ -463,9 +558,11 @@ describe("the switcher, end to end", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain('name="project"');
-    expect(html).toContain(`value="${STRAD_PROJECT}"`);
-    expect(html).toContain(`value="${ZIMMER_PROJECT}"`);
+    // The PICKER, asserted as a <select> with an <option> per store — a bare
+    // `name="project"` would be satisfied by the hidden field the forms carry.
+    expect(html).toContain('<select class="in in-select" id="store-input"');
+    expect(html).toContain(`<option value="${STRAD_PROJECT}"`);
+    expect(html).toContain(`<option value="${ZIMMER_PROJECT}"`);
     expect(html).toContain("strad prod");
     expect(html).toContain("zimmer prod");
     // The first store is selected with no query string.
@@ -560,6 +657,33 @@ describe("the switcher, end to end", () => {
     expect(await stradFake.store.reveal(`${STRAD_NS}ROTATE_ME`)).toBe("after");
   });
 
+  it("a GET with an unknown ?project= falls back, and does not error", async () => {
+    // The documented split: a GET is a NAVIGATION, so a stale bookmark from
+    // before a store was renamed lands on the first store rather than a 400.
+    // The POST half is the next test, and it goes the other way.
+    const res = await fetch(`${baseUrl}/ui/secrets?project=gone-away`, {
+      headers: auth,
+    });
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain(`value="${STRAD_PROJECT}" selected`);
+  });
+
+  it("REFUSES a POST that OMITS the project on a multi-store page", async () => {
+    // An absent project is only an answer when there is one store to mean.
+    // Every form on the page posts the field, so a request without it is stale
+    // or hand-crafted — and defaulting it writes to whichever store happens to
+    // be declared first.
+    const before = (await stradFake.store.list(STRAD_NS)).length;
+    const res = await post("/ui/secrets/create", {
+      ns: STRAD_NS,
+      variable: "NO_PROJECT_FIELD",
+      value: "x",
+    });
+    expect(res.status).toBe(400);
+    expect((await stradFake.store.list(STRAD_NS)).length).toBe(before);
+  });
+
   it("REFUSES a form naming a store this console does not front", async () => {
     // Not a silent fallback to the first store. A create that succeeds against
     // the wrong GCP project under the wrong service account, and reports
@@ -583,9 +707,19 @@ describe("the switcher, end to end", () => {
       headers: auth,
     });
     const html = await res.text();
-    // The hidden field the mutating forms post back.
+    const field = `<input type="hidden" name="project" value="${ZIMMER_PROJECT}" />`;
+
+    // EVERY form, counted — not "at least one". A single `toContain` passes
+    // while five of six forms silently post to the wrong store.
+    const posts = html.match(/<form method="post"/g)?.length ?? 0;
+    const carried = html.split(field).length - 1;
+    expect(posts).toBeGreaterThan(0);
+    expect(carried).toBeGreaterThanOrEqual(posts);
+
+    // The namespace picker is a GET, and it carries the project too — otherwise
+    // changing namespace would silently bounce back to the first store.
     expect(html).toContain(
-      `<input type="hidden" name="project" value="${ZIMMER_PROJECT}" />`,
+      `<form class="nsform" method="get" action="/ui/secrets">\n    <input type="hidden" name="project" value="${ZIMMER_PROJECT}" />`,
     );
   });
 
@@ -605,6 +739,52 @@ describe("the switcher, end to end", () => {
 
     expect(zimmerHtml).toContain("/ui/secrets/reveal");
     expect(stradHtml).not.toContain("/ui/secrets/reveal");
+  });
+
+  it("offers a way to the sibling when the SELECTED store is degraded", async () => {
+    // A page whose first store has no credential replaces the whole render —
+    // picker included — with a message. With no ?project= the first store is the
+    // one selected, so without sibling links ONE unseeded key would make every
+    // other store on the page reachable only by hand-typing a query string.
+    // Under the old page-per-project layout each page failed on its own.
+    const noStradKey = await createApp({
+      config: CONFIG,
+      registry: await Registry.build({
+        config: CONFIG,
+        secrets: sharedSecretProviders({
+          name: "test",
+          get: () => Promise.resolve(null),
+          invalidate: () => {},
+        }),
+        mode: "core",
+        env,
+      }),
+      tokenStore: tokenStoreFromConfig(CONFIG, env),
+      mode: "core",
+      env,
+      // Zimmer's key resolves; strad's does not.
+      secrets: { ZIMMER_ADMIN_KEY, VIEWER_KEY },
+      diagnosticStore: null,
+    });
+    const srv = noStradKey.listen(0);
+    try {
+      const addr = srv.address();
+      if (typeof addr === "string" || !addr) throw new Error("no port");
+      const res = await fetch(`http://127.0.0.1:${addr.port}/ui/secrets`, {
+        headers: auth,
+      });
+      const html = await res.text();
+
+      expect(res.status).toBe(200);
+      expect(html).toContain("admin credential is not configured");
+      // The way out: a link to the store that still works.
+      expect(html).toContain(
+        `href="/ui/secrets?project=${encodeURIComponent(ZIMMER_PROJECT)}"`,
+      );
+      expect(html).toContain("zimmer prod");
+    } finally {
+      srv.close();
+    }
   });
 
   it("refuses a POST reveal against the store that does not offer it", async () => {

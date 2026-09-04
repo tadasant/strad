@@ -493,7 +493,11 @@ ${listing}
     <div class="field">
       <span class="field-l">Namespace</span>
       <code class="pathpart">${esc(ns)}</code>
-      <span class="field-h">Type or pick one above; the suggestions are a convenience, not a limit.</span>
+      <span class="field-h">${
+        store.namespacesStrict
+          ? "Pick one above. This store is strict: a namespace outside its configured list is refused on create."
+          : "Type or pick one above; the suggestions are a convenience, not a limit."
+      }</span>
     </div>
     <div class="field">
       <label class="field-l" for="pfx">Path prefix <span class="field-opt">optional</span></label>
@@ -1316,14 +1320,32 @@ export function renderMessage(opts: {
   tone?: "info" | "warn" | "error";
   icon?: string;
   breadcrumbToIndex?: boolean;
+  /**
+   * Other stores on this console page, offered as links.
+   *
+   * A multi-store secrets page whose SELECTED store is broken — an unseeded
+   * admin key, no namespace — renders this message instead of the parameter
+   * table, and the message has no store picker in it. With no `?project=` the
+   * selected store is the first one, so without these links one unseeded
+   * credential would make every OTHER store on the page reachable only by
+   * hand-typing a query string. Under the old page-per-project layout each page
+   * failed on its own; this keeps that true.
+   */
+  otherStores?: { href: string; label: string }[];
 }): string {
   const tone = opts.tone ?? "info";
+  const others = opts.otherStores?.length
+    ? `<p class="state-sub state-links">Other stores on this page: ${opts.otherStores
+        .map((s) => `<a href="${esc(s.href)}">${esc(s.label)}</a>`)
+        .join(" · ")}</p>`
+    : "";
   const body = `
 ${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a></nav>` : ""}
 <div class="state state-${tone}">
   <div class="state-icon">${opts.icon ?? INFO_SVG}</div>
   <p class="state-title">${esc(opts.heading)}</p>
   <p class="state-sub">${esc(opts.sub)}</p>
+  ${others}
 </div>`;
   return layout({
     title: opts.title,
@@ -1594,6 +1616,10 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .posture strong{color:var(--white)}
 .posture-warn{border-left-color:#e0a63b;margin-bottom:.7rem}
 .posture-reveal{margin-bottom:.7rem}
+
+.state-links{margin-top:.6rem}
+.state-links a{color:var(--text-accent);text-decoration:none}
+.state-links a:hover{text-decoration:underline}
 
 /* Store picker: which of the console's parameter stores this page is showing. */
 .storeform{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap}
