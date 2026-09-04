@@ -26,9 +26,9 @@ toward them, not away. If a change moves away from one, say so.
 - `npm run typecheck`, `npm run lint`, `npm run format:check` — all three gate CI.
   The typecheck covers one program: `src/`, `test/` AND `scripts/`. The scripts run
   under `node --experimental-transform-types`, which strips types and checks
-  nothing, so `tsc` is the only thing that reads them — including
+  nothing, so `tsc` is the only thing that type-checks them — including
   `render-spec.ts`, which emits the deployed App Platform spec. The two `.mjs`
-  scripts are outside it; `allowJs` is off.
+  scripts in `scripts/` are outside it; `allowJs` is off.
 - `npm run config:check -- --config <path>` validates a config the way a deploy
   would, with no secrets. An unknown key is a hard error there — the schema is
   Zod-default, so `consoleEnvs:` for `consoleEnv:` is otherwise stripped in
