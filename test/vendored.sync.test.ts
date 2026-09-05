@@ -9,7 +9,7 @@ const { copies, drifted, repoPath, select, VENDORED } = manifest;
 /**
  * Vendored copies rot. This is the thing that notices — for every seam at once.
  *
- * Six seams cross an npm-tree boundary — nine files, since one of them is a
+ * Seven seams cross an npm-tree boundary — ten files, since one of them is a
  * library that spans four — because a supplementary image is its own Docker
  * build context and `servers/bundle/host` and `servers/secrets` are their own
  * npm projects. Each has to exist twice, and the only thing standing between
@@ -47,8 +47,16 @@ const everyCopy = (): Copy[] => entries.flatMap((entry) => copies(entry));
 /** The first line of every banner, and the only thing a copy is known by. */
 const STAMP = "// GENERATED — DO NOT EDIT.";
 
-/** Directories with nothing of ours in them, or a build of something that has. */
-const SKIP = new Set(["node_modules", "dist", ".astro", "coverage"]);
+/**
+ * Directories with nothing of ours in them, or a build of something that has.
+ *
+ * `build` is `servers/secrets`' `tsc` output, and it is the same trap the
+ * `.astro` entry is: a banner is a `//` comment, so `tsc` copies it through to
+ * `build/parameter-wire.js` and `build/capability-table.js`, which are then
+ * stamped files no entry claims. They exist only after `npm test` in that tree —
+ * which CI runs in a separate job, and a human runs right before this one.
+ */
+const SKIP = new Set(["node_modules", "dist", "build", ".astro", "coverage"]);
 
 /**
  * `scripts/sync-vendored.mjs` holds every banner as a string literal. It is the
@@ -77,7 +85,7 @@ function stamped(dir = ".", found: string[] = []): string[] {
  * The manifest is the check, so a misread manifest is a check over nothing.
  *
  * `drifted()` returning `[]` because an entry lost its targets — or because the
- * whole list did — looks EXACTLY like "in sync", and six drift guards would
+ * whole list did — looks EXACTLY like "in sync", and seven drift guards would
  * become zero with CI green. The per-seam tests this replaced got that
  * protection for free by naming their targets as literals. Here it has to be
  * asserted out loud.
@@ -88,10 +96,11 @@ describe("the vendored-module manifest", () => {
   });
 
   it("covers every seam we expect to have one", () => {
-    // Naming them here means adding a seventh module that crosses an npm boundary
+    // Naming them here means adding an eighth module that crosses an npm boundary
     // — or dropping one — is a deliberate act, not something that silently
     // ships with a guard that guards nothing.
     expect(entries.map((entry) => entry.id).sort()).toEqual([
+      "capabilities",
       "elicitation",
       "envprefix",
       "paramroute",
