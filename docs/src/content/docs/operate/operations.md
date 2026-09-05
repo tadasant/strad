@@ -986,6 +986,35 @@ so a change to one server doesn't rebuild the rest:
 | `release-onepassword-image.yml` | `ghcr.io/tadasant/strad-server-onepassword`      | `servers/onepassword/`                                                                                                                                                                                                                                                                                         |
 | `bundle-google-release.yml`     | `ghcr.io/tadasant/strad-server-bundle-google`    | `images/bundle-google/`                                                                                                                                                                                                                                                                                        |
 
+Four of those workflows hold no build of their own. `release-bundle-api-image.yml`,
+`release-goodeggs-image.yml`, `release-fetchpet-image.yml` and
+`release-pointsyeah-image.yml` are a `paths:` filter, a concurrency group, and a
+call to **`release-supplementary-image.yml`** — the reusable workflow that holds the
+shared body: checkout, isolate the docker config, log in to ghcr, create a
+job-scoped buildx builder, build and push `:latest` and `:sha-<commit>`. A caller
+passes `context:` and `image:`, plus `file:`, `cache-scope:` and `refuse-off-main:`
+when it needs them.
+
+One copy of that body rather than one per server is the point. Every cross-cutting
+fix to the release path — naming the buildx builder, retrying the ghcr push,
+isolating the docker config — was three separate changes each applied by hand to
+nine to eleven files, and a copy that missed one is invisible in review.
+
+Two things about that shape are worth knowing:
+
+- **The `github` context inside a called workflow is the caller's.** `github.sha` is
+  the commit that triggered the caller and `github.ref` is the ref it ran on, so
+  the `sha-` tag and the off-`main` guard mean what they meant when the body lived
+  in the caller.
+- **Each caller watches the shared file in its own `paths:`.** A change to the body
+  therefore cuts real images, rather than first executing on whatever unrelated
+  commit next touches one of those trees.
+
+`release-image.yml` (the core image) is deliberately not a caller — it does
+considerably more than build and push. Neither is `release-onepassword-image.yml`,
+whose `op` verification is described below. `release-bundle-image.yml` is not one
+yet.
+
 Everything below `release-bundle-image.yml` in that table is a **per-server image
 that staging no longer deploys** — staging runs the one collapsed bundle. They are
 still built and still pushed on purpose: production, in `tadasant-internal`, has not

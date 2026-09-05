@@ -12,12 +12,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { buildUnits, publishingWorkflows } from "./helpers/workflow-graph.js";
+
 /**
  * Every job that logs in to ghcr must log in somewhere only it can reach.
  *
  * `~/.docker/config.json` is the credential file, and `runs-on: self-hosted`
- * means one of them for the whole box. Nine jobs in this repo run
- * `docker/login-action`, each writing `auths["ghcr.io"]` with its OWN job's
+ * means one of them for the whole box. Every job in this repo that reaches ghcr
+ * runs `docker/login-action`, each writing `auths["ghcr.io"]` with its OWN job's
  * `GITHUB_TOKEN`, and each running `docker logout ghcr.io` in a post step —
  * `logout: true` is that action's default. So the last job to log in owns the
  * credential every concurrent build pushes with, and the first job to finish
@@ -50,8 +52,27 @@ const ACTION_DIR = ".github/actions";
 const ISOLATE = "./.github/actions/docker-config";
 const MANIFEST = `${ACTION_DIR}/docker-config/action.yml`;
 
-/** How many logging-in jobs we expect to find at all. */
-const MIN_LOGIN_JOBS = 9;
+/**
+ * How many COPIES of the login step exist.
+ *
+ * A count of copies is a weak floor and this is the only job it does: stop the
+ * loop below passing by asserting over an empty list. It moves whenever
+ * releases share a body — four of them share `release-supplementary-image.yml`
+ * and hold one login between them — and it cannot tell that apart from three
+ * releases losing their credential. `MIN_PUBLISHING_WORKFLOWS` is the floor
+ * that means something.
+ */
+const MIN_LOGIN_JOBS = 6;
+
+/**
+ * How many workflows put an image on ghcr.
+ *
+ * A release that delegates its build still publishes, and is still separately
+ * broken if the body it delegates to stops logging in — so this counts
+ * releases rather than copies, and sharing a body does not move it. It is what
+ * the coverage assertion below guards.
+ */
+const MIN_PUBLISHING_WORKFLOWS = 9;
 
 interface Step {
   uses?: string;
@@ -95,7 +116,7 @@ function* jobs(): Generator<{ file: string; job: string; steps: Step[] }> {
 
 // The `@` is not required: an UNPINNED `uses: docker/login-action` logs in just
 // the same, and matching only the pinned spelling would make such a step
-// invisible to every assertion here while `found` stayed at nine.
+// invisible to every assertion here while `found` stayed where it was.
 const isLogin = (s: Step) =>
   s.uses === "docker/login-action" ||
   (s.uses?.startsWith("docker/login-action@") ?? false);
@@ -156,6 +177,53 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
     // Guard the guard: a loop that found no logins would pass by asserting
     // over nothing.
     expect(found).toBeGreaterThanOrEqual(MIN_LOGIN_JOBS);
+  });
+
+  /**
+   * …and the other direction, which the loop above cannot see at all.
+   *
+   * Everything above starts from a login and checks what is ordered around it.
+   * A release that stops logging in ENTIRELY is invisible to it — no login, no
+   * iteration, nothing asserted — and the symptom is a 403 on the push, from a
+   * workflow whose diff removed one `uses:` line.
+   *
+   * A release does not have to hold its own login: four of them reach theirs
+   * through `release-supplementary-image.yml`, one file away, where a reviewer
+   * of the caller cannot see it at all. So the coverage is asserted from the
+   * release, through the `uses:` edge, to the job whose steps actually build.
+   */
+  it("gets every publishing workflow to an isolated login, through whatever workflow owns the build", () => {
+    const publishing = publishingWorkflows();
+
+    // Guard the guard: an empty graph passes every assertion below. Nine before
+    // the four supplementary releases shared a body, nine after.
+    expect(
+      publishing.length,
+      `found ${publishing.length} workflows that publish an image; the walk ` +
+        `is not reaching them.`,
+    ).toBeGreaterThanOrEqual(MIN_PUBLISHING_WORKFLOWS);
+
+    for (const unit of buildUnits()) {
+      if (!unit.publishes) continue;
+      const where =
+        unit.file === unit.entry
+          ? `${unit.entry} (${unit.job})`
+          : `${unit.entry} -> ${unit.file} (${unit.job})`;
+
+      expect(
+        unit.steps.findIndex(isLogin),
+        `${where} pushes an image and never runs \`docker/login-action\`, so ` +
+          `the push authenticates as whoever last wrote the box-wide ` +
+          `credential file — or as nobody.`,
+      ).toBeGreaterThanOrEqual(0);
+
+      expect(
+        unit.steps.findIndex(isIsolate),
+        `${where} pushes an image without calling ${ISOLATE}, so its ` +
+          `credential lands in the file every concurrent job on this ` +
+          `self-hosted box shares.`,
+      ).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("never hand-rolls a docker login or logout in a shell step", () => {

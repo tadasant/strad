@@ -1,9 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+
+import {
+  BUILD_PUSH,
+  calledWorkflow,
+  workflow,
+  workflowFiles,
+  WORKFLOW_DIR,
+  type Permissions,
+  type Step,
+  type Workflow,
+} from "./helpers/workflow-graph.js";
 
 /**
  * The release path must EXECUTE before it is merged, and must not be able to
@@ -35,46 +46,9 @@ import { parse } from "yaml";
  *      reason the first half is affordable is that the second holds.
  */
 
-const WORKFLOW_DIR = ".github/workflows";
 const ACTION_DIR = ".github/actions";
 const COMPOSITE = `${ACTION_DIR}/build-push/action.yml`;
-const WRAPPER = "./.github/actions/build-push";
-
-interface Step {
-  "continue-on-error"?: boolean;
-  uses?: string;
-  id?: string;
-  if?: string;
-  with?: Record<string, unknown>;
-  env?: Record<string, unknown>;
-  run?: string;
-  name?: string;
-}
-
-type Permissions = Record<string, string> | string;
-
-interface Job {
-  steps?: Step[];
-  uses?: string;
-  secrets?: unknown;
-  permissions?: Permissions;
-}
-
-interface Workflow {
-  on?: Record<string, unknown>;
-  permissions?: Permissions;
-  jobs?: Record<string, Job>;
-}
-
-function workflowFiles(): string[] {
-  return readdirSync(WORKFLOW_DIR)
-    .filter((f) => /\.ya?ml$/.test(f))
-    .map((f) => `${WORKFLOW_DIR}/${f}`);
-}
-
-function workflow(file: string): Workflow {
-  return (parse(readFileSync(file, "utf8")) as Workflow) ?? {};
-}
+const WRAPPER = BUILD_PUSH;
 
 /** Every step of every job in a workflow, jobs that only `uses:` another aside. */
 function steps(doc: Workflow): Step[] {
@@ -143,19 +117,6 @@ function prReachable(): Set<string> {
   }
 
   return reached;
-}
-
-/**
- * The file a job's `uses:` names, for a reusable workflow in THIS repo. Both
- * spellings: the `./` path form, and the `owner/repo/.github/workflows/x.yml@ref`
- * form, which is legal for a same-repo call and would otherwise be an edge this
- * walk silently does not follow.
- */
-function calledWorkflow(uses: string | undefined): string | undefined {
-  if (typeof uses !== "string") return undefined;
-  if (uses.startsWith("./")) return uses.slice(2);
-  const m = /^[^/]+\/[^/]+\/(\.github\/workflows\/[^@]+)@/.exec(uses);
-  return m?.[1];
 }
 
 /** A `pull_request:` trigger that names no `paths:` filter runs on every PR. */
