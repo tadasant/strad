@@ -2420,7 +2420,7 @@ time an agent guesses. The description fix IS worth having upstream — it is no
 strad-specific — and `pulsemcp/pulsemcp#5071` asks for it. Until it lands there,
 the running server is the only place the fix reaches a session.
 
-**The sharp edge.** The seven VENDORED seams in this repo (`scripts/sync-vendored.mjs`)
+**The sharp edge.** The eight VENDORED seams in this repo (`scripts/sync-vendored.mjs`)
 each have a sync script and a drift test, because the failure of a silent
 divergence is a silent one. A FORK has the opposite problem and no such
 guard: there is no upstream to diff against, and a re-vendor that pastes
@@ -4013,7 +4013,7 @@ do not: `src/secrets/presence.ts`, `src/secrets/param-route.ts` and
 (`scripts/sync-vendored.mjs`), which is a separate npm tree with its own
 lockfile. A vendored module can only import something that crosses the boundary
 with it and resolves at the SAME relative path in both trees — so importing the
-rule would mean either an eighth seam in the manifest, or moving the rule out of
+rule would mean either a ninth seam in the manifest, or moving the rule out of
 `src/config/` to a path that happens to work from both sides. Neither is worth a
 forty-character regex, and both make `schema.ts` — the most import-constrained
 consumer, and the reason the module is under `src/config/` at all — import it
@@ -4028,6 +4028,6 @@ files still spell one thing the same way" — the same shape as
 `test/env-prefix.markers.test.ts`. `test/vendored.sync.test.ts` covers the other
 half, that each vendored COPY matches its source.
 
-**Undo.** Add `src/config/env-name.ts` to the `VENDORED` manifest as an eighth
+**Undo.** Add `src/config/env-name.ts` to the `VENDORED` manifest as a ninth
 seam and let the three import it, on the day one of them needs something else
 from the module too. Until then the grep is cheaper than the seam.

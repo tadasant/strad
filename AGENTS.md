@@ -39,14 +39,14 @@ toward them, not away. If a change moves away from one, say so.
   the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
   typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
   Anything CI cannot enumerate is skipped WITH A REASON, never failed.
-- SEVEN seams are VENDORED across an npm-tree boundary — ten files, since one of
-  them is a library that spans four — and ONE manifest owns all of them: the
+- EIGHT seams are VENDORED across an npm-tree boundary — eleven files, since one
+  of them is a library that spans four — and ONE manifest owns all of them: the
   `VENDORED` array in `scripts/sync-vendored.mjs`. Edit the
   source, never the copy; run the sync and commit both halves.
   `npm run vendor:sync` writes every copy, `-- --check` fails if any has drifted,
   `-- --only <id>` does one seam, and `test/vendored.sync.test.ts` runs the check
   over the whole manifest in CI. The per-seam aliases below are thin wrappers on
-  `--only <id>`; adding an eighth seam is one entry in the manifest, not an eighth
+  `--only <id>`; adding a ninth seam is one entry in the manifest, not a ninth
   copy of the script. An entry is one `source` file copied to each of its
   `targets`, unless it declares `files:` — then `source` and every target are
   DIRECTORIES and each name in `files` crosses between them, so a library that
@@ -98,6 +98,20 @@ toward them, not away. If a change moves away from one, say so.
     failing on a variable that is right there.
     `test/env-prefix.markers.test.ts` is the seam's other half: it greps both
     trees for the marker variables discovery actually looks for.
+  - `npm run writerules:sync` (`--only writerules`) re-vendors
+    `src/secrets/parameters/write-rules.ts` — the version ranking, the `v{n+1}`
+    mint, and the `secretAccessor` policy edit that makes a secret parameter's
+    `__REF__` renderable — into `servers/secrets`. It is the MUTATING half of the
+    same parameter the wire addresses, and every rule in it fails silently: a
+    writer that ranks or mints differently writes a version every reader skips
+    (the rotate reports success and the old value keeps being served), and a
+    parameter written without the grant renders `400 SECRET_REFERENCE_ERROR` for
+    every reader forever. Only the decisions are shared — the listing, the POST
+    and the read-modify-write around the policy stay at each call site, including
+    the `options.requestedPolicyVersion=3` the read must ask for.
+    `test/parameter-write-rules.ownership.test.ts` is the seam's other half: byte
+    identity cannot see the tree growing a second implementation beside the copy,
+    nor either half quietly ceasing to import it.
   - `npm run elicitation:sync` (`--only elicitation`) re-vendors the four
     `src/*.ts` modules of `servers/onepassword/elicitation` — the unpublished
     `@pulsemcp/mcp-elicitation` — into `images/bundle-google/vendor/`. Both trees
@@ -150,6 +164,7 @@ not a confession.
 | `src/deploy/config-inline.ts` — what `STRAD_CONFIG_YAML` carries, and the spec's size | `operate/deploy-model.md`, `servers/interface.md`, `limitations.md`                                                           |
 | `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts`   | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md`, and `npm run presence:sync`                                |
 | `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope      | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`                                                               |
+| `src/secrets/parameters/write-rules.ts` — the ranking, the mint, the render grant     | `operate/secrets.md`, and `npm run writerules:sync`                                                                           |
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                     | `operate/secrets.md`, `limitations.md`                                                                                        |
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache         | `operate/console-pwa.md`, `auth/overview.md`                                                                                  |
 | `servers/remote-filesystem/**` — a tool, the link model, the sensitivity model        | `servers/artifact-store.md`, `limitations.md`                                                                                 |

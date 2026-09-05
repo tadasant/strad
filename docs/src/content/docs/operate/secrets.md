@@ -321,6 +321,26 @@ rather than asked-for-politely because a disagreement here is the one failure in
 this subsystem that is silent: both halves keep answering, and one of them hands a
 process bytes that are not the value. See [Known limitations](/limitations/) #33.
 
+**The rules for a parameter's VERSIONS travel the same way.** Parameter Manager
+has no `latest` alias, so "the current version of this parameter" is a decision
+every caller makes for itself — and all of them make it the same way: skip the
+disabled versions, take the greatest NUMERIC suffix, and mint the next one as
+`v{n+1}`. Ranking by list order is the trap, because Parameter Manager lists
+lexicographically and `v9` sorts after `v12`. The third rule is the grant that
+makes a written secret readable at all: `:render` dereferences a `__REF__` as the
+PARAMETER's own principal, so that principal needs `secretAccessor` on the secret
+or every render is a `400 SECRET_REFERENCE_ERROR`. All three live in
+`src/secrets/parameters/write-rules.ts`, vendored into
+`servers/secrets/shared/src/parameter-write-rules.ts` by
+`npm run writerules:sync`, guarded by `test/vendored.sync.test.ts` and
+`test/parameter-write-rules.ownership.test.ts`. What is NOT shared is the HTTP
+around them — each tree lists, POSTs and read-modify-writes the IAM policy with
+its own token and its own error type, and gets loud failures when it gets that
+wrong. A disagreement about the rules is the silent one: a writer that ranks or
+mints differently writes a version every reader skips, so the rotate reports
+success while the console, the resolver and every container keep serving the old
+value.
+
 ## A server's secrets live in that server's namespace
 
 **Every `${NAME}` written on a server entry resolves from that server's own

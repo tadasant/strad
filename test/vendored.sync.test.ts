@@ -9,7 +9,7 @@ const { copies, drifted, repoPath, select, VENDORED } = manifest;
 /**
  * Vendored copies rot. This is the thing that notices — for every seam at once.
  *
- * Seven seams cross an npm-tree boundary — ten files, since one of them is a
+ * Eight seams cross an npm-tree boundary — eleven files, since one of them is a
  * library that spans four — because a supplementary image is its own Docker
  * build context and `servers/bundle/host` and `servers/secrets` are their own
  * npm projects. Each has to exist twice, and the only thing standing between
@@ -19,9 +19,11 @@ const { copies, drifted, repoPath, select, VENDORED } = manifest;
  * `npm run vendor:sync`, and commit both halves.
  *
  * The seam-specific checks — that the secrets tree has no second implementation
- * of a name the wire owns, that the bundle host still greps for the real marker
- * variables — are NOT here. They belong to their seams and live in
- * `test/parameter-wire.ownership.test.ts` and `test/env-prefix.markers.test.ts`.
+ * of a name the wire or the write rules own, that the bundle host still greps for
+ * the real marker variables — are NOT here. They belong to their seams and live in
+ * `test/parameter-wire.ownership.test.ts`,
+ * `test/parameter-write-rules.ownership.test.ts` and
+ * `test/env-prefix.markers.test.ts`.
  */
 interface Entry {
   id: string;
@@ -85,7 +87,7 @@ function stamped(dir = ".", found: string[] = []): string[] {
  * The manifest is the check, so a misread manifest is a check over nothing.
  *
  * `drifted()` returning `[]` because an entry lost its targets — or because the
- * whole list did — looks EXACTLY like "in sync", and seven drift guards would
+ * whole list did — looks EXACTLY like "in sync", and eight drift guards would
  * become zero with CI green. The per-seam tests this replaced got that
  * protection for free by naming their targets as literals. Here it has to be
  * asserted out loud.
@@ -96,7 +98,7 @@ describe("the vendored-module manifest", () => {
   });
 
   it("covers every seam we expect to have one", () => {
-    // Naming them here means adding an eighth module that crosses an npm boundary
+    // Naming them here means adding a ninth module that crosses an npm boundary
     // — or dropping one — is a deliberate act, not something that silently
     // ships with a guard that guards nothing.
     expect(entries.map((entry) => entry.id).sort()).toEqual([
@@ -107,6 +109,7 @@ describe("the vendored-module manifest", () => {
       "presence",
       "telemetry",
       "wire",
+      "writerules",
     ]);
   });
 
