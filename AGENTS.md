@@ -184,6 +184,7 @@ not a confession.
 | `servers/onepassword/elicitation/src/**` — the elicitation library itself             | `limitations.md`, `servers/onepassword/README.md`, and `npm run elicitation:sync`                                             |
 | `src/secrets/param-route.ts`, `src/http/params.ts` — the credential write-back path   | `operate/secrets.md`, `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`, and `npm run paramroute:sync`      |
 | `scripts/resolve-image-tag.ts`, `src/deploy/imageTag.ts`                              | `operate/operations.md`                                                                                                       |
+| `src/http/retry.ts` — the transient-status set, `Retry-After`, a budget's ceilings    | `operate/operations.md`, `operate/secrets.md`, `limitations.md`                                                               |
 | `src/telemetry/**`, `telemetry/bundle/instrument.mjs`                                 | `operate/telemetry.md`                                                                                                        |
 | `servers/bundle/**` — a mount added or removed, the Chromium, the `op` CLI            | `intro/architecture.md`, `operate/telemetry.md`, and every count                                                              |
 | `infra/strad.staging.yaml`                                                            | `operate/operations.md`, `servers/adding.md`                                                                                  |

@@ -476,6 +476,31 @@ deploy fails and tells you to wait for the release or pass an explicit `version`
 A registry it cannot read is likewise an error, never a silent walk-back to
 something older.
 
+##### When GHCR refuses the walk
+
+The walk is up to 50 sequential `HEAD`s at one GHCR repository, plus the
+pull-scoped token it needs first — which is exactly the shape that earns a rate
+limit. A `429`, a `500`, a `502`, a `503`, a `504` or a connection that never
+answered is retried; a `404` is "no image for that commit" and is the only
+negative; anything else — a `401`, a `403`, a `501` — is a settled answer and
+fails at once.
+
+That is the same policy the parameter store runs on, from the same module
+(`src/http/retry.ts`), rather than a second opinion written beside the registry
+calls. Two things follow. A `Retry-After` is **honoured**: a registry that names
+a delay is saying when it will answer, and sleeping less than that spends an
+attempt on a request already known to be refused. And the backoff is
+**jittered**, so 50 probes refused in the same second do not all come back in
+the same millisecond.
+
+The budget is sized for the walk, not for one call: **three tries and at most
+3s of added sleep, per probe**. Multiplied across a fully-refused 50-commit walk
+that is 150s, which is where it has always been. A rate limit that outlasts two
+backoffs is GHCR throttling the walk itself, and the answer to that is a
+shorter walk — a `version` input, or a deploy from a commit that published —
+not a longer sleep. A `Retry-After` longer than the remaining 3s gives up on the
+first answer rather than fifty times over.
+
 The core recovers from a failed release on its own, which is why its remedy stops
 there. `release-image.yml` builds every non-docs commit, so the commit that fixes
 a broken build is itself a commit that publishes, and the walk stops on it. The

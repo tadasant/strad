@@ -52,6 +52,13 @@
  * That difference is the whole of `ImageSource`.
  */
 import { execFileSync } from "node:child_process";
+import {
+  isRetryableStatus,
+  parseRetryAfter,
+  retryDelayMs,
+  sleep,
+  type RetryBudget,
+} from "../http/retry.ts";
 
 /**
  * Tags that name "whatever was pushed most recently" rather than one build.
@@ -708,7 +715,7 @@ export async function resolveDeployTag(
 ): Promise<ResolvedTag> {
   const source = options.source ?? CORE_IMAGE_SOURCE;
   const waitMs = options.waitMs ?? 0;
-  const sleep = options.sleep ?? defaultSleep;
+  const doSleep = options.sleep ?? sleep;
   const now = options.now ?? (() => Date.now());
   // Cleared after a lookup throws: one unreadable API is a note in the error,
   // not a call re-made on every poll for fifteen minutes.
@@ -786,7 +793,7 @@ export async function resolveDeployTag(
       let waited = false;
       while (now() < deadline) {
         waited = true;
-        await sleep(WAIT_POLL_MS);
+        await doSleep(WAIT_POLL_MS);
         if (await published(tag)) return { tag, sha: candidate.sha, distance };
         run = await lookUp();
         gone = deadRun(run, source);
@@ -939,6 +946,8 @@ export interface RegistryOptions {
   fetchImpl?: typeof fetch;
   /** Overridable so tests do not actually sleep. */
   sleep?: (ms: number) => Promise<void>;
+  /** Narrows `REGISTRY_RETRY_BUDGET`. Tests use it; deploys do not. */
+  retry?: Partial<RetryBudget>;
 }
 
 const ACCEPT = [
@@ -948,8 +957,101 @@ const ACCEPT = [
   "application/vnd.docker.distribution.manifest.v2+json",
 ].join(",");
 
-const defaultSleep = (ms: number): Promise<void> =>
-  new Promise((r) => setTimeout(r, ms));
+/**
+ * Three tries and at most 3s of added sleep, per registry call.
+ *
+ * The number that matters here is not this one, it is this one times fifty.
+ * `resolveDeployTag` walks back up to 50 commits and probes each of them
+ * sequentially against the same repository, and every probe carries this budget
+ * independently — so a budget that is unremarkable for a single read is five
+ * minutes of a deploy step when the registry is refusing the whole walk.
+ * `DEFAULT_RETRY_BUDGET` is sized for one call and is deliberately not reused.
+ *
+ * 3s holds the multiplied worst case at 150s, which is also exactly where the
+ * hand-rolled loop this replaced already held it (1s then 2s), so no deploy
+ * that passes today gets slower. Two retries rather than three keeps it there
+ * while still covering the burst this exists for: a rate limit that outlasts
+ * two backoffs is the registry throttling the WALK, and the answer to that is a
+ * shorter walk, not a longer sleep.
+ *
+ * `totalDelayMs` is also the ceiling a server-named `Retry-After` is measured
+ * against. GHCR naming 60 seconds gives up on the first answer rather than
+ * fifty times over.
+ */
+const REGISTRY_RETRY_BUDGET: RetryBudget = {
+  attempts: 3,
+  baseDelayMs: 500,
+  maxDelayMs: 2_000,
+  totalDelayMs: 3_000,
+};
+
+/**
+ * What one attempt produced: an answer, or a reason to consider another.
+ *
+ * `status` is what the loop classifies on, and its ABSENCE is meaningful: no
+ * response reached us (or none we could read), so there is no server verdict to
+ * respect and the failure is transient by construction.
+ */
+type Attempt<T> =
+  | { done: T }
+  | {
+      failed: { reason: string; status?: number; retryAfterMs?: number };
+    };
+
+/**
+ * The bounded attempt loop both registry calls run on.
+ *
+ * `idempotent` is unconditionally `true`: every request below is a `HEAD` or a
+ * `GET`, so the write-safety half of `isRetryableStatus` gives nothing up here.
+ *
+ * The reason it is one loop rather than two is the reason it was worth writing:
+ * the two copies it replaces had each restated the retryable-status predicate
+ * inline as `status >= 500 || status === 429`, which retried a permanent `501`
+ * three times and reported it a backoff late. `src/http/retry.ts` owns that
+ * decision; this only supplies the requests.
+ */
+async function retryingRegistry<T>(
+  ctx: {
+    budget: RetryBudget;
+    sleep: (ms: number) => Promise<void>;
+    /** How to report the last reason if every attempt is spent. */
+    describe: (reason: string) => string;
+  },
+  attempt: () => Promise<Attempt<T>>,
+): Promise<T> {
+  let spentMs = 0;
+  let last = "no attempt was made";
+  for (let n = 0; ; n++) {
+    let outcome: Attempt<T>;
+    try {
+      outcome = await attempt();
+    } catch (err) {
+      outcome = {
+        failed: { reason: err instanceof Error ? err.message : String(err) },
+      };
+    }
+    if ("done" in outcome) return outcome.done;
+
+    const { reason, status, retryAfterMs } = outcome.failed;
+    last = reason;
+    if (status !== undefined && !isRetryableStatus(status, true)) break;
+
+    const delay = retryDelayMs({
+      attempt: n,
+      spentMs,
+      retryAfterMs,
+      budget: ctx.budget,
+    });
+    if (delay === undefined) break;
+    await ctx.sleep(delay);
+    spentMs += delay;
+  }
+  throw new Error(ctx.describe(last));
+}
+
+/** A refusal a registry timed itself, when it sent one. */
+const retryAfterOf = (res: Response): number | undefined =>
+  parseRetryAfter(res.headers.get("retry-after"));
 
 /**
  * A "does this tag exist?" probe against a registry.
@@ -960,20 +1062,27 @@ const defaultSleep = (ms: number): Promise<void> =>
  * an older image every time GHCR had a bad minute.
  *
  * 429 is retried rather than fatal because a long walk-back is exactly what
- * provokes it: up to 50 sequential HEADs at one registry.
+ * provokes it: up to 50 sequential HEADs at one registry. That burst shape is
+ * also what makes GHCR name a `Retry-After`, so the delay it names is the one
+ * that gets slept — see `REGISTRY_RETRY_BUDGET` for what bounds it.
  */
 export function registryProbe(
   opts: RegistryOptions,
 ): (tag: string) => Promise<boolean> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const sleep = opts.sleep ?? defaultSleep;
+  const doSleep = opts.sleep ?? sleep;
+  const budget: RetryBudget = { ...REGISTRY_RETRY_BUDGET, ...opts.retry };
 
-  return async function published(tag: string): Promise<boolean> {
-    let last = "";
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      let res: Response;
-      try {
-        res = await doFetch(
+  return function published(tag: string): Promise<boolean> {
+    return retryingRegistry(
+      {
+        budget,
+        sleep: doSleep,
+        describe: (last) =>
+          `could not read ${opts.repository}:${tag} (${last})`,
+      },
+      async (): Promise<Attempt<boolean>> => {
+        const res = await doFetch(
           `https://${opts.registry}/v2/${opts.repository}/manifests/${tag}`,
           {
             method: "HEAD",
@@ -983,18 +1092,17 @@ export function registryProbe(
             },
           },
         );
-      } catch (err) {
-        last = err instanceof Error ? err.message : String(err);
-        if (attempt < 3) await sleep(attempt * 1000);
-        continue;
-      }
-      if (res.status === 404) return false;
-      if (res.ok) return true;
-      last = `HTTP ${res.status}`;
-      if (res.status < 500 && res.status !== 429) break;
-      if (attempt < 3) await sleep(attempt * 1000);
-    }
-    throw new Error(`could not read ${opts.repository}:${tag} (${last})`);
+        if (res.status === 404) return { done: false };
+        if (res.ok) return { done: true };
+        return {
+          failed: {
+            reason: `HTTP ${res.status}`,
+            status: res.status,
+            retryAfterMs: retryAfterOf(res),
+          },
+        };
+      },
+    );
   };
 }
 
@@ -1003,7 +1111,9 @@ export function registryProbe(
  *
  * Retried on the same reasoning as the probe above, and for a stronger one: it
  * is a strictly EARLIER single point of failure, so one transient blip here
- * fails a deploy that had nothing wrong with it.
+ * fails a deploy that had nothing wrong with it. It is made ONCE per deploy, so
+ * a budget sized for fifty sequential probes is generous for it rather than
+ * tight — which is why there is one budget here and not two.
  */
 export async function fetchPullToken(opts: {
   registry: string;
@@ -1012,16 +1122,22 @@ export async function fetchPullToken(opts: {
   password: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  retry?: Partial<RetryBudget>;
 }): Promise<string> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const sleep = opts.sleep ?? defaultSleep;
+  const doSleep = opts.sleep ?? sleep;
+  const budget: RetryBudget = { ...REGISTRY_RETRY_BUDGET, ...opts.retry };
   const basic = Buffer.from(`${opts.actor}:${opts.password}`).toString(
     "base64",
   );
-  let last = "";
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
+  return retryingRegistry(
+    {
+      budget,
+      sleep: doSleep,
+      describe: (last) => `could not obtain a pull token (${last})`,
+    },
+    async (): Promise<Attempt<string>> => {
       const res = await doFetch(
         `https://${opts.registry}/token?service=${opts.registry}` +
           `&scope=repository:${opts.repository}:pull`,
@@ -1029,19 +1145,21 @@ export async function fetchPullToken(opts: {
       );
       if (res.ok) {
         const body = (await res.json()) as { token?: string };
-        if (body.token) return body.token;
-        last = "registry returned no pull token";
-      } else {
-        last = `HTTP ${res.status}`;
-        // 401/403 will not improve on a retry; a bad credential is a bad
-        // credential.
-        if (res.status < 500 && res.status !== 429) break;
+        if (body.token) return { done: body.token };
+        // A 200 carrying no token is not an answer this can use, and the status
+        // says nothing about whether the next one will be the same. No status
+        // is reported, so the loop treats it like a transport failure.
+        return { failed: { reason: "registry returned no pull token" } };
       }
-    } catch (err) {
-      last = err instanceof Error ? err.message : String(err);
-    }
-    if (attempt < 3) await sleep(attempt * 1000);
-  }
-
-  throw new Error(`could not obtain a pull token (${last})`);
+      // 401/403 will not improve on a retry; a bad credential is a bad
+      // credential. The loop reads that off the status.
+      return {
+        failed: {
+          reason: `HTTP ${res.status}`,
+          status: res.status,
+          retryAfterMs: retryAfterOf(res),
+        },
+      };
+    },
+  );
 }
