@@ -83,44 +83,8 @@ export interface SpecSummary {
   sizeAdvisory?: string;
 }
 
-/**
- * The largest App Platform spec DigitalOcean has been observed to ACCEPT from
- * this repo's renderer: 131,010 bytes, `strad-prod`, 2026-08-30T04:01Z
- * (tadasant-internal run 33291566037).
- *
- * ## This is an observation, not a documented limit
- *
- * DigitalOcean publishes no app-spec size limit. What is known is two data
- * points, both from the same day and the same app: 131,010 bytes deployed, and
- * 141,342 bytes came back
- *
- *     400 error validating app spec field "App spec": size limit exceeded
- *
- * (run 33330369567, 19:18Z). So the real ceiling is somewhere in
- * `(131010, 141342]` and nothing here knows where. 128 KiB is 131,072 — 62 bytes
- * above the accepted spec — which makes it look like the answer and is not
- * evidence of anything. Do not turn this into a hard gate on that basis; a
- * wrongly-placed hard gate fails deploys that would have worked, which is worse
- * than the failure it is guarding.
- *
- * It is used only to WARN, and the warning's job is to make growth visible while
- * there is still room to act on it. What prod was actually in was headroom
- * nobody had measured — somewhere between 1 and 10,332 bytes, since the accepted
- * spec deployed and one 10,332 bytes larger did not.
- *
- * Raise this if a larger spec is observed to deploy; that is a better
- * measurement, not a weakening.
- */
-export const LARGEST_ACCEPTED_SPEC_BYTES = 131_010;
-
 import { isKnownInstanceSize } from "./instance-size.ts";
-
-/**
- * The share of `LARGEST_ACCEPTED_SPEC_BYTES` above which the size is worth a
- * sentence in the deploy log. 80% of it is ~105 KB — far enough below the
- * unknown ceiling that a deploy which trips this still has room to land.
- */
-const ADVISORY_FRACTION = 0.8;
+import { LARGEST_ACCEPTED_SPEC_BYTES, specSizeWarnAt } from "./spec-size.ts";
 
 /**
  * A sentence about `bytes`, or `undefined` when there is nothing to say.
@@ -141,7 +105,7 @@ export function sizeAdvisory(bytes: number): string | undefined {
       `src/deploy/config-inline.ts covers where a strad spec's bytes go.`
     );
   }
-  if (bytes > LARGEST_ACCEPTED_SPEC_BYTES * ADVISORY_FRACTION) {
+  if (bytes >= specSizeWarnAt(LARGEST_ACCEPTED_SPEC_BYTES)) {
     return (
       `this spec is ${bytes} bytes, within ` +
       `${LARGEST_ACCEPTED_SPEC_BYTES - bytes} of the largest one known to have ` +

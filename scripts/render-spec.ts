@@ -46,6 +46,14 @@
  * `image:` lines it would have to change first. Without the flag the same list
  * is printed as a warning, so a deploy that cannot yet fail on it still says so.
  *
+ * The SIZE of the spec is gated too, and that gate is always on. An App
+ * Platform spec past some size is refused with a 400 that names neither the
+ * number nor the cause, three steps downstream of the render that produced it,
+ * and it has taken prod down twice. Here the number is known, so it is checked
+ * and reported: refused past the ceiling, warned inside the band below it,
+ * logged either way. `--max-spec-bytes` moves the ceiling for an operator who
+ * learns App Platform takes more. See src/deploy/spec-size.ts.
+ *
  * The output contains secret values. Never echo it into a build log.
  */
 import { readFileSync } from "node:fs";
@@ -59,6 +67,12 @@ import {
   type EnvVar,
 } from "../src/deploy/appspec.ts";
 import { inlineConfigYaml } from "../src/deploy/config-inline.ts";
+import {
+  formatSpecSizeError,
+  formatSpecSizeWarning,
+  specSizeReport,
+  LARGEST_ACCEPTED_SPEC_BYTES,
+} from "../src/deploy/spec-size.ts";
 import {
   BUNDLE_BOOT_ENV_KEYS,
   REQUIRED_BOOT_ENV_KEYS,
@@ -104,12 +118,38 @@ const { values } = parseArgs({
     region: { type: "string" },
     domain: { type: "string", multiple: true },
     "require-immutable-images": { type: "boolean", default: false },
+    // The one way to raise the size ceiling without a PR to this repo. prod
+    // renders this script straight from `main`, so an operator who learns that
+    // App Platform takes more than src/deploy/spec-size.ts has watched it take
+    // should not have to wait on a merge here to say so.
+    "max-spec-bytes": { type: "string" },
   },
 });
 
 if (!values.config || !values.image || !values.app) {
   console.error(
     "usage: render-spec --config <path> --image <ref> --app <name>",
+  );
+  process.exit(1);
+}
+
+// Parsed HERE, next to the other argument checks, rather than at the bottom
+// where it is used: a typo'd ceiling should cost nothing, and by the bottom of
+// this script the render has already parsed a config, resolved images and made
+// several round trips to the secrets store.
+// PRESENCE, not truthiness. `--max-spec-bytes ""` is a flag that was passed and
+// meant something — a workflow input that resolved empty, most likely — and
+// falling back to the default on it would restore the ceiling silently, during
+// the one incident this hatch exists for. An empty string is `Number("") === 0`
+// and is rejected below with the rest of the nonsense.
+const maxSpecBytes =
+  values["max-spec-bytes"] !== undefined
+    ? Number(values["max-spec-bytes"])
+    : LARGEST_ACCEPTED_SPEC_BYTES;
+if (!Number.isInteger(maxSpecBytes) || maxSpecBytes <= 0) {
+  console.error(
+    `::error::--max-spec-bytes must be a positive whole number of bytes, ` +
+      `not "${values["max-spec-bytes"]}".`,
   );
   process.exit(1);
 }
@@ -926,8 +966,42 @@ if (mutable.length > 0) {
   );
 }
 
+// AND REFUSE A SPEC APP PLATFORM WOULD REFUSE, HERE, WHERE THE NUMBER IS KNOWN.
+//
+// DigitalOcean rejects an oversize spec with `400 … error validating app spec
+// field "App spec": size limit exceeded`, and it does so at `doctl apps
+// update`, three steps after the render that caused it, naming neither the size
+// nor the driver. strad-prod has been taken down by that 400 twice. Both times
+// the render was green, both times the bytes were mostly one env var, and both
+// times the only way to find that out was to go and measure the live app spec.
+//
+// This is the last thing between a spec and stdout, and it is not opt-in: the
+// ceiling is the largest spec prod is OBSERVED to have deployed, so nothing
+// under it is refused and there is no deploy this can newly break. That is the
+// opposite trade to --require-immutable-images, which is opt-in because prod
+// renders a config this repo cannot edit — a config can be shortened by whoever
+// is running the deploy, an image tag in someone else's file cannot.
+//
+// See src/deploy/spec-size.ts for the measurements the ceiling comes from.
+const size = specSizeReport(spec, maxSpecBytes);
+if (size.verdict === "over") {
+  console.error(`::error::${formatSpecSizeError(size)}`);
+  process.exit(1);
+}
+if (size.verdict === "warn") {
+  console.error(`::warning::${formatSpecSizeWarning(size)}`);
+}
+console.error(
+  `[render-spec] spec: ${size.bytes} bytes of ${size.limit} ` +
+    `(${size.limit - size.bytes} of headroom).`,
+);
+
 // A BARE spec, not { spec }. This file is fed to `doctl apps create/update
 // --spec`, which parses an App Platform spec and rejects an unknown top-level
 // "spec" field outright ("parsing app spec: json: unknown field \"spec\"").
 // doctl is what wraps it into the API's { spec } envelope.
-process.stdout.write(JSON.stringify(spec, null, 2));
+//
+// `size.json` rather than a second `JSON.stringify`: what was measured and what
+// is emitted have to be the same bytes, or the guard is guarding a document
+// nobody deploys.
+process.stdout.write(size.json);

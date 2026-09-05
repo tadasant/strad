@@ -25,12 +25,14 @@
  * `::error::` annotation on any defect.
  *
  * It also prints the byte count PER COMPONENT, and warns when the total is near
- * or past the largest spec this deployment is known to have deployed. That is a
- * warning and not a gate: DigitalOcean publishes no size limit, so the figure it
- * compares against is an observation with a range around it (see
- * `LARGEST_ACCEPTED_SPEC_BYTES`) and must not fail a deploy that would work.
- * What it is for is the state prod was in on 2026-08-30 — headroom nobody had
- * measured, somewhere between 1 and 10,332 bytes.
+ * or past the largest spec this deployment is known to have deployed. Here that
+ * stays a warning: `scripts/render-spec.ts` is where the same number is a hard
+ * refusal, and by the time a spec reaches this script it has either passed that
+ * gate or been let through by `--max-spec-bytes` — which is a deliberate act
+ * this script has no business overruling. What it is for is the state prod was
+ * in on 2026-08-30: headroom nobody had measured, somewhere between 1 and
+ * 10,332 bytes. See `src/deploy/spec-size.ts` for the measurements behind
+ * `LARGEST_ACCEPTED_SPEC_BYTES` and for why the refusal sits exactly there.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";

@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   assertDeployableSpec,
-  LARGEST_ACCEPTED_SPEC_BYTES,
   sizeAdvisory,
   SpecFileError,
 } from "../src/deploy/spec-file.ts";
+import { LARGEST_ACCEPTED_SPEC_BYTES } from "../src/deploy/spec-size.ts";
 
 /**
  * The check that stands between a rendered spec and `doctl apps update`.

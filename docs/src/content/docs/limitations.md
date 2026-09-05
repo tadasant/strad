@@ -2184,8 +2184,17 @@ Two things changed, neither of which claims to know the limit:
   Prod's spec: 141,342 → ~96,238 bytes. See
   [the deploy model](/operate/deploy-model/#the-config-travels-without-its-prose-and-the-spec-has-a-size).
 - **`assert-spec` reports the size and where it is**, per component, and warns
-  past ~80% of the largest spec known to have deployed. A warning and never an
-  error — a hard gate on an inferred number fails deploys that would have worked.
+  past ~80% of the largest spec known to have deployed.
+- **`render-spec` refuses to emit a spec past 131,010 bytes**
+  (`src/deploy/spec-size.ts`). That is a hard gate, and it is safe only because
+  of where it sits: 131,010 is the largest spec `strad-prod` has been observed to
+  deploy, so the gate cannot refuse a size that is known to work, and everything
+  above it is a size nobody has evidence about. It names the byte count, the
+  ceiling, the overshoot and the components and variables the bytes are in — the
+  400 it replaces names none of those and arrives three steps later.
+  `--max-spec-bytes` raises it for an operator who finds App Platform takes more,
+  because prod renders this script straight from `main` and should not have to
+  wait on a strad PR to say so.
 
 **What is still true.** The largest remaining block is the `bundle` component's
 93 credential variables, about half of them the per-slug aliases of #56. That
