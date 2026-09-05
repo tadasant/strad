@@ -14,6 +14,7 @@
     "dom-to-semantic-markdown": "^1.5.0",
     "jsdom": "^26.1.0",
     "pdf-parse": "^1.1.1",
+    "undici": "^7.29.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {

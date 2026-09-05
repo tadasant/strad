@@ -3,7 +3,9 @@
  * Provides basic HTTP fetching without external services
  */
 
+import { fetch } from 'undici';
 import { ContentParserFactory } from '../content-parsers/index.js';
+import { assertFetchableUrl, blockedUrlCause, guardedDispatcher } from './url-guard.js';
 
 export interface INativeScrapingClient {
   scrape(url: string, options?: NativeScrapingOptions): Promise<NativeScrapingResult>;
@@ -42,13 +44,24 @@ export class NativeScrapingClient implements INativeScrapingClient {
   private parserFactory = new ContentParserFactory();
 
   async scrape(url: string, options: NativeScrapingOptions = {}): Promise<NativeScrapingResult> {
-    try {
-      const controller = new AbortController();
-      const timeoutId = options.timeout
-        ? setTimeout(() => controller.abort(), options.timeout)
-        : null;
+    // Outside the try so a fetch that THROWS still clears it. A refusal is a
+    // throw, and a timer nobody cancelled holds the event loop open for the
+    // whole budget — a minute, by the tool's default.
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-      const response = await fetch(url, {
+    try {
+      // Scheme and literal address, before anything is dispatched. See
+      // ./url-guard.ts — the connector behind `guardedDispatcher()` is what
+      // covers the two things this call cannot see, resolved addresses and
+      // redirect hops.
+      // The parsed URL is what gets fetched, so the thing that was checked and
+      // the thing that is dispatched cannot drift apart.
+      const target = assertFetchableUrl(url);
+
+      const controller = new AbortController();
+      timeoutId = options.timeout ? setTimeout(() => controller.abort(), options.timeout) : null;
+
+      const response = await fetch(target, {
         method: options.method || 'GET',
         headers: {
           ...this.defaultHeaders,
@@ -56,6 +69,9 @@ export class NativeScrapingClient implements INativeScrapingClient {
         },
         body: options.body,
         signal: controller.signal,
+        // undici's own `fetch`, not the global one, so the dispatcher this
+        // passes is certainly the one that opens the socket.
+        dispatcher: guardedDispatcher(),
       });
 
       if (timeoutId) {
@@ -98,6 +114,20 @@ export class NativeScrapingClient implements INativeScrapingClient {
         metadata: parsed.metadata,
       };
     } catch (error) {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+
+      // A refusal raised in the connector arrives as `TypeError: fetch failed`
+      // with the real reason as `cause`; the caller gets the reason.
+      const blocked = blockedUrlCause(error);
+      if (blocked) {
+        return {
+          success: false,
+          error: blocked.message,
+        };
+      }
+
       if (error instanceof Error && error.name === 'AbortError') {
         return {
           success: false,
