@@ -35,8 +35,8 @@ export type StoreFactory = () => ArtifactStore;
  * This is a CLIENT limit, not an MCP one: the protocol puts no ceiling on
  * `description`, and Claude Code cuts it at 2048 characters, silently on the
  * server side and with one line in its own connection log. Four of this server's
- * seven tools were over it — `upload_file` by 743 characters, a quarter of its
- * text — so their tails were documentation no agent on that client ever read.
+ * seven tools were over it, `upload_file` at 4111 characters: more than half of
+ * that one was documentation no agent on that client ever read.
  *
  * A budget only means something if something checks it: `server.test.ts` asserts
  * it over EVERY tool this server defines, so a new tool cannot regress unnoticed.

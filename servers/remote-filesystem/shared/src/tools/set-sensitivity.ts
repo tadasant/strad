@@ -31,9 +31,9 @@ export const SetSensitivitySchema = z.object({
 const DESCRIPTION = `Change whether an already-uploaded artifact is sensitive, and get its new link.
 
 This is the correction path. If you uploaded genuinely sensitive material without
-\`is_sensitive: true\`, call this immediately with \`is_sensitive: true\`: the object becomes
-readable only to signed-in members of the viewer domain. \`false\` goes the other way,
-dropping that grant so a time-limited signed link works again.
+\`is_sensitive: true\`, call this immediately with it set true: the object becomes readable
+only to signed-in members of the viewer domain. \`false\` goes the other way, dropping that
+grant so a time-limited signed link works again.
 
 **⚠️ A signed URL you already handed out keeps working.** A signature stays valid until it
 expires, whatever the object's ACL. Restricting stops NEW readers and stops new signed
@@ -41,18 +41,19 @@ links being minted; it cannot recall a URL already pasted into a message. If the
 truly must not be readable, delete_file it and re-upload with \`is_sensitive: true\`.
 
 **⚠️ And if the artifact was ever \`public\`, Google's edge may serve the old copy for up
-to an hour.** Restricting is still the right first move, but treat it as "no new
-readers", not "no readers", and say so if a human is relying on it.
+to an hour.** Restricting is still the right first move, but it means "no new readers",
+not "no readers" — say so if a human is relying on it.
 
 **Example response:**
 \`\`\`json
 {
-  "path": "reports/net-worth.png",
-  "url": "https://storage.cloud.google.com/artifacts/reports/net-worth.png?authuser=dana%40example.com",
+  "path": "net-worth.png",
+  "url": "https://storage.cloud.google.com/artifacts/net-worth.png?authuser=dana%40example.com",
   "access": "restricted",
   "requires_sign_in": true,
   "expires_at": null,
   "viewer_domain": "example.com",
+  "viewer_account": "dana@example.com",
   "sign_in_hint": "Opens only for a signed-in example.com account. ..."
 }
 \`\`\`
@@ -64,10 +65,10 @@ the grant is fine, and the hint says which account to use. It is the answer to "
 link is broken", not a permissions bug.
 
 **Use cases:**
-- You realise after uploading that a screenshot shows account balances
+- You realise a screenshot you uploaded shows account balances
 - A human asks you to lock down an artifact you already shared
 - Un-restricting an artifact that turned out not to be sensitive
-- Checking and correcting the access level of an old artifact`;
+- Correcting the access level of an old artifact`;
 
 export function setSensitivityTool(storeFactory: StoreFactory): ToolDefinition {
   return {

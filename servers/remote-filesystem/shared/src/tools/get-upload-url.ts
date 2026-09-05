@@ -33,9 +33,6 @@ const PARAMS = {
     "`expires_in_days` controls the browser link returned after the upload succeeds.",
 } as const;
 
-/** The body cap, in the unit the description says it in. */
-const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
-
 const DESCRIPTION = `Create a temporary URL for uploading an artifact with curl, then get back the usual browser link.
 
 Use this rather than upload_file for anything but a tiny snippet: bytes travel from a
@@ -53,9 +50,9 @@ ${LINK_HANDLING_DESCRIPTION}
 - Publish a generated PDF, CSV or HTML report
 - Move a large log or trace archive to a browser link
 
-**Boundaries:** POST only, one successful upload, ${MAX_UPLOAD_MB} MB max. The token
-lives in this process — use it promptly, a restart invalidates it. Expiry kills the
-upload URL, not the artifact.`;
+**Boundaries:** POST only, one successful upload, ${MAX_UPLOAD_BYTES} bytes max. The
+token lives in this process — use it promptly, a restart invalidates it. Expiry kills
+the upload URL, not the artifact.`;
 
 export function getUploadUrlTool(
   storeFactory: StoreFactory,

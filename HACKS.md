@@ -4047,20 +4047,25 @@ characters, `get_upload_url` at 3580, `refresh_link` at 3463 and
 at all. It is what Claude Code cuts a description to, and it reports the cut in
 its own connection log rather than to the server, so the tail of a long
 description is text no agent on that client ever reads. Production's log for the
-`remote-filesystem-tmp-public` slug named all four tools. `upload_file` was
-losing 743 characters of the 2791 it shipped then, and the signed-URL handling
-added since (#194, landed in #246) had taken it to 4111.
+`remote-filesystem-tmp-public` slug named all four tools on 2026-09-02, when
+`upload_file` was 2791 characters and losing 743 of them. The signed-URL handling
+added since (#194, landed in #246) had taken it to 4111 by the time it was fixed,
+so more than half of it was arriving nowhere.
 
 **What it costs.** The shared link-handling block is 1067 characters and three
 tools carry it verbatim, so half of each of those budgets goes before the tool
 says anything about itself. The four rewritten descriptions land between 1991 and
-2014 characters, which leaves under fifty characters of room each. An addition to
-any of them costs a removal. What the removals freed up moved to
-`docs/servers/artifact-store.md`, which has no budget: the example response
-`upload_file` and `refresh_link` used to carry, the multi-replica caveat on
-`get_upload_url`'s upload token, and the long form of the `is_sensitive`
-argument. The parameter descriptions keep their own copy of that argument,
-because a parameter description is not what this client cuts.
+2002 characters, which leaves 46 to 57 characters of room each. An addition to
+any of them costs a removal. Five things came out for that reason, and
+`docs/servers/artifact-store.md` carries all five with no budget of its own: the
+example artifact response `upload_file` and `refresh_link` used to show, the
+`access`-values glossary on `upload_file` (including what a `public` artifact
+means), the multi-replica caveat on `get_upload_url`'s upload token, three
+sentences of motivation from the link-handling block, and the long form of the
+`is_sensitive` argument. Only the example response was new prose on that page;
+the rest was already there. The `is_sensitive` parameter description keeps its
+own copy of the argument, because a parameter description is not what this client
+cuts.
 
 **Undo.** The number belongs to a client, so it moves when the client does. If
 Claude Code raises or drops the cut, change the one constant and the four

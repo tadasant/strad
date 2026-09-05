@@ -1289,9 +1289,9 @@ upload directory would be the stronger answer and is not implemented.
 Claude Code truncates an MCP tool description at 2048 characters. It says so in
 its own connection log and never tells the server, so a description longer than
 that does not fail anywhere; it stops arriving. Production's log named four of the
-artifact store's seven tools, and `upload_file` was losing 743 characters. That is
-a quarter of its text, off the end, where the use cases and the link-handling
-guidance are.
+artifact store's seven tools, and by the time they were fixed `upload_file` was
+4111 characters: more than half of it, off the end, where the use cases and the
+link-handling guidance are.
 
 Every description in that server is now held under `DESCRIPTION_BUDGET`, asserted
 over every tool the server defines so that a new tool cannot regress unnoticed.
@@ -1300,13 +1300,16 @@ tail.
 
 The room is tight and stays tight. The shared link-handling block is 1067
 characters and three tools carry it verbatim, so half of each of those budgets
-goes before the tool describes itself, and the four rewrites land within fifty
-characters of the ceiling. An addition to one of them costs a removal. What the
-removals freed up moved to [the artifact store
-page](/servers/artifact-store/): the example response, the caveat that a
-multi-replica deployment needs sticky routing for an upload token, and the long
-form of the `is_sensitive` argument. That argument still reaches an agent in full
-through the parameter description, which is not what this client cuts.
+goes before the tool describes itself, and the four rewrites land 46 to 57
+characters below the ceiling. An addition to one of them costs a removal. Five
+things came out for that reason, and [the artifact store
+page](/servers/artifact-store/) carries all five with no budget of its own: the
+example response, the `access`-values glossary, the caveat that a multi-replica
+deployment needs sticky routing for an upload token, three sentences of
+motivation from the link-handling block, and the long form of the `is_sensitive`
+argument. Only the example response is new prose there; the rest was already on
+the page. That last argument also still reaches an agent in full through the
+parameter description, which is not what this client cuts.
 
 2048 is a client's cut rather than the protocol's. MCP puts no ceiling on
 `description`, and other clients cut at other lengths or not at all, so this

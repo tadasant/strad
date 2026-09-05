@@ -350,9 +350,9 @@ The two credentials come from the parameters system, not from hand-written
 A tool description is the only documentation that reaches every client, and
 Claude Code cuts one at 2048 characters. The cut is silent from the server's side
 and shows up only in the client's own connection log. Four of these seven tools
-were over that line, and `upload_file` was losing 743 characters: the tail of a
-description is where the use cases and the link-handling guidance live, so a
-quarter of it was text no agent on that client read.
+were over that line, `upload_file` at 4111 characters, and the tail of a
+description is where the use cases and the link-handling guidance live — so more
+than half of that one was text no agent on that client read.
 
 `DESCRIPTION_BUDGET` in `shared/src/tools/shared.ts` is that number, and the
 server's test suite asserts it over every tool the server defines, so a new tool
@@ -362,10 +362,12 @@ to the smallest limit anyone has measured.
 
 **An addition costs a removal.** The shared link-handling block alone is over
 half the budget in the three tools that carry it, and the four rewritten
-descriptions sit within fifty characters of the ceiling. Prose that does not fit
-belongs on this page, which has no budget. A parameter description is not what
-the client cuts, so `is_sensitive` still carries its full argument where an agent
-reads it.
+descriptions sit 46 to 57 characters below the ceiling. Prose that does not fit
+belongs on this page, which has no budget — the example response above, the
+`access` glossary, the sticky-routing caveat on an upload token, and the argument
+for and against `is_sensitive` are all here for that reason. A parameter
+description is not what the client cuts, so `is_sensitive` also still carries its
+full argument where an agent reads it.
 
 ## Tools
 
