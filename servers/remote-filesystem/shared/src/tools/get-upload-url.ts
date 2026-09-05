@@ -33,43 +33,29 @@ const PARAMS = {
     "`expires_in_days` controls the browser link returned after the upload succeeds.",
 } as const;
 
+/** The body cap, in the unit the description says it in. */
+const MAX_UPLOAD_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
+
 const DESCRIPTION = `Create a temporary URL for uploading an artifact with curl, then get back the usual browser link.
 
-Use this instead of upload_file whenever the payload is large enough that base64 or text would be a nontrivial number of tokens. If the file exists on disk and a shell is available, this is normally the right upload path for screenshots, recordings, PDFs, archives, logs, reports and any other artifact larger than a tiny snippet.
+Use this rather than upload_file for anything but a tiny snippet: bytes travel from a
+shell instead of base64 through an MCP call. The response carries a ready-made \`curl\`
+command — run it with \`/path/to/file\` replaced by your file. That POST answers with the
+same JSON upload_file returns; hand its \`url\` to a human or put it in a PR.
 
-The returned URL is unguessable, expires quickly, accepts exactly one successful POST, and stores the posted bytes through the same artifact store as upload_file. The POST response is the same JSON shape upload_file returns: path, url, access, size_bytes, content_type, bucket and expiry fields, plus viewer_domain and sign_in_hint when the artifact is restricted.
-
-**How to use it:**
-1. Call get_upload_url with path/content_type/is_sensitive/expires_in_days.
-2. Run the returned curl command, replacing /path/to/file with the artifact on disk.
-3. Use the JSON response from curl as the artifact link to show a human or place in a PR description.
-
-**Example shell flow:**
-\`\`\`sh
-curl -fsS -X POST -H 'Content-Type: image/png' --data-binary @/tmp/screenshot.png 'https://strad.example/mcp-upload/remote-filesystem-tmp-public/<token>'
-\`\`\`
-
-The guidance below is about the browser link the POST hands back — **not** the upload
-target above, which is a strad route (\`/mcp-upload/<slug>/<token>\`), carries no
-signature, and answers only POST.
+The guidance below is about that browser link, **not** the upload target, which is a
+strad route carrying no signature.
 
 ${LINK_HANDLING_DESCRIPTION}
 
 **Use cases:**
-- Upload a Playwright screenshot without base64 in the MCP call
-- Upload a video recording or trace archive
+- Upload a screenshot or recording without base64 in the MCP call
 - Publish a generated PDF, CSV or HTML report
-- Move a large log file to a browser link
-- Avoid bloating the MCP transcript with artifact bytes
+- Move a large log or trace archive to a browser link
 
-**Boundaries:**
-- POST only. The URL does not accept GET, PUT or PATCH.
-- The upload body limit is ${MAX_UPLOAD_BYTES} bytes.
-- Expiry kills the upload URL, not the stored artifact or its browser link.
-- The temporary token lives in this server process. Use it promptly; a server restart
-  invalidates it, and deployments that run multiple replicas need sticky routing or a
-  single upload-capable replica.
-- If the POST fails before storage succeeds, call it again before expiry; after one successful POST the URL cannot be reused.`;
+**Boundaries:** POST only, one successful upload, ${MAX_UPLOAD_MB} MB max. The token
+lives in this process — use it promptly, a restart invalidates it. Expiry kills the
+upload URL, not the artifact.`;
 
 export function getUploadUrlTool(
   storeFactory: StoreFactory,

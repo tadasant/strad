@@ -45,64 +45,27 @@ export const UploadSchema = z.object({
     .describe(PARAMS.expires_in_days),
 });
 
-const DESCRIPTION = `Upload a file and get back a link a human can open in a browser.
+const DESCRIPTION = `Upload a file and get back a link a human can open in a browser. Put the returned
+\`url\` in your reply, or embed it with markdown image syntax.
 
-This is how an agent hands a person a screenshot, a recording, a report or any other
-artifact it produced. The artifact is stored in a Google Cloud Storage bucket and the
-tool returns a URL — put that URL in your reply, or embed it in a PR description with
-markdown image syntax.
+**Prefer get_upload_url for anything but a tiny payload** — it returns a POST target
+and a curl command, so bytes travel from a shell instead of base64-encoded into this
+call. Use this one for small in-memory payloads and \`file://\` paths it can read.
 
-For nontrivial payloads, prefer get_upload_url: it returns a temporary POST target
-and a curl command, so the bytes travel from the shell to the server instead of being
-base64/text-encoded into the MCP tool call. Use this direct upload_file tool for tiny
-in-memory payloads or files already visible to this server through file://.
-
-**Two kinds of link, chosen by \`is_sensitive\`:**
-- \`false\` (default) — a signed URL. Unguessable, opens instantly for anyone holding
-  it with no sign-in, and expires after \`expires_in_days\` (default ${DEFAULT_LINK_DAYS}). This is
-  the right choice for essentially every screenshot.
-- \`true\` — a link that requires signing in to a Google account on the viewer domain.
-  It never expires. Use it only for genuinely sensitive material; see the
-  \`is_sensitive\` parameter description for the line.
-
-**Example response:**
-\`\`\`json
-{
-  "path": "uploads/2026/08/02/081500-a1b2c3.png",
-  "url": "https://storage.googleapis.com/artifacts/uploads/2026/08/02/081500-a1b2c3.png?GoogleAccessId=...&Expires=1786869329&Signature=...",
-  "access": "link",
-  "requires_sign_in": false,
-  "expires_at": "2026-08-16T08:15:00.000Z",
-  "signing_version": "v2",
-  "size_bytes": 50450,
-  "content_type": "image/png",
-  "bucket": "artifacts"
-}
-\`\`\`
-
-**\`access\` values:**
-- \`link\` — private object, reachable only through the signed URL above
-- \`restricted\` — private object, reachable only by a signed-in member of the viewer
-  domain (\`viewer_domain\` and \`sign_in_hint\` are included in the response, plus
-  \`viewer_account\` where the deployment configures one). If the
-  human reports a 403, give them \`sign_in_hint\` before anything else: the usual cause
-  is that their browser opened the link as the wrong one of several signed-in Google
-  accounts, not a missing grant.
-- \`public\` — world-readable forever. This tool never creates one; you will only see
-  it from set_sensitivity or refresh_link on an object made public long ago.
+\`is_sensitive\` picks the KIND of link — see its parameter description; the default is
+right for essentially every screenshot. A \`restricted\` response also carries
+\`sign_in_hint\`, the answer for a human whose link 403s.
 
 ${LINK_HANDLING_DESCRIPTION}
 
 **Use cases:**
 - Share a Playwright screenshot as PR evidence
 - Hand a human a recording of a bug reproducing
-- Publish a generated chart or report and link to it in a message
-- Store a large output that would be unreadable pasted inline
-- Attach a design mock to a review comment
+- Publish a generated chart or report and link to it
+- Store an output too large to paste inline
 
-**The link outlives nothing.** Expiry kills the URL, never the artifact. If a link has
-gone stale, call refresh_link with the \`path\` from this response and you get a fresh
-one. Keep the \`path\` — it is the durable handle; the URL is not.`;
+**Keep the \`path\`, not the URL.** Expiry kills the link, never the artifact:
+refresh_link mints a fresh one.`;
 
 export function uploadFileTool(storeFactory: StoreFactory): ToolDefinition {
   return {

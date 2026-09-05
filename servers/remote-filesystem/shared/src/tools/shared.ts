@@ -30,6 +30,23 @@ export interface ToolDefinition {
 export type StoreFactory = () => ArtifactStore;
 
 /**
+ * The most characters a tool description may carry.
+ *
+ * This is a CLIENT limit, not an MCP one: the protocol puts no ceiling on
+ * `description`, and Claude Code cuts it at 2048 characters, silently on the
+ * server side and with one line in its own connection log. Four of this server's
+ * seven tools were over it — `upload_file` by 743 characters, a quarter of its
+ * text — so their tails were documentation no agent on that client ever read.
+ *
+ * A budget only means something if something checks it: `server.test.ts` asserts
+ * it over EVERY tool this server defines, so a new tool cannot regress unnoticed.
+ * Other clients cut at other lengths, or not at all; this one is the smallest
+ * measured. Prose that does not fit belongs in `docs/servers/artifact-store.md`,
+ * which has no budget.
+ */
+export const DESCRIPTION_BUDGET = 2048;
+
+/**
  * The `is_sensitive` copy. It lives here because it appears in `upload_file` and
  * in `set_sensitivity`, and an agent that reads two different versions of this
  * guidance will follow the more permissive one.
@@ -77,13 +94,11 @@ export const SENSITIVE_DESCRIPTION =
  * name is wrong everywhere else.
  */
 export const LINK_HANDLING_DESCRIPTION = `**For a signed link (\`access: "link"\`), the query string IS the credential — pass the
-URL through verbatim.** The signature after \`?\` is most of the URL's length, and dropping
-it is loud for the reader and silent for you: the link still looks like a link. Do not
-truncate at the \`?\`, do not wrap it across lines, and do not put markdown emphasis on a
-bare URL (\`**<url>**\` glues the trailing asterisks onto the signature). A \`path\` cannot be
-turned back into a URL — only a tool can mint the signature. Prefer \`[text](url)\`, which
-nothing can attach itself to the end of; Slack renders that literally, so there post the
-bare URL or \`<url|text>\`.
+URL through verbatim.** Do not truncate at the \`?\`, wrap it, or emphasize a bare URL
+(\`**<url>**\` glues the trailing asterisks onto the signature). A \`path\` cannot be
+turned back into a URL — only a tool can mint the signature. Prefer \`[text](url)\`,
+which nothing can be glued to; Slack renders that literally, so there post the bare URL
+or \`<url|text>\`.
 
 **Check it before you publish it:** \`curl -sS -o /dev/null -w '%{http_code}' "<url>"\` must
 print \`200\`.
@@ -92,9 +107,9 @@ print \`200\`.
 carried no signature (dropped, or cut at the \`?\`). \`SignatureDoesNotMatch\`: characters
 were added or removed. \`MissingSecurityHeader\`: the query string was only partly kept.
 \`ExpiredToken\`: the link aged out, and refresh_link mints a fresh one. **None of them
-means the bucket is misconfigured** — these objects are private by design, whatever the
-bucket or the mount is called. A \`restricted\` artifact fails differently and carries no
-signature; \`sign_in_hint\` diagnoses that one.`;
+means the bucket is misconfigured** — the objects are private by design.
+A \`restricted\` artifact fails differently and carries no signature;
+\`sign_in_hint\` diagnoses that one.`;
 
 export const EXPIRES_DESCRIPTION =
   `How many days the returned link stays valid (1-${MAX_LINK_DAYS}). Default: ${DEFAULT_LINK_DAYS}. ` +

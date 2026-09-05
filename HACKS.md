@@ -4031,3 +4031,39 @@ half, that each vendored COPY matches its source.
 **Undo.** Add `src/config/env-name.ts` to the `VENDORED` manifest as an eighth
 seam and let the three import it, on the day one of them needs something else
 from the module too. Until then the grep is cheaper than the seam.
+
+---
+
+## 82. Tool descriptions are written to a client's 2048-character cut
+
+**What.** Every tool description in `servers/remote-filesystem/` is held at or
+under 2048 characters by `DESCRIPTION_BUDGET` in
+`servers/remote-filesystem/shared/src/tools/shared.ts`, asserted over every tool
+the server defines. Four of the seven were over that line: `upload_file` at 4111
+characters, `get_upload_url` at 3580, `refresh_link` at 3463 and
+`set_sensitivity` at 2589. All four were rewritten to fit.
+
+**Why.** 2048 is not an MCP limit; the protocol puts no ceiling on `description`
+at all. It is what Claude Code cuts a description to, and it reports the cut in
+its own connection log rather than to the server, so the tail of a long
+description is text no agent on that client ever reads. Production's log for the
+`remote-filesystem-tmp-public` slug named all four tools. `upload_file` was
+losing 743 characters of the 2791 it shipped then, and the signed-URL handling
+added since (#194, landed in #246) had taken it to 4111.
+
+**What it costs.** The shared link-handling block is 1067 characters and three
+tools carry it verbatim, so half of each of those budgets goes before the tool
+says anything about itself. The four rewritten descriptions land between 1991 and
+2014 characters, which leaves under fifty characters of room each. An addition to
+any of them costs a removal. What the removals freed up moved to
+`docs/servers/artifact-store.md`, which has no budget: the example response
+`upload_file` and `refresh_link` used to carry, the multi-replica caveat on
+`get_upload_url`'s upload token, and the long form of the `is_sensitive`
+argument. The parameter descriptions keep their own copy of that argument,
+because a parameter description is not what this client cuts.
+
+**Undo.** The number belongs to a client, so it moves when the client does. If
+Claude Code raises or drops the cut, change the one constant and the four
+descriptions can breathe again. The structural fix is a client that fetches the
+long form on demand, from an MCP resource beside the tool, and no client does
+that today.

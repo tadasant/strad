@@ -78,6 +78,33 @@ flowchart TD
   R --> C["storage.cloud.google.com<br/>+ ?authuser= when configured<br/>Google sign-in, then ACL"]
 ```
 
+## What an artifact response looks like
+
+`upload_file`, `refresh_link`, `set_sensitivity` and the POST behind
+`get_upload_url` all answer with the same object. A non-sensitive upload:
+
+```json
+{
+  "path": "uploads/2026/08/02/081500-a1b2c3.png",
+  "url": "https://storage.googleapis.com/artifacts/uploads/2026/08/02/081500-a1b2c3.png?GoogleAccessId=...&Expires=1786869329&Signature=...",
+  "access": "link",
+  "requires_sign_in": false,
+  "expires_at": "2026-08-16T08:15:00.000Z",
+  "signing_version": "v2",
+  "size_bytes": 50450,
+  "content_type": "image/png",
+  "bucket": "artifacts"
+}
+```
+
+A `restricted` artifact carries three more fields: `viewer_domain`,
+`sign_in_hint`, and `viewer_account` where the deployment configures one. Its
+`expires_at` and `signing_version` come back `null`, because that link does not
+expire.
+
+`path` is the durable handle. The URL is not: it expires, and it cannot be
+rebuilt from the path by anything but a tool call.
+
 ## Steering agents away from `is_sensitive`
 
 Having to log in is bad UX, so `false` is the right answer almost every time. The
@@ -317,6 +344,28 @@ The two credentials come from the parameters system, not from hand-written
   no link is issued — a loud failure rather than a quiet loss of the sign-in gate.
 - The service account needs object read/write, `storage.objects.update` to set
   ACLs, and a private key so URLs can be signed locally.
+
+## Descriptions are written to a budget
+
+A tool description is the only documentation that reaches every client, and
+Claude Code cuts one at 2048 characters. The cut is silent from the server's side
+and shows up only in the client's own connection log. Four of these seven tools
+were over that line, and `upload_file` was losing 743 characters: the tail of a
+description is where the use cases and the link-handling guidance live, so a
+quarter of it was text no agent on that client read.
+
+`DESCRIPTION_BUDGET` in `shared/src/tools/shared.ts` is that number, and the
+server's test suite asserts it over every tool the server defines, so a new tool
+cannot regress unnoticed. 2048 is a client's cut rather than the protocol's: MCP
+puts no ceiling on `description`, and other clients differ, so this server writes
+to the smallest limit anyone has measured.
+
+**An addition costs a removal.** The shared link-handling block alone is over
+half the budget in the three tools that carry it, and the four rewritten
+descriptions sit within fifty characters of the ceiling. Prose that does not fit
+belongs on this page, which has no budget. A parameter description is not what
+the client cuts, so `is_sensitive` still carries its full argument where an agent
+reads it.
 
 ## Tools
 
