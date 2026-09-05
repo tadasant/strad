@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { after, describe, it } from "node:test";
+import { afterAll, describe, it } from "vitest";
 
-import { GrafanaUpstream, READ_ONLY_ARGS } from "../build/index.js";
+import { GrafanaUpstream, READ_ONLY_ARGS } from "../src/index.js";
 
 const FAKE = fileURLToPath(new URL("./fake-mcp-grafana.mjs", import.meta.url));
 
@@ -40,7 +40,7 @@ async function callJson(instance, name, args = {}) {
   return JSON.parse(result.content[0].text);
 }
 
-after(async () => {
+afterAll(async () => {
   await Promise.all(started.map((instance) => instance.close()));
 });
 

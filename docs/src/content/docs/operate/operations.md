@@ -165,7 +165,10 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
     rather than the bundle's twenty other credentials, that tools and results are
     forwarded verbatim, and that a child which dies is replaced on the next call.
     The binary's own tool count is asserted by `bundle_image`, against the real
-    thing.
+    thing. No separate build leg, because `npm test` is
+    `npm run build && vitest run` — `tsc` over `src/` runs first, so a type error
+    there still fails the PR rather than the bundle-image build. The suite itself
+    runs under Vitest against the TypeScript sources, like every other tree's.
   - **`bundle/host`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run` — `tsc` over `src/`, so a type error there
     still fails the PR. The host is the process every bundle container runs: it
