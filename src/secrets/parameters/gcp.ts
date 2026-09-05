@@ -15,7 +15,7 @@ import {
   retryDelayMs,
   sleep,
   type RetryBudget,
-} from "./retry.ts";
+} from "../../http/retry.ts";
 import {
   decodeEnvelope,
   decodeEnvelopeValue,
@@ -87,8 +87,8 @@ export interface GcpParameterStoreConfig {
   timeoutMs?: number;
   /**
    * How hard a refused call is tried again. Defaults to
-   * `DEFAULT_RETRY_BUDGET`; see `retry.ts` for what each ceiling holds and why
-   * the default is small.
+   * `DEFAULT_RETRY_BUDGET`; see `src/http/retry.ts` for what each ceiling holds
+   * and why the default is small.
    */
   retry?: Partial<RetryBudget>;
   /**
@@ -236,7 +236,7 @@ export function createGcpParameterStore(
         // AbortSignal that has already fired aborts the next request instantly.
         // See `timeoutMs` above: an unbounded read is the one failure the
         // runtime provider cannot degrade around, and retrying widens that bound
-        // rather than removing it (see `retry.ts` for the ceiling).
+        // rather than removing it (see `src/http/retry.ts` for the ceiling).
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) {
@@ -1066,8 +1066,12 @@ export function createGcpParameterStore(
  * A throttle, a server error and a request that never answered are moments;
  * a `400` (the reference will not dereference) and a `403` (the credential may
  * not) are the store's settled view of that parameter until something changes.
- * Same partition `retry.ts` uses to decide what is worth trying again, applied
- * here to decide what is worth REMEMBERING.
+ * Deliberately WIDER than `isRetryableStatus`, and the difference is the point:
+ * that partition decides what is worth trying AGAIN, this one decides what is
+ * worth REMEMBERING. A `501` is not worth a retry — the server will not start
+ * implementing it in 400ms — but it is equally not the store's settled view of
+ * that parameter, so caching it would answer a later read with an outage that
+ * had already passed.
  */
 function isTransient(err: unknown): boolean {
   const status = statusOf(err);

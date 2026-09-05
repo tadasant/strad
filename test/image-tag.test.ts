@@ -22,6 +22,7 @@ import {
   shaTag,
   type Candidate,
 } from "../src/deploy/imageTag.ts";
+import type { RetryBudget } from "../src/http/retry.ts";
 import { parseImage } from "../src/deploy/appspec.ts";
 import type {
   ServerConfig,
@@ -613,9 +614,10 @@ describe("resolveDeployTag", () => {
   });
 });
 
-/** A probe wired to a scripted fetch, with sleeps stubbed out. */
-function probe(responses: (Response | Error)[]) {
+/** A probe wired to a scripted fetch, recording what it would have slept. */
+function probe(responses: (Response | Error)[], retry?: Partial<RetryBudget>) {
   const calls = { n: 0 };
+  const slept: number[] = [];
   const fetchImpl = vi.fn(async () => {
     const next = responses[calls.n++] ?? responses[responses.length - 1];
     if (next instanceof Error) throw next;
@@ -623,19 +625,33 @@ function probe(responses: (Response | Error)[]) {
   });
   return {
     calls,
+    slept,
     fetchImpl,
     published: registryProbe({
       registry: "ghcr.io",
       repository: "tadasant/strad",
       token: "t",
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      sleep: async () => {},
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+      retry,
     }),
   };
 }
 
-const res = (status: number): Response =>
-  ({ status, ok: status >= 200 && status < 300 }) as Response;
+/**
+ * A response the probe can read.
+ *
+ * `headers` is real rather than stubbed: `Retry-After` is read off it, and a
+ * fake that has no headers would let the code that ignores the header pass.
+ */
+const res = (status: number, headers: Record<string, string> = {}): Response =>
+  ({
+    status,
+    ok: status >= 200 && status < 300,
+    headers: new Headers(headers),
+  }) as Response;
 
 describe("registryProbe", () => {
   it("reports a published tag", async () => {
@@ -675,6 +691,65 @@ describe("registryProbe", () => {
     await expect(p.published("sha-x")).rejects.toThrow(/fetch failed/);
     expect(p.calls.n).toBe(3);
   });
+
+  it("does NOT retry a 501 — it sounds transient and is a permanent answer", async () => {
+    // The hand-rolled loop this replaced tested `status >= 500`, so it spent
+    // two backoffs rediscovering a verdict the first response had already
+    // given. `isRetryableStatus` names the five statuses that mean "not now".
+    const p = probe([res(501)]);
+    await expect(p.published("sha-x")).rejects.toThrow(/HTTP 501/);
+    expect(p.calls.n).toBe(1);
+    expect(p.slept).toEqual([]);
+  });
+
+  it("sleeps the delay GHCR named rather than one of its own", async () => {
+    // A long walk-back is what provokes the 429, and a registry refusing a
+    // burst says when it will answer. Backing off less than that is a request
+    // we already know will be refused.
+    const p = probe([res(429, { "retry-after": "2" }), res(200)]);
+    await expect(p.published("sha-x")).resolves.toBe(true);
+    expect(p.slept).toEqual([2_000]);
+  });
+
+  it("gives up rather than sleeping past the budget for a long Retry-After", async () => {
+    // 60s does not fit a 3s ceiling, and the walk carries that ceiling up to 50
+    // times over. One attempt, no sleep, and the deploy fails fast.
+    const p = probe([res(429, { "retry-after": "60" })]);
+    await expect(p.published("sha-x")).rejects.toThrow(/HTTP 429/);
+    expect(p.calls.n).toBe(1);
+    expect(p.slept).toEqual([]);
+  });
+
+  it("backs off with jitter, and never past the total-sleep ceiling", async () => {
+    // Equal jitter on a 500ms first term: 250-500ms, then 500-1000ms. The point
+    // of the randomness is to de-synchronise probes that were all refused in
+    // the same millisecond, so the assertion is a window, not a number.
+    const p = probe([res(503), res(503), res(503)]);
+    await expect(p.published("sha-x")).rejects.toThrow(/HTTP 503/);
+    expect(p.calls.n).toBe(3);
+    expect(p.slept).toHaveLength(2);
+    expect(p.slept[0]).toBeGreaterThanOrEqual(250);
+    expect(p.slept[0]).toBeLessThanOrEqual(500);
+    expect(p.slept[1]).toBeGreaterThanOrEqual(500);
+    expect(p.slept[1]).toBeLessThanOrEqual(1_000);
+    expect(p.slept.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(3_000);
+  });
+
+  it("stops when the total-sleep ceiling is spent, not when attempts are", async () => {
+    // Room for five tries, but only one backoff's worth of sleep. The first
+    // term is 200-400ms and fits; the second doubles to 400-800ms and cannot
+    // fit in what is left however the jitter falls, so the loop stops there.
+    const p = probe([res(503)], {
+      attempts: 5,
+      baseDelayMs: 400,
+      maxDelayMs: 4_000,
+      totalDelayMs: 400,
+    });
+    await expect(p.published("sha-x")).rejects.toThrow(/HTTP 503/);
+    expect(p.calls.n).toBe(2);
+    expect(p.slept).toHaveLength(1);
+    expect(p.slept[0]).toBeLessThanOrEqual(400);
+  });
 });
 
 describe("fetchPullToken", () => {
@@ -683,54 +758,86 @@ describe("fetchPullToken", () => {
     repository: "tadasant/strad",
     actor: "a",
     password: "p",
-    sleep: async () => {},
   };
 
-  it("returns the token", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({ token: "tok" }),
-    }));
-    await expect(
-      fetchPullToken({
+  /** The token endpoint, scripted, with the sleeps recorded rather than taken. */
+  function token(answers: (Response | Error)[]) {
+    const calls = { n: 0 };
+    const slept: number[] = [];
+    const fetchImpl = vi.fn(async () => {
+      const next = answers[calls.n++] ?? answers[answers.length - 1];
+      if (next instanceof Error) throw next;
+      return next as Response;
+    });
+    return {
+      calls,
+      slept,
+      got: fetchPullToken({
         ...base,
         fetchImpl: fetchImpl as unknown as typeof fetch,
+        sleep: async (ms) => {
+          slept.push(ms);
+        },
       }),
-    ).resolves.toBe("tok");
+    };
+  }
+
+  /** A token response. `body` is what the endpoint returned as JSON. */
+  const tok = (body: unknown, headers: Record<string, string> = {}): Response =>
+    ({
+      ok: true,
+      status: 200,
+      headers: new Headers(headers),
+      json: async () => body,
+    }) as Response;
+
+  it("returns the token", async () => {
+    const t = token([tok({ token: "tok" })]);
+    await expect(t.got).resolves.toBe("tok");
+    expect(t.calls.n).toBe(1);
   });
 
   it("retries a transient failure — it is an EARLIER single point of failure", async () => {
-    let n = 0;
-    const fetchImpl = vi.fn(async () => {
-      if (++n === 1) throw new Error("fetch failed");
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({ token: "tok" }),
-      };
-    });
-    await expect(
-      fetchPullToken({
-        ...base,
-        fetchImpl: fetchImpl as unknown as typeof fetch,
-      }),
-    ).resolves.toBe("tok");
-    expect(n).toBe(2);
+    const t = token([new Error("fetch failed"), tok({ token: "tok" })]);
+    await expect(t.got).resolves.toBe("tok");
+    expect(t.calls.n).toBe(2);
+  });
+
+  it("retries a 200 that carried no token", async () => {
+    // The status says nothing here, so there is no server verdict to respect.
+    const t = token([tok({}), tok({ token: "tok" })]);
+    await expect(t.got).resolves.toBe("tok");
+    expect(t.calls.n).toBe(2);
   });
 
   it("does not retry a bad credential", async () => {
-    let n = 0;
-    const fetchImpl = vi.fn(async () => {
-      n++;
-      return { ok: false, status: 401, json: async () => ({}) };
-    });
-    await expect(
-      fetchPullToken({
-        ...base,
-        fetchImpl: fetchImpl as unknown as typeof fetch,
-      }),
-    ).rejects.toThrow(/HTTP 401/);
-    expect(n).toBe(1);
+    const t = token([res(401)]);
+    await expect(t.got).rejects.toThrow(/HTTP 401/);
+    expect(t.calls.n).toBe(1);
+    expect(t.slept).toEqual([]);
+  });
+
+  it("honours the Retry-After the registry named", async () => {
+    const t = token([res(429, { "retry-after": "1" }), tok({ token: "tok" })]);
+    await expect(t.got).resolves.toBe("tok");
+    expect(t.slept).toEqual([1_000]);
+  });
+
+  it("spends the same three tries on a 5xx that the probe does", async () => {
+    // The budget is merged at each entry point, so the token fetch is asserted
+    // on its own rather than inferred from the probe's.
+    const t = token([res(503)]);
+    await expect(t.got).rejects.toThrow(
+      /could not obtain a pull token \(HTTP 503\)/,
+    );
+    expect(t.calls.n).toBe(3);
+    expect(t.slept).toHaveLength(2);
+  });
+
+  it("does NOT retry a 501 here either", async () => {
+    const t = token([res(501)]);
+    await expect(t.got).rejects.toThrow(/HTTP 501/);
+    expect(t.calls.n).toBe(1);
+    expect(t.slept).toEqual([]);
   });
 });

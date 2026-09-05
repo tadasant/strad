@@ -725,6 +725,16 @@ The budget is small on purpose. Every read must still SETTLE — the runtime pro
 serves stale values when a refresh rejects, but has nothing to react to if a promise
 never settles — so retrying widens that bound rather than removing it.
 
+None of that is specific to Parameter Manager, so none of it lives there. The
+policy — which statuses mean "not now", how `Retry-After` is read, how the
+backoff is jittered, and what a budget bounds — is `src/http/retry.ts`, and the
+store is one of its two callers. The other is the registry walk that resolves
+which image a deploy ships, which meets the same `429` against GHCR for the same
+reason: a burst of reads in a few seconds. See [when GHCR refuses the
+walk](/operate/operations/#when-ghcr-refuses-the-walk). The budgets differ —
+each caller sizes its own — but the rules do not, which is the point of having
+one module rather than three.
+
 :::caution[The retry survives a blip, not an exhausted quota]
 Three retries and at most 2.8s of backoff clear a burst that overran the quota for
 a second or two. They do not clear a quota exhausted for the

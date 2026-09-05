@@ -3406,11 +3406,12 @@ that wants its own PR.
 transient `5xx`, on an IDEMPOTENT method only — with exponential backoff and
 jitter, bounded at three retries and at most 2.8s of backoff, under a 6s ceiling a
 server-named `Retry-After` is measured against (`DEFAULT_RETRY_BUDGET` in
-`src/secrets/parameters/retry.ts`). A write is never retried, not even on a `429`:
-a refusal from a fronting proxy can post-date the write, and a retried `POST` that
-landed comes back `409`, which sends `create()`'s rollback down the branch that
-strands a versionless parameter. That clears a burst that overran the quota for a
-second or two. It does NOT clear a quota exhausted for a whole minute: the budget
+`src/http/retry.ts`, the module the store and the deploy's registry walk both
+read their rules from). A write is never retried, not even on a `429`: a refusal
+from a fronting proxy can post-date the write, and a retried `POST` that landed
+comes back `409`, which sends `create()`'s rollback down the branch that strands
+a versionless parameter. That clears a burst that overran the quota for a second
+or two. It does NOT clear a quota exhausted for a whole minute: the budget
 runs out and the original `429` is thrown. The bound is deliberate — the store's
 other invariant is that every read SETTLES, and a budget long enough to cross a
 minute boundary would put minutes of sleep on a deploy's critical path, multiplied
