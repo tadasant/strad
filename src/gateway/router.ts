@@ -10,7 +10,12 @@ import {
 } from "../auth/index.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
-import { event, instruments, tracer } from "../telemetry/index.ts";
+import {
+  elapsedSeconds,
+  event,
+  instruments,
+  tracer,
+} from "../telemetry/index.ts";
 import {
   entitledServers,
   parseServersParam,
@@ -323,11 +328,6 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   }
-}
-
-/** Seconds elapsed since an `hrtime.bigint()` mark. */
-function elapsedSeconds(startedAt: bigint): number {
-  return Number(process.hrtime.bigint() - startedAt) / 1e9;
 }
 
 /**

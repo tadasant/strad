@@ -558,6 +558,31 @@ describe("observe", () => {
     expect(o!.detail).toContain("SyntaxError");
   });
 
+  it("summarises a TIMEOUT by class too, not just a throw", async () => {
+    // The deadline and the throw are two exits from the same read, and after
+    // the deadline wrapper moved into `src/util/deadline.ts` they are two
+    // exits from the same `catch` here. Asserting the timeout one keeps the
+    // defence covering both: a future wrapper that resolved a sentinel of its
+    // own instead of rejecting would take this row past `errorSummary`
+    // entirely, and this test is what would notice.
+    const [o] = await observe([requirement("X_TOKEN")], {
+      config: STORE_CONFIG,
+      lookup: () =>
+        new Promise(() => {
+          /* never settles */
+        }),
+      bag: EMPTY_BAG,
+      timeoutMs: 20,
+    });
+    expect(o!.state).toBe("error");
+    // A class name, and nothing the wrapper wrote in its message — the name of
+    // the secret is in that message, and this row is the one surface on the
+    // page that prints text from outside it.
+    expect(o!.detail).toContain("Detail: Error");
+    expect(o!.detail).not.toContain("did not answer within");
+    expect(o!.detail).not.toContain("X_TOKEN");
+  });
+
   it("passes a ParameterStoreError message through, since it is known value-free", async () => {
     // gcp.ts builds it from method + resource with the query and `:verb`
     // stripped, so it is the one backend message worth showing an operator.

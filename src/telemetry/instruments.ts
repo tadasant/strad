@@ -27,6 +27,18 @@ import type { ErrorKind } from "./redact.ts";
 export const TRACER_NAME = "strad.gateway";
 export const METER_NAME = "strad.gateway";
 
+/**
+ * Seconds elapsed since a `process.hrtime.bigint()` mark.
+ *
+ * Here because every histogram in this file takes seconds and every caller
+ * marks with `hrtime` — the monotonic clock, so a duration cannot go negative
+ * when NTP steps the wall clock mid-request. Every module that records one of
+ * these durations imports it from here.
+ */
+export function elapsedSeconds(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1e9;
+}
+
 export function tracer() {
   return trace.getTracer(TRACER_NAME);
 }

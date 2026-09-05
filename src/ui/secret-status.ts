@@ -18,6 +18,7 @@ import {
 import { mcpNamespace } from "../deploy/server-namespaces.ts";
 import { waiversBySlug } from "../deploy/unseeded.ts";
 import { errorSummary } from "../secrets/provider/view.ts";
+import { withDeadline } from "../util/deadline.ts";
 import {
   placeholderReason,
   reasonFor,
@@ -431,9 +432,10 @@ export async function observe(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return Promise.all(
     requirements.map(async (requirement) => {
-      const found = await withDeadline(
+      const found = await attemptRead(
         () => opts.lookup(requirement.name, requirement.slugs),
         timeoutMs,
+        requirement.name,
       );
       return classify(requirement, found, opts);
     }),
@@ -443,22 +445,21 @@ export async function observe(
 /** `{ ok: value }`, or `{ error: message }` for a throw or a timeout. */
 type Attempt = { ok: string | null } | { error: string };
 
-async function withDeadline(
+/**
+ * One name's read, under its own deadline, reduced to something printable.
+ *
+ * The reduction is the point, and it lives HERE rather than inside
+ * `withDeadline` so that the next reader of this page sees it: the wrapper is
+ * generic and knows nothing about secrets, and the defence below is about
+ * exactly one thing this page does.
+ */
+async function attemptRead(
   read: () => Promise<string | null>,
   timeoutMs: number,
+  name: string,
 ): Promise<Attempt> {
-  let timer: NodeJS.Timeout | undefined;
   try {
-    const value = await Promise.race([
-      read(),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`timed out after ${timeoutMs}ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
-    return { ok: value };
+    return { ok: await withDeadline(read, timeoutMs, name) };
   } catch (err) {
     // THIS IS THE ONE PIECE OF FREE-FORM TEXT ON THE PAGE THAT COMES FROM OUTSIDE
     // IT, AND A RAW `err.message` HERE LEAKS A SECRET.
@@ -483,8 +484,6 @@ async function withDeadline(
           ? `${summary.slice(0, 200)}… (truncated)`
           : summary,
     };
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }
 

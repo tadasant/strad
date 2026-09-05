@@ -14,6 +14,7 @@ import { context, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { StradConfig } from "../config/schema.ts";
 import {
   argShape,
+  elapsedSeconds,
   errorKind,
   event,
   instruments,
@@ -21,6 +22,7 @@ import {
   tracer,
 } from "../telemetry/index.ts";
 import { ServerUnconfiguredError } from "./unconfigured.ts";
+import { withDeadline } from "../util/deadline.ts";
 import {
   LocalHostUnavailableError,
   LocalMachineOfflineError,
@@ -302,11 +304,6 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
   return server;
 }
 
-/** Seconds elapsed since an `hrtime.bigint()` mark. */
-function elapsedSeconds(startedAt: bigint): number {
-  return Number(process.hrtime.bigint() - startedAt) / 1e9;
-}
-
 /**
  * How long `troubleshoot_host` will wait for the machine before answering.
  *
@@ -338,9 +335,12 @@ async function troubleshoot(
 ): Promise<CallToolResult> {
   const host = adapter.host!;
   try {
+    // A deadline the adapter does not impose on itself: this tool answers a
+    // human who is watching, so it must answer.
     const tools = await withDeadline(
-      adapter.listTools(),
+      () => adapter.listTools(),
       TROUBLESHOOT_PROBE_MS,
+      "the machine",
     );
     // The count this slug's clients would actually see. The raw upstream total
     // would answer a question nobody asked — how much an allow-list withholds.
@@ -358,27 +358,6 @@ async function troubleshoot(
     // restart a tunnel that is working fine.
     return undiagnosedResult(host);
   }
-}
-
-/**
- * A deadline the adapter does not impose on itself.
- *
- * The timer is unref'd: a probe in flight must never be the reason the process
- * stays alive.
- */
-function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: NodeJS.Timeout;
-  return Promise.race([
-    work,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(new Error(`the machine did not answer within ${timeoutMs}ms`)),
-        timeoutMs,
-      );
-      timer.unref?.();
-    }),
-  ]).finally(() => clearTimeout(timer));
 }
 
 /**

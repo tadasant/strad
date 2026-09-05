@@ -247,6 +247,34 @@ describe("probeToolSurfaces", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 
+  it("calls a wedged LOCAL-TUNNEL `offline`, and keeps it out of degraded", async () => {
+    // The one behavioural consumer of `DeadlineError`, which lives in
+    // `src/util/deadline.ts` and is shared with three other callers. A laptop
+    // that accepted a connection and then went quiet trips OUR deadline rather
+    // than the adapter's, and calling that `unreachable` would put a switched-off
+    // machine on the list of things to go and look at. The two timeouts are set
+    // independently, so which of them fires is a config detail and must not
+    // decide the verdict.
+    const sleeping = {
+      slugs: ["laptop"],
+      get: () => ({
+        slug: "laptop",
+        kind: "local-tunnel" as const,
+        listTools: () => new Promise<never>(() => {}),
+        callTool: () => Promise.reject(new Error("unused")),
+        close: () => Promise.resolve(),
+      }),
+      has: () => true,
+      close: () => Promise.resolve(),
+    };
+    const { snapshot } = await probeToolSurfaces({
+      registry: sleeping as unknown as Registry,
+      timeoutMs: 50,
+    });
+    expect(snapshot.surfaces[0]?.state).toBe("offline");
+    expect(snapshot.degraded).toEqual([]);
+  });
+
   it("calls a server that answers with no tools `empty`, not `unreachable`", async () => {
     const empty = {
       slugs: ["nothing"],
