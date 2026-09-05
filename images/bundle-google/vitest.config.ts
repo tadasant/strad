@@ -19,10 +19,14 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["vendor/google-sheets-shared/test/**/*.test.ts"],
-    // The root's value, and every other tree's. The `servers` matrix in
-    // `.github/workflows/ci.yml` runs thirteen legs at once on the one
-    // self-hosted box with no `max-parallel`, so Vitest's 5s default is a
-    // tighter bound than a contended box can be held to.
+    // The root's value, and every other tree's — `test/vitest-convergence.test.ts`
+    // is what holds every config in the repo to it. The reason it is not 5s is
+    // the same here as everywhere, arriving by a different route: this image is
+    // NOT a leg of `ci.yml`'s `servers` matrix, it is gated by
+    // `.github/workflows/bundle-google-ci.yml`, whose two jobs run on the same
+    // one self-hosted box as every other workflow's — including that matrix's
+    // thirteen concurrent legs. Vitest's default is a tighter bound than a
+    // contended box can be held to.
     testTimeout: 20_000,
   },
 });
