@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_VARIABLE_LENGTH, isEnvName, secretRefsIn } from "./env-name.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
 
@@ -1045,9 +1046,10 @@ export const StradConfig = z
     // copy of one of these strings (src/http/params.ts), never out of the URL a
     // caller sent. A name that is not a legal variable would compose a path
     // pointing somewhere else entirely, so what may appear in either list is
-    // checked here rather than at the route. `validateVariableName` is the same
-    // rule the console applies when a human creates a parameter, restated as a
-    // regex so this file stays dependency-free.
+    // checked here rather than at the route. It is the SAME rule the console
+    // applies when a human creates a parameter (`validateVariableName`), because
+    // both come from src/config/env-name.ts — a zero-import module, so this file
+    // pays nothing for importing it and the two gates cannot drift apart.
     //
     // `params: true` is REQUIRED for both, and not merely for tidiness. That
     // flag is what injects `/strad/{env}/mcp/{slug}/static/` onto this component
@@ -1081,13 +1083,10 @@ export const StradConfig = z
         const seenVars = new Map<string, string>();
         for (const variable of entries) {
           // The same two rules `validateVariableName` applies when a human
-          // creates a parameter in the console, restated as code so this file
-          // stays dependency-free. The length cap is Parameter Manager's, and a
-          // name past it addresses a parameter that cannot exist.
-          if (
-            !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
-            variable.length > 200
-          ) {
+          // creates a parameter in the console, from the same module. The length
+          // cap is Parameter Manager's, and a name past it addresses a parameter
+          // that cannot exist.
+          if (!isEnvName(variable) || variable.length > MAX_VARIABLE_LENGTH) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               message:
@@ -1194,10 +1193,7 @@ export const StradConfig = z
       ];
 
       for (const { field, variable } of named) {
-        if (
-          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable) ||
-          variable.length > 200
-        ) {
+        if (!isEnvName(variable) || variable.length > MAX_VARIABLE_LENGTH) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message:
@@ -1262,9 +1258,7 @@ export const StradConfig = z
       // injection for the same box name, so both are refused.
       const referenced = new Set<string>();
       const scan = (raw: string): void => {
-        for (const m of raw.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
-          if (m[1]) referenced.add(m[1]);
-        }
+        for (const name of secretRefsIn(raw)) referenced.add(name);
       };
       if (s.kind === "supplementary-image") {
         for (const value of Object.values(s.env)) scan(value);

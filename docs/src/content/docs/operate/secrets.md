@@ -923,6 +923,16 @@ and writing a namespace nothing injects would be a credential going nowhere. Eac
 entry is a **variable name**, never a path, so there is no spelling of one that
 addresses another server's namespace or the gateway's.
 
+What counts as a legal variable name is **one rule**, in `src/config/env-name.ts`,
+and everything that gates on it imports it from there: the config check above, the
+write-back route's own second check, the console's create form (its browser
+`pattern=` attribute is built from the same string), and the scanners that decide
+which `${NAME}` references get baked and which get resolved at request time. Two
+of those gates sit on either side of a deploy, so a disagreement between them
+would be silent — a credential baked under a name nothing reads. Three modules
+that are vendored into the bundle host's own npm tree still hold a copy of the
+literal; a test greps them, and [Limitations](/limitations/) #81 says why.
+
 **Seed the parameter first.** The write is a `rotate()`, which needs a parameter
 to rotate: create the name in `/ui/secrets` (or with `store:seed`) under that
 server's namespace before the first deploy. Until it exists the boot read gets a

@@ -2454,6 +2454,20 @@ See `HACKS.md` #80.
 
 ---
 
+### 81. The env-name rule is one module, and three vendored files still hold a copy
+
+"What is a legal environment-variable name" — `[A-Za-z_][A-Za-z0-9_]*`, and the `${NAME}` reference form built on it — is one rule, and it lives once, in `src/config/env-name.ts`. It is load-bearing in two places where a disagreement would be silent: the config schema composes `/strad/{env}/mcp/{slug}/static/{VARIABLE}` out of it, and the two reference scanners on either side of the deploy boundary decide from it which `${NAME}`s get baked onto a container and which get looked up at request time. A name one accepts and the other does not is a credential baked under a name nothing reads.
+
+Three modules still keep their own copy of the literal: the presence vocabulary, the parameter write-back route, and the slug env-prefix rule. All three are vendored byte-for-byte into the bundle host's own npm tree, and a vendored module can only import something that crosses the boundary with it at the same relative path — so importing the rule would mean an eighth vendoring seam, for a forty-character regex.
+
+What holds them instead is a test, not a convention: `test/env-name.test.ts` reads all three as text and fails if any mention of the character class in them is not a verbatim occurrence of the shared constant. The vendoring check covers the other half, that each copy in the bundle tree still matches its source.
+
+**How you would know.** You would not, from a running deployment — that is the point of the test. A drift would surface as a variable name the console accepts and the deploy refuses, or the reverse.
+
+See `HACKS.md` #81.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

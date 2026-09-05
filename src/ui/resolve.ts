@@ -1,3 +1,4 @@
+import { secretRefRe } from "../config/env-name.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
@@ -618,9 +619,8 @@ function resolveEnv(
  * yet" state, not crash, when a credential has not been injected.
  */
 function tryResolve(value: string, secrets: SecretBag): string | undefined {
-  const REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   let missing = false;
-  const out = value.replace(REF, (_m, name: string) => {
+  const out = value.replace(secretRefRe(), (_m, name: string) => {
     const found = secrets[name];
     if (found === undefined) {
       missing = true;

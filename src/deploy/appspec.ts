@@ -1,3 +1,4 @@
+import { secretRefsIn } from "../config/env-name.ts";
 import { isUnhosted } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { connectorVariables } from "./server-namespaces.ts";
@@ -831,14 +832,10 @@ function identityEnvs(
  * must not be mistaken for a real reference.
  */
 export function collectSecretRefs(config: StradConfig): string[] {
-  const REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
   const out = new Set<string>();
   const walk = (node: unknown): void => {
     if (typeof node === "string") {
-      for (const m of node.matchAll(REF)) {
-        const name = m[1];
-        if (name) out.add(name);
-      }
+      for (const name of secretRefsIn(node)) out.add(name);
     } else if (Array.isArray(node)) {
       node.forEach(walk);
     } else if (node && typeof node === "object") {
