@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 
 import {
   createMCPServer,
   GRAFANA_ENV_NAMES,
   missingCredentials,
   upstreamEnv,
-} from "../build/index.js";
+} from "../src/index.js";
 
 const FAKE = fileURLToPath(new URL("./fake-mcp-grafana.mjs", import.meta.url));
 
