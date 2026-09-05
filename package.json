@@ -30,6 +30,7 @@
     "telemetry:sync": "node scripts/sync-vendored.mjs --only telemetry",
     "presence:sync": "node scripts/sync-vendored.mjs --only presence",
     "wire:sync": "node scripts/sync-vendored.mjs --only wire",
+    "capabilities:sync": "node scripts/sync-vendored.mjs --only capabilities",
     "paramroute:sync": "node scripts/sync-vendored.mjs --only paramroute",
     "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix",
     "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation"

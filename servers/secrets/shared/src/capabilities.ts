@@ -1,3 +1,9 @@
+import {
+  capabilitiesFromHeld,
+  NO_CAPABILITIES,
+  PROBE_PERMISSIONS,
+  type Capabilities,
+} from "./capability-table.js";
 import { tokenMinter, type ServiceAccount } from "./google-auth.js";
 
 /**
@@ -24,6 +30,13 @@ import { tokenMinter, type ServiceAccount } from "./google-auth.js";
  * Cloud Resource Manager API degrades this server to the read-only surface it has
  * always had rather than opening anything.
  *
+ * WHAT IS ASKED, AND WHAT THE ANSWER MEANS, IS NOT HERE. The ten permission
+ * strings and the fold into four booleans are `./capability-table.js`, a module
+ * vendored from core so that the console and this server derive their surfaces
+ * from one table rather than from two that agree today. This file is the
+ * transport around it: this tree's own token mint and its own `fetch`, which
+ * genuinely differ from core's.
+ *
  * ONE PROBE PER PROJECT, AND NEVER A SHARED ANSWER. This server fronts a LIST of
  * stores, each a different GCP project reached with a different service account,
  * and `projects:testIamPermissions` answers about exactly one project as exactly
@@ -40,61 +53,12 @@ import { tokenMinter, type ServiceAccount } from "./google-auth.js";
  * by mistake reads wrong.
  */
 
-export const PROBE_PERMISSIONS = {
-  readSecretValue: "secretmanager.versions.access",
-  writeSecretValue: "secretmanager.versions.add",
-  createSecret: "secretmanager.secrets.create",
-  /**
-   * The IAM half of a secret create. `create()` in write-client.ts grants the
-   * PARAMETER's own principal `secretAccessor` on the secret it points at —
-   * without it every `:render` of that parameter answers
-   * `400 SECRET_REFERENCE_ERROR`. A credential that can write the values but not
-   * the binding fails the create and rolls it back, so both belong in the
-   * `writeSecretValues` answer. Kept identical to the src/ copy.
-   */
-  readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
-  bindSecret: "secretmanager.secrets.setIamPolicy",
-  createParameter: "parametermanager.parameters.create",
-  /**
-   * A secret create reads `policyMember.iamPolicyUidPrincipal` off the parameter
-   * as the first call of the grant, so this is part of a secret write too.
-   * Kept identical to the src/ copy.
-   */
-  readParameter: "parametermanager.parameters.get",
-  writeParameter: "parametermanager.parameterVersions.create",
-  deleteParameter: "parametermanager.parameters.delete",
-  /**
-   * The SECOND read path. `:render` derefs a `__REF__` as the PARAMETER's own
-   * principal, not the caller's, so `render` without
-   * `secretmanager.versions.access` returns a secret value — `create()` grants
-   * that principal `secretAccessor`, so the path is open rather than theoretical.
-   * `readValue` in write-client.ts uses exactly this call, so a credential
-   * holding only `render` genuinely can read one. Kept identical to the src/ copy.
-   */
-  renderParameter: "parametermanager.parameterVersions.render",
-} as const;
-
-export interface Capabilities {
-  /** May read a SECRET parameter's value (`:render` deref, or SM access). */
-  readSecretValues: boolean;
-  /** May create parameters and add versions. */
-  writeParameters: boolean;
-  /** May write SECRET values — needs both stores. */
-  writeSecretValues: boolean;
-  /** May delete a parameter. */
-  deleteParameters: boolean;
-  /** False means every flag above is a fail-closed default, not an observation. */
-  probed: boolean;
-  reason?: string;
-}
-
-export const NO_CAPABILITIES: Capabilities = Object.freeze({
-  readSecretValues: false,
-  writeParameters: false,
-  writeSecretValues: false,
-  deleteParameters: false,
-  probed: false,
-});
+export {
+  capabilitiesFromHeld,
+  NO_CAPABILITIES,
+  PROBE_PERMISSIONS,
+  type Capabilities,
+};
 
 export interface ProbeConfig {
   projectId: string;
@@ -155,27 +119,9 @@ export async function probeCapabilities(
       };
     }
     const body = (await res.json()) as { permissions?: string[] };
-    const held = new Set(body.permissions ?? []);
-    const P = PROBE_PERMISSIONS;
-    const params =
-      held.has(P.createParameter) && held.has(P.writeParameter);
-    return {
-      // EITHER read path counts. See PROBE_PERMISSIONS.renderParameter.
-      readSecretValues:
-        held.has(P.readSecretValue) || held.has(P.renderParameter),
-      writeParameters: params,
-      // Both stores AND the binding: see PROBE_PERMISSIONS.bindSecret. A create
-      // that cannot grant the parameter its own access rolls back.
-      writeSecretValues:
-        params &&
-        held.has(P.createSecret) &&
-        held.has(P.writeSecretValue) &&
-        held.has(P.readParameter) &&
-        held.has(P.readSecretIamPolicy) &&
-        held.has(P.bindSecret),
-      deleteParameters: held.has(P.deleteParameter),
-      probed: true,
-    };
+    // An empty body is Google's way of saying "none of them" — an answer, not a
+    // failure, and prod's normal one.
+    return capabilitiesFromHeld(new Set(body.permissions ?? []));
   } catch (err) {
     return {
       ...NO_CAPABILITIES,

@@ -2413,7 +2413,7 @@ time an agent guesses. The description fix IS worth having upstream — it is no
 strad-specific — and `pulsemcp/pulsemcp#5071` asks for it. Until it lands there,
 the running server is the only place the fix reaches a session.
 
-**The sharp edge.** The six VENDORED seams in this repo (`scripts/sync-vendored.mjs`)
+**The sharp edge.** The seven VENDORED seams in this repo (`scripts/sync-vendored.mjs`)
 each have a sync script and a drift test, because the failure of a silent
 divergence is a silent one. A FORK has the opposite problem and no such
 guard: there is no upstream to diff against, and a re-vendor that pastes

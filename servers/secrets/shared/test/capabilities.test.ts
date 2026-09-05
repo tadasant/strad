@@ -6,37 +6,34 @@ import { PROBE_PERMISSIONS, probeCapabilities } from "../src/capabilities.js";
 import { VIEWER_ACCOUNT } from "./fake-parameter-manager.js";
 
 /**
- * The probe's PERMISSION STRINGS, pinned literally.
+ * The probe's PERMISSION STRINGS — pinned in core, exercised here.
  *
  * This server's ENTIRE tool surface is derived from the probe's answer, so a
  * permission string Google does not recognise does not fail loudly — it comes
  * back outside the held set, reads as "not granted", and quietly withholds
  * `get_secret_value` and the write tools from a credential that can in fact use
- * them. Nothing in the type system knows these are Google's identifiers, so this
- * is the only place that can catch a plausible-looking typo.
+ * them. Nothing in the type system knows these are Google's identifiers, so a
+ * plausible-looking typo has to be caught by a literal somewhere.
  *
  * That exact typo shipped in PROSE — `docs/operate/secrets-iam.md` documented a
  * custom role containing `parametermanager.parameterVersions.access`, borrowing
  * Secret Manager's verb for a permission Parameter Manager does not define (it
- * reads a version's payload with `parameterVersions.get`). This file's copy of
- * the strings was correct, and this is what keeps it that way. The names are
- * verified against
+ * reads a version's payload with `parameterVersions.get`). The probe's copy of
+ * the strings was correct, and a literal is what keeps it that way.
+ *
+ * There is now ONE such literal, and it is not here. `src/capability-table.ts`
+ * is vendored byte-for-byte from `src/secrets/parameters/capability-table.ts` in
+ * the strad repo root, so the pin in that tree's
+ * `test/parameters.capabilities.test.ts` — verified against
  * https://cloud.google.com/iam/docs/roles-permissions/parametermanager and the
- * secretmanager page next to it.
+ * secretmanager page next to it — is a pin on these bytes too. A second literal
+ * transcribed here would only pin the two copies to each other, which is the
+ * defect the vendoring closed.
+ *
+ * So this file reads the table rather than restating it, and spends its
+ * assertions on the half that is genuinely this tree's: the transport, and the
+ * answers the shared fold gives when it is reached through that transport.
  */
-
-const EXPECTED = {
-  readSecretValue: "secretmanager.versions.access",
-  writeSecretValue: "secretmanager.versions.add",
-  createSecret: "secretmanager.secrets.create",
-  readSecretIamPolicy: "secretmanager.secrets.getIamPolicy",
-  bindSecret: "secretmanager.secrets.setIamPolicy",
-  createParameter: "parametermanager.parameters.create",
-  readParameter: "parametermanager.parameters.get",
-  writeParameter: "parametermanager.parameterVersions.create",
-  deleteParameter: "parametermanager.parameters.delete",
-  renderParameter: "parametermanager.parameterVersions.render",
-};
 
 /**
  * A Cloud Resource Manager stub that records the request. `held: undefined`
@@ -73,8 +70,12 @@ const probe = (crm) =>
     fetchImpl: crm.fetchImpl,
   });
 
-test("every probed permission is Google's identifier", () => {
-  assert.deepEqual(PROBE_PERMISSIONS, EXPECTED);
+test("the vendored table is the one this tree probes with", () => {
+  // Not a restatement of the pin — the point is that the copy ARRIVED: ten
+  // entries, and not the spelling that broke the documented custom role. A tree
+  // whose vendored table went missing or half-written fails here rather than in
+  // a surface that quietly lists four tools.
+  assert.equal(Object.keys(PROBE_PERMISSIONS).length, 10);
   assert.ok(
     !Object.values(PROBE_PERMISSIONS).includes(
       "parametermanager.parameterVersions.access",
@@ -96,24 +97,24 @@ test("the probe POSTs exactly those strings to CRM's testIamPermissions", async 
   );
   assert.equal(crm.calls[0].method, "POST");
   assert.deepEqual(crm.calls[0].body, {
-    permissions: Object.values(EXPECTED),
+    permissions: Object.values(PROBE_PERMISSIONS),
   });
 });
 
 test("either read path grants readSecretValues", async () => {
-  const viaSm = await probe(stubCrm([EXPECTED.readSecretValue]));
+  const viaSm = await probe(stubCrm([PROBE_PERMISSIONS.readSecretValue]));
   assert.equal(viaSm.readSecretValues, true);
 
   // `:render` derefs as the PARAMETER's principal, not the caller's, so this
   // credential genuinely can read a secret value once that principal holds
   // secretAccessor. Missing it would be a security property that exists only
   // in prose.
-  const viaRender = await probe(stubCrm([EXPECTED.renderParameter]));
+  const viaRender = await probe(stubCrm([PROBE_PERMISSIONS.renderParameter]));
   assert.equal(viaRender.readSecretValues, true);
 });
 
 test("a staging-shaped grant lights up the write tools", async () => {
-  const caps = await probe(stubCrm(Object.values(EXPECTED)));
+  const caps = await probe(stubCrm(Object.values(PROBE_PERMISSIONS)));
   assert.deepEqual(caps, {
     readSecretValues: true,
     writeParameters: true,
@@ -128,9 +129,13 @@ test("without the IAM-policy grant, a secret write is not claimed", async () => 
   // secret; `:render` derefs as that principal, so a create without the binding
   // produces a parameter nothing can read. A credential that can write the
   // values but not set the policy fails the create and rolls it back.
-  for (const missing of [EXPECTED.bindSecret, EXPECTED.readSecretIamPolicy]) {
+  const both = [
+    PROBE_PERMISSIONS.bindSecret,
+    PROBE_PERMISSIONS.readSecretIamPolicy,
+  ];
+  for (const missing of both) {
     const caps = await probe(
-      stubCrm(Object.values(EXPECTED).filter((p) => p !== missing)),
+      stubCrm(Object.values(PROBE_PERMISSIONS).filter((p) => p !== missing)),
     );
     assert.equal(caps.writeParameters, true);
     assert.equal(caps.writeSecretValues, false);

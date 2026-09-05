@@ -2165,6 +2165,34 @@ Every handler re-checks the capability rather than trusting that it was listed �
 `tools/list` a client cached a minute ago is not an authorization. A probe that
 cannot run yields the read-only surface; nothing is opened by a failure.
 
+### Both doors ask the same question, out of one file
+
+The console asks it too — its reveal control and its write affordances are gated
+on the same probe about the same kind of credential — and the two run in
+different npm trees, which cannot import from each other. So the part that must
+not differ is **vendored**: `src/secrets/parameters/capability-table.ts` holds
+the ten permission strings and the fold into four booleans, and is copied
+byte-for-byte into `servers/secrets/shared/src/capability-table.ts` by
+`npm run capabilities:sync`. CI fails on a drift.
+
+What each tree keeps is the **transport** — its own token mint, its own `fetch`,
+its own timeout — because those genuinely differ and nothing rests on them
+matching. What gets asked, and what the answer is taken to mean, does rest on it,
+and the failure of two hand-kept copies is silent in both directions: widen one
+and the MCP surface lists a write tool for a credential the console has already
+decided cannot finish the write, producing a 403 with no explanation; narrow one
+— a plausible typo is enough — and a permission Google does not recognise simply
+comes back outside the held set, reads as "not granted", and withholds a tool
+from a credential that holds it.
+
+The sharpest case is the read disjunction. `readSecretValues` is
+`secretmanager.versions.access` **or** `parametermanager.parameterVersions.render`,
+because [`:render` derefs as the parameter's own principal](/operate/secrets-iam/#never-grant-the-secrets-mcp-credential-parameteraccessor),
+so a credential holding only `render` can still read a secret value. A copy that
+lost the second half would leave the one server whose contract is "no tool
+returns a secret value" reporting itself read-only while holding a credential
+that can read one.
+
 ### An answer is remembered; an absence is not
 
 The probe runs once per store and the answer is kept for the life of the

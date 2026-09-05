@@ -10,19 +10,26 @@ import {
 import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
 
 /**
- * The probe's PERMISSION STRINGS, pinned literally.
+ * The probe's PERMISSION STRINGS, pinned literally — ONCE, for both doors.
  *
  * These are Google's identifiers, not strad's, and nothing in the type system
  * knows that. A plausible-looking typo — `parametermanager.parameterVersions.access`
- * borrowing Secret Manager's verb, say — compiles, lints, and produces a probe
- * that is wrong in the silent direction: a permission Google does not recognise is
- * never in the held set, so the capability reads false and the surface withholds a
- * tool the credential can in fact use.
+ * borrowing Secret Manager's verb, say — compiles, lints, and does not fail
+ * loudly: a permission Google does not recognise comes back outside the held set,
+ * reads as "not granted", and quietly withholds `get_secret_value` and the write
+ * tools from a credential that can in fact use them. The `secrets` MCP server's
+ * ENTIRE tool surface is derived from this answer, and so is the console's
+ * reveal, so a typo here costs capability rather than a Google error.
  *
  * That exact typo shipped — in PROSE, in `docs/operate/secrets-iam.md`'s custom
  * role, where `docs.iam-identifiers.test.ts` now guards it. The probe was right.
- * This suite is what keeps it right, since the same mistake in this file would
- * cost capability rather than a Google error.
+ * This suite is what keeps it right.
+ *
+ * The literal lives here and nowhere else. The table it is checked against is
+ * `src/secrets/parameters/capability-table.ts`, VENDORED byte-for-byte into
+ * `servers/secrets/shared/src/capability-table.ts` and checked by
+ * `test/vendored.sync.test.ts` — so pinning it once pins both trees, where two
+ * hand-written copies of the same ten strings only pinned them to each other.
  *
  * So the test spells each one out. Changing a value here should require having
  * looked it up at
@@ -240,22 +247,38 @@ describe("parsing the key the probe runs as", () => {
 
 describe("the bundle's copy of the probe", () => {
   /**
-   * `servers/**` is outside the core TS program, so the secrets server carries
-   * its own copy of these strings and its own comment saying it is "kept
-   * identical to the src/ copy". That claim is only worth anything if something
-   * checks it — a drift here means prod's `/mcp` surface and the console's
-   * reveal posture are derived from different questions.
+   * `servers/**` is outside the core TS program, so the secrets server compiles
+   * its own probe. The TABLE it probes with is vendored, and byte-identity is
+   * `test/vendored.sync.test.ts`'s job — but byte-identity cannot see the drift
+   * that matters most here: a tree that keeps the vendored module and stops
+   * USING it. An open-coded fold beside an unread `capability-table.ts` passes
+   * every check in this repo while prod's `/mcp` surface and the console's
+   * reveal posture are once again derived from different questions.
+   *
+   * So this asserts the two claims the sync cannot: the tree's probe still asks
+   * Cloud Resource Manager, and it still folds the answer through the shared
+   * function rather than a second copy of the disjunction.
    */
-  it("asks for the same permissions as the console's", () => {
-    const source = readFileSync(
+  it("folds its answer through the vendored table, and asks the same API", () => {
+    const tree = readFileSync(
       new URL("../servers/secrets/shared/src/capabilities.ts", import.meta.url),
       "utf8",
     );
-    for (const permission of Object.values(EXPECTED)) {
-      expect(source).toContain(`"${permission}"`);
+    expect(tree).toContain(":testIamPermissions");
+    expect(tree).toContain('from "./capability-table.js"');
+    expect(tree).toContain("return capabilitiesFromHeld(");
+
+    // Both directions, because either transport could grow a fold of its own and
+    // the other would keep using the shared one. `held.has(` is what the fold is
+    // made of, and it belongs only in `capability-table.ts`.
+    const core = readFileSync(
+      new URL("../src/secrets/parameters/capabilities.ts", import.meta.url),
+      "utf8",
+    );
+    expect(core).toContain("return capabilitiesFromHeld(");
+    for (const source of [tree, core]) {
+      expect(source).not.toContain("held.has(");
     }
-    expect(source).not.toContain("parametermanager.parameterVersions.access");
-    expect(source).toContain(":testIamPermissions");
   });
 
   /**

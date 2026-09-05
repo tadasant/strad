@@ -39,14 +39,14 @@ toward them, not away. If a change moves away from one, say so.
   the `bundle_image` CI job is where it runs. An allow list is exhaustive, so a
   typo'd or renamed entry narrows a slug's surface by one and errors nowhere.
   Anything CI cannot enumerate is skipped WITH A REASON, never failed.
-- SIX seams are VENDORED across an npm-tree boundary — nine files, since one of
+- SEVEN seams are VENDORED across an npm-tree boundary — ten files, since one of
   them is a library that spans four — and ONE manifest owns all of them: the
   `VENDORED` array in `scripts/sync-vendored.mjs`. Edit the
   source, never the copy; run the sync and commit both halves.
   `npm run vendor:sync` writes every copy, `-- --check` fails if any has drifted,
   `-- --only <id>` does one seam, and `test/vendored.sync.test.ts` runs the check
   over the whole manifest in CI. The per-seam aliases below are thin wrappers on
-  `--only <id>`; adding a seventh seam is one entry in the manifest, not a seventh
+  `--only <id>`; adding an eighth seam is one entry in the manifest, not an eighth
   copy of the script. An entry is one `source` file copied to each of its
   `targets`, unless it declares `files:` — then `source` and every target are
   DIRECTORIES and each name in `files` crosses between them, so a library that
@@ -67,6 +67,16 @@ toward them, not away. If a change moves away from one, say so.
     silent (`HACKS.md` #33). `test/parameter-wire.ownership.test.ts` is the
     seam's other half: it fails if that tree grows a second implementation of a
     name the wire owns, which byte-identity alone cannot see.
+  - `npm run capabilities:sync` (`--only capabilities`) re-vendors
+    `src/secrets/parameters/capability-table.ts` — the ten IAM permission strings
+    and the fold into four booleans — into `servers/secrets`. Each tree keeps its
+    own transport; what is shared is what gets asked and what the answer MEANS,
+    because both doors derive a SURFACE from it: the `secrets` server's whole
+    tool list and the console's reveal and write affordances. A drift is silent
+    both ways — a widened copy lists a write tool for a credential that cannot
+    finish the write, and a one-character typo is a permission Google does not
+    recognise, which comes back outside the held set and withholds a tool from a
+    credential that holds it.
   - `npm run paramroute:sync` (`--only paramroute`) re-vendors
     `src/secrets/param-route.ts` — the parameter write-back wire, BOTH ends of
     it: the route shape and body core validates, and the client the host calls
@@ -146,6 +156,7 @@ not a confession.
 | `src/deploy/unseeded.ts`, `src/gateway/unconfigured.ts` — the `mayBeUnseeded:` waiver | `operate/secrets.md`, `servers/interface.md`, `servers/adding.md`, `operate/deploy-model.md`, `limitations.md`           |
 | `src/deploy/server-namespaces.ts` — the per-server/gateway resolution order           | `operate/secrets.md`, `operate/deploy-model.md`, `servers/interface.md`                                                  |
 | `src/deploy/instance-size.ts` — the closed App Platform plan set, and its two gates   | `servers/interface.md`, `operate/deploy-model.md`, `limitations.md`                                                      |
+| `src/secrets/parameters/capability-table.ts` — a permission string, or the fold       | `operate/secrets.md`, and `npm run capabilities:sync`                                                                    |
 | `src/secrets/env-prefix.ts` — the slug → box-variable-name mangling                   | `operate/secrets.md`, `limitations.md`, and `npm run envprefix:sync`                                                     |
 | `scripts/sync-vendored.mjs` — a seam added to `VENDORED`, or the mechanism itself     | this file's vendored-modules bullet, and `operate/telemetry.md` if the telemetry entry moved                             |
 | `servers/onepassword/elicitation/src/**` — the elicitation library itself             | `limitations.md`, `servers/onepassword/README.md`, and `npm run elicitation:sync`                                        |
