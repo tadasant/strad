@@ -288,7 +288,9 @@ does not. See [Secrets](/operate/secrets/#get-apisecretsreadiness--the-same-answ
 The other authenticated surface the Google gate does not guard — because it is not
 on core at all. Every component that holds secrets in its own process environment
 serves it: the `strad-bundle` host image, and the strad image in
-`STRAD_MODE=bundle`. Core is the only caller.
+`STRAD_MODE=bundle`. Core is the only caller. Both serve the same handler — it is
+vendored across the npm-tree boundary with the presence vocabulary — so the
+fail-closed rule below is one rule and not two copies of one.
 
 It takes the shared **`STRAD_INTERNAL_TOKEN`**, the same credential core already
 presents to proxy `/mcp` to that component, and that choice is the security

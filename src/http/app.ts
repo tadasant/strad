@@ -283,14 +283,13 @@ export function createApp(opts: AppOptions): Express {
     // secrets/presence.ts. Never a value. Mounting it on core too would be
     // pointless (core already reads its own environment directly) and would put
     // a presence surface on the one component with a public route.
-    app.post(
-      PRESENCE_ROUTE,
-      createPresenceHandler({
-        component: env.STRAD_COMPONENT ?? env.STRAD_BUNDLE ?? "bundle",
-        image: env.STRAD_VERSION ?? null,
-        env,
-      }),
-    );
+    //
+    // The handler is `presenceResponse` in secrets/presence.ts — the same
+    // function the bundle host image serves from its vendored copy, so there is
+    // one route here and not two that merely agree. Everything it answers with
+    // comes from `env`, including the provenance line (`STRAD_COMPONENT`,
+    // `STRAD_BUNDLE`, `STRAD_VERSION`).
+    app.post(PRESENCE_ROUTE, createPresenceHandler({ env }));
   }
 
   return app;

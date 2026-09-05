@@ -57,9 +57,15 @@ toward them, not away. If a change moves away from one, say so.
     from the repo root, so an image whose copy rots is a dashboard quietly
     missing a container.
   - `npm run presence:sync` (`--only presence`) re-vendors
-    `src/secrets/presence.ts` into the bundle host tree. A drifted copy means one
-    component calls `change-me` filler and the other calls it a credential, on
-    the same console row.
+    `src/secrets/presence.ts` into the bundle host tree. It carries BOTH ends of
+    `POST /_strad/presence` — the vocabulary and `presenceResponse`, the route
+    those words are spoken through — because the copy the fleet runs is the host
+    image's. A drifted copy means one component calls `change-me` filler and the
+    other calls it a credential, on the same console row; a second handler means
+    one of them stops answering `cache-control: no-store` and the console renders
+    a cached "absent" for a credential that is present. Each tree keeps only the
+    three-line express adapter, and injects its own `node:crypto`
+    `timingSafeEqual` — the module stays import-free.
   - `npm run wire:sync` (`--only wire`) re-vendors
     `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the
     envelope shape — into `servers/secrets`. Both halves address the SAME GCP
@@ -141,7 +147,7 @@ not a confession.
 | `src/deploy/spec-file.ts`, `scripts/assert-spec.ts` — the pre-`doctl` spec check      | `operate/operations.md`, `limitations.md`                                                                                |
 | `src/deploy/spec-size.ts` — the size ceiling, the warn band, what the refusal says    | `operate/deploy-model.md`, `operate/operations.md`, `limitations.md`                                                     |
 | `src/deploy/config-inline.ts` — what `STRAD_CONFIG_YAML` carries, and the spec's size | `operate/deploy-model.md`, `servers/interface.md`, `limitations.md`                                                      |
-| `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts`   | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md`                                                        |
+| `src/secrets/presence.ts`, `src/gateway/bundle-presence.ts`, `src/http/presence.ts`   | `operate/secrets.md`, `auth/overview.md`, `intro/architecture.md`, and `npm run presence:sync`                           |
 | `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the envelope      | `operate/secrets.md`, `limitations.md`, and `npm run wire:sync`                                                          |
 | `src/ui/secret-status.ts` — a state, a label, or the source badge                     | `operate/secrets.md`, `limitations.md`                                                                                   |
 | `src/ui/pwa.ts`, `pwa-icons.ts` — the manifest, the worker, what it may cache         | `operate/console-pwa.md`, `auth/overview.md`                                                                             |

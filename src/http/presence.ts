@@ -1,17 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
-import {
-  authorizePresence,
-  buildPresenceReport,
-  parsePresenceRequest,
-} from "../secrets/presence.ts";
+import { presenceResponse } from "../secrets/presence.ts";
 
 /**
  * `POST /_strad/presence` — one component answering for its own environment.
  *
- * Mounted on the strad image in BUNDLE mode (see http/app.ts). The bundle host
- * image serves the identical route from its own tree with the vendored copy of
- * `secrets/presence.ts`, so the two speak the same five words.
+ * Mounted on the strad image in BUNDLE mode (see http/app.ts). This file is the
+ * express half and nothing else: the route itself is `presenceResponse` in
+ * `secrets/presence.ts`, vendored into the bundle host tree, so the two
+ * components serve one implementation rather than two that merely agree.
  *
  * ## Why this surface exists at all
  *
@@ -51,22 +48,16 @@ import {
  * "on the private network" is a reachability property, not an authorization one.
  */
 export interface PresenceHandlerOptions {
-  /** This component's own name for itself, for the console's provenance line. */
-  component: string;
-  /** The image tag it is running, when the spec told it one. */
-  image?: string | null;
+  /**
+   * The environment this component answers ABOUT, and also the one it answers
+   * AS: `presenceResponse` reads `STRAD_COMPONENT`, `STRAD_BUNDLE` and
+   * `STRAD_VERSION` out of it for the provenance line. Core supplies no
+   * fallback for either, where the host image knows its own package version.
+   */
   env: NodeJS.ProcessEnv;
   /** Injected in tests so boot time is not the clock under test. */
   bootedAt?: Date;
   now?: () => Date;
-}
-
-/** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
-function constantTimeEquals(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
 }
 
 export function createPresenceHandler(
@@ -75,35 +66,16 @@ export function createPresenceHandler(
   const bootedAt = opts.bootedAt ?? new Date();
 
   return (req: Request, res: Response) => {
-    const auth = authorizePresence(
-      req.get("authorization"),
-      opts.env.STRAD_INTERNAL_TOKEN,
-      constantTimeEquals,
-    );
-    if (!auth.ok) {
-      res.status(auth.status).json({ error: auth.error });
-      return;
-    }
-
-    const parsed = parsePresenceRequest(req.body);
-    if (!parsed.ok) {
-      res.status(parsed.status).json({ error: parsed.error });
-      return;
-    }
-
-    // Never cached. The answer changes the moment a deploy lands, and a stale
-    // "absent" is exactly the thing that would keep a fixed connector looking
-    // broken — the failure mode the readiness endpoint refuses for the same
-    // reason.
-    res.set("cache-control", "no-store").json(
-      buildPresenceReport({
-        component: opts.component,
-        image: opts.image ?? null,
-        bootedAt,
-        observedAt: opts.now?.(),
-        env: opts.env,
-        keys: parsed.keys,
-      }),
-    );
+    const answer = presenceResponse({
+      authorization: req.get("authorization"),
+      body: req.body,
+      env: opts.env,
+      bootedAt,
+      now: opts.now,
+      // The shared module stays import-free so it can be vendored; this caller
+      // has node:crypto, so it passes the real constant-time compare in.
+      timingSafeEqual,
+    });
+    res.status(answer.status).set(answer.headers).json(answer.body);
   };
 }
