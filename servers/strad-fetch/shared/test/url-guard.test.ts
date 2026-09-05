@@ -97,6 +97,8 @@ describe('IPv6 literals', () => {
     ['ff02::1', 'multicast'],
     ['100::1', 'discard-only'],
     ['2001:db8::1', 'documentation'],
+    ['2001::1', 'Teredo'],
+    ['fec0::1', 'site-local'],
   ])('refuses [%s]', (address, why) => {
     expect(refusal(`http://[${address}]/x`)).toContain(why);
   });
@@ -106,6 +108,7 @@ describe('IPv6 literals', () => {
     ['::ffff:169.254.169.254', 'IPv4-mapped', 'link-local'],
     ['::ffff:192.168.0.1', 'IPv4-mapped', 'private'],
     ['::127.0.0.1', 'IPv4-compatible', 'loopback'],
+    ['::ffff:0:7f00:1', 'IPv4-translated', 'loopback'],
     ['64:ff9b::169.254.169.254', 'NAT64', 'link-local'],
     ['2002:7f00:1::', '6to4', 'loopback'],
   ])('refuses [%s], an %s form carrying a blocked IPv4 address', (address, form, why) => {
@@ -272,6 +275,18 @@ describe('blockedUrlCause', () => {
   it('finds the refusal under undici’s "fetch failed"', () => {
     const blocked = new BlockedUrlError('nope');
     expect(blockedUrlCause(new TypeError('fetch failed', { cause: blocked }))).toBe(blocked);
+  });
+
+  it('finds it inside an AggregateError, which is how happy-eyeballs reports', () => {
+    const blocked = new BlockedUrlError('nope');
+    const aggregate = new AggregateError([new Error('ECONNREFUSED'), blocked]);
+    expect(blockedUrlCause(new TypeError('fetch failed', { cause: aggregate }))).toBe(blocked);
+  });
+
+  it('does not run away on a cause that points at itself', () => {
+    const looped: { cause?: unknown } = {};
+    looped.cause = looped;
+    expect(blockedUrlCause(looped)).toBeNull();
   });
 
   it('returns null for an unrelated failure', () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
+import diagnosticsChannel from 'node:diagnostics_channel';
 import type { AddressInfo } from 'node:net';
 import type dns from 'node:dns';
 import { fetch } from 'undici';
@@ -17,6 +18,7 @@ import { createGuardedDispatcher } from '../src/scraping-client/url-guard.js';
 
 const ORIGINAL_ALLOWLIST = process.env.STRAD_FETCH_ALLOW_PRIVATE_HOSTS;
 const servers: http.Server[] = [];
+const subscriptions: Array<() => void> = [];
 
 interface Listener {
   port: number;
@@ -32,6 +34,36 @@ async function listen(handler: http.RequestListener, host = '127.0.0.1'): Promis
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, host, resolve));
   return { port: (server.address() as AddressInfo).port, hits };
+}
+
+/**
+ * The whole of `127.0.0.0/8` is local on Linux, which is what CI runs; macOS
+ * binds `127.0.0.1` only. A test that needs a SECOND loopback address skips
+ * rather than failing on a developer's laptop.
+ */
+async function listenOrSkip(
+  handler: http.RequestListener,
+  host: string
+): Promise<Listener | null> {
+  try {
+    return await listen(handler, host);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EADDRNOTAVAIL') return null;
+    throw error;
+  }
+}
+
+/** Counts every connection undici is about to open, refused or not. */
+function countDispatches(): () => number {
+  let dispatches = 0;
+  const onConnect = () => {
+    dispatches += 1;
+  };
+  diagnosticsChannel.channel('undici:client:beforeConnect').subscribe(onConnect);
+  subscriptions.push(() =>
+    diagnosticsChannel.channel('undici:client:beforeConnect').unsubscribe(onConnect)
+  );
+  return () => dispatches;
 }
 
 const page = (body: string): http.RequestListener => {
@@ -52,6 +84,7 @@ afterEach(async () => {
   if (ORIGINAL_ALLOWLIST === undefined) delete process.env.STRAD_FETCH_ALLOW_PRIVATE_HOSTS;
   else process.env.STRAD_FETCH_ALLOW_PRIVATE_HOSTS = ORIGINAL_ALLOWLIST;
 
+  subscriptions.splice(0).forEach((unsubscribe) => unsubscribe());
   await Promise.all(servers.splice(0).map((server) => new Promise((r) => server.close(r))));
 });
 
@@ -78,6 +111,11 @@ describe('NativeScrapingClient and the URL guard', () => {
   });
 
   it('refuses the App Platform metadata address without opening a socket', async () => {
+    // Counted rather than inferred. On a cloud runner this address is the LIVE
+    // metadata endpoint, so a regression here would have CI make the request
+    // the guard exists to prevent and then report it as a timeout.
+    const dispatches = countDispatches();
+
     const result = await new NativeScrapingClient().scrape(
       'http://169.254.169.254/latest/meta-data/',
       { timeout: 5000 }
@@ -85,6 +123,8 @@ describe('NativeScrapingClient and the URL guard', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('link-local');
+    expect(result.error).not.toContain('timeout');
+    expect(dispatches()).toBe(0);
   });
 
   it('refuses a file: URL', async () => {
@@ -106,10 +146,14 @@ describe('NativeScrapingClient and the URL guard', () => {
     expect(target.hits).toEqual(['/x']);
   });
 
-  it('checks the REDIRECT TARGET, not only the URL the caller passed', async () => {
+  it('checks the REDIRECT TARGET, not only the URL the caller passed', async (ctx) => {
     // The allowlisted host answers; the hop it points at is a real listening
     // service on another loopback address, and it is refused at the connector.
-    const internal = await listen(page('<html><body>internal service</body></html>'), '127.0.0.2');
+    const internal = await listenOrSkip(
+      page('<html><body>internal service</body></html>'),
+      '127.0.0.2'
+    );
+    if (!internal) return ctx.skip();
     const hop = await listen(redirectTo(`http://127.0.0.2:${internal.port}/secret`));
     process.env.STRAD_FETCH_ALLOW_PRIVATE_HOSTS = '127.0.0.1';
 
@@ -166,6 +210,23 @@ describe('the guarded dispatcher on a name that points into a private range', ()
     expect(target.hits).toEqual([]);
 
     await dispatcher.close();
+  });
+
+  it('is on the TLS path too, which reaches net.connect through another branch', async () => {
+    // undici spreads its build options into `tls.connect` for https and into
+    // `net.connect` for http — two places the guarded `lookup` has to survive,
+    // and https is the scheme that carries essentially all real traffic. A real
+    // resolver would answer ENOTFOUND here, so the guard's own message is what
+    // proves the lookup reached the TLS branch.
+    await expect(
+      fetch('https://rebind.example/', {
+        dispatcher: createGuardedDispatcher({
+          resolve: resolveTo('127.0.0.1') as unknown as typeof dns.lookup,
+        }),
+      })
+    ).rejects.toMatchObject({
+      cause: { name: 'BlockedUrlError', message: expect.stringContaining('127.0.0.1') },
+    });
   });
 
   it('connects when the operator has named the host, which is the escape hatch working', async () => {

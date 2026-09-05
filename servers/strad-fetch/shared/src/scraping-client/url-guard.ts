@@ -77,7 +77,9 @@ const IPV6_BLOCKS: Array<{ cidr: string; why: string }> = [
   { cidr: '64:ff9b:1::/48', why: 'a local-use NAT64 address (64:ff9b:1::/48)' },
   { cidr: '100::/64', why: 'a discard-only address (100::/64)' },
   { cidr: '2001:db8::/32', why: 'a documentation address (2001:db8::/32)' },
+  { cidr: '2001::/32', why: 'a Teredo tunnel address (2001::/32)' },
   { cidr: 'fc00::/7', why: 'a unique-local address (fc00::/7)' },
+  { cidr: 'fec0::/10', why: 'a deprecated site-local address (fec0::/10)' },
   { cidr: 'fe80::/10', why: 'a link-local address (fe80::/10)' },
   { cidr: 'ff00::/8', why: 'a multicast address (ff00::/8)' },
 ];
@@ -90,6 +92,7 @@ const IPV6_BLOCKS: Array<{ cidr: string; why: string }> = [
  */
 const IPV6_EMBEDDED_IPV4: Array<{ cidr: string; offset: number; form: string }> = [
   { cidr: '::ffff:0:0/96', offset: 12, form: 'IPv4-mapped' },
+  { cidr: '::ffff:0:0:0/96', offset: 12, form: 'IPv4-translated' },
   { cidr: '::/96', offset: 12, form: 'IPv4-compatible' },
   { cidr: '64:ff9b::/96', offset: 12, form: 'NAT64' },
   { cidr: '2002::/16', offset: 2, form: '6to4' },
@@ -214,22 +217,36 @@ export function blockedAddressReason(address: string): string | null {
   return 'not an IP address';
 }
 
-/** `[::1]` and `::1` are the same host; a trailing dot is the same name. */
+/**
+ * `[::1]` and `::1` are the same host, and one trailing dot is the same name.
+ *
+ * Matching against the allowlist is exact after this, so a punycode or unicode
+ * spelling that does not normalise to a listed entry fails closed.
+ */
 function normalizeHost(hostname: string): string {
   let host = hostname.trim().toLowerCase();
   if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-  while (host.endsWith('.') && host.length > 1) host = host.slice(0, -1);
+  if (host.endsWith('.') && host.length > 1) host = host.slice(0, -1);
   return host;
 }
 
+/** Memoised on the raw variable: this is read twice per connection. */
+let allowlist: { raw: string; hosts: Set<string> } | undefined;
+
 function allowedHosts(): Set<string> {
   const raw = process.env.STRAD_FETCH_ALLOW_PRIVATE_HOSTS || '';
-  return new Set(
-    raw
-      .split(',')
-      .map((entry) => normalizeHost(entry))
-      .filter((entry) => entry.length > 0)
-  );
+  if (!allowlist || allowlist.raw !== raw) {
+    allowlist = {
+      raw,
+      hosts: new Set(
+        raw
+          .split(',')
+          .map((entry) => normalizeHost(entry))
+          .filter((entry) => entry.length > 0)
+      ),
+    };
+  }
+  return allowlist.hosts;
 }
 
 /** Has the operator named this host in `STRAD_FETCH_ALLOW_PRIVATE_HOSTS`? */
@@ -421,11 +438,18 @@ export function guardedDispatcher(): Agent {
  * `TypeError: fetch failed` with the real error as `cause`, and "fetch failed"
  * is exactly the message this guard exists to replace.
  */
-export function blockedUrlCause(error: unknown): BlockedUrlError | null {
-  let current: unknown = error;
-  for (let depth = 0; current != null && depth < 8; depth++) {
-    if (current instanceof BlockedUrlError) return current;
-    current = (current as { cause?: unknown }).cause;
+export function blockedUrlCause(error: unknown, depth = 0): BlockedUrlError | null {
+  if (error == null || depth > 8) return null;
+  if (error instanceof BlockedUrlError) return error;
+
+  // Happy-eyeballs collects one error per address it tried, so a refusal can
+  // arrive as a member of an AggregateError rather than as a `cause`.
+  if (error instanceof AggregateError) {
+    for (const inner of error.errors) {
+      const blocked = blockedUrlCause(inner, depth + 1);
+      if (blocked) return blocked;
+    }
   }
-  return null;
+
+  return blockedUrlCause((error as { cause?: unknown }).cause, depth + 1);
 }

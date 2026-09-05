@@ -387,6 +387,12 @@ export async function scrapeWithSingleStrategy(
         if (result.success && result.status === 200 && result.data) {
           return acceptSingleIfReadable('native', result.data, url);
         }
+        // The strategy said WHY, so say it. `Strategy native failed` is what a
+        // caller used to get for a URL the guard refused, and a refusal that
+        // reads as a generic failure is a refusal nobody can act on.
+        if (result.error) {
+          return { success: false, content: null, source: 'native', error: result.error };
+        }
         break;
       }
 

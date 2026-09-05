@@ -54,12 +54,14 @@ export class NativeScrapingClient implements INativeScrapingClient {
       // ./url-guard.ts — the connector behind `guardedDispatcher()` is what
       // covers the two things this call cannot see, resolved addresses and
       // redirect hops.
-      assertFetchableUrl(url);
+      // The parsed URL is what gets fetched, so the thing that was checked and
+      // the thing that is dispatched cannot drift apart.
+      const target = assertFetchableUrl(url);
 
       const controller = new AbortController();
       timeoutId = options.timeout ? setTimeout(() => controller.abort(), options.timeout) : null;
 
-      const response = await fetch(url, {
+      const response = await fetch(target, {
         method: options.method || 'GET',
         headers: {
           ...this.defaultHeaders,
