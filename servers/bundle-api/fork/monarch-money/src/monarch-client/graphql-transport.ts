@@ -12,7 +12,25 @@
 export interface GraphQLError {
   message: string;
   path?: (string | number)[];
+  /**
+   * Where in the query text Monarch rejected. Its own error messages are
+   * uniformly `Something went wrong while processing: None on request_id:
+   * None.`, so this is frequently the ONLY thing distinguishing "you asked for
+   * a field that does not exist" from "the whole request was bad" — see
+   * `Q_PORTFOLIO_HOLDINGS`.
+   */
+  locations?: Array<{ line: number; column: number }>;
   extensions?: Record<string, unknown>;
+}
+
+/**
+ * `message`, plus the query coordinates Monarch pointed at, when it gave any.
+ * Monarch's messages do not name the offending field, so a message without the
+ * location is not actionable.
+ */
+function describeError(e: GraphQLError): string {
+  const at = (e.locations ?? []).map((l) => `${l.line}:${l.column}`).join(', ');
+  return at ? `${e.message} (at ${at})` : e.message;
 }
 
 export interface GraphQLResponse<T> {
@@ -92,22 +110,23 @@ export function createGraphQLTransport(options: CreateGraphQLTransportOptions): 
       }
 
       const text = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `Monarch API request failed: ${response.status} ${response.statusText}${text ? ` - ${text.slice(0, 200)}` : ''}`
-        );
-      }
 
-      let parsed: GraphQLResponse<T>;
+      // Parse BEFORE branching on the HTTP status. Monarch answers a
+      // malformed-for-the-schema query with `400` AND a well-formed GraphQL
+      // error body — `{"errors":[{"message":"Something went wrong while
+      // processing: None on request_id: None.","locations":[{...}]}]}` — and
+      // the `locations` entry is the only thing that says WHICH field it
+      // rejected. Throwing on `!response.ok` first turned that into a generic
+      // Error carrying 200 truncated characters of JSON and no structure, so
+      // the one caller that could have acted on it never saw it.
+      let parsed: GraphQLResponse<T> | null = null;
       try {
         parsed = JSON.parse(text) as GraphQLResponse<T>;
       } catch {
-        throw new Error(
-          `Monarch API returned a non-JSON response (status ${response.status}): ${text.slice(0, 200)}`
-        );
+        parsed = null;
       }
 
-      if (parsed.errors && parsed.errors.length > 0) {
+      if (parsed?.errors && parsed.errors.length > 0) {
         const isAuthError = parsed.errors.some((e) =>
           /unauthor|not authenticated|forbidden/i.test(e.message)
         );
@@ -115,8 +134,20 @@ export function createGraphQLTransport(options: CreateGraphQLTransportOptions): 
           throw new MonarchAuthError(parsed.errors.map((e) => e.message).join('; '));
         }
         throw new MonarchGraphQLError(
-          `Monarch GraphQL errors: ${parsed.errors.map((e) => e.message).join('; ')}`,
+          `Monarch GraphQL errors: ${parsed.errors.map(describeError).join('; ')}`,
           parsed.errors
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          `Monarch API request failed: ${response.status} ${response.statusText}${text ? ` - ${text.slice(0, 200)}` : ''}`
+        );
+      }
+
+      if (!parsed) {
+        throw new Error(
+          `Monarch API returned a non-JSON response (status ${response.status}): ${text.slice(0, 200)}`
         );
       }
 

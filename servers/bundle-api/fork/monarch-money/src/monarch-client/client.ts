@@ -9,6 +9,7 @@ import type {
   NetWorthByTypeRow,
   NetWorthSnapshot,
   RecurringTransaction,
+  Security,
   SessionState,
   SetBalanceHistoryResult,
   SpendingByCategory,
@@ -43,7 +44,7 @@ export interface IMonarchClient {
     startDate: string,
     endDate: string
   ): Promise<BalanceSnapshot[]>;
-  getAccountHoldings(accountId: string): Promise<Holding[]>;
+  getHoldingsByAccount(): Promise<Map<string, Holding[]>>;
   setAccountBalanceHistory(input: {
     accountId: string;
     snapshots: Array<{ date: string; balance: number }>;
@@ -266,14 +267,92 @@ export class MonarchClient implements IMonarchClient {
       .map((s) => ({ date: s.date, balance: s.signedBalance }));
   }
 
-  async getAccountHoldings(accountId: string): Promise<Holding[]> {
+  /**
+   * Every account's holdings, in ONE request, keyed by account id.
+   *
+   * Monarch has no per-account holdings field (see `Q_PORTFOLIO_HOLDINGS`), so
+   * this reads the portfolio-wide `aggregateHoldings` connection — grouped by
+   * security — and regroups it by the `account { id }` each per-account leg
+   * carries. An account with no positions is simply absent from the map.
+   *
+   * EVERYTHING STRUCTURAL THROWS. A missing `portfolio`, `aggregateHoldings`,
+   * `edges`, `node` or `node.holdings` cannot occur on a query that succeeded,
+   * so its absence means the request failed or the schema moved — and reporting
+   * that as "this portfolio is empty" is the failure mode this whole path
+   * exists to avoid. Anything less than the whole portfolio is refused for the
+   * same reason: a truncated page is an undercount nobody can see. Only an
+   * empty `edges` array is a real, genuinely empty portfolio, and it returns an
+   * empty map.
+   */
+  async getHoldingsByAccount(): Promise<Map<string, Holding[]>> {
     const data = await this.options.transport.request<{
-      account: { holdings: Holding[] | null } | null;
+      portfolio: {
+        aggregateHoldings: {
+          pageInfo: { hasNextPage: boolean | null } | null;
+          edges: Array<{
+            node: {
+              holdings: Array<Holding & { account: { id: string } | null }> | null;
+              security: Security | null;
+            } | null;
+          }> | null;
+        } | null;
+      } | null;
     }>({
-      query: ops.Q_ACCOUNT_HOLDINGS,
-      variables: { accountId },
+      query: ops.Q_PORTFOLIO_HOLDINGS,
+      variables: { input: {} },
     });
-    return data.account?.holdings ?? [];
+
+    const connection = data.portfolio?.aggregateHoldings;
+    const edges = connection?.edges;
+    if (!edges) {
+      throw new Error(
+        'Monarch returned no `portfolio.aggregateHoldings.edges` for the holdings ' +
+          'query. That field is structural, so this is a failed request or a changed ' +
+          'schema — not an empty portfolio.'
+      );
+    }
+    if (connection?.pageInfo?.hasNextPage) {
+      // Monarch rejects a `first:` argument on this connection, so there is no
+      // cursor path to follow. Returning the first page would report part of a
+      // portfolio as all of it.
+      throw new Error(
+        'Monarch paginated `portfolio.aggregateHoldings` (`hasNextPage` is true) and ' +
+          'this client cannot page it. Refusing to report a partial portfolio as a ' +
+          'complete one.'
+      );
+    }
+
+    const byAccount = new Map<string, Holding[]>();
+    for (const edge of edges) {
+      const node = edge?.node;
+      // A null node, or a node whose `holdings` is absent, is as structural as
+      // a null `edges`: every aggregate node observed against the live API
+      // carries at least one per-account leg. Skipping either would drop a
+      // whole security from the portfolio and report the rest as complete.
+      if (!node?.holdings) {
+        throw new Error(
+          'Monarch returned an aggregate holding with no per-account legs — the ' +
+            'holdings response no longer matches the expected schema.'
+        );
+      }
+      for (const { account, ...holding } of node.holdings) {
+        if (!account?.id) {
+          // Every leg observed against the live API carries its account. One
+          // that does not cannot be attributed to an account at all, and
+          // silently dropping it would understate a portfolio by exactly the
+          // amount nobody would notice.
+          throw new Error(
+            `Monarch returned a holding (${holding.id}) with no account — the ` +
+              'holdings response no longer matches the expected schema.'
+          );
+        }
+        const list = byAccount.get(account.id);
+        const entry: Holding = { ...holding, security: node.security };
+        if (list) list.push(entry);
+        else byAccount.set(account.id, [entry]);
+      }
+    }
+    return byAccount;
   }
 
   /**

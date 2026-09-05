@@ -87,16 +87,16 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
   - **`x-twitter`** — tests: timeline, search, lookups and private bookmarks. The
     functional suites read no credentials, so they run here like the rest; only
     `test:e2e`, which CI does not run, resolves X API keys.
-  - **`bundle-api`** — build and tests over the `bundle-api` tree. Four of its six
+  - **`bundle-api`** — build and tests over the `bundle-api` tree. Three of its six
     servers are verbatim vendor copies with no tests here yet: a test written
     _inside_ a vendored copy is a merge conflict on every re-vendor and belongs
     upstream, and nobody has yet given them the tree-root treatment `pointsyeah`
-    and `onepassword` have. The other two are **forks**, and neither has a
+    and `onepassword` have. The other three are **forks**, and none has a
     sync script or an upstream to diff against, so their tests are the only thing
-    that stops a re-vendor from silently reverting them. Both fork suites run
+    that stops a re-vendor from silently reverting them. All three fork suites run
     under Vitest against their TypeScript sources, and `npm test` in each is
     `npm run build && vitest run`, so each fork is typechecked before its own
-    suite runs; the leg's separate build step is what typechecks the four
+    suite runs; the leg's separate build step is what typechecks the three
     vendored trees and `remote/`. `slack` — see
     [limitations #55](/limitations/#55-the-slack-server-is-a-fork-and-only-its-tests-defend-the-delta) —
     renders mrkdwn, which is not Markdown: `~text~` is strikethrough, so a message
@@ -109,6 +109,12 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
     and passenger counts encoded at protobuf field numbers Google skips as
     unknown, baggage flags read in the wrong order, and a date grid that returned
     a trailing price history instead of future departures.
+    `monarch-money` — see [limitations #80](/limitations/#80-monarch-money-is-a-fork-and-no-recorded-fixture-can-see-the-schema-move-again) —
+    asked for `account(id:) { holdings }`, which Monarch's schema does not have, and
+    swallowed the resulting 400 in a bare `.catch(() => [])`, so every account
+    reported an empty portfolio. Its suite asserts the query TEXT, because a wrong
+    query shape is invisible to a mocked client, and that every fetch failure comes
+    back as an error rather than as an empty list.
   - **`pointsyeah`** — tests, and no separate build leg, because `npm test` is
     `npm run build && vitest run`: the same `tsc` over both workspaces, in the
     ordering the image's Dockerfile uses, runs first, so a type error still fails

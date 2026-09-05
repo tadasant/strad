@@ -43,6 +43,38 @@ export interface SetBalanceHistoryResult {
   status: string;
 }
 
+/**
+ * The security a holding is a position in.
+ *
+ * Monarch models holdings as per-account legs of a portfolio-wide aggregate
+ * keyed by security, so every holding has one of these. It is carried alongside
+ * the holding's own fields rather than folded into them because the two names
+ * disagree: `Holding.name` is whatever the institution calls the position and
+ * varies between accounts holding the same fund, while `Security.name` is
+ * Monarch's canonical name for it. `Security.id` is the join key that says two
+ * positions in different accounts are the same security.
+ *
+ * `ticker` and `currentPrice` are null for institution-only funds that have no
+ * public symbol (e.g. a 401(k)'s "Instl 500 Index Trust").
+ */
+export interface Security {
+  id: string;
+  ticker?: string | null;
+  name?: string | null;
+  type?: string | null;
+  typeDisplay?: string | null;
+  currentPrice?: number | null;
+}
+
+/**
+ * One position in one account.
+ *
+ * `costBasis` is null wherever the institution does not report one (common on
+ * money-market positions), and `ticker` is null for funds with no public
+ * symbol — in both cases the field is genuinely absent upstream, not dropped
+ * here. `type`/`typeDisplay` is the asset class, and is the only field that
+ * distinguishes a money-market fund (`cash`) from equity.
+ */
 export interface Holding {
   id: string;
   ticker?: string | null;
@@ -51,7 +83,9 @@ export interface Holding {
   costBasis?: number | null;
   value?: number | null;
   type?: string | null;
+  typeDisplay?: string | null;
   closingPrice?: number | null;
+  security?: Security | null;
 }
 
 export interface NetWorthSnapshot {

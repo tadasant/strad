@@ -1,0 +1,12 @@
+{
+  "status": 400,
+  "statusText": "Bad Request",
+  "body": {
+    "errors": [
+      {
+        "message": "Something went wrong while processing: None on request_id: None.",
+        "locations": [{ "line": 6, "column": 5 }]
+      }
+    ]
+  }
+}

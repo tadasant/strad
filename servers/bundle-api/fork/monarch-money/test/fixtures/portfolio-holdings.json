@@ -1,0 +1,223 @@
+{
+  "data": {
+    "portfolio": {
+      "aggregateHoldings": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
+        "edges": [
+          {
+            "node": {
+              "holdings": [
+                {
+                  "id": "hold_01",
+                  "ticker": "VMFXX",
+                  "name": "Vanguard Money Market Reserves - Federal Money Market Fd USD MNT",
+                  "quantity": 239.32,
+                  "value": 239.32,
+                  "costBasis": null,
+                  "type": "cash",
+                  "typeDisplay": "Cash",
+                  "closingPrice": 1,
+                  "account": {
+                    "id": "acct_01"
+                  }
+                },
+                {
+                  "id": "hold_02",
+                  "ticker": "VMFXX",
+                  "name": "Vanguard Money Market Reserves - Federal Money Market Fd USD MNT",
+                  "quantity": 120.21,
+                  "value": 120.21,
+                  "costBasis": null,
+                  "type": "cash",
+                  "typeDisplay": "Cash",
+                  "closingPrice": 1,
+                  "account": {
+                    "id": "acct_02"
+                  }
+                },
+                {
+                  "id": "hold_03",
+                  "ticker": "VMFXX",
+                  "name": "Vanguard Money Market Reserves - Federal Money Market Fd USD MNT",
+                  "quantity": 217.42,
+                  "value": 217.42,
+                  "costBasis": null,
+                  "type": "cash",
+                  "typeDisplay": "Cash",
+                  "closingPrice": 1,
+                  "account": {
+                    "id": "acct_03"
+                  }
+                },
+                {
+                  "id": "hold_04",
+                  "ticker": "VMFXX",
+                  "name": "Vanguard Money Market Reserves - Federal Money Market Fd USD MNT",
+                  "quantity": 395.34,
+                  "value": 395.34,
+                  "costBasis": 376.88,
+                  "type": "cash",
+                  "typeDisplay": "Cash",
+                  "closingPrice": 0.9999997820765677,
+                  "account": {
+                    "id": "acct_04"
+                  }
+                }
+              ],
+              "security": {
+                "id": "sec_01",
+                "ticker": "VMFXX",
+                "name": "Vanguard Federal Money Market Fund",
+                "type": "cash",
+                "typeDisplay": "Cash",
+                "currentPrice": 1
+              }
+            }
+          },
+          {
+            "node": {
+              "holdings": [
+                {
+                  "id": "hold_05",
+                  "ticker": null,
+                  "name": "Instl 500 Index Trust",
+                  "quantity": 212.18,
+                  "value": 25574.06,
+                  "costBasis": null,
+                  "type": "mutual_fund",
+                  "typeDisplay": "Mutual Fund",
+                  "closingPrice": 120.53,
+                  "account": {
+                    "id": "acct_05"
+                  }
+                }
+              ],
+              "security": {
+                "id": "sec_02",
+                "ticker": null,
+                "name": "Instl 500 Index Trust",
+                "type": "mutual_fund",
+                "typeDisplay": "Mutual Fund",
+                "currentPrice": null
+              }
+            }
+          },
+          {
+            "node": {
+              "holdings": [
+                {
+                  "id": "hold_06",
+                  "ticker": "SGOV",
+                  "name": "ISHARES 0-3 MONTH TREASURY BOND ETF",
+                  "quantity": 348.46,
+                  "value": 35008.97,
+                  "costBasis": 38481.72,
+                  "type": "etf",
+                  "typeDisplay": "ETF",
+                  "closingPrice": 100.4677,
+                  "account": {
+                    "id": "acct_06"
+                  }
+                }
+              ],
+              "security": {
+                "id": "sec_03",
+                "ticker": "SGOV",
+                "name": "iShares Trust - iShares 0-3 Month Treasury Bond ETF",
+                "type": "etf",
+                "typeDisplay": "ETF",
+                "currentPrice": 100.47
+              }
+            }
+          },
+          {
+            "node": {
+              "holdings": [
+                {
+                  "id": "hold_07",
+                  "ticker": "US.DIRECT.INDEXING",
+                  "name": "US Direct Indexing",
+                  "quantity": 30.32,
+                  "value": 7255.56,
+                  "costBasis": 8332.46,
+                  "type": "equity",
+                  "typeDisplay": "Stock",
+                  "closingPrice": 239.29960862745668,
+                  "account": {
+                    "id": "acct_07"
+                  }
+                },
+                {
+                  "id": "hold_08",
+                  "ticker": "US.DIRECT.INDEXING",
+                  "name": "US Direct Indexing",
+                  "quantity": 84.35,
+                  "value": 15368.01,
+                  "costBasis": 10235.29,
+                  "type": "equity",
+                  "typeDisplay": "Stock",
+                  "closingPrice": 182.19337740163724,
+                  "account": {
+                    "id": "acct_08"
+                  }
+                },
+                {
+                  "id": "hold_09",
+                  "ticker": "US.DIRECT.INDEXING",
+                  "name": "US Direct Indexing",
+                  "quantity": 397.6,
+                  "value": 73718.89,
+                  "costBasis": 43156.55,
+                  "type": "equity",
+                  "typeDisplay": "Stock",
+                  "closingPrice": 185.4096839351202,
+                  "account": {
+                    "id": "acct_09"
+                  }
+                }
+              ],
+              "security": {
+                "id": "sec_04",
+                "ticker": "US.DIRECT.INDEXING",
+                "name": "US Direct Indexing",
+                "type": "equity",
+                "typeDisplay": "Stock",
+                "currentPrice": null
+              }
+            }
+          },
+          {
+            "node": {
+              "holdings": [
+                {
+                  "id": "hold_10",
+                  "ticker": "SNOW",
+                  "name": "SNOWFLAKE INC CLASS A",
+                  "quantity": 154.13,
+                  "value": 53529.35,
+                  "costBasis": 30412.81,
+                  "type": "equity",
+                  "typeDisplay": "Stock",
+                  "closingPrice": 347.3,
+                  "account": {
+                    "id": "acct_06"
+                  }
+                }
+              ],
+              "security": {
+                "id": "sec_05",
+                "ticker": "SNOW",
+                "name": "Snowflake Inc.",
+                "type": "equity",
+                "typeDisplay": "Stock",
+                "currentPrice": 337.18
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,204 @@
+# monarch-money — a fork, not a vendor copy
+
+Everything under `servers/bundle-api/upstream/` is copied verbatim: fixes go
+upstream, then get re-vendored. This directory is one of three exceptions, and
+it sits in `fork/` so that the difference is visible from the path.
+
+**Forked from** `monarch-money-mcp-server-shared` v0.0.6, the `shared/` package
+of [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers)'s
+monarch-money server (published as
+[`monarch-money-mcp-server`](https://www.npmjs.com/package/monarch-money-mcp-server)).
+The `version` field stays at `0.0.6`: it records the vendor point this fork
+diverges from, and bumping it would misstate that. Nothing in strad publishes
+this package — the image is the artifact.
+
+## Why it is forked
+
+One defect, and the shape of it is why it could not wait for a round trip
+through upstream: **`get_accounts(includeHoldings: true)` returned
+`"holdings": []` for every account, on a workspace where fourteen accounts held
+forty-four positions.** Not an error, not a missing key — a well-formed empty
+array on all fifty-six accounts, reproduced twice twenty minutes apart.
+
+An agent asked for that workspace's asset allocation, got nothing usable, and
+fell back to bucketing from account names and transaction merchant strings. It
+classified the money-market funds as equity and understated the money-market
+allocation by roughly **twenty times**. A human caught it by noticing the number
+looked wrong. Nothing in the analysis could have.
+
+Filed as [tadasant/strad#183](https://github.com/tadasant/strad/issues/183).
+
+### Two independent defects, and only one of them was diagnosable
+
+**The query asked for a field that does not exist.** Upstream's
+`Q_ACCOUNT_HOLDINGS` was:
+
+```graphql
+query GetAccountHoldings($accountId: UUID!) {
+  account(id: $accountId) {
+    id
+    displayName
+    holdings { id ticker name quantity costBasis value type closingPrice }
+  }
+}
+```
+
+`Account` has no `holdings` field. Monarch answers with `400` and a GraphQL
+error body whose `locations` entry points at line 6 column 5 — the `holdings`
+selection. That exact response is recorded in
+`test/fixtures/account-holdings-400.json`.
+
+**And the failure was swallowed twice over.** In the handler:
+
+```ts
+holdings: await client.getAccountHoldings(a.id).catch(() => []),
+```
+
+and, underneath it, in the client:
+
+```ts
+return data.account?.holdings ?? [];
+```
+
+The bare `.catch` discarded the error unconditionally, and the `??` collapsed a
+null `account` into an empty portfolio with no error at all. The transport below
+both of them already classified `MonarchAuthError` against `MonarchGraphQLError`
+and retained Monarch's structured `errors` array; all of it was thrown away one
+frame up. **Nobody could see the first defect because of the second one** — the
+issue that reported this could rank the causes but not name one.
+
+## The deltas
+
+| File | Delta |
+| --- | --- |
+| `src/monarch-client/operations.ts` | `Q_ACCOUNT_HOLDINGS` → `Q_PORTFOLIO_HOLDINGS`, reshaped onto `portfolio(input:) { aggregateHoldings { edges { node { holdings { … } security { … } } } } }` |
+| `src/monarch-client/client.ts` | `getAccountHoldings(accountId)` → `getHoldingsByAccount()`: one request, grouped by account id. Every structural absence throws instead of yielding `[]`, and a paginated connection is refused |
+| `src/monarch-client/graphql-transport.ts` | Parse the body BEFORE branching on the HTTP status, so a `400` carrying GraphQL errors is a `MonarchGraphQLError`; `GraphQLError.locations` is typed and included in the message |
+| `src/tools/accounts.ts` | The per-account `.catch(() => [])` is gone. One call, and a failure reaches the handler's existing `try/catch` |
+| `src/types.ts` | `Holding` gains `typeDisplay` and a nested `security`; new `Security` interface |
+| `src/monarch-client/client.integration-mock.ts` | `MockData.holdings` (flat) → `MockData.holdingsByAccount` (keyed), matching the shape the real client returns |
+| `test/` | New. The fork's only defence — see below |
+
+### The surface Monarch actually serves
+
+Holdings are a **portfolio-wide** connection, not a field on an account.
+`portfolio(input:)`'s `aggregateHoldings` edges group by SECURITY; each node's
+`holdings` array is that security's per-account legs, each carrying
+`account { id }`. So one request returns every account's holdings, and the
+client regroups it by account.
+
+That also removes the N+1 the old shape had by construction: one GraphQL
+round-trip per account, fifty-six of them on the workspace where this was
+reported, down to one for the whole portfolio.
+
+Verified against the live `api.monarch.com` endpoint on 2026-09-05:
+
+- **The operation name does not matter.** `GetPortfolioHoldings`, `GetHoldings`
+  and the web client's `Web_GetHoldings` all return the same 200. The issue
+  ranked "Monarch gates by operation name" as a live possibility, on the
+  evidence that `Web_GetUploadBalanceHistorySession` in this same file carries
+  Monarch's own prefix. It does not apply here, so the query keeps the plain
+  name every other query in the file uses.
+- **`ticker` and `name` are on the holding AND on the security.** The issue
+  predicted they would live only on a nested `security`. They are on both, and
+  they DIFFER: `holding.name` is the institution's string for the position
+  ("Vanguard Money Market Reserves - Federal Money Market Fd USD MNT"),
+  `security.name` is Monarch's canonical one ("Vanguard Federal Money Market
+  Fund"). Both are surfaced, and `security.id` is the join key that identifies
+  the same security held in two accounts.
+- **`costBasis` is on the holding**, not only as `basis` at the aggregate level.
+  It is null wherever the institution does not report one — commonly on
+  money-market positions (15 of 44 in the observed response).
+- **`ticker` is null** for institution-only funds with no public symbol, and
+  `security.currentPrice` is null with it.
+- **`type`/`typeDisplay` is the asset class** — `cash`, `equity`, `etf`,
+  `mutual_fund`. This is the field whose absence produced the 20x error, and it
+  is why the tool description now tells callers to bucket on it rather than
+  guessing from a ticker or an account name.
+
+### Silence is the bug, so every failure is loud
+
+`holdings: []` has to mean "this account holds nothing" and nothing else. A
+caller cannot tell an empty portfolio from a swallowed failure, and the second
+one is what produces a confident wrong answer. So:
+
+- The per-account `.catch` is gone. There is no per-account request left to
+  catch, and the one call that remains propagates to the handler's `try/catch`,
+  which returns `errorFromException(err)` — Monarch's own message, or the auth
+  hint for a `MonarchAuthError`.
+- Everything structural THROWS: a missing `portfolio`, `aggregateHoldings`,
+  `edges`, `node` or `node.holdings`. A successful query cannot omit any of
+  them, so their absence is a failed request or a changed schema. An empty
+  `edges` array is the opposite — a real, genuinely empty portfolio — and
+  returns an empty map.
+- A holding that cannot be attributed to an account throws rather than being
+  dropped. Silently dropping one understates a portfolio by exactly the amount
+  nobody would notice.
+- **A truncated page is refused.** `aggregateHoldings` is a Relay connection, so
+  the query selects `pageInfo { hasNextPage }` and the client throws if it is
+  true. Monarch rejects a `first:` argument and exposes no `totalCount`, so
+  there is no cursor path to write — and returning the first page would report
+  part of a portfolio as all of it. Observed `false` over the whole portfolio
+  (31 aggregate nodes), so this has never fired; it is there because an
+  undercount is precisely the failure nobody can see.
+
+One gap this cannot close from inside the client: a holding whose account is not
+in `getAccounts()` has no row to attach to in `get_accounts`, and falls out
+without an error. `Q_ACCOUNTS` takes no filter and returns hidden accounts too,
+so the two responses have always agreed — but they are two requests, and the
+mismatch would be an undercount rather than a failure. It is noted at the call
+site in `src/tools/accounts.ts`.
+
+## The sharp edge
+
+A FORK has no upstream to diff against and no sync script to notice its loss: a
+re-vendor that pastes `monarch-money/shared/src` over `fork/monarch-money/src`
+reverts all of this with nothing to say so. What stands in for a drift test is
+`test/holdings.test.ts`, run by `ci.yml`'s `servers (bundle-api)` leg.
+
+It asserts the two properties whose absence made a wrong answer look like a
+right one:
+
+1. **The query text** reads `portfolio(input:)` / `aggregateHoldings`, carries
+   `account { id }` on each leg, selects `type`/`typeDisplay`/`security`, and
+   does NOT select `account(id:`. A wrong query shape is invisible to a mocked
+   client by construction — the mock returns the fixture whatever was asked for
+   — which is exactly how this shipped, so the query string is asserted
+   directly.
+2. **Every fetch failure surfaces as an error**, never as `[]`: a null
+   `portfolio`, a null `aggregateHoldings`, a null `edges`, an empty payload, a
+   thrown transport error, and an auth error.
+
+Plus the parse itself, against `test/fixtures/portfolio-holdings.json` — five
+aggregate nodes recorded from a real 200 and **anonymized**: account, holding
+and security ids replaced with synthetic ones, and quantities, values and cost
+bases regenerated. Every SHAPE is verbatim, including which fields come back
+null, because the shape is the only thing the parser can get wrong. The slice
+covers one security held in four accounts, one account holding two securities
+under two different nodes, a null ticker, a null cost basis, a synthetic ticker
+(`US.DIRECT.INDEXING`) and all four asset classes.
+
+A revert fails those. A revert that also deletes the tests does not — the same
+hole `check-tool-policy` has, and the same answer: the test file is the artifact
+under review.
+
+## Not done here
+
+The issue also suggested exposing holdings as its own `get_holdings` tool, since
+the natural Monarch call is portfolio-wide. The issue gate rated that divergent
+and did not clear it, so this fork fixes the existing
+`get_accounts(includeHoldings)` path only. The portfolio-wide client method
+(`getHoldingsByAccount`) is the piece such a tool would build on, if someone
+files for it.
+
+## Undo
+
+Copy `monarch-money/shared/src` back over `fork/monarch-money/src`, `git mv
+servers/bundle-api/fork/monarch-money servers/bundle-api/upstream/monarch-money`,
+restore the `COPY` line in EACH of `servers/bundle/Dockerfile` and
+`servers/bundle-api/Dockerfile`, point `loadApiTree` in
+`servers/bundle/host/src/index.ts` back at `upstream/monarch-money/build/index.js`,
+and move `fork/monarch-money` back to `upstream/monarch-money` in the
+`bundle-api` workspaces and build script while dropping it from the test script.
+`get_accounts(includeHoldings: true)` then reports every account as holding
+nothing again.

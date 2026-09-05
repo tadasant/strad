@@ -32,7 +32,14 @@ export interface MockData {
   me?: { id: string; email: string; name: string };
   accounts?: Account[];
   balanceHistory?: BalanceSnapshot[];
-  holdings?: Holding[];
+  /**
+   * Holdings keyed by ACCOUNT ID. Monarch has no per-account holdings field, so
+   * the client reads the whole portfolio in one request and groups it; the mock
+   * mirrors that shape rather than a flat list, because a flat list cannot
+   * express "this account holds nothing and that one holds three things" —
+   * which is the distinction `get_accounts(includeHoldings)` exists to make.
+   */
+  holdingsByAccount?: Record<string, Holding[]>;
   netWorth?: NetWorthSnapshot[];
   netWorthByType?: NetWorthByTypeRow[];
   cashflow?: CashflowSummary;
@@ -152,8 +159,8 @@ export function createIntegrationMockMonarchClient(
         ]
       );
     },
-    async getAccountHoldings() {
-      return data.holdings ?? [];
+    async getHoldingsByAccount() {
+      return new Map<string, Holding[]>(Object.entries(data.holdingsByAccount ?? {}));
     },
     async setAccountBalanceHistory(input) {
       const dates = input.snapshots.map((s) => s.date).sort();

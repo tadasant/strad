@@ -1,9 +1,8 @@
 # slack — a fork, not a vendor copy
 
-Everything else under `servers/bundle-api/` lives in `upstream/` and is copied
-verbatim: fixes go upstream, then get re-vendored. This directory is the
-exception, and it sits in `fork/` so that the difference is visible from the
-path.
+Everything under `servers/bundle-api/upstream/` is copied verbatim: fixes go
+upstream, then get re-vendored. This directory is one of three exceptions, and
+it sits in `fork/` so that the difference is visible from the path.
 
 **Forked from** [`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers)
 `experimental/slack/shared`, commit
