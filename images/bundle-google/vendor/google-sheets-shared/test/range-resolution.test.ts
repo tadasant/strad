@@ -7,10 +7,10 @@
  * that names no tab, and both read and write accept the gid a pasted URL
  * carries.
  */
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
-import { intendedSheetGid, resolveRange } from "../build/utils/resolve-range.js";
+import { intendedSheetGid, resolveRange } from "../src/utils/resolve-range.js";
 
 const SPREADSHEET = {
   spreadsheetId: "abc",

@@ -4,11 +4,11 @@
  * at the wrong offset — and the class no smoke test can catch, because a
  * credential-free container never addresses a cell.
  */
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
-import { columnLetter, quoteSheetTitle, rangeOrigin, sheetRange } from "../build/utils/a1.js";
-import { parseSheetGid, parseSpreadsheetId } from "../build/utils/parse-spreadsheet-id.js";
+import { columnLetter, quoteSheetTitle, rangeOrigin, sheetRange } from "../src/utils/a1.js";
+import { parseSheetGid, parseSpreadsheetId } from "../src/utils/parse-spreadsheet-id.js";
 
 test("columnLetter walks past Z the way Sheets does", () => {
   assert.equal(columnLetter(0), "A");

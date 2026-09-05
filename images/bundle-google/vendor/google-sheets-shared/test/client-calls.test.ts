@@ -7,18 +7,18 @@
  * unencoded range 400s on every tab whose title has a space. None of it can be
  * caught by listing tools, and all of it decides which cells a caller touches.
  */
-import { test, beforeEach, afterEach } from "node:test";
+import { test, beforeEach, afterEach } from "vitest";
 import assert from "node:assert/strict";
 
-import { getSpreadsheet } from "../build/google-sheets-client/lib/get-spreadsheet.js";
+import { getSpreadsheet } from "../src/google-sheets-client/lib/get-spreadsheet.js";
 import {
   appendValues,
   batchGetValues,
   clearValues,
   getValues,
   updateValues,
-} from "../build/google-sheets-client/lib/values.js";
-import { addSheet } from "../build/google-sheets-client/lib/batch-update.js";
+} from "../src/google-sheets-client/lib/values.js";
+import { addSheet } from "../src/google-sheets-client/lib/batch-update.js";
 
 const HEADERS = { Authorization: "Bearer test", "Content-Type": "application/json" };
 const ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms";
