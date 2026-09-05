@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import { buildUnits, publishingWorkflows } from "./helpers/workflow-graph.js";
+
 /**
  * Every job that logs in to ghcr must log in somewhere only it can reach.
  *
@@ -50,8 +52,28 @@ const ACTION_DIR = ".github/actions";
 const ISOLATE = "./.github/actions/docker-config";
 const MANIFEST = `${ACTION_DIR}/docker-config/action.yml`;
 
-/** How many logging-in jobs we expect to find at all. */
-const MIN_LOGIN_JOBS = 9;
+/**
+ * How many COPIES of the login step exist.
+ *
+ * This is not the guard it once was, and the reason is the whole point of
+ * `release-supplementary-image.yml`: four releases that each held their own copy
+ * of the login now share one, so the number fell from nine to six without a
+ * single release losing its credential. A count of copies cannot tell those two
+ * things apart, so it is kept only to stop the loop below asserting over an
+ * empty list — the floor that means something is
+ * `MIN_PUBLISHING_WORKFLOWS`, which counts what does not move.
+ */
+const MIN_LOGIN_JOBS = 6;
+
+/**
+ * How many workflows put an image on ghcr.
+ *
+ * Sharing a body does not change it: a release that delegates its build still
+ * publishes, and is still separately broken if the body it delegates to stops
+ * logging in. So this is what the coverage assertion counts, and it held at nine
+ * across the collapse.
+ */
+const MIN_PUBLISHING_WORKFLOWS = 9;
 
 interface Step {
   uses?: string;
@@ -156,6 +178,54 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
     // Guard the guard: a loop that found no logins would pass by asserting
     // over nothing.
     expect(found).toBeGreaterThanOrEqual(MIN_LOGIN_JOBS);
+  });
+
+  /**
+   * …and the other direction, which the loop above cannot see at all.
+   *
+   * Everything above starts from a login and checks what is ordered around it.
+   * A release that stops logging in ENTIRELY is invisible to it — no login, no
+   * iteration, nothing asserted — and the symptom is a 403 on the push, from a
+   * workflow whose diff removed one `uses:` line.
+   *
+   * That was tolerable while every release held its own copy of the body: a
+   * missing login was a missing block in the file you were reading.
+   * `release-supplementary-image.yml` moved the login one file away from four
+   * releases, so it is asserted here instead — from the release, through the
+   * `uses:` edge, to the job whose steps actually build.
+   */
+  it("gets every publishing workflow to an isolated login, through whatever workflow owns the build", () => {
+    const publishing = publishingWorkflows();
+
+    // Guard the guard: an empty graph passes every assertion below. Nine before
+    // the four supplementary releases shared a body, nine after.
+    expect(
+      publishing.length,
+      `found ${publishing.length} workflows that publish an image; the walk ` +
+        `is not reaching them.`,
+    ).toBeGreaterThanOrEqual(MIN_PUBLISHING_WORKFLOWS);
+
+    for (const unit of buildUnits()) {
+      if (!unit.publishes) continue;
+      const where =
+        unit.file === unit.entry
+          ? `${unit.entry} (${unit.job})`
+          : `${unit.entry} -> ${unit.file} (${unit.job})`;
+
+      expect(
+        unit.steps.findIndex(isLogin),
+        `${where} pushes an image and never runs \`docker/login-action\`, so ` +
+          `the push authenticates as whoever last wrote the box-wide ` +
+          `credential file — or as nobody.`,
+      ).toBeGreaterThanOrEqual(0);
+
+      expect(
+        unit.steps.findIndex(isIsolate),
+        `${where} pushes an image without calling ${ISOLATE}, so its ` +
+          `credential lands in the file every concurrent job on this ` +
+          `self-hosted box shares.`,
+      ).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("never hand-rolls a docker login or logout in a shell step", () => {

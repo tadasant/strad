@@ -1,15 +1,10 @@
 name: Release bundle-api image
 
-# Build the bundle-api supplementary MCP server image and push it to ghcr, from
-# servers/bundle-api. This is SEPARATE from the strad core image
-# (release-image.yml): bundle-api is a `supplementary-image` bundle — its own
-# container, published to its own package, run as an internal-only App Platform
-# component. It bundles six pure-API MCP servers in one image.
+# Build the bundle-api supplementary MCP server image — six pure-API MCP servers in one image — and push it to ghcr.
 #
-# Pushing needs no PAT: the built-in GITHUB_TOKEN can write packages owned by
-# this repo. PULLING (by App Platform) is the durable-credential half — the
-# package must be visible to the GHCR_PULL_TOKEN used in deploy-staging.yml, or
-# made public. See HACKS.md.
+# The build itself is `release-supplementary-image.yml`, which every
+# supplementary image release shares. This file is the half that is genuinely
+# per-server: which tree cuts an image, and which package it lands in.
 
 on:
   push:
@@ -18,6 +13,10 @@ on:
     paths:
       - "servers/bundle-api/**"
       - ".github/workflows/release-bundle-api-image.yml"
+      # A change to the shared body has to be exercised by a real release, or
+      # its first execution is on whatever unrelated commit next touches this
+      # tree. See test/workflow-release-callers.test.ts.
+      - ".github/workflows/release-supplementary-image.yml"
   workflow_dispatch:
 
 concurrency:
@@ -30,38 +29,13 @@ permissions:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-
-      # This job's ghcr credential goes somewhere no concurrent job can rewrite
-      # or log out of. Before the login AND before buildx, which keeps its
-      # builder metadata in the same directory. HACKS.md #57.
-      - uses: ./.github/actions/docker-config
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Job-scoped: on this self-hosted box every job runs as the same user, so
-      # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
-      # build with no `--builder` resolves whichever job created a builder most
-      # recently — then dies when that job removes it. HACKS.md #53.
-      - uses: docker/setup-buildx-action@v3
-        id: buildx
-        with:
-          use: false
-
-      - name: Build and push
-        uses: ./.github/actions/build-push
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: servers/bundle-api
-          tags: |
-            ghcr.io/tadasant/strad-bundle-api:latest
-            ghcr.io/tadasant/strad-bundle-api:sha-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    # No `secrets: inherit`: the shared body needs only GITHUB_TOKEN, which a
+    # called workflow is handed automatically. Inheriting would put every
+    # credential this repo holds in reach of a build that wants none of them.
+    uses: ./.github/workflows/release-supplementary-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      context: servers/bundle-api
+      image: ghcr.io/tadasant/strad-bundle-api

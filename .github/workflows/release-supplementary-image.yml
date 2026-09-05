@@ -1,0 +1,133 @@
+name: Release a supplementary image
+
+# The shared body of every supplementary MCP server image release, written once.
+#
+# A `supplementary-image` server is its own container: built from its own tree,
+# published to its own ghcr package, run as an internal-only App Platform
+# component. That makes them all the same job — checkout, isolate the docker
+# config, log in to ghcr, create a job-scoped buildx builder, build and push
+# `:latest` and `:sha-<commit>` — and for a long time it was that job written
+# out once per server, six times over.
+#
+# The cost of that was measured rather than theorised. Three separate PRs made
+# the same cross-cutting fix nine to eleven times: #127 (every build names its
+# buildx builder), #124 (retry every ghcr push), #135 (every job logs in to its
+# own docker config). A drift between the copies is invisible in review, which
+# is why `test/workflow-buildx-builder.test.ts` and
+# `test/workflow-docker-config.test.ts` exist. They still do — this file is what
+# gives them one place to be right about.
+#
+# A caller is its own `on: push: paths:`, its own `concurrency:` group, and a
+# `uses:` of this file. It watches THIS file in its `paths:` as well as its own,
+# so a change to the shared body is exercised by a real release rather than
+# discovered by the next unrelated commit; `test/workflow-release-callers.test.ts`
+# holds that.
+#
+# Pushing needs no PAT: the built-in GITHUB_TOKEN can write packages owned by
+# this repo, and it is handed to a called workflow automatically — which is why
+# no caller passes `secrets: inherit`, and none should. PULLING (by App
+# Platform) is the durable-credential half — the package must be visible to the
+# GHCR_PULL_TOKEN used in deploy-staging.yml, or made public. See HACKS.md.
+#
+# WHAT DOES NOT CHANGE under `workflow_call`: the `github` context here is the
+# CALLER's. `github.sha` is the commit that triggered the caller and
+# `github.ref` is the ref it ran on, so the `sha-` tag below and the
+# `refuse-off-main` guard mean exactly what they meant when this body lived in
+# the caller. `github.actor` likewise.
+#
+# `release-image.yml` (the core image) is deliberately not a caller: it does
+# considerably more than build and push. Neither is `release-onepassword-image.yml`,
+# which loads the image it built and asserts the pinned `op` CLI inside it before
+# publishing — see that file for why it stays whole.
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: Build context, as docker/build-push-action takes it.
+        type: string
+        required: true
+      file:
+        description: Dockerfile path, relative to the workspace. Empty means the context's own.
+        type: string
+        required: false
+        default: ""
+      image:
+        description: >-
+          The ghcr repository to publish, with no tag — the two tags are added
+          below. For example, the pointsyeah server's repository under
+          ghcr.io/tadasant.
+        type: string
+        required: true
+      cache-scope:
+        description: >-
+          buildx gha cache scope. Empty shares the default scope, which is what
+          every one-tree image wants; a build large enough to evict the others
+          out of it names its own.
+        type: string
+        required: false
+        default: ""
+      refuse-off-main:
+        description: >-
+          Fail immediately unless the caller ran on `main`. For an image whose
+          `:latest` a live deployment tracks, where a branch build would move
+          the tag out from under it.
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Refuse to release from anything but main
+        # `github.ref` is the CALLER's ref, so this reads the branch a human
+        # dispatched, not this file's own. A branch build belongs on a
+        # branch-scoped tag: dispatch deploy-staging.yml on the branch with
+        # `build: true`, which builds and deploys together.
+        if: inputs.refuse-off-main && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::this image only releases from main (got ${GITHUB_REF}). Use deploy-staging.yml with build:true to test a branch."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      # This job's ghcr credential goes somewhere no concurrent job can rewrite
+      # or log out of. Before the login AND before buildx, which keeps its
+      # builder metadata in the same directory. HACKS.md #57.
+      - uses: ./.github/actions/docker-config
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Job-scoped: on this self-hosted box every job runs as the same user, so
+      # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
+      # build with no `--builder` resolves whichever job created a builder most
+      # recently — then dies when that job removes it. HACKS.md #53.
+      - uses: docker/setup-buildx-action@v3
+        id: buildx
+        with:
+          use: false
+
+      - name: Build and push
+        uses: ./.github/actions/build-push
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: ${{ inputs.context }}
+          file: ${{ inputs.file }}
+          tags: |
+            ${{ inputs.image }}:latest
+            ${{ inputs.image }}:sha-${{ github.sha }}
+          cache-from: type=gha${{ inputs.cache-scope != '' && format(',scope={0}', inputs.cache-scope) || '' }}
+          cache-to: type=gha,mode=max${{ inputs.cache-scope != '' && format(',scope={0}', inputs.cache-scope) || '' }}

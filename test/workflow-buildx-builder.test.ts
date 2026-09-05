@@ -3,6 +3,14 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
+import {
+  buildUnits,
+  grantsPackageWrite,
+  isTriggerable,
+  workflow,
+  workflowFiles,
+} from "./helpers/workflow-graph.js";
+
 /**
  * Every buildx build must name the builder it runs on.
  *
@@ -38,9 +46,18 @@ const BUILD_ACTIONS = [
   "./.github/actions/build-push",
 ];
 
-/** How many builder-owning jobs and build steps we expect to find at all. */
-const MIN_SETUP_STEPS = 10;
-const MIN_BUILD_STEPS = 15;
+/**
+ * How many COPIES of the builder wiring exist.
+ *
+ * Both fell by three when `release-supplementary-image.yml` gave four
+ * supplementary releases one body instead of four, and neither release lost its
+ * builder in the process — which is exactly what a count of copies cannot tell
+ * you. They stay as anti-vacuity floors on the loops below, and the assertion
+ * that survives a body being shared is the last one in this describe: every
+ * workflow that asks for `packages: write` must still REACH a build.
+ */
+const MIN_SETUP_STEPS = 9;
+const MIN_BUILD_STEPS = 14;
 
 interface Step {
   "continue-on-error"?: boolean;
@@ -210,6 +227,51 @@ describe("no build runs on a builder its own job does not own", () => {
               `${file} (${job}) shells out to a build command without ` +
                 `\`--builder\`, which resolves the shared pointer.`,
             ).toMatch(/--builder\b/);
+  });
+
+  /**
+   * A workflow that asks for the credential must still reach the build.
+   *
+   * Every assertion above starts from a step. A job that only `uses:` another
+   * workflow has none, so a release whose `uses:` points somewhere that does not
+   * build is invisible to all of them — and the run is GREEN. Nothing errors,
+   * no tag is written, and the failure surfaces later and elsewhere, as the
+   * deploy hard-stopping on an image no commit ever published.
+   *
+   * `packages: write` is what marks a workflow as one that exists to publish,
+   * and it is not a name: `release-supplementary-image.yml` can be renamed, a
+   * caller can be added, and this still holds. A workflow that stops needing to
+   * reach a build should stop asking for the credential in the same diff.
+   */
+  it("leaves no workflow asking for `packages: write` that never reaches a build", () => {
+    const units = buildUnits();
+    let found = 0;
+
+    for (const file of workflowFiles()) {
+      if (!isTriggerable(file)) continue;
+      const doc = workflow(file);
+      const asks =
+        grantsPackageWrite(doc.permissions) ||
+        Object.values(doc.jobs ?? {}).some((j) =>
+          grantsPackageWrite(j.permissions),
+        );
+      if (!asks) continue;
+      found++;
+
+      expect(
+        units
+          .filter((u) => u.entry === file)
+          .map((u) => `${u.file} (${u.job})`),
+        `${file} grants \`packages: write\` and nothing it runs — its own ` +
+          `steps or the workflow it delegates to — builds an image. A release ` +
+          `that reaches no build is a GREEN run that published nothing, and ` +
+          `the next deploy is what finds out.`,
+      ).not.toEqual([]);
+    }
+
+    // Guard the guard: a walk that resolved no workflows would pass by
+    // asserting over nothing.
+    expect(found).toBeGreaterThanOrEqual(9);
   });
 
   it("never writes the expression delimiter as an escape", () => {
