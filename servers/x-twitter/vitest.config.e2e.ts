@@ -1,5 +1,4 @@
 import { defineConfig } from "vitest/config";
-import path from "path";
 
 export default defineConfig({
   test: {
@@ -7,10 +6,5 @@ export default defineConfig({
     environment: "node",
     include: ["tests/e2e/**/*.test.ts"],
     testTimeout: 60000,
-  },
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./shared/src"),
-    },
   },
 });
