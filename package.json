@@ -33,6 +33,7 @@
     "capabilities:sync": "node scripts/sync-vendored.mjs --only capabilities",
     "paramroute:sync": "node scripts/sync-vendored.mjs --only paramroute",
     "envprefix:sync": "node scripts/sync-vendored.mjs --only envprefix",
+    "writerules:sync": "node scripts/sync-vendored.mjs --only writerules",
     "elicitation:sync": "node scripts/sync-vendored.mjs --only elicitation"
   },
   "dependencies": {

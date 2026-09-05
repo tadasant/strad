@@ -12,6 +12,13 @@ import {
   SECRET_VALUE_ENCODING,
   type ParameterEnvelope,
 } from "./parameter-wire.js";
+import {
+  nextVersionId,
+  rankVersions,
+  versionIdOf,
+  withSecretAccessor,
+  type IamPolicy,
+} from "./parameter-write-rules.js";
 import { tokenMinter, type ServiceAccount } from "./google-auth.js";
 
 /**
@@ -57,16 +64,6 @@ export interface WriteClientConfig {
 const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
 const DEFAULT_SM_BASE = "https://secretmanager.googleapis.com";
 const LOCATION = "global";
-
-/** See `grantRenderAccess` — the grant is on the PARAMETER, not on any caller. */
-const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
-
-/** One Secret Manager IAM binding. `condition` is carried, never interpreted. */
-interface IamBinding {
-  role: string;
-  members?: string[];
-  condition?: unknown;
-}
 
 export interface ParametersWriter {
   create(input: {
@@ -127,15 +124,14 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
   /**
    * The greatest `v{n}` among a parameter's ENABLED versions.
    *
-   * This ranking is a contract, not a detail. Three readers rank versions —
-   * this tree's reader, the console's client (src/secrets/parameters/gcp.ts)
-   * and the runtime resolver — and all three take the greatest NUMERIC suffix.
-   * A writer that disagrees writes versions the others skip, silently: the tool
-   * reports success and the value never takes effect.
+   * This ranking is a contract, not a detail, so the ranking itself is not
+   * written here: `rankVersions` is vendored from `src/secrets/parameters/write-rules.ts`,
+   * and `test/vendored.sync.test.ts` fails CI when the two copies drift. Three
+   * readers rank versions — this tree's reader, the console's client and the
+   * runtime resolver — and a writer that disagrees writes versions the others
+   * skip, silently: the tool reports success and the value never takes effect.
    *
-   * Two ways to get that wrong, both of which this function exists to prevent:
-   * ranking by list order (Parameter Manager lists lexicographically, so `v9`
-   * sorts after `v12`), and minting an id whose suffix is not a number.
+   * What stays here is the LISTING — this tree's own call, its own error type.
    */
   async function currentVersionId(id: string): Promise<string | undefined> {
     const listed = (await pm(
@@ -144,14 +140,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     )) as {
       parameterVersions?: { name?: string; disabled?: boolean }[];
     };
-    let best: { vid: string; n: number } | undefined;
-    for (const v of listed.parameterVersions ?? []) {
-      if (v.disabled || !v.name) continue;
-      const vid = v.name.slice(v.name.lastIndexOf("/") + 1);
-      const n = Number(/(\d+)$/.exec(vid)?.[1] ?? "0");
-      if (!best || n > best.n) best = { vid, n };
-    }
-    return best?.vid;
+    return rankVersions(listed.parameterVersions ?? [])?.vid;
   }
 
   /**
@@ -183,7 +172,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
         nextPageToken?: string;
       };
       for (const v of page.parameterVersions ?? []) {
-        const vid = v.name?.slice(v.name.lastIndexOf("/") + 1);
+        const vid = versionIdOf(v.name);
         if (!vid) continue;
         await pm("DELETE", `${pmParent}/parameters/${id}/versions/${vid}`).catch(
           () => {},
@@ -197,13 +186,12 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
     id: string,
     envelope: ParameterEnvelope,
   ): Promise<void> {
-    // `v{n+1}`, from the same ranking every reader uses. A timestamp-shaped id
-    // would be unique and legal and still wrong: `Date.now().toString(36)` ends
-    // in a letter most of the time, so its numeric suffix reads as 0 and the
-    // version sorts BELOW `v1`.
-    const current = await currentVersionId(id);
-    const n = current ? Number(/(\d+)$/.exec(current)?.[1] ?? "0") : 0;
-    const versionId = `v${n + 1}`;
+    // `v{n+1}`, from the same ranking every reader uses — the shared mint, not a
+    // second reading of the same suffix. A timestamp-shaped id would be unique
+    // and legal and still wrong: `Date.now().toString(36)` ends in a letter most
+    // of the time, so its numeric suffix reads as 0 and the version sorts BELOW
+    // `v1`.
+    const versionId = nextVersionId(await currentVersionId(id));
     await pm(
       "POST",
       `${pmParent}/parameters/${id}/versions?parameter_version_id=${versionId}`,
@@ -248,8 +236,10 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
   }
 
   /**
-   * Make a secret parameter's `__REF__` resolvable — the same grant, and the same
-   * reasoning, as `grantRenderAccess` in `src/secrets/parameters/gcp.ts`.
+   * Make a secret parameter's `__REF__` resolvable — the same grant as
+   * `grantRenderAccess` in `src/secrets/parameters/gcp.ts`, and now literally the
+   * same policy edit: `withSecretAccessor` is vendored from
+   * `src/secrets/parameters/write-rules.ts`.
    *
    * Parameter Manager derefs a reference as the PARAMETER's own principal, so a
    * secret written here without this binding renders `400 SECRET_REFERENCE_ERROR`
@@ -270,27 +260,20 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
 
     // `requestedPolicyVersion=3` is REQUIRED: without it IAM returns a version-1
     // VIEW that omits conditional bindings, and writing that view back deletes
-    // them. Same reasoning, same call, as the src/ copy.
+    // them. The query string is this call site's — `withSecretAccessor` never
+    // sees it — so the requirement is written where the request is made, in both
+    // trees.
     const policy = (await sm(
       "GET",
       `${smParent}/secrets/${id}:getIamPolicy?options.requestedPolicyVersion=3`,
-    )) as { bindings?: IamBinding[]; etag?: string; version?: number };
+    )) as IamPolicy;
 
-    const bindings = (policy.bindings ?? []).map((b) => ({
-      ...b,
-      members: [...(b.members ?? [])],
-    }));
-    // UNCONDITIONAL only — a conditional `secretAccessor` binding would grant
-    // access just while its condition holds, failing like no grant at all.
-    const binding = bindings.find(
-      (b) => b.role === SECRET_ACCESSOR_ROLE && b.condition === undefined,
-    );
-    if (binding?.members.includes(principal)) return;
-    if (binding) binding.members.push(principal);
-    else bindings.push({ role: SECRET_ACCESSOR_ROLE, members: [principal] });
+    // `null` is "already a member": nothing to write.
+    const next = withSecretAccessor(policy, principal);
+    if (!next) return;
 
     await sm("POST", `${smParent}/secrets/${id}:setIamPolicy`, {
-      policy: { ...policy, bindings },
+      policy: next,
     });
   }
 

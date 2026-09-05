@@ -4,6 +4,7 @@ import {
   variableOf,
   type ParameterEnvelope,
 } from "./parameter-wire.js";
+import { rankVersions } from "./parameter-write-rules.js";
 
 /**
  * A read-only Google Cloud **Parameter Manager** client — the VIEWER half of the
@@ -214,10 +215,11 @@ export class ParameterManagerReadClient implements ParametersReader {
    *
    * Parameter Manager's `parameterVersions.get` has NO `latest` alias (that is a
    * Secret Manager feature) — so the current version has to be found by
-   * enumerating. This is byte-for-byte the same choice the admin/resolver half
-   * makes (src/secrets/parameters/gcp.ts `currentVersionId`): list the versions,
-   * skip the disabled ones, and take the greatest `v{n}` by numeric suffix, so
-   * all three roles read the same version of the same parameter.
+   * enumerating. Skip the disabled ones, take the greatest `v{n}` by numeric
+   * suffix. All three roles have to make that choice identically, so none of them
+   * writes it down twice: `rankVersions` is vendored from
+   * `src/secrets/parameters/write-rules.ts`, and `test/vendored.sync.test.ts`
+   * fails CI when the copies drift.
    */
   private async currentVersionId(id: string): Promise<string | undefined> {
     const versions: RawVersion[] = [];
@@ -232,15 +234,7 @@ export class ParameterManagerReadClient implements ParametersReader {
       pageToken = page.nextPageToken;
     } while (pageToken);
 
-    let best: { vid: string; n: number } | undefined;
-    for (const v of versions) {
-      if (v.disabled) continue;
-      const vid = v.name?.split("/").pop();
-      if (!vid) continue;
-      const n = Number(/(\d+)$/.exec(vid)?.[1] ?? "0");
-      if (!best || n > best.n) best = { vid, n };
-    }
-    return best?.vid;
+    return rankVersions(versions)?.vid;
   }
 
   /**

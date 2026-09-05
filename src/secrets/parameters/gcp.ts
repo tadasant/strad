@@ -31,6 +31,13 @@ import {
   type ParameterEnvelope,
 } from "./wire.ts";
 import {
+  nextVersionId,
+  rankVersions,
+  versionIdOf,
+  withSecretAccessor,
+  type IamPolicy,
+} from "./write-rules.ts";
+import {
   ParameterStoreError,
   type CreateParameterInput,
   type ParameterMeta,
@@ -103,28 +110,6 @@ export interface GcpParameterStoreConfig {
 const DEFAULT_PM_BASE = "https://parametermanager.googleapis.com";
 const DEFAULT_SM_BASE = "https://secretmanager.googleapis.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
-
-/**
- * The role a parameter's own principal needs on every secret it references.
- *
- * `:render` does NOT dereference a `__REF__` as the caller — it derefs as the
- * PARAMETER, so the caller's `secretAccessor` is the wrong grant to reason about
- * and granting it to the resolver does not make a single reference resolve.
- */
-const SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
-
-/**
- * One binding in a Secret Manager IAM policy.
- *
- * `condition` is carried opaquely and never interpreted — it exists here so a
- * read-modify-write preserves a conditional binding it does not understand
- * rather than dropping it on the way back.
- */
-interface IamBinding {
-  role: string;
-  members?: string[];
-  condition?: unknown;
-}
 
 /**
  * The HTTP status behind a failure, for the two error types this client raises.
@@ -312,11 +297,13 @@ export function createGcpParameterStore(
     disabled?: boolean;
   }
 
-  function versionIdOf(name: string | undefined): string | undefined {
-    return name?.split("/").pop();
-  }
-
-  /** The greatest `v{n}` among a parameter's enabled versions, or undefined. */
+  /**
+   * The greatest `v{n}` among a parameter's enabled versions, or undefined.
+   *
+   * The paging is this client's; the RANKING is `write-rules.ts`, vendored into
+   * `servers/secrets` so the half that writes versions cannot disagree with the
+   * three halves that read them.
+   */
   async function currentVersionId(id: string): Promise<string | undefined> {
     const versions: RawVersion[] = [];
     let pageToken: string | undefined;
@@ -331,28 +318,14 @@ export function createGcpParameterStore(
       pageToken = page.nextPageToken;
     } while (pageToken);
 
-    let best: { vid: string; n: number } | undefined;
-    for (const v of versions) {
-      if (v.disabled) continue;
-      const vid = versionIdOf(v.name);
-      if (!vid) continue;
-      const n = Number(/(\d+)$/.exec(vid)?.[1] ?? "0");
-      if (!best || n > best.n) best = { vid, n };
-    }
-    return best?.vid;
-  }
-
-  async function nextVersionId(id: string): Promise<string> {
-    const current = await currentVersionId(id);
-    const n = current ? Number(/(\d+)$/.exec(current)?.[1] ?? "0") : 0;
-    return `v${n + 1}`;
+    return rankVersions(versions)?.vid;
   }
 
   async function addVersion(
     id: string,
     envelope: ParameterEnvelope,
   ): Promise<string> {
-    const vid = await nextVersionId(id);
+    const vid = nextVersionId(await currentVersionId(id));
     await pm(
       "POST",
       `${pmParent}/parameters/${id}/versions?parameter_version_id=${vid}`,
@@ -444,29 +417,17 @@ export function createGcpParameterStore(
     const policy = (await sm(
       "GET",
       `${smParent}/secrets/${id}:getIamPolicy?options.requestedPolicyVersion=3`,
-    )) as {
-      bindings?: IamBinding[];
-      etag?: string;
-      version?: number;
-    };
+    )) as IamPolicy;
 
-    const bindings = (policy.bindings ?? []).map((b) => ({
-      ...b,
-      members: [...(b.members ?? [])],
-    }));
-    // An UNCONDITIONAL binding, specifically. One role may appear in several
-    // bindings distinguished by `condition`, and appending the principal to a
-    // conditional one grants access only while that condition holds — which
-    // fails exactly like no grant at all, from a policy that reads as correct.
-    const binding = bindings.find(
-      (b) => b.role === SECRET_ACCESSOR_ROLE && b.condition === undefined,
-    );
-    if (binding?.members.includes(principal)) return;
-    if (binding) binding.members.push(principal);
-    else bindings.push({ role: SECRET_ACCESSOR_ROLE, members: [principal] });
+    // The edit itself is `write-rules.ts` — the same bytes the `secrets` server's
+    // write client applies, because both of them write parameters this policy
+    // decides the renderability of. `null` is "already a member": nothing to
+    // write, and a `setIamPolicy` that changes nothing is still a write.
+    const next = withSecretAccessor(policy, principal);
+    if (!next) return;
 
     await sm("POST", `${smParent}/secrets/${id}:setIamPolicy`, {
-      policy: { ...policy, bindings },
+      policy: next,
     });
   }
 
