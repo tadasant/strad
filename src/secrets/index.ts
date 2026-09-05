@@ -18,6 +18,8 @@
  * rewrite — that is the point of this seam.
  */
 
+import { secretRefRe } from "../config/env-name.ts";
+
 export interface SecretSource {
   readonly name: string;
   /** Return every secret this source can see, as a flat bag. */
@@ -141,8 +143,6 @@ export async function loadSecrets(
   return Object.freeze(await source.load());
 }
 
-const REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-
 /**
  * Resolve `${NAME}` references in a config value against the secret bag.
  *
@@ -150,7 +150,7 @@ const REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
  * string "${GRANOLA_TOKEN}" as a bearer token is worse than a boot failure.
  */
 export function resolveRefs(value: string, secrets: SecretBag): string {
-  return value.replace(REF, (_match, name: string) => {
+  return value.replace(secretRefRe(), (_match, name: string) => {
     const found = secrets[name];
     if (found === undefined) {
       throw new Error(

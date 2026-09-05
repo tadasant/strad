@@ -1,3 +1,4 @@
+import { secretRefRe, secretRefsIn } from "../../config/env-name.ts";
 import { SecretNotFoundError, type SecretProvider } from "./types.ts";
 
 /**
@@ -14,17 +15,15 @@ import { SecretNotFoundError, type SecretProvider } from "./types.ts";
  *
  * An unresolved reference throws. A config that ships the literal string
  * "${GRANOLA_TOKEN}" as a bearer token is worse than a failed request.
+ *
+ * WHAT a `${NAME}` is lives in src/config/env-name.ts, alongside the bare-name
+ * form the config schema and the console gate on. This module owns the resolving,
+ * not the rule.
  */
-const REF = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /** Every distinct `${NAME}` in a string, in first-appearance order. */
 export function refsIn(value: string): string[] {
-  const out: string[] = [];
-  for (const match of value.matchAll(REF)) {
-    const name = match[1];
-    if (name && !out.includes(name)) out.push(name);
-  }
-  return out;
+  return secretRefsIn(value);
 }
 
 export async function resolveRefsAsync(
@@ -45,7 +44,9 @@ export async function resolveRefsAsync(
     }),
   );
 
-  return value.replace(REF, (_match, name: string) => resolved.get(name)!);
+  return value.replace(secretRefRe(), (_match, name: string) =>
+    resolved.get(name)!,
+  );
 }
 
 /** Resolve every `${NAME}` in a string-valued map. */

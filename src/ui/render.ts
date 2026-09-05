@@ -1,4 +1,8 @@
 import type { ConsoleDenial } from "../auth/dev.ts";
+// The `pattern=` on the variable-name input below. HTML anchors `pattern`
+// implicitly, so the UNANCHORED source string is exactly what belongs there —
+// the same string `isEnvName` sits between `^` and `$`. One rule, both gates.
+import { ENV_NAME_SOURCE } from "../config/env-name.ts";
 import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
@@ -519,7 +523,7 @@ ${listing}
     <label class="field">
       <span class="field-l">Variable name</span>
       <input class="in" id="varname" type="text" name="variable" required autocapitalize="off" autocomplete="off"
-             pattern="[A-Za-z_][A-Za-z0-9_]*" placeholder="${esc(exampleVariable(config))}" />
+             pattern="${ENV_NAME_SOURCE}" placeholder="${esc(exampleVariable(config))}" />
       <span class="field-h">A valid environment variable name.</span>
     </label>
     <div class="field">

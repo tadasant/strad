@@ -3998,3 +3998,36 @@ servers/bundle-api/upstream/monarch-money`, restore the `COPY` line in EACH of
 Tool names and tool count are unchanged either way — the delta is entirely in
 what `get_accounts` returns — so `check-tool-policy` and the smoke counts do not
 move.
+
+---
+
+## 81. The env-name rule is one module, and three vendored files still hold a copy
+
+**What.** "What is a legal environment-variable name" —
+`/^[A-Za-z_][A-Za-z0-9_]*$/`, and its `${NAME}` reference form — now lives once,
+in `src/config/env-name.ts`, and every module in the core tree imports it. Three
+do not: `src/secrets/presence.ts`, `src/secrets/param-route.ts` and
+`src/secrets/env-prefix.ts` each keep their own literal.
+
+**Why.** Those three are vendored byte-for-byte into `servers/bundle/host/src/`
+(`scripts/sync-vendored.mjs`), which is a separate npm tree with its own
+lockfile. A vendored module can only import something that crosses the boundary
+with it and resolves at the SAME relative path in both trees — so importing the
+rule would mean either an eighth seam in the manifest, or moving the rule out of
+`src/config/` to a path that happens to work from both sides. Neither is worth a
+forty-character regex, and both make `schema.ts` — the most import-constrained
+consumer, and the reason the module is under `src/config/` at all — import it
+from further away.
+
+**Why it is not the drift this consolidated.** The five copies the rule had
+inside ONE npm tree were held together by nothing. These three are held by a
+test: `test/env-name.test.ts` reads all three as text and asserts that every
+mention of the character class in them is a verbatim occurrence of
+`ENV_NAME_SOURCE`. That is a grep, and a grep is the right strength for "two
+files still spell one thing the same way" — the same shape as
+`test/env-prefix.markers.test.ts`. `test/vendored.sync.test.ts` covers the other
+half, that each vendored COPY matches its source.
+
+**Undo.** Add `src/config/env-name.ts` to the `VENDORED` manifest as an eighth
+seam and let the three import it, on the day one of them needs something else
+from the module too. Until then the grep is cheaper than the seam.

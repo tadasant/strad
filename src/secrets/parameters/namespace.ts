@@ -208,21 +208,3 @@ export function validatePathPrefix(prefix: string): string | null {
   }
   return null;
 }
-
-/**
- * Validate a variable name for a new parameter.
- *
- * A parameter's variable is injected as an ENVIRONMENT VARIABLE into a server's
- * process, so it must be a legal env var name: it is not free-form. This is the
- * console's first gate; it turns "GCP rejected your id" into a sentence.
- */
-export function validateVariableName(variable: string): string | null {
-  if (!variable) return "A variable name is required.";
-  if (variable.length > 200) {
-    return "A variable name may be at most 200 characters.";
-  }
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable)) {
-    return "A variable name must be a valid environment variable name (letters, digits and underscores; not starting with a digit).";
-  }
-  return null;
-}

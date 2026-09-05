@@ -622,6 +622,11 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
 - **Two enabled servers declare the same env key with different values, in a
   scope where one would silently overwrite the other.** See below — the scope is
   not the same for the two maps.
+- A `paramsWritable:` or `paramsRefresh:` entry is not a legal environment
+  variable name (letters, digits and underscores; not starting with a digit; at
+  most 200 characters). Those entries compose a store path, so the rule is
+  checked here rather than at the route — it is the same rule the console applies
+  to a variable a human creates, from `src/config/env-name.ts`.
 - An `oauth:` connector names a variable that is not a legal environment variable
   name, or points two of its three fields at names that
   [fold to one parameter](/operate/secrets/) (a path lowercases before it hashes,

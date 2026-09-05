@@ -1,3 +1,4 @@
+import { isEnvName } from "../config/env-name.ts";
 import { isUnhosted } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -261,7 +262,7 @@ export function validateReport(body: unknown): PresenceReport | null {
     PresenceVerdict
   >;
   for (const [key, value] of Object.entries(raw.keys)) {
-    if (!KEY_SHAPE.test(key)) return null;
+    if (!isEnvName(key)) return null;
     if (typeof value !== "object" || value === null) return null;
     const verdict = value as Record<string, unknown>;
     if (!isPresence(verdict.presence)) return null;
@@ -287,7 +288,7 @@ export function validateReport(body: unknown): PresenceReport | null {
       // Re-applied here rather than trusted: the vendored `parseParamKeys` checks
       // the same shape on the peer, and core must not assume the peer ran it.
       // These strings become `requirement.name` and are rendered as `${…}`.
-      if (value.some((v) => typeof v !== "string" || !KEY_SHAPE.test(v))) {
+      if (value.some((v) => typeof v !== "string" || !isEnvName(v))) {
         return null;
       }
       paramKeys[slug] = value as string[];
@@ -309,9 +310,6 @@ export function validateReport(body: unknown): PresenceReport | null {
     paramKeys,
   };
 }
-
-/** The env-var shape, restated core-side. Never trust the peer to have checked. */
-const KEY_SHAPE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * A short, printable identifier: a component name, an image tag, a timestamp.
