@@ -18,8 +18,8 @@ import { buildUnits, publishingWorkflows } from "./helpers/workflow-graph.js";
  * Every job that logs in to ghcr must log in somewhere only it can reach.
  *
  * `~/.docker/config.json` is the credential file, and `runs-on: self-hosted`
- * means one of them for the whole box. Nine jobs in this repo run
- * `docker/login-action`, each writing `auths["ghcr.io"]` with its OWN job's
+ * means one of them for the whole box. Every job in this repo that reaches ghcr
+ * runs `docker/login-action`, each writing `auths["ghcr.io"]` with its OWN job's
  * `GITHUB_TOKEN`, and each running `docker logout ghcr.io` in a post step —
  * `logout: true` is that action's default. So the last job to log in owns the
  * credential every concurrent build pushes with, and the first job to finish
@@ -55,23 +55,22 @@ const MANIFEST = `${ACTION_DIR}/docker-config/action.yml`;
 /**
  * How many COPIES of the login step exist.
  *
- * This is not the guard it once was, and the reason is the whole point of
- * `release-supplementary-image.yml`: four releases that each held their own copy
- * of the login now share one, so the number fell from nine to six without a
- * single release losing its credential. A count of copies cannot tell those two
- * things apart, so it is kept only to stop the loop below asserting over an
- * empty list — the floor that means something is
- * `MIN_PUBLISHING_WORKFLOWS`, which counts what does not move.
+ * A count of copies is a weak floor and this is the only job it does: stop the
+ * loop below passing by asserting over an empty list. It moves whenever
+ * releases share a body — four of them share `release-supplementary-image.yml`
+ * and hold one login between them — and it cannot tell that apart from three
+ * releases losing their credential. `MIN_PUBLISHING_WORKFLOWS` is the floor
+ * that means something.
  */
 const MIN_LOGIN_JOBS = 6;
 
 /**
  * How many workflows put an image on ghcr.
  *
- * Sharing a body does not change it: a release that delegates its build still
- * publishes, and is still separately broken if the body it delegates to stops
- * logging in. So this is what the coverage assertion counts, and it held at nine
- * across the collapse.
+ * A release that delegates its build still publishes, and is still separately
+ * broken if the body it delegates to stops logging in — so this counts
+ * releases rather than copies, and sharing a body does not move it. It is what
+ * the coverage assertion below guards.
  */
 const MIN_PUBLISHING_WORKFLOWS = 9;
 
@@ -117,7 +116,7 @@ function* jobs(): Generator<{ file: string; job: string; steps: Step[] }> {
 
 // The `@` is not required: an UNPINNED `uses: docker/login-action` logs in just
 // the same, and matching only the pinned spelling would make such a step
-// invisible to every assertion here while `found` stayed at nine.
+// invisible to every assertion here while `found` stayed where it was.
 const isLogin = (s: Step) =>
   s.uses === "docker/login-action" ||
   (s.uses?.startsWith("docker/login-action@") ?? false);
@@ -188,11 +187,10 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
    * iteration, nothing asserted — and the symptom is a 403 on the push, from a
    * workflow whose diff removed one `uses:` line.
    *
-   * That was tolerable while every release held its own copy of the body: a
-   * missing login was a missing block in the file you were reading.
-   * `release-supplementary-image.yml` moved the login one file away from four
-   * releases, so it is asserted here instead — from the release, through the
-   * `uses:` edge, to the job whose steps actually build.
+   * A release does not have to hold its own login: four of them reach theirs
+   * through `release-supplementary-image.yml`, one file away, where a reviewer
+   * of the caller cannot see it at all. So the coverage is asserted from the
+   * release, through the `uses:` edge, to the job whose steps actually build.
    */
   it("gets every publishing workflow to an isolated login, through whatever workflow owns the build", () => {
     const publishing = publishingWorkflows();

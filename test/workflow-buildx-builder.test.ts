@@ -49,12 +49,12 @@ const BUILD_ACTIONS = [
 /**
  * How many COPIES of the builder wiring exist.
  *
- * Both fell by three when `release-supplementary-image.yml` gave four
- * supplementary releases one body instead of four, and neither release lost its
- * builder in the process — which is exactly what a count of copies cannot tell
- * you. They stay as anti-vacuity floors on the loops below, and the assertion
- * that survives a body being shared is the last one in this describe: every
- * workflow that asks for `packages: write` must still REACH a build.
+ * Both are weak floors doing one job: stopping the loops below from passing by
+ * asserting over an empty list. A count of copies moves whenever releases share
+ * a body — four of them share `release-supplementary-image.yml` and hold one
+ * builder between them — and it cannot tell that apart from three releases
+ * losing theirs. The assertion that does not move is the last one in this
+ * describe: every workflow asking for `packages: write` must REACH a build.
  */
 const MIN_SETUP_STEPS = 9;
 const MIN_BUILD_STEPS = 14;

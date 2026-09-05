@@ -6,16 +6,16 @@ name: Release a supplementary image
 # published to its own ghcr package, run as an internal-only App Platform
 # component. That makes them all the same job — checkout, isolate the docker
 # config, log in to ghcr, create a job-scoped buildx builder, build and push
-# `:latest` and `:sha-<commit>` — and for a long time it was that job written
-# out once per server, six times over.
+# `:latest` and `:sha-<commit>` — so it is written here, once, and each release
+# is the part that differs.
 #
-# The cost of that was measured rather than theorised. Three separate PRs made
-# the same cross-cutting fix nine to eleven times: #127 (every build names its
-# buildx builder), #124 (retry every ghcr push), #135 (every job logs in to its
-# own docker config). A drift between the copies is invisible in review, which
-# is why `test/workflow-buildx-builder.test.ts` and
-# `test/workflow-docker-config.test.ts` exist. They still do — this file is what
-# gives them one place to be right about.
+# The cost of a copy per server was measured rather than theorised. Three
+# separate PRs made the same cross-cutting fix nine to eleven times: #127 (every
+# build names its buildx builder), #124 (retry every ghcr push), #135 (every job
+# logs in to its own docker config). A drift between copies is invisible in
+# review, which is why `test/workflow-buildx-builder.test.ts` and
+# `test/workflow-docker-config.test.ts` exist; this file is the one place they
+# have to be right about.
 #
 # A caller is its own `on: push: paths:`, its own `concurrency:` group, and a
 # `uses:` of this file. It watches THIS file in its `paths:` as well as its own,

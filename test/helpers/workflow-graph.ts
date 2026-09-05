@@ -5,19 +5,16 @@ import { parse } from "yaml";
  * The publish graph of `.github/workflows`: which workflows end in an image on
  * ghcr, and which job's steps actually do it.
  *
- * Every supplementary image release used to be one workflow holding its own
- * copy of the build — so "does this file log in", "does this file name its
- * builder" and "does this file build at all" were all answerable by reading one
- * file, and `test/workflow-docker-config.test.ts` and
- * `test/workflow-buildx-builder.test.ts` did exactly that.
- * `release-supplementary-image.yml` moved that body behind a `workflow_call`,
- * which is the point — but it also means a per-file scan now walks past four
- * releases without asserting anything about them, because a job that only
- * `uses:` another workflow has no steps of its own.
+ * A release does not have to hold its own build. Four of them delegate to
+ * `release-supplementary-image.yml`, and a job that only `uses:` another
+ * workflow has no steps — so a per-file scan of this directory walks past those
+ * four asserting nothing at all about them, which is not what
+ * `test/workflow-docker-config.test.ts` and `test/workflow-buildx-builder.test.ts`
+ * are for.
  *
- * So the invariants those files assert are asserted where the steps really are.
- * This module is the edge-following half: it resolves a delegating job to the
- * job that runs the build, and it keeps the ENTRY — the triggerable workflow the
+ * This module is the edge-following half, so the invariants those files assert
+ * are asserted where the steps really are. It resolves a delegating job to the
+ * job that runs the build, and keeps the ENTRY — the triggerable workflow the
  * path started at — so a failure names the release that is broken rather than
  * the shared file it goes through.
  */
@@ -125,20 +122,28 @@ export interface BuildUnit {
   publishes: boolean;
 }
 
-/** Every build reachable from `file`, following `uses:` into local workflows. */
+/**
+ * Every build reachable from `file`, following `uses:` into local workflows.
+ *
+ * `stack` is the ANCESTOR chain of this call, not everything the walk has ever
+ * visited — it exists to stop a cycle, and nothing else. A walk-wide visited set
+ * would also swallow a workflow reached by two edges: one file with a job per
+ * image, each calling the same shared body, is the obvious next shape here, and
+ * only the first of those jobs would have yielded a unit.
+ */
 function unitsFrom(
   entry: string,
   file: string,
-  seen: Set<string>,
+  stack: ReadonlySet<string>,
 ): BuildUnit[] {
-  if (seen.has(file) || !existsSync(file)) return [];
-  seen.add(file);
+  if (stack.has(file) || !existsSync(file)) return [];
+  const deeper = new Set([...stack, file]);
 
   const out: BuildUnit[] = [];
   for (const [job, body] of Object.entries(workflow(file).jobs ?? {})) {
     const target = calledWorkflow(body.uses);
     if (target) {
-      out.push(...unitsFrom(entry, target, seen));
+      out.push(...unitsFrom(entry, target, deeper));
       continue;
     }
     const steps = body.steps ?? [];

@@ -985,18 +985,17 @@ so a change to one server doesn't rebuild the rest:
 
 Four of those workflows hold no build of their own. `release-bundle-api-image.yml`,
 `release-goodeggs-image.yml`, `release-fetchpet-image.yml` and
-`release-pointsyeah-image.yml` are each about fifteen lines — a `paths:` filter, a
-concurrency group, and a call to **`release-supplementary-image.yml`**, the reusable
-workflow that holds the shared body: checkout, isolate the docker config, log in to
-ghcr, create a job-scoped buildx builder, build and push `:latest` and
-`:sha-<commit>`.
+`release-pointsyeah-image.yml` are a `paths:` filter, a concurrency group, and a
+call to **`release-supplementary-image.yml`** — the reusable workflow that holds the
+shared body: checkout, isolate the docker config, log in to ghcr, create a
+job-scoped buildx builder, build and push `:latest` and `:sha-<commit>`. A caller
+passes `context:` and `image:`, plus `file:`, `cache-scope:` and `refuse-off-main:`
+when it needs them.
 
-That body used to be written out once per server, six times over, and every
-cross-cutting fix to the release path had to be applied to all of them by hand —
-naming the buildx builder, retrying the ghcr push, isolating the docker config were
-three separate changes each made nine to eleven times. A caller passes `context:`
-and `image:`, plus `file:`, `cache-scope:` and `refuse-off-main:` when it needs
-them.
+One copy of that body rather than one per server is the point. Every cross-cutting
+fix to the release path — naming the buildx builder, retrying the ghcr push,
+isolating the docker config — was three separate changes each applied by hand to
+nine to eleven files, and a copy that missed one is invisible in review.
 
 Two things about that shape are worth knowing:
 
