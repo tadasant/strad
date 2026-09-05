@@ -88,20 +88,68 @@ query Web_GetUploadBalanceHistorySession($sessionKey: String!) {
   }
 }`;
 
-export const Q_ACCOUNT_HOLDINGS = `
-query GetAccountHoldings($accountId: UUID!) {
-  account(id: $accountId) {
-    id
-    displayName
-    holdings {
-      id
-      ticker
-      name
-      quantity
-      costBasis
-      value
-      type
-      closingPrice
+// Holdings are NOT a field on `Account`. `account(id:) { holdings { ... } }`
+// makes Monarch reject the whole query with a 400 whose only body is
+// `Something went wrong while processing: None on request_id: None.` and a
+// `locations` entry pointing at the `holdings` selection — recorded verbatim in
+// `test/fixtures/account-holdings-400.json`.
+//
+// The real surface is `portfolio(input:)`, a PORTFOLIO-WIDE connection. Its
+// `aggregateHoldings` edges group by SECURITY; each node's `holdings` array is
+// that security's per-account legs, each carrying `account { id }`. So one
+// request returns every account's holdings, which is why the client groups the
+// response by account id rather than issuing one request per account.
+//
+// `PortfolioInput` accepts `accountIds` and a `startDate`/`endDate` window; we
+// send `{}` and take the whole portfolio, because the caller (`get_accounts`)
+// wants all of it and a filtered query would put the N+1 straight back.
+//
+// The operation name does NOT matter: `GetPortfolioHoldings`, `GetHoldings` and
+// the web client's `Web_GetHoldings` all return the same 200. Monarch does not
+// gate this operation by name, so the plain name every other query here uses is
+// the one it keeps.
+//
+// Field notes, all observed against the live api.monarch.com endpoint:
+// - `holding.name` is the INSTITUTION's string for the position ("Vanguard
+//   Money Market Reserves - Federal Money Market Fd USD MNT"); `security.name`
+//   is Monarch's canonical one ("Vanguard Federal Money Market Fund"). They
+//   differ, so both are surfaced.
+// - `holding.ticker` is null for institution-only funds with no public symbol
+//   ("Instl 500 Index Trust"), and `security.ticker` is null with it.
+// - `holding.costBasis` is null wherever the institution does not report one —
+//   commonly on money-market positions.
+// - `holding.type` / `typeDisplay` is the asset class (`cash`, `equity`, `etf`,
+//   `mutual_fund` / `Cash`, `Stock`, `ETF`, `Mutual Fund`). It is the field that
+//   separates a money-market fund from equity, which is the whole reason a
+//   caller asks for holdings.
+export const Q_PORTFOLIO_HOLDINGS = `
+query GetPortfolioHoldings($input: PortfolioInput) {
+  portfolio(input: $input) {
+    aggregateHoldings {
+      edges {
+        node {
+          holdings {
+            id
+            ticker
+            name
+            quantity
+            costBasis
+            value
+            type
+            typeDisplay
+            closingPrice
+            account { id }
+          }
+          security {
+            id
+            ticker
+            name
+            type
+            typeDisplay
+            currentPrice
+          }
+        }
+      }
     }
   }
 }`;

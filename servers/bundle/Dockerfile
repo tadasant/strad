@@ -44,9 +44,9 @@ COPY servers/bundle-api/package.json servers/bundle-api/package-lock.json ./
 COPY servers/bundle-api/fork/slack/package.json ./fork/slack/
 COPY servers/bundle-api/upstream/serpapi-hotels/package.json ./upstream/serpapi-hotels/
 COPY servers/bundle-api/upstream/tailscale/package.json ./upstream/tailscale/
-COPY servers/bundle-api/upstream/monarch-money/package.json ./upstream/monarch-money/
 COPY servers/bundle-api/upstream/gcs/package.json ./upstream/gcs/
 COPY servers/bundle-api/fork/google-flights/package.json ./fork/google-flights/
+COPY servers/bundle-api/fork/monarch-money/package.json ./fork/monarch-money/
 COPY servers/bundle-api/remote/package.json ./remote/
 RUN npm ci --no-audit --no-fund
 COPY servers/bundle-api/fork ./fork

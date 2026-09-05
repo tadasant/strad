@@ -2,20 +2,20 @@
   "name": "strad-bundle-api",
   "version": "0.1.0",
   "private": true,
-  "description": "Six pure-API MCP servers packaged as one strad supplementary-image bundle (streamable-HTTP over each server's tool logic: four vendored verbatim in upstream/, slack and google-flights forked in fork/).",
+  "description": "Six pure-API MCP servers packaged as one strad supplementary-image bundle (streamable-HTTP over each server's tool logic: three vendored verbatim in upstream/, slack, google-flights and monarch-money forked in fork/).",
   "type": "module",
   "workspaces": [
     "fork/slack",
     "fork/google-flights",
+    "fork/monarch-money",
     "upstream/serpapi-hotels",
     "upstream/tailscale",
-    "upstream/monarch-money",
     "upstream/gcs",
     "remote"
   ],
   "scripts": {
-    "build": "npm run build --workspace=fork/slack --workspace=upstream/serpapi-hotels --workspace=upstream/tailscale --workspace=upstream/monarch-money --workspace=upstream/gcs --workspace=fork/google-flights && npm run build --workspace=remote",
+    "build": "npm run build --workspace=fork/slack --workspace=upstream/serpapi-hotels --workspace=upstream/tailscale --workspace=fork/monarch-money --workspace=upstream/gcs --workspace=fork/google-flights && npm run build --workspace=remote",
     "start": "node remote/build/index.js",
-    "test": "npm run test --workspace=fork/slack --workspace=fork/google-flights"
+    "test": "npm run test --workspace=fork/slack --workspace=fork/google-flights --workspace=fork/monarch-money"
   }
 }

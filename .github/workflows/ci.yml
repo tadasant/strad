@@ -141,12 +141,12 @@ jobs:
   #               not run here, resolves X API keys — so they need nothing CI cannot
   #               give them.
   #
-  #   bundle-api  build + test. Six pure-API servers. Four are verbatim vendor
+  #   bundle-api  build + test. Six pure-API servers. Three are verbatim vendor
   #               copies with no tests here yet: a test written INSIDE a vendored
   #               copy is a merge conflict on every re-vendor and belongs upstream,
   #               and nobody has given them the tree-root treatment pointsyeah and
-  #               onepassword have. The other two are FORKED, and their tests are the only
-  #               thing defending the delta: a fork has no upstream to argue with it
+  #               onepassword have. The other three are FORKED, and their tests are the
+  #               only thing defending the delta: a fork has no upstream to argue with it
   #               and no sync script to notice its loss, so a careless re-vendor
   #               silently reverts the fix.
   #                 fork/slack — `~text~` is strikethrough, so a message using `~`
@@ -160,7 +160,13 @@ jobs:
   #                   returned a trailing price history instead of future
   #                   departures. The tests assert the encoded `tfs` bytes and the
   #                   parsed values, because none of the three ever raised an error.
-  #               The build also typechecks the four vendored trees plus remote/,
+  #                 fork/monarch-money — get_accounts(includeHoldings) reported an
+  #                   empty portfolio for every account: the query asked for a field
+  #                   Monarch's schema does not have, and a bare `.catch(() => [])`
+  #                   turned every 400 into `[]`. The tests assert the QUERY TEXT,
+  #                   since a wrong shape is invisible to a mocked client, and that
+  #                   every fetch failure surfaces as an error rather than as `[]`.
+  #               The build also typechecks the three vendored trees plus remote/,
   #               which otherwise surfaces first as a failed bundle image build.
   #
   #   pointsyeah  test, and no separate build leg: `npm test` is `npm run build &&

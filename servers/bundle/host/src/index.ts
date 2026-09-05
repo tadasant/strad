@@ -339,10 +339,10 @@ async function loadApiTree(): Promise<ApiTree> {
   const mod = async (slug: string): Promise<{ createMCPServer: Factory }> =>
     loadFromTree("bundle-api", `upstream/${slug}/build/index.js`);
 
-  // slack is one of two servers in that tree strad FORKED rather than vendored
-  // verbatim — its write tools carry the Slack-mrkdwn rules and a post-hoc
-  // advisory that upstream does not have. It builds from fork/, not upstream/.
-  // See servers/bundle-api/fork/slack/FORK.md.
+  // slack is one of three servers in that tree strad FORKED rather than
+  // vendored verbatim — its write tools carry the Slack-mrkdwn rules and a
+  // post-hoc advisory that upstream does not have. It builds from fork/, not
+  // upstream/. See servers/bundle-api/fork/slack/FORK.md.
   const slack = (await loadFromTree("bundle-api", "fork/slack/build/index.js")) as {
     createMCPServer: Factory;
   };
@@ -350,7 +350,7 @@ async function loadApiTree(): Promise<ApiTree> {
   const tailscale = await mod("tailscale");
   const gcs = await mod("gcs");
 
-  // google-flights is the other fork. Upstream's protobuf numbered two Info
+  // google-flights is the second fork. Upstream's protobuf numbered two Info
   // fields wrong, so Google silently ignored cabin class AND passenger counts;
   // its baggage flags were read in the wrong order; and its date grid returned a
   // trailing price HISTORY rather than future departure dates. All three are
@@ -360,9 +360,15 @@ async function loadApiTree(): Promise<ApiTree> {
     "fork/google-flights/build/index.js",
   )) as { createMCPServer: Factory };
 
+  // monarch-money is the third. Its holdings query asked for `account(id:) {
+  // holdings }`, a field Monarch's schema does not have, and the handler wrapped
+  // each request in `.catch(() => [])` — so every brokerage reported an empty
+  // portfolio and nothing raised. It reads `portfolio.aggregateHoldings` here,
+  // in one request, and a failed fetch is an error.
+  // See servers/bundle-api/fork/monarch-money/FORK.md.
   const monarchMod = (await loadFromTree(
     "bundle-api",
-    "upstream/monarch-money/build/index.js",
+    "fork/monarch-money/build/index.js",
   )) as {
     createMCPServer: Factory;
     createFileSessionStore: () => unknown;

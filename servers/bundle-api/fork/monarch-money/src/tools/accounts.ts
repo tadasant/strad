@@ -11,7 +11,11 @@ const ACCOUNTS_DESCRIPTION = `List every account connected to the Monarch Money 
 
 Returns balance, type/subtype, hidden/sync flags, last update time, and the linked institution. Use this as the starting point for nearly every read operation — most other tools take an account id you'll find here.
 
-Set \`includeHoldings: true\` to attach investment holdings (ticker, quantity, value, cost basis) to each account that tracks them. Holdings are an extra GraphQL request per account, so omit the flag when you only need balances.
+Set \`includeHoldings: true\` to attach investment holdings to each account that holds securities. That costs ONE extra GraphQL request in total (not one per account), so the flag is cheap — omit it only when you genuinely just want balances.
+
+Each holding carries \`type\`/\`typeDisplay\`, the asset class. **Use it rather than guessing from the ticker or the account name:** a money-market fund like \`VMFXX\` reports \`"type": "cash"\` and is not equity, and an account named "Brokerage" routinely holds both. \`ticker\` and \`costBasis\` are null where the institution does not report them, and \`security\` is Monarch's canonical record for the position — \`security.id\` is what identifies the same security held across two accounts, since \`name\` is whatever each institution calls it.
+
+\`holdings: []\` means the account holds nothing. If holdings cannot be fetched, this tool returns an ERROR — it never reports a failed fetch as an empty portfolio.
 
 Example response (with \`includeHoldings: true\`):
 \`\`\`json
@@ -25,7 +29,18 @@ Example response (with \`includeHoldings: true\`):
     "type": { "name": "brokerage", "display": "Brokerage" },
     "institution": { "id": "inst_42", "name": "Vanguard" },
     "holdings": [
-      { "id": "h_1", "ticker": "VTI", "name": "Vanguard Total Stock Market", "quantity": 312.5, "costBasis": 65000, "value": 78912.5 }
+      {
+        "id": "h_1",
+        "ticker": "VTI",
+        "name": "VANGUARD TOTAL STOCK MKT ETF",
+        "quantity": 312.5,
+        "costBasis": 65000,
+        "value": 78912.5,
+        "type": "etf",
+        "typeDisplay": "ETF",
+        "closingPrice": 252.52,
+        "security": { "id": "sec_9", "ticker": "VTI", "name": "Vanguard Total Stock Market ETF", "type": "etf", "typeDisplay": "ETF", "currentPrice": 252.52 }
+      }
     ]
   }
 ]
@@ -35,7 +50,7 @@ Example response (with \`includeHoldings: true\`):
 - Discover account ids for use with other tools
 - Render a "connected accounts" overview
 - Compute total balance per institution
-- Pull holdings for portfolio analysis (with \`includeHoldings: true\`)`;
+- Pull holdings for portfolio analysis, bucketed by \`holdings[].type\` (with \`includeHoldings: true\`)`;
 
 const BALANCE_HISTORY_DESCRIPTION = `Daily balance snapshots for a single account over a date range. Useful for charting a balance curve, computing average balance, or spotting a sudden drop.
 
@@ -96,7 +111,8 @@ export function accountTools(clientFactory: ClientFactory): RegisteredTool[] {
       .optional()
       .default(false)
       .describe(
-        'When true, attach investment holdings to each account that tracks them. Default: false.'
+        'When true, attach investment holdings to each account that holds securities. One extra ' +
+          'GraphQL request in total, not one per account. Default: false.'
       ),
   });
 
@@ -109,7 +125,9 @@ export function accountTools(clientFactory: ClientFactory): RegisteredTool[] {
       properties: {
         includeHoldings: {
           type: 'boolean',
-          description: 'When true, attach investment holdings to each account. Default: false.',
+          description:
+            'When true, attach investment holdings to each account that holds securities. ' +
+            'One extra GraphQL request in total, not one per account. Default: false.',
         },
       },
       required: [],
@@ -121,12 +139,17 @@ export function accountTools(clientFactory: ClientFactory): RegisteredTool[] {
         const accounts = await client.getAccounts();
         if (!parsed.includeHoldings) return okJSON(accounts);
 
-        const enriched: (Account & { holdings: Holding[] })[] = await Promise.all(
-          accounts.map(async (a) => ({
-            ...a,
-            holdings: await client.getAccountHoldings(a.id).catch(() => []),
-          }))
-        );
+        // ONE portfolio-wide request for every account's holdings, and NO
+        // per-account `.catch`. A failure reaches the enclosing catch and is
+        // reported as an error — which is the point. `holdings: []` has to mean
+        // "this account holds nothing" and nothing else: a caller that buckets
+        // asset allocation cannot tell an empty portfolio from a swallowed
+        // failure, and gets a confident wrong answer from the second one.
+        const byAccount = await client.getHoldingsByAccount();
+        const enriched: (Account & { holdings: Holding[] })[] = accounts.map((a) => ({
+          ...a,
+          holdings: byAccount.get(a.id) ?? [],
+        }));
         return okJSON(enriched);
       } catch (err) {
         return errorFromException(err);

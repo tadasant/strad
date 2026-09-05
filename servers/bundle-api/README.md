@@ -9,7 +9,7 @@ single internal Node process:
 | `slack` | Slack workspace (**forked** — see [`fork/slack/FORK.md`](fork/slack/FORK.md)) | messaging / channels / DMs |
 | `serpapi-hotels` | SerpApi Google Hotels | hotel search |
 | `tailscale` | Tailscale VPN | policy / devices / keys |
-| `monarch-money` | Monarch Money | personal finance |
+| `monarch-money` | Monarch Money (**forked** — see [`fork/monarch-money/FORK.md`](fork/monarch-money/FORK.md)) | personal finance |
 | `gcs` | Google Cloud Storage | object storage |
 | `google-flights` | Google Flights (**forked** — see [`fork/google-flights/FORK.md`](fork/google-flights/FORK.md)) | flight search |
 
@@ -26,6 +26,7 @@ servers/bundle-api/
                          #   (each server's shared/ tool-logic factory)
   fork/slack/            # FORKED from the same monorepo @b1f13fe, and edited here
   fork/google-flights/   # FORKED from google-flights-mcp-server@0.2.6
+  fork/monarch-money/    # FORKED from monarch-money-mcp-server-shared@0.0.6
   remote/                # NEW streamable-HTTP host over all six createMCPServer()s
   Dockerfile         # node:22-slim -> ghcr.io/tadasant/strad-bundle-api
 ```
@@ -38,7 +39,7 @@ logic is reimplemented**. It swaps stdio for an Express front door speaking
 server at `/<slug>`. strad's core gateway proxies to it over the private network
 at `${bundle-api.PRIVATE_URL}/<slug>`.
 
-`fork/` holds the two exceptions, under a different directory so that the
+`fork/` holds the three exceptions, under a different directory so that the
 exception is visible from the path. Hashes and versions above are the points a
 copy was last verified identical to upstream, which is what each fork diverges
 from — not commits that touched the server in question.
@@ -62,9 +63,22 @@ economy, one adult), the two baggage entries were read in the wrong order, and
 departure dates. Details and the evidence for each are in
 [`fork/google-flights/FORK.md`](fork/google-flights/FORK.md).
 
-`npm test` at this level runs both forks' suites — Vitest over each fork's
+**`fork/monarch-money`.** One defect, of the same kind: `get_accounts(includeHoldings:
+true)` reported `"holdings": []` for every account on a workspace where fourteen
+of them held forty-four positions. The query asked for `account(id:) { holdings }`,
+a field Monarch's schema does not have, so every request 400'd — and a bare
+`.catch(() => [])` in the handler, over a `?? []` in the client, turned each 400
+into an empty portfolio. Holdings hang off `portfolio.aggregateHoldings`, so the
+fork reads the whole portfolio in ONE request (down from one per account, 56 of
+them) and groups it by account, and every way the fetch can fail is now an error
+rather than an empty array. An agent that hit the silent version bucketed asset
+allocation off account names instead and understated money-market holdings by
+about 20x. Details and the recorded responses are in
+[`fork/monarch-money/FORK.md`](fork/monarch-money/FORK.md).
+
+`npm test` at this level runs all three forks' suites — Vitest over each fork's
 TypeScript sources, with `tsc` still running first — which is what stops a
-re-vendor from quietly reverting either.
+re-vendor from quietly reverting any of them.
 
 Per request we mint a fresh, stateless MCP `Server` + transport and reuse the
 factory's `registerHandlers`. Each factory is created ONCE at startup (tailscale

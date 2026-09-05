@@ -1370,10 +1370,10 @@ depend on it and delete the fork.
 
 ### 55. The slack server is a fork, and only its tests defend the delta
 
-`servers/bundle-api/fork/slack/` is a FORK rather than a vendor copy. Four of the
+`servers/bundle-api/fork/slack/` is a FORK rather than a vendor copy. Three of the
 six servers in `bundle-api` sit in `upstream/` and are copied verbatim; slack
-sits in `fork/` alongside `google-flights` (#58), and strad has edited its tool
-definitions.
+sits in `fork/` alongside `google-flights` (#58) and `monarch-money` (#80), and
+strad has edited its tool definitions.
 
 The reason is Slack's message format. Slack renders **mrkdwn**, mrkdwn is not
 Markdown, and `~text~` is strikethrough — so an agent writing `~750 som` and
@@ -1888,7 +1888,7 @@ exercises no branch.
 ### 58. The google-flights date grid costs one request per date, a premium seat has no legroom to report, and the fare brand is not the cabin
 
 `servers/bundle-api/fork/google-flights/` is the second fork in that tree (#55 is
-the first), taken from the published `google-flights-mcp-server` v0.2.6. It fixes
+the first, #80 the third), taken from the published `google-flights-mcp-server` v0.2.6. It fixes
 three defects that all shipped a confident, wrong answer with no error attached:
 cabin class and passenger counts encoded at protobuf field numbers Google skips
 as unknown fields, so every search was economy and one adult; the two baggage
@@ -2431,6 +2431,26 @@ Three narrower edges. The guard is on `native` only — the paid strategies fetc
 **How you would know.** A `scrape` of a private URL comes back `Refusing to fetch …: 127.0.0.1 is a loopback address (127.0.0.0/8)`, or `… strad-bundle is a single-label name, which only a private network serves`, as the `native` strategy's error, with the other strategies' failures beside it.
 
 See `HACKS.md` #79.
+
+---
+
+### 80. monarch-money is a fork, and no recorded fixture can see the schema move again
+
+`servers/bundle-api/fork/monarch-money/` is the third fork in that tree, alongside slack (#55) and google-flights (#58), taken from `monarch-money-mcp-server-shared` v0.0.6. It fixes one defect of exactly the kind that justifies a fork: `get_accounts(includeHoldings: true)` reported `"holdings": []` for **every** account — reproduced twice, twenty minutes apart, across all fifty-six accounts on a workspace where fourteen held forty-four positions.
+
+Two defects had to hold at once for that to be invisible. The query asked for `account(id:) { holdings }`, a field Monarch's schema does not have, so every request came back `400`; and the handler wrapped each one in `.catch(() => [])`, over a `?? []` in the client, so every `400` became an empty portfolio. Nothing raised, anywhere. Holdings hang off `portfolio.aggregateHoldings` — a portfolio-wide connection grouped by security, each node's legs carrying their own `account { id }` — so the fork reads the whole thing in one request and regroups by account, which also retires the old shape's one-round-trip-per-account N+1.
+
+**The cost of the silence was the decision made on top of it.** An agent asked for that workspace's asset allocation, got fifty-six empty arrays, and fell back to bucketing from account names and transaction merchant strings. It classified the money-market funds as equity and understated that allocation by roughly twenty times. A human caught it by noticing the number looked wrong; nothing in the analysis could have. So `holdings: []` now means "this account holds nothing" and nothing else: a missing `portfolio`, `aggregateHoldings` or `edges` throws rather than yielding an empty map, a holding that cannot be attributed to an account throws rather than being dropped, and the one remaining request propagates to the handler's error path. An empty `edges` array is a genuinely empty portfolio and stays one.
+
+**Only its tests defend the delta,** exactly as with #55 and #58. A re-vendor that pastes the published package over `fork/monarch-money/src` reverts it silently. `fork/monarch-money/test/holdings.test.ts`, run on every PR by `ci.yml`'s `servers (bundle-api)` leg, asserts the QUERY TEXT — `portfolio(input:)`, `aggregateHoldings`, `account { id }`, the asset-class fields, and the absence of `account(id:` — because a wrong query shape is invisible to a mocked client by construction, which is exactly how this shipped. It also asserts that every way the fetch can fail surfaces as an error rather than as `[]`.
+
+**What no fixture can cover is the schema moving again.** `test/fixtures/portfolio-holdings.json` is recorded from a real response and anonymized — ids replaced, quantities and values regenerated, every shape and every null verbatim, because the shape is the only thing the parser can get wrong and the alternative is a household's positions in a git history. Nothing in CI talks to `api.monarch.com`. The query-text assertions pin the shape this fork was verified against on 2026-09-05; the next schema change will present exactly as this one did, minus the silence.
+
+**How you would know.** `get_accounts` with `includeHoldings: true` returns an error naming Monarch's message and the query coordinates it rejected — `Monarch Money error: Monarch GraphQL errors: Something went wrong while processing: None on request_id: None. (at 6:5)` — rather than a well-formed list of accounts that hold nothing.
+
+**Undo:** move the tree back under `upstream/`, restore the Dockerfile `COPY` lines and `loadApiTree`'s path, and move the workspace back in the `bundle-api` workspaces and build script. Tool names and tool count are unchanged by the fork.
+
+See `HACKS.md` #80.
 
 ---
 

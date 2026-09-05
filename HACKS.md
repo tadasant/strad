@@ -3903,3 +3903,91 @@ strategies is a call site; `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` could take
 `host:port` entries the day a deployment needs one; and the parameter route
 closes when a shadowing check covers a name no server declared, rather than only
 a name two servers both declare (`src/deploy/appspec.ts`).
+
+## 80. monarch-money is a FORK, and nothing detects a re-vendor that reverts it
+
+**What.** `servers/bundle-api/upstream/<slug>/` is vendored verbatim from
+[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers) — three of the
+six servers in that tree, under the same terms as good-eggs (#10). monarch-money
+is not. It lives in `servers/bundle-api/fork/monarch-money/`, forked at
+`monarch-money-mcp-server-shared@0.0.6`, and strad has edited its holdings path.
+slack (#55) and google-flights (#58) are the other two forks in that tree.
+
+The delta is `get_accounts(includeHoldings: true)`, which reported
+`"holdings": []` for EVERY account — reproduced twice, twenty minutes apart,
+across all fifty-six accounts on a workspace where fourteen of them held
+forty-four positions. Two defects had to hold at once for that to be invisible.
+The query asked for `account(id:) { holdings }`, a field Monarch's schema does
+not have, so every request came back `400`. And the handler wrapped each one in
+`.catch(() => [])`, over a `?? []` in the client, so every `400` became an empty
+portfolio. Neither half raised anything anywhere.
+
+Holdings are a portfolio-wide connection: `portfolio(input:) { aggregateHoldings
+{ edges { node { holdings { … } security { … } } } } }`, grouped by security,
+each node's `holdings` carrying the `account { id }` of its leg. The fork reads
+that in ONE request and regroups by account, which also retires the old shape's
+N+1 — one round-trip per account, fifty-six of them here.
+
+**Why.** The rule everywhere else is that fixes go upstream and get re-vendored,
+and two other vendored trees carry the same divergence risk (#15, #19, #45). This
+one cannot wait on that round trip, for the reason #55 could not: the failure
+does not cost a retry, it costs the decision made on top of it. An agent asked
+for this workspace's asset allocation, got fifty-six empty arrays, and fell back
+to bucketing from account names and transaction merchant strings — classifying
+the money-market funds as equity and understating that allocation by roughly
+**twenty times**. A human caught it by noticing the number looked wrong. Nothing
+in the analysis could have. `tadasant/strad#183` is the report.
+
+**Silence is the defect, so every failure is loud.** `holdings: []` has to mean
+"this account holds nothing" and nothing else, because a caller cannot tell an
+empty portfolio from a swallowed failure and the second one is what produces a
+confident wrong answer. The per-account `.catch` is gone and the one remaining
+call propagates to the handler's existing `try/catch`. A missing `portfolio`,
+`aggregateHoldings` or `edges` throws rather than yielding an empty map — those
+are structural, so their absence is a failed request or a changed schema, while
+an empty `edges` array is a genuinely empty portfolio and stays one. A holding
+that cannot be attributed to an account throws rather than being dropped.
+
+The transport is fixed on the same principle. It branched on `!response.ok`
+BEFORE parsing, so Monarch's `400` — which carries a well-formed GraphQL error
+body — became a generic Error holding two hundred truncated characters of JSON.
+It parses first now, so that response is a `MonarchGraphQLError` with its
+`errors` array intact. That matters more than it sounds: Monarch's message is
+the same generic `Something went wrong while processing: None on request_id:
+None.` for every malformed query, so the `locations` entry is the ONLY thing
+identifying the field it rejected, and the message now names it.
+
+**The sharp edge.** A FORK has no upstream to diff against and no sync script to
+notice its loss: a re-vendor that pastes `monarch-money/shared/src` over
+`fork/monarch-money/src` reverts all of it with nothing to say so. What stands in
+is `servers/bundle-api/fork/monarch-money/test/holdings.test.ts`, run by
+`ci.yml`'s `servers (bundle-api)` leg. It asserts the QUERY TEXT — that it reads
+`portfolio(input:)` and `aggregateHoldings`, carries `account { id }`, selects
+`type`/`typeDisplay`/`security`, and does not select `account(id:` — because a
+wrong query shape is invisible to a mocked client by construction, which is
+exactly how this shipped. And it asserts that every way the fetch can fail comes
+back as an error rather than as `[]`. A revert fails those. A revert that also
+deletes the tests does not — the same hole `check-tool-policy` has (#46), and the
+same answer: the test file is the artifact under review.
+
+**The fixture is anonymized, and that is a real limit.**
+`test/fixtures/portfolio-holdings.json` is five aggregate nodes from a real 200,
+with account, holding and security ids replaced and quantities, values and cost
+bases regenerated. Every shape is verbatim — which fields are present, which come
+back null, the nesting — because the shape is the only thing the parser can get
+wrong, and the alternative is a household's positions in a git history. What no
+recorded fixture can cover is the schema MOVING again: the query text assertions
+pin the shape this fork was verified against on 2026-09-05, and nothing in CI
+talks to `api.monarch.com`. The next schema change presents exactly as this one
+did, minus the silence.
+
+**Undo.** Copy `monarch-money/shared/src` back over `fork/monarch-money/src`,
+`git mv servers/bundle-api/fork/monarch-money
+servers/bundle-api/upstream/monarch-money`, restore the `COPY` line in EACH of
+`servers/bundle/Dockerfile` and `servers/bundle-api/Dockerfile`, point
+`loadApiTree` in `servers/bundle/host/src/index.ts` back at
+`upstream/monarch-money/build/index.js`, and move the workspace back in the
+`bundle-api` workspaces and build script while dropping it from the test script.
+Tool names and tool count are unchanged either way — the delta is entirely in
+what `get_accounts` returns — so `check-tool-policy` and the smoke counts do not
+move.

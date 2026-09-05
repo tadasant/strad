@@ -14,7 +14,7 @@
 # those secrets onto this component at deploy time.
 #
 # TWO STAGES, and the split is the point. The build needs devDependencies
-# (typescript, @types, and vitest via fork/slack and fork/google-flights); the
+# (typescript, @types, and vitest via the three fork/ trees); the
 # runtime needs none of them. `npm prune --omit=dev` alone would not be enough
 # here: in a single stage the pruned files stay in the published `npm ci`
 # layer, so the toolchain still ships — deleted from the container's
@@ -39,9 +39,9 @@ COPY package.json package-lock.json ./
 COPY fork/slack/package.json ./fork/slack/package.json
 COPY upstream/serpapi-hotels/package.json ./upstream/serpapi-hotels/package.json
 COPY upstream/tailscale/package.json ./upstream/tailscale/package.json
-COPY upstream/monarch-money/package.json ./upstream/monarch-money/package.json
 COPY upstream/gcs/package.json ./upstream/gcs/package.json
 COPY fork/google-flights/package.json ./fork/google-flights/package.json
+COPY fork/monarch-money/package.json ./fork/monarch-money/package.json
 COPY remote/package.json ./remote/package.json
 RUN npm ci --no-audit --no-fund
 
