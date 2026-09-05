@@ -122,10 +122,18 @@ query Web_GetUploadBalanceHistorySession($sessionKey: String!) {
 //   `mutual_fund` / `Cash`, `Stock`, `ETF`, `Mutual Fund`). It is the field that
 //   separates a money-market fund from equity, which is the whole reason a
 //   caller asks for holdings.
+// - `aggregateHoldings` is a Relay connection and the client cannot page it.
+//   `pageInfo { hasNextPage }` is selectable (and `false` over the whole
+//   portfolio observed here, 31 nodes); `totalCount` is not a field, and a
+//   `first:` argument is REJECTED, so there is no cursor path to write. The
+//   client therefore refuses a truncated page rather than reporting it as the
+//   whole portfolio — an undercount nobody can see is the failure this file
+//   exists to stop.
 export const Q_PORTFOLIO_HOLDINGS = `
 query GetPortfolioHoldings($input: PortfolioInput) {
   portfolio(input: $input) {
     aggregateHoldings {
+      pageInfo { hasNextPage }
       edges {
         node {
           holdings {

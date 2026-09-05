@@ -72,7 +72,7 @@ issue that reported this could rank the causes but not name one.
 | File | Delta |
 | --- | --- |
 | `src/monarch-client/operations.ts` | `Q_ACCOUNT_HOLDINGS` → `Q_PORTFOLIO_HOLDINGS`, reshaped onto `portfolio(input:) { aggregateHoldings { edges { node { holdings { … } security { … } } } } }` |
-| `src/monarch-client/client.ts` | `getAccountHoldings(accountId)` → `getHoldingsByAccount()`: one request, grouped by account id. A missing `portfolio`/`aggregateHoldings`/`edges` throws instead of yielding `[]` |
+| `src/monarch-client/client.ts` | `getAccountHoldings(accountId)` → `getHoldingsByAccount()`: one request, grouped by account id. Every structural absence throws instead of yielding `[]`, and a paginated connection is refused |
 | `src/monarch-client/graphql-transport.ts` | Parse the body BEFORE branching on the HTTP status, so a `400` carrying GraphQL errors is a `MonarchGraphQLError`; `GraphQLError.locations` is typed and included in the message |
 | `src/tools/accounts.ts` | The per-account `.catch(() => [])` is gone. One call, and a failure reaches the handler's existing `try/catch` |
 | `src/types.ts` | `Holding` gains `typeDisplay` and a nested `security`; new `Security` interface |
@@ -126,13 +126,28 @@ one is what produces a confident wrong answer. So:
   catch, and the one call that remains propagates to the handler's `try/catch`,
   which returns `errorFromException(err)` — Monarch's own message, or the auth
   hint for a `MonarchAuthError`.
-- A missing `portfolio`, `aggregateHoldings` or `edges` THROWS. Those are
-  structural: a successful query cannot omit them, so their absence is a failed
-  request or a changed schema. An empty `edges` array is the opposite — a real,
-  genuinely empty portfolio — and returns an empty map.
+- Everything structural THROWS: a missing `portfolio`, `aggregateHoldings`,
+  `edges`, `node` or `node.holdings`. A successful query cannot omit any of
+  them, so their absence is a failed request or a changed schema. An empty
+  `edges` array is the opposite — a real, genuinely empty portfolio — and
+  returns an empty map.
 - A holding that cannot be attributed to an account throws rather than being
   dropped. Silently dropping one understates a portfolio by exactly the amount
   nobody would notice.
+- **A truncated page is refused.** `aggregateHoldings` is a Relay connection, so
+  the query selects `pageInfo { hasNextPage }` and the client throws if it is
+  true. Monarch rejects a `first:` argument and exposes no `totalCount`, so
+  there is no cursor path to write — and returning the first page would report
+  part of a portfolio as all of it. Observed `false` over the whole portfolio
+  (31 aggregate nodes), so this has never fired; it is there because an
+  undercount is precisely the failure nobody can see.
+
+One gap this cannot close from inside the client: a holding whose account is not
+in `getAccounts()` has no row to attach to in `get_accounts`, and falls out
+without an error. `Q_ACCOUNTS` takes no filter and returns hidden accounts too,
+so the two responses have always agreed — but they are two requests, and the
+mismatch would be an undercount rather than a failure. It is noted at the call
+site in `src/tools/accounts.ts`.
 
 ## The sharp edge
 

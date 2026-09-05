@@ -1,6 +1,6 @@
 // The strad fork delta for monarch-money: `get_accounts(includeHoldings: true)`
-// returned `"holdings": []` for every account, on a workspace where thirteen
-// accounts held securities.
+// returned `"holdings": []` for every account, on a workspace where fourteen
+// accounts held forty-four positions.
 //
 // Two things had to be true at once for that to be invisible. The query asked
 // for `account(id:) { holdings }`, a field Monarch's schema does not have, so
@@ -120,10 +120,19 @@ describe('Q_PORTFOLIO_HOLDINGS', () => {
 
   test('selects the asset class and the joined security', () => {
     // `type`/`typeDisplay` is what separates a money-market fund from equity —
-    // the field whose absence produced the 20x misclassification.
+    // the field whose absence produced the 20x misclassification. Matched as
+    // whole selection lines: a bare `toContain('type')` is satisfied by
+    // `typeDisplay` alone, so it could not fail on its own.
     for (const field of ['type', 'typeDisplay', 'costBasis', 'closingPrice', 'security']) {
-      expect(ops.Q_PORTFOLIO_HOLDINGS).toContain(field);
+      expect(ops.Q_PORTFOLIO_HOLDINGS).toMatch(new RegExp(`^\\s*${field}\\b`, 'm'));
     }
+  });
+
+  test('refuses to page silently: it asks whether there is a next page', () => {
+    // Monarch rejects a `first:` argument on this connection, so the client has
+    // no cursor path — asking is the only way it can tell a whole portfolio
+    // from the first slice of one.
+    expect(ops.Q_PORTFOLIO_HOLDINGS).toMatch(/pageInfo\s*\{\s*hasNextPage\s*\}/);
   });
 });
 
@@ -230,6 +239,41 @@ describe('getHoldingsByAccount surfaces failure rather than emptiness', () => {
     );
   });
 
+  test.each([
+    ['a node is null', [{ node: null }]],
+    ['a node has no holdings array', [{ node: { holdings: null, security: null } }]],
+  ])('throws when %s', async (_label, edges) => {
+    // Skipping either would drop a whole security and report the rest as the
+    // complete portfolio — the reported bug's output, from the fixed code.
+    await expect(
+      clientOver(
+        transportReturning({ portfolio: { aggregateHoldings: { edges } } })
+      ).getHoldingsByAccount()
+    ).rejects.toThrow(/no per-account legs/);
+  });
+
+  test('throws rather than reporting a truncated page as the whole portfolio', async () => {
+    await expect(
+      clientOver(
+        transportReturning({
+          portfolio: {
+            aggregateHoldings: {
+              pageInfo: { hasNextPage: true },
+              edges: [
+                {
+                  node: {
+                    holdings: [{ id: 'h_1', account: { id: 'acct_01' } }],
+                    security: null,
+                  },
+                },
+              ],
+            },
+          },
+        })
+      ).getHoldingsByAccount()
+    ).rejects.toThrow(/cannot page it/);
+  });
+
   test('throws on a holding that cannot be attributed to an account', async () => {
     // Silently dropping it would understate a portfolio by exactly the amount
     // nobody would notice.
@@ -309,8 +353,10 @@ describe('get_accounts(includeHoldings: true)', () => {
     // Monarch's own message reaches the caller instead of being discarded.
     expect(result.content[0].text).toContain('Something went wrong (at 6:5)');
     // The failure mode this fork exists to prevent: an error must never be
-    // reported as a well-formed list of accounts holding nothing.
-    expect(result.content[0].text).not.toContain('"holdings":[]');
+    // reported as a well-formed list of accounts holding nothing. Asserted as
+    // "the payload does not parse as one", rather than as the absence of a
+    // substring the error path could never contain anyway.
+    expect(() => JSON.parse(result.content[0].text)).toThrow();
   });
 
   test('reports an auth failure as an auth failure', async () => {
@@ -409,6 +455,26 @@ describe('graphql transport error classification', () => {
     });
 
     await expect(transport.request({ query: '{ x }' })).rejects.toBeInstanceOf(MonarchAuthError);
+  });
+
+  test('a 200 with a non-JSON body is an error', async () => {
+    // The reorder moved this shape from "throw at the parse" to "fall through
+    // two later checks", so it is pinned rather than assumed.
+    const transport = createGraphQLTransport({
+      token: 't',
+      fetchImpl: fetchReturning(200, 'OK', '<html>a login page</html>'),
+    });
+
+    await expect(transport.request({ query: '{ x }' })).rejects.toThrow(/non-JSON response/);
+  });
+
+  test('a 5xx carrying GraphQL errors is classified too', async () => {
+    const transport = createGraphQLTransport({
+      token: 't',
+      fetchImpl: fetchReturning(502, 'Bad Gateway', { errors: [{ message: 'upstream died' }] }),
+    });
+
+    await expect(transport.request({ query: '{ x }' })).rejects.toBeInstanceOf(MonarchGraphQLError);
   });
 
   test('a 200 with no data and no errors is an error, not an empty result', async () => {

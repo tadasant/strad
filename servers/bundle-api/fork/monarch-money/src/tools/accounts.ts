@@ -146,6 +146,11 @@ export function accountTools(clientFactory: ClientFactory): RegisteredTool[] {
         // asset allocation cannot tell an empty portfolio from a swallowed
         // failure, and gets a confident wrong answer from the second one.
         const byAccount = await client.getHoldingsByAccount();
+        // The one gap the loudness above cannot close from here: a holding whose
+        // account is not in `getAccounts()` has no row to attach to and falls
+        // out. `Q_ACCOUNTS` takes no filter and returns hidden accounts too, so
+        // the two responses have always agreed — but they are two requests, and
+        // the mismatch would be an undercount rather than an error.
         const enriched: (Account & { holdings: Holding[] })[] = accounts.map((a) => ({
           ...a,
           holdings: byAccount.get(a.id) ?? [],

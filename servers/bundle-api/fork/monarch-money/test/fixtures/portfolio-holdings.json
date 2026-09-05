@@ -2,6 +2,9 @@
   "data": {
     "portfolio": {
       "aggregateHoldings": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
         "edges": [
           {
             "node": {

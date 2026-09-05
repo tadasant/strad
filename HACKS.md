@@ -2389,11 +2389,12 @@ notices the deploy that failed because of it.
 ## 55. The slack server is a FORK, and nothing detects a re-vendor that reverts it
 
 **What.** `servers/bundle-api/upstream/<slug>/` is vendored verbatim from
-[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers) — four of the six
+[`pulsemcp/mcp-servers`](https://github.com/pulsemcp/mcp-servers) — three of the six
 servers in that tree, under the same terms as good-eggs (#10). Slack is not. It
 lives in `servers/bundle-api/fork/slack/`, forked at
 `b1f13fedeb9be97ac03514d637a4616f760b6dee`, and strad has edited its tool
-definitions. `google-flights` is the other fork in that tree (#58).
+definitions. `google-flights` (#58) and `monarch-money` (#80) are the other two
+forks in that tree.
 
 The delta is the Slack message format. Slack renders mrkdwn, mrkdwn is not
 Markdown, and `~text~` is STRIKETHROUGH — so an agent that writes `~750 som` and
@@ -2684,7 +2685,7 @@ test. Every job then logs in to the same file again.
 ## 58. The google-flights date grid costs one request per date, a premium seat has no legroom to report, and the fare brand is not the cabin
 
 **What.** `servers/bundle-api/fork/google-flights/` is the second FORK in that
-tree (#55 is the first), taken from the published `google-flights-mcp-server`
+tree (#55 is the first, #80 the third), taken from the published `google-flights-mcp-server`
 v0.2.6. Three defects are fixed there — cabin class and passenger counts encoded
 at protobuf field numbers Google skips as unknown, the two baggage entries read
 in the wrong order, and a `get_date_grid` that returned a trailing 61-day price
@@ -3942,11 +3943,17 @@ in the analysis could have. `tadasant/strad#183` is the report.
 "this account holds nothing" and nothing else, because a caller cannot tell an
 empty portfolio from a swallowed failure and the second one is what produces a
 confident wrong answer. The per-account `.catch` is gone and the one remaining
-call propagates to the handler's existing `try/catch`. A missing `portfolio`,
-`aggregateHoldings` or `edges` throws rather than yielding an empty map — those
-are structural, so their absence is a failed request or a changed schema, while
-an empty `edges` array is a genuinely empty portfolio and stays one. A holding
-that cannot be attributed to an account throws rather than being dropped.
+call propagates to the handler's existing `try/catch`. Everything structural
+throws rather than yielding an empty map — a missing `portfolio`,
+`aggregateHoldings`, `edges`, `node` or `node.holdings`, since a successful query
+cannot omit any of them — while an empty `edges` array is a genuinely empty
+portfolio and stays one. A holding that cannot be attributed to an account
+throws rather than being dropped. And because `aggregateHoldings` is a Relay
+connection that Monarch will not let this client page — `first:` is rejected,
+`totalCount` is not a field — the query selects `pageInfo { hasNextPage }` and
+the client refuses a truncated page rather than reporting part of a portfolio as
+all of it. It has never been true (31 nodes, `hasNextPage: false`); it is asked
+because an undercount is the failure nobody can see.
 
 The transport is fixed on the same principle. It branched on `!response.ok`
 BEFORE parsing, so Monarch's `400` — which carries a well-formed GraphQL error

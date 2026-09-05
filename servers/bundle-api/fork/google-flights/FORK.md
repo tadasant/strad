@@ -1,7 +1,7 @@
 # google-flights — a fork, not a vendor copy
 
 Everything under `servers/bundle-api/upstream/` is copied verbatim: fixes go
-upstream, then get re-vendored. This directory is one of two exceptions, and it
+upstream, then get re-vendored. This directory is one of three exceptions, and it
 sits in `fork/` so that the difference is visible from the path.
 
 **Forked from** [`google-flights-mcp-server`](https://www.npmjs.com/package/google-flights-mcp-server)
