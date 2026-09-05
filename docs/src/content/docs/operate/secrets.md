@@ -335,10 +335,11 @@ or every render is a `400 SECRET_REFERENCE_ERROR`. All three live in
 `npm run writerules:sync`, guarded by `test/vendored.sync.test.ts` and
 `test/parameter-write-rules.ownership.test.ts`. What is NOT shared is the HTTP
 around them — each tree lists, POSTs and read-modify-writes the IAM policy with
-its own token and its own error type, and gets loud failures when it gets that
-wrong. A disagreement about the rules is the silent one: a writer that ranks or
-mints differently writes a version every reader skips, so the rotate reports
-success while the console, the resolver and every container keep serving the old
+its own token and its own error type, and none of those differences is a
+disagreement about which version is current or about what the policy should say.
+A disagreement about the RULES is the silent one: a writer that ranks or mints
+differently writes a version every reader skips, so the rotate reports success
+while the console, the resolver and every container keep serving the old
 value.
 
 ## A server's secrets live in that server's namespace

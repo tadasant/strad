@@ -131,7 +131,7 @@ export function createWriteClient(cfg: WriteClientConfig): ParametersWriter {
    * runtime resolver — and a writer that disagrees writes versions the others
    * skip, silently: the tool reports success and the value never takes effect.
    *
-   * What is this function's own is the LISTING, which is loud when it is wrong.
+   * What stays here is the LISTING — this tree's own call, its own error type.
    */
   async function currentVersionId(id: string): Promise<string | undefined> {
     const listed = (await pm(

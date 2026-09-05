@@ -40,9 +40,11 @@
  * ## What belongs here
  *
  * The pure decisions, and nothing else. The HTTP that lists versions, POSTs one,
- * and reads-then-writes an IAM policy stays at each call site: the two trees mint
- * their own tokens, page differently and raise different error types, and none of
- * that can drift silently.
+ * and reads-then-writes an IAM policy stays at each call site: the trees mint their
+ * own tokens, page differently and raise different error types, and none of those
+ * differences is a disagreement about which version is current or about what the
+ * policy should say. That is the line — what the halves must AGREE on lives here;
+ * how each of them talks to Google is its own.
  */
 
 /** One parameter version, as a `parameterVersions.list` page describes it. */
@@ -70,9 +72,9 @@ function versionNumber(vid: string): number {
  * The greatest `v{n}` among a parameter's ENABLED versions, or undefined.
  *
  * The caller lists the versions (paging is theirs); this is the part that has to
- * be the same everywhere. `n` comes back with `vid` because a writer needs it to
- * mint the next id and would otherwise re-derive it — a second parse of the same
- * string is a second chance to parse it differently.
+ * be the same everywhere. `n` comes back alongside `vid` because it is the number
+ * the ranking actually compared, so a caller reasoning about the ordering reads it
+ * rather than forming a second opinion about the same string.
  */
 export function rankVersions(
   listed: ListedVersion[],

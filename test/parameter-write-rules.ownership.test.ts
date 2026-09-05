@@ -24,7 +24,7 @@ const SOURCE: string = repoPath(
  * `test/parameter-wire.ownership.test.ts`, deliberately: the two seams cross the
  * same boundary, address the same GCP parameter, and fail the same silent way.
  */
-describe("the secrets tree has no second implementation of the write rules", () => {
+describe("the write rules have one implementation, and both trees use it", () => {
   const dir = "servers/secrets/shared/src";
   const vendored = "parameter-write-rules.ts";
 
@@ -102,5 +102,17 @@ describe("the secrets tree has no second implementation of the write rules", () 
       .map(([file]) => file)
       .sort();
     expect(importers).toEqual(["parameter-manager.ts", "write-client.ts"]);
+  });
+
+  it("is imported by the source tree's own client too", () => {
+    // The same fail-open from the other side, and the one a scan of the SECRETS
+    // tree cannot see: `src/secrets/parameters/gcp.ts` is the console admin and
+    // the runtime resolver, two of the three readers, and it could re-hand-write
+    // the ranking with the vendored copy still byte-identical and every test
+    // above still green. The store behaviour tests would not notice either —
+    // `src/secrets/parameters/fake.ts` lists versions in ascending order, where
+    // "last one wins" and "greatest suffix" agree.
+    const client = readFileSync("src/secrets/parameters/gcp.ts", "utf8");
+    expect(client).toMatch(/from "\.\/write-rules\.ts"/);
   });
 });
