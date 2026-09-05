@@ -223,6 +223,80 @@ export async function probeCapabilities(
 }
 
 /**
+ * How long ONE caller waits on a probe before it is treated as unanswered.
+ *
+ * The probe's two legs are bounded differently and one of them is not bounded
+ * at all: `probeCapabilities` aborts the `testIamPermissions` fetch after
+ * `DEFAULT_TIMEOUT_MS`, but it builds that AbortController AFTER the token mint
+ * returns, and `mintAccessToken` passes no signal. Node's `fetch` has no overall
+ * timeout of its own, so a token endpoint that accepts the connection and then
+ * stalls holds the request for undici's 300s header timeout — and indefinitely
+ * if it trickles bytes.
+ *
+ * SIX SECONDS IS THE /mcp DOOR'S NUMBER, deliberately. The `secrets` mount's
+ * memo in `servers/secrets/shared/src/server.ts` already bounds the same probe
+ * about the same credential at six, and two doors disagreeing on how long a
+ * caller waits is a difference with no reason behind it. What the number has to
+ * be under over there is the gateway's ten-second reachability timeout; what it
+ * has to be under here is a human's patience with a page that has not painted.
+ * Both are satisfied by six, and a healthy probe answers in well under a second,
+ * so this is only ever reached by something already broken.
+ *
+ * The abandoned probe is CANCELLED, not merely dropped. Nothing of the probe's
+ * own fires on the stalled-mint path this exists for, so an uncancelled request
+ * would leave a socket per render parked until undici timed it out.
+ * `ProbeConfig` takes a `fetchImpl`, so the deadline supplies one carrying a
+ * signal of its own — a caller's choice about its own request, which leaves what
+ * the probe MAKES of an answer alone.
+ */
+const PROBE_DEADLINE_MS = 6_000;
+
+/**
+ * A probe bounded by the deadline, in both directions: the caller stops waiting
+ * and the request stops running.
+ *
+ * Resolves to `NO_CAPABILITIES` if no answer arrives in time — which is
+ * `probed: false`, so the memo above keeps it for `failureTtlMs` and the next
+ * caller asks again rather than inheriting the stall.
+ */
+function probeWithDeadline(
+  cfg: ProbeConfig,
+  deadlineMs: number,
+): Promise<Capabilities> {
+  const abandon = new AbortController();
+  const underlying = cfg.fetchImpl ?? fetch;
+  // Every fetch the probe makes joins this signal. The CRM leg passes one of its
+  // own (`DEFAULT_TIMEOUT_MS`), so the two are combined rather than replaced.
+  const fetchImpl: FetchLike = (input, init) =>
+    underlying(input, {
+      ...init,
+      signal: init?.signal
+        ? AbortSignal.any([init.signal, abandon.signal])
+        : abandon.signal,
+    });
+
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<Capabilities>((resolve) => {
+    timer = setTimeout(() => {
+      abandon.abort();
+      resolve({
+        ...NO_CAPABILITIES,
+        reason:
+          `the capability probe for "${cfg.projectId}" did not answer within ` +
+          `${deadlineMs / 1000}s`,
+      });
+    }, deadlineMs);
+    // A pending probe must never be the reason the process refuses to exit.
+    timer.unref?.();
+  });
+
+  return Promise.race([
+    probeCapabilities({ ...cfg, fetchImpl }),
+    deadline,
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
  * The probe, MEMOISED with a TTL.
  *
  * An IAM grant changes on human timescales, and the probe costs a token mint
@@ -230,6 +304,27 @@ export async function probeCapabilities(
  * for an answer that is stable for hours. The TTL bounds how long a REVOKED
  * permission keeps being offered; the operation itself still fails closed at
  * Google, so a stale `true` costs a legible error, not a leak.
+ *
+ * ## The in-flight entry is shared, and it always ends
+ *
+ * Concurrent renders join ONE probe rather than stampeding Google, and the entry
+ * is cleared when that probe settles. Sharing a promise is only safe if the
+ * promise settles, and `probeCapabilities` on its own carries no guarantee that
+ * it will: its token mint passes no abort signal and Node's `fetch` has no
+ * overall timeout. A raw probe in this entry, cleared in `.finally()`, is
+ * therefore an entry a stalled mint never clears — and every later render of
+ * that store's page joins the same hanging promise for the life of the process,
+ * unlogged and untimed, with a redeploy the only cure. Which is exactly what an
+ * operator trying to rotate a credential through this console cannot reach for.
+ *
+ * So the entry holds a probe bounded by construction. The deadline is what makes
+ * the memo's own claim true — an answer for `ttlMs`, a non-answer for
+ * `failureTtlMs`, and never a pending promise for the life of the process.
+ *
+ * The deadline is SILENT here, deliberately, where the `/mcp` mount logs the
+ * same fault to stderr: the console's caller is a human looking at the page it
+ * renders, and the reason travels to them as the unverified-capability detail on
+ * that page rather than into a log they would have to go and read.
  */
 export function cachedProbe(
   cfg: ProbeConfig,
@@ -242,6 +337,8 @@ export function cachedProbe(
    * reveal long after the cause had passed.
    */
   failureTtlMs = 15_000,
+  /** Test seam. See PROBE_DEADLINE_MS for why the default is what it is. */
+  deadlineMs = PROBE_DEADLINE_MS,
 ): () => Promise<Capabilities> {
   let at = 0;
   let inFlight: Promise<Capabilities> | undefined;
@@ -250,7 +347,9 @@ export function cachedProbe(
   return () => {
     const ttl = value?.probed === false ? failureTtlMs : ttlMs;
     if (value && now() - at < ttl) return Promise.resolve(value);
-    inFlight ??= probeCapabilities(cfg)
+    // The `.then` hangs off the RACE, not off the probe, so an abandoned probe
+    // that settles later cannot write itself over a fresher answer.
+    inFlight ??= probeWithDeadline(cfg, deadlineMs)
       .then((caps) => {
         value = caps;
         at = now();

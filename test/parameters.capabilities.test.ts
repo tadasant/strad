@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  cachedProbe,
   NO_CAPABILITIES,
   PROBE_PERMISSIONS,
   probeCapabilities,
@@ -255,5 +256,228 @@ describe("the bundle's copy of the probe", () => {
     }
     expect(source).not.toContain("parametermanager.parameterVersions.access");
     expect(source).toContain(":testIamPermissions");
+  });
+
+  /**
+   * The two doors bound the SAME probe about the SAME credential, and both
+   * comments say six seconds is the other one's number. That is a claim about a
+   * file this program does not compile, so nothing but a check like this keeps
+   * it true: either constant can be retuned alone with no test failing, and the
+   * doors would then disagree on how long a caller waits for one answer.
+   */
+  it("waits the same six seconds on a probe as the console does", () => {
+    const consoleSide = readFileSync(
+      new URL("../src/secrets/parameters/capabilities.ts", import.meta.url),
+      "utf8",
+    );
+    const mcpSide = readFileSync(
+      new URL("../servers/secrets/shared/src/server.ts", import.meta.url),
+      "utf8",
+    );
+    for (const source of [consoleSide, mcpSide]) {
+      expect(source).toContain("const PROBE_DEADLINE_MS = 6_000;");
+    }
+  });
+});
+
+/**
+ * A stub whose TOKEN leg can be made to hang forever, which is the failure the
+ * deadline exists for. `probeCapabilities` builds its own AbortController after
+ * the mint returns, so on this path nothing of the probe's own ever fires — the
+ * only thing that can end the call is a bound the caller brought.
+ *
+ * It records the signal each mint was given, because "the caller stopped
+ * waiting" and "the request stopped running" are two different claims and the
+ * second is the one that keeps a socket per render from piling up.
+ */
+function stallingMint(held: string[] = []) {
+  const state = {
+    /** Hang the TOKEN leg — the one with no signal of its own. */
+    stall: true,
+    /** Hang the CRM leg instead, which DOES pass a signal of its own. */
+    stallCrm: false,
+    mints: 0,
+    signals: [] as (AbortSignal | null | undefined)[],
+    crmCalls: 0,
+    crmSignals: [] as (AbortSignal | null | undefined)[],
+    held,
+    /** Let a stalled mint through, to see what a LATE answer does. */
+    release: () => {},
+  };
+  const token = () =>
+    new Response(JSON.stringify({ access_token: "at", expires_in: 3600 }), {
+      headers: { "content-type": "application/json" },
+    });
+  const fetchImpl = (async (
+    url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    if (String(url).startsWith("http://token")) {
+      state.mints += 1;
+      state.signals.push(init?.signal);
+      if (state.stall) {
+        return new Promise<Response>((resolve) => {
+          state.release = () => resolve(token());
+        });
+      }
+      return token();
+    }
+    state.crmCalls += 1;
+    state.crmSignals.push(init?.signal);
+    if (state.stallCrm) return new Promise<Response>(() => {});
+    return new Response(JSON.stringify({ permissions: state.held }), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  return { state, fetchImpl };
+}
+
+/** A prober with a 25ms deadline, so the test costs 25ms rather than six seconds. */
+function cachedWithClock(
+  fetchImpl: typeof fetch,
+  clock: () => number,
+  deadlineMs = 25,
+) {
+  return cachedProbe(
+    {
+      projectId: "strad-secrets-test",
+      account: ACCOUNT,
+      crmApiBase: "http://crm",
+      tokenUrl: "http://token/token",
+      fetchImpl,
+    },
+    5 * 60_000,
+    clock,
+    15_000,
+    deadlineMs,
+  );
+}
+
+describe("the memoised probe — a call cannot outlive its bound", () => {
+  it("fails closed on a mint that never settles, and cancels the abandoned request", async () => {
+    const { state, fetchImpl } = stallingMint();
+    const probe = cachedWithClock(fetchImpl, () => 0);
+
+    const caps = await probe();
+
+    expect(caps).toMatchObject({ ...NO_CAPABILITIES, probed: false });
+    expect(caps.reason).toContain("did not answer within");
+    expect(state.mints).toBe(1);
+    // Not merely dropped. Nothing else aborts this leg, and a socket per page
+    // render left running is the cost of "abandoned" without "cancelled".
+    expect(state.signals[0]?.aborted).toBe(true);
+    // The probe never reached Google, so nothing may be claimed from it.
+    expect(state.crmCalls).toBe(0);
+  });
+
+  it("does not poison the memo — the next call after the TTL probes afresh", async () => {
+    // The defect: the in-flight promise was cleared only in `.finally()`, so a
+    // probe that never settled was joined by every later render for the life of
+    // the process. Against that code this test hangs rather than fails.
+    const { state, fetchImpl } = stallingMint([
+      EXPECTED.createParameter,
+      EXPECTED.writeParameter,
+    ]);
+    let clock = 0;
+    const probe = cachedWithClock(fetchImpl, () => clock);
+
+    const first = await probe();
+    expect(first.probed).toBe(false);
+
+    // Inside the failure TTL the non-answer stands: this is a memo, not a stall.
+    clock += 1_000;
+    expect(await probe()).toStrictEqual(first);
+    expect(state.mints).toBe(1);
+
+    // Past it, a FRESH probe — which is the whole point. The store recovers, and
+    // the console's page recovers with it, with no restart.
+    clock += 15_000;
+    state.stall = false;
+    const recovered = await probe();
+    expect(state.mints).toBe(2);
+    expect(recovered).toMatchObject({ probed: true, writeParameters: true });
+
+    // And a real answer is kept for the full TTL, unchanged by any of this.
+    clock += 60_000;
+    expect(await probe()).toStrictEqual(recovered);
+    expect(state.mints).toBe(2);
+  });
+
+  it("still shares ONE probe across concurrent renders", async () => {
+    // The bound must not become a probe per render: one console page fronts
+    // several stores and a stalled one would then mint per row, per reload.
+    const { state, fetchImpl } = stallingMint();
+    const probe = cachedWithClock(fetchImpl, () => 0);
+
+    const [a, b] = await Promise.all([probe(), probe()]);
+
+    expect(state.mints).toBe(1);
+    expect(a).toStrictEqual(b);
+    expect(a.probed).toBe(false);
+  });
+
+  it("leaves a healthy probe alone — one round trip, memoised", async () => {
+    const { state, fetchImpl } = stallingMint([EXPECTED.deleteParameter]);
+    state.stall = false;
+    let clock = 0;
+    const probe = cachedWithClock(fetchImpl, () => clock);
+
+    const caps = await probe();
+    expect(caps).toMatchObject({ probed: true, deleteParameters: true });
+
+    clock += 4 * 60_000;
+    expect(await probe()).toStrictEqual(caps);
+    expect(state.mints).toBe(1);
+    expect(state.crmCalls).toBe(1);
+  });
+
+  it("cancels the CRM leg too, through the signal it already carries", async () => {
+    // The mint is not the only leg that can hang, and it is the only one the
+    // deadline reaches by replacing a missing signal. The CRM leg brings its own
+    // (`DEFAULT_TIMEOUT_MS`), so the two have to be COMBINED — replacing it would
+    // drop the probe's own bound, and ignoring it would leave this leg running.
+    const { state, fetchImpl } = stallingMint();
+    state.stall = false;
+    state.stallCrm = true;
+    const probe = cachedWithClock(fetchImpl, () => 0);
+
+    const caps = await probe();
+
+    expect(caps).toMatchObject({ ...NO_CAPABILITIES, probed: false });
+    expect(caps.reason).toContain("did not answer within");
+    expect(state.crmCalls).toBe(1);
+    expect(state.crmSignals[0]?.aborted).toBe(true);
+  });
+
+  it("does not let a late answer overwrite the one that replaced it", async () => {
+    // The abandoned probe is not awaited, but it is still running: a stalled
+    // mint that comes back a minute later must not write itself over the answer
+    // a later probe already established. Hence the `.then` hanging off the RACE
+    // rather than off the probe.
+    const { state, fetchImpl } = stallingMint();
+    let clock = 0;
+    const probe = cachedWithClock(fetchImpl, () => clock);
+
+    expect((await probe()).probed).toBe(false);
+    const stalled = state.release;
+
+    // A second probe gets through and establishes the real answer.
+    clock += 16_000;
+    state.stall = false;
+    state.held = [EXPECTED.createParameter, EXPECTED.writeParameter];
+    const established = await probe();
+    expect(established).toMatchObject({ probed: true, writeParameters: true });
+
+    // Now the FIRST probe's mint finally returns, and its CRM leg answers with a
+    // different permission set. Nothing of it may reach the memo.
+    state.held = [EXPECTED.deleteParameter];
+    stalled();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(await probe()).toStrictEqual(established);
+    expect(await probe()).toMatchObject({
+      writeParameters: true,
+      deleteParameters: false,
+    });
   });
 });
