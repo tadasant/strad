@@ -8,7 +8,7 @@
  * unreachable from every slug. This is the test that makes that a CI failure
  * instead.
  */
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
 import {
@@ -18,7 +18,7 @@ import {
   missingCredentials,
   createDefaultClient,
   GOOGLE_SHEETS_ENV_NAMES,
-} from "../build/index.js";
+} from "../src/index.js";
 
 test("every registered tool is in exactly one tier", () => {
   const registered = toolNames().sort();

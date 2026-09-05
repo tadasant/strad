@@ -6,11 +6,11 @@
  * verbatim. A table numbered 1..n instead would be an invitation to write to the
  * wrong row, and it would look perfectly reasonable.
  */
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 
-import { renderValueRange, MAX_CELLS } from "../build/utils/format-values.js";
-import { findCells } from "../build/utils/find-cells.js";
+import { renderValueRange, MAX_CELLS } from "../src/utils/format-values.js";
+import { findCells } from "../src/utils/find-cells.js";
 
 test("a rendered range is addressed where it actually lives", () => {
   const { text } = renderValueRange({
