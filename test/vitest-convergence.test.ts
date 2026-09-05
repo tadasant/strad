@@ -15,8 +15,10 @@ import { installableTrees } from "./helpers/bundle-trees.js";
 // notices. It is the same shape as `test/vendored.sync.test.ts` — an invariant
 // the repo decided on, asserted rather than remembered.
 //
-// It walks the git index rather than the filesystem so that a tree's
-// `node_modules/` cannot answer for it.
+// The first rule walks the git index rather than the filesystem so that a tree's
+// `node_modules/` cannot answer for it. The second has to walk the filesystem —
+// what it asks about is a directory carrying a lockfile — which is the same set
+// in CI, where the checkout is the tracked files and nothing else.
 //
 // TWO rules live here, and they answer different questions. The first — "one
 // Vitest, everywhere" — is about the vitest a package already declares: which
@@ -199,19 +201,37 @@ describe("one HARNESS, everywhere", () => {
     expect(off).toEqual([]);
   });
 
+  it("is not satisfied by a command that merely says the word `vitest`", () => {
+    // Guard the guard, and the sharpest one here: the check below is a string
+    // test on a script, and a script is free text. `\bvitest\b` would accept
+    // `echo skipping vitest && exit 0`, and `vitest --version` — a real binary
+    // that exits 0 in milliseconds having asserted nothing — which is precisely
+    // the "reports like a pass" failure the whole file is about, reintroduced
+    // inside its own assertion.
+    expect(runsVitest("vitest run")).toBe(true);
+    expect(
+      runsVitest("npm run build && vitest run --config vitest.config.ts"),
+    ).toBe(true);
+    expect(runsVitest("echo skipping vitest for now && exit 0")).toBe(false);
+    expect(runsVitest("vitest --version")).toBe(false);
+    expect(runsVitest("node --test test/*.test.mjs")).toBe(false);
+  });
+
   it("gives every tree a `test` script that ends at vitest", () => {
     const off: string[] = [];
     for (const tree of harnessUnits()) {
-      const leaves = leafTestCommands(tree);
+      const { leaves, problems } = resolveTestScript(tree);
+      off.push(...problems);
       // A tree that resolved to nothing would pass the loop below vacuously —
       // the same shape as the empty-walk failure the first test guards against,
-      // one level down.
-      expect(
-        leaves.length,
-        `${tree}: its \`test\` script resolves to no command at all`,
-      ).toBeGreaterThan(0);
+      // one level down. Reported rather than thrown, like everything else here:
+      // an inline `expect` inside the walk would abort the run at the first
+      // broken tree and hide every tree after it in sorted order.
+      if (leaves.length === 0 && problems.length === 0) {
+        off.push(`${tree}: its \`test\` script resolves to no command at all`);
+      }
       for (const leaf of leaves) {
-        if (!/\bvitest\b/.test(leaf)) off.push(`${tree}: ${leaf}`);
+        if (!runsVitest(leaf)) off.push(`${tree}: ${leaf}`);
       }
     }
     expect(
@@ -222,6 +242,36 @@ describe("one HARNESS, everywhere", () => {
     ).toEqual([]);
   });
 });
+
+/**
+ * One `--workspace <x>` reference, in either form npm accepts.
+ *
+ * `-w` and the plural `--workspaces` are deliberately not matched. Neither
+ * appears in a `test` script today, and both fail SAFE if one ever does: the
+ * text stays in the leaf, and a leaf reading `npm run test -w shared` runs no
+ * vitest, so the check below reports it rather than resolving past it.
+ */
+const WORKSPACE_REF = /--workspace(?:=|\s+)(\S+)/g;
+
+/**
+ * Whether a command really RUNS vitest, rather than merely mentioning it.
+ *
+ * A `test` script is free text, so a substring test is not enough: `echo
+ * skipping vitest && exit 0` contains the word, and `vitest --version` is the
+ * real binary exiting 0 without collecting a file. So the command is split into
+ * its segments and one of them has to BEGIN with the binary and ask it to
+ * `run` — the shape every leaf in this repo already has.
+ */
+function runsVitest(command: string): boolean {
+  return command
+    .split(/&&|\|\||;/)
+    .map((segment) => segment.trim())
+    .some((segment) =>
+      /^(?:npx\s+(?:--yes\s+|--no\s+)?)?vitest\s+(?:run\b|--run\b)/.test(
+        segment,
+      ),
+    );
+}
 
 /**
  * Every unit `npm ci` can address, which is every unit a CI leg can run in: the
@@ -237,8 +287,11 @@ type Pkg = { name?: string; scripts?: Record<string, string> };
 
 /**
  * Every `package.json` inside one tree, keyed by BOTH its path from that tree's
- * root and its `name` — because `--workspace` takes either, and this repo uses
- * both (`--workspace shared`, `--workspace google-sheets-workspace-mcp-server-shared`).
+ * root and its `name`, because `--workspace` takes either. Every `test` script
+ * here happens to use a path today (`--workspace shared`,
+ * `--workspace=fork/slack`), but `servers/onepassword`'s BUILD script already
+ * uses names (`--workspace onepassword-mcp-server-shared`), so the form is one
+ * a `test` script is a copy-paste away from.
  *
  * The walk stops at a nested lockfile: that directory is a tree in its own right
  * and answers for itself, which is what keeps `servers/bundle/host` from being
@@ -274,34 +327,52 @@ function packagesUnder(tree: string): Map<string, Pkg> {
  * says which runner is used. Checking the tree's own script alone would read
  * `npm run test --workspace shared` as neither vitest nor `node --test`.
  */
-function leafTestCommands(tree: string): string[] {
-  const packages = packagesUnder(tree);
+function resolveTestScript(tree: string): {
+  leaves: string[];
+  problems: string[];
+} {
   const leaves: string[] = [];
+  const problems: string[] = [];
   const seen = new Set<string>();
+  // Built only if a delegation is actually followed. Most trees never need it,
+  // and for the repo root the walk would cover everything not already a tree.
+  let packages: Map<string, Pkg> | undefined;
 
   const visit = (key: string): void => {
     if (seen.has(key)) return;
     seen.add(key);
-    const pkg = packages.get(key);
-    expect(
-      pkg,
-      `${tree}: \`--workspace ${key}\` names no package in this tree`,
-    ).toBeDefined();
-    const script = pkg!.scripts?.test;
-    expect(
-      script,
-      `${tree}: \`${key}\` has no \`test\` script — a tree that ships source ` +
-        `and runs nothing is the failure this file exists to make loud`,
-    ).toBeDefined();
-    const delegated = [...script!.matchAll(/--workspace(?:=|\s+)(\S+)/g)].map(
-      (m) => m[1]!,
-    );
-    if (delegated.length === 0) leaves.push(script!);
+    const pkg =
+      key === "."
+        ? manifest(tree)
+        : (packages ??= packagesUnder(tree)).get(key);
+    if (!pkg) {
+      problems.push(
+        `${tree}: \`--workspace ${key}\` names no package in this tree`,
+      );
+      return;
+    }
+    const script = pkg.scripts?.test;
+    if (script === undefined) {
+      problems.push(
+        `${tree}: \`${key}\` has no \`test\` script — a tree that ships ` +
+          `source and runs nothing is the failure this file exists to make loud`,
+      );
+      return;
+    }
+    const delegated = [...script.matchAll(WORKSPACE_REF)].map((m) => m[1]!);
+    if (delegated.length === 0) leaves.push(script);
     else for (const ref of delegated) visit(ref);
   };
 
   visit(".");
-  return leaves;
+  return { leaves, problems };
+}
+
+/** One tree's own `package.json`. */
+function manifest(tree: string): Pkg {
+  return JSON.parse(
+    readFileSync(path.join(REPO_ROOT, tree, "package.json"), "utf8"),
+  ) as Pkg;
 }
 
 /** Every tracked `package.json` that declares `vitest`, with the range it declares. */
