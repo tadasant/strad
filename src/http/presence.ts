@@ -8,7 +8,7 @@ import { presenceResponse } from "../secrets/presence.ts";
  * Mounted on the strad image in BUNDLE mode (see http/app.ts). This file is the
  * express half and nothing else: the route itself is `presenceResponse` in
  * `secrets/presence.ts`, vendored into the bundle host tree, so the two
- * components serve one implementation rather than two that agree today.
+ * components serve one implementation rather than two that merely agree.
  *
  * ## Why this surface exists at all
  *

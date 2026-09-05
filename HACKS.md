@@ -1308,7 +1308,13 @@ fails closed (503) when it is unset.
 and cannot import across the boundary. `npm run presence:sync` writes it,
 `test/vendored.sync.test.ts` fails CI on drift. Two copies of the placeholder
 table would mean `change-me` reading as filler on one console row and as a
-credential on the next, in one list, under one word.
+credential on the next, in one list, under one word. It carries the ROUTE as
+well — `presenceResponse`, the authorize-then-parse-then-answer wiring — for the
+same reason at one remove: the copy the fleet runs is the host image's, so a
+second handler is one of the two dropping `cache-control: no-store` and the
+console rendering a cached "absent" for a credential that is present. Each tree
+keeps only the three-line express adapter, and injects its own `node:crypto`
+`timingSafeEqual` so the module stays import-free.
 
 **IT NEEDS AN IMAGE AND A PIN BUMP TO BECOME VISIBLE.** The core half degrades
 gracefully — a component that answers 404 is reported `unsupported`, "rebuild and

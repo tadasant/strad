@@ -1681,12 +1681,13 @@ filler whichever process holds it.
 and `presenceResponse`, the handler that authorizes, parses and answers. Each
 component keeps only the three-line express adapter over it — core in
 `STRAD_MODE=bundle`, and the host image, which is what a bundle of
-`supplementary-image` servers actually runs. The wiring used to be written out
-by hand on both sides, and the untested copy was the one every deployment
-served. It is worth naming what that protects: authorization runs before
-parsing, so a `401` says the same thing whatever the body was, and an answer
-carries `cache-control: no-store` — a cached `absent` is exactly what would keep
-a fixed connector looking broken on this page.
+`supplementary-image` servers actually runs. The wiring is part of the seam
+rather than each tree's own because the tree that serves it in production is the
+one a second copy would rot in unwatched, and two things it decides are
+load-bearing: authorization runs before parsing, so a `401` says the same thing
+whatever the body was, and an answer carries `cache-control: no-store` — a
+cached `absent` is exactly what would keep a fixed connector looking broken on
+this page.
 
 **It cannot be turned into an oracle.** The key roster core sends is derived from
 the config core is running, plus whatever the component itself reports under

@@ -32,11 +32,11 @@
  * route those words are spoken through, and both are here for the same reason
  * `secrets/param-route.ts` carries both the shape core serves and the client the
  * host calls with. The wiring — authorize before parse, what a refusal carries,
- * `cache-control: no-store` on an answer — was written twice, and the half that
- * lives in the tree with no test runner is the half every deployment actually
- * runs: a bundle of `supplementary-image` servers runs the host image, not the
- * strad image in bundle mode. Each tree keeps only the three-line express
- * adapter that applies the result to a response.
+ * `cache-control: no-store` on an answer — belongs to the seam rather than to
+ * either tree, because the tree with no test runner is the one every deployment
+ * actually runs: a bundle of `supplementary-image` servers runs the host image,
+ * not the strad image in bundle mode. Each tree keeps only the three-line
+ * express adapter that applies the result to a response.
  *
  * ## Why this file has no imports
  *
@@ -363,7 +363,7 @@ export function authorizePresence(
 }
 
 /**
- * The one constant-time compare on this surface, in both trees.
+ * The comparator the presence route compares a token with, in both trees.
  *
  * It is a compare of BYTES, not of UTF-16 code units: two strings of equal
  * `.length` can encode to different numbers of bytes, and a token is bytes.
@@ -376,7 +376,11 @@ export function authorizePresence(
  * `node:crypto` in scope passes it and gets the C implementation; the fallback
  * is a JS loop with no early exit, for a caller that has none. Either way the
  * framing — the utf-8 encode, the length guard, the "a mismatch must not throw"
- * rule — is written once, here, rather than once per door.
+ * rule — is one function rather than one per tree.
+ *
+ * Other doors of the gateway hand-roll their own — `http/params.ts`,
+ * `auth/tokens.ts`, `auth/session.ts` — and consolidating those is a separate
+ * question about four doors and one shared secret, not about this route.
  */
 export function constantTimeEquals(
   a: string,
@@ -521,10 +525,13 @@ export interface PresenceRouteInput {
   /** Injected so the clock under test is not the wall clock. */
   now?: () => Date;
   /**
-   * `node:crypto`'s `timingSafeEqual`, from a caller that has it in scope. This
-   * module is vendored and import-free, so it cannot reach for it itself.
+   * `node:crypto`'s `timingSafeEqual`. REQUIRED, though `constantTimeEquals`
+   * has a fallback: this module is vendored and import-free, so it cannot reach
+   * for the C implementation itself, and an optional field would let a third
+   * adapter take the JS loop by saying nothing. Making it required turns that
+   * into a compile error in whichever tree forgot.
    */
-  timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean;
+  timingSafeEqual: (a: Uint8Array, b: Uint8Array) => boolean;
 }
 
 /**
@@ -532,11 +539,10 @@ export interface PresenceRouteInput {
  *
  * The vocabulary above decides what a verdict may say; this decides the ORDER
  * the three steps run in, what a caller learns when one of them refuses, and
- * which headers an answer carries. That wiring was written twice — once here in
- * core and once in the bundle host tree, where nothing could test it — and the
- * copy that runs in every deployment was the untested one. It is one
- * implementation now, vendored across the boundary like the vocabulary it sits
- * on (`npm run presence:sync`).
+ * which headers an answer carries. It is ONE implementation, vendored across
+ * the npm-tree boundary like the vocabulary it sits on (`npm run
+ * presence:sync`), because the tree that serves it in production is the tree a
+ * second copy would rot in unwatched.
  *
  * AUTHORIZE BEFORE PARSE IS THE POINT. An unauthorized caller learns nothing
  * about which bodies this endpoint would have accepted, so a 401 comes back for

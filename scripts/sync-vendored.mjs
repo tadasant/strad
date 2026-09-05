@@ -63,13 +63,22 @@ export const VENDORED = [
     ],
   },
   {
-    // Core and the bundle each classify values the other cannot see, and the
-    // console renders both in ONE list under ONE word. Two placeholder tables
-    // means `change-me` reads as filler on one row and as a credential on the
-    // next, and nothing on the page says why.
+    // BOTH ends of `POST /_strad/presence`, for two different reasons.
+    //
+    // The VOCABULARY, because core and the bundle each classify values the other
+    // cannot see and the console renders both in ONE list under ONE word: two
+    // placeholder tables means `change-me` reads as filler on one row and as a
+    // credential on the next, and nothing on the page says why.
+    //
+    // The ROUTE those words are spoken through, because the copy the fleet runs
+    // is the host image's — a bundle of `supplementary-image` servers runs that
+    // image, not the strad image in bundle mode — and it is the copy in the tree
+    // whose suite CI reaches last. A second handler is one of them dropping
+    // `cache-control: no-store` and the console rendering a cached "absent" for
+    // a credential that is present.
     id: "presence",
     source: "src/secrets/presence.ts",
-    label: "the presence vocabulary",
+    label: "the presence vocabulary and its route",
     banner: `// GENERATED — DO NOT EDIT.
 // Vendored from src/secrets/presence.ts by \`npm run presence:sync\`.
 // Edit the source, run the sync, and commit both. CI fails if these drift.
