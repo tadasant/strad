@@ -1301,7 +1301,7 @@ send-email confirmation and is its own Docker build context. Both copies end up
 in the same bundle image, and both gate an irreversible act through the library's
 `requestConfirmation()` — sending an email on one side, revealing or minting a
 credential on the other — so the seam is in the `VENDORED` manifest alongside the
-other five: `servers/onepassword/elicitation/src` is the source, `npm run
+other six: `servers/onepassword/elicitation/src` is the source, `npm run
 elicitation:sync` writes the copy, and `test/vendored.sync.test.ts` fails CI on
 drift and on a `files:` list that no longer names every module in the source
 directory. The trees' `package.json`, `tsconfig.json` and markdown are identical
