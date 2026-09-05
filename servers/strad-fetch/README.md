@@ -38,9 +38,10 @@ string and `native` is a bare `fetch` from a container that hosts twenty-one
 mounts, so the strategy checks the scheme (`http`/`https` only) and refuses
 loopback, link-local, RFC1918, carrier-grade NAT, multicast and reserved
 addresses — as literals, as the IPv6 forms carrying an IPv4 address, and as
-resolved addresses, on the resolution that decides the socket. Redirects are
-checked at every hop. A refusal is reported as that strategy's failure. See
-`FORK.md` #11.
+resolved addresses, on the resolution that decides the socket. It also refuses
+single-label and special-use NAMES, which is how strad's own private network is
+addressed. Redirects are checked at every hop. A refusal is reported as that
+strategy's failure. See `FORK.md` #11.
 
 **A strategy has to be able to READ the page, not just fetch it.** A page that
 draws its content client-side answers 200 with a full document that extracts to
@@ -62,9 +63,9 @@ None of it is required.
 - `STRAD_FETCH_CACHE_MAX_BYTES` — resource cache byte cap. Default 64MB.
 - `STRAD_FETCH_STRATEGY_CONFIG_PATH` — where the learned strategy table lives.
   Defaults to a file under the OS temp directory, per container.
-- `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` — comma-separated hosts the native strategy
-  may reach despite the address check. Empty by default; it is the local-
-  development escape hatch, not an off switch.
+- `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` — comma-separated bare hosts (no port) the
+  native strategy may reach despite the address and name checks. Empty by
+  default; it is the local-development escape hatch, not an off switch.
 
 The image is credential-free. strad injects the API keys, when it has them, onto
 the bundle component through the staging/prod config.

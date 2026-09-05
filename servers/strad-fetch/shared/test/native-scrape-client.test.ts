@@ -218,15 +218,15 @@ describe('the guarded dispatcher on a name that points into a private range', ()
     // and https is the scheme that carries essentially all real traffic. A real
     // resolver would answer ENOTFOUND here, so the guard's own message is what
     // proves the lookup reached the TLS branch.
-    await expect(
-      fetch('https://rebind.example/', {
-        dispatcher: createGuardedDispatcher({
-          resolve: resolveTo('127.0.0.1') as unknown as typeof dns.lookup,
-        }),
-      })
-    ).rejects.toMatchObject({
+    const dispatcher = createGuardedDispatcher({
+      resolve: resolveTo('127.0.0.1') as unknown as typeof dns.lookup,
+    });
+
+    await expect(fetch('https://rebind.example/', { dispatcher })).rejects.toMatchObject({
       cause: { name: 'BlockedUrlError', message: expect.stringContaining('127.0.0.1') },
     });
+
+    await dispatcher.close();
   });
 
   it('connects when the operator has named the host, which is the escape hatch working', async () => {

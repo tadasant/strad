@@ -256,6 +256,14 @@ and underneath the fetch:
   literals, as the IPv6 forms that carry an IPv4 address (`::ffff:127.0.0.1`,
   `64:ff9b::`, `2002::/16`), and as **resolved** addresses, so a NAME that points
   into one of those ranges is refused too.
+- **The name.** A single-label host, and the special-use suffixes (`.internal`,
+  `.local`, `.localdomain`, `.home.arpa`, `.alt`, `.localhost`). This is the
+  rule that covers strad's own private network rather than the range check:
+  `${bundle.PRIVATE_URL}` resolves to `http://bundle-name:8080`
+  (`src/deploy/appspec.ts`), so every component — the bundle's twenty-one mounts
+  and the core gateway — is one bare label, and what that resolves to is not
+  known to be in any listed range. Public DNS serves no single-label name, so
+  refusing them costs no legitimate fetch.
 - **The connection.** The resolved-address check is a guarded `lookup` on an
   undici `Agent`, so it runs on the resolution that decides the socket rather
   than on a second one that raced it, and the connector re-checks the host on
@@ -281,11 +289,11 @@ as tool output. That is the network-position change the fork is about, and it is
 the one delta here that closes a hole rather than an outage
 (tadasant/strad#180).
 
-**What it does not do.** The guard is a list of address ranges, so it covers what
-is unroutable on the public internet and not whatever a host's own private
-networking happens to use; and it guards `native` only, since the paid strategies
-fetch from a third party's network rather than from this container. See
-`HACKS.md` #79.
+**What it does not do.** It is a DENYLIST — it refuses what is known to be
+private rather than permitting what is known to be public — so a private service
+behind an ordinary dotted name that resolves outside every listed range is still
+reachable. And it guards `native` only, since the paid strategies fetch from a
+third party's network rather than from this container. See `HACKS.md` #79.
 
 ## Re-vendoring
 

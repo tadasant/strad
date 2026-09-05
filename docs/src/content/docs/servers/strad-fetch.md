@@ -143,6 +143,12 @@ So the native strategy checks three things:
   carry an IPv4 address, `::ffff:127.0.0.1` and `2002:7f00:1::` among them — and
   as **resolved** addresses, so a name that points into one of those ranges is
   refused too.
+- **The name.** A single-label host, and the special-use suffixes (`.internal`,
+  `.local`, `.localdomain`, `.home.arpa`, `.alt`, `.localhost`). This is the rule
+  that covers strad's own private network rather than the range check: a bundle
+  is reached at `${bundle.PRIVATE_URL}`, which is `http://bundle-name:8080`, so
+  every component is one bare label. Public DNS serves no single-label name, so
+  refusing them costs no legitimate fetch.
 - **Every connection the fetch opens**, not just the URL the caller passed. The
   resolved-address check runs on the resolution that decides the socket, so there
   is no second lookup to race, and a **redirect** into a private address is
@@ -150,23 +156,23 @@ So the native strategy checks three things:
   new connection through the same guarded dispatcher.
 
 A refusal is the native strategy's failure, in the shape every other failure has
-— `Refusing to fetch …: 169.254.169.254 is a link-local address (169.254.0.0/16)`
-— so it reaches the caller rather than a log, and the paid strategies are still
-tried behind it.
+— `Refusing to fetch …: 169.254.169.254 is a link-local address (169.254.0.0/16)
+— the cloud metadata range` — so it reaches the caller rather than a log, and the
+paid strategies are still tried behind it.
 
 `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` is the escape hatch: a comma-separated list of
-hosts that may be reached anyway, empty by default. It is for pointing a
-development gateway at a service on the same box, and it is a list rather than an
-off switch on purpose.
+**bare hosts** — no port; an entry exempts every port on that host — that may be
+reached anyway, empty by default. It is for pointing a development gateway at a
+service on the same box, and it is a list rather than an off switch on purpose.
 
-:::caution[It is a denylist of ranges, not a map of this deployment]
-What the guard covers is "unroutable on the public internet". Loopback and the
-metadata address are in that set; App Platform's private component network is
-covered only if it uses an address in one of these ranges, and what a
-private-range fetch actually reaches from inside an App Platform container has
-not been measured. The guard also covers `native` only — the paid strategies
-fetch from a third party's network rather than from this container. See
-[limitation #79](/limitations/#79-strad-fetchs-url-guard-is-a-list-of-address-ranges-and-one-of-them-was-never-measured).
+:::caution[It is a denylist, not an allowlist]
+The guard refuses what is known to be private rather than permitting what is
+known to be public, so a private service behind an ordinary dotted name that
+resolves outside every listed range is still reachable, and each new form of
+private addressing is a rule somebody has to remember to add. It also covers
+`native` only — the paid strategies fetch from a third party's network rather
+than from this container. See
+[limitation #79](/limitations/#79-strad-fetchs-url-guard-is-a-denylist-so-it-refuses-what-is-known-to-be-private).
 :::
 
 ## There is no boot-time credential probe
@@ -193,7 +199,7 @@ through the server's `env:` map.
 | `STRAD_FETCH_CACHE_MAX_ENTRIES`    | `512`   | Resource-cache entry cap.                           |
 | `STRAD_FETCH_CACHE_MAX_BYTES`      | `64MB`  | Resource-cache byte cap.                            |
 | `STRAD_FETCH_STRATEGY_CONFIG_PATH` | temp    | Where the learned strategy table lives.              |
-| `STRAD_FETCH_ALLOW_PRIVATE_HOSTS`  | empty   | Hosts the native strategy may reach anyway.          |
+| `STRAD_FETCH_ALLOW_PRIVATE_HOSTS`  | empty   | Bare hosts (no port) the native strategy may reach anyway. |
 
 The two credential names are bare because each names one vendor and nothing else in
 the bundle image reads them — the same reasoning that leaves `SLACK_BOT_TOKEN`

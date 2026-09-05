@@ -12,9 +12,11 @@
  *
  * Three checks, because no one of them covers the others:
  *
- *  1. `assertFetchableUrl` — the scheme allowlist and the literal-address check,
- *     run before anything is dispatched, so the ordinary case fails fast with a
- *     message that says which rule it broke.
+ *  1. `assertFetchableUrl` — the scheme allowlist, the literal-address check and
+ *     the private-NAME check, run before anything is dispatched, so the ordinary
+ *     case fails fast with a message that says which rule it broke. The name
+ *     half is what covers this deployment's own private network, which is
+ *     addressed by bare component label rather than by an address in any range.
  *  2. `createGuardedLookup` — every DNS resolution the fetch performs, so a NAME
  *     that points into a private range is rejected. Forcing `all: true` means a
  *     record set with one public and one private address is rejected on the
@@ -46,6 +48,9 @@ export class BlockedUrlError extends Error {
 }
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+
+/** Name suffixes reserved for private or local resolution, never the public web. */
+const PRIVATE_NAME_SUFFIXES = ['.internal', '.local', '.localdomain', '.home.arpa', '.alt'];
 
 /**
  * Address blocks the native strategy will not reach.
@@ -185,12 +190,19 @@ function blockedIpv6Reason(bytes: number[]): string | null {
   const direct = IPV6_RULES.find((candidate) => inBlock(bytes, candidate.prefix, candidate.bits));
   if (direct) return direct.why;
 
+  let carriesIpv4 = false;
   for (const rule of IPV6_EMBEDDED_RULES) {
     if (!inBlock(bytes, rule.prefix, rule.bits)) continue;
+    carriesIpv4 = true;
     const embedded = bytes.slice(rule.offset, rule.offset + 4);
     const reason = blockedIpv4Reason(embedded);
     if (reason) return `${rule.form} for ${embedded.join('.')}, which is ${reason}`;
   }
+
+  // `::/8` is reserved in full. The forms above carve the usable parts out of
+  // it, so anything left over is a spelling nobody assigned — refused rather
+  // than allowed, since `::` is where a novel IPv4-carrying form would appear.
+  if (bytes[0] === 0 && !carriesIpv4) return 'in the reserved ::/8 block';
 
   return null;
 }
@@ -275,6 +287,23 @@ export function blockedHostReason(hostname: string): string | null {
   // mistake say so plainly instead of surfacing as a connect failure.
   if (host === 'localhost' || host.endsWith('.localhost')) {
     return `${host} is a name reserved for the loopback interface`;
+  }
+
+  // A BARE name is how this deployment's own private network is addressed:
+  // App Platform resolves `${bundle.PRIVATE_URL}` to `http://bundle-name:8080`
+  // (`src/deploy/appspec.ts`), so the bundle's twenty-one mounts and the core
+  // gateway are all one label. The address such a name resolves to is not known
+  // to be in any listed range, so the range check cannot be what refuses it —
+  // and public DNS serves no single-label name, which is what makes refusing
+  // them free.
+  if (!host.includes('.')) {
+    return `${host} is a single-label name, which only a private network serves`;
+  }
+
+  // The rest of the special-use space, for the same reason: none of it is the
+  // public web, and `metadata.google.internal` is in it.
+  if (PRIVATE_NAME_SUFFIXES.some((suffix) => host.endsWith(suffix))) {
+    return `${host} is a name reserved for private networks`;
   }
 
   return null;

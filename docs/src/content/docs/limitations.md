@@ -2418,38 +2418,17 @@ See `HACKS.md` #78.
 
 ---
 
-### 79. strad-fetch's URL guard is a list of address ranges, and one of them was never measured
+### 79. strad-fetch's URL guard is a denylist, so it refuses what is known to be private
 
-`strad-fetch`'s `native` strategy fetches `http` and `https` only, and refuses
-loopback, link-local (including `169.254.169.254`), RFC1918, carrier-grade NAT,
-multicast and reserved addresses — as literals, as the IPv6 forms that carry an
-IPv4 address, and as **resolved** addresses, checked on the resolution that
-decides the socket rather than on a second one that raced it. Redirects go
-through the same check, because each hop opens a connection through the same
-guarded dispatcher.
+`strad-fetch`'s `native` strategy fetches `http` and `https` only, and refuses three shapes of private destination. **Addresses**: loopback, link-local (including `169.254.169.254`), RFC1918, carrier-grade NAT, multicast and reserved space — as literals, as the IPv6 forms that carry an IPv4 address, and as **resolved** addresses, checked on the resolution that decides the socket rather than on a second one that raced it. **Names**: a single-label host, and the special-use suffixes (`.internal`, `.local`, `.localdomain`, `.home.arpa`, `.alt`, `.localhost`) — which is how strad's own private network is addressed, since `${bundle.PRIVATE_URL}` resolves to `http://bundle-name:8080`. **Connections**: every hop the fetch opens is checked, so a redirect into a private address is refused at the connector, before a socket exists.
 
-It is a **denylist of ranges**, so what it covers is "unroutable on the public
-internet" rather than "inside this deployment". Two of the three destinations the
-defect named are answered by a range — `127.0.0.1:<port>` is loopback,
-`169.254.169.254` is link-local. The third, App Platform's private component
-networking, is covered only if it uses an address in one of these ranges or a name
-that resolves into one, and **what a private-range fetch actually reaches from
-inside an App Platform container has not been established**: answering it means
-probing a live deployment, which is a decision about production rather than about
-a change. The guard is right to have either way; it is a smaller claim than "the
-container cannot reach itself".
+It is a **denylist**: it refuses what is known to be private rather than permitting what is known to be public. A private service behind an ordinary dotted name that resolves outside every listed range is still reachable, and every new form of private addressing is a rule somebody has to remember to add. An allowlist of permitted destinations is the shape that fails closed, and it is not a shape a general-purpose web fetcher can have.
 
-Three narrower edges sit alongside it. The guard is on `native` only — the paid
-strategies fetch from a third party's network, not from this container, so a
-private URL still costs a call to Firecrawl or BrightData before the chain gives
-up. A host named in `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` is exempt from the address
-check entirely rather than for one port, because that variable names hosts and a
-DNS lookup has no port to match on. And a redirect is refused at the connector, so
-the error names the host that was refused without saying a redirect pointed at it.
+What `169.254.169.254` and the private component network actually **answer** from inside an App Platform container was never established — that means probing a live deployment, which is a decision about production rather than about a change. The guard was built not to need it: the metadata address is refused by range and the component network by name, in both cases without opening a connection.
 
-**How you would know.** A `scrape` of a private URL comes back
-`Refusing to fetch …: 127.0.0.1 is a loopback address (127.0.0.0/8)` as the
-`native` strategy's error, with the other strategies' failures beside it.
+Three narrower edges. The guard is on `native` only — the paid strategies fetch from a third party's network, not from this container, so a private URL still costs a call to Firecrawl or BrightData before the chain gives up. `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` exempts a host rather than a host and port, and is less operator-only than it reads: strad-fetch declares no parameters, but it shares a bundle with a server that does, so whoever can write that namespace can put this variable on the shared bundle environment at the next deploy. And a redirect is refused at the connector, so the error names the host that was refused without saying a redirect pointed at it.
+
+**How you would know.** A `scrape` of a private URL comes back `Refusing to fetch …: 127.0.0.1 is a loopback address (127.0.0.0/8)`, or `… strad-bundle is a single-label name, which only a private network serves`, as the `native` strategy's error, with the other strategies' failures beside it.
 
 See `HACKS.md` #79.
 

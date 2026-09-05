@@ -3847,40 +3847,53 @@ container stops being the only way to split reach.
 
 ---
 
-## 79. strad-fetch's URL guard is a list of address ranges, and one of them was never measured
+## 79. strad-fetch's URL guard is a denylist, so it refuses what is known to be private
 
 **What.** The `native` strategy refuses to fetch anything but `http`/`https`, and
-refuses loopback, link-local, RFC1918, carrier-grade NAT, multicast and reserved
-addresses — as literals, as the IPv6 forms that carry an IPv4 address, and as
-resolved addresses, on the resolution that decides the socket
-(`servers/strad-fetch/shared/src/scraping-client/url-guard.ts`, `FORK.md` #11).
-It is a **denylist of ranges**, so what it covers is "unroutable on the public
-internet", not "inside this deployment".
+refuses three shapes of private destination
+(`servers/strad-fetch/shared/src/scraping-client/url-guard.ts`, `FORK.md` #11):
+loopback, link-local, RFC1918, carrier-grade NAT, multicast and reserved
+**addresses** — as literals, as the IPv6 forms that carry an IPv4 address, and as
+resolved addresses, on the resolution that decides the socket; single-label and
+special-use **names**, which is how strad's own private network is addressed
+(`${bundle.PRIVATE_URL}` is `http://bundle-name:8080`, `src/deploy/appspec.ts`);
+and any **connection** whose host fails either check, which is what covers
+redirect hops and IP literals.
 
-**Why it is a hack.** The defect it closes named three destinations, and only two
-of them are answered by a range: `127.0.0.1:<port>` is loopback and
-`169.254.169.254` is link-local. The third — App Platform's private component
-networking, the thing that lets one component reach another — is covered only if
-it uses an address in one of these ranges or a name that resolves into one. **What
-a private-range fetch actually reaches from inside an App Platform container was
-never established**, deliberately: answering it means probing a live deployment,
-which is a decision about production rather than about a PR. The guard is correct
-to have either way, and it is a smaller claim than "the container cannot reach
-itself".
+**Why it is a hack.** It is a denylist: it refuses what is known to be private
+rather than permitting what is known to be public. So a private service behind an
+ordinary dotted name that resolves outside every listed range is still reachable,
+and every new form of private addressing is a rule somebody has to remember to
+add. An allowlist — a set of destinations the tool may reach — is the shape that
+fails closed, and it is not a shape a general-purpose web fetcher can have.
 
-Three narrower edges sit alongside it. The guard is on `native` only, because the
-paid strategies fetch from a third party's network rather than from this
-container — so a private URL still costs a call to Firecrawl or BrightData, which
-answers it from where they are, before the chain gives up. An allowlisted host is
-exempt from the address check entirely rather than for one port, because
-`STRAD_FETCH_ALLOW_PRIVATE_HOSTS` names hosts and a DNS lookup has no port to
-match on. And a redirect is refused at the connector, so the error says which host
-was refused but not that a redirect is what pointed at it.
+**What is still unmeasured, and why it no longer decides anything.** What
+`169.254.169.254` and the private component network actually ANSWER from inside
+an App Platform container was never established — answering it means probing a
+live deployment, which is a decision about production rather than about a PR.
+The guard was built so that it does not need to know: the metadata address is
+refused by range and the component network by name, both without a connection
+being opened. The unmeasured fact would only matter if a private destination
+existed that is neither.
 
-**Undo.** Establish what the private component network answers on, from a
-container, as its own piece of work — and if it is addressed outside these ranges,
-the guard needs an explicit allowlist of destinations rather than a denylist of
-ranges, which is the shape that fails closed. Nothing else here needs a change of
-shape: extending the guard to the paid strategies is a call site, and
-`STRAD_FETCH_ALLOW_PRIVATE_HOSTS` could take `host:port` entries the day a
-deployment needs one.
+**Three narrower edges.**
+
+- The guard is on `native` only. The paid strategies fetch from a third party's
+  network rather than from this container, so a private URL still costs a call to
+  Firecrawl or BrightData before the chain gives up.
+- `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` exempts a **host**, not a host and port —
+  the variable names hosts, and a DNS lookup has no port to match on — so
+  allowlisting a development service on one port exempts every port on that host.
+  It is also less operator-only than it reads: strad-fetch declares no `params:`,
+  but it shares a bundle with a server that does, and a namespace on that bundle
+  accepts any well-shaped variable name (`src/secrets/parameters/namespace.ts`),
+  so whoever can write that namespace — the `secrets` slug, or a console user —
+  can put this name on the shared bundle environment at the next deploy.
+- A redirect is refused at the connector, so the error names the host that was
+  refused without saying a redirect is what pointed at it.
+
+**Undo.** Nothing here needs a change of shape. Extending the guard to the paid
+strategies is a call site; `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` could take
+`host:port` entries the day a deployment needs one; and the parameter route
+closes when a shadowing check covers a name no server declared, rather than only
+a name two servers both declare (`src/deploy/appspec.ts`).

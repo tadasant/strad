@@ -124,6 +124,21 @@ describe('IPv6 literals', () => {
       expect(() => assertFetchableUrl(`http://[${address}]/x`)).not.toThrow();
     }
   );
+
+  // The IPv4-carrying forms carve the usable part out of a block that is
+  // reserved in full, so a spelling none of them claims is a spelling nobody
+  // assigned — and `::` is exactly where a novel one would appear.
+  it.each(['::ffff:0:0:0:1', '::1:2:3:4:5'])(
+    'refuses [%s], a ::/8 form no rule claims',
+    (address) => {
+      expect(refusal(`http://[${address}]/x`)).toContain('reserved ::/8');
+    }
+  );
+
+  it('still allows an IPv4-mapped PUBLIC address, which also sits in ::/8', () => {
+    expect(blockedAddressReason('::ffff:8.8.8.8')).toBeNull();
+    expect(blockedAddressReason('64:ff9b::8.8.8.8')).toBeNull();
+  });
 });
 
 describe('hosts that are names', () => {
@@ -131,8 +146,36 @@ describe('hosts that are names', () => {
     expect(refusal(`http://${host}:8080/x`)).toContain('loopback interface');
   });
 
+  // `${bundle.PRIVATE_URL}` is `http://bundle-name:8080` (`src/deploy/appspec.ts`),
+  // so the deployment's own private network is addressed by bare label. Nothing
+  // in the range check can see that, which is what makes this rule the one that
+  // covers the third destination the defect named.
+  it.each(['strad-bundle', 'core', 'bundle-zimmer-secrets', 'metadata'])(
+    'refuses the single-label name %s, which is how a private component is addressed',
+    (host) => {
+      expect(refusal(`http://${host}:8080/x`)).toContain('single-label');
+    }
+  );
+
+  it.each([
+    'metadata.google.internal',
+    'printer.local',
+    'db.localdomain',
+    'thing.home.arpa',
+    'x.alt',
+  ])('refuses the special-use name %s', (host) => {
+    expect(refusal(`http://${host}/x`)).toContain('reserved for private networks');
+  });
+
   it('has nothing to say about an ordinary name — that is the resolver’s job', () => {
     expect(blockedHostReason('example.com')).toBeNull();
+    expect(blockedHostReason('sub.example.co.uk')).toBeNull();
+    expect(blockedHostReason('alt.example')).toBeNull();
+  });
+
+  it('does not mistake an IPv6 literal for a single-label name', () => {
+    expect(blockedHostReason('2606:4700:4700::1111')).toBeNull();
+    expect(refusal('http://[::1]/x')).toContain('loopback');
   });
 
   it('refuses a URL with no host at all', () => {
@@ -175,13 +218,17 @@ describe('STRAD_FETCH_ALLOW_PRIVATE_HOSTS', () => {
 describe('createGuardedLookup', () => {
   const resolver =
     (table: Record<string, dns.LookupAddress[]>) =>
-    (hostname: string, _options: unknown, callback: (...args: unknown[]) => void) => {
+    (hostname: string, options: dns.LookupOptions, callback: (...args: unknown[]) => void) => {
       const entries = table[hostname];
       if (!entries) {
         callback(Object.assign(new Error(`ENOTFOUND ${hostname}`), { code: 'ENOTFOUND' }));
         return;
       }
-      callback(null, entries);
+      // Honour `all` the way `dns.lookup` does, so the bypass case below is
+      // asserting the shape the caller ASKED for rather than the only shape
+      // this fake can produce.
+      if (options.all) callback(null, entries);
+      else callback(null, entries[0].address, entries[0].family);
     };
 
   const lookup = (
@@ -267,7 +314,17 @@ describe('createGuardedLookup', () => {
       'dev.example'
     );
     expect(error).toBeNull();
-    expect(address).toEqual([{ address: '127.0.0.1', family: 4 }]);
+    expect(address).toBe('127.0.0.1');
+  });
+
+  it('hands an allowlisted host through in the all: true shape as well', async () => {
+    process.env.STRAD_FETCH_ALLOW_PRIVATE_HOSTS = 'dev.example';
+    const entries = [{ address: '127.0.0.1', family: 4 }];
+    const { error, address } = await lookup({ 'dev.example': entries }, 'dev.example', {
+      all: true,
+    });
+    expect(error).toBeNull();
+    expect(address).toEqual(entries);
   });
 });
 
