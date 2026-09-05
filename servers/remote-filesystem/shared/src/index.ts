@@ -57,6 +57,7 @@ export {
 } from "./tools.js";
 
 export {
+  DESCRIPTION_BUDGET,
   LINK_HANDLING_DESCRIPTION,
   SENSITIVE_DESCRIPTION,
   type ToolDefinition,

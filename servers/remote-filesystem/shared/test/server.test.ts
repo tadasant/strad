@@ -6,6 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createMCPServer,
   createUploadLeaseStore,
+  DESCRIPTION_BUDGET,
   LINK_HANDLING_DESCRIPTION,
   loadConfig,
   toolDefinitions,
@@ -553,6 +554,41 @@ test("the link-handling guidance keeps the three points and the four codes", () 
     !/-public/.test(copy),
     "the guidance names a deployment-specific bucket, and is wrong on the others",
   );
+});
+
+/**
+ * A description longer than the client will show is not documentation.
+ *
+ * Claude Code cuts a tool description at 2048 characters and says so only in its
+ * own connection log, so the server never learns. Four of these seven tools were
+ * over that line, `upload_file` at 4111 characters, and what fell off was what an
+ * agent reads LAST: the use cases, the link-handling guidance, "keep the path".
+ * Nothing failed; the text was never delivered.
+ *
+ * So the budget is asserted over EVERY tool this server defines rather than the
+ * four that were over it, because the way this comes back is a new tool nobody
+ * measured. The room is genuinely tight — three of these carry the shared
+ * link-handling block, which is half the budget on its own — so an addition here
+ * costs a removal, and this test is where you find that out.
+ */
+test("no tool description exceeds the client's truncation budget", () => {
+  const definitions = toolDefinitions(
+    () => new FakeStore(),
+    new UploadLeaseStore({ slug: "remote-filesystem-tmp-public" }),
+  );
+  assert.ok(
+    definitions.length > 0,
+    "toolDefinitions() returned nothing, so the budget was checked against no tools",
+  );
+  for (const tool of definitions) {
+    assert.ok(
+      tool.description.length <= DESCRIPTION_BUDGET,
+      `${tool.name}'s description is ${tool.description.length} chars, ` +
+        `${tool.description.length - DESCRIPTION_BUDGET} over the ${DESCRIPTION_BUDGET}-char ` +
+        `budget — a client will cut the tail off it. Tighten the prose or move ` +
+        `the long form to docs/servers/artifact-store.md; do not append.`,
+    );
+  }
 });
 
 test("every tool description carries the sections the house style requires", () => {

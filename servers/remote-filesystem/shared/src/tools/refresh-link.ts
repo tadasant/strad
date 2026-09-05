@@ -28,43 +28,14 @@ export const RefreshLinkSchema = z.object({
 
 const DESCRIPTION = `Mint a fresh link for an artifact whose old link has expired.
 
-Signed links expire; the artifacts behind them do not. When a human says "that
-screenshot link is dead" or asks you to dig up an artifact from weeks ago, this is the
-tool: give it the artifact's \`path\` and it returns a working URL again. Nothing is
-re-uploaded and nothing changes about the stored object.
+Signed links expire; the artifacts behind them do not. Give this a \`path\` and it returns
+a working URL again; nothing is re-uploaded and the stored object does not change. Any
+path in the bucket works, however old, and list_files finds one you do not have.
 
-It also works on artifacts uploaded long before, by any tool, anywhere in the bucket —
-there is no prefix confinement, so an old path is still a valid handle.
-
-**Finding the path:** if you have the original upload_file response, use its \`path\`.
-If you do not, call list_files first — its \`prefix\` parameter narrows to a directory
-and its results carry the exact paths.
-
-**Example response:**
-\`\`\`json
-{
-  "path": "screenshots/8379/v1-kpi-dashboard.png",
-  "url": "https://storage.googleapis.com/artifacts/screenshots/8379/v1-kpi-dashboard.png?GoogleAccessId=...&Expires=1788000000&Signature=...",
-  "access": "link",
-  "requires_sign_in": false,
-  "expires_at": "2026-08-16T09:00:00.000Z",
-  "signing_version": "v2",
-  "size_bytes": 6988,
-  "content_type": "image/png",
-  "bucket": "artifacts"
-}
-\`\`\`
-
-**Sensitivity is preserved, not re-decided.** If the artifact is \`restricted\`, you get
-its sign-in URL back and \`expires_in_days\` is ignored — that link never went stale in
-the first place. To CHANGE whether an artifact is sensitive, use set_sensitivity.
-
-A \`restricted\` response also carries \`viewer_domain\` and \`sign_in_hint\` (and
-\`viewer_account\` where one is configured). Hand \`sign_in_hint\` to any human whose
-link 403s — the usual cause is their browser opening it as the wrong one of several
-signed-in Google accounts, not a missing grant. And note the inverse: \`access: "link"\`
-on something you believe is sensitive means the domain grant is gone, so it 403s for
-everyone; set_sensitivity puts it back.
+**Sensitivity is preserved, not re-decided.** A \`restricted\` artifact comes back with its
+sign-in URL, \`expires_in_days\` ignored (that link never went stale) and \`sign_in_hint\`
+for a human whose browser 403s it. The inverse is a signal: \`access: "link"\` on something
+you believe is sensitive means the domain grant is gone. set_sensitivity changes either.
 
 ${LINK_HANDLING_DESCRIPTION}
 
@@ -72,7 +43,7 @@ ${LINK_HANDLING_DESCRIPTION}
 - A link in an old PR comment or Slack message has expired
 - A human asks to see an artifact from a previous session
 - You need a longer-lived link than the one you first handed out
-- Confirming what an artifact's current access level actually is`;
+- Confirming an artifact's current access level`;
 
 export function refreshLinkTool(storeFactory: StoreFactory): ToolDefinition {
   return {
