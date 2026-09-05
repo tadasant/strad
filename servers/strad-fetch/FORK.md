@@ -239,9 +239,57 @@ different strategies for the same prefix. And it does not gate the raw path — 
 were fetched, under a note saying they could not be extracted from. That is the
 documented debugging escape hatch, and it was the workaround for this defect.
 
+## 11. The native strategy fetches the public internet only
+
+**Upstream.** `NativeScrapingClient.scrape` calls `fetch(url)` on whatever string
+the caller put in `scrape`'s `url` — no scheme allowlist, no address check. The
+`scrape` tool's `url` is a free-form string, and `native` is in every strategy
+chain (delta 2 put it in `speed`'s too).
+
+**Here.** Three checks in `shared/src/scraping-client/url-guard.ts`, in front of
+and underneath the fetch:
+
+- **The scheme.** `http` and `https` only. `file:`, `data:`, `ftp:`, `gopher:`
+  and the rest are refused before anything is dispatched.
+- **The address.** Loopback, link-local (including `169.254.169.254`), RFC1918,
+  carrier-grade NAT, multicast and reserved space are refused — as IPv4 and IPv6
+  literals, as the IPv6 forms that carry an IPv4 address (`::ffff:127.0.0.1`,
+  `64:ff9b::`, `2002::/16`), and as **resolved** addresses, so a NAME that points
+  into one of those ranges is refused too.
+- **The connection.** The resolved-address check is a guarded `lookup` on an
+  undici `Agent`, so it runs on the resolution that decides the socket rather
+  than on a second one that raced it, and the connector re-checks the host on
+  every connection the fetch opens. That is what covers REDIRECTS: a public page
+  that 302s to `http://127.0.0.1:8080/` is a fresh dispatch through the same
+  dispatcher, and an IP literal never reaches a resolver at all.
+
+A refusal is the native strategy's failure, in the shape every other failure has,
+so it is reported to the caller rather than logged. `STRAD_FETCH_ALLOW_PRIVATE_HOSTS`
+is a comma-separated list of hosts an operator may exempt, empty by default —
+for a development gateway pointed at a service on the same box.
+
+`undici` is a dependency because of this. Node bundles it but does not export it,
+and its `Agent` is the only way to put a check on the socket a `fetch` opens; the
+fetch here comes from the same package so the dispatcher passed is certainly the
+one that connects.
+
+**Why.** Upstream ran as a per-session stdio subprocess, so this was a fetch from
+the agent's own sandbox — the same network position the agent already had. Behind
+strad it is a fetch from the container that hosts twenty-one mounts, reachable by
+any session holding a token entitled to the slug, and the response body comes back
+as tool output. That is the network-position change the fork is about, and it is
+the one delta here that closes a hole rather than an outage
+(tadasant/strad#180).
+
+**What it does not do.** The guard is a list of address ranges, so it covers what
+is unroutable on the public internet and not whatever a host's own private
+networking happens to use; and it guards `native` only, since the paid strategies
+fetch from a third party's network rather than from this container. See
+`HACKS.md` #79.
+
 ## Re-vendoring
 
 `npm test` in this tree is what stops a re-vendor from silently reverting any of
 the above: the strategy-chain deltas (2, 3, 10), the fixed tool schema (4), the
-cache bounds (6), the cache-hit kind (7) and the server name (8) each have an
-assertion that fails if upstream's behaviour comes back. Read this file first, re-apply, run the suite.
+cache bounds (6), the cache-hit kind (7), the server name (8) and the URL guard
+(11) each have an assertion that fails if upstream's behaviour comes back. Read this file first, re-apply, run the suite.

@@ -33,6 +33,15 @@ rejected paid key costs coverage on protected sites, never the fetch itself** �
 `native` is in the chain in both optimisation modes, which is the delta that
 matters most against upstream.
 
+**The native strategy fetches the public internet only.** `url` is a free-form
+string and `native` is a bare `fetch` from a container that hosts twenty-one
+mounts, so the strategy checks the scheme (`http`/`https` only) and refuses
+loopback, link-local, RFC1918, carrier-grade NAT, multicast and reserved
+addresses — as literals, as the IPv6 forms carrying an IPv4 address, and as
+resolved addresses, on the resolution that decides the socket. Redirects are
+checked at every hop. A refusal is reported as that strategy's failure. See
+`FORK.md` #11.
+
 **A strategy has to be able to READ the page, not just fetch it.** A page that
 draws its content client-side answers 200 with a full document that extracts to
 nothing, so it is treated as unread: the chain escalates to a strategy that
@@ -53,6 +62,9 @@ None of it is required.
 - `STRAD_FETCH_CACHE_MAX_BYTES` — resource cache byte cap. Default 64MB.
 - `STRAD_FETCH_STRATEGY_CONFIG_PATH` — where the learned strategy table lives.
   Defaults to a file under the OS temp directory, per container.
+- `STRAD_FETCH_ALLOW_PRIVATE_HOSTS` — comma-separated hosts the native strategy
+  may reach despite the address check. Empty by default; it is the local-
+  development escape hatch, not an off switch.
 
 The image is credential-free. strad injects the API keys, when it has them, onto
 the bundle component through the staging/prod config.
@@ -60,8 +72,8 @@ the bundle component through the staging/prod config.
 ## Tests
 
 ```
-npm test        # builds, then runs the strategy, storage and tool suites
+npm test        # builds, then runs the strategy, storage, tool and URL-guard suites
 ```
 
-CI runs the same thing in the `strad_fetch` job, and the bundle's smoke test
+CI runs the same thing in the `servers (strad-fetch)` job, and the bundle's smoke test
 asserts the mount lists exactly one tool.

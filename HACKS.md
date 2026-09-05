@@ -3844,3 +3844,43 @@ the staging read the write surface exists to test end to end. Or give strad a wa
 to express entitlement per NAMESPACE rather than per slug — `entitlements.ts`
 names slugs and `toolPolicy.ts` names tool names — at which point one store per
 container stops being the only way to split reach.
+
+---
+
+## 79. strad-fetch's URL guard is a list of address ranges, and one of them was never measured
+
+**What.** The `native` strategy refuses to fetch anything but `http`/`https`, and
+refuses loopback, link-local, RFC1918, carrier-grade NAT, multicast and reserved
+addresses — as literals, as the IPv6 forms that carry an IPv4 address, and as
+resolved addresses, on the resolution that decides the socket
+(`servers/strad-fetch/shared/src/scraping-client/url-guard.ts`, `FORK.md` #11).
+It is a **denylist of ranges**, so what it covers is "unroutable on the public
+internet", not "inside this deployment".
+
+**Why it is a hack.** The defect it closes named three destinations, and only two
+of them are answered by a range: `127.0.0.1:<port>` is loopback and
+`169.254.169.254` is link-local. The third — App Platform's private component
+networking, the thing that lets one component reach another — is covered only if
+it uses an address in one of these ranges or a name that resolves into one. **What
+a private-range fetch actually reaches from inside an App Platform container was
+never established**, deliberately: answering it means probing a live deployment,
+which is a decision about production rather than about a PR. The guard is correct
+to have either way, and it is a smaller claim than "the container cannot reach
+itself".
+
+Three narrower edges sit alongside it. The guard is on `native` only, because the
+paid strategies fetch from a third party's network rather than from this
+container — so a private URL still costs a call to Firecrawl or BrightData, which
+answers it from where they are, before the chain gives up. An allowlisted host is
+exempt from the address check entirely rather than for one port, because
+`STRAD_FETCH_ALLOW_PRIVATE_HOSTS` names hosts and a DNS lookup has no port to
+match on. And a redirect is refused at the connector, so the error says which host
+was refused but not that a redirect is what pointed at it.
+
+**Undo.** Establish what the private component network answers on, from a
+container, as its own piece of work — and if it is addressed outside these ranges,
+the guard needs an explicit allowlist of destinations rather than a denylist of
+ranges, which is the shape that fails closed. Nothing else here needs a change of
+shape: extending the guard to the paid strategies is a call site, and
+`STRAD_FETCH_ALLOW_PRIVATE_HOSTS` could take `host:port` entries the day a
+deployment needs one.

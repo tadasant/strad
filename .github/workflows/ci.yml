@@ -219,6 +219,12 @@ jobs:
   #               native rather than skipping it, and that a rejected credential
   #               does not abort the strategies after it — plus the cache bounds
   #               that a shared container needs and a stdio subprocess did not.
+  #               It also owns the URL guard in front of the native strategy,
+  #               which is the one thing here that fails OPEN when it regresses:
+  #               a range dropped from the denylist, or a resolved address that
+  #               stops being checked, is a scrape of the container's own
+  #               loopback returned as tool output, and nothing else in this
+  #               repo would say so.
   #
   #   bundle/host test. THE host: the process every bundle container runs. It
   #               mounts every tree in the image — 21 mounts, which staging's 30
