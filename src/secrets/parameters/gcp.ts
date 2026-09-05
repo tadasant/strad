@@ -1066,8 +1066,12 @@ export function createGcpParameterStore(
  * A throttle, a server error and a request that never answered are moments;
  * a `400` (the reference will not dereference) and a `403` (the credential may
  * not) are the store's settled view of that parameter until something changes.
- * Same partition `src/http/retry.ts` uses to decide what is worth trying
- * again, applied here to decide what is worth REMEMBERING.
+ * Deliberately WIDER than `isRetryableStatus`, and the difference is the point:
+ * that partition decides what is worth trying AGAIN, this one decides what is
+ * worth REMEMBERING. A `501` is not worth a retry — the server will not start
+ * implementing it in 400ms — but it is equally not the store's settled view of
+ * that parameter, so caching it would answer a later read with an outage that
+ * had already passed.
  */
 function isTransient(err: unknown): boolean {
   const status = statusOf(err);

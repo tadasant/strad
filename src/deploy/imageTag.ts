@@ -1009,6 +1009,18 @@ type Attempt<T> =
  * inline as `status >= 500 || status === 429`, which retried a permanent `501`
  * three times and reported it a backoff late. `src/http/retry.ts` owns that
  * decision; this only supplies the requests.
+ *
+ * `request` and `read` are separate on purpose. Only `request` is wrapped: a
+ * transport that never delivered a response has no status to classify and is
+ * transient by construction, whereas a throw out of `read` is this module
+ * failing to understand a response it DID get. Catching both would report a
+ * defect here as three refusals from GHCR. `read` may still decide a response
+ * is transient — it returns `failed` to say so.
+ *
+ * The loop is bounded twice over. `retryDelayMs` stops it at the attempt and
+ * total-sleep ceilings, and `n < attempts` holds it structurally even for a
+ * budget the delay function cannot bound — a `Retry-After: 0`, honoured
+ * verbatim, adds nothing to `spentMs`.
  */
 async function retryingRegistry<T>(
   ctx: {
@@ -1017,19 +1029,25 @@ async function retryingRegistry<T>(
     /** How to report the last reason if every attempt is spent. */
     describe: (reason: string) => string;
   },
-  attempt: () => Promise<Attempt<T>>,
+  request: () => Promise<Response>,
+  read: (res: Response) => Promise<Attempt<T>>,
 ): Promise<T> {
-  let spentMs = 0;
-  let last = "no attempt was made";
-  for (let n = 0; ; n++) {
-    let outcome: Attempt<T>;
+  async function once(): Promise<Attempt<T>> {
+    let res: Response;
     try {
-      outcome = await attempt();
+      res = await request();
     } catch (err) {
-      outcome = {
+      return {
         failed: { reason: err instanceof Error ? err.message : String(err) },
       };
     }
+    return read(res);
+  }
+
+  let spentMs = 0;
+  let last = "";
+  for (let n = 0; n < ctx.budget.attempts; n++) {
+    const outcome = await once();
     if ("done" in outcome) return outcome.done;
 
     const { reason, status, retryAfterMs } = outcome.failed;
@@ -1081,8 +1099,8 @@ export function registryProbe(
         describe: (last) =>
           `could not read ${opts.repository}:${tag} (${last})`,
       },
-      async (): Promise<Attempt<boolean>> => {
-        const res = await doFetch(
+      () =>
+        doFetch(
           `https://${opts.registry}/v2/${opts.repository}/manifests/${tag}`,
           {
             method: "HEAD",
@@ -1091,7 +1109,8 @@ export function registryProbe(
               accept: ACCEPT,
             },
           },
-        );
+        ),
+      async (res): Promise<Attempt<boolean>> => {
         if (res.status === 404) return { done: false };
         if (res.ok) return { done: true };
         return {
@@ -1137,20 +1156,38 @@ export async function fetchPullToken(opts: {
       sleep: doSleep,
       describe: (last) => `could not obtain a pull token (${last})`,
     },
-    async (): Promise<Attempt<string>> => {
-      const res = await doFetch(
+    () =>
+      doFetch(
         `https://${opts.registry}/token?service=${opts.registry}` +
           `&scope=repository:${opts.repository}:pull`,
         { headers: { authorization: `Basic ${basic}` } },
-      );
+      ),
+    async (res): Promise<Attempt<string>> => {
       if (res.ok) {
-        const body = (await res.json()) as { token?: string };
+        // A body that will not parse is caught here rather than left to the
+        // loop, which does not catch `read`: an unreadable 200 from the token
+        // endpoint is the endpoint having a bad second, not a defect here.
+        let body: { token?: string };
+        try {
+          body = (await res.json()) as { token?: string };
+        } catch (err) {
+          return {
+            failed: {
+              reason: err instanceof Error ? err.message : String(err),
+            },
+          };
+        }
         if (body.token) return { done: body.token };
         // A 200 carrying no token is not an answer this can use, and the status
         // says nothing about whether the next one will be the same. No status
         // is reported, so the loop treats it like a transport failure.
         return { failed: { reason: "registry returned no pull token" } };
       }
+      // Release the socket before the loop sleeps on it. The body of a refused
+      // token request is an error payload nothing here reads, and leaving it
+      // undrained holds the connection open for the whole backoff — the same
+      // reason `call()` in `src/secrets/parameters/gcp.ts` cancels it.
+      await res.body?.cancel().catch(() => {});
       // 401/403 will not improve on a retry; a bad credential is a bad
       // credential. The loop reads that off the status.
       return {

@@ -822,4 +822,22 @@ describe("fetchPullToken", () => {
     await expect(t.got).resolves.toBe("tok");
     expect(t.slept).toEqual([1_000]);
   });
+
+  it("spends the same three tries on a 5xx that the probe does", async () => {
+    // The budget is merged at each entry point, so the token fetch is asserted
+    // on its own rather than inferred from the probe's.
+    const t = token([res(503)]);
+    await expect(t.got).rejects.toThrow(
+      /could not obtain a pull token \(HTTP 503\)/,
+    );
+    expect(t.calls.n).toBe(3);
+    expect(t.slept).toHaveLength(2);
+  });
+
+  it("does NOT retry a 501 here either", async () => {
+    const t = token([res(501)]);
+    await expect(t.got).rejects.toThrow(/HTTP 501/);
+    expect(t.calls.n).toBe(1);
+    expect(t.slept).toEqual([]);
+  });
 });
