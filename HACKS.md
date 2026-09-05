@@ -1416,8 +1416,8 @@ cached for the whole TTL.
 **Undo.** Delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
 `src/gateway/bundle-presence.ts`, `src/http/presence.ts`,
 the `presence` entry in `scripts/sync-vendored.mjs`,
-`servers/bundle/host/src/presence.ts`, `servers/bundle/host/src/presence-route.ts`
-and the route that mounts it in `servers/bundle/host/src/index.ts`, the
+`servers/bundle/host/src/presence.ts` and the route that mounts it in
+`servers/bundle/host/src/index.ts`, the
 `presence`/`store` options on
 `ObserveOptions`, `readDeploymentSecretStatus`, the `unrenderable` state, the
 `STRAD_PARAM_KEYS` env var in `src/deploy/appspec.ts`, and

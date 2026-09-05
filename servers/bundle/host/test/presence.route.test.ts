@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { MAX_PRESENCE_KEYS, type PresenceReport } from "../src/presence.js";
+import { timingSafeEqual } from "node:crypto";
+
 import {
   constantTimeEquals,
+  MAX_PRESENCE_KEYS,
   presenceResponse,
+  type PresenceReport,
   type PresenceResponse,
-} from "../src/presence-route.js";
+} from "../src/presence.js";
 
 /**
- * `presence.ts` is vendored from core and its vocabulary is tested there. What
- * only this process can get wrong is the WIRING: the order the three steps run
- * in, what a refusal carries, and where the report's component, image and
- * environment come from.
+ * The presence route, run against the COPY this image actually serves.
+ *
+ * `presence.ts` is vendored from core — vocabulary and route together — and the
+ * source is tested there. This suite is not a second opinion about the wiring;
+ * it is the assertion that the bytes compiled into the bundle image behave,
+ * inside this tree's own compiler settings and its own `node:crypto`, exactly
+ * as the source does. The image is what every deployment runs.
  */
 
 const TOKEN = "internal-token-value";
@@ -34,7 +40,8 @@ function ask(
       STRAD_INTERNAL_TOKEN: TOKEN,
     }) as NodeJS.ProcessEnv,
     bootedAt: BOOTED_AT,
-    version: "0.1.0",
+    image: "0.1.0",
+    timingSafeEqual,
   });
 }
 
@@ -213,20 +220,22 @@ describe("the presence report this process answers with", () => {
   });
 });
 
-describe("constantTimeEquals", () => {
+describe("constantTimeEquals, with this tree's own node:crypto", () => {
   it("does not throw on a length mismatch, which timingSafeEqual would", () => {
-    expect(constantTimeEquals("short", "a-much-longer-token")).toBe(false);
+    expect(
+      constantTimeEquals("short", "a-much-longer-token", timingSafeEqual),
+    ).toBe(false);
   });
 
   it("is true only for identical bytes", () => {
-    expect(constantTimeEquals("token", "token")).toBe(true);
-    expect(constantTimeEquals("token", "tokeN")).toBe(false);
-    expect(constantTimeEquals("", "")).toBe(true);
+    expect(constantTimeEquals("token", "token", timingSafeEqual)).toBe(true);
+    expect(constantTimeEquals("token", "tokeN", timingSafeEqual)).toBe(false);
+    expect(constantTimeEquals("", "", timingSafeEqual)).toBe(true);
   });
 
   it("compares BYTES, not UTF-16 code units", () => {
     // Two strings of equal `.length` whose utf-8 encodings differ in length —
     // the case a naive charCode loop would call equal-length and this does not.
-    expect(constantTimeEquals("é", "e")).toBe(false);
+    expect(constantTimeEquals("é", "e", timingSafeEqual)).toBe(false);
   });
 });

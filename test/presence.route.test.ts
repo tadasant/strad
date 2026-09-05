@@ -1,4 +1,5 @@
 import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
+import { timingSafeEqual } from "node:crypto";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
@@ -6,7 +7,15 @@ import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
-import { PRESENCE_ROUTE } from "../src/secrets/presence.ts";
+import {
+  constantTimeEquals,
+  MAX_PRESENCE_KEYS,
+  PRESENCE_PROTOCOL,
+  PRESENCE_ROUTE,
+  presenceResponse,
+  type PresenceReport,
+  type PresenceResponse,
+} from "../src/secrets/presence.ts";
 import {
   probeBundles,
   refDelivery,
@@ -252,6 +261,260 @@ describe("the presence route, over a socket", () => {
     });
     expect(res.status).toBe(404);
     await new Promise((r) => core.close(r));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The handler itself, without a socket — the half the bundle host runs
+// ---------------------------------------------------------------------------
+
+/**
+ * `presenceResponse` is the route, and both components serve it.
+ *
+ * The suite above drives it through express on core. Every deployed bundle is a
+ * `supplementary-image` bundle, which runs the `strad-bundle` host image rather
+ * than the strad image in bundle mode — so the answers a console actually
+ * renders come from the vendored copy of this function, three lines of express
+ * away. Testing it here rather than only through `createApp` is what makes that
+ * path covered at all; `test/vendored.sync.test.ts` is what makes this the same
+ * function.
+ */
+describe("presenceResponse", () => {
+  const INTERNAL = "internal-token-value";
+  const BOOTED = new Date("2026-08-31T00:00:00.000Z");
+  const OBSERVED = new Date("2026-09-01T12:00:00.000Z");
+
+  function ask(
+    overrides: {
+      authorization?: string | undefined;
+      body?: unknown;
+      env?: Record<string, string | undefined>;
+      component?: string;
+      image?: string | null;
+      now?: () => Date;
+    } = {},
+  ) {
+    return presenceResponse({
+      authorization:
+        "authorization" in overrides
+          ? overrides.authorization
+          : `Bearer ${INTERNAL}`,
+      body:
+        "body" in overrides ? overrides.body : { keys: ["SLACK_BOT_TOKEN"] },
+      env: overrides.env ?? { STRAD_INTERNAL_TOKEN: INTERNAL },
+      bootedAt: BOOTED,
+      component: overrides.component,
+      image: overrides.image,
+      now: "now" in overrides ? overrides.now : () => OBSERVED,
+      timingSafeEqual,
+    });
+  }
+
+  function answered(response: PresenceResponse): PresenceReport {
+    expect(response.status).toBe(200);
+    return response.body as PresenceReport;
+  }
+
+  describe("authorization", () => {
+    it("fails CLOSED with 503 when no internal token is configured", () => {
+      // A component that cannot tell core from anything else in the VPC must
+      // refuse. "On the private network" is a reachability property.
+      const response = ask({ env: {} });
+
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ error: "internal token not configured" });
+    });
+
+    it("401s a wrong token, a missing header and a bare Bearer", () => {
+      for (const authorization of [
+        "Bearer wrong-token-value",
+        undefined,
+        "",
+        "Bearer ",
+      ]) {
+        const response = ask({ authorization });
+        expect(response.status, String(authorization)).toBe(401);
+        expect(response.body).toEqual({ error: "invalid internal token" });
+      }
+    });
+
+    it("takes the token bare, and with the Bearer prefix and odd spacing", () => {
+      expect(ask({ authorization: INTERNAL }).status).toBe(200);
+      expect(ask({ authorization: `bearer  ${INTERNAL}  ` }).status).toBe(200);
+    });
+
+    it("authorizes BEFORE parsing, so a refusal teaches nothing about the body", () => {
+      const malformed = ask({
+        authorization: "Bearer nope",
+        body: { keys: 5 },
+      });
+      const wellFormed = ask({ authorization: "Bearer nope" });
+
+      expect(malformed).toEqual(wellFormed);
+      expect(malformed.status).toBe(401);
+    });
+
+    it("compares the token in constant time, over bytes", () => {
+      // The comparator is injected because this module is vendored and cannot
+      // import node:crypto. Both branches of that injection are the same rule.
+      expect(constantTimeEquals("token", "token", timingSafeEqual)).toBe(true);
+      expect(constantTimeEquals("token", "token")).toBe(true);
+      // A length mismatch must not throw, which is what timingSafeEqual does.
+      expect(constantTimeEquals("short", "much-longer", timingSafeEqual)).toBe(
+        false,
+      );
+      expect(constantTimeEquals("short", "much-longer")).toBe(false);
+      // Equal `.length`, different utf-8 bytes: a charCode loop would compare
+      // them as equal-length, and this does not.
+      expect(constantTimeEquals("é", "e", timingSafeEqual)).toBe(false);
+      expect(constantTimeEquals("é", "e")).toBe(false);
+    });
+  });
+
+  describe("request parsing", () => {
+    it("400s a body that is not a JSON object", () => {
+      for (const body of [null, [], "keys", 7]) {
+        const response = ask({ body });
+        expect(response.status).toBe(400);
+        expect(response.body).toEqual({ error: "body must be a JSON object" });
+      }
+    });
+
+    it("400s when keys is not an array", () => {
+      expect(ask({ body: {} }).body).toEqual({
+        error: "keys must be an array of strings",
+      });
+    });
+
+    it("400s a key that is not an env-var name, WITHOUT echoing it", () => {
+      const response = ask({ body: { keys: ["<script>alert(1)</script>"] } });
+
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(response.body)).not.toContain("script");
+    });
+
+    it("bounds one request at MAX_PRESENCE_KEYS", () => {
+      const keys = Array.from(
+        { length: MAX_PRESENCE_KEYS + 1 },
+        (_, i) => `K_${i}`,
+      );
+      const response = ask({ body: { keys } });
+
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({
+        error: `at most ${MAX_PRESENCE_KEYS} keys per request`,
+      });
+    });
+  });
+
+  describe("the answer", () => {
+    it("is never cached", () => {
+      // Load-bearing, and the reason this assertion exists on the handler
+      // rather than only on core's express route: a stale "absent" is what
+      // keeps a fixed connector looking broken in the console.
+      expect(ask().headers).toEqual({ "cache-control": "no-store" });
+    });
+
+    it("carries no headers on a refusal — only an answer is cacheable", () => {
+      expect(ask({ authorization: undefined }).headers).toEqual({});
+      expect(ask({ body: {} }).headers).toEqual({});
+      expect(ask({ env: {} }).headers).toEqual({});
+    });
+
+    it("reports a verdict per requested key, and never a value", () => {
+      const report = answered(
+        ask({
+          body: { keys: ["SET_KEY", "EMPTY_KEY", "MISSING_KEY", "FILLER_KEY"] },
+          env: {
+            STRAD_INTERNAL_TOKEN: INTERNAL,
+            SET_KEY: "xoxb-an-actual-credential",
+            EMPTY_KEY: "",
+            FILLER_KEY: "change-me",
+          },
+        }),
+      );
+
+      expect(report.keys.SET_KEY?.presence).toBe("present");
+      expect(report.keys.EMPTY_KEY?.presence).toBe("empty");
+      expect(report.keys.MISSING_KEY?.presence).toBe("absent");
+      expect(report.keys.FILLER_KEY?.presence).toBe("placeholder");
+      expect(JSON.stringify(report)).not.toContain("an-actual-credential");
+      expect(JSON.stringify(report)).not.toContain(INTERNAL);
+    });
+
+    it("answers about this component's own params, which core cannot name", () => {
+      const report = answered(
+        ask({
+          body: { keys: [] },
+          env: {
+            STRAD_INTERNAL_TOKEN: INTERNAL,
+            STRAD_PARAM_KEYS: JSON.stringify({ telegram: ["TELEGRAM_API_ID"] }),
+            TELEGRAM_API_ID: "12345",
+          },
+        }),
+      );
+
+      expect(report.paramKeys).toEqual({ telegram: ["TELEGRAM_API_ID"] });
+      expect(report.keys.TELEGRAM_API_ID?.presence).toBe("present");
+    });
+
+    it("names the component and image the environment names", () => {
+      const report = answered(
+        ask({
+          env: {
+            STRAD_INTERNAL_TOKEN: INTERNAL,
+            STRAD_COMPONENT: "bundle-zimmer-secrets",
+            STRAD_VERSION: "sha-abc123",
+          },
+          component: "ignored-fallback",
+          image: "ignored-fallback",
+        }),
+      );
+
+      expect(report.component).toBe("bundle-zimmer-secrets");
+      expect(report.image).toBe("sha-abc123");
+    });
+
+    it("falls back to STRAD_BUNDLE, then to what the adapter supplied", () => {
+      // The two callers know different things about themselves: the host image
+      // knows its own package version, core in bundle mode knows only what the
+      // spec baked. The env lookup is shared; the fallback is the adapter's.
+      expect(
+        answered(
+          ask({
+            env: { STRAD_INTERNAL_TOKEN: INTERNAL, STRAD_BUNDLE: "bundle-api" },
+          }),
+        ).component,
+      ).toBe("bundle-api");
+
+      const hostShaped = answered(ask({ component: "bundle", image: "0.1.0" }));
+      expect(hostShaped.component).toBe("bundle");
+      expect(hostShaped.image).toBe("0.1.0");
+
+      // Core in bundle mode supplies neither.
+      const coreShaped = answered(ask());
+      expect(coreShaped.component).toBe("bundle");
+      expect(coreShaped.image).toBeNull();
+    });
+
+    it("reports when THIS process booted, not when the value was baked", () => {
+      // The freshness half. A container that predates the last render holds the
+      // previous deploy's environment, and this is what lets core tell them
+      // apart — HACKS.md #35 is entirely about a process that can lie by being
+      // old.
+      const report = answered(ask());
+
+      expect(report.bootedAt).toBe(BOOTED.toISOString());
+      expect(report.observedAt).toBe(OBSERVED.toISOString());
+      expect(report.protocol).toBe(PRESENCE_PROTOCOL);
+    });
+
+    it("observes at the wall clock when no clock is injected", () => {
+      const before = Date.now();
+      const report = answered(ask({ now: undefined }));
+
+      expect(Date.parse(report.observedAt)).toBeGreaterThanOrEqual(before);
+    });
   });
 });
 

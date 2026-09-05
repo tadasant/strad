@@ -1677,6 +1677,17 @@ into `servers/bundle/host/src/presence.ts` (`npm run presence:sync`;
 `test/vendored.sync.test.ts` fails CI on drift) so that `change-me` reads as
 filler whichever process holds it.
 
+**One route, not two that agree.** That module carries both ends: the vocabulary
+and `presenceResponse`, the handler that authorizes, parses and answers. Each
+component keeps only the three-line express adapter over it — core in
+`STRAD_MODE=bundle`, and the host image, which is what a bundle of
+`supplementary-image` servers actually runs. The wiring used to be written out
+by hand on both sides, and the untested copy was the one every deployment
+served. It is worth naming what that protects: authorization runs before
+parsing, so a `401` says the same thing whatever the body was, and an answer
+carries `cache-control: no-store` — a cached `absent` is exactly what would keep
+a fixed connector looking broken on this page.
+
 **It cannot be turned into an oracle.** The key roster core sends is derived from
 the config core is running, plus whatever the component itself reports under
 `STRAD_PARAM_KEYS`. There is no path from a request parameter — on `/ui` or on

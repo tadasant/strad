@@ -54,7 +54,7 @@
  * failure (OOM), and that is the risk the telemetry is there to watch.
  */
 import express, { type Request, type Response } from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,8 +68,7 @@ import {
   remoteFilesystemDegraded,
   scrubCapabilityEnv,
 } from "./mounts.js";
-import { PRESENCE_ROUTE } from "./presence.js";
-import { presenceResponse } from "./presence-route.js";
+import { PRESENCE_ROUTE, presenceResponse } from "./presence.js";
 import { paramStoreFor, startParamRefresh } from "./param-store.js";
 import { CORE_URL_ENV, createStoreRefreshClient } from "./param-route.js";
 import { loadFromTree, treeSdk, type TreeName } from "./trees.js";
@@ -1408,13 +1407,21 @@ async function main(): Promise<void> {
   // It answers with the five words in presence.ts and nothing else: no value, no
   // length, no prefix, no hash. Behind the same internal token core already
   // presents to proxy /mcp here, and fail-closed when that token is unset.
+  //
+  // The route itself is `presenceResponse`, in the module vendored from core
+  // (`npm run presence:sync`): core's console is the only caller and this image
+  // is the server every deployment actually runs, so the wiring is one
+  // implementation rather than two. What stays here is what only this process
+  // knows — when it booted, and the version to report when the deploy baked no
+  // STRAD_VERSION.
   app.post(PRESENCE_ROUTE, (req, res) => {
     const answer = presenceResponse({
       authorization: req.get("authorization"),
       body: req.body,
       env: process.env,
       bootedAt: BOOTED_AT,
-      version: VERSION,
+      image: VERSION,
+      timingSafeEqual,
     });
     res.status(answer.status).set(answer.headers).json(answer.body);
   });

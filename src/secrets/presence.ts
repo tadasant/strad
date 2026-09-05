@@ -23,13 +23,26 @@
  * a secret, and the four characters an issuer puts at the front are the four an
  * attacker most wants.
  *
+ * ## It carries BOTH ends of the wire
+ *
+ * The vocabulary is the top of the file; `presenceResponse` at the bottom is the
+ * route those words are spoken through, and both are here for the same reason
+ * `secrets/param-route.ts` carries both the shape core serves and the client the
+ * host calls with. The wiring — authorize before parse, what a refusal carries,
+ * `cache-control: no-store` on an answer — was written twice, and the half that
+ * lives in the tree with no test runner is the half every deployment actually
+ * runs: a bundle of `supplementary-image` servers runs the host image, not the
+ * strad image in bundle mode. Each tree keeps only the three-line express
+ * adapter that applies the result to a response.
+ *
  * ## Why this file has no imports
  *
  * It is vendored, byte-identical, into `servers/bundle/host/src/presence.ts` —
  * that tree is a separate npm project with its own lockfile and its own compiler
  * settings, and it cannot import across the boundary. Zero imports is what makes
- * one file compile in both. `npm run presence:sync` writes the copy and
- * `test/vendored.sync.test.ts` fails CI if it drifts.
+ * one file compile in both, and it is why `node:crypto`'s `timingSafeEqual` is
+ * INJECTED by the caller rather than imported here. `npm run presence:sync`
+ * writes the copy and `test/vendored.sync.test.ts` fails CI if it drifts.
  */
 
 /**
@@ -330,7 +343,7 @@ export function authorizePresence(
   header: string | undefined,
   expected: string | undefined,
   /** Injected so the comparison can be constant-time where the caller has one. */
-  equals: (a: string, b: string) => boolean = timingSafeEqualish,
+  equals: (a: string, b: string) => boolean = constantTimeEquals,
 ): { ok: true } | { ok: false; status: number; error: string } {
   if (!expected) {
     return {
@@ -347,15 +360,33 @@ export function authorizePresence(
 }
 
 /**
- * Constant-time-ish string compare, with no dependency on node:crypto so this
- * file stays importable by both trees unchanged. Callers that have
- * `timingSafeEqual` in scope should pass it in — see `authorizePresence`.
+ * The one constant-time compare on this surface, in both trees.
+ *
+ * It is a compare of BYTES, not of UTF-16 code units: two strings of equal
+ * `.length` can encode to different numbers of bytes, and a token is bytes.
+ * The length is compared first — that leaks the length of the presented token,
+ * which is what `timingSafeEqual` itself does by throwing on a mismatch, and it
+ * is not a secret worth a branchless compare.
+ *
+ * `timingSafeEqual` is INJECTED rather than imported because this file is
+ * vendored into a tree that cannot import across the boundary. A caller with
+ * `node:crypto` in scope passes it and gets the C implementation; the fallback
+ * is a JS loop with no early exit, for a caller that has none. Either way the
+ * framing — the utf-8 encode, the length guard, the "a mismatch must not throw"
+ * rule — is written once, here, rather than once per door.
  */
-function timingSafeEqualish(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
+export function constantTimeEquals(
+  a: string,
+  b: string,
+  timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean,
+): boolean {
+  const left = Buffer.from(a, "utf8");
+  const right = Buffer.from(b, "utf8");
+  if (left.length !== right.length) return false;
+  if (timingSafeEqual) return timingSafeEqual(left, right);
   let diff = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let i = 0; i < left.length; i += 1) {
+    diff |= left[i]! ^ right[i]!;
   }
   return diff === 0;
 }
@@ -442,4 +473,109 @@ export function parseParamKeys(
     out[slug] = names;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The route: authorize, then parse, then answer
+// ---------------------------------------------------------------------------
+
+/**
+ * One HTTP answer, as a value rather than as a side effect on a response.
+ *
+ * Framework-free on purpose: both adapters are three lines of express, and a
+ * handler that returned nothing would only be reachable through a socket. This
+ * one is reachable from a unit test in either tree.
+ */
+export interface PresenceResponse {
+  status: number;
+  /** Applied verbatim. Empty on a refusal — only an answer is worth caching rules. */
+  headers: Record<string, string>;
+  body: PresenceReport | { error: string };
+}
+
+export interface PresenceRouteInput {
+  /** The `authorization` header, as express reports it. */
+  authorization: string | undefined;
+  /** The parsed JSON body, whatever it turned out to be. */
+  body: unknown;
+  /**
+   * The process environment: the thing being reported ON, and also where the
+   * internal token and the provenance come from.
+   */
+  env: Record<string, string | undefined>;
+  /** When THIS process started. The freshness half of the report. */
+  bootedAt: Date;
+  /**
+   * What to answer under when the environment names nobody.
+   *
+   * The two callers legitimately know different things about themselves — the
+   * host image knows its own package version, core in bundle mode knows none —
+   * so the FALLBACKS are the adapter's and the env lookup is shared. Reversing
+   * that would be two copies of "who am I" resolving in different orders.
+   */
+  component?: string;
+  image?: string | null;
+  /** Injected so the clock under test is not the wall clock. */
+  now?: () => Date;
+  /**
+   * `node:crypto`'s `timingSafeEqual`, from a caller that has it in scope. This
+   * module is vendored and import-free, so it cannot reach for it itself.
+   */
+  timingSafeEqual?: (a: Uint8Array, b: Uint8Array) => boolean;
+}
+
+/**
+ * `POST /_strad/presence`, as a function of its inputs.
+ *
+ * The vocabulary above decides what a verdict may say; this decides the ORDER
+ * the three steps run in, what a caller learns when one of them refuses, and
+ * which headers an answer carries. That wiring was written twice — once here in
+ * core and once in the bundle host tree, where nothing could test it — and the
+ * copy that runs in every deployment was the untested one. It is one
+ * implementation now, vendored across the boundary like the vocabulary it sits
+ * on (`npm run presence:sync`).
+ *
+ * AUTHORIZE BEFORE PARSE IS THE POINT. An unauthorized caller learns nothing
+ * about which bodies this endpoint would have accepted, so a 401 comes back for
+ * a malformed body just as it does for a well-formed one.
+ */
+export function presenceResponse(input: PresenceRouteInput): PresenceResponse {
+  const auth = authorizePresence(
+    input.authorization,
+    input.env.STRAD_INTERNAL_TOKEN,
+    (a, b) => constantTimeEquals(a, b, input.timingSafeEqual),
+  );
+  if (!auth.ok) {
+    return { status: auth.status, headers: {}, body: { error: auth.error } };
+  }
+
+  const parsed = parsePresenceRequest(input.body);
+  if (!parsed.ok) {
+    return {
+      status: parsed.status,
+      headers: {},
+      body: { error: parsed.error },
+    };
+  }
+
+  return {
+    status: 200,
+    // Never cached. The answer changes the moment a deploy lands, and a stale
+    // "absent" is exactly the thing that would keep a fixed connector looking
+    // broken — the failure mode the readiness endpoint refuses for the same
+    // reason.
+    headers: { "cache-control": "no-store" },
+    body: buildPresenceReport({
+      component:
+        input.env.STRAD_COMPONENT ??
+        input.env.STRAD_BUNDLE ??
+        input.component ??
+        "bundle",
+      image: input.env.STRAD_VERSION ?? input.image ?? null,
+      bootedAt: input.bootedAt,
+      observedAt: input.now?.(),
+      env: input.env,
+      keys: parsed.keys,
+    }),
+  };
 }

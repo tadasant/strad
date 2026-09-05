@@ -116,7 +116,9 @@ is one of five words per key — `absent`, `empty`, `unexpanded`, `placeholder`,
 baked onto its own component and core cannot read it, so unaided the console's only
 honest answer is that it did not check. Both the strad image in bundle mode and
 the `strad-bundle` host image serve it, both behind `STRAD_INTERNAL_TOKEN`, and both
-fail closed when that token is unset. See
+fail closed when that token is unset — from one handler, `presenceResponse` in
+`src/secrets/presence.ts`, vendored into the host tree with the vocabulary it
+answers in. See
 [Secrets](/operate/secrets/#the-presence-route-a-component-answering-for-itself).
 
 When core proxies to a strad-image bundle, it calls
