@@ -55,6 +55,19 @@ of which, `servers`, is a thirteen-leg matrix over the server trees:
   [`bundle-google-ci.yml`](#the-image-workflows). `servers/bundle` needs no
   exemption — it owns no lockfile, so it is not a tree; its host is.
 
+  **Nor is the runner each leg uses.** A leg runs whatever its tree's `npm test`
+  runs, so a tree added on a different runner — or with no `test` script at all —
+  is green here and asserts nothing, which looks identical to a tree that passed.
+  That happened twice after the repo converged on Vitest: `servers/grafana` and
+  `images/bundle-google` both arrived on `node --test`, one of them running its
+  suite against a stale `build/` rather than its sources. So
+  `test/vitest-convergence.test.ts` holds both halves — the vitest major and
+  config shape of every package that declares one, and, for every **tree**, that
+  its `test` script exists and resolves through `npm run test --workspace <x>`
+  down to a command that really runs vitest. It also fails on any tracked
+  `*.test.mjs`, because no `include:` in this repo matches that name: such a file
+  is collected by nothing and reports like a suite that passed.
+
   What each leg is for:
 
   - **`good-eggs`** — build (typechecks `shared` + `remote`) and its browser-free
