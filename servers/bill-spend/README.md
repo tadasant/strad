@@ -83,16 +83,29 @@ on someone's books this is the worst failure mode available: forty transactions
 reported re-coded, none of them changed.
 
 That is measured, not inferred. Sent to a live sandbox company: two values on a
-single-select field come back `200 SUCCESS` with **one of them stored and the
-other silently gone.**
+single-select field come back `200 SUCCESS` and **the field is exactly as it
+was.** Probed across an empty field, a coded one, two values, three, and a list
+containing the value already selected — every one SUCCESS, every one discarded
+whole. It is the mistake an agent makes by treating a single-select field as
+multi-select, and BILL reports it as a success.
 
 So this server does not trust the reply. `shared/src/wire.ts` holds the body
 shapes it knows how to send, best first, and `setTransactionCoding` walks that
 ladder, **re-reading the transaction after every attempt and diffing it**.
 Nothing decides a write succeeded except the read-back. A result carries
-`verified: true` and the `wire_variant` that actually persisted; when nothing
-persists, the tool fails with `persisted: false` and the full attempt table —
-per shape, what BILL answered and what the transaction looked like afterwards.
+`verified: true` — meaning the read-back was done — and, when the transaction
+moved, the `wire_variant` that moved it. When nothing reaches the requested
+state, the tool fails with `persisted: false` and the full attempt table: per
+shape, what BILL answered and what the transaction looked like afterwards.
+
+**"Did not persist" and "did not change" are different claims, and the error
+checks the second one.** Usually nothing moved and "treat this as uncoded" is the
+right advice. But this server runs unattended against a company real people also
+use, so a person can edit the same transaction in the BILL web app between the
+PUT and the read-back — and then the transaction moved while this write did not.
+That failure carries `changed: true` alongside `persisted: false`, with the
+before and after, rather than telling a caller a row somebody just coded is
+uncoded.
 
 Everything else about the write follows from that:
 
@@ -238,7 +251,7 @@ All five tools have been exercised end to end against a real BILL **sandbox**
 company through a real MCP client: the custom-field catalog, a field's values,
 the transaction list, one transaction's coding, and a re-code that was read back
 and diffed. The write persists, the verification is real, and the failure path
-fires on a write BILL answers SUCCESS to and half-applies.
+fires on a write BILL answers SUCCESS to and discards.
 
 Three things the sandbox could not exercise: a **locked** transaction (it seeds
 none), the **rate limiter** (60/min was never approached), and — the one that

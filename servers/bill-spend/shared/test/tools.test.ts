@@ -71,6 +71,32 @@ describe("list_coding_fields", () => {
     expect(fields.map((f) => f.name)).toEqual(["GL Account", "Project"]);
   });
 
+  it("hides a retired field by DEFAULT even though BILL returns it", async () => {
+    // The other half of the same measurement. The endpoint ignores
+    // `retired:eq:false` as readily as it ignores `retired:eq:true`, so the
+    // default walk comes back carrying retired fields — and an agent reading
+    // that result would code a transaction to a dead account. Filtered locally,
+    // so it is right under either behaviour.
+    const { call } = build({
+      ignoresRetiredFilterOnFields: true,
+      fields: [
+        ...fixture().fields,
+        {
+          id: "Y3VzdG9tZmllbGQ6MzAz",
+          uuid: "tty_old_0003",
+          name: "Old Account",
+          retired: true,
+          values: [],
+        },
+      ],
+    });
+    const names = ((await call("list_coding_fields", {})).json!.fields as Array<
+      Record<string, unknown>
+    >).map((f) => f.name);
+    expect(names).not.toContain("Old Account");
+    expect(names).toContain("GL Account");
+  });
+
   it("still finds a retired field when BILL DOES apply the filter", async () => {
     // The other half of the same union: the dedupe must not cost the second
     // walk its results on an endpoint that honours the filter.

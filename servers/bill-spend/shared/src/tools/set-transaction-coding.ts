@@ -51,10 +51,11 @@ export function setTransactionCodingTool(
       '"after":[{"value":"Software & Subscriptions"}],"changed":true,' +
       '"verified":true,"wire_variant":"customFieldId/id"}\n\n' +
       "PASS `value_ids` FROM list_coding_options, using the `id` it returns. " +
-      "Account names are not accepted, and a uuid taken from a " +
-      "list_transactions result is the identifier form BILL is reported to " +
-      "accept and drop. An id that belongs to a different field is refused here " +
-      "before anything is written.\n\n" +
+      "Account names are not accepted. A `uuid` works too — BILL persists both " +
+      "identifier forms — but an id that belongs to a DIFFERENT field does not: " +
+      "the write endpoint accepts it and discards it, which is why this tool " +
+      "resolves every value against that field's own catalog and refuses an " +
+      "unknown one before anything is written.\n\n" +
       "An empty `value_ids` array CLEARS the field's coding. A transaction that " +
       "already carries exactly these values is left alone and comes back with " +
       "`changed: false` — re-running a sweep costs reads, not writes. " +

@@ -22,16 +22,17 @@ const DEFAULT_LIMIT = 200;
  * it.
  *
  * THE `id` IS WHY THIS TOOL EXISTS IN THIS SHAPE. Every other read in this
- * server can get away with returning a `uuid`; this one must return the base64
- * `id` beside it, because the `id` is the form `set_transaction_coding` sends
- * first, and it is the only form anyone has reported the write endpoint actually
- * honouring. A caller that takes a value's `uuid` out of a `list_transactions`
- * result and writes with it is walking straight into the 200-SUCCESS-and-nothing-
- * happened failure. See wire.ts.
+ * server can get away with returning a `uuid`; this one returns the base64 `id`
+ * beside it, because the `id` is the form `set_transaction_coding` sends first
+ * and the form its ladder's first rung needs. Both forms were measured to
+ * persist, so a `uuid` is not a silent failure — but a caller taking a value's
+ * `uuid` out of a `list_transactions` result has skipped the catalog lookup that
+ * refuses an id belonging to the WRONG field, which is the likeliest real cause
+ * of a write BILL answers 200 to and drops. See wire.ts.
  *
  * BILL marks `id` DEPRECATED in its own schema, which is worth knowing and does
- * not change the recommendation: a deprecated field that writes beats a current
- * one that is silently dropped, and the write path tries both regardless.
+ * not change the recommendation: it is what the write sends first, and this is
+ * the only endpoint that hands it out beside the uuid.
  */
 export function listCodingOptionsTool(gateway: GatewayFactory): ToolDefinition {
   return {
@@ -43,11 +44,13 @@ export function listCodingOptionsTool(gateway: GatewayFactory): ToolDefinition {
       'Example: {"field":"Y3VzdG9tZmllbGQ6MTIz","options":[' +
       '{"id":"Y3VzdG9tZmllbGR2YWx1ZTo0NTY","uuid":"tvl_9z8y7x",' +
       '"value":"Internet/Phone"}],"returned":1}\n\n' +
-      "PASS THE `id`, not the `uuid`, to set_transaction_coding. BILL's write " +
-      "endpoint documents both as acceptable and is reported to accept the uuid " +
-      "form, answer SUCCESS, and discard the update. The write verifies itself " +
-      "by re-reading either way, so a uuid costs you retries rather than " +
-      "silence — but the `id` is the one to send.\n\n" +
+      "PASS THE `id` to set_transaction_coding. BILL's write endpoint accepts " +
+      "the uuid form too — that was measured, not assumed — so a uuid is not a " +
+      "silent failure; the `id` is simply the form the write sends first. What " +
+      "matters more is that the value belongs to THIS field: an id from a " +
+      "different custom field is accepted by the write endpoint and then " +
+      "discarded, so call this tool for the exact field you are about to " +
+      "write.\n\n" +
       "What you get is the display string and nothing else. BILL returns no " +
       "account number, no account type, and no link back to the QuickBooks or " +
       "NetSuite account these values were imported from, so a merchant can be " +

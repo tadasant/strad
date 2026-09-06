@@ -99,19 +99,32 @@ on someone's books, that is the worst failure available: forty transactions
 reported re-coded, none of them changed.
 
 That is measured, not inferred. Sending two values to a single-select field
-against a live BILL sandbox company comes back `200 SUCCESS` with **one of them
-stored and the other silently gone** — no error, no warning, a transaction coded
-as something other than what was asked for.
+against a live BILL sandbox company comes back `200 SUCCESS` and **the field is
+exactly as it was** — the update dropped whole, no error, no warning. Probed
+across an empty field, a coded one, two values, three, and a list containing the
+value already selected: every one SUCCESS, every one discarded. It is the mistake
+an agent makes by treating a single-select field as multi-select, and BILL
+reports it as a success.
 
 So this server does not trust the reply. `servers/bill-spend/shared/src/wire.ts`
 holds the body shapes it knows how to send, best first, and the write walks that
 ladder **re-reading the transaction after every attempt and diffing it**. Nothing
 decides a write succeeded except the read-back.
 
-A successful result carries `verified: true` and the `wire_variant` that actually
-persisted, so which shape BILL honours stops being folklore. When nothing
-persists, the tool fails with `persisted: false` and the full attempt table — per
-shape, what BILL answered and what the transaction looked like afterwards.
+A successful result carries `verified: true` — meaning the read-back was done —
+and, when the transaction moved, the `wire_variant` that moved it. When nothing
+reaches the requested state, the tool fails with `persisted: false` and the full
+attempt table: per shape, what BILL answered and what the transaction looked like
+afterwards.
+
+**"Did not persist" and "did not change" are different claims, and the error
+checks the second one.** Usually nothing moved and "treat this as uncoded" is the
+right advice. But this server runs unattended against a company real people also
+use, so a person can edit the same transaction in the BILL web app between the
+PUT and the read-back — and then the transaction moved while this write did not.
+That failure carries `changed: true` alongside `persisted: false`, with the
+before and after, rather than telling a caller a row somebody just coded is
+uncoded.
 
 Everything else about the write follows from that:
 
@@ -218,7 +231,7 @@ All five tools have been exercised against a live BILL sandbox company end to
 end: the custom-field catalog, a field's values, the transaction list, one
 transaction's coding, and a re-code that was read back and diffed. The write
 persists, the verification is real, and the failure path fires on a write BILL
-answers SUCCESS to and half-applies.
+answers SUCCESS to and discards.
 
 Three things were **not** exercised, and each needs something the sandbox does
 not have:

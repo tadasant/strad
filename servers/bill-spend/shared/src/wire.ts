@@ -29,10 +29,12 @@
  *
  * WHAT IS TRUE IS THE FAILURE MODE ITSELF, and it was reproduced. Send two
  * values to a `multiSelect: false` field and BILL answers **HTTP 200
- * `{"status":"SUCCESS"}`, stores one of them and discards the other** — no
- * error, no warning, a transaction coded as something other than what was asked
- * for. That is the worst failure available to an agent working unattended on
- * someone's books, it is what `setTransactionCoding` re-reads to catch, and it
+ * `{"status":"SUCCESS"}` and does nothing at all** — the field comes back
+ * exactly as it was. Probed across an empty field, a coded one, two values,
+ * three, and a list containing the value already selected: every one SUCCESS,
+ * every one discarded whole. No error, no warning, and an agent that believed
+ * the reply would report a transaction re-coded that is still coded the way it
+ * was last month. That is what `setTransactionCoding` re-reads to catch, and it
  * is why nothing here treats a 200 as evidence.
  *
  * SO THE LADDER STAYS, AT TWO RUNGS, and the reason is no longer BILL's

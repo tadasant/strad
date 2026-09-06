@@ -1198,7 +1198,7 @@ declares thirty-five server slugs:
   secrets are seeded, so they are skipped at render; see
   [Telegram](/servers/telegram/#not-configured-is-a-supported-state) and
   [A server whose secret is not seeded yet](#a-server-whose-secret-is-not-seeded-yet).
-- `zimmer-secrets` — a thirtieth `supplementary-image` entry, running that same
+- `zimmer-secrets` — the thirty-second `supplementary-image` entry, running that same
   image on its **own** component, `bundle-zimmer-secrets`. It is the only server
   that leaves the one bundle, and the only reason to leave it: a parameter store is
   `process.env`. See [Two stores, one

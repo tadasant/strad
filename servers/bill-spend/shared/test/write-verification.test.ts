@@ -432,6 +432,30 @@ describe("regressions found in review", () => {
     expect(bill.transaction(OPEN).selected[GL]).toEqual(before);
   });
 
+  it("does not call a note that was ALREADY THERE a change", async () => {
+    // The note axis of the same diff. `note_persisted` says BILL stored what was
+    // sent, which is equally true of the note the transaction already carried —
+    // exactly a sweep re-annotating what it annotated last month. Movement is
+    // measured against the note read BEFORE the write, not against the request.
+    const { bill, gateway } = build({ acceptsVariant: "customFieldId/id" });
+    const args = {
+      transaction_id: OPEN,
+      field: "tty_project_0002",
+      value_ids: [],
+      note: "explained by the sweep",
+    };
+    const first = await gateway.setTransactionCoding(args);
+    expect(first.changed).toBe(true);
+    const writesAfterFirst = bill.writes.length;
+
+    const second = await gateway.setTransactionCoding(args);
+    expect(second.changed).toBe(false);
+    expect(second.note_persisted).toBe(true);
+    expect(second.wire_variant).toBeNull();
+    // And the second call took the cheap path: nothing to change, nothing sent.
+    expect(bill.writes.length).toBe(writesAfterFirst);
+  });
+
   it("counts a note that DID land as a change, with no value moving", async () => {
     // The other side of the same diff: on a NOTE-type field there are no values
     // to move, so the note is the only thing a change can consist of.
@@ -445,6 +469,65 @@ describe("regressions found in review", () => {
     expect(result.changed).toBe(true);
     expect(result.note_persisted).toBe(true);
     expect(result.wire_variant).toBe("customFieldId/id");
+  });
+
+  it("refuses a single-select overflow that BILL answers SUCCESS to and drops", async () => {
+    // THE MEASURED FAILURE, END TO END. Two values sent to a `multiSelect:
+    // false` field: BILL answers 200 SUCCESS and the field is EXACTLY as it
+    // was — the update is dropped whole, not applied in part. A server that
+    // trusted the reply would report this transaction re-coded.
+    const { bill, gateway } = build({ acceptsVariant: "customFieldId/id" });
+    expect(bill.transaction(OPEN).selected[GL]).toEqual(["tvl_0901"]);
+
+    const error = await gateway
+      .setTransactionCoding({
+        transaction_id: OPEN,
+        field: GL,
+        value_ids: [SOFTWARE_ID, MEALS_ID],
+      })
+      .catch((e: unknown) => e as WriteNotPersistedError);
+
+    expect(error).toBeInstanceOf(WriteNotPersistedError);
+    expect(error.attempts.every((a) => a.reportedStatus === "SUCCESS")).toBe(
+      true,
+    );
+    expect(error.attempts.every((a) => !a.persisted)).toBe(true);
+    // Nothing moved, so the original advice is the right advice.
+    expect(bill.transaction(OPEN).selected[GL]).toEqual(["tvl_0901"]);
+    expect(error.drift).toBeUndefined();
+    expect(error.message).toContain("did NOT change");
+    expect(error.message).toContain("Treat this transaction as UNCODED");
+  });
+
+  it("says the transaction MOVED when something else moved it mid-write", async () => {
+    // The other branch of the same failure. `WriteNotPersistedError` asserts
+    // "did NOT change" and "treat this as UNCODED" — a claim about the ledger
+    // that nothing used to check. A human editing the same transaction in the
+    // BILL web app between the PUT and the read-back makes it false, and an
+    // unattended agent works against a company real people also use.
+    const { bill, gateway } = build({
+      acceptsVariant: null,
+      concurrentEdit: { fieldUuid: GL, valueUuids: ["tvl_0903"] },
+    });
+
+    const error = await gateway
+      .setTransactionCoding({
+        transaction_id: OPEN,
+        field: GL,
+        value_ids: [SOFTWARE_ID],
+      })
+      .catch((e: unknown) => e as WriteNotPersistedError);
+
+    expect(error).toBeInstanceOf(WriteNotPersistedError);
+    expect(error.attempts.every((a) => !a.persisted)).toBe(true);
+    expect(bill.transaction(OPEN).selected[GL]).toEqual(["tvl_0903"]);
+    expect(error.drift).toEqual({
+      before: ["Internet/Phone"],
+      after: ["Meals & Entertainment"],
+    });
+    expect(error.message).toContain("IT IS NO LONGER WHAT IT WAS");
+    expect(error.message).not.toContain("did NOT change");
+    expect(error.message).not.toContain("Treat this transaction as UNCODED");
   });
 
   it("dedupes the same value passed in both identifier forms", async () => {

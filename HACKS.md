@@ -4122,16 +4122,23 @@ request. `servers/bill-spend/shared/src/wire.ts` enumerates TWO body shapes for
 order, **re-reading the transaction and diffing it after every attempt**. Nothing
 in that server treats BILL's reply as evidence: a result carries `verified: true`
 only for a change that was observed on a subsequent read, and the shape that
-worked comes back as `wire_variant`. When no shape persists, the tool fails with
-`persisted: false` and the whole attempt table rather than reporting the success
-BILL claimed.
+worked comes back as `wire_variant`. When no shape reaches the requested state,
+the tool fails with `persisted: false` and the whole attempt table rather than
+reporting the success BILL claimed. That failure asserts "did NOT change" and
+"treat this as UNCODED", which are claims about the TRANSACTION rather than
+about the request, so they are checked: a transaction that moved while this
+write did not — a person editing it in the BILL web app between the PUT and the
+read-back — comes back `changed: true` with the before and after instead.
 
 **Why.** The endpoint answers HTTP 200 `{"status":"SUCCESS"}` to updates it
 discards. That was measured, not inferred: sending two values to a
 `multiSelect: false` field against a live BILL sandbox company comes back
-SUCCESS with ONE of them stored and the other silently gone. The consumer is an
-unattended agent editing someone's books, where believing the reply means
-reporting forty transactions re-coded and changing none of them.
+SUCCESS with the field EXACTLY AS IT WAS — probed across an empty field, a coded
+one, two values, three, and a list containing the value already selected, every
+one SUCCESS and every one dropped whole. It is the mistake an agent makes by
+treating a single-select field as multi-select. The consumer is an unattended
+agent editing someone's books, where believing the reply means reporting forty
+transactions re-coded and changing none of them.
 
 The ladder itself was built for a second reason that turned out to be smaller
 than it looked. BILL's own
@@ -4160,12 +4167,12 @@ irreducible. It is not; it is what verification costs when the API will lie.
 shapes that both persist and that need different identifier forms, so there is
 nothing further to trim until a caller can be guaranteed to hold the base64 `id`.
 The read-back is NOT part of the undo, and the live company is why: a
-single-select field handed two values is answered SUCCESS and half-applied, so
-the diff is the only thing that separates "coded" from "coded as something
-else". The diff is also against the state read BEFORE the PUT, not against the
-requested state — a request for the state a field is already in satisfies
-"matches what was asked for" vacuously, and reporting that as a change is the
-same lie one size down.
+single-select field handed two values is answered SUCCESS and left untouched, so
+the diff is the only thing that separates "coded" from "reported as coded". The
+diff is also against the state read BEFORE the PUT, not against the requested
+state — a request for the state a field is already in satisfies "matches what was
+asked for" vacuously, and reporting that as a change is the same lie one size
+down.
 `servers/bill-spend/shared/test/write-verification.test.ts` is the canary — its
 fake answers SUCCESS to every shape and applies only the one it was told to
 honour, so a server that started trusting the reply goes red there.

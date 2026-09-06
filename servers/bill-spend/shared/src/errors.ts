@@ -126,26 +126,48 @@ export interface WriteAttempt {
 }
 
 /**
- * BILL reported success and the transaction did not change.
+ * BILL reported success and the transaction is not in the requested state.
  *
  * THIS IS THE FAILURE THE SERVER EXISTS TO CATCH. `PUT
- * /v3/spend/transactions/{id}/custom-fields` can answer HTTP 200
- * `{"status":"SUCCESS"}` having discarded the update — BILL's own API reference
- * and its Transactions guide disagree about the request body (`customFieldId`
- * vs `customFieldUuid`), and a community implementer reports that the `tty_…` /
- * `tvl_…` UUID forms are accepted and dropped while only the base64 `id` form
- * writes. For an unattended agent working on someone's books, believing that
- * reply is how you report forty transactions re-coded and change none of them.
+ * /v3/spend/transactions/{id}/custom-fields` answers HTTP 200
+ * `{"status":"SUCCESS"}` to updates it discards, which was measured rather than
+ * inferred: two values sent to a `multiSelect: false` field come back SUCCESS
+ * with the field exactly as it was. For an unattended agent working on someone's
+ * books, believing that reply is how you report forty transactions re-coded and
+ * change none of them.
  *
  * So this is raised after every body shape this server knows has been tried and
  * READ BACK, and it carries all of them. That list is the diagnostic: it says,
  * per shape, what BILL answered and what the transaction looked like afterwards.
+ *
+ * THE MESSAGE MAKES A CLAIM ABOUT THE LEDGER, so `drift` is what checks it.
+ * "Did NOT change" and "treat this as UNCODED" are assertions about a
+ * transaction, not about a request, and they are false whenever something moved
+ * it while this write was failing to. The plain cause is a human editing the
+ * same transaction in the BILL web app between the PUT and the read-back — this
+ * server is driven unattended against a company real people also use. Telling an
+ * operator to treat a row somebody just coded as uncoded is how it gets coded
+ * twice, so when the caller determined the transaction moved it passes the
+ * before and after and the message says that instead.
  */
+export interface WriteDrift {
+  /** What the transaction carried before the write, as display strings. */
+  before: string[];
+  /** What it carries now. Different from `before`, or this would not be here. */
+  after: string[];
+}
+
 export class WriteNotPersistedError extends Error {
   readonly transactionId: string;
   readonly attempts: WriteAttempt[];
+  /** Present only when the transaction MOVED, to something unrequested. */
+  readonly drift?: WriteDrift;
 
-  constructor(transactionId: string, attempts: WriteAttempt[]) {
+  constructor(
+    transactionId: string,
+    attempts: WriteAttempt[],
+    drift?: WriteDrift,
+  ) {
     const reported = attempts
       .map(
         (a) =>
@@ -154,21 +176,33 @@ export class WriteNotPersistedError extends Error {
           `, read-back showed [${a.observedAfter.join(", ") || "nothing"}]`,
       )
       .join("; ");
+    const tried =
+      `${attempts.length} request ${attempts.length === 1 ? "shape was" : "shapes were"} ` +
+      `tried and each was verified by re-reading the transaction: ${reported}.`;
     super(
-      `The coding of transaction ${transactionId} did NOT change. ` +
-        `${attempts.length} request ${attempts.length === 1 ? "shape was" : "shapes were"} ` +
-        `tried and each was verified by re-reading the transaction: ${reported}. ` +
-        `Treat this transaction as UNCODED. BILL can answer 200 SUCCESS and ` +
-        `discard the update, which is why this is reported as a failure rather ` +
-        `than as the success BILL claimed. Most likely causes: the value ids do ` +
-        `not belong to that custom field (get them from list_coding_options for ` +
-        `this exact field), the field does not apply to this transaction's ` +
-        `budget, or the field is not selectable on this transaction at all ` +
-        `(check get_transaction_coding).`,
+      drift
+        ? `The coding of transaction ${transactionId} was not set to what was ` +
+          `asked for, AND IT IS NO LONGER WHAT IT WAS: it now carries ` +
+          `[${drift.after.join(", ") || "nothing"}] where it carried ` +
+          `[${drift.before.join(", ") || "nothing"}]. ${tried} Nothing this ` +
+          `write sent was applied, so something ELSE moved it — most plainly a ` +
+          `person editing the same transaction in the BILL web app while this ` +
+          `was running. Do not treat it as uncoded: read it with ` +
+          `get_transaction_coding, and decide whether the coding it now carries ` +
+          `is the one you were about to replace.`
+        : `The coding of transaction ${transactionId} did NOT change. ${tried} ` +
+          `Treat this transaction as UNCODED. BILL can answer 200 SUCCESS and ` +
+          `discard the update, which is why this is reported as a failure rather ` +
+          `than as the success BILL claimed. Most likely causes: the value ids do ` +
+          `not belong to that custom field (get them from list_coding_options for ` +
+          `this exact field), the field does not apply to this transaction's ` +
+          `budget, or the field is not selectable on this transaction at all ` +
+          `(check get_transaction_coding).`,
     );
     this.name = "WriteNotPersistedError";
     this.transactionId = transactionId;
     this.attempts = attempts;
+    if (drift) this.drift = drift;
   }
 }
 

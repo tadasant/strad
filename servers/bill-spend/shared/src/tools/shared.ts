@@ -114,6 +114,13 @@ export async function guard(
       return failWithDetail(err, {
         transaction_id: err.transactionId,
         persisted: false,
+        // STRUCTURE, not just the sentence. `changed: true` on a FAILURE reads
+        // like a contradiction and is the most important thing in the result:
+        // this write applied none of what it sent, and the transaction moved
+        // anyway — so somebody else is editing it.
+        ...(err.drift === undefined
+          ? { changed: false }
+          : { changed: true, before: err.drift.before, after: err.drift.after }),
         attempts: err.attempts,
       });
     }
