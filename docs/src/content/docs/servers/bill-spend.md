@@ -55,7 +55,7 @@ the API.
 | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------- |
 | `list_coding_fields`     | readonly      | The custom fields this company tags transactions with                                             |
 | `list_coding_options`    | readonly      | One field's legal values — the chart of accounts. Returns the base64 `id` **and** the `uuid`      |
-| `list_transactions`      | readonly      | Transactions, filterable by `updated_after`; surfaces `is_locked` and the current coding          |
+| `list_transactions`      | readonly      | Transactions, filterable by date, lock and review state; surfaces `is_locked` and the current coding |
 | `get_transaction_coding` | readonly      | One transaction's full coding, both identifier forms, and whether it is writable                  |
 | `set_transaction_coding` | **readwrite** | Change one transaction's coding — read back and diffed before it reports success                  |
 
@@ -90,6 +90,60 @@ surface that swapped a read tool for a card tool.
 reviewed on it and cannot change a ledger. Capability is enforced by the
 gateway's per-slug `tools:` policy, not by a container variable — one mount runs
 at full capability and strad decides, per slug and per call, what may run.
+
+## Reading a window of transactions
+
+`list_transactions` is what a re-coding sweep reads, and two things about BILL's
+read side shape it.
+
+### Date filters are day-granular, and the window is widened
+
+`GET /v3/spend/transactions` takes one `filters` parameter. Its grammar is
+`{field}:{op}:{value},{field}:{op}:{value}` — positional, split on `:` and `,`,
+with **no quoting and no escape sequence**. A value carrying either separator is
+not a filter that matches something else; it is a request BILL rejects outright:
+
+```
+filters=occurredTime:gte:2026-09-01T00:00:00Z
+-> 422 Invalid filter request format. Expect (field:operator:value).
+```
+
+An ISO-8601 instant is four colons long, which is why every date filter on this
+tool was broken until the wire form was fixed. What BILL accepts on a time field
+is a bare `yyyy-MM-dd` and nothing finer, with `gte` and `lte` as the only
+operators — `gt`, `lt`, `eq`, `in` and `isnull` are each a 400 naming the
+operator.
+
+**A date means the instant the day starts at, not the day it covers.** Against a
+company whose transactions all occurred at `2026-09-06T06:03Z`,
+`occurredTime:lte:2026-09-06` matched nothing and `occurredTime:lte:2026-09-07`
+matched all of them. So truncating an instant to its own date drops a sweep's
+most recent day.
+
+So `occurred_after`, `occurred_before`, `updated_after` and `updated_before` take
+a date **or** an instant, and each bound is moved a day **outward**: the window
+strad asks BILL for can only be too wide, never too narrow. The result echoes the
+terms actually sent as `filters_applied`, and rows outside the exact instant come
+back — narrow against each row's own `occurred_time` if the day is not enough.
+
+The widening is a whole day because BILL does not document which zone that
+midnight is in, and a company has its own locale — so the boundary is a
+per-company fact strad cannot carry. Too wide is a row a caller can see and
+discard; too narrow is a transaction nobody learns about. See
+[limitations](/limitations) for the rest.
+
+### Review status is readable, barely, and not settable
+
+A sweep can re-code a transaction and cannot tick it off. `is_reviewed` works as
+a **filter**, so a run can skip what a human already reviewed in the BILL web
+app — but BILL does not return the field on a transaction, so a row in the result
+does not say which side it fell on.
+
+**Nothing in the Spend & Expense v3 API sets it.** There is no review or approval
+endpoint; the one transaction mutator, `PUT /v3/spend/transactions/{id}`, takes
+`budgetId` and nothing else, and answers 200 to a review-shaped body it discards
+whole. strad ships no tool for it rather than one that reports success and
+changes nothing — the same standard the write below is held to.
 
 ## The write can report success and change nothing
 
@@ -233,6 +287,10 @@ transaction's coding, and a re-code that was read back and diffed. The write
 persists, the verification is real, and the failure path fires on a write BILL
 answers SUCCESS to and discards.
 
+Every date filter has been exercised against that company too, individually and
+in combination, including a window that correctly matches nothing — a filter BILL
+silently ignored would have matched everything.
+
 Three things were **not** exercised, and each needs something the sandbox does
 not have:
 
@@ -248,6 +306,10 @@ not have:
 - **A locked transaction.** The sandbox seeds none. The refusal is checked by the
   unit suite against a fake, not against BILL.
 - **The rate limiter.** 60 calls per token per minute was never approached.
+- **`is_reviewed: true` matching anything.** Every transaction in the sandbox is
+  unreviewed, and nothing in the API can review one. The filter is accepted and
+  the two branches partition the company exactly — 8 of 8 unreviewed, 0 reviewed
+  — but no row has ever been observed on the `true` side.
 
 ## Open question
 

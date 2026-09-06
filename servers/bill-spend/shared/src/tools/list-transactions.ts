@@ -1,4 +1,5 @@
 import { InputError } from "../errors.js";
+import { dateFilterTerm, filterValue } from "../filters.js";
 import {
   args,
   boundedInt,
@@ -54,6 +55,16 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
       "`updated_time` you saw; next run starts there. Page with `cursor` from " +
       "`next_cursor` — BILL caps this endpoint at 50 per page and the whole " +
       "token is limited to 60 calls a minute.\n\n" +
+      "DATE FILTERS ARE DAY-GRANULAR and the window comes back WIDER than you " +
+      "ask for: BILL takes only `yyyy-MM-dd` on a time field and reads it as " +
+      "that day's START, so each bound is rounded a day outward. " +
+      "`filters_applied` is what was actually sent. Rows outside your instant " +
+      "can appear; none inside it are dropped. Narrow against each row's own " +
+      "`occurred_time` if you need the instant rather than the day.\n\n" +
+      "REVIEW STATUS IS NOT SETTABLE through this API — no endpoint does it, so " +
+      "a sweep that re-codes transactions cannot also tick them off; a human " +
+      "does that in the BILL web app. `is_reviewed` filters but is not returned " +
+      "on a row, so it says what to skip, not what you have.\n\n" +
       "`is_locked: true` means BILL will refuse a coding change on that " +
       "transaction; filter them out with `is_locked: false` rather than " +
       "discovering it one write at a time.\n\n" +
@@ -76,24 +87,31 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
         updated_after: {
           type: "string",
           description:
-            "Only transactions changed at or after this instant, ISO-8601 with " +
-            'a zone, e.g. "2026-09-01T00:00:00Z". This is the incremental-sweep ' +
-            "filter: it catches a transaction whose coding or status changed " +
-            "since the last run, not just newly-occurred ones.",
+            "Only transactions changed at or after this time. A date " +
+            '("2026-09-01") or a full ISO-8601 instant ("2026-09-01T00:00:00Z") ' +
+            "— BILL filters BY DAY, so an instant is rounded outward, never in. " +
+            "This is the incremental-sweep filter: it catches a transaction " +
+            "whose coding or status changed since the last run, not just " +
+            "newly-occurred ones.",
         },
         updated_before: {
           type: "string",
-          description: "Only transactions changed at or before this instant (ISO-8601).",
+          description:
+            "Only transactions changed at or before this time (date or ISO-8601 " +
+            "instant, rounded outward to a whole day).",
         },
         occurred_after: {
           type: "string",
           description:
-            "Only purchases made at or after this instant (ISO-8601). Use this " +
-            "for a date-bounded backfill; use `updated_after` for a sweep.",
+            "Only purchases made at or after this time (date or ISO-8601 " +
+            "instant, rounded outward to a whole day). Use this for a " +
+            "date-bounded backfill; use `updated_after` for a sweep.",
         },
         occurred_before: {
           type: "string",
-          description: "Only purchases made at or before this instant (ISO-8601).",
+          description:
+            "Only purchases made at or before this time (date or ISO-8601 " +
+            "instant, rounded outward to a whole day).",
         },
         is_locked: {
           type: "boolean",
@@ -101,11 +119,22 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
             "Restrict to locked (true) or unlocked (false) transactions. Pass " +
             "false to see only what can still be re-coded. Omit for both.",
         },
+        is_reviewed: {
+          type: "boolean",
+          description:
+            "Restrict to transactions a human has (true) or has not (false) " +
+            "marked reviewed in the BILL web app. Pass false to see only what " +
+            "still needs a look. BILL FILTERS ON THIS AND DOES NOT RETURN IT, " +
+            "so a row in the result does not say which side it fell on, and " +
+            "nothing in this API can SET it — see the tool description.",
+        },
         merchant_name: {
           type: "string",
           description:
             'Exact merchant name, e.g. "Comcast" — BILL matches this with `eq`, ' +
-            "not a substring. Use the `merchant_name` from a previous result.",
+            "not a substring. Use the `merchant_name` from a previous result. A " +
+            "name containing a comma or a colon is refused: BILL's filter " +
+            "grammar is split on both and has no escape.",
         },
         transaction_type: {
           type: "string",
@@ -132,33 +161,37 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
         // documents. The composition is deliberately NOT exposed as a
         // pass-through `filters` string: this token is unscoped ADMIN, and a
         // free-text filter parameter is a surface an agent can put anything into.
+        //
+        // Every value that reaches a term goes through `filters.ts`, which owns
+        // the one rule the grammar has: `,` and `:` are structural and have no
+        // escape. A time field additionally collapses to the `yyyy-MM-dd` BILL
+        // accepts, widened a day outward so the window can only be too wide.
         const filters: string[] = [];
         const updatedAfter = isoInstant(input, "updated_after");
         const updatedBefore = isoInstant(input, "updated_before");
         const occurredAfter = isoInstant(input, "occurred_after");
         const occurredBefore = isoInstant(input, "occurred_before");
-        if (updatedAfter) filters.push(`updatedTime:gte:${updatedAfter}`);
-        if (updatedBefore) filters.push(`updatedTime:lte:${updatedBefore}`);
-        if (occurredAfter) filters.push(`occurredTime:gte:${occurredAfter}`);
-        if (occurredBefore) filters.push(`occurredTime:lte:${occurredBefore}`);
+        if (updatedAfter)
+          filters.push(dateFilterTerm("updatedTime", "from", updatedAfter));
+        if (updatedBefore)
+          filters.push(dateFilterTerm("updatedTime", "to", updatedBefore));
+        if (occurredAfter)
+          filters.push(dateFilterTerm("occurredTime", "from", occurredAfter));
+        if (occurredBefore)
+          filters.push(dateFilterTerm("occurredTime", "to", occurredBefore));
 
         const isLocked = optionalBool(input, "is_locked");
         if (isLocked !== undefined) filters.push(`isLocked:eq:${isLocked}`);
 
+        // The ONLY review-related thing this API offers. BILL filters on
+        // `isReviewed` and does not return it on a transaction, and there is no
+        // endpoint that sets it — see the tool description.
+        const isReviewed = optionalBool(input, "is_reviewed");
+        if (isReviewed !== undefined) filters.push(`isReviewed:eq:${isReviewed}`);
+
         const merchant = optionalString(input, "merchant_name");
         if (merchant !== undefined) {
-          // A comma is the term separator in BILL's filter grammar, so a
-          // merchant name containing one would split into two malformed terms —
-          // and a malformed term BILL ignores is a filter that silently does
-          // nothing, which is the failure this whole tool is careful about.
-          if (merchant.includes(",")) {
-            throw new InputError(
-              `\`merchant_name\`="${merchant}" contains a comma, which is the ` +
-                `separator in BILL's filter syntax and cannot be escaped. ` +
-                `Filter by date instead and match the name in the results.`,
-            );
-          }
-          filters.push(`merchantName:eq:${merchant}`);
+          filters.push(`merchantName:eq:${filterValue("merchant_name", merchant)}`);
         }
 
         const type = optionalString(input, "transaction_type");
@@ -189,7 +222,16 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
           sort,
           ...(cursor === undefined ? {} : { cursor }),
         });
-        return ok({ ...result, returned: result.transactions.length });
+        // THE WINDOW ACTUALLY ASKED FOR, verbatim, because it is not the one the
+        // caller named: a date filter is rounded outward to whole days. A caller
+        // that needs the exact instant it asked for narrows the rows itself
+        // against their own `occurred_time` / `updated_time`, and this is what
+        // tells it that it has to.
+        return ok({
+          ...result,
+          returned: result.transactions.length,
+          ...(filters.length > 0 ? { filters_applied: filters } : {}),
+        });
       }),
   };
 }

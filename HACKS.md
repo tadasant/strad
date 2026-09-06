@@ -4319,3 +4319,87 @@ deploy fails on the same name with nothing pointing at where the value went.
 The parameter-path routes beside it resolve per namespace (#77) and this one
 cannot, because a Secret Manager name is not a parameter path — there is no
 namespace to resolve it by.
+
+---
+
+## 87. BILL's transaction filters are day-granular, so strad widens every date window rather than narrowing one
+
+**What.** `list_transactions` in `servers/bill-spend` cannot ask BILL for an
+instant. `GET /v3/spend/transactions` takes one `filters` parameter whose grammar
+is `{field}:{op}:{value}`, split on `:` and `,` with **no quoting and no escape**,
+and on a time field the only value it accepts is a bare `yyyy-MM-dd`. So
+`servers/bill-spend/shared/src/filters.ts` reduces the caller's instant to a date
+and moves each bound a day OUTWARD — `occurred_after` back one, `occurred_before`
+forward one. The result echoes the terms actually sent as `filters_applied`, and
+the tool description tells a caller to narrow against each row's own
+`occurred_time` if it needs the instant rather than the day.
+
+**Why.** Two measurements against the sandbox, both of which cost the fleet real
+work. First, the four date parameters were **entirely broken** until this: an
+ISO-8601 instant carries four colons, so `updatedTime:gte:2026-09-01T00:00:00Z`
+came back `422 Invalid filter request format. Expect (field:operator:value).` —
+which is why session #15633 had to cursor-page a whole transaction history and
+filter client-side to get a four-month window, and why `updated_after`, the
+documented mechanism for an incremental sweep, swept nothing.
+
+Second, a date is resolved to the instant that day **starts** at, not the day it
+covers: against a company whose transactions all occurred at `2026-09-06T06:03Z`,
+`occurredTime:lte:2026-09-06` matched nothing and `occurredTime:lte:2026-09-07`
+matched all of them. The naive truncation is therefore not merely imprecise, it
+**drops a sweep's most recent day** — silently, which is the failure mode this
+server exists to refuse.
+
+The widening is a day rather than nothing because BILL does not document which
+zone that midnight is in, and measuring it would not help: a Spend & Expense
+company has its own locale, so the boundary is a per-company fact this server
+cannot carry — and the sandbox cannot even settle the sandbox, its transactions
+sharing one timestamp three minutes from the only boundary that separates UTC
+from US Mountain. A day either way is wider than any zone offset, so the window
+can only be too wide. Too wide is a row a caller can see and discard; too
+narrow is a transaction nobody learns about.
+
+**Undo.** BILL accepting a time-of-day on `occurredTime` / `updatedTime`, or
+documenting the zone. The first removes the widening; the second reduces it to
+nothing on the lower bound and one day on the upper. Neither is announced, so
+`servers/bill-spend/shared/test/filters.test.ts` pins the
+arithmetic and the tool echoes what it sent.
+
+---
+
+## 88. Nothing in BILL's Spend & Expense API marks a transaction reviewed, so strad ships no tool that claims to
+
+**What.** `bill-spend-rw` re-codes a transaction and cannot tick it off. There is
+no `set_transaction_review_status` tool, and the gap is stated in
+`list_transactions`'s own description rather than left for a caller to discover.
+The one review-related affordance that exists is a READ: `is_reviewed` filters,
+so a sweep can skip what a human already reviewed in the web app.
+
+**Why.** The API does not expose it, established by calling the sandbox rather
+than by reading the docs — which is the standard this product earned in #84.
+BILL's own documentation index enumerates the whole Spend & Expense transaction
+family: list, get, update, the 3DS challenge, the three receipt endpoints and the
+three custom-field endpoints. There is no review or approval endpoint among them,
+and every plausible path — `/reviews`, `/review`, `/approve`, `/approvals`,
+`/status`, `/v3/spend/reviews`, `/v3/spend/review-policies` — answers `404 Page
+Not Found`. The router discriminates: `PATCH` on a transaction answers `405` and
+names the allowed methods, so a 404 there means the route is absent rather than
+the verb wrong.
+
+The one transaction mutator, `PUT /v3/spend/transactions/{id}`, documents exactly
+one body field — `budgetId` — and its behaviour is #84's all over again: six
+different review-shaped bodies (`isReviewed`, `reviewed`, `reviewStatus`,
+`review`, `reviews`, `reviewers`, and `status: APPROVED`) each came back **HTTP
+200 with a full transaction body and `updatedTime` moved**, while `reviews` and
+`reviewers` stayed empty and `isReviewed:eq:true` went on matching nothing. A
+tool built on that reply would report an unattended monthly sweep as forty
+transactions reviewed with none of them changed, which is the worst outcome this
+server has a house rule against.
+
+BILL is also where the boundary sits: the apiToken behind this mount is unscoped
+ADMIN on a company's card program, and the five-tool surface is the only thing
+withholding card issuance. A sixth tool is a decision about that boundary, and a
+sixth tool that does not work is that decision made for nothing.
+
+**Undo.** BILL shipping a review endpoint on the Spend & Expense v3 API. Until
+then a human ticks transactions off in the BILL web app, and the read-side
+`is_reviewed` filter is what keeps a sweep from proposing the same rows twice.

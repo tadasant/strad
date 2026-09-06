@@ -53,7 +53,7 @@ a label; the account structure cannot be reasoned about, because it is not there
 | --- | --- | --- |
 | `list_coding_fields` | readonly | The custom fields this company tags transactions with |
 | `list_coding_options` | readonly | One field's legal values — the chart of accounts. **Returns the base64 `id` beside the `uuid`** |
-| `list_transactions` | readonly | Transactions, filterable by `updated_after` for an incremental sweep; surfaces `is_locked` and current coding |
+| `list_transactions` | readonly | Transactions, filterable by date, lock and review state; surfaces `is_locked` and current coding |
 | `get_transaction_coding` | readonly | One transaction's full coding, both identifier forms, and whether it is writable |
 | `set_transaction_coding` | **readwrite** | Change one transaction's coding — read back and diffed before it reports success |
 
@@ -74,6 +74,32 @@ support, which is the entire job. There is no official BILL MCP server.
 Adding a tool here is a decision about that boundary, not a feature.
 `test/config.test.ts` asserts that no tool name mentions a card, a budget, a
 user, a reimbursement, a bank or funding.
+
+## Reading a window: dates are days, and review status is not writable
+
+BILL's `filters` grammar is `{field}:{op}:{value},{field}:{op}:{value}` — split
+on `:` and `,`, with **no quoting and no escape**. An ISO-8601 instant is four
+colons long, so `occurredTime:gte:2026-09-01T00:00:00Z` is a
+`422 Invalid filter request format`, and every date filter on this tool was
+broken until the wire form was fixed. What BILL takes on a time field is a bare
+`yyyy-MM-dd`, with `gte` and `lte` the only operators.
+
+**A date is the instant the day starts at.** `occurredTime:lte:2026-09-06`
+matched nothing against a company whose transactions occurred at
+`2026-09-06T06:03Z`; `lte:2026-09-07` matched all of them. So truncating an
+instant to its own date drops a sweep's most recent day. `shared/src/filters.ts`
+moves each bound a day **outward** instead — the window can only be too wide —
+and the result echoes what was sent as `filters_applied`. The widening is a whole
+day because BILL does not document the zone that midnight is in, and a company
+has its own locale — so it is a per-company fact this server cannot carry.
+
+**Review status is a read, and barely one.** `is_reviewed` filters; BILL does not
+return the field on a transaction; and nothing in the Spend & Expense v3 API
+sets it. There is no review or approval endpoint — every plausible path 404s, on
+a router that answers 405 when the path exists — and `PUT /v3/spend/transactions/{id}`
+takes `budgetId` and nothing else, answering 200 to a review-shaped body it
+discards whole. There is no `set_transaction_review_status` tool here for the
+same reason the write below exists in the shape it does.
 
 ## ⚠️ The write can report success and change nothing
 

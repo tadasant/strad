@@ -209,13 +209,16 @@ export function optionalBool(
 }
 
 /**
- * An ISO-8601 instant, refused here rather than at BILL.
+ * A date or an ISO-8601 instant, refused here rather than at BILL.
  *
  * BILL answers a malformed datetime filter with a generic 400 that does not name
  * the parameter, and the failure a caller most wants caught is the one that does
  * NOT error: a filter BILL cannot parse and silently ignores turns "everything
  * updated since yesterday" into "everything", which is a sweep over the whole
  * ledger reported as an incremental one.
+ *
+ * The instant is normalised, not sent: `billFilterDate` in `src/filters.ts`
+ * reduces it to the `yyyy-MM-dd` BILL's filter grammar actually accepts.
  */
 export function isoInstant(
   raw: Record<string, unknown>,
@@ -226,8 +229,9 @@ export function isoInstant(
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
     throw new InputError(
-      `\`${key}\`="${value}" is not a date-time. Use ISO-8601 with a zone, ` +
-        `e.g. "2026-09-01T00:00:00Z".`,
+      `\`${key}\`="${value}" is not a date or a date-time. Use a date, ` +
+        `e.g. "2026-09-01", or ISO-8601 with a zone, e.g. ` +
+        `"2026-09-01T00:00:00Z".`,
     );
   }
   return new Date(parsed).toISOString();
