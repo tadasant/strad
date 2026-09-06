@@ -1377,7 +1377,15 @@ the answer: three more reasons, answered from the config and the environment
 rather than from a probe. `resolverCredential()` reproduces `resolverFromEnv`'s
 three exits rather than approximating them, so a key JSON that is SET and
 unparseable is told apart from an absent one; the two take opposite actions and
-the panel names which. `in-process` is this process resolving them within
+the panel names which. THE TWO DOORS DISAGREE ON THAT ONE SHAPE.
+`storeReadiness()` in `src/http/readiness.ts` derives `resolverCredential` from
+set-ness (`STRAD_PARAMS_PROJECT_ID` and the key JSON both present), so on a
+deployment whose key JSON is set and unparseable `/api/secrets/readiness` says a
+credential IS present and `params: true` servers resolve their parameters, while
+the console panel says the key does not parse. The JSON field is self-consistent
+about what it measures — its own `detail` says "are not both set" — and changing
+what a published field means is a wider decision than the panel that surfaced
+it, so it is written down here rather than folded in. `in-process` is this process resolving them within
 `gateway.secrets.ttlSeconds`; `delegated` is a builtin mounted in another
 component, which does the same with its own resolver while core proxies;
 `inert` is a deployment with no `STRAD_PARAMS_*` credential, where `Registry.build`

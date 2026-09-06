@@ -1603,6 +1603,13 @@ ${extra}`);
     expect(scope?.detail).toContain("STRAD_PARAMS_PROJECT_ID");
     expect(scope?.detail).toContain("runs on its options: alone");
     expect(scope?.detail).not.toContain("EVERY TOOL CALL");
+    const target = unobservableTarget(cfg(), scope!, {});
+    expect(target.detail).toContain(
+      "Set STRAD_PARAMS_PROJECT_ID and STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON first",
+    );
+    expect(target.commands[1]).toBe(
+      "# But first: this deployment sets no STRAD_PARAMS_PROJECT_ID, so nothing reads them.",
+    );
   });
 
   it("tells a key JSON the resolver cannot parse apart from an absent one", () => {
@@ -1701,6 +1708,17 @@ servers:
     expect(scope?.reason).toBe("delegated");
     expect(scope?.detail).toContain("most likely skipped there too");
     expect(scope?.detail).not.toContain("reaches that process within the TTL");
+    // AND THE FIX BLOCK BELOW IT. The scope's detail and its "where to look"
+    // block are one popout, and the action is taken from the second — so a
+    // hedge in one and an unconditional TTL promise in the other is the panel
+    // contradicting itself in consecutive paragraphs.
+    const target = unobservableTarget(cfg("", "bundle-builtins"), scope!, {});
+    expect(target.detail).toContain("most likely reaches nothing");
+    expect(target.detail).not.toContain("with NO deploy");
+    expect(target.commands[1]).toContain(
+      'core sets no STRAD_PARAMS_PROJECT_ID, and "bundle-builtins" is given core\'s',
+    );
+    expect(target.commands[1]).not.toContain("No redeploy.");
   });
 
   it("is `delegated` for a builtin core only proxies to", () => {
@@ -2209,6 +2227,10 @@ servers:
     expect(dialog).toContain(
       "# Then nothing: this gateway process re-reads this prefix within 3600s. No redeploy.",
     );
+    // The TTL is the upper bound, not the wait: a console write calls
+    // `forgetStoreReading` -> `invalidate()` -> `resolver.forget()`, and the
+    // registry's parameter view reads through that same resolver.
+    expect(dialog).toContain("drops the snapshot");
     expect(dialog).toContain(
       "/ui/secrets?ns=%2Fstrad%2Ftest%2Fmcp%2Fecho%2Fstatic%2F",
     );

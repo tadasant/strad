@@ -1835,9 +1835,10 @@ function builtinScope(
       `EVERY TOOL CALL, out of the one snapshot of the store this process holds for ` +
       `gateway.secrets.ttlSeconds (${ttl}s). So there is no private URL to bind, no image ` +
       `to repin and no container to redeploy — a value written under this namespace reaches ` +
-      `the running server within that TTL, on the first call past it, and rotating one ` +
-      `takes effect the same way. What went unestablished is only that this PAGE does not ` +
-      `read the namespace; the process that serves the server does.`,
+      `the running server within that TTL, and rotating one takes effect the same way. The ` +
+      `TTL is the upper bound rather than the wait: a write made through this console drops ` +
+      `the snapshot, so the next tool call re-reads. What went unestablished is only that ` +
+      `this PAGE does not read the namespace; the process that serves the server does.`,
   };
 }
 
@@ -2422,19 +2423,34 @@ export function unobservableTarget(
       scope.reason === "in-process"
         ? "this gateway process"
         : `"${scope.component}"`;
+    // THE SAME HEDGE THE SCOPE'S OWN DETAIL MAKES, because the two are one
+    // popout and a reader takes the action from THIS half. A `delegated` scope
+    // on a deployment with no resolver credential says the merge is most likely
+    // skipped on that component; promising the TTL here regardless would
+    // contradict the paragraph directly above it.
+    const unbacked =
+      scope.reason === "delegated" && resolverCredential(env) !== "present";
+    const lands = unbacked
+      ? `${where} It would be read by ${who} on every tool call — but only if that ` +
+        `component holds a resolver credential, and core holds none, so on this ` +
+        `deployment a value written here most likely reaches nothing. Wire the credential ` +
+        `before you seed.`
+      : `${where} It is read by ${who} on every tool call, out of one snapshot of the ` +
+        `store — so a value written here reaches the running server within ` +
+        `gateway.secrets.ttlSeconds (${ttl}s), with NO deploy, no restart and nothing to ` +
+        `repin. A rotation lands the same way, and a write made THROUGH THIS CONSOLE lands ` +
+        `sooner still: it drops the snapshot, so the next tool call re-reads rather than ` +
+        `waiting out the TTL.`;
     return {
       store: "GCP Parameter Manager (index) + Secret Manager (value)",
       resource: `${scope.namespace}*`,
       project,
-      detail:
-        `${where} It is read by ${who} on every tool call, out of one snapshot of the ` +
-        `store — so a value written here reaches the running server within ` +
-        `gateway.secrets.ttlSeconds (${ttl}s), with NO deploy, no restart and nothing to ` +
-        `repin. That is also true of a rotation: overwrite the value and the next call ` +
-        `past the TTL uses it.`,
+      detail: lands,
       commands: [
         `# Console: prefix "${scope.namespace}" — every managed parameter this server gets.`,
-        `# Then nothing: ${who} re-reads this prefix within ${ttl}s. No redeploy.`,
+        unbacked
+          ? `# But first: core sets no ${RESOLVER_ENV.projectId}, and "${scope.component}" is given core's.`
+          : `# Then nothing: ${who} re-reads this prefix within ${ttl}s. No redeploy.`,
       ],
       href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
     };

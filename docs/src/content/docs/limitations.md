@@ -894,6 +894,15 @@ the badge, and `/api/secrets/readiness` reports `ready: false` for as long as th
 deployment carries such a server. The badge leads somewhere; it still cannot be
 cleared.
 
+**And on one shape the two doors disagree about the credential.** The panel
+reproduces `resolverFromEnv`'s three exits, so a key JSON that is _set and
+unparseable_ reads as `inert` with the key named as the problem.
+`/api/secrets/readiness` derives its `resolverCredential` from set-ness instead,
+so on that deployment it reports a credential as present and says `params: true`
+servers resolve their parameters. The JSON field is self-consistent about what it
+measures — its own `detail` says "are not both set" — and changing what a
+published field means is a wider decision than the panel that surfaced it.
+
 **The `cannot render` diagnosis can lose a race and simply not appear.**
 `readStoreDiagnostics` gives its two store reads six seconds together, and the
 per-parameter render pass is bounded at a fan-out of ten. A large namespace can
