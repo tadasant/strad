@@ -220,9 +220,8 @@ a typo rather than from a closed laptop.
 Take the path from the server you are tunnelling to, not from habit. `/mcp` is a
 common convention and plenty of servers use it, but the Anki add-on above serves
 streamable HTTP at the **root** of its port — its `http_path` setting defaults to
-the empty string — so its URL ends at the hostname. Point a tunnel at
-`http://127.0.0.1:3141/` and check it answers before you put a path on the end
-of it.
+the empty string — so its URL ends at the hostname. When in doubt, read the
+server's own docs for the URL it tells clients to connect to, and use that.
 
 #### `troubleshoot_host`: the tool a machine that is off still serves
 
