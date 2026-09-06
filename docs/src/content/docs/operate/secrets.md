@@ -1799,12 +1799,30 @@ resolves references from the environment. Moving a credential there is a config
 change (drop the `${NAME}` entry from that server's `env:`), not a value you can
 add to unblock the current deploy.
 
-The project is read from the deployment rather than assumed: the resolver's own
-`STRAD_PARAMS_PROJECT_ID` if this process holds one, else the `secrets` server's
-declared `SECRETS_PROJECT_ID`, else the `strad-secrets-<env>` convention. The
-convention is last because a deployment that named its project something else
-would otherwise be handed a command that fails; when it _is_ a guess, the page
-says so.
+**The project is a question about the PATH, not about the deployment.** Each route
+above names a different parameter path, and on a deployment whose
+[`consoleStores:`](#one-console-page-many-stores) partition the namespaces between
+projects those paths can live in different ones — so the project printed beside a
+route is the project of the store whose `namespaces:` **cover** that route's path.
+It is the same question `storeForPath` asks of a write, flattened across both
+dimensions (several secrets slugs, several stores per slug), so the index cannot
+describe a store differently from the page that writes to it.
+
+Where the namespaces decide nothing the deployment's default answers instead: the
+resolver's own `STRAD_PARAMS_PROJECT_ID` if this process holds one, else the
+`secrets` server's declared `SECRETS_PROJECT_ID`, else its first declared store,
+else the `strad-secrets-<env>` convention. The convention is last because a
+deployment that named its project something else would otherwise be handed a
+command that fails; when it _is_ a guess, the page says so. Three cases fall back
+this way, and none of them states one of two answers confidently: no store
+declares a namespace at all, the path lies outside every declared namespace, or
+two stores in different projects both claim it — the ambiguity `storeForPath`
+refuses outright for a write.
+
+A `strad-<env>-<NAME>` Secret Manager route keeps the deployment default rather
+than a store's project, because it is not a parameter path: the deploy workflow
+reads those secrets out of the deployment's own project however the parameter
+stores are partitioned.
 
 A `consoleEnv:`-only name gets one route and it is not the store — that value is
 read from the deploy environment only, because it carries the console's
@@ -2416,15 +2434,19 @@ hazard is a write: `storeForPath` refuses an ambiguous path at request time, so
 without the config rule the first symptom would be a create or rotate failing on a
 path a human just typed, in a deployment that rendered and deployed clean.
 
-**A leftover `SECRETS_PROJECT_ID` is warned about.** `storeProject()` prefers it
-over a server's own `consoleStores:`, so on a multi-store page a stale one — the
-single-store shape this list replaced — makes the console index and the roster's
-copy-pasteable `gcloud` commands describe a different project from the one the
-store page defaults to. The annotation fires only for the server the roster would
-actually answer from, since `storeProject()` consults the first candidate and
-stops; a deployment whose resolver sets `STRAD_PARAMS_PROJECT_ID` overrides the
-whole order anyway. It fails legibly rather than writing anywhere wrong, which is
-why it is a warning; drop it, or make it name the first store.
+**A leftover `SECRETS_PROJECT_ID` is warned about.** `storeProject()` — the
+DEPLOYMENT-wide default, which the index header and
+[`/api/secrets/readiness`](#get-apisecretsreadiness--the-same-answer-for-a-machine)
+report — prefers it over a server's own `consoleStores:`, so on a multi-store page
+a stale one (the single-store shape this list replaced) makes the console index
+name a different project from the one the store page defaults to. The annotation
+fires only for the server that default would actually answer from, since
+`storeProject()` consults the first candidate and stops; a deployment whose
+resolver sets `STRAD_PARAMS_PROJECT_ID` overrides the whole order anyway. It fails
+legibly rather than writing anywhere wrong, which is why it is a warning; drop it,
+or make it name the first store. The roster's copy-pasteable `gcloud` commands are
+not affected: each one names the store whose namespaces cover its own path, and
+falls back to this default only where they decide nothing.
 
 **Two stores sharing one `${REF}` is reported across the whole deployment**, not
 one server's list — a bundle carries one secrets slug, so a strad store and a

@@ -2433,37 +2433,6 @@ See `HACKS.md` #76.
 
 ---
 
-### 77. The console index describes a multi-store slug by its first store
-
-A `consoleStores:` slug puts several parameter stores on one `/ui/<slug>` page,
-selected with `?project=`. The console INDEX at `/ui` did not follow: it renders
-one card per slug, and the roster's "which project holds this store" answer is a
-single id resolved in this order — the resolver's own `STRAD_PARAMS_PROJECT_ID`
-if this process holds one, else the first enabled supplementary server that
-declares a project at all, and within it `consoleEnv.SECRETS_PROJECT_ID`, then
-`env.SECRETS_PROJECT_ID`, then the FIRST store. The first store is the answer
-only when nothing earlier in that order gave one.
-
-**What it costs.** The roster prints copy-pasteable `gcloud` commands for a
-missing secret. If the name lives in a namespace owned by a store other than the
-first, the printed command names the wrong `--project`. It fails legibly rather
-than writing anywhere wrong — but it is a wrong answer to a question a human
-asked.
-
-**How you would know.** A `gcloud parameters ...` command copied off `/ui` returns
-`NOT_FOUND` for a parameter you can see listed on `/ui/<slug>?project=<the other
-one>`. The `SECRETS_PROJECT_ID`-outvotes-the-list case is caught earlier:
-`check-config` emits a `::warning::` when that name and the first store disagree
-on the server the roster would answer from.
-
-**The fix.** `storeForPath` already resolves a path to the one store that covers
-it, across both several slugs and several stores per slug. The index should ask it
-rather than reading a project off the config.
-
-See `HACKS.md` #77.
-
----
-
 ### 78. One `/mcp` container fronting several stores lists `get_secret_value` for all of them
 
 `mcpStores:` lets one secrets container front several GCP projects. An MCP tool

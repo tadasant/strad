@@ -3800,6 +3800,18 @@ role next to the other principals on that page.
 
 ## 77. The console index still describes a multi-store slug by its FIRST store
 
+**✅ RESOLVED.** The roster asks which store's namespaces COVER a path instead of
+reading a project off the config: `storeProjectForPath()` in
+`src/ui/secret-status.ts` flattens the declared stores through
+`resolveServerView` — the same both-dimensions flattening `storeForPath` applies
+to the write-back route — and every parameter path `fixTargets()` prints is
+named with the project that owns it. A path no store covers, and a path two
+stores in different projects both claim, fall back to the deployment default
+rather than stating one of two answers confidently. `storeProject()` still
+answers for the DEPLOYMENT, which is what the page header and
+`/api/secrets/readiness` want, and what a `strad-<env>-*` Secret Manager secret
+— not a parameter path — is created in.
+
 **What.** `consoleStores:` puts N parameter stores on one `/ui/<slug>` page. The
 console INDEX at `/ui` did not change with it: it still renders one card per
 secrets slug, and `storeProject()` in `src/ui/secret-status.ts` answers "which
@@ -3809,26 +3821,15 @@ first enabled supplementary server that declares a project at all — and within
 that server `consoleEnv.SECRETS_PROJECT_ID`, then `env.SECRETS_PROJECT_ID`, then
 `consoleStores[0]`. So a slug declaring `consoleStores:` is described by its
 first entry only when nothing earlier in that order answered; a leftover
-`SECRETS_PROJECT_ID` outvotes the list entirely. `check-config` now emits a
+`SECRETS_PROJECT_ID` outvotes the list entirely. `check-config` emits a
 `::warning::` when that name and the first store disagree, which makes the
 mismatch visible without changing the order.
 
-**Why it is a hack.** `storeProject()` feeds the copy-pasteable `gcloud`
+**Why it was a hack.** `storeProject()` feeds the copy-pasteable `gcloud`
 commands the roster prints for a missing secret. On a multi-store slug whose
 second store owns the namespace a missing name lives in, the printed command
-names the wrong `--project` — it will fail, legibly, rather than write anywhere
-wrong, but it is a wrong answer handed to a human who asked for a right one.
-
-It is bounded by which deployments can hit it. It needs a `consoleStores:` slug
-whose stores hold DIFFERENT projects AND a `${NAME}` the roster reports missing
-out of a non-first store. The prod migration that this field exists for has that
-shape, so this is a real state and not a theoretical one.
-
-**Undo.** Make the roster's store diagnosis per NAMESPACE rather than per
-deployment: `storeForPath` in `src/http/params.ts` already resolves a path to the
-one store that covers it, across both dimensions (several slugs, several stores
-per slug), so the index can ask the same question the write-back route asks
-instead of picking a project off the config. Tracked in tadasant/strad#261.
+named the wrong `--project` — it would fail, legibly, rather than write anywhere
+wrong, but it was a wrong answer handed to a human who asked for a right one.
 
 ---
 
