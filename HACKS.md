@@ -3834,11 +3834,11 @@ named with the project that owns it. A path no store covers, and a path two
 stores in different projects both claim, fall back to the deployment default
 rather than stating one of two answers confidently. `storeProject()` still
 answers for the DEPLOYMENT, which is what the page header and
-`/api/secrets/readiness` want. A `strad-<env>-*` Secret Manager secret keeps that
-default because it is NOT a parameter path — no namespace covers it, so there is
-no per-path answer to give. That default is itself the wrong project for a Secret
-Manager name on a deployment whose two projects differ, which is #86 and is not
-this entry.
+`/api/secrets/readiness` want. A `strad-<env>-*` Secret Manager secret gets neither
+answer: it is NOT a parameter path, so no namespace covers it, and the deployment
+default is the parameter store's project, which is the wrong project for a name the
+deploy reads out of its own `GCP_PROJECT_ID`. That route names no project at all —
+#86, and not this entry.
 
 **What.** `consoleStores:` puts N parameter stores on one `/ui/<slug>` page. The
 console INDEX at `/ui` did not change with it: it still renders one card per
@@ -4282,6 +4282,26 @@ change.
 
 ## 86. The console's `gcloud secrets` recipe names the PARAMETER STORE's project
 
+**✅ RESOLVED.** It names no project. Both Secret Manager routes — the baked
+`strad-<env>-*` one and the `consoleEnv:`-only one, which is Secret-Manager-only
+by construction — set `FixTarget.project` to null and print
+`--project "$DEPLOY_SECRETS_PROJECT"`, over a comment saying what to set it to:
+the project the deploy reads `strad-<env>-*` out of, its own `GCP_PROJECT_ID`,
+NOT this deployment's parameter store. The variable rather than dropping the flag
+is the whole safety property — a variable nobody filled in is not a project id,
+unset or pasted whole with its `…` placeholder, and `gcloud` refuses either, so a
+blind paste writes nothing, whereas a dropped
+flag would fall through to whatever `gcloud config` has set, which for an
+operator who has been working in the parameter store is the very project this
+exists to stop writing to, and it would succeed. A command a human has to
+complete beats one that is confidently wrong; the recipe already asks for
+`$VALUE`, and now asks for one more. The declared-project alternative was
+weighed and refused: a `deploySecretsProject:` in the config is a second copy of
+a fact that lives in the deploy environment, and a copy that drifts fails exactly
+the way this entry describes — silently. `storeProject()` is untouched and still
+answers for the parameter store, which is what it is named for, and no store
+selection or resolution path moved. Fixes tadasant/strad#315.
+
 **What.** The roster prints a paste-ready Secret Manager recipe for a missing
 `${NAME}` — `gcloud secrets create strad-<env>-<NAME> --project <P> …` — and `<P>`
 is `storeProject()`, whose own doc says what it answers: _"Which GCP project
@@ -4291,17 +4311,11 @@ deploy workflow reads `strad-<env>-*` from `secrets.GCP_PROJECT_ID` instead, and
 that they differ, so that the parameter store's viewer and admin cannot reach
 strad's own secrets.
 
-**Why it is a hack.** The console reads no deploy-environment fact, so it has
-nothing better to reach for and prints the one project id it holds. It is the one
-route on this page that does NOT fail legibly: a paste against the wrong
+**Why it was a hack.** The console reads no deploy-environment fact, so it had
+nothing better to reach for and printed the one project id it holds. It was the
+one route on this page that did NOT fail legibly: a paste against the wrong
 `--project` SUCCEEDS, the operator believes the name is seeded, and the next
 deploy fails on the same name with nothing pointing at where the value went.
 The parameter-path routes beside it resolve per namespace (#77) and this one
 cannot, because a Secret Manager name is not a parameter path — there is no
 namespace to resolve it by.
-
-**Undo.** Either say less — drop `--project` and name the constraint in prose,
-since a command a human has to complete beats one that is confidently wrong — or
-let the deployment declare the deploy-secrets project and use it for the Secret
-Manager routes, leaving `storeProject()` answering for the parameter store, which
-is what it is named for. Tracked in tadasant/strad#315.

@@ -280,17 +280,21 @@ describe("a multi-store slug's fix targets", () => {
     ).not.toBe(shared!.project);
   });
 
-  it("leaves the Secret Manager route on the deployment's own project", () => {
-    // `strad-test-*` is not a parameter path — the deploy workflow reads those
-    // secrets out of the deployment's project, whatever the parameter stores are
-    // partitioned into — so it keeps the default rather than being routed by a
-    // namespace it does not live under.
+  it("names NO project on the Secret Manager route, and no store's either", () => {
+    // `strad-test-*` is not a parameter path — no namespace covers it, so there
+    // is no per-path answer to give — and the deployment default is not an
+    // answer either: it is the PARAMETER STORE's project, and the deploy reads
+    // these secrets from its own GCP_PROJECT_ID. Every project id this page
+    // holds is the wrong one, so it names none of them.
     const baked = byResource.get("strad-test-SHOP_PASSWORD");
     expect(baked).toBeDefined();
-    expect(baked!.project).toBe(storeProject(MULTI, {}).project);
-    expect(baked!.commands.join("\n")).toContain(
-      `--project ${storeProject(MULTI, {}).project}`,
-    );
+    expect(baked!.project).toBeNull();
+    const printed = baked!.commands.join("\n");
+    expect(printed).not.toContain(storeProject(MULTI, {}).project);
+    expect(printed).not.toContain(GATEWAY_PROJECT);
+    expect(printed).not.toContain(SERVER_PROJECT);
+    expect(printed).toContain('--project "$DEPLOY_SECRETS_PROJECT"');
+    expect(baked!.detail).toContain("GCP_PROJECT_ID");
   });
 
   it("routes a MANAGED parameter by its own static namespace", () => {
@@ -326,10 +330,10 @@ describe("a multi-store slug's fix targets", () => {
     expect(note.resource).toBe("/strad/test/mcp/shop/static/SHOP_PASSWORD");
     expect(note.detail).toContain("NOT a fix for this row");
     expect(note.project).toBe(SERVER_PROJECT);
-    // …and the Secret Manager route beside it keeps the deployment default.
+    // …and the Secret Manager route beside it names no project at all.
     expect(
       targets.find((t) => t.resource === "strad-test-SHOP_PASSWORD")!.project,
-    ).toBe(storeProject(envProvider, {}).project);
+    ).toBeNull();
   });
 
   it("points the namespace popout at the store that owns THAT namespace", () => {
@@ -475,9 +479,18 @@ describe("storeProjectForPath", () => {
 describe("a single-store deployment", () => {
   it("answers with its one project for every path", () => {
     const targets = fixTargets(SINGLE, shopPassword(SINGLE), {});
-    expect(targets.length).toBeGreaterThan(0);
-    for (const target of targets) {
+    const paths = targets.filter((t) => t.resource.startsWith("/strad/"));
+    expect(paths.length).toBeGreaterThan(0);
+    for (const target of paths) {
       expect(target.project).toBe("strad-secrets-test");
+    }
+    // The Secret Manager route is the exception, and it is not a partitioning
+    // question: even here, where one project holds every parameter, the deploy
+    // reads `strad-test-*` from a project this page has never been told about.
+    const baked = targets.filter((t) => !t.resource.startsWith("/"));
+    expect(baked.length).toBeGreaterThan(0);
+    for (const target of baked) {
+      expect(target.project).toBeNull();
     }
     expect(
       storeProjectForPath(SINGLE, "/strad/test/mcp/shop/static/X", {}),
@@ -576,6 +589,30 @@ describe("GET /ui on a partitioned multi-store deployment", () => {
       "/strad/test/gateway/static/SHOP_PASSWORD",
     );
     expect(shared).toBe(GATEWAY_PROJECT);
+  });
+
+  it("prints no project id at all beside the strad-<env>-* route", async () => {
+    const res = await fetch(`${baseUrl}/ui`, { headers: auth });
+    const html = await res.text();
+    expect(res.status).toBe(200);
+
+    // The RENDERED half of the null, which the derivation tests above cannot
+    // see: `fixBlock` keeps the <dt>project</dt> row and answers it in prose,
+    // because a route that simply dropped the row would read as a page that
+    // forgot rather than as one that knows it cannot say.
+    const cell = `<dt>resource</dt><dd><code>strad-test-SHOP_PASSWORD</code></dd>`;
+    const at = html.indexOf(cell);
+    expect(at).toBeGreaterThan(-1);
+    const block = html.slice(at, at + 600);
+    expect(block).toContain(
+      `<dt>project</dt><dd class="sec-fix-open">your deploy environment`,
+    );
+    // …and no project id — not the stores', not the resolver's, and no stray
+    // "null" or "undefined" rendered where one used to be.
+    expect(block).not.toContain(SERVER_PROJECT);
+    expect(block).not.toContain(GATEWAY_PROJECT);
+    expect(block).not.toContain("null");
+    expect(block).not.toContain("undefined");
   });
 });
 

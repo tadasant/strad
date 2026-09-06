@@ -861,13 +861,16 @@ servers:
 // ---------------------------------------------------------------------------
 
 describe("fixTargets", () => {
-  it("names the Secret Manager secret, the project and a paste-ready command", () => {
+  it("names the Secret Manager secret and a recipe whose project is the reader's", () => {
     const req = requirement("SLACK_BOT_TOKEN", { deliveries: ["bundle"] });
     const [first] = fixTargets(CONFIG, req, {});
     expect(first!.resource).toBe("strad-test-SLACK_BOT_TOKEN");
-    expect(first!.project).toBe("strad-secrets-somewhere");
+    expect(first!.project).toBeNull();
     expect(first!.commands.join("\n")).toContain(
-      "gcloud secrets create strad-test-SLACK_BOT_TOKEN --project strad-secrets-somewhere",
+      'gcloud secrets create strad-test-SLACK_BOT_TOKEN --project "$DEPLOY_SECRETS_PROJECT" --replication-policy automatic',
+    );
+    expect(first!.commands.join("\n")).toContain(
+      'printf %s "$VALUE" | gcloud secrets versions add strad-test-SLACK_BOT_TOKEN --project "$DEPLOY_SECRETS_PROJECT" --data-file=-',
     );
   });
 
@@ -963,6 +966,150 @@ describe("fixTargets", () => {
     expect(targets).toHaveLength(1);
     expect(targets[0]!.resource).toBe("strad-test-SECRETS_ADMIN_KEY_JSON");
     expect(targets[0]!.detail).toContain("never from the parameter store");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The `strad-<env>-*` recipe, on a deployment whose two projects differ
+// ---------------------------------------------------------------------------
+
+/**
+ * The arrangement `infra/strad.staging.yaml` INSTRUCTS, in miniature.
+ *
+ * The parameter store is `strad-params-test` and it is deliberately not the
+ * IAM boundary: strad's own `strad-test-*` secrets live somewhere else, so that
+ * the store's viewer and admin cannot reach them. WHERE else is a deploy-
+ * environment fact — `GCP_PROJECT_ID` in the deploy workflow — and no fixture
+ * can supply it, because the running gateway is not told it either. That is the
+ * whole point: every project id reachable from here is the wrong one.
+ */
+const SPLIT = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: test
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /secrets
+    entitlements: [admin]
+    env:
+      SECRETS_PROJECT_ID: "strad-params-test"
+      SECRETS_NAMESPACES: "/strad/test/mcp/"
+      SECRETS_SERVICE_ACCOUNT_KEY_JSON: "\${SECRETS_VIEWER_KEY_JSON}"
+    consoleEnv:
+      SECRETS_PROJECT_ID: "strad-params-test"
+      SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON: "\${SECRETS_ADMIN_KEY_JSON}"
+`);
+
+/** Every project id this process could possibly reach, and none of them is it. */
+const RESOLVER_ENV_SPLIT = { STRAD_PARAMS_PROJECT_ID: "strad-resolver-test" };
+
+describe("the Secret Manager recipe when the two projects differ", () => {
+  const smRoute = (req: SecretRequirement, env: NodeJS.ProcessEnv = {}) => {
+    const target = fixTargets(SPLIT, req, env).find(
+      (t) => t.resource === "strad-test-SHOP_PASSWORD",
+    );
+    expect(target).toBeDefined();
+    return target!;
+  };
+
+  it("names no project on the baked route, and prints none in the command", () => {
+    // THE DEFECT THIS CLOSES. `<P>` is not `storeProject()` — that answers
+    // "which GCP project holds the PARAMETER store", and a paste against it
+    // SUCCEEDS, seeding the name where the deploy will never look for it.
+    const baked = smRoute(
+      requirement("SHOP_PASSWORD", { deliveries: ["bundle"] }),
+    );
+    expect(baked.project).toBeNull();
+    const printed = baked.commands.join("\n");
+    expect(printed).not.toContain("strad-params-test");
+    expect(printed).not.toContain("strad-secrets-test");
+    expect(printed).toContain("export DEPLOY_SECRETS_PROJECT=");
+    expect(printed).toContain(
+      'gcloud secrets create strad-test-SHOP_PASSWORD --project "$DEPLOY_SECRETS_PROJECT"',
+    );
+    expect(baked.detail).toContain("GCP_PROJECT_ID");
+    expect(baked.detail).toContain("NOT that store's project");
+  });
+
+  it("does the same on the consoleEnv-only route, which is the other call site", () => {
+    // Secret-Manager-only by construction: `consoleEnv:` is read from the deploy
+    // environment and never from the store, so this route is the one that most
+    // obviously belongs to the deploy's project and least obviously to the
+    // store's.
+    const target = fixTargets(
+      SPLIT,
+      requirement("SECRETS_ADMIN_KEY_JSON", {
+        deliveries: ["console"],
+        consoleKeys: ["SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON"],
+      }),
+      {},
+    );
+    expect(target).toHaveLength(1);
+    expect(target[0]!.resource).toBe("strad-test-SECRETS_ADMIN_KEY_JSON");
+    expect(target[0]!.project).toBeNull();
+    expect(target[0]!.commands.join("\n")).not.toContain("strad-params-test");
+    expect(target[0]!.commands.join("\n")).toContain(
+      '--project "$DEPLOY_SECRETS_PROJECT"',
+    );
+    expect(target[0]!.detail).toContain("NOT that store's project");
+  });
+
+  it("does not reach for the RESOLVER's project either", () => {
+    // `storeProject()` prefers `STRAD_PARAMS_PROJECT_ID` over everything the
+    // config declares, and it is still the parameter store's — a third wrong
+    // answer, not a better one.
+    const printed = smRoute(
+      requirement("SHOP_PASSWORD", { deliveries: ["bundle"] }),
+      RESOLVER_ENV_SPLIT,
+    ).commands.join("\n");
+    expect(printed).not.toContain("strad-resolver-test");
+  });
+
+  it("still answers the PARAMETER path from the store that owns it", () => {
+    // Untouched by this: a parameter path IS answered from the config, because
+    // the store that covers the namespace declared its own project and the
+    // resolver reads that same declaration.
+    const path = fixTargets(
+      SPLIT,
+      requirement("SHOP_PASSWORD", {
+        deliveries: ["gateway"],
+        slugs: ["shop"],
+      }),
+      {},
+    ).find((t) => t.resource.startsWith("/strad/"));
+    expect(path!.project).toBe("strad-params-test");
+  });
+
+  it("refuses to quote a malformed secret name into a shell command", () => {
+    // `gateway.env` is free-form YAML and it is half of the interpolated name.
+    const hostile = parseConfig(`
+version: 1
+gateway: { name: strad, env: "test; rm -rf /" }
+auth: { staticTokens: { enabled: true } }
+servers: []
+`);
+    const printed = fixTargets(
+      hostile,
+      requirement("SHOP_PASSWORD", { deliveries: ["bundle"] }),
+      {},
+    )
+      .find((t) => t.resource.startsWith("strad-"))!
+      .commands.join("\n");
+    expect(printed).toContain("No paste-ready command");
+    expect(printed).not.toContain("gcloud secrets create");
+    // The rejected name is not echoed either: it is the thing that failed the
+    // shape test, so a newline in it would end the `#` and start a command.
+    expect(printed).not.toContain("rm -rf");
   });
 });
 

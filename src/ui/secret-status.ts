@@ -2134,8 +2134,19 @@ export interface FixTarget {
   store: string;
   /** The exact resource name or canonical path to create. */
   resource: string;
-  /** The GCP project it goes in. */
-  project: string;
+  /**
+   * The GCP project it goes in, or null when this process cannot know.
+   *
+   * A parameter PATH is answered from the config: the store whose namespaces
+   * cover it declared its project, and that declaration is what the resolver
+   * reads too. A `strad-<env>-*` SECRET MANAGER secret is not — the deploy
+   * workflow reads those from its own `GCP_PROJECT_ID`, which is a deploy-
+   * environment fact the running gateway holds nothing about, and which
+   * `infra/strad.staging.yaml` INSTRUCTS should differ from the parameter
+   * store's project. Null there, and the route says so, because the one id this
+   * page holds answers a different question. See HACKS.md #86.
+   */
+  project: string | null;
   /** Why this route, and when the value takes effect. */
   detail: string;
   /** Copy-pasteable, in order. Never contains a value — `$VALUE` is a stand-in. */
@@ -2477,8 +2488,8 @@ export function unobservableTarget(
 /**
  * Where a missing secret has to be set, most likely route first.
  *
- * This is the whole point of the page: a name and a project and a path, not a
- * scavenger hunt. Which route is FIRST is decided by what the deployment
+ * This is the whole point of the page: a name and a path and — where it is
+ * knowable — a project, not a scavenger hunt. Which route is FIRST is decided by what the deployment
  * declares, because the two are not interchangeable — a value in the parameter
  * store is read at runtime by a store-backed gateway and is deploy-time input at
  * most to an `env` one.
@@ -2498,11 +2509,13 @@ export function fixTargets(
   // differently. A PARAMETER PATH is owned by whichever store's namespaces cover
   // it — `storeProjectForPath` — because that is the store a human has to create
   // it in. A `strad-<env>-*` SECRET MANAGER secret is NOT a parameter path, so
-  // no namespace covers it and there is no per-path answer to give; it keeps the
-  // deployment default. That default is the PARAMETER STORE's project, which is
-  // not necessarily where the deploy workflow reads `strad-<env>-*` from — see
-  // HACKS.md #86. Routing it through a namespace it does not live under would
-  // replace one wrong answer with another.
+  // no namespace covers it and there is no per-path answer to give — and the
+  // deployment default is not one either: it answers for the PARAMETER STORE,
+  // and the deploy workflow reads `strad-<env>-*` from its own GCP_PROJECT_ID,
+  // which `infra/strad.staging.yaml` instructs should be a different project.
+  // Those routes therefore name NO project and print a command with the project
+  // left as a shell variable, rather than one that writes somewhere plausible
+  // and wrong. See `secretManagerCommands` below.
   const deployment = storeProject(config, env);
   const stores = declaredStores(config, env);
   /** The project a PARAMETER PATH is created in — its owning store's, or the default. */
@@ -2556,13 +2569,14 @@ export function fixTargets(
     targets.push({
       store: "GCP Secret Manager (deploy environment only)",
       resource: smName,
-      project: deployment.project,
+      project: null,
       detail:
         `This name is referenced only from a consoleEnv: map, and consoleEnv: is read from ` +
         `the DEPLOY environment — never from the parameter store, because it carries the ` +
         `console's store-admin credential. Seed it in Secret Manager, where the deploy ` +
-        `workflow reads every strad-${gatewayEnv}-* secret, then redeploy.${projectNoteFor(deployment.guessed)}`,
-      commands: secretManagerCommands(smName, deployment.project),
+        `workflow reads every strad-${gatewayEnv}-* secret, then redeploy.` +
+        deploySecretsProjectNote(gatewayEnv),
+      commands: secretManagerCommands(smName, gatewayEnv),
     });
     return targets;
   }
@@ -2596,13 +2610,14 @@ export function fixTargets(
   const bakedTarget: FixTarget = {
     store: "GCP Secret Manager",
     resource: smName,
-    project: deployment.project,
+    project: null,
     detail:
       `The deploy workflow loads every strad-${gatewayEnv}-* secret into its job ` +
       `environment, and scripts/render-spec.ts turns each referenced \${NAME} into a ` +
       `SECRET env var on the app spec. Adding a version here takes effect on the next ` +
-      `deploy, not immediately.${projectNoteFor(deployment.guessed)}`,
-    commands: secretManagerCommands(smName, deployment.project),
+      `deploy, not immediately.` +
+      deploySecretsProjectNote(gatewayEnv),
+    commands: secretManagerCommands(smName, gatewayEnv),
   };
 
   // THE SERVER'S OWN NAMESPACE — on a store-backed deployment, the route to
@@ -2715,32 +2730,87 @@ export function fixTargets(
   return targets;
 }
 
+/** The shell variable a reader fills in, mirroring `$VALUE` in the same recipe. */
+const DEPLOY_PROJECT_VAR = "DEPLOY_SECRETS_PROJECT";
+
 /**
- * A GCP project id, or a refusal.
+ * The one sentence a Secret Manager route owes a reader in place of a project.
  *
- * `project` reaches a command a human is invited to paste into a shell. It comes
- * from `STRAD_PARAMS_PROJECT_ID` or a free-form YAML `SECRETS_PROJECT_ID`, so it
- * is the same trust boundary as the config itself — but "someone who can edit the
- * config can already run code" is an argument for not caring, and this page's
- * whole job is to be pasted from. A value carrying `;` or a backtick would yield
- * a command that runs something else. GCP project ids are 6–30 characters of
- * lowercase letters, digits and hyphens, so anything else is not a project id and
- * is not worth quoting into a command.
+ * Said in the detail as well as in the commands, because the two are read by
+ * different people: the recipe is for whoever is pasting, this is for whoever is
+ * deciding whether the row is even their problem.
  */
-function safeProject(project: string): string | null {
-  return /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(project) ? project : null;
+function deploySecretsProjectNote(gatewayEnv: string): string {
+  return (
+    ` The project is whichever one your deploy workflow reads strad-${gatewayEnv}-* ` +
+    `out of — its own GCP_PROJECT_ID, a deploy-environment fact this page cannot ` +
+    `see. On a deployment that has a parameter store it is deliberately NOT that ` +
+    `store's project, so the commands leave it to you rather than naming an id ` +
+    `that answers a different question.`
+  );
 }
 
-function secretManagerCommands(name: string, project: string): string[] {
-  const safe = safeProject(project);
-  if (!safe) {
+/**
+ * A Secret Manager secret id, or a refusal.
+ *
+ * Applied to everything `secretManagerCommands` prints, which is the rendered
+ * name AND `gateway.env` — both free-form YAML, the same trust boundary as the
+ * config itself. "Someone who can edit the config can already run code" is an
+ * argument for not caring, and this page's whole job is to be pasted from, so a
+ * value carrying `;` or a backtick would yield a command that runs something
+ * else. A Secret Manager id is letters, digits, `-` and `_`, up to 255 of them;
+ * anything else is not a secret name and is not worth quoting into a command.
+ *
+ * The env is checked SEPARATELY even though today's call sites compose the name
+ * out of it, which makes the second check redundant. Redundant is not the same
+ * as unnecessary: the coupling is a fact about two call sites, not about this
+ * function, and a third one that printed a name the env is not a prefix of would
+ * otherwise put unchecked YAML into a pasteable block.
+ */
+function safeSecretName(name: string): string | null {
+  return /^[A-Za-z0-9_-]{1,255}$/.test(name) ? name : null;
+}
+
+/**
+ * The paste-ready recipe for a `strad-<env>-*` secret, with the project LEFT OUT.
+ *
+ * A baked `--project` here was wrong on exactly the deployment this repo
+ * prescribes: `<P>` was `storeProject()`, which answers for the parameter store,
+ * and `infra/strad.staging.yaml` instructs that the parameter store is a
+ * different project from the one holding strad's own `strad-<env>-*` secrets, so
+ * that the store's viewer and admin cannot reach them. The paste then SUCCEEDED
+ * against the wrong project and the next deploy failed on the same name with
+ * nothing pointing at where the value went — the one route on this page that did
+ * not fail legibly (HACKS.md #86).
+ *
+ * `"$DEPLOY_SECRETS_PROJECT"` rather than a placeholder like `<PROJECT>`, and
+ * rather than dropping the flag. A variable nobody filled in is not a project
+ * id — unset it expands to empty, pasted whole it is still the `…` placeholder —
+ * and `gcloud` refuses either, so nothing is written. Dropping the flag would
+ * instead fall through to whatever `gcloud config` has set, which for an
+ * operator who has been working in the parameter store is the very project this
+ * exists to stop writing to, and it would succeed. The recipe already asks the
+ * reader to supply `$VALUE`; this asks for one more.
+ */
+function secretManagerCommands(name: string, gatewayEnv: string): string[] {
+  const safe = safeSecretName(name);
+  const safeEnv = safeSecretName(gatewayEnv);
+  if (!safe || !safeEnv) {
+    // NEITHER value is echoed. Whichever failed is the one that failed a shape
+    // test, so it may carry a newline — and a newline in a `#` line ends the
+    // comment and starts a command, which is the injection this branch exists
+    // to refuse.
     return [
-      `# No paste-ready command: "${project}" is not a well-formed GCP project id,`,
-      `# so it is not quoted into a shell command here. Fix the project id first.`,
+      `# No paste-ready command: this deployment's strad-<env>-<NAME> is not a`,
+      `# well-formed Secret Manager id, so nothing is quoted into a shell command`,
+      `# here. Fix gateway.env, or shorten the variable name.`,
     ];
   }
   return [
-    `gcloud secrets create ${name} --project ${safe} --replication-policy automatic`,
-    `printf %s "$VALUE" | gcloud secrets versions add ${name} --project ${safe} --data-file=-`,
+    `# Set this to the project your deploy reads strad-${safeEnv}-* from — the`,
+    `# deploy workflow's GCP_PROJECT_ID, NOT this deployment's parameter store.`,
+    `export ${DEPLOY_PROJECT_VAR}=…`,
+    `gcloud secrets create ${safe} --project "$${DEPLOY_PROJECT_VAR}" --replication-policy automatic`,
+    `printf %s "$VALUE" | gcloud secrets versions add ${safe} --project "$${DEPLOY_PROJECT_VAR}" --data-file=-`,
   ];
 }

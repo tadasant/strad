@@ -370,8 +370,8 @@ function banner(issues: Entry[], enabled: number): string {
     return `<p class="posture posture-warn"><strong>${actionable} server${
       actionable === 1 ? "" : "s"
     } need attention.</strong> Open the <code>ISSUE</code> badge on each for the store, the
-      project and the resource name to create. Nothing here can be fixed by redeploying alone
-      unless the value exists first.${
+      resource name to create, and the project it goes in where this page can know it. Nothing
+      here can be fixed by redeploying alone unless the value exists first.${
         unchecked
           ? ` A further ${unchecked} could not be checked at all — their popouts say which process would have to be asked.`
           : ""
@@ -658,8 +658,8 @@ const PARTIAL_UNVERIFIED_HEADLINE =
  *
  * A `<dialog>` rather than an inline expander, for the same reason the Help
  * control is one: the roster stays a roster, and the remediation — a store, a
- * project, a canonical path and two pasteable commands per secret — does not
- * have to fit in a grid cell. `showModal()` gives the focus trap, the backdrop
+ * canonical path, a project where one is knowable, and a pasteable recipe per
+ * route — does not have to fit in a grid cell. `showModal()` gives the focus trap, the backdrop
  * and Escape-to-close for free.
  *
  * EVERY requirement is listed, worst first — not only the outstanding ones. A
@@ -988,7 +988,16 @@ function fixBlock(
           )}<span class="sec-fix-store">${esc(target.store)}</span></div>
           <dl class="sec-fix-dl">
             <dt>resource</dt><dd><code>${esc(target.resource)}</code></dd>
-            <dt>project</dt><dd><code>${esc(target.project)}</code></dd>
+            <dt>project</dt><dd${
+              // A null project is not a missing field — it is the answer. The
+              // deploy environment's project is not a fact this process holds,
+              // and printing the one project id it does hold is what put a
+              // credential in the wrong place (HACKS.md #86). The route's own
+              // detail, right below, says which project to look for and where.
+              target.project === null
+                ? ' class="sec-fix-open">your deploy environment&#39;s own project — see below'
+                : `><code>${esc(target.project)}</code>`
+            }</dd>
           </dl>
           <p class="sec-fix-why">${esc(target.detail)}</p>
 ${
@@ -1100,7 +1109,8 @@ const GUIDE = `
           works: strad never calls the upstream to check. A server that lists tools and fails
           every call with an auth error is exactly the shape this badge cannot rule out.</li>
         <li><b>ISSUE</b> — anything else. Click it: the popout names the secret, the state,
-          and the exact store, project and path to fix. Four things land here, and they are
+          and the exact store and path to fix — with the project, except on the
+          <code>strad-&lt;env&gt;-*</code> route, whose project only your deploy environment knows. Four things land here, and they are
           not the same problem:
           <ul>
             <li><b>not seeded</b> — the backend answered, and there is no such secret. The one
@@ -1312,6 +1322,7 @@ const INDEX_CSS = `<style>
 .sec-fix-dl{display:grid;grid-template-columns:auto 1fr;gap:.15rem .7rem;margin:.55rem 0 0}
 .sec-fix-dl dt{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
 .sec-fix-dl dd{margin:0;font-size:.8rem;word-break:break-all}
+.sec-fix-dl dd.sec-fix-open{word-break:normal;color:var(--g3);font-style:italic}
 .sec-fix-why{color:var(--g2);font-size:.79rem;margin:.55rem 0 0;line-height:1.55}
 .secret-row .sec-detail-inline{padding-left:0}
 </style>`;
