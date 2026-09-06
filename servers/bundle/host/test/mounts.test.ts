@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  dropInheritedNames,
   extraSlugs,
   missingCredentialsDegraded,
   remoteFilesystemDegraded,
@@ -238,6 +239,21 @@ describe("extraSlugs", () => {
     expect(log.lines()).toEqual([]);
   });
 
+  it("loses the per-slug mounts, not the container, when a tree exports no list", () => {
+    // `google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES` is read off a module built
+    // in another Docker stage. If it were ever absent, dereferencing it inside
+    // `buildMounts()` would exit the process and take all twenty-two mounts down.
+    const log = captureLog();
+
+    expect(
+      extraSlugs("google-sheets", undefined as unknown as string[], {
+        GOOGLE_SHEETS_X__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
+    expect(log.lines()).toHaveLength(1);
+    expect(log.lines()[0]).toContain("no marker names");
+  });
+
   it("does not invent a slug from a head that is not a mangled slug", () => {
     // `FOO__BAR__TELEGRAM_API_ID` would fold to a slug of `foo--bar`, which the
     // config schema forbids precisely because it destroys the name's injectivity.
@@ -248,6 +264,73 @@ describe("extraSlugs", () => {
     } as NodeJS.ProcessEnv);
 
     expect(found).toEqual([]);
+  });
+});
+
+/**
+ * The bare-name fallback, closed for the one variable that is an identity.
+ *
+ * `slugEnvView` gives a slug the bare value for anything it has no name of its
+ * own for. Discovery used to require a google-sheets slug's refresh token, so a
+ * per-slug mount always had one and this could not bite; keying discovery on the
+ * OAuth app pair is what makes it reachable.
+ */
+describe("dropInheritedNames", () => {
+  const TOKEN = "GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN";
+
+  it("keeps a name the slug holds under its OWN prefix", () => {
+    const view = { [TOKEN]: "mine" };
+
+    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "mine",
+      [TOKEN]: "somebody-elses",
+    } as NodeJS.ProcessEnv);
+
+    expect(view).toEqual({ [TOKEN]: "mine" });
+  });
+
+  it("drops a bare value the slug would otherwise inherit, and says whose it is", () => {
+    // The failure: an unconnected slug reports itself healthy and serves ANOTHER
+    // Google account's spreadsheets, because one OAuth app usually serves every
+    // slug and the refresh would succeed.
+    const log = captureLog();
+    const view = { [TOKEN]: "somebody-elses" };
+
+    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
+      [TOKEN]: "somebody-elses",
+    } as NodeJS.ProcessEnv);
+
+    expect(view).toEqual({});
+    expect(log.lines()).toHaveLength(1);
+    expect(log.lines()[0]).toContain(`not inheriting the bare ${TOKEN}`);
+    expect(log.lines()[0]).toContain(
+      "GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN",
+    );
+  });
+
+  it("says nothing when there was nothing to inherit, which is the normal case", () => {
+    // Every unconnected slug on a bundle with no bare token takes this path, and
+    // a warning per boot per slug for the designed state would be noise.
+    const log = captureLog();
+    const view: Record<string, string | undefined> = {};
+
+    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+    } as NodeJS.ProcessEnv);
+
+    expect(view).toEqual({});
+    expect(log.lines()).toEqual([]);
+  });
+
+  it("treats an empty per-slug value as no value: '' is not a credential", () => {
+    const view = { [TOKEN]: "somebody-elses" };
+
+    dropInheritedNames(view, "google-sheets-tadas412-ro", [TOKEN], {
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "",
+      [TOKEN]: "somebody-elses",
+    } as NodeJS.ProcessEnv);
+
+    expect(view).toEqual({});
   });
 });
 
@@ -374,9 +457,17 @@ describe("the mounts that use these verdicts", () => {
   it("discovers google-sheets slugs on the OAuth app pair, not the token", () => {
     // The design this pins: a connector slug must mount BEFORE it is connected,
     // because the console page that mints its token is the mount. Passing the
-    // tree's full credential list here would put that cycle back.
-    expect(host).toContain("google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
-    expect(host).not.toContain("google.sheets.GOOGLE_SHEETS_ENV_NAMES");
+    // tree's full credential list here would put that cycle back. Asserted on the
+    // ARGUMENT rather than on the file containing a string, so the host may go on
+    // naming the whole credential elsewhere — as it does, to subtract the pair.
+    const call = host.match(/extraSlugs\(\s*"google-sheets",\s*([\w.]+)/);
+    expect(call?.[1]).toBe("google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
+  });
+
+  it("keeps a discovered google-sheets mount off the inherited names", () => {
+    // The other half of that decision: discovery no longer requires the token, so
+    // the bare fallback for it has to be closed by hand.
+    expect(host).toContain("dropInheritedNames(");
   });
 
   it("gets remote-filesystem's verdict from the shared helper", () => {

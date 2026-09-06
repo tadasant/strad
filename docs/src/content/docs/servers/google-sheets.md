@@ -36,7 +36,8 @@ That choice has consequences worth stating, because they run in both directions:
 A slug's credential is baked onto the container under
 [the slug's own variable names](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
 (`GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`), and the bundle
-host mounts one instance of this server per slug it finds a complete set for.
+host mounts one instance of this server per slug it finds the OAuth client id and
+secret for — the token is what the mount is _for_, not what summons it.
 Nothing forks: the account is a parameter, and so is the tier.
 
 ```
