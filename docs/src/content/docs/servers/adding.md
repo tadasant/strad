@@ -297,19 +297,20 @@ does not surface them.
 ## The full worked example
 
 `infra/strad.staging.yaml` in the repo deliberately exercises all four kinds at
-once. It declares thirty-three server slugs: a core builtin (`echo`), a
+once. It declares thirty-five server slugs: a core builtin (`echo`), a
 credential-free `remote-http` canary (`deepwiki` → `https://mcp.deepwiki.com/mcp`),
-and thirty `supplementary-image` entries — twenty-nine sharing ONE bundle
-over the private network, which resolve onto nineteen paths because every
-read-only / read-write pair is two entries on one path. Eighteen of those are
-among the bundle image's twenty-one baked mounts; the nineteenth,
+a `local-tunnel` (`anki`, which ships disabled),
+and thirty-two `supplementary-image` entries — thirty-one sharing ONE bundle
+over the private network, which resolve onto twenty paths because every
+read-only / read-write pair is two entries on one path. Nineteen of those are
+among the bundle image's twenty-two baked mounts; the twentieth,
 `/grafana-registry`, is a per-slug instance the host stands up because the
 container carries that slug's own Grafana credential. One of
 those, `secrets`, is also the worked example for the split `env:` / `consoleEnv:`
 credentials from step 4b, and `remote-filesystem-tmp-public` is the deploy-time
 `params: true` example from step 4c — `echo` is the runtime one.
 
-The thirtieth, `zimmer-secrets`, is the worked example for the one case where a
+The thirty-second, `zimmer-secrets`, is the worked example for the one case where a
 second **bundle** is the answer rather than a second `path`: it is the same image
 and the same `path: /secrets` as `secrets`, differing only in `bundle:` and in
 which store it points at. [Two stores, one

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 #
-# bundle — THE strad supplementary image. Twenty-one MCP servers, one container.
+# bundle — THE strad supplementary image. Twenty-two MCP servers, one container.
 #
 # BUILD CONTEXT IS THE REPO ROOT (not servers/bundle/), because this image is
-# assembled from thirteen existing projects that live in different places:
+# assembled from fourteen existing projects that live in different places:
 #
 #   servers/bundle-api      slack, serpapi-hotels, tailscale, monarch-money,
 #                           gcs, google-flights
@@ -16,6 +16,7 @@
 #   servers/pointsyeah      pointsyeah             ┘
 #   servers/x-twitter       X
 #   servers/telegram        telegram               (MTProto, USER session)
+#   servers/bill-spend      bill-spend             (BILL Spend & Expense coding)
 #   servers/pulse-subregistry  pulse-subregistry
 #   servers/strad-fetch     strad-fetch            (web fetching; strad's own fork)
 #   servers/grafana         grafana                (proxies the pinned mcp-grafana
@@ -23,7 +24,7 @@
 #
 # Each is built in its OWN stage with its OWN lockfile and its OWN node_modules,
 # exactly as its standalone image builds it, and copied into /app/trees/<name>.
-# Nothing is merged. That is on purpose: merging thirteen dependency trees is how you
+# Nothing is merged. That is on purpose: merging fourteen dependency trees is how you
 # discover in production that two of them wanted different Playwright versions.
 # The host (servers/bundle/host) imports across them by path — Node resolves each
 # package's own imports from its own tree — and owns the one thing that MUST be
@@ -115,6 +116,19 @@ COPY servers/telegram/package.json servers/telegram/package-lock.json ./
 COPY servers/telegram/shared/package.json ./shared/
 RUN npm ci --no-audit --no-fund
 COPY servers/telegram/shared ./shared
+RUN npm run build && npm prune --omit=dev
+
+# ---- bill-spend ---------------------------------------------------------------
+# strad's own BILL Spend & Expense server: re-codes card transactions to the
+# right chart-of-accounts value, and re-reads the transaction to prove the write
+# landed — BILL's update endpoint can answer 200 SUCCESS and discard it. Its only
+# dependency is the MCP SDK; every call is one HTTPS request with a static header.
+FROM ${PW} AS build-bill-spend
+WORKDIR /src
+COPY servers/bill-spend/package.json servers/bill-spend/package-lock.json ./
+COPY servers/bill-spend/shared/package.json ./shared/
+RUN npm ci --no-audit --no-fund
+COPY servers/bill-spend/shared ./shared
 RUN npm run build && npm prune --omit=dev
 
 # ---- good-eggs / fetchpet / pointsyeah (browser servers) ---------------------
@@ -273,7 +287,7 @@ RUN set -eux; \
 ENV NODE_ENV=production
 WORKDIR /app
 
-# The thirteen trees, each with the node_modules it was built against.
+# The fourteen trees, each with the node_modules it was built against.
 COPY --from=build-api /src /app/trees/bundle-api
 COPY --from=build-google /src /app/trees/bundle-google
 COPY --from=build-op /src /app/trees/onepassword
@@ -284,6 +298,7 @@ COPY --from=build-fetchpet /src /app/trees/fetchpet
 COPY --from=build-pointsyeah /src /app/trees/pointsyeah
 COPY --from=build-x-twitter /src /app/trees/x-twitter
 COPY --from=build-telegram /src /app/trees/telegram
+COPY --from=build-bill-spend /src /app/trees/bill-spend
 COPY --from=build-pulse-subregistry /src /app/trees/pulse-subregistry
 COPY --from=build-strad-fetch /src /app/trees/strad-fetch
 COPY --from=build-grafana /src /app/trees/grafana

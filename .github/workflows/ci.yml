@@ -136,6 +136,14 @@ jobs:
   #               no-credentials path — the state this server ships in, where it
   #               must still mount and list rather than take the bundle down.
   #
+  #   bill-spend  test. It EDITS FINANCIAL RECORDS with a token that is unscoped
+  #               ADMIN on a BILL company, so two of its suites are the reason it
+  #               runs on every PR: the write is reported as successful only after
+  #               a read-back (BILL's update endpoint can answer 200 SUCCESS and
+  #               discard the change), and the tool surface is asserted to contain
+  #               nothing that issues a card or moves a budget — that surface is
+  #               the only boundary the credential has.
+  #
   #   x-twitter   test. Timeline, search, lookups and private bookmarks. The
   #               functional suites read no credentials — only `test:e2e`, which is
   #               not run here, resolves X API keys — so they need nothing CI cannot
@@ -297,6 +305,10 @@ jobs:
             build: false
             test: true
             skip-browser: false
+          - tree: bill-spend
+            build: false
+            test: true
+            skip-browser: false
           - tree: x-twitter
             build: false
             test: true
@@ -352,7 +364,7 @@ jobs:
         working-directory: servers/${{ matrix.tree }}
         run: npm test
 
-  # THE bundle: twenty-one MCP servers, thirteen dependency trees, one Chromium and the
+  # THE bundle: twenty-two MCP servers, fourteen dependency trees, one Chromium and the
   # `op` CLI in one container. It is now the only supplementary component strad
   # deploys, so a PR that cannot build it — or that builds one where a server
   # silently lost half its tools — is a failing PR.

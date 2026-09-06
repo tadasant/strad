@@ -41,7 +41,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const VENDORED = [
   {
     // The one process this telemetry exists to watch is `servers/bundle` — the
-    // container that co-locates twenty-one servers, Chromium and `op`. The rest
+    // container that co-locates twenty-two servers, Chromium and `op`. The rest
     // are the per-server images, still built even though only the bundle
     // deploys. An image added here without a bootstrap is a dashboard quietly
     // missing a container.

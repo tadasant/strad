@@ -1,0 +1,21 @@
+{
+  "name": "bill-spend-shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BILL Spend & Expense transaction coding: the custom-field catalog, the transaction list, and a write that is verified by read-back before it reports success.",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.6",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.9"
+  },
+  "license": "MIT"
+}

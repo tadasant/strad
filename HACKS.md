@@ -713,10 +713,10 @@ still what makes prod's read-only variants read-only.
 policies) → confirm → _then_ delete the per-server images, their workflows and the
 toggle plumbing.
 
-## 24. Twenty-one servers share one process, and one Chromium
+## 24. Twenty-two servers share one process, and one Chromium
 
-The collapsed bundle is one container running twenty-one MCP servers and one
-headless Chromium. An OOM there is a twenty-one-server outage; it used to be a
+The collapsed bundle is one container running twenty-two MCP servers and one
+headless Chromium. An OOM there is a twenty-two-server outage; it used to be a
 one-server outage.
 
 Mitigated where it could be:
@@ -3477,7 +3477,7 @@ behaviour, which is the pre-change one.
 a listed parameter current in a supplementary container's `process.env` without a
 redeploy. What it cannot do is make the MCP server inside that container LOOK at
 the new value. That is a property of the upstream, and this image runs
-twenty-one of them written by other people.
+twenty-two of them, most written by other people.
 
 The split is real and it is not subtle:
 
@@ -4113,3 +4113,46 @@ strad-authored branches in `describe()`: every failure that gets one is a failur
 the fallthrough never has to answer for. `test/ui.secrets.error-text.test.ts` is
 the canary — it plants a credential inside a payload that will not parse and
 asserts that neither the value nor the window reaches the page or the log.
+
+## 84. BILL's coding write can answer 200 SUCCESS and change nothing, so strad sends every body shape until one demonstrably lands
+
+**What.** `set_transaction_coding` in `servers/bill-spend` does not send one
+request. `servers/bill-spend/shared/src/wire.ts` enumerates THREE body shapes for
+`PUT /v3/spend/transactions/{id}/custom-fields`, and the write walks them in
+order, **re-reading the transaction and diffing it after every attempt**. Nothing
+in that server treats BILL's reply as evidence: a result carries `verified: true`
+only for a change that was observed on a subsequent read, and the shape that
+worked comes back as `wire_variant`. When no shape persists, the tool fails with
+`persisted: false` and the whole attempt table rather than reporting the success
+BILL claimed.
+
+**Why.** The endpoint can answer HTTP 200 `{"status":"SUCCESS"}` and discard the
+update, and there is no way to tell which requests it will do that to. BILL's own
+[API reference](https://developer.bill.com/reference/updatetransactioncustomfields)
+says the array items are `{customFieldId, selectedValues[], note}`; its
+[Transactions guide](https://developer.bill.com/docs/transaction-management)'s
+worked example says `customFieldUuid`. Both were read against the live docs.
+Separately, a community implementer who called it reports that the `tty_…` /
+`tvl_…` UUID forms BILL's own GETs hand back are accepted and dropped, and that
+only the base64 `id` form writes — UNVERIFIED, one developer's field note, but
+BILL contradicting itself corroborates that the endpoint is finicky. The consumer
+is an unattended agent editing someone's books, where believing the reply means
+reporting forty transactions re-coded and changing none of them.
+
+**What it costs.** Calls, against a budget of 60 per token per minute. A verified
+write is four to five requests — the lock check, the before-state, the field's
+value catalog (cached five minutes), the PUT, the read-back — so roughly a dozen
+transactions a minute. The ladder itself is paid for once: the winning shape is
+memoised for the life of the process, and a memoised shape that stops working
+loses one attempt and hands back to the ladder. It also costs a claim this repo
+cannot make anywhere else — that the number of round trips per write is
+irreducible. It is not; it is what verification costs when the API will lie.
+
+**Undo.** When BILL settles its own documentation, delete the variants that never
+win from `WIRE_VARIANTS`. The read-back is NOT part of the undo: even with one
+correct shape, a write to a field the transaction's budget does not carry is
+still answered SUCCESS and still dropped, so the diff is the only thing that
+separates "coded" from "reported as coded".
+`servers/bill-spend/shared/test/write-verification.test.ts` is the canary — its
+fake answers SUCCESS to every shape and applies only the one it was told to
+honour, so a server that started trusting the reply goes red there.

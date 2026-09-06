@@ -354,11 +354,11 @@ nothing warns beforehand. Publishing the OAuth app removes the expiry.
 
 ## The deployment
 
-### 24. Twenty-one servers share one process and one CPU
+### 24. Twenty-two servers share one process and one CPU
 
-The `bundle` component runs one Node process that mounts twenty-one MCP servers,
+The `bundle` component runs one Node process that mounts twenty-two MCP servers,
 launches one shared Chromium and supervises one `mcp-grafana` child process, on
-`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-one down together, and
+`apps-s-1vcpu-2gb`. A crash in the host takes all twenty-two down together, and
 Chromium contends with every other server for the single vCPU.
 
 Measured working set is ~760MB with two browser servers logging in at once, against
@@ -2514,6 +2514,20 @@ What keeps that branch rare is that every failure the console actually produces 
 **How you would know.** The page says so — it names the class and says the message was withheld. If that is all you have, the next step is another branch in `describe()`, not a wider message.
 
 See `HACKS.md` #83.
+
+---
+
+### 84. A BILL coding write is reported successful only after strad re-reads the transaction
+
+BILL Spend & Expense's `PUT /v3/spend/transactions/{id}/custom-fields` can answer HTTP 200 `{"status":"SUCCESS"}` and discard the update. BILL's own API reference and its Transactions guide disagree about the request body — `customFieldId` versus `customFieldUuid` — and a community implementer who called it reports that the UUID forms BILL's own GETs hand back are accepted and dropped while only the base64 `id` form writes. That last part is unverified; BILL contradicting itself is not.
+
+So `set_transaction_coding` sends up to three body shapes and **re-reads the transaction after each one**, reporting success only on a change it observed. A successful result carries `verified: true` and the `wire_variant` that persisted; a failure carries `persisted: false` and the whole attempt table.
+
+The cost is round trips against a budget of 60 calls per token per minute: a verified write is four to five requests, so roughly a dozen transactions a minute. The winning shape is memoised for the process, so the ladder itself is paid for once.
+
+**How you would know.** The tool tells you, either way — that is the entire design. What it cannot tell you is whether an accounting-integration-mapped GL field is exposed through this API at all; BILL's custom-field `type` enum has no GL-account member and no integration-origin marker, and that question needs a real company to answer.
+
+See `HACKS.md` #84 and [BILL Spend & Expense](/servers/bill-spend/).
 
 ---
 
