@@ -1020,9 +1020,9 @@ describe("the Secret Manager recipe when the two projects differ", () => {
   };
 
   it("names no project on the baked route, and prints none in the command", () => {
-    // THE DEFECT. `<P>` used to be `storeProject()` — "which GCP project holds
-    // the PARAMETER store" — and a paste against it SUCCEEDS, seeding the name
-    // where the deploy will never look for it.
+    // THE DEFECT THIS CLOSES. `<P>` is not `storeProject()` — that answers
+    // "which GCP project holds the PARAMETER store", and a paste against it
+    // SUCCEEDS, seeding the name where the deploy will never look for it.
     const baked = smRoute(
       requirement("SHOP_PASSWORD", { deliveries: ["bundle"] }),
     );
@@ -1035,7 +1035,7 @@ describe("the Secret Manager recipe when the two projects differ", () => {
       'gcloud secrets create strad-test-SHOP_PASSWORD --project "$DEPLOY_SECRETS_PROJECT"',
     );
     expect(baked.detail).toContain("GCP_PROJECT_ID");
-    expect(baked.detail).toContain("NOT the parameter store's project");
+    expect(baked.detail).toContain("NOT that store's project");
   });
 
   it("does the same on the consoleEnv-only route, which is the other call site", () => {
@@ -1058,7 +1058,7 @@ describe("the Secret Manager recipe when the two projects differ", () => {
     expect(target[0]!.commands.join("\n")).toContain(
       '--project "$DEPLOY_SECRETS_PROJECT"',
     );
-    expect(target[0]!.detail).toContain("NOT the parameter store's project");
+    expect(target[0]!.detail).toContain("NOT that store's project");
   });
 
   it("does not reach for the RESOLVER's project either", () => {

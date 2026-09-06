@@ -370,8 +370,8 @@ function banner(issues: Entry[], enabled: number): string {
     return `<p class="posture posture-warn"><strong>${actionable} server${
       actionable === 1 ? "" : "s"
     } need attention.</strong> Open the <code>ISSUE</code> badge on each for the store, the
-      project and the resource name to create. Nothing here can be fixed by redeploying alone
-      unless the value exists first.${
+      resource name to create, and the project it goes in where this page can know it. Nothing
+      here can be fixed by redeploying alone unless the value exists first.${
         unchecked
           ? ` A further ${unchecked} could not be checked at all — their popouts say which process would have to be asked.`
           : ""
@@ -656,8 +656,8 @@ const PARTIAL_UNVERIFIED_HEADLINE =
  *
  * A `<dialog>` rather than an inline expander, for the same reason the Help
  * control is one: the roster stays a roster, and the remediation — a store, a
- * project, a canonical path and two pasteable commands per secret — does not
- * have to fit in a grid cell. `showModal()` gives the focus trap, the backdrop
+ * canonical path, a project where one is knowable, and a pasteable recipe per
+ * route — does not have to fit in a grid cell. `showModal()` gives the focus trap, the backdrop
  * and Escape-to-close for free.
  *
  * EVERY requirement is listed, worst first — not only the outstanding ones. A
@@ -1050,7 +1050,8 @@ const GUIDE = `
           works: strad never calls the upstream to check. A server that lists tools and fails
           every call with an auth error is exactly the shape this badge cannot rule out.</li>
         <li><b>ISSUE</b> — anything else. Click it: the popout names the secret, the state,
-          and the exact store, project and path to fix. Four things land here, and they are
+          and the exact store and path to fix — with the project, except on the
+          <code>strad-&lt;env&gt;-*</code> route, whose project only your deploy environment knows. Four things land here, and they are
           not the same problem:
           <ul>
             <li><b>not seeded</b> — the backend answered, and there is no such secret. The one

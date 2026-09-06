@@ -487,7 +487,9 @@ describe("a single-store deployment", () => {
     // The Secret Manager route is the exception, and it is not a partitioning
     // question: even here, where one project holds every parameter, the deploy
     // reads `strad-test-*` from a project this page has never been told about.
-    for (const target of targets.filter((t) => !t.resource.startsWith("/"))) {
+    const baked = targets.filter((t) => !t.resource.startsWith("/"));
+    expect(baked.length).toBeGreaterThan(0);
+    for (const target of baked) {
       expect(target.project).toBeNull();
     }
     expect(
@@ -587,6 +589,30 @@ describe("GET /ui on a partitioned multi-store deployment", () => {
       "/strad/test/gateway/static/SHOP_PASSWORD",
     );
     expect(shared).toBe(GATEWAY_PROJECT);
+  });
+
+  it("prints no project id at all beside the strad-<env>-* route", async () => {
+    const res = await fetch(`${baseUrl}/ui`, { headers: auth });
+    const html = await res.text();
+    expect(res.status).toBe(200);
+
+    // The RENDERED half of the null, which the derivation tests above cannot
+    // see: `fixBlock` keeps the <dt>project</dt> row and answers it in prose,
+    // because a route that simply dropped the row would read as a page that
+    // forgot rather than as one that knows it cannot say.
+    const cell = `<dt>resource</dt><dd><code>strad-test-SHOP_PASSWORD</code></dd>`;
+    const at = html.indexOf(cell);
+    expect(at).toBeGreaterThan(-1);
+    const block = html.slice(at, at + 600);
+    expect(block).toContain(
+      `<dt>project</dt><dd class="sec-fix-open">your deploy environment`,
+    );
+    // …and no project id — not the stores', not the resolver's, and no stray
+    // "null" or "undefined" rendered where one used to be.
+    expect(block).not.toContain(SERVER_PROJECT);
+    expect(block).not.toContain(GATEWAY_PROJECT);
+    expect(block).not.toContain("null");
+    expect(block).not.toContain("undefined");
   });
 });
 

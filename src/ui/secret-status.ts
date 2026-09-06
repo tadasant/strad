@@ -2173,8 +2173,8 @@ export function unobservableTarget(
 /**
  * Where a missing secret has to be set, most likely route first.
  *
- * This is the whole point of the page: a name and a project and a path, not a
- * scavenger hunt. Which route is FIRST is decided by what the deployment
+ * This is the whole point of the page: a name and a path and — where it is
+ * knowable — a project, not a scavenger hunt. Which route is FIRST is decided by what the deployment
  * declares, because the two are not interchangeable — a value in the parameter
  * store is read at runtime by a store-backed gateway and is deploy-time input at
  * most to an `env` one.
@@ -2429,22 +2429,28 @@ function deploySecretsProjectNote(gatewayEnv: string): string {
   return (
     ` The project is whichever one your deploy workflow reads strad-${gatewayEnv}-* ` +
     `out of — its own GCP_PROJECT_ID, a deploy-environment fact this page cannot ` +
-    `see, and deliberately NOT the parameter store's project. So the commands ` +
-    `leave it to you rather than naming the one id this page does hold.`
+    `see. On a deployment that has a parameter store it is deliberately NOT that ` +
+    `store's project, so the commands leave it to you rather than naming an id ` +
+    `that answers a different question.`
   );
 }
 
 /**
  * A Secret Manager secret id, or a refusal.
  *
- * `name` is the one thing interpolated into a command a human is invited to
- * paste, and half of it — `strad-<gateway.env>-` — is free-form YAML, the same
- * trust boundary as the config itself. "Someone who can edit the config can
- * already run code" is an argument for not caring, and this page's whole job is
- * to be pasted from, so a value carrying `;` or a backtick would yield a command
- * that runs something else. A Secret Manager id is letters, digits, `-` and `_`,
- * up to 255 of them; anything else is not a secret name and is not worth quoting
- * into a command.
+ * Applied to everything `secretManagerCommands` prints, which is the rendered
+ * name AND `gateway.env` — both free-form YAML, the same trust boundary as the
+ * config itself. "Someone who can edit the config can already run code" is an
+ * argument for not caring, and this page's whole job is to be pasted from, so a
+ * value carrying `;` or a backtick would yield a command that runs something
+ * else. A Secret Manager id is letters, digits, `-` and `_`, up to 255 of them;
+ * anything else is not a secret name and is not worth quoting into a command.
+ *
+ * The env is checked SEPARATELY even though today's call sites compose the name
+ * out of it, which makes the second check redundant. Redundant is not the same
+ * as unnecessary: the coupling is a fact about two call sites, not about this
+ * function, and a third one that printed a name the env is not a prefix of would
+ * otherwise put unchecked YAML into a pasteable block.
  */
 function safeSecretName(name: string): string | null {
   return /^[A-Za-z0-9_-]{1,255}$/.test(name) ? name : null;
@@ -2463,28 +2469,30 @@ function safeSecretName(name: string): string | null {
  * not fail legibly (HACKS.md #86).
  *
  * `"$DEPLOY_SECRETS_PROJECT"` rather than a placeholder like `<PROJECT>`, and
- * rather than dropping the flag: an unset variable expands to empty, `gcloud`
- * rejects an empty `--project`, and nothing is written. Dropping the flag would
- * instead fall through to whatever `gcloud config` has set — which for an
+ * rather than dropping the flag. A variable nobody filled in is not a project
+ * id — unset it expands to empty, pasted whole it is still the `…` placeholder —
+ * and `gcloud` refuses either, so nothing is written. Dropping the flag would
+ * instead fall through to whatever `gcloud config` has set, which for an
  * operator who has been working in the parameter store is the very project this
  * exists to stop writing to, and it would succeed. The recipe already asks the
  * reader to supply `$VALUE`; this asks for one more.
  */
 function secretManagerCommands(name: string, gatewayEnv: string): string[] {
   const safe = safeSecretName(name);
-  if (!safe) {
-    // The rejected name is NOT echoed. It is the thing that failed the shape
+  const safeEnv = safeSecretName(gatewayEnv);
+  if (!safe || !safeEnv) {
+    // NEITHER value is echoed. Whichever failed is the one that failed a shape
     // test, so it may carry a newline — and a newline in a `#` line ends the
     // comment and starts a command, which is the injection this branch exists
     // to refuse.
     return [
       `# No paste-ready command: this deployment's strad-<env>-<NAME> is not a`,
       `# well-formed Secret Manager id, so nothing is quoted into a shell command`,
-      `# here. Fix gateway.env in the config first.`,
+      `# here. Fix gateway.env, or shorten the variable name.`,
     ];
   }
   return [
-    `# Set this to the project your deploy reads strad-${gatewayEnv}-* from — the`,
+    `# Set this to the project your deploy reads strad-${safeEnv}-* from — the`,
     `# deploy workflow's GCP_PROJECT_ID, NOT this deployment's parameter store.`,
     `export ${DEPLOY_PROJECT_VAR}=…`,
     `gcloud secrets create ${safe} --project "$${DEPLOY_PROJECT_VAR}" --replication-policy automatic`,

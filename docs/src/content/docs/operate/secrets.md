@@ -1775,8 +1775,10 @@ Disabled servers contribute nothing — the gateway does not mount them and
 
 ### The fix guidance is the point
 
-A `not seeded` or `check value` popout names, per route: the store, the GCP project,
-the exact resource name or canonical path, and a paste-ready `gcloud` command. The
+A `not seeded` or `check value` popout names, per route: the store, the exact
+resource name or canonical path, a paste-ready `gcloud` command, and the GCP project
+— except on the `strad-<env>-*` route, whose project is not a fact this process holds,
+for the reason set out further down this section. The
 route offered **first** is decided by what the deployment declares, because the two
 are not interchangeable:
 
@@ -1841,9 +1843,10 @@ gcloud secrets create strad-staging-SLACK_BOT_TOKEN --project "$DEPLOY_SECRETS_P
 printf %s "$VALUE" | gcloud secrets versions add strad-staging-SLACK_BOT_TOKEN --project "$DEPLOY_SECRETS_PROJECT" --data-file=-
 ```
 
-The variable rather than a dropped `--project` is deliberate. An unset variable
-expands to empty and `gcloud` refuses an empty `--project`, so a blind paste
-writes nothing; a dropped flag would fall through to whatever `gcloud config` has
+The variable rather than a dropped `--project` is deliberate. A variable nobody
+filled in is not a project id — unset it expands to empty, pasted whole it is
+still the `…` placeholder — and `gcloud` refuses either, so a blind paste writes
+nothing; a dropped flag would fall through to whatever `gcloud config` has
 set, and for an operator who has been working in the parameter store that is the
 one project this exists to stop writing to — and it would succeed. This route was
 the only one on the page that could put a credential somewhere plausible and

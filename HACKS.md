@@ -3809,11 +3809,11 @@ named with the project that owns it. A path no store covers, and a path two
 stores in different projects both claim, fall back to the deployment default
 rather than stating one of two answers confidently. `storeProject()` still
 answers for the DEPLOYMENT, which is what the page header and
-`/api/secrets/readiness` want. A `strad-<env>-*` Secret Manager secret keeps that
-default because it is NOT a parameter path — no namespace covers it, so there is
-no per-path answer to give. That default is itself the wrong project for a Secret
-Manager name on a deployment whose two projects differ, which is #86 and is not
-this entry.
+`/api/secrets/readiness` want. A `strad-<env>-*` Secret Manager secret gets neither
+answer: it is NOT a parameter path, so no namespace covers it, and the deployment
+default is the parameter store's project, which is the wrong project for a name the
+deploy reads out of its own `GCP_PROJECT_ID`. That route names no project at all —
+#86, and not this entry.
 
 **What.** `consoleStores:` puts N parameter stores on one `/ui/<slug>` page. The
 console INDEX at `/ui` did not change with it: it still renders one card per
@@ -4263,8 +4263,9 @@ by construction — set `FixTarget.project` to null and print
 `--project "$DEPLOY_SECRETS_PROJECT"`, over a comment saying what to set it to:
 the project the deploy reads `strad-<env>-*` out of, its own `GCP_PROJECT_ID`,
 NOT this deployment's parameter store. The variable rather than dropping the flag
-is the whole safety property — an unset variable expands to empty and `gcloud`
-refuses an empty `--project`, so a blind paste writes nothing, whereas a dropped
+is the whole safety property — a variable nobody filled in is not a project id,
+unset or pasted whole with its `…` placeholder, and `gcloud` refuses either, so a
+blind paste writes nothing, whereas a dropped
 flag would fall through to whatever `gcloud config` has set, which for an
 operator who has been working in the parameter store is the very project this
 exists to stop writing to, and it would succeed. A command a human has to
