@@ -1,21 +1,39 @@
 /**
- * The secret-loading seam.
+ * The boot-time secret BAG, and `${NAME}` resolution against it.
  *
- * Target state: secrets live in Google Cloud Secret Manager under
- * `strad-<env>-<NAME>`, with a separate service account per environment so a
- * staging credential can never read a prod secret. CI (authenticated to GCP via
- * Workload Identity Federation) reads them and injects them into the App
- * Platform app spec as SECRET-type env vars at deploy time.
+ * This module reads every secret ONCE into a flat frozen record, and resolves
+ * `${NAME}` references against that snapshot synchronously. Two callers want
+ * exactly that shape. Boot (`src/index.ts`) needs a bag before anything can
+ * serve a request, and backs the console's `consoleEnv:` resolution with it.
+ * The App Platform spec render (`src/deploy/appspec.ts`) resolves references at
+ * deploy time, against secrets CI holds and the container never will.
+ * `SecretBag`, `loadSecrets`, `resolveRefs` and `resolveMap` are those two
+ * paths, and they are the whole of what this module does for a live gateway.
  *
- * That means **the runtime container never needs GCP credentials**. By the time
- * strad boots, its secrets are already env vars. `EnvSecretSource` is therefore
- * not a stopgap — it is the production runtime path, on purpose. It sidesteps a
- * bootstrap "one key to rule them all" problem: no master credential is baked
- * into the image.
+ * A snapshot cannot notice a rotation. The read path a running gateway takes for
+ * a server's `${NAME}` is `src/secrets/provider/` — one name in, one value or
+ * `null` out, per request — and the store behind it is `src/secrets/parameters/`,
+ * which speaks Google Cloud **Parameter** Manager. Which of the two a deployment
+ * resolves from is `gateway.secrets.provider: env | gcp-parameter-store` in the
+ * config (`src/config/schema.ts`), validated by Zod and checked by
+ * `npm run config:check`. `docs/operate/secrets.md` is the prose for all of it.
  *
- * `GcpSecretManagerSource` exists for the CI/deploy side (and for anyone who
- * *does* want a runtime fetch). Swapping backends is a config change, not a
- * rewrite — that is the point of this seam.
+ * **`SecretSource`, `EnvSecretSource`, `GcpSecretManagerSource` and
+ * `secretSourceFromEnv` below are residue.** No backend is selected through
+ * them. `secretSourceFromEnv` is reachable only as `loadSecrets`'s default
+ * argument, and the `STRAD_SECRET_SOURCE` switch inside it is set by no config,
+ * workflow, infra file or test in this repo, so the branch it guards picks
+ * `EnvSecretSource` every time. `GcpSecretManagerSource` names Google Secret
+ * Manager — a different product, reached through different IAM roles, from the
+ * Parameter Manager strad reads — and `@google-cloud/secret-manager` appears in
+ * no `package.json` here, so its lazy import throws on the one branch that
+ * would reach it. `interface SecretSource` has no importers at all. A reader
+ * asking how a secret backend is chosen wants the config field, not these
+ * symbols.
+ *
+ * The name `SecretSource` is taken a second time, unrelatedly, by the
+ * `"GSM" | "ENV"` badge type in `src/ui/secret-status.ts`. That is the one with
+ * importers, and it describes where the console says a value came from.
  */
 
 import { secretRefRe } from "../config/env-name.ts";
