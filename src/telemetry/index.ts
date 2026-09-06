@@ -15,6 +15,7 @@ import {
   type ResourceIdentity,
 } from "./resource.ts";
 import { startRuntimeMetrics, type RuntimeMetricsHandle } from "./runtime.ts";
+import { errorText } from "../util/error-text.ts";
 
 export {
   argShape,
@@ -238,7 +239,7 @@ export function startTelemetry(
     log({
       evt: "telemetry.start_failed",
       service: name,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorText(err),
     });
     // See the other early return: a wired logger on a DISABLED handle is a
     // logger nothing will flush. `startRuntimeMetrics` and the browser hooks run

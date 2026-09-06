@@ -39,6 +39,8 @@
  * asserting the canary appears nowhere in any exported span, metric or log record.
  */
 
+import { errorText } from "../util/error-text.ts";
+
 /**
  * How an error is allowed to be described in telemetry: a fixed, closed set.
  *
@@ -119,7 +121,7 @@ export function errorKind(err: unknown): ErrorKind {
   const declared = declaredKind(err);
   if (declared) return declared;
 
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorText(err);
 
   // The MCP SDK's request timeout. It defaults to 60s and fires at EVERY hop,
   // which is exactly the failure we want to be able to see, so it gets its own

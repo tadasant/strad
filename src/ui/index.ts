@@ -14,6 +14,7 @@ import {
   NO_CAPABILITIES,
   normalisePathPrefix,
   ParameterStoreError,
+  UnreadablePayloadError,
   normaliseNamespace,
   validateNamespace,
   validatePathPrefix,
@@ -23,6 +24,9 @@ import {
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
+import { DeadlineError } from "../util/deadline.ts";
+import { errorSummary, errorText } from "../util/error-text.ts";
+import { event } from "../telemetry/index.ts";
 import type { BundlePresence } from "../gateway/bundle-presence.ts";
 import type { Registry } from "../gateway/registry.ts";
 import { mountPlayground } from "./playground.ts";
@@ -453,11 +457,9 @@ async function handleServerView(
       .send(renderGcsBrowse({ view, relPrefix, result, signedInAs }));
   } catch (err) {
     const isGcs = err instanceof GcsError;
-    const detail = isGcs
-      ? `${err.status} — ${err.message}`
-      : err instanceof Error
-        ? err.message
-        : String(err);
+    // `errorText`, not `errorSummary`: this branch is a GCS object listing, and
+    // its response body is bucket metadata rather than anything the store holds.
+    const detail = isGcs ? `${err.status} — ${err.message}` : errorText(err);
     res
       .status(502)
       .type("html")
@@ -476,7 +478,7 @@ async function handleServerView(
 }
 
 // ---------------------------------------------------------------------------
-// The parameters page, and the five actions that mutate it.
+// The parameters page, and the six actions on it.
 // ---------------------------------------------------------------------------
 
 type SecretAction =
@@ -1087,39 +1089,66 @@ export function storeFor(
  * cheap lock, that is the one that holds.
  */
 function assertWellFormed(path: string): void {
-  if (!path) throw new Error("A parameter path is required.");
+  if (!path) throw new ConsoleInputError("A parameter path is required.");
   if (path.length > 512) {
-    throw new Error("A parameter path may be at most 512 characters.");
+    throw new ConsoleInputError(
+      "A parameter path may be at most 512 characters.",
+    );
   }
   if (!path.startsWith("/")) {
-    throw new Error(`"${path}" is not an absolute parameter path.`);
+    throw new ConsoleInputError(`"${path}" is not an absolute parameter path.`);
   }
   // Checked on the RAW path, before any normalisation: an empty segment folds to
   // the same id as none, so `…/mcp//VAR` and `…/mcp/VAR` are one resource.
   if (path.includes("//") || path.split("/").includes("..")) {
-    throw new Error(`"${path}" is not a well-formed parameter path.`);
+    throw new ConsoleInputError(
+      `"${path}" is not a well-formed parameter path.`,
+    );
   }
   const variable = variableOf(path);
   if (validateVariableName(variable)) {
-    throw new Error(`"${path}" does not end in a valid variable name.`);
+    throw new ConsoleInputError(
+      `"${path}" does not end in a valid variable name.`,
+    );
   }
   // Everything between the leading slash and the variable is namespace+prefix,
   // and both use one alphabet. `validatePathPrefix` returns null for "", so a
   // bare `/VARIABLE` still passes.
   const lead = path.slice(1, path.length - variable.length - 1);
   if (validatePathPrefix(lead)) {
-    throw new Error(`"${path}" is not a well-formed parameter path.`);
+    throw new ConsoleInputError(
+      `"${path}" is not a well-formed parameter path.`,
+    );
   }
 }
 
-/** An error message that describes the failure and never the payload. */
+/**
+ * Something the console itself refused, in a sentence the console itself wrote.
+ *
+ * The class is the point, not the message. Every other kind of failure on these
+ * routes has been somewhere near a store read, and `describe()` will not print
+ * such an error's message — see its header. Validation has NOT: this is thrown
+ * by `assertWellFormed` over a path the caller typed, before any request is
+ * made, so its text is strad's own and safe to show back.
+ */
+class ConsoleInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConsoleInputError";
+  }
+}
+
 /**
  * 4xx for the caller's mistakes, 502 only for the store's.
  *
- * `assertWellFormed` throws a plain Error for a path the caller chose; the store
- * throws `ParameterStoreError` carrying Google's own status, and a 404 there is
- * the id-collision guard saying "that is not your parameter". Neither is a bad
- * gateway.
+ * `assertWellFormed` throws a `ConsoleInputError` for a path the caller chose;
+ * the store throws `ParameterStoreError` carrying Google's own status, and a 404
+ * there is the id-collision guard saying "that is not your parameter". Neither
+ * is a bad gateway.
+ *
+ * A timeout is the store failing to answer, so it takes the store's status. What
+ * is left is genuinely unexpected — nothing on these routes knows whose fault it
+ * is — and 500 is the honest answer for it.
  */
 function statusFor(err: unknown): number {
   if (err instanceof ParameterStoreError) {
@@ -1128,23 +1157,134 @@ function statusFor(err: unknown): number {
     if (err.status === 409) return 409;
     return 502;
   }
-  // A plain Error here is validation — assertWellFormed and friends.
-  return 400;
+  if (err instanceof ConsoleInputError) return 400;
+  // A store that did not answer, and one this container could not reach, are
+  // both the gateway's upstream failing. 500 is left for the genuinely
+  // unexplained, which is the only thing `describe()` cannot write a sentence for.
+  if (isTimeout(err) || transportCode(err)) return 502;
+  return 500;
 }
 
+/**
+ * What the console tells a human about a failure, without telling them a secret.
+ *
+ * The rule is `errorSummary`'s (`src/util/error-text.ts`) and this is the surface
+ * it was written for. Every route that reaches here — `GET /ui/:server` and the
+ * six `POST /ui/:server/*` actions — reads the parameter store, and a store read
+ * ends in `decodeEnvelope` -> `JSON.parse` over a payload that is a credential on
+ * a non-secret parameter and the envelope around one on a secret parameter.
+ * `JSON.parse` puts a window of its input in the `SyntaxError` it throws. So the
+ * fallthrough prints a CLASS, never a message.
+ *
+ * A class name alone is a real loss for the operator, which is why the
+ * fallthrough is the last branch rather than the only one. Every failure this
+ * console actually produces in the field gets a sentence strad wrote — the store
+ * refusing the credential, a name collision, a request that timed out, a version
+ * whose payload will not decode — and each of those sentences says what to do
+ * next, which the upstream's message never did anyway.
+ */
 function describe(err: unknown): string {
+  if (err instanceof UnreadablePayloadError) {
+    return (
+      `The current version of that parameter is not a strad envelope, so the console ` +
+      `cannot read it. Something other than strad wrote this version, or it is ` +
+      `truncated. Rotating writes a fresh version and clears it; reveal and note will ` +
+      `keep failing until something does.`
+    );
+  }
   if (err instanceof ParameterStoreError) {
     if (err.status === 403) {
       return `The store denied the request (403). The console's service account needs write access to this namespace's Parameter Manager and Secret Manager.`;
     }
     if (err.status === 409) return `That parameter already exists.`;
-    return `${err.message}`;
+    // Method plus resource, query and `:verb` stripped — the one error shape on
+    // this path whose message is known not to carry a value.
+    return err.message;
   }
-  return err instanceof Error ? err.message : String(err);
+  if (isTimeout(err)) {
+    return (
+      `The store did not answer in time. Parameter Manager bounds every attempt ` +
+      `(gateway.secrets.timeoutMs), so this is the store being slow or unreachable ` +
+      `rather than a refusal. The bound is on THIS end, so a write that timed out ` +
+      `may still have landed — re-read the parameter before retrying. If it keeps ` +
+      `timing out, check the Google Cloud status page for Parameter Manager.`
+    );
+  }
+  const transport = transportCode(err);
+  if (transport) {
+    return (
+      `The console could not reach the parameter store (${transport}). Nothing was ` +
+      `sent, so nothing was written. This is DNS, the network or TLS between this ` +
+      `container and googleapis.com rather than anything about the parameter.`
+    );
+  }
+  if (err instanceof ConsoleInputError) return err.message;
+  // `ValueEncodingError` (`src/secrets/parameters/wire.ts`) is the other error on
+  // this path whose message strad wrote: a parameter path and the encoding token
+  // its envelope declared, with no value anywhere in it. It is what a reveal of a
+  // parameter written by a newer strad looks like, and the class alone would send
+  // an operator looking in the wrong place.
+  if (err instanceof Error && err.name === "ValueEncodingError") {
+    return err.message;
+  }
+  return (
+    `The console hit an unexpected ${errorSummary(err)}. Its message is withheld ` +
+    `deliberately: an error raised while reading the parameter store can carry a ` +
+    `window of the payload it failed on, and on this path that payload is a ` +
+    `credential. The class is logged with the request under ` +
+    `strad.console_render_failed.`
+  );
+}
+
+/**
+ * A request that ran out of time, whoever bounded it.
+ *
+ * The one that fires on these routes is the store's per-attempt
+ * `AbortSignal.timeout` (`src/secrets/parameters/gcp.ts`), which surfaces as
+ * undici's `TimeoutError` — matched by NAME because it is a `DOMException`, not
+ * an `Error` subclass this file can name.
+ *
+ * `DeadlineError` (`src/util/deadline.ts`) is here for completeness rather than
+ * because a console route produces one today: both of its call sites catch
+ * internally. It costs one `instanceof` and it means a third caller that does
+ * let one through is already answered.
+ */
+function isTimeout(err: unknown): boolean {
+  if (err instanceof DeadlineError) return true;
+  return (
+    err instanceof Error &&
+    (err.name === "TimeoutError" || err.name === "AbortError")
+  );
+}
+
+/**
+ * A request that never got an answer, named by the code the runtime gave it.
+ *
+ * `fetch` reports every transport failure as one opaque `TypeError: fetch
+ * failed` and puts the real diagnosis on `cause.code` — `ENOTFOUND`,
+ * `ECONNREFUSED`, `CERT_HAS_EXPIRED`. Without this branch an unreachable store
+ * is the console's least useful page: a `TypeError`, withheld, for the most
+ * ordinary outage there is.
+ *
+ * The code is a runtime constant, not text from a response, so it is safe to
+ * print — and the shape test is what keeps that true rather than assumed. A
+ * `cause` that does not carry one still gets the sentence, without a code.
+ */
+function transportCode(err: unknown): string | null {
+  if (!(err instanceof TypeError) || !("cause" in err)) return null;
+  const code: unknown = (err.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code)
+    ? code
+    : "no code";
 }
 
 function renderUnexpected(res: Response, err: unknown): void {
-  const detail = err instanceof Error ? err.message : String(err);
+  // The page prints a class and no message, so without this the operator has
+  // nothing else to look at — the express handler is the end of the line here.
+  // By class, not by message, and `errorSummary` is why: see `describe()`. The
+  // export carries the NAME ALONE (`src/telemetry/events.ts`); the class stays
+  // on stderr.
+  event({ evt: "strad.console_render_failed", error: errorSummary(err) });
   if (res.headersSent) return;
   res
     .status(500)
@@ -1154,7 +1294,7 @@ function renderUnexpected(res: Response, err: unknown): void {
         title: "Error",
         signedInAs: signedInLabel(res),
         heading: "Something went wrong",
-        sub: `The console hit an unexpected error rendering this view. Detail: ${detail}`,
+        sub: describe(err),
         tone: "error",
         breadcrumbToIndex: true,
       }),

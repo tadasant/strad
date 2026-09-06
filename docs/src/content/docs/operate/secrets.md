@@ -2736,3 +2736,50 @@ credential" mean "redeploy the gateway".
   leaked into a public Actions log this way before.
 
 `test/secrets.provider.test.ts` carries the canary that enforces the first four.
+
+### Two ways to turn an error into text, and which one a store path uses
+
+An error message is text strad did not necessarily write, so there are exactly
+two ways to turn one into a string and both live in `src/util/error-text.ts`:
+
+| function            | what it prints                                                                                                  | use it when                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `errorSummary(err)` | a `ParameterStoreError`'s message, which is a method plus a resource path; **the class name** for anything else | anything that could have touched a store read, a rendered payload, or a secret value |
+| `errorText(err)`    | the message, whatever it says                                                                                   | the message is strad's own or an upstream's, and no secret is in scope               |
+
+**Every path that reads the parameter store uses `errorSummary`.** The reason is
+`JSON.parse`: V8 puts about ten characters of its input into the `SyntaxError` it
+throws, and on a store path that input is a parameter payload — which is a
+credential on a non-secret parameter, and the envelope around one on a secret
+parameter. The token endpoint's 200 body is the same problem in a different
+place: it carries the minted `access_token`.
+
+So a parse on a store path is never left unwrapped, and the wrapper **drops** the
+original rather than chaining it as a `cause` — a `cause` travels, and anything
+that stringifies the chain puts the window back. Three do it:
+`currentEnvelope` raises an `UnreadablePayloadError` naming the resource,
+`mintAccessToken` (`src/secrets/parameters/service-account.ts`) raises a
+`ServiceAccountAuthError`, and `renderOne` returns a fixed reason rather than
+throwing at all.
+
+`src/secrets/param-route.ts` is the one file that reduces to a class name by
+hand instead of calling `errorSummary`. It is vendored byte-for-byte into the
+bundle host's own npm tree and must stay import-free, so importing the shared
+function would mean a ninth vendoring seam; the rule is inlined at each of its
+two sites, with the reason written beside it.
+
+A class name on its own is not much use to an operator, so the console does not
+stop there. `describe()` in `src/ui/index.ts` writes strad's own sentence for
+every failure the console actually produces — the store refusing the credential
+(403), a name collision (409), a request that timed out, a store this container
+could not reach (named by its transport code), a version whose payload declares
+an encoding this build does not know, a version whose payload will not decode at
+all, and a path the console itself rejected — and only falls through to the bare
+class for something genuinely unexpected. That fallthrough says what
+was withheld and why, and the class is logged under
+`strad.console_render_failed`, whose export carries the event name alone.
+
+`test/ui.secrets.error-text.test.ts` is the canary: it plants a credential inside
+a payload that will not parse, drives `GET /ui/:server` and the four `POST`
+actions that read the envelope, and asserts that neither the value nor the
+ten-character window reaches the HTML page or the log.

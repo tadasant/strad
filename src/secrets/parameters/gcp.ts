@@ -39,11 +39,13 @@ import {
 } from "./write-rules.ts";
 import {
   ParameterStoreError,
+  UnreadablePayloadError,
   type CreateParameterInput,
   type ParameterMeta,
   type ParameterStore,
   type ResolvedNamespace,
 } from "./types.ts";
+import { errorSummary } from "../../util/error-text.ts";
 
 /**
  * The GCP implementation of the parameter store: Parameter Manager as the index
@@ -358,7 +360,24 @@ export function createGcpParameterStore(
     }
   }
 
-  /** The current envelope (raw — a secret one still holds a `__REF__`, not a value). */
+  /**
+   * The current envelope (raw — a secret one still holds a `__REF__`, not a value).
+   *
+   * The decode is wrapped for the same reason `renderOne`'s is, and it is the
+   * console that makes it matter. Five store methods start here — `list`,
+   * `rotate`, `setNote`, `reveal` and `destroy` — and between them they are
+   * reached from `GET /ui/:server` and from four of its six `POST` actions,
+   * every one of which renders a failure into an HTML page. An unwrapped `decodeEnvelope` throws `JSON.parse`'s own
+   * `SyntaxError`, and that message embeds a window of the payload it choked on
+   * — which on a non-secret parameter IS the value, and on a secret one is the
+   * envelope around its pointer.
+   *
+   * So the thrown error is DROPPED rather than chained as a `cause`: a `cause`
+   * travels, and anything that stringifies the chain puts the window back. What
+   * replaces it names the resource and nothing else, in the `method + resource`
+   * shape every other `ParameterStoreError` from this file uses, which is
+   * exactly the shape `errorSummary` is allowed to pass through to a human.
+   */
   async function currentEnvelope(id: string): Promise<{
     envelope: ParameterEnvelope;
     versionId: string;
@@ -366,17 +385,17 @@ export function createGcpParameterStore(
   } | null> {
     const vid = await currentVersionId(id);
     if (!vid) return null;
-    const raw = (await pm(
-      "GET",
-      `${pmParent}/parameters/${id}/versions/${vid}`,
-    )) as RawVersion;
+    const resource = `${pmParent}/parameters/${id}/versions/${vid}`;
+    const raw = (await pm("GET", resource)) as RawVersion;
     const data = raw.payload?.data;
     if (data == null) return null;
-    return {
-      envelope: decodeEnvelope(Buffer.from(data, "base64").toString("utf8")),
-      versionId: vid,
-      createTime: raw.createTime,
-    };
+    let envelope: ParameterEnvelope;
+    try {
+      envelope = decodeEnvelope(Buffer.from(data, "base64").toString("utf8"));
+    } catch {
+      throw new UnreadablePayloadError(resource);
+    }
+    return { envelope, versionId: vid, createTime: raw.createTime };
   }
 
   /**
@@ -1081,16 +1100,17 @@ function isTransient(err: unknown): boolean {
 /**
  * Why one `:render` failed, in a form safe to print.
  *
- * A `ParameterStoreError` is method + resource with the query and `:verb`
- * stripped, so its message is known value-free and passes through. Anything else
- * is reduced to its class name — a `SyntaxError` from a malformed response body
- * embeds a window of that body, and on THIS path the body is the dereferenced
- * secret. Same rule as view.ts's `errorSummary`, restated here rather than
- * imported so this file keeps no dependency on the provider layer above it.
+ * `errorSummary` is the base and it is the whole defence: a `ParameterStoreError`
+ * is method + resource with the query and `:verb` stripped, so its message is
+ * known value-free and passes through, and anything else is reduced to its class
+ * name — a `SyntaxError` from a malformed response body embeds a window of that
+ * body, and on THIS path the body is the dereferenced secret.
  *
- * The 400 is called out by name because it is the one an operator can act on:
- * Parameter Manager refuses to dereference a payload whose rendered value
- * carries a quote, a brace or a newline, which is every structural credential.
+ * What this function adds is per-surface SHAPING on top of that base, never a
+ * second derivation of the string. The 400 is called out by name because it is
+ * the one an operator can act on: Parameter Manager refuses to dereference a
+ * payload whose rendered value carries a quote, a brace or a newline, which is
+ * every structural credential.
  */
 function renderFailureReason(err: unknown): string {
   if (err instanceof ParameterStoreError) {
@@ -1100,7 +1120,7 @@ function renderFailureReason(err: unknown): string {
           `key, a PEM — is the known cause.`
       : err.message;
   }
-  return err instanceof Error ? err.name : "unknown error";
+  return errorSummary(err);
 }
 
 /** Parse an admin service-account key; report malformed keys by shape, not content. */

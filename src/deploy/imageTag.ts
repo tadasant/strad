@@ -59,6 +59,7 @@ import {
   sleep,
   type RetryBudget,
 } from "../http/retry.ts";
+import { errorText } from "../util/error-text.ts";
 
 /**
  * Tags that name "whatever was pushed most recently" rather than one build.
@@ -752,7 +753,7 @@ export async function resolveDeployTag(
           // could not be read in the error the walk was going to throw anyway.
           lookupFailure =
             `\n(could not read ${source.workflow} runs for that commit: ` +
-            `${err instanceof Error ? err.message : String(err)})`;
+            `${errorText(err)})`;
           releaseRun = undefined;
           return null;
         }
@@ -1038,7 +1039,7 @@ async function retryingRegistry<T>(
       res = await request();
     } catch (err) {
       return {
-        failed: { reason: err instanceof Error ? err.message : String(err) },
+        failed: { reason: errorText(err) },
       };
     }
     return read(res);
@@ -1173,7 +1174,7 @@ export async function fetchPullToken(opts: {
         } catch (err) {
           return {
             failed: {
-              reason: err instanceof Error ? err.message : String(err),
+              reason: errorText(err),
             },
           };
         }

@@ -126,7 +126,7 @@ import {
   RESOLVER_ENV,
   resolverFromEnv,
 } from "../src/secrets/parameters/index.ts";
-import { errorSummary } from "../src/secrets/provider/view.ts";
+import { errorSummary } from "../src/util/error-text.ts";
 import { resolveSeedScope, SeedScopeError } from "../src/deploy/seed-scope.ts";
 
 /**

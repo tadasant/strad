@@ -12,7 +12,7 @@ import {
   seededByServer,
 } from "./server-namespaces.ts";
 import { isSecretRef } from "../secrets/parameters/wire.ts";
-import { errorSummary } from "../secrets/provider/view.ts";
+import { errorSummary } from "../util/error-text.ts";
 import type {
   ParameterAdmin,
   ParameterResolver,
@@ -132,8 +132,9 @@ export interface RenderCheck {
   /**
    * Set when `resolve()` threw — the credential cannot render at all, which is
    * the shape a missing `parametermanager.parameterAccessor` takes. Summarised
-   * through `errorSummary()`, which is the same function `view.ts` uses to
-   * keep a `:render`ed payload out of an error message.
+   * through `errorSummary()` — the repo's one safe error-to-text function
+   * (`src/util/error-text.ts`), which keeps a `:render`ed payload out of an
+   * error message.
    */
   error?: string;
 }

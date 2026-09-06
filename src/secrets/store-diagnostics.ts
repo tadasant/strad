@@ -1,6 +1,6 @@
 import type { ParameterStore } from "./parameters/index.ts";
 import { variableOf } from "./parameters/wire.ts";
-import { errorSummary } from "./provider/view.ts";
+import { errorSummary } from "../util/error-text.ts";
 import { event } from "../telemetry/index.ts";
 import { withDeadline } from "../util/deadline.ts";
 

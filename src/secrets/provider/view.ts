@@ -31,6 +31,8 @@
  * outage into a silent misconfiguration.
  */
 
+import { errorSummary } from "../../util/error-text.ts";
+
 export interface NamespaceViewOptions {
   /** Injected in tests so the clock is not the thing under test. */
   now?: () => number;
@@ -211,22 +213,4 @@ export class NamespaceView {
 
     return inflight;
   }
-}
-
-/**
- * A one-line description of a failure, safe to log.
- *
- * A `ParameterStoreError` is built from a method and a resource path with the
- * query string and any `:verb` stripped (see parameters/gcp.ts), so its message
- * is known not to carry a value and is passed through. ANYTHING else is reduced
- * to its class name: a `SyntaxError` from a malformed response body embeds a
- * window of that body, and on this path the body can be a rendered secret.
- */
-export function errorSummary(err: unknown): string {
-  if (err instanceof Error) {
-    return err.name === "ParameterStoreError"
-      ? `${err.name}: ${err.message}`
-      : err.name;
-  }
-  return "unknown error";
 }

@@ -32,6 +32,7 @@ import {
 } from "../../telemetry/index.ts";
 import { remedyText, type HostState, type LocalHost } from "../troubleshoot.ts";
 import type { CallToolResult, ServerAdapter } from "./types.ts";
+import { errorText } from "../../util/error-text.ts";
 
 /** Where this adapter connects, and with what credential. */
 export interface HttpEndpoint {
@@ -956,10 +957,7 @@ export class UpstreamError extends Error {
     message?: string,
   ) {
     super(
-      message ??
-        `upstream MCP server "${slug}" failed: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
+      message ?? `upstream MCP server "${slug}" failed: ${errorText(cause)}`,
     );
   }
 }

@@ -56,6 +56,7 @@ import {
   resolveDeployTag,
   type Candidate,
 } from "../src/deploy/imageTag.ts";
+import { errorText } from "../src/util/error-text.ts";
 
 const { values } = parseArgs({
   options: {
@@ -228,7 +229,7 @@ try {
   // An `::error::` annotation, not a raw unhandled rejection: the whole point of
   // this step is to say which commit it could not resolve and what to do next,
   // and a undici stack trace says neither.
-  const message = err instanceof Error ? err.message : String(err);
+  const message = errorText(err);
   console.error(`::error::${message.replace(/\n/g, "%0A")}`);
   process.exit(1);
 }
