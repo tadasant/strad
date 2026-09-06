@@ -543,11 +543,12 @@ document.addEventListener("click", function (e) {
  *
  * It is derived from WHAT fixDialog() WILL RENDER rather than from the state —
  * requirement rows, or an `unobservable` scope — so the two cannot disagree
- * about a state neither of them anticipated. Two entries have neither: a
- * `no-secrets` server, which is READY and references nothing, and a `params:
- * true` BUILTIN that declares no `${NAME}` beside its parameters, which is
- * `unverified` and gets no scope because core resolves those parameters itself
- * (see unobservableScope, and #264).
+ * about a state neither of them anticipated. Exactly one entry has neither: a
+ * `no-secrets` server, which is READY and references nothing. Every entry
+ * carrying an ISSUE badge has one or the other, and that is the contract this
+ * predicate exists to keep — including a `params: true` builtin, which gets a
+ * scope of its own rather than the supplementary image's (see unobservableScope,
+ * #264).
  */
 function hasFixDialog(entry: Entry): boolean {
   const status = entry.status;
@@ -574,10 +575,11 @@ function hasFixDialog(entry: Entry): boolean {
  * The inert ISSUE chip is a floor, not the fix. An entry that asserts "this
  * needs attention" and offers no way to find out why is the worse of the two
  * failures, so the real answer is that the popout is given something true to say
- * — see unobservableBlock(). One shape still takes this branch: a `params: true`
- * BUILTIN with no `${NAME}` of its own, which is `unverified` and gets no scope
- * because every sentence the panel knows how to say is about a component core is
- * not. Explaining that one honestly is #264.
+ * — see unobservableBlock(). NO SHAPE REACHES THAT BRANCH: every ISSUE entry
+ * carries either requirement rows or a scope. It is kept as the floor it is — a
+ * badge whose panel would be empty must not be a control that swallows the click
+ * — rather than as a shape anything ships in. The last shape that took it was a
+ * `params: true` BUILTIN with no `${NAME}` of its own, whose scope is #264.
  */
 function badgeMarkup(entry: Entry): string {
   if (!entry.badge) return "";
@@ -690,10 +692,10 @@ function fixDialog(
   // demotes an entry whose rows all resolved.
   //
   // Not keyed off `status.unobservable`, which would be the obvious thing and is
-  // wrong: `unobservableScope()` builds no scope for a `params: true` BUILTIN,
-  // whose parameters core resolves itself, so a builtin would silently fall back
-  // to the headline that contradicts its own rows. Every-row-`present` is the
-  // fact, and it holds for both kinds.
+  // wrong in the other direction: a scope is set on graded entries too, so an
+  // entry whose rows carry real bad news would get the "the rows below were
+  // established" line over a row reading `not seeded`. Every-row-`present` is
+  // the fact this headline is about, and it holds for every kind.
   const established =
     status.requirements.length > 0 &&
     status.requirements.every((o) => o.state === "present");
@@ -732,8 +734,19 @@ ${
  * says in so many words that "their popouts say which process would have to be
  * asked", and an inert chip asserting "this needs attention" with no way to find
  * out why is the worse half of the trade. So the control stays and the panel
- * says the true thing instead — WHICH component holds the value, WHY this
- * process could not ask it, and WHERE to look rather than here.
+ * says the true thing instead — WHICH component holds the value, WHY this page
+ * did not establish it, and WHERE to look rather than here.
+ *
+ * EVERY LINE OF IT IS PER-REASON, including the two that read like boilerplate.
+ * The chip and the evidence line were written for a supplementary image, whose
+ * values are on a container core cannot see, and both are FALSE about a `params:
+ * true` builtin core mounts: this process resolves its parameters itself, per
+ * tool call, so "not visible here" and "it never sees them" would be the panel's
+ * own vocabulary contradicting the paragraph between them. A panel with nothing
+ * true to say is why a builtin got no block at all, and why widening it took
+ * three more reasons rather than one more branch (#264). `delegated` is the
+ * exception that proves the split: its values genuinely are elsewhere, so it
+ * keeps the container chip and gets an evidence line of its own.
  *
  * It renders BELOW the requirement rows, and on an entry that has some. Those
  * rows are about names this server references; this block is about the
@@ -754,11 +767,11 @@ function unobservableBlock(
   return `      <div class="sec-req">
         <div class="sec-req-head">
           <code class="sec-component">${esc(scope.component)}</code>
-          <span class="chip chip-plain chip-route">not visible here</span>
+          <span class="chip chip-plain chip-route">${esc(UNOBSERVABLE_ROUTE[scope.reason])}</span>
           <span class="sec-delivery">${esc(UNOBSERVABLE_LABEL[scope.reason])}</span>
         </div>
         <p class="sec-detail">${esc(scope.detail)}</p>
-        <p class="sec-evidence">Established by: nothing. This gateway process is not the component that holds these values, and it never sees them.</p>
+        <p class="sec-evidence">${esc(UNOBSERVABLE_EVIDENCE[scope.reason])}</p>
 ${fixBlock(
   unobservableTarget(config, scope, env),
   "Check it here",
@@ -767,13 +780,59 @@ ${fixBlock(
       </div>`;
 }
 
-/** The probe outcome, in the few words that go beside the chip. */
+/** Why the value is where it is, in the two or three words on the chip. */
+const UNOBSERVABLE_ROUTE: Record<UnobservableScope["reason"], string> = {
+  unwired: "not visible here",
+  unsupported: "not visible here",
+  unreachable: "not visible here",
+  unmanifested: "not visible here",
+  silent: "not visible here",
+  // NOT "not visible here". This process holds these values; what it does not
+  // do is read them on this page.
+  "in-process": "resolved in this process",
+  delegated: "not visible here",
+  inert: "not resolved at all",
+};
+
+/** The probe outcome — or, for a builtin, who resolves it — beside the chip. */
 const UNOBSERVABLE_LABEL: Record<UnobservableScope["reason"], string> = {
   unwired: "no private URL bound",
   unsupported: "image predates the presence route",
   unreachable: "component did not answer",
   unmanifested: "component manifested no parameters",
   silent: "component listed none for this slug",
+  "in-process": "resolved per tool call, within the TTL",
+  delegated: "resolved by that component, per tool call",
+  inert: "no resolver credential on this deployment",
+};
+
+/** The five probe reasons' evidence line: core is not the holder, full stop. */
+const CONTAINER_EVIDENCE =
+  "Established by: nothing. This gateway process is not the component that holds these values, and it never sees them.";
+
+/**
+ * What established these values, which for every one of these is "nothing" —
+ * and the reason it is nothing is not the same reason twice.
+ *
+ * The probe reasons say core never saw them. `in-process` says a strad process
+ * reads them and this PAGE does not, which is a much weaker claim and the only
+ * one that is true of a builtin core mounts. `inert` says nothing reads them at
+ * all, which is stronger than either.
+ */
+const UNOBSERVABLE_EVIDENCE: Record<UnobservableScope["reason"], string> = {
+  unwired: CONTAINER_EVIDENCE,
+  unsupported: CONTAINER_EVIDENCE,
+  unreachable: CONTAINER_EVIDENCE,
+  unmanifested: CONTAINER_EVIDENCE,
+  silent: CONTAINER_EVIDENCE,
+  "in-process":
+    "Established by: nothing on this page. This process does resolve these values — per tool call, out of the snapshot it holds of the store — but the console does not read that namespace, so nothing here observed one.",
+  // NOT the container line: that component does not HOLD these either, it
+  // resolves them the same way core resolves its own.
+  delegated:
+    "Established by: nothing. These values are resolved by that component's own process, out of its own snapshot of the store, and core proxies the call without ever seeing them.",
+  inert:
+    "Established by: nothing, and nothing is reading them. Without a resolver credential the merge that would inject these never runs, so this is not a gap in what the console can see — there is nothing to see.",
 };
 
 const SECRET_CHIP_CLASS: Record<SecretState, string> = {

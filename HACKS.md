@@ -1332,7 +1332,7 @@ produced a DEAD CONTROL in prod (#259, on `craigslist`): `badgeMarkup()` rendere
 an `ISSUE` button and the dialog list, filtered on `requirements.length > 0`,
 emitted no `<dialog>` for it, so `FIX_DIALOG_SCRIPT` found no element and
 swallowed the click. The popout is built from the probe outcome — which component
-holds the value, which of the five ways the question went unanswered (`unwired`,
+holds the value, which of the five ways the PROBE went unanswered (`unwired`,
 `unsupported`, `unreachable`, `unmanifested`, `silent`), and the
 `/strad/<env>/mcp/<slug>/static/*` prefix to look under — and the badge and the
 dialog ask ONE predicate, `hasFixDialog()`, derived from what the popout will
@@ -1366,15 +1366,32 @@ print the `unverified` headline, whose "nothing here was established either"
 would sit directly above a row reading "PLUMBED, established by this gateway
 process"; a partially established entry gets its own first line.
 
-**ONE EDGE OF THAT SHAPE IS OPEN.** `params:` is a field on a BUILTIN too, whose
-bundle defaults to `core`: core resolves those parameters itself, in-process,
-through the resolver TTL, so the panel's whole vocabulary (private URL, image
-pin, redeploy the container) would be false about it. `unobservableScope()`
-refuses to build a scope for anything that is not a `supplementary-image`, so
-such an entry is demoted with no panel behind it — an inert `ISSUE` chip where it
-has no rows, its `${NAME}` rows and the summary sentence where it has some. A
-floor, not an answer (#264). Staging's `echo` is that shape: `params: true` with
-one `${STRAD_ENV}` in `options:`, and it reads `unverified` rather than `READY`.
+**A BUILTIN GETS THE SAME PANEL SHAPE AND NONE OF THE SAME SENTENCES.** `params:`
+is a field on a BUILTIN too, whose bundle defaults to `core`: a strad process
+resolves those parameters itself, per tool call, through the resolver TTL, so the
+container vocabulary (private URL, image pin, redeploy the container, a value
+that lands at the NEXT DEPLOY) would be false about it. That is why it had no
+panel at all — an inert `ISSUE` chip where it has no rows, its `${NAME}` rows and
+the summary sentence where it has some — a floor rather than an answer. #264 is
+the answer: three more reasons, answered from the config and the environment
+rather than from a probe. `resolverCredential()` reproduces `resolverFromEnv`'s
+three exits rather than approximating them, so a key JSON that is SET and
+unparseable is told apart from an absent one; the two take opposite actions and
+the panel names which. `in-process` is this process resolving them within
+`gateway.secrets.ttlSeconds`; `delegated` is a builtin mounted in another
+component, which does the same with its own resolver while core proxies;
+`inert` is a deployment with no `STRAD_PARAMS_*` credential, where `Registry.build`
+gets a null resolver and skips the merge, so the parameters are read by NOTHING
+and seeding the namespace changes nothing. Every line is per-reason including the
+chip and the evidence line, because those two were the wrong-vocabulary half.
+
+THE BADGE STILL NEVER GOES GREEN. `expectedKeys()` enumerates only bundles
+holding supplementary images, so `core` is never probed and the gap is
+unconditional and permanent for every `params: true` builtin; `/api/secrets/readiness`
+reports `ready: false` for as long as one is configured (#265). Explaining where
+a value resolves is not observing that it did. Staging's `echo` is that shape:
+`params: true` with one `${STRAD_ENV}` in `options:`, and it reads `unverified`
+rather than `READY`.
 
 **Live verification is outstanding.** Every state in this feature is constructed
 in tests — `test/presence.test.ts`, `test/presence.route.test.ts`,

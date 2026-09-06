@@ -13,6 +13,7 @@ import {
 } from "../secrets/parameters/namespace.ts";
 import { resolveServerView, serverLooksSecrets } from "./resolve.ts";
 import {
+  parseServiceAccount,
   resolverFromEnv,
   RESOLVER_ENV,
   type ParameterStore,
@@ -1140,9 +1141,20 @@ export async function readSecretStatus(opts: {
   presence?: BundlePresence;
   /** The store's own account of itself, for telling the four states apart. */
   store?: StoreDiagnostics | null;
+  /**
+   * The running gateway's environment — see `deriveServerStatuses`.
+   *
+   * REQUIRED, unlike every other reading input, because the branch it decides
+   * fails toward a claim rather than toward silence: without it a `params: true`
+   * builtin reads `inert`, "these are read by nothing, do not seed", which is
+   * the most actionable sentence this feature prints and the worst one to print
+   * wrongly. Both surfaces reach this through `readDeploymentSecretStatus`,
+   * which is handed the environment it was built with.
+   */
+  env: NodeJS.ProcessEnv;
   timeoutMs?: number;
 }): Promise<SecretReading> {
-  const { config, bag, lookup, presence, store, timeoutMs } = opts;
+  const { config, bag, lookup, presence, store, env, timeoutMs } = opts;
   const delivery = refDelivery(config);
 
   const observations = await observe(collectRequirements(config), {
@@ -1171,7 +1183,7 @@ export async function readSecretStatus(opts: {
   );
 
   return {
-    statuses: deriveServerStatuses(config, observations, presence),
+    statuses: deriveServerStatuses(config, observations, presence, env),
     boot: bootObservations.map((observation, i) => ({
       observation,
       required: bootKeys[i]?.required ?? false,
@@ -1292,6 +1304,7 @@ export async function readDeploymentSecretStatus(opts: {
     lookup: secretLookup(opts.bag, opts.secretProvider),
     presence,
     store,
+    env: opts.env,
     timeoutMs: opts.timeoutMs,
   });
 }
@@ -1357,8 +1370,11 @@ export interface ServerSecretStatus {
    * server references, not about the credentials it runs on.
    *
    * Either way it carries the three facts that make the panel worth opening:
-   * which component holds the value, why this process could not ask it, and
-   * where the value lives instead.
+   * which component holds the value, why this page did not establish it, and
+   * where the value lives instead. WHICH component and WHY differ by kind — a
+   * supplementary image's parameters are on a container core could not ask, a
+   * builtin's are resolved by a strad process per tool call — so the panel says
+   * both in that kind's own words rather than in one set for both.
    */
   unobservable?: UnobservableScope;
 }
@@ -1366,7 +1382,9 @@ export interface ServerSecretStatus {
 /**
  * Why an entry could not be checked, said in specifics rather than as a shrug.
  *
- * `reason` is the probe outcome, and the five are not one problem. Three are
+ * TWO FAMILIES OF REASON, and they are not the same claim. The first five are
+ * PROBE OUTCOMES from a `supplementary-image`, whose parameters live on a
+ * component this process is not, and they are not one problem either. Three are
  * about the component: `unwired` is a spec that never bound its private URL,
  * `unsupported` is a pin to bump, `unreachable` is a component core cannot talk
  * to. Two are about what it said, and they want OPPOSITE first moves —
@@ -1376,16 +1394,43 @@ export interface ServerSecretStatus {
  * wants seeding. Collapsing those two sends an operator to seed a value that is
  * already there.
  *
- * ONLY EVER SET FOR A `supplementary-image` SERVER, which is the only kind whose
- * managed parameters live on a component this process is not. A `params: true`
- * builtin resolves its own in-process, per call, through the resolver — every
- * sentence below would be false about it, and a confidently wrong panel is worse
- * than the dead control this replaced.
+ * The other three are about a `params: true` BUILTIN, where nothing was probed
+ * because there was nothing to probe: a builtin's parameters are resolved by a
+ * strad process, per tool call, out of the resolver's own snapshot of the store
+ * — `optionsFor` in src/gateway/registry.ts merges them over the server's
+ * `options:`. `in-process` is THIS process doing it; `delegated` is a builtin
+ * mounted in another component running the strad image in bundle mode, which
+ * does it there; `inert` is a deployment holding no resolver credential at all,
+ * where the merge is skipped and the parameters are read by nobody.
+ *
+ * The two families share a shape and almost no vocabulary. Every sentence the
+ * probe reasons say — which private URL was never bound, which image to repin,
+ * which container to redeploy so the value reaches it — is false about a
+ * builtin, which is why it took a second set of reasons rather than a widened
+ * predicate (#264). `delegated` is the one that keeps a foot in both: its values
+ * ARE on a component core cannot see, so it keeps the container chip and takes
+ * the builtin's account of when a write lands. A confidently wrong panel is
+ * worse than the dead control this replaced.
  */
 export interface UnobservableScope {
-  /** The App Platform component that holds the value. Never `core`. */
+  /**
+   * The App Platform component the value would be resolved BY.
+   *
+   * `core` when that process is this one: `in-process`, where it does resolve
+   * them, and `inert`, where it would and no credential lets it. For every other
+   * reason it is another component — and for the five probe reasons that is the
+   * whole reason the value is not visible from here.
+   */
   component: string;
-  reason: "unwired" | "unsupported" | "unreachable" | "unmanifested" | "silent";
+  reason:
+    | "unwired"
+    | "unsupported"
+    | "unreachable"
+    | "unmanifested"
+    | "silent"
+    | "in-process"
+    | "delegated"
+    | "inert";
   /** One sentence: what was asked, what answered, and what would change it. */
   detail: string;
   /** The static namespace this server's managed parameters live under. */
@@ -1546,20 +1591,27 @@ function managedParamObservations(
  * process knows, and the difference between "bump the pin" and "the component is
  * down" is the entire content of the panel a reader opens the badge for.
  *
- * `supplementary-image` ONLY, and the guard is the load-bearing line rather than
- * a type narrowing. `params:` is also a field on a builtin, whose bundle
- * defaults to `core` — and a builtin's managed parameters are resolved by THIS
- * process, per call, through the resolver's TTL. There is no `${core.PRIVATE_URL}`
- * to bind, no component to redeploy, and no sense in which the value is invisible
- * from here, so every sentence below would be false about it. It gets no scope,
- * and `hasFixDialog` degrades its badge to inert text rather than opening a panel
- * that lies. Explaining that shape honestly is #264.
+ * TWO KINDS GET A SCOPE, and they are answered by different functions because
+ * they are answered from different evidence. A `supplementary-image` is answered
+ * from the PROBE below — this process asked a component and this is what came
+ * back. A `params: true` BUILTIN is never probed at all, and `builtinScope`
+ * answers it from the config and the environment instead: nothing asked it a
+ * question because a builtin's parameters are resolved by a strad process rather
+ * than held on a container. Running a builtin through the probe branch is what
+ * would produce the confidently wrong panel — a `${core.PRIVATE_URL}` that was
+ * never meant to exist, an image to repin, a container to redeploy.
+ *
+ * Everything else — `remote-http`, `local-tunnel` — is unhosted and never gets
+ * here: `params:` is not a field on it, and `isUnhosted` keeps the caller's
+ * `managed` false regardless.
  */
 function unobservableScope(
   config: StradConfig,
   server: ServerConfig,
   presence?: BundlePresence,
+  env: NodeJS.ProcessEnv = {},
 ): UnobservableScope | undefined {
+  if (server.kind === "builtin") return builtinScope(config, server, env);
   if (server.kind !== "supplementary-image") return undefined;
   const component = server.bundle;
   const namespace = staticNamespace(config.gateway.env, server.slug);
@@ -1634,10 +1686,178 @@ function unobservableScope(
   };
 }
 
+/**
+ * Whether this environment yields a resolver, and if not, WHY NOT.
+ *
+ * `resolverFromEnv` has three exits and this reproduces all three, because the
+ * third is the one that would otherwise be told a lie: a key JSON that is SET
+ * and unparseable returns null exactly as an absent one does (see
+ * `parseServiceAccount` — not JSON, not an object, or missing
+ * `client_email` / `private_key`). A panel that reported that as "the variables
+ * are not set" would send an operator to look at two variables that are sitting
+ * right there.
+ *
+ * A PREDICATE RATHER THAN A CLIENT. Asking `resolverFromEnv()` would answer the
+ * same question and construct a `ParameterStore` to throw away — and this file
+ * asks it per builtin, per page load, for a value it only null-tests. Nothing
+ * here reads the store; the running gateway's own resolver is built once, in
+ * src/index.ts, and this is a claim ABOUT that, not a second one.
+ *
+ * `test/ui.secret-status.test.ts` pins the two together over the shapes that
+ * separate them, which is what keeps this from drifting into an approximation.
+ */
+export function resolverCredential(
+  env: NodeJS.ProcessEnv,
+): "present" | "unset" | "unusable" {
+  const projectId = env[RESOLVER_ENV.projectId];
+  const keyJson = env[RESOLVER_ENV.keyJson];
+  if (!projectId || !keyJson) return "unset";
+  return parseServiceAccount(keyJson).account ? "present" : "unusable";
+}
+
+/**
+ * The same three facts for a builtin, in the vocabulary that is TRUE about one.
+ *
+ * A builtin has no container. Its managed parameters are read by a strad
+ * process, from the store, at the moment they are used: `optionsFor` in
+ * src/gateway/registry.ts merges everything under this namespace over the
+ * server's resolved `options:` on EVERY TOOL CALL, out of the one snapshot of
+ * the store that process holds for `gateway.secrets.ttlSeconds`. So the honest
+ * panel is not "which container was not asked" but "which process resolves
+ * these, and how long after a write it picks one up" — and the answer to the
+ * second is a TTL rather than a deploy, which is the single sentence the
+ * supplementary-image panel gets wrong about this shape.
+ *
+ * Three cases, because "a strad process" is not always THIS one and is
+ * sometimes none:
+ *
+ *   - `in-process` — `bundle: core` (the default) and this deployment holds a
+ *     resolver credential. This very process resolves them, per call. The
+ *     rotation observatory `infra/strad.staging.yaml` documents on `echo` is
+ *     exactly this case.
+ *   - `delegated` — a builtin mounted in another component. That component runs
+ *     the strad image in bundle mode and resolves them there with its own
+ *     resolver; core proxies the call over the private network and never holds
+ *     the values. It is not probed either, and cannot be: `expectedKeys` (see
+ *     src/gateway/bundle-presence.ts) enumerates only the bundles holding
+ *     supplementary images, and a bundle may not hold both kinds.
+ *   - `inert` — no USABLE resolver credential in this environment.
+ *     `Registry.build` gets a null resolver, skips the merge outright, and the
+ *     server runs on its `options:` alone. Seeding the namespace changes nothing
+ *     until the credential exists, so a panel pointing at the namespace without
+ *     saying this would send someone to write a value nothing reads.
+ *
+ * `inert` is decided by `resolverCredential()`, which reproduces
+ * `resolverFromEnv`'s three exits rather than approximating them — and the third
+ * exit is why: a key JSON that is set and UNPARSEABLE resolves nothing, exactly
+ * as an absent one does. "Set the variables" is the wrong instruction for a
+ * deployment that has set them, so the two are told apart in the prose.
+ *
+ * It is decided by the credential rather than by `gateway.secrets.provider`,
+ * because the registry decides it that way. The two come apart: `params:`
+ * resolution is wired to `STRAD_PARAMS_*` and not to the provider flip, so a
+ * `provider: env` deployment that sets the resolver credential does resolve a
+ * builtin's parameters (which is why staging's `echo` is a usable observatory
+ * without the flip).
+ */
+function builtinScope(
+  config: StradConfig,
+  server: Extract<ServerConfig, { kind: "builtin" }>,
+  env: NodeJS.ProcessEnv,
+): UnobservableScope {
+  const namespace = staticNamespace(config.gateway.env, server.slug);
+  const ttl = config.gateway.secrets.ttlSeconds;
+  const credential = resolverCredential(env);
+
+  if (server.bundle !== "core") {
+    // THE TTL IS A PROMISE ABOUT A PROCESS THIS ONE CANNOT SEE, so it is stated
+    // conditionally rather than asserted. That component holds whatever the app
+    // spec gave it, which is core's own resolver credential (`renderAppSpec`
+    // broadcasts the environment to a bundle running the strad image) — so
+    // core holding none is real evidence about it and NOT an observation of it.
+    // Promising a TTL unconditionally is the same falsehood `inert` exists to
+    // prevent, one component over.
+    const lands =
+      credential === "present"
+        ? `A value written under this namespace reaches that process within the TTL, with ` +
+          `no redeploy.`
+        : `Whether a value written under this namespace reaches it depends on that ` +
+          `component holding a resolver credential of its own. The app spec gives it the ` +
+          `one core has, and core has none — so on this deployment the merge is most ` +
+          `likely skipped there too, and nothing reads this namespace.`;
+    return {
+      component: server.bundle,
+      namespace,
+      reason: "delegated",
+      detail:
+        `This builtin is mounted in "${server.bundle}", a component running the strad image ` +
+        `in bundle mode, and THAT process resolves these parameters — merging everything ` +
+        `under this namespace over the server's options: on every tool call, out of its own ` +
+        `snapshot of the store, refreshed within gateway.secrets.ttlSeconds (${ttl}s). Core ` +
+        `proxies the call over the private network and never holds the values. Nothing was ` +
+        `asked of that component either: the presence probe enumerates only the components ` +
+        `holding supplementary images, and this one holds builtins. ${lands}`,
+    };
+  }
+
+  if (credential !== "present") {
+    // WHICH FAILURE, because they take opposite actions. Unset is a deploy that
+    // never wired the credential; unusable is one that wired a key JSON the
+    // resolver cannot parse, and telling THAT operator to "set the variables"
+    // sends them to look at two variables that are already there.
+    const why =
+      credential === "unset"
+        ? `this environment sets no ${RESOLVER_ENV.projectId} / ${RESOLVER_ENV.keyJson}`
+        : `this environment sets ${RESOLVER_ENV.keyJson} to something the resolver cannot ` +
+          `parse as a service-account key — which resolves exactly as much as an absent ` +
+          `one does, namely nothing`;
+    return {
+      component: "core",
+      namespace,
+      reason: "inert",
+      detail:
+        `\`params: true\` is INERT on this deployment, so these parameters are read by ` +
+        `nothing. A builtin's parameters are resolved by this process rather than baked ` +
+        `onto a container — but only while it holds a usable store credential, and ${why}. ` +
+        `The registry is built with a null resolver, skips the merge outright, and this ` +
+        `server runs on its options: alone. Seeding this namespace changes nothing until ` +
+        `that credential works.`,
+    };
+  }
+
+  return {
+    component: "core",
+    namespace,
+    reason: "in-process",
+    detail:
+      `THIS process resolves these, and no component holds them. A builtin runs inside the ` +
+      `gateway: everything under this namespace is merged over the server's options: on ` +
+      `EVERY TOOL CALL, out of the one snapshot of the store this process holds for ` +
+      `gateway.secrets.ttlSeconds (${ttl}s). So there is no private URL to bind, no image ` +
+      `to repin and no container to redeploy — a value written under this namespace reaches ` +
+      `the running server within that TTL, on the first call past it, and rotating one ` +
+      `takes effect the same way. What went unestablished is only that this PAGE does not ` +
+      `read the namespace; the process that serves the server does.`,
+  };
+}
+
 export function deriveServerStatuses(
   config: StradConfig,
   observations: SecretObservation[],
   presence?: BundlePresence,
+  /**
+   * The environment the RUNNING gateway resolves through, for the one question
+   * a `params: true` builtin's panel cannot answer from config alone: whether
+   * this deployment holds a resolver credential at all, and so whether the
+   * merge that reads the namespace happens (see `builtinScope`).
+   *
+   * Defaults to nothing rather than to `process.env`, and deliberately: a
+   * default of the real environment would make this function's output depend on
+   * whichever machine ran it — green on a developer's box with the credential
+   * exported, `inert` in CI, from one config. The one production caller passes
+   * the environment it was handed.
+   */
+  env: NodeJS.ProcessEnv = {},
 ): ServerSecretStatus[] {
   const byName = new Map(observations.map((o) => [o.requirement.name, o]));
   const waivers = waiversBySlug(config);
@@ -1709,10 +1929,10 @@ export function deriveServerStatuses(
       // ONE call site, so the three branches below cannot drift about which
       // entries get a panel. Gated on `managed` rather than `managedGap` for the
       // same reason the zero-row branch is: that branch has always built a scope
-      // whenever there IS a namespace. Only ever non-undefined for a
-      // `supplementary-image` — see unobservableScope().
+      // whenever there IS a namespace. Both hosted kinds get one, in their own
+      // vocabulary — see unobservableScope().
       const managedScope = managed
-        ? unobservableScope(config, server, presence)
+        ? unobservableScope(config, server, presence, env)
         : undefined;
 
       if (requirements.length === 0) {
@@ -2124,6 +2344,15 @@ function projectOwning(stores: DeclaredStore[], path: string): string | null {
  * rather than a resource, because nothing here knows the variable names. That is
  * the honest end of the trail this process can follow: the store, the project,
  * the prefix, and a console route that lists what is actually under it.
+ *
+ * The store, the project, the prefix and the route are the same for every
+ * reason — they are facts about where the values live, and a builtin's live in
+ * exactly the same place. WHEN A WRITE TAKES EFFECT is not the same, and it is
+ * the sentence a reader acts on: a supplementary image's environment is baked at
+ * render time, so a write waits for the next deploy, while a builtin's
+ * parameters are read at the moment they are used, so a write waits for a TTL
+ * and nothing else. Saying "redeploy" to someone whose value is already live
+ * within the hour is the specific falsehood #264 is about.
  */
 export function unobservableTarget(
   config: StradConfig,
@@ -2132,12 +2361,85 @@ export function unobservableTarget(
 ): FixTarget {
   // The namespace IS the path here, so the store that owns it is knowable: this
   // asks which store covers it rather than which store the deployment defaults
-  // to. On a single-store deployment they are the same answer.
+  // to. On a single-store deployment they are the same answer. Every branch
+  // below prints THIS project — the reason decides when a write takes effect,
+  // never where it goes.
   const { project, guessed } = storeProjectForPath(
     config,
     scope.namespace,
     env,
   );
+  const projectNote = guessed
+    ? "; the project is inferred from the naming convention, because this deployment declares none"
+    : "";
+  const ttl = config.gateway.secrets.ttlSeconds;
+  const where =
+    `Everything under this prefix is where this server's managed parameters live, and the ` +
+    `parameters console reads it directly. What is listed there is the answer this page ` +
+    `could not get${projectNote}.`;
+
+  // A BUILTIN, RESOLVED BY A STRAD PROCESS. No render bakes these onto anything
+  // and no deploy carries them; the process reads the prefix itself and a write
+  // lands within its TTL. `inert` is the exception INSIDE that family — the
+  // merge does not run at all — so it is told to fix the credential rather than
+  // promised a TTL that nothing is counting. WHICH fix, because the two shapes
+  // of a null resolver take opposite actions: `resolverCredential` tells an
+  // unset credential from an unparseable one, and "set these two variables" is
+  // the wrong instruction for a deployment that has set them.
+  if (scope.reason === "inert") {
+    const fix =
+      resolverCredential(env) === "unusable"
+        ? {
+            detail:
+              `Fix ${RESOLVER_ENV.keyJson} first — it is set to something the resolver ` +
+              `cannot parse as a service-account key; then this prefix is read on every ` +
+              `tool call.`,
+            command: `# But first: ${RESOLVER_ENV.keyJson} does not parse, so nothing reads them.`,
+          }
+        : {
+            detail:
+              `Set ${RESOLVER_ENV.projectId} and ${RESOLVER_ENV.keyJson} first; then this ` +
+              `prefix is read on every tool call.`,
+            command: `# But first: this deployment sets no ${RESOLVER_ENV.projectId}, so nothing reads them.`,
+          };
+    return {
+      store: "GCP Parameter Manager (index) + Secret Manager (value)",
+      resource: `${scope.namespace}*`,
+      project,
+      detail:
+        `${where} Nothing reads it on this deployment: with no usable resolver credential ` +
+        `the registry skips the merge, so a value written here takes effect at no point at ` +
+        `all — not on write, not on a TTL, not on a deploy. ${fix.detail}`,
+      commands: [
+        `# Console: prefix "${scope.namespace}" — where this builtin's parameters would go.`,
+        fix.command,
+      ],
+      href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+    };
+  }
+  if (scope.reason === "in-process" || scope.reason === "delegated") {
+    const who =
+      scope.reason === "in-process"
+        ? "this gateway process"
+        : `"${scope.component}"`;
+    return {
+      store: "GCP Parameter Manager (index) + Secret Manager (value)",
+      resource: `${scope.namespace}*`,
+      project,
+      detail:
+        `${where} It is read by ${who} on every tool call, out of one snapshot of the ` +
+        `store — so a value written here reaches the running server within ` +
+        `gateway.secrets.ttlSeconds (${ttl}s), with NO deploy, no restart and nothing to ` +
+        `repin. That is also true of a rotation: overwrite the value and the next call ` +
+        `past the TTL uses it.`,
+      commands: [
+        `# Console: prefix "${scope.namespace}" — every managed parameter this server gets.`,
+        `# Then nothing: ${who} re-reads this prefix within ${ttl}s. No redeploy.`,
+      ],
+      href: `/ui/secrets?ns=${encodeURIComponent(scope.namespace)}`,
+    };
+  }
+
   return {
     store: "GCP Parameter Manager (index) + Secret Manager (value)",
     resource: `${scope.namespace}*`,
@@ -2146,11 +2448,8 @@ export function unobservableTarget(
       `Everything under this prefix is resolved at RENDER time and injected into ` +
       `"${scope.component}" as environment variables — so this is where the credentials ` +
       `are, and the parameters console reads it directly. What is listed there is the ` +
-      `answer this page could not get${
-        guessed
-          ? "; the project is inferred from the naming convention, because this deployment declares none"
-          : ""
-      }. A value written here reaches the container at the NEXT DEPLOY, not on write.`,
+      `answer this page could not get${projectNote}. A value written here reaches the ` +
+      `container at the NEXT DEPLOY, not on write.`,
     commands: [
       `# Console: prefix "${scope.namespace}" — every managed parameter this server gets.`,
       `# Then redeploy "${scope.component}": a supplementary image's environment is baked at render time.`,

@@ -1621,13 +1621,14 @@ An entry that declares nothing else has **zero requirement rows**, and it is the
 one the console can say the least about. Its popout is built from the probe
 outcome rather than from a row, and it answers the three questions a reader has:
 
-| The panel says               | Where it comes from                                                                                                               |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| **which component** holds it | the server's `bundle:`. Never `core` — that is the whole reason the value is invisible from here.                                 |
-| **why** it went unanswered   | the probe outcome, in five flavours (below). A pin bump and an outage are not the same news.                                      |
-| **where to look instead**    | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix. |
+| The panel says                 | Where it comes from                                                                                                                       |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **which component** holds it   | the server's `bundle:`. `core` when the process that resolves them is this one, which is a builtin and nothing else.                      |
+| **why** it was not established | the probe outcome for a supplementary image; for a builtin, which process does the resolving. Eight flavours (below).                     |
+| **where to look instead**      | the store, the project, and `/strad/<env>/mcp/<slug>/static/*` — with a link straight into the parameters console at that prefix.         |
+| **when a write takes effect**  | a deploy for a supplementary image, whose environment is baked at render time; `gateway.secrets.ttlSeconds` for a builtin, which is read. |
 
-The reasons, which want different responses — three about the component, and two about what it said:
+The reasons, which want different responses. Five are **probe outcomes** from a `supplementary-image` — three about the component, two about what it said:
 
 | Reason         | The probe outcome                                                                                                                                                | What closes it                                                                                                           |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -1639,16 +1640,29 @@ The reasons, which want different responses — three about the component, and t
 
 The last two look alike and want opposite first moves, which is why they are two. Telling an operator to seed a value on the strength of a stale manifest is how a working credential gets rewritten.
 
+The other three are about a `params: true` **builtin**, where nothing was probed because there was nothing to probe. A builtin has no container: `optionsFor` (`src/gateway/registry.ts`) merges everything under its static namespace over its resolved `options:` on every tool call, out of the resolver's own snapshot of the store. So the question is not which container went unasked but which process does the resolving — and the answer to "when does a write take effect" is a TTL rather than a deploy:
+
+| Reason       | What is true instead                                                                                                                                                                                                                        | What closes it                                                                                |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `in-process` | `bundle: core` and this deployment holds a resolver credential. **This** process resolves them, per tool call, within `gateway.secrets.ttlSeconds`                                                                                          | nothing — write the value and the next call past the TTL uses it. The page just never read it |
+| `delegated`  | the builtin is mounted in another component, which runs the strad image in bundle mode and resolves them there with its own resolver. Core proxies the call and never holds the values                                                      | likewise nothing, and likewise within the TTL — on that component                             |
+| `inert`      | no _usable_ `STRAD_PARAMS_*` credential — unset, or a key JSON the resolver cannot parse — so `Registry.build` gets a null resolver, skips the merge outright, and the server runs on its `options:` alone. The panel says which of the two | fix the credential. **Do not seed first** — nothing reads the namespace until it works        |
+
+`inert` reproduces `resolverFromEnv`'s three exits rather than approximating them, because a key JSON that is set and unparseable resolves exactly as much as an absent one — nothing — and "set the variables" is the wrong instruction for a deployment that has set them. It is keyed off the credential and not off `gateway.secrets.provider`, because the registry keys off it that way: `params:` resolution is wired to `STRAD_PARAMS_*` rather than to the provider flip, so a `provider: env` deployment that sets the credential does resolve a builtin's parameters. That is why staging's `echo` was a usable rotation observatory before the flip.
+
+A builtin is never probed and cannot be. `expectedKeys` (`src/gateway/bundle-presence.ts`) enumerates only the bundles holding supplementary images, and a bundle may not hold both kinds — so `core` is asked nothing, and a `delegated` builtin's component is asked nothing either.
+
 On a server that declares `${NAME}` references too, the panel renders **below**
 those rows. The rows are about names this server references; the panel is about
 the credentials it runs on, and they are different questions — the rows cannot
 answer the second one, which is precisely why the entry is not `READY`.
 
-The scope is only ever set for a `supplementary-image` server, because it is the only kind whose managed parameters live on a component this process is not. A `params: true` **builtin** runs inside core and resolves its own through the resolver's TTL, per call — there is no `${core.PRIVATE_URL}` to bind and no container to redeploy, so every sentence above would be false about it. It gets no panel; where it has no requirement rows either, its badge degrades to inert text rather than opening one that lies, and where it has some, the popout is those rows and the sentence above them. Explaining that shape honestly is [#264](https://github.com/tadasant/strad/issues/264).
+The two families share a shape and almost no vocabulary, which is why a builtin takes three more reasons rather than a widened predicate. Every line of the panel is per-reason, including the two that read like boilerplate: the chip ("not visible here") and the evidence line ("this gateway process is not the component that holds these values, and it never sees them") are both false about a builtin core mounts, whose values this process does hold. `delegated` is the exception that proves the split — its values are genuinely elsewhere, so it keeps the container chip and takes the builtin's account of when a write lands. A confidently wrong panel is worse than an inert badge, which is why a builtin got no panel at all before [#264](https://github.com/tadasant/strad/issues/264) and its badge degraded to inert text instead.
 
 The panel is still not a green. Nothing here was observed, the state stays
 `unverified`, and the badge stays `ISSUE` — the change is that the badge now
-leads somewhere.
+leads somewhere. That holds for a builtin too: `in-process` says the parameters
+resolve somewhere this page cannot see, not that they resolve.
 
 #### A name declared twice is two claims, and both are ranked
 
@@ -1965,8 +1979,10 @@ component manifested puts the deployment in `issues[]` and holds `ready` at
 `${NAME}` to list, and the sentence in `summary` carrying the whole of it. Where
 the server is a `supplementary-image` the exit is real: rebuild and repin the
 component so it manifests `STRAD_PARAM_KEYS`, and the rows fill in. Where it is a
-**builtin** there is no exit today at all — core is never probed, so the gap is
-permanent ([#264](https://github.com/tadasant/strad/issues/264)). Staging carries
+**builtin** there is no exit at all — core is never probed, so the gap is
+permanent. The console explains that gap rather than only asserting it
+([#264](https://github.com/tadasant/strad/issues/264)); it does not close it,
+because explaining where a value resolves is not observing that it did. Staging carries
 both (`remote-filesystem-tmp-public` and `echo`) and reports `ready: false` for
 that reason rather than for a missing credential. Read `servers.states` rather
 than `ready` if you need to tell "a value nobody seeded" from "a namespace nobody
