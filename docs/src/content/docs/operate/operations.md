@@ -1272,10 +1272,14 @@ declares thirty-five server slugs:
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a
   credential-free canary.
-- `anki` — a `local-tunnel`, shipped `enabled: false`. A quick tunnel mints a
-  new hostname per process, so there is no stable value to commit; it is turned
-  on by putting a hostname in `url` and flipping the flag. Like `deepwiki` it
-  costs no component.
+- `anki` — a `local-tunnel`, shipped `enabled: false` on `https://anki.invalid/`,
+  a host reserved by RFC 2606 that resolves nowhere. Staging does not borrow the
+  machine; it only proves the kind parses, renders and routes. Turning it on is a
+  hostname in `url` and a flip of the flag. The URL ends at the hostname because
+  the add-on serves at the **root** of its port — a `/mcp` suffix would address a
+  path nothing serves, and that `404` is an ordinary upstream error rather than an
+  offline machine, so it would fail a `?servers=` listing instead of dropping out
+  of it. Like `deepwiki` it costs no component.
 - thirty-one `supplementary-image` entries on the one `bundle` component running
   `ghcr.io/tadasant/strad-bundle`. They land on twenty paths, because a
   read-only and a read-write variant of one upstream are two entries sharing one

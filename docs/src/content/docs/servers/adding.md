@@ -16,8 +16,10 @@ deployment you're changing — `infra/strad.staging.yaml` for staging, or
 
 - **`remote-http`** — set `url` and any `headers` (use `${SECRET}` for
   credentials).
-- **`local-tunnel`** — set `url` (your tunnel's hostname), any `headers`, and a
-  `recovery:` block naming the machine and the commands that bring it back.
+- **`local-tunnel`** — set `url` (your tunnel's hostname **and the path the
+  server behind it serves on** — plenty serve at `/mcp`, plenty at the root), any
+  `headers`, and a `recovery:` block naming the machine and the commands that
+  bring it back.
   For a server on a machine you own; it needs no bundle and no image, and it is
   expected to be offline whenever that machine is. See
   [the kind's section](/servers/interface/#2-local-tunnel) for what changes when

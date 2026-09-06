@@ -65,7 +65,7 @@ servers:
   #    and says what to run there.
   - slug: anki
     kind: local-tunnel
-    url: https://your-tunnel-host.example/mcp
+    url: https://your-tunnel-host.example/
     entitlements: [admin]
     recovery:
       commands:
