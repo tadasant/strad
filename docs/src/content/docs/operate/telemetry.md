@@ -317,23 +317,12 @@ upstream text on this path to redact. Nothing derived from the credential — no
 length, no prefix, no digest — exists anywhere in the flow to be exported. See
 [Connectors](/operate/connectors/).
 
-`ui.playground.tool_call` is on no list, and it is the rule working rather than an
-oversight. The console playground writes one per call, naming the slug and the
-tool — and the tool is a string a human typed into a text field, not a word from a
-set this repo wrote down. It reaches stdout in full and the ingestor not at all;
-`strad.mcp.tool_calls` with `strad.surface=playground` carries the same fact in a
-channel nobody can write free text into.
-
-Two things are deliberately absent. **`mcp.auth_failed`** is not exported at all:
-its fields are safe, but it fires before authentication succeeds, so anyone who
-can POST `/mcp` could fill the batch queue and evict the signals that matter.
-`strad.mcp.auth_failures` counts the same thing by the same `reason`, in a
-channel with no queue to starve. And the **424's requested-server list** is
-filtered to slugs that actually exist in the config, with the rest reduced to a
-count — `?servers=` is validated against nothing, so it is the one place a client
-writes free text into strad's own vocabulary. The same filtering applies to the
-`mcp.server` attribute on `strad.mcp.unavailable`, where an unfiltered value
-would let any token holder mint metric series at will.
+The **424's requested-server list** is filtered to slugs that actually exist in
+the config, with the rest reduced to a count — `?servers=` is validated against
+nothing, so it is the one place a client writes free text into strad's own
+vocabulary. The same filtering applies to the `mcp.server` attribute on
+`strad.mcp.unavailable`, where an unfiltered value would let any token holder
+mint metric series at will.
 
 Every exportable event a client can drive — `mcp.list_tools_failed`,
 `mcp.list_resources_failed`, `mcp.local_machine_offline`,
@@ -343,6 +332,36 @@ fault is therefore under-reported by up to a minute in the ingestor; the streams
 are never throttled, and `strad.mcp.tool_surface` carries the same fact
 continuously. Fault events export at `SeverityNumber.ERROR`, so
 `severity >= ERROR` finds them.
+
+### The second table: what does not leave, and why
+
+An empty slot in a deny-by-default allowlist reads the same whether it is a
+verdict or nobody looking, and those are not the same fact. So `EXPORTABLE` has a
+counterpart in the same file: **`NOT_EXPORTED`**, keyed the same way, whose values
+are the reason. Nine events are on it.
+
+| Event                                                                 | Why it stays on the stream                                                                                                                                                                                                                                                                                            |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mcp.auth_failed`                                                     | its fields are safe, but it fires **before** authentication succeeds, so anyone who can POST `/mcp` could fill the batch queue and evict the signals that matter. `strad.mcp.auth_failures` counts the same thing by the same `reason`, in a channel with no queue to starve                                          |
+| `mcp.request`                                                         | `requested` is the caller's own `?servers=` echoed back, validated against nothing — and one record per authenticated request is the queue-starvation argument as well. The trace span carries requested and selected; `strad.mcp.requests` counts the outcomes                                                       |
+| `mcp.tool_denied`                                                     | `tool` is denamespaced from the name the **caller** sent, so a client could write any string into the ingestor by calling a tool that does not exist. `server` is not that — by that line the slug has been matched against the selection — so an exportable **shape**, a slug and a count, is possible and unwritten |
+| `ui.playground.tool_call`                                             | the tool is a string a human typed into a console text field, not a word from a set this repo wrote down. `strad.mcp.tool_calls` with `strad.surface=playground` carries the same fact in a channel nobody can write free text into                                                                                   |
+| `telemetry.disabled` / `telemetry.started` / `telemetry.start_failed` | boot lines from `startTelemetry`'s own `log` seam, not `event()` — they run around the lifecycle of the exporter an export would need                                                                                                                                                                                 |
+| `errors.started` / `errors.start_failed`                              | the same, one layer over: `startErrorReporting` runs **before** `startTelemetry`, so there is no log exporter yet to reach                                                                                                                                                                                            |
+
+Those last five are a blind spot **by construction**, and that is the reason to
+write them down rather than the reason not to: when telemetry goes quiet, the
+line saying why is on the container's stdout and nowhere else. `mcp.tool_denied`
+is the one with real work behind it — a policy refusal reaches no counter either,
+because the throw sits ahead of the `strad.mcp.tool_calls` block, so an operator's
+view of a withheld tool is dark in both channels.
+
+Every `evt:` literal under `src/` appears in **exactly one** of the two tables.
+`test/telemetry.event-export-decisions.test.ts` reads the call sites as text and
+fails the build for an event in both or in neither — so a new `event()` call is a
+verdict somebody wrote, not a record that quietly reaches nobody. It also demands
+that `evt` be written as a string literal, because one built from a variable would
+be invisible to that scan.
 
 ### An offline `local-tunnel` is not a fault, and does not export as one
 
