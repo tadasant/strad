@@ -2551,33 +2551,6 @@ See `HACKS.md` #84 and [BILL Spend & Expense](/servers/bill-spend/).
 
 ---
 
-### 86. The console's `gcloud secrets` recipe names the parameter store's project
-
-The roster prints a paste-ready Secret Manager recipe for a missing `${NAME}` —
-`gcloud secrets create strad-<env>-<NAME> --project <P>` — and `<P>` is the
-**parameter store's** project. The deploy workflow reads `strad-<env>-*` from a
-different one, and `infra/strad.staging.yaml` instructs that the two differ, so
-that the parameter store's credentials cannot reach strad's own secrets.
-
-**What it costs.** It is the one route on that page that does not fail legibly.
-A paste against the wrong `--project` **succeeds**: the operator believes the
-name is seeded, and the next deploy fails on that same name with nothing pointing
-at where the value went. The parameter-path routes beside it resolve per
-namespace and this one cannot — a Secret Manager name is not a parameter path,
-so there is no namespace to resolve it by.
-
-**How you would know.** `gcloud secrets create` copied off `/ui` reports success,
-and the deploy still refuses the name. The secret is sitting in the parameter
-store's project.
-
-**The fix.** Say less — drop `--project` and name the constraint in prose — or
-let the deployment declare its deploy-secrets project and use that for the
-Secret Manager routes.
-
-See `HACKS.md` #86.
-
----
-
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

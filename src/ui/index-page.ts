@@ -929,7 +929,16 @@ function fixBlock(
           )}<span class="sec-fix-store">${esc(target.store)}</span></div>
           <dl class="sec-fix-dl">
             <dt>resource</dt><dd><code>${esc(target.resource)}</code></dd>
-            <dt>project</dt><dd><code>${esc(target.project)}</code></dd>
+            <dt>project</dt><dd${
+              // A null project is not a missing field — it is the answer. The
+              // deploy environment's project is not a fact this process holds,
+              // and printing the one project id it does hold is what put a
+              // credential in the wrong place (HACKS.md #86). The route's own
+              // detail, right below, says which project to look for and where.
+              target.project === null
+                ? ' class="sec-fix-open">your deploy environment&#39;s own project — see below'
+                : `><code>${esc(target.project)}</code>`
+            }</dd>
           </dl>
           <p class="sec-fix-why">${esc(target.detail)}</p>
 ${
@@ -1253,6 +1262,7 @@ const INDEX_CSS = `<style>
 .sec-fix-dl{display:grid;grid-template-columns:auto 1fr;gap:.15rem .7rem;margin:.55rem 0 0}
 .sec-fix-dl dt{color:var(--g4);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em}
 .sec-fix-dl dd{margin:0;font-size:.8rem;word-break:break-all}
+.sec-fix-dl dd.sec-fix-open{word-break:normal;color:var(--g3);font-style:italic}
 .sec-fix-why{color:var(--g2);font-size:.79rem;margin:.55rem 0 0;line-height:1.55}
 .secret-row .sec-detail-inline{padding-left:0}
 </style>`;

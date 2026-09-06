@@ -1823,11 +1823,31 @@ declares a namespace at all, the path lies outside every declared namespace, or
 two stores in different projects both claim it — the ambiguity `storeForPath`
 refuses outright for a write.
 
-A `strad-<env>-<NAME>` Secret Manager route keeps the deployment default, because
-it is not a parameter path — no namespace covers it, so there is no per-path
-answer to give. Note that the default is the **parameter store's** project, and
-the deploy workflow reads `strad-<env>-*` from a project that
-[need not be the same one](/limitations/#86-the-consoles-gcloud-secrets-recipe-names-the-parameter-stores-project).
+**A `strad-<env>-<NAME>` Secret Manager route names no project at all**, and that
+is the honest answer rather than a missing one. It is not a parameter path, so no
+namespace covers it and there is no per-path answer to give — and the deployment
+default is not an answer either: it is the **parameter store's** project, while
+the deploy workflow reads `strad-<env>-*` from its own `GCP_PROJECT_ID`, which
+`infra/strad.staging.yaml` instructs should be a different project so that the
+store's viewer and admin cannot reach strad's own secrets. That project is a
+deploy-environment fact the running gateway holds nothing about, so the route
+says which project to look for and the recipe leaves it to you:
+
+```sh
+# Set this to the project your deploy reads strad-staging-* from — the
+# deploy workflow's GCP_PROJECT_ID, NOT this deployment's parameter store.
+export DEPLOY_SECRETS_PROJECT=…
+gcloud secrets create strad-staging-SLACK_BOT_TOKEN --project "$DEPLOY_SECRETS_PROJECT" --replication-policy automatic
+printf %s "$VALUE" | gcloud secrets versions add strad-staging-SLACK_BOT_TOKEN --project "$DEPLOY_SECRETS_PROJECT" --data-file=-
+```
+
+The variable rather than a dropped `--project` is deliberate. An unset variable
+expands to empty and `gcloud` refuses an empty `--project`, so a blind paste
+writes nothing; a dropped flag would fall through to whatever `gcloud config` has
+set, and for an operator who has been working in the parameter store that is the
+one project this exists to stop writing to — and it would succeed. This route was
+the only one on the page that could put a credential somewhere plausible and
+wrong without saying so.
 
 **A covering namespace outranks the resolver's own `STRAD_PARAMS_PROJECT_ID`,**
 which is one store among several on a partitioned deployment and simply the wrong
@@ -2459,8 +2479,9 @@ fires only for the server that default would actually answer from, since
 resolver sets `STRAD_PARAMS_PROJECT_ID` overrides the whole order anyway. It fails
 legibly rather than writing anywhere wrong, which is why it is a warning; drop it,
 or make it name the first store. The roster's copy-pasteable `gcloud` commands are
-not affected: each one names the store whose namespaces cover its own path, and
-falls back to this default only where they decide nothing.
+not affected: each parameter path names the store whose namespaces cover it, and
+falls back to this default only where they decide nothing — and the
+`strad-<env>-*` Secret Manager recipe names no project at all.
 
 **Two stores sharing one `${REF}` is reported across the whole deployment**, not
 one server's list — a bundle carries one secrets slug, so a strad store and a

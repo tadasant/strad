@@ -353,8 +353,8 @@ function sharedConsoleAdminCredential(config: StradConfig): string[] {
  * in `storeProject()`. See the call site.
  *
  * `storeProject()` (src/ui/secret-status.ts) answers "which project holds the
- * store" for the DEPLOYMENT — the console index's header note, `store.project`
- * on `/api/secrets/readiness`, and the roster's Secret Manager routes. Its order
+ * store" for the DEPLOYMENT — the console index's header note and `store.project`
+ * on `/api/secrets/readiness`. Its order
  * is: the RESOLVER's own project id if this process holds one, else the FIRST
  * enabled supplementary server that declares a project at all — and within that
  * server, `consoleEnv.`, then `env.`, then `consoleStores[0]`, then
@@ -362,7 +362,9 @@ function sharedConsoleAdminCredential(config: StradConfig): string[] {
  *
  * A parameter PATH is not answered from that order at all: `storeProjectForPath()`
  * beside it resolves each one to the store whose namespaces cover it, so the
- * roster's per-path `gcloud` commands do not follow this disagreement.
+ * roster's per-path `gcloud` commands do not follow this disagreement. Neither
+ * does the `strad-<env>-*` Secret Manager recipe, which names no project: the
+ * deploy reads those from its own GCP_PROJECT_ID, which is not a config fact.
  *
  * Both of those preambles matter, and getting either wrong would make this
  * annotation assert something false:
