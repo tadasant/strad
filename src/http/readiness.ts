@@ -28,6 +28,7 @@ import {
   type ServerState,
 } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
+import { errorSummary } from "../util/error-text.ts";
 
 /**
  * `GET /api/secrets/readiness` — the machine's answer to "is the secrets side of
@@ -455,7 +456,7 @@ export function createReadinessHandler(
       // not come from code that promises to be value-free.
       event({
         evt: "strad.readiness_failed",
-        error: err instanceof Error ? err.name : "unknown",
+        error: errorSummary(err),
       });
       if (!res.headersSent) res.status(500).json({ error: "readiness_failed" });
     }

@@ -6,12 +6,13 @@ import {
 } from "./capability-table.ts";
 import {
   mintAccessToken,
+  ServiceAccountAuthError,
   SCOPE_CLOUD_PLATFORM,
   type FetchLike,
   type MintedToken,
   type ServiceAccount,
 } from "./service-account.ts";
-import { errorText } from "../../util/error-text.ts";
+import { errorSummary } from "../../util/error-text.ts";
 
 /**
  * The console's half of the capability probe: how the question is ASKED.
@@ -91,7 +92,7 @@ export async function probeCapabilities(
     // A malformed or rejected key. Report the SHAPE — the key is the payload.
     return {
       ...NO_CAPABILITIES,
-      reason: `could not mint an access token for this credential (${errorText(err)})`,
+      reason: `could not mint an access token for this credential (${authReason(err)})`,
     };
   }
 
@@ -125,7 +126,7 @@ export async function probeCapabilities(
   } catch (err) {
     return {
       ...NO_CAPABILITIES,
-      reason: `projects:testIamPermissions did not complete (${errorText(err)})`,
+      reason: `projects:testIamPermissions did not complete (${authReason(err)})`,
     };
   } finally {
     clearTimeout(timer);
@@ -270,4 +271,20 @@ export function cachedProbe(
       });
     return inFlight;
   };
+}
+
+/**
+ * Why a probe did not finish, in a form safe to print.
+ *
+ * This reason is rendered to a human — `revealPosture()` puts it on the console
+ * page — so `errorSummary` is the base (`src/util/error-text.ts`). Per-surface
+ * shaping on top of it: a `ServiceAccountAuthError`'s message is strad's own,
+ * built from a status and a status text, so it passes through where a class name
+ * would say nothing. Everything else is reduced, because both calls here parse a
+ * Google response body and one of those bodies carries the minted token.
+ */
+function authReason(err: unknown): string {
+  return err instanceof ServiceAccountAuthError
+    ? err.message
+    : errorSummary(err);
 }

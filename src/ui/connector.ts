@@ -34,6 +34,7 @@ import {
   type ConnectorState,
 } from "../connectors/index.ts";
 import { CONNECTOR_CALLBACK_PATH } from "../connectors/index.ts";
+import { errorSummary } from "../util/error-text.ts";
 import {
   parameterPath,
   type ParameterStore,
@@ -469,7 +470,7 @@ async function handleCallback(
       // quote a rendered value, so it never becomes an event field or a page.
       console.error(
         `[strad] connector write failed for ${entry.server.slug}: ` +
-          `${err instanceof Error ? err.name : "unknown error"}`,
+          `${errorSummary(err)}`,
       );
     }
     back(`?error=${encodeURIComponent(code)}`);
@@ -772,9 +773,7 @@ function renderUnexpected(res: Response, err: unknown): void {
   // THE CLASS, NOT THE OBJECT. A store client's exception can quote a rendered
   // value, and this is the one handler every route funnels into — logging `err`
   // here would undo the discipline the rest of the file keeps.
-  console.error(
-    `[strad] connector route failed: ${err instanceof Error ? err.name : "unknown error"}`,
-  );
+  console.error(`[strad] connector route failed: ${errorSummary(err)}`);
   if (res.headersSent) return;
   res
     .status(500)

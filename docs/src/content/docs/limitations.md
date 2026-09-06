@@ -2509,7 +2509,7 @@ See `HACKS.md` #81.
 
 The cost is real and it is debuggability. An operator who hits a failure strad did not anticipate gets the class and a sentence saying the message was withheld and why, instead of the upstream's own words.
 
-What keeps that branch rare is that every failure the console actually produces has a sentence strad wrote: a 403 names the IAM binding to add, a 409 says the parameter already exists, a timeout says nothing was written, a version whose payload will not decode says that rotating clears it, and a path the console itself rejected still says which rule it broke. The class is logged under `strad.console_render_failed`, whose export carries the event name alone.
+What keeps that branch rare is that every failure the console actually produces has a sentence strad wrote: a 403 names the IAM binding to add, a 409 says the parameter already exists, a timeout says the bound is on strad's end so a write may still have landed, a store the container cannot reach names the transport code (`ENOTFOUND`, `ECONNREFUSED`), a version whose payload will not decode says that rotating clears it, and a path the console itself rejected still says which rule it broke. The class is logged under `strad.console_render_failed`, whose export carries the event name alone.
 
 **How you would know.** The page says so — it names the class and says the message was withheld. If that is all you have, the next step is another branch in `describe()`, not a wider message.
 

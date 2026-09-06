@@ -25,7 +25,7 @@ import {
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
 import { DeadlineError } from "../util/deadline.ts";
-import { errorSummary } from "../util/error-text.ts";
+import { errorSummary, errorText } from "../util/error-text.ts";
 import { event } from "../telemetry/index.ts";
 import type { BundlePresence } from "../gateway/bundle-presence.ts";
 import type { Registry } from "../gateway/registry.ts";
@@ -457,11 +457,9 @@ async function handleServerView(
       .send(renderGcsBrowse({ view, relPrefix, result, signedInAs }));
   } catch (err) {
     const isGcs = err instanceof GcsError;
-    const detail = isGcs
-      ? `${err.status} — ${err.message}`
-      : err instanceof Error
-        ? err.message
-        : String(err);
+    // `errorText`, not `errorSummary`: this branch is a GCS object listing, and
+    // its response body is bucket metadata rather than anything the store holds.
+    const detail = isGcs ? `${err.status} — ${err.message}` : errorText(err);
     res
       .status(502)
       .type("html")
@@ -480,7 +478,7 @@ async function handleServerView(
 }
 
 // ---------------------------------------------------------------------------
-// The parameters page, and the five actions that mutate it.
+// The parameters page, and the six actions on it.
 // ---------------------------------------------------------------------------
 
 type SecretAction =
@@ -1160,7 +1158,10 @@ function statusFor(err: unknown): number {
     return 502;
   }
   if (err instanceof ConsoleInputError) return 400;
-  if (isTimeout(err)) return 502;
+  // A store that did not answer, and one this container could not reach, are
+  // both the gateway's upstream failing. 500 is left for the genuinely
+  // unexplained, which is the only thing `describe()` cannot write a sentence for.
+  if (isTimeout(err) || transportCode(err)) return 502;
   return 500;
 }
 
@@ -1204,11 +1205,28 @@ function describe(err: unknown): string {
     return (
       `The store did not answer in time. Parameter Manager bounds every attempt ` +
       `(gateway.secrets.timeoutMs), so this is the store being slow or unreachable ` +
-      `rather than a refusal — nothing was written. Try again; if it keeps timing ` +
-      `out, check the Google Cloud status page for Parameter Manager.`
+      `rather than a refusal. The bound is on THIS end, so a write that timed out ` +
+      `may still have landed — re-read the parameter before retrying. If it keeps ` +
+      `timing out, check the Google Cloud status page for Parameter Manager.`
+    );
+  }
+  const transport = transportCode(err);
+  if (transport) {
+    return (
+      `The console could not reach the parameter store (${transport}). Nothing was ` +
+      `sent, so nothing was written. This is DNS, the network or TLS between this ` +
+      `container and googleapis.com rather than anything about the parameter.`
     );
   }
   if (err instanceof ConsoleInputError) return err.message;
+  // `ValueEncodingError` (`src/secrets/parameters/wire.ts`) is the other error on
+  // this path whose message strad wrote: a parameter path and the encoding token
+  // its envelope declared, with no value anywhere in it. It is what a reveal of a
+  // parameter written by a newer strad looks like, and the class alone would send
+  // an operator looking in the wrong place.
+  if (err instanceof Error && err.name === "ValueEncodingError") {
+    return err.message;
+  }
   return (
     `The console hit an unexpected ${errorSummary(err)}. Its message is withheld ` +
     `deliberately: an error raised while reading the parameter store can carry a ` +
@@ -1221,10 +1239,15 @@ function describe(err: unknown): string {
 /**
  * A request that ran out of time, whoever bounded it.
  *
- * Two shapes reach here and neither is a `ParameterStoreError`: `withDeadline`
- * (`src/util/deadline.ts`) rejects with its own class, and the store's per-attempt
- * `AbortSignal.timeout` surfaces as undici's `TimeoutError`. Matched by NAME
- * because the second is a `DOMException`, not an `Error` subclass we can name.
+ * The one that fires on these routes is the store's per-attempt
+ * `AbortSignal.timeout` (`src/secrets/parameters/gcp.ts`), which surfaces as
+ * undici's `TimeoutError` — matched by NAME because it is a `DOMException`, not
+ * an `Error` subclass this file can name.
+ *
+ * `DeadlineError` (`src/util/deadline.ts`) is here for completeness rather than
+ * because a console route produces one today: both of its call sites catch
+ * internally. It costs one `instanceof` and it means a third caller that does
+ * let one through is already answered.
  */
 function isTimeout(err: unknown): boolean {
   if (err instanceof DeadlineError) return true;
@@ -1232,6 +1255,27 @@ function isTimeout(err: unknown): boolean {
     err instanceof Error &&
     (err.name === "TimeoutError" || err.name === "AbortError")
   );
+}
+
+/**
+ * A request that never got an answer, named by the code the runtime gave it.
+ *
+ * `fetch` reports every transport failure as one opaque `TypeError: fetch
+ * failed` and puts the real diagnosis on `cause.code` — `ENOTFOUND`,
+ * `ECONNREFUSED`, `CERT_HAS_EXPIRED`. Without this branch an unreachable store
+ * is the console's least useful page: a `TypeError`, withheld, for the most
+ * ordinary outage there is.
+ *
+ * The code is a runtime constant, not text from a response, so it is safe to
+ * print — and the shape test is what keeps that true rather than assumed. A
+ * `cause` that does not carry one still gets the sentence, without a code.
+ */
+function transportCode(err: unknown): string | null {
+  if (!(err instanceof TypeError) || !("cause" in err)) return null;
+  const code: unknown = (err.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]*$/.test(code)
+    ? code
+    : "no code";
 }
 
 function renderUnexpected(res: Response, err: unknown): void {

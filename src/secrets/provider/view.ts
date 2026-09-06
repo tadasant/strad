@@ -1,5 +1,3 @@
-import { errorSummary } from "../../util/error-text.ts";
-
 /**
  * A single-flighted, last-known-good view of one named map over a resolver.
  *
@@ -32,6 +30,8 @@ import { errorSummary } from "../../util/error-text.ts";
  * There is nothing to serve, and reporting an empty namespace would turn an
  * outage into a silent misconfiguration.
  */
+
+import { errorSummary } from "../../util/error-text.ts";
 
 export interface NamespaceViewOptions {
   /** Injected in tests so the clock is not the thing under test. */

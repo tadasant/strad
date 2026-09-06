@@ -320,6 +320,41 @@ describe("the console's catch-all", () => {
     expect(html).toContain("Its message is withheld");
     expect(html).toContain("that payload is a credential");
   });
+
+  /**
+   * The page prints a class and no message, so the log is the operator's only
+   * other thread to pull. Asserted here because the page's own copy points at
+   * this event by name, and three doc pages repeat the claim.
+   */
+  it("logs the class under strad.console_render_failed, with no message", async () => {
+    await plantUnreadablePayload();
+    capabilities = () => {
+      try {
+        JSON.parse(`{"value":${CANARY}}`);
+      } catch (err) {
+        return Promise.reject(err as Error);
+      }
+      throw new Error("unreachable");
+    };
+
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      await fetch(`${baseUrl}/ui/secrets`, { headers: auth });
+    } finally {
+      console.error = original;
+    }
+
+    const logged = lines.filter((l) =>
+      l.includes("strad.console_render_failed"),
+    );
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("SyntaxError");
+    expectNoLeak(logged[0]!);
+  });
 });
 
 describe("the other failures an operator actually hits", () => {
@@ -347,10 +382,72 @@ describe("the other failures an operator actually hits", () => {
     expect(html).toContain("needs write access");
   });
 
-  it("timeout: says nothing was written, and answers 502 rather than 400", async () => {
+  /**
+   * Both timeout shapes, because only one of them can fire here.
+   *
+   * `DeadlineError` is strad's own and is matched by `instanceof`.
+   * `AbortSignal.timeout` — the bound the store actually puts on every attempt —
+   * rejects with a `DOMException` NAMED `TimeoutError`, which is not an `Error`
+   * subclass this file can import. That one is the branch production reaches,
+   * so testing only the first would leave the live path unproven.
+   */
+  for (const [label, make] of [
+    [
+      "strad's own DeadlineError",
+      () => new DeadlineError("the store index timed out after 4000ms"),
+    ],
+    [
+      "undici's TimeoutError",
+      () => {
+        const e = new Error("The operation was aborted due to timeout");
+        e.name = "TimeoutError";
+        return e;
+      },
+    ],
+  ] as const) {
+    it(`timeout (${label}): warns the write may have landed, and answers 502`, async () => {
+      await plantUnreadablePayload();
+      storeFault = make;
+
+      const res = await post("/ui/secrets/rotate", {
+        path: `${NS}SEEDED_KEY`,
+        value: "a-new-value",
+      });
+      const html = await res.text();
+
+      // 502, not the blanket 400 every non-store error used to get: a store that
+      // did not answer is the store's failure, and behind an ingress a 4xx here
+      // reads as the operator having typed something wrong.
+      expect(res.status).toBe(502);
+      expect(html).toContain("The store did not answer in time");
+      // The bound is on THIS end, so the console must not claim the write did
+      // not land — it does not know that, and it is the thing to check first.
+      expect(html).toContain("may still have landed");
+      expect(html).not.toContain("nothing was written");
+      // The class name alone would have said none of that.
+      expect(html).not.toContain("DeadlineError");
+      expect(html).not.toContain("TimeoutError");
+    });
+  }
+
+  /**
+   * The most ordinary outage there is, and the one with no `ParameterStoreError`.
+   *
+   * `fetch` reports DNS, a refused connection and a bad certificate alike as
+   * `TypeError: fetch failed`, with the diagnosis on `cause.code`. Without a
+   * branch for it the console's answer to "the store is unreachable" would be a
+   * withheld `TypeError`, which is the outcome issue #156 called worse than today.
+   */
+  it("unreachable store: names the transport code and answers 502", async () => {
     await plantUnreadablePayload();
-    storeFault = () =>
-      new DeadlineError("the store index timed out after 4000ms");
+    storeFault = () => {
+      const e = new TypeError("fetch failed");
+      (e as { cause?: unknown }).cause = Object.assign(
+        new Error("getaddrinfo ENOTFOUND parametermanager.googleapis.com"),
+        { code: "ENOTFOUND" },
+      );
+      return e;
+    };
 
     const res = await post("/ui/secrets/rotate", {
       path: `${NS}SEEDED_KEY`,
@@ -358,14 +455,41 @@ describe("the other failures an operator actually hits", () => {
     });
     const html = await res.text();
 
-    // 502, not the blanket 400 every non-store error used to get: a store that
-    // did not answer is the store's failure, and behind an ingress a 4xx here
-    // reads as the operator having typed something wrong.
     expect(res.status).toBe(502);
-    expect(html).toContain("The store did not answer in time");
-    expect(html).toContain("nothing was written");
-    // The class name would have been `DeadlineError`, which says none of that.
-    expect(html).not.toContain("DeadlineError");
+    expect(html).toContain("could not reach the parameter store (ENOTFOUND)");
+    expect(html).toContain("Nothing was sent");
+    // The undici cause carries the hostname it could not resolve; the code is
+    // what travels, and the message it came from does not.
+    expect(html).not.toContain("getaddrinfo");
+    expect(html).not.toContain("TypeError");
+  });
+
+  /**
+   * A `cause` with no usable code still gets the sentence.
+   *
+   * The shape test on `code` is what keeps "this is a runtime constant" true
+   * rather than assumed, so it has to be exercised in the direction where it
+   * REFUSES — otherwise a regression that printed arbitrary text would pass.
+   */
+  it("unreachable store with no code: still 502, and prints no borrowed text", async () => {
+    await plantUnreadablePayload();
+    storeFault = () => {
+      const e = new TypeError("fetch failed");
+      (e as { cause?: unknown }).cause = Object.assign(new Error("boom"), {
+        code: "sk-live-CANARY-7f21ab-DO-NOT-LEAK",
+      });
+      return e;
+    };
+
+    const res = await post("/ui/secrets/rotate", {
+      path: `${NS}SEEDED_KEY`,
+      value: "a-new-value",
+    });
+    const html = await res.text();
+
+    expect(res.status).toBe(502);
+    expect(html).toContain("could not reach the parameter store (no code)");
+    expectNoLeak(html);
   });
 
   it("a malformed path is still the caller's, and still says which rule it broke", async () => {

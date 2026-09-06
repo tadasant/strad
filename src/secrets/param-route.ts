@@ -315,10 +315,15 @@ export function createParamClient(opts: ParamClientOptions): ParamClient {
         note("info", `read the current ${variable} from the parameter store`);
         return parsed.value;
       } catch (err) {
+        // The CLASS, never the message. Core's 200 body for this route is
+        // `{"protocol":…,"value":"<the credential>"}`, and a truncated one makes
+        // `res.json()` throw a `SyntaxError` carrying a window of it. Same rule
+        // as `errorSummary` in `src/util/error-text.ts`, inlined rather than
+        // imported because this file is vendored and must stay import-free.
         note(
           "warn",
           `could not read ${variable} from core ` +
-            `(${err instanceof Error ? err.message : String(err)}); ${baked}`,
+            `(${err instanceof Error ? err.name : "unknown error"}); ${baked}`,
         );
         return undefined;
       }
@@ -520,10 +525,12 @@ export async function refreshParamsOnce(
         // `get()` promises not to throw, but it is an interface and this is a
         // background loop: one implementation breaking that promise must not
         // stop the OTHER servers on this component from refreshing.
+        // The class, for the reason `get()` above states: an implementation
+        // that breaks its no-throw promise may be throwing over the same body.
         opts.note?.(
           "warn",
           `${target.slug}: reading ${variable} threw ` +
-            `(${err instanceof Error ? err.message : String(err)}); ` +
+            `(${err instanceof Error ? err.name : "unknown error"}); ` +
             `keeping the value this container already holds`,
         );
         continue;

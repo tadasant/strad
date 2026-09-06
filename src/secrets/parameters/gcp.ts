@@ -364,10 +364,10 @@ export function createGcpParameterStore(
    * The current envelope (raw — a secret one still holds a `__REF__`, not a value).
    *
    * The decode is wrapped for the same reason `renderOne`'s is, and it is the
-   * console's write paths that make it matter. `list`, `rotate`, `setNote`,
-   * `reveal` and `destroy` all start here, and each of them is reached from a
-   * `POST /ui/:server/*` handler whose catch-all renders the failure into an
-   * HTML page. An unwrapped `decodeEnvelope` throws `JSON.parse`'s own
+   * console that makes it matter. Five store methods start here — `list`,
+   * `rotate`, `setNote`, `reveal` and `destroy` — and between them they are
+   * reached from `GET /ui/:server` and from four of its six `POST` actions,
+   * every one of which renders a failure into an HTML page. An unwrapped `decodeEnvelope` throws `JSON.parse`'s own
    * `SyntaxError`, and that message embeds a window of the payload it choked on
    * — which on a non-secret parameter IS the value, and on a secret one is the
    * envelope around its pointer.

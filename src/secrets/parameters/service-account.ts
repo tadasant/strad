@@ -105,10 +105,19 @@ export async function mintAccessToken(
     );
   }
 
-  const json = (await res.json()) as {
-    access_token?: string;
-    expires_in?: number;
-  };
+  // Wrapped for the same reason `currentEnvelope` in gcp.ts is: `JSON.parse`
+  // embeds a window of its input in the `SyntaxError` it throws, and the input
+  // here is the token endpoint's 200 body — which carries `access_token`. The
+  // parse error is DROPPED rather than chained; a `cause` travels.
+  let json: { access_token?: string; expires_in?: number };
+  try {
+    json = (await res.json()) as { access_token?: string; expires_in?: number };
+  } catch {
+    throw new ServiceAccountAuthError(
+      "token exchange returned a body that is not readable JSON",
+      502,
+    );
+  }
   if (!json.access_token) {
     throw new ServiceAccountAuthError(
       "token exchange returned no access_token",

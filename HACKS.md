@@ -4081,16 +4081,16 @@ render `err.message` into the HTML page. They now go through `errorSummary()`
 (`src/util/error-text.ts`), which passes a `ParameterStoreError`'s message
 through — it is a method plus a resource path, and carries no value — and reduces
 everything else to its class name. `currentEnvelope()` in
-`src/secrets/parameters/gcp.ts` was the one store read on the console's five
-write paths whose `decodeEnvelope` had no `try` around it, so it now throws an
+`src/secrets/parameters/gcp.ts` was the one store read behind the console's
+parameter actions whose `decodeEnvelope` had no `try` around it, so it now throws an
 `UnreadablePayloadError` naming the resource and DROPS the parse error rather
 than chaining it as a `cause`.
 
 **Why.** `JSON.parse` embeds about ten characters of its input in the
 `SyntaxError` it throws — `Unexpected token 's', ..."value":sk-live-CA"... is not
 valid JSON`. A parameter payload is a credential on a non-secret parameter and
-the envelope around one on a secret parameter, so on `GET /ui/:server` and all
-five `POST /ui/:server/*` actions that window rendered as visible text on a page
+the envelope around one on a secret parameter, so on `GET /ui/:server` and the
+six `POST /ui/:server/*` actions that window rendered as visible text on a page
 whose entire claim is that it never prints bytes. The repo had already decided
 this — `errorSummary` exists for it, and three separate comments explain it —
 and had routed the console's own catch-all around the decision.
@@ -4100,8 +4100,10 @@ available. An operator who hits a failure strad did not anticipate sees the clas
 and a sentence saying the message was withheld and why, rather than the upstream's
 own words. Everything the console actually produces in the field is written
 around that: a 403 names the IAM binding to add, a 409 says the parameter already
-exists, a timeout says nothing was written, a payload that will not decode says
-rotating clears it, and a malformed path still says which rule it broke. The
+exists, a timeout says the bound is on this end so a write may still have landed,
+a store the container cannot reach names the transport code, a payload that will
+not decode says rotating clears it, and a malformed path still says which rule it
+broke. The
 class is logged under `strad.console_render_failed`, whose export carries the
 event name alone.
 
