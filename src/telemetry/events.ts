@@ -242,18 +242,22 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
  * `test/telemetry.event-export-decisions.test.ts` reads the call sites as TEXT
  * to check it, so the lists are compared rather than maintained in parallel.
  *
- * An entry here is a REDACTION VERDICT, not a backlog. Moving one up to
+ * An entry here is a REDACTION VERDICT. Moving one up to
  * `EXPORTABLE` takes the same per-field "where does this value come from at
  * every call site" answer that table demands, one event at a time — the rule
  * being that a hostile client and a broken upstream can BOTH only ever make the
  * value one of a set this repo wrote down.
  *
  * Five of these never reach `event()` at all: `startTelemetry` and
- * `startErrorReporting` write through their own injectable `log` seam, because
- * they run around the lifecycle of the very exporter an export would need. That
- * is a real blind spot rather than a technicality, and it is stated here so an
- * operator hunting a silent deployment knows where those lines are: stdout, and
- * nowhere else.
+ * `startErrorReporter` write through their own injectable `log` seam, because
+ * they run around the lifecycle of the very exporter an export would need. It
+ * is worth saying where those lines are, since an operator hunting a silent
+ * deployment goes looking for them: stdout, and nowhere else.
+ *
+ * Both tables are held against event NAMES. Neither says an entry is
+ * EFFECTIVE — an `EXPORTABLE` entry for a call site that does not go through
+ * `event()` would ship nothing at all, and the five above are what that looks
+ * like.
  */
 export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   "mcp.auth_failed":
@@ -264,12 +268,13 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "this file exists to deliver. strad.mcp.auth_failures already counts the " +
     "same thing, by the same `reason`, in a channel with no queue to starve.",
   "mcp.request":
-    "`requested` is the caller's own ?servers= list echoed back, validated " +
-    "against nothing — the exact shape mcp.unavailable shipped until a review " +
-    "caught it. It also fires on every authenticated request, so it is the " +
-    "queue-starvation argument as well as the free-text one. The tool-call " +
-    "span carries requested and selected as attributes, and strad.mcp.requests " +
-    "counts the outcomes.",
+    "It fires on EVERY authenticated request, which is the queue-starvation " +
+    "argument that keeps mcp.auth_failed off the list, one token further in. " +
+    "Its fields would survive the field test — resolveSelection has already " +
+    "matched every slug in `requested` against the entitled set, so an " +
+    "unconfigured string never reaches this line — but the volume is the " +
+    "objection. The mcp.request span carries requested and selected as " +
+    "attributes, and strad.mcp.requests counts the outcomes.",
   "mcp.tool_denied":
     "`tool` is denamespaced from the tool name the CALLER sent, so a client " +
     "could write any string it liked into the ingestor by calling a tool that " +
@@ -281,8 +286,8 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   "ui.playground.tool_call":
     "The tool name is typed by a human into a text field in the console, so it " +
     "is not a word from a set this repo wrote down. strad.mcp.tool_calls with " +
-    "strad.surface=playground carries the same fact in a channel nobody can " +
-    "write free text into.",
+    "strad.surface=playground counts the call in a channel with no queue to " +
+    "starve.",
   "telemetry.disabled":
     "Emitted through startTelemetry's own `log` seam rather than event(), on " +
     "the path where no OTLP endpoint is configured — there is no exporter to " +
@@ -297,7 +302,7 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "is the one that is missing. Impossible by construction, and worth writing " +
     "down: when telemetry goes quiet, this line is on stdout and nowhere else.",
   "errors.started":
-    "Emitted through startErrorReporting's `log` seam, which runs BEFORE " +
+    "Emitted through startErrorReporter's `log` seam, which runs BEFORE " +
     "startTelemetry — the log exporter does not exist yet, so an event() would " +
     "reach the same stream by a longer route.",
   "errors.start_failed":

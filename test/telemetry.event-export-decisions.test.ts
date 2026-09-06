@@ -23,14 +23,25 @@ import { EXPORTABLE, NOT_EXPORTED } from "../src/telemetry/events.ts";
  * `EXPORTABLE` ∪ `NOT_EXPORTED` exactly: nothing emitted without a verdict,
  * nothing carrying a verdict that is no longer emitted, nothing in both.
  *
- * ## The scan's one hole, and why it is small
+ * ## The scan's holes, stated
  *
- * A text scan cannot see an `evt` built from a variable. That is why the first
- * case below rejects any `evt:` that is not immediately a string literal: the
- * hole is closed by making the literal a rule rather than by hoping. What
- * remains is a payload object assembled somewhere else and handed to `event()`
- * by reference — no call site does that today, every one passes an inline
- * object literal, and such a payload would be invisible here.
+ * A text scan cannot see an `evt` built from a variable, so the first case
+ * below makes the literal a rule: any `evt:` that is not immediately a string
+ * literal fails. Three holes survive that, and they are small in different
+ * ways.
+ *
+ *   - A payload object assembled somewhere else and handed to `event()` by
+ *     reference carries no `evt:` of its own. No call site does that; every one
+ *     passes an inline object literal.
+ *   - The scan reads comments and strings too, so a doc comment that writes
+ *     `evt: "x"` is counted as a call site. That direction is loud — it demands
+ *     a verdict for an event nothing emits — rather than silent.
+ *   - `src/telemetry/events.ts` itself is exempt, because `evt` is a parameter
+ *     there. An `event()` call added inside the pipeline module is unseen.
+ *
+ * And the tables are held against event NAMES: this says nothing about whether
+ * an `EXPORTABLE` entry is EFFECTIVE, which is a distinction the five
+ * `telemetry.*` / `errors.*` verdicts turn on.
  */
 
 const SRC = "src";
@@ -53,11 +64,11 @@ function evtOccurrences(): { file: string; rest: string }[] {
   for (const file of sources(SRC)) {
     if (file === MACHINERY) continue;
     const text = readFileSync(file, "utf8");
-    for (const m of text.matchAll(/\bevt:/g)) {
-      found.push({
-        file,
-        rest: text.slice(m.index + m[0].length, m.index + 80),
-      });
+    // `evt"?\s*:` rather than `evt:`, so a quoted key — `"evt": "x.y"`, which
+    // prettier would leave alone in an object that has one — is seen too.
+    for (const m of text.matchAll(/\bevt"?\s*:/g)) {
+      const from = m.index + m[0].length;
+      found.push({ file, rest: text.slice(from, from + 80) });
     }
   }
   return found;
@@ -76,18 +87,24 @@ describe("every emitted event has a written-down export verdict", () => {
   });
 
   it("emits nothing that is in neither table, and nothing that is in both", () => {
+    // A non-literal is the case above's job. Skipped rather than asserted on
+    // here, so that failure reports the rule it broke instead of throwing on a
+    // null match before this case's own assertions run.
     const emitted = new Set(
-      evtOccurrences().map((o) => /^\s*"([^"]+)"/.exec(o.rest)![1]!),
+      evtOccurrences().flatMap((o) => {
+        const m = /^\s*"([^"]+)"/.exec(o.rest);
+        return m ? [m[1]!] : [];
+      }),
     );
-
-    // Guard the guard: a regex that silently matched nothing would make every
-    // assertion below pass by comparing empty sets.
-    expect(emitted.size).toBeGreaterThan(25);
-    expect(emitted.has("mcp.list_tools_failed")).toBe(true);
-    expect(emitted.has("mcp.auth_failed")).toBe(true);
 
     const exportable = Object.keys(EXPORTABLE);
     const notExported = Object.keys(NOT_EXPORTED);
+
+    // Guard the guard: a regex that silently matched nothing would make every
+    // assertion below pass by comparing empty sets. Two events by name, one
+    // from each table, rather than a count somebody has to maintain.
+    expect(emitted.has("mcp.list_tools_failed")).toBe(true);
+    expect(emitted.has("mcp.auth_failed")).toBe(true);
 
     const both = exportable.filter((evt) => evt in NOT_EXPORTED).sort();
     expect(
@@ -114,12 +131,15 @@ describe("every emitted event has a written-down export verdict", () => {
       "carries a verdict in src/telemetry/events.ts and is emitted nowhere " +
         "under src/ — the call site went away and the entry outlived it",
     ).toEqual([]);
+
+    // The same statement as a count. Redundant with the three assertions above
+    // by construction, and it is what a reader checks by hand.
+    expect(emitted.size).toBe(exportable.length + notExported.length);
   });
 
   it("gives every NOT_EXPORTED entry a reason, not a placeholder", () => {
-    // The value is the whole point of the table: `mcp.auth_failed` was the only
-    // exclusion anyone had written a reason for, and a one-word value would put
-    // the other eight back where they started.
+    // The value is the whole point of the table. A one-word entry is the empty
+    // slot again, wearing a reason's clothes.
     for (const [evt, why] of Object.entries(NOT_EXPORTED)) {
       expect(why.length, `${evt} needs a reason`).toBeGreaterThan(60);
     }
