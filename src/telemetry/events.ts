@@ -40,12 +40,12 @@ import { errorKind } from "./redact.ts";
  *
  * ## What is deliberately NOT on the list
  *
- * `mcp.auth_failed`. Its attributes are safe — `reason` is a closed set — but it
- * is emitted BEFORE authentication succeeds, so anyone who can reach `/mcp`
- * produces one exported record per request. A bot spraying bad bearer tokens
- * would fill the batch queue and evict `mcp.list_tools_failed`, which is the one
- * signal this file exists to deliver. `strad.mcp.auth_failures` already counts
- * the same thing, by the same `reason`, in a channel with no queue to starve.
+ * `NOT_EXPORTED`, below — a second table, keyed the same way, whose values are
+ * the REASON. An event's absence from the allowlist otherwise reads the same
+ * whether it is a redaction verdict or nobody looking, and those are not the
+ * same fact. Every `evt:` literal under `src/` appears in exactly one of the two
+ * tables, and `test/telemetry.event-export-decisions.test.ts` fails the build
+ * for one that appears in both or in neither.
  */
 
 /**
@@ -231,6 +231,84 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.store_diagnostics_failed": [],
     "strad.console_render_failed": [],
   });
+
+/**
+ * evt -> why it does not leave the process.
+ *
+ * The counterpart to `EXPORTABLE`, and it exists because the two things an
+ * empty slot can mean — "we decided this must not ship" and "nobody looked" —
+ * look identical from here, and one of them is how a boundary erodes. Every
+ * `evt:` literal under `src/` is in exactly one of the two tables, and
+ * `test/telemetry.event-export-decisions.test.ts` reads the call sites as TEXT
+ * to check it, so the lists are compared rather than maintained in parallel.
+ *
+ * An entry here is a REDACTION VERDICT. Moving one up to
+ * `EXPORTABLE` takes the same per-field "where does this value come from at
+ * every call site" answer that table demands, one event at a time — the rule
+ * being that a hostile client and a broken upstream can BOTH only ever make the
+ * value one of a set this repo wrote down.
+ *
+ * Five of these never reach `event()` at all: `startTelemetry` and
+ * `startErrorReporter` write through their own injectable `log` seam, because
+ * they run around the lifecycle of the very exporter an export would need. It
+ * is worth saying where those lines are, since an operator hunting a silent
+ * deployment goes looking for them: stdout, and nowhere else.
+ *
+ * Both tables are held against event NAMES. Neither says an entry is
+ * EFFECTIVE — an `EXPORTABLE` entry for a call site that does not go through
+ * `event()` would ship nothing at all, and the five above are what that looks
+ * like.
+ */
+export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
+  "mcp.auth_failed":
+    "Its attributes are safe — `reason` is a closed set — but it is emitted " +
+    "BEFORE authentication succeeds, so anyone who can reach /mcp produces one " +
+    "exported record per request. A bot spraying bad bearer tokens would fill " +
+    "the batch queue and evict mcp.list_tools_failed, which is the one signal " +
+    "this file exists to deliver. strad.mcp.auth_failures already counts the " +
+    "same thing, by the same `reason`, in a channel with no queue to starve.",
+  "mcp.request":
+    "It fires on EVERY authenticated request, which is the queue-starvation " +
+    "argument that keeps mcp.auth_failed off the list, one token further in. " +
+    "Its fields would survive the field test — resolveSelection has already " +
+    "matched every slug in `requested` against the entitled set, so an " +
+    "unconfigured string never reaches this line — but the volume is the " +
+    "objection. The mcp.request span carries requested and selected as " +
+    "attributes, and strad.mcp.requests counts the outcomes.",
+  "mcp.tool_denied":
+    "`tool` is denamespaced from the tool name the CALLER sent, so a client " +
+    "could write any string it liked into the ingestor by calling a tool that " +
+    "does not exist. `server` is not that — by this line the slug has already " +
+    "been matched against the selection, which comes from the config — so an " +
+    "exportable SHAPE, the slug and a count, is available and is not written " +
+    "yet. It is work rather than a table move: the refusal throws ahead of the " +
+    "strad.mcp.tool_calls block, so it reaches no counter either.",
+  "ui.playground.tool_call":
+    "The tool name is typed by a human into a text field in the console, so it " +
+    "is not a word from a set this repo wrote down. strad.mcp.tool_calls with " +
+    "strad.surface=playground counts the call in a channel with no queue to " +
+    "starve.",
+  "telemetry.disabled":
+    "Emitted through startTelemetry's own `log` seam rather than event(), on " +
+    "the path where no OTLP endpoint is configured — there is no exporter to " +
+    "carry it, which is precisely what it says.",
+  "telemetry.started":
+    "Same seam, and the same reason from the other side: it announces the " +
+    "exporter that would have to carry it, which the arrival of any other " +
+    "record already proves. It is a boot-time fact for whoever is reading the " +
+    "container console.",
+  "telemetry.start_failed":
+    "The exporter did not come up, so the only channel that could carry this " +
+    "is the one that is missing. Impossible by construction, and worth writing " +
+    "down: when telemetry goes quiet, this line is on stdout and nowhere else.",
+  "errors.started":
+    "Emitted through startErrorReporter's `log` seam, which runs BEFORE " +
+    "startTelemetry — the log exporter does not exist yet, so an event() would " +
+    "reach the same stream by a longer route.",
+  "errors.start_failed":
+    "The same blind spot as telemetry.start_failed, one layer over: exception " +
+    "reporting failed to start, and the record saying so can only go to stdout.",
+});
 
 /**
  * Events whose `error` field should become `error.kind`.

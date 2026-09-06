@@ -1140,9 +1140,11 @@ staging app with it. That deploy would have gone green.
 
 strad ships its own structured events as OTLP logs, against a per-event field
 allowlist. It does not ship the stdout stream — that carries upstream-authored
-text, and the whole point is to keep it out of an external ingestor.
+text, and the whole point is to keep it out of an external ingestor. Twenty-five
+event types are on the allowlist and nine are deliberately off it, each with its
+reason written beside it in `NOT_EXPORTED`.
 
-Three consequences worth knowing before you go looking for something and do not
+Five consequences worth knowing before you go looking for something and do not
 find it:
 
 - **`mcp.auth_failed` is not exported.** It fires before authentication
@@ -1156,6 +1158,17 @@ find it:
 - **An upstream's error message is never in the ingestor.** `error` is on no
   allowlist; the classification ships instead. Finding out _what_ an upstream
   said means reading the container console.
+- **A tool the capability policy withholds is dark in both channels.**
+  `mcp.tool_denied` carries a tool name denamespaced from what the caller asked
+  for — free text a client writes — so it is not exportable as it stands, and the
+  refusal throws ahead of the `strad.mcp.tool_calls` block, so it increments no
+  counter either. "How often is this slug refusing calls" is answerable only from
+  the container console.
+- **The lines that say the exporter is off are on stdout only.** The five
+  `telemetry.*` and `errors.*` boot lines are written by their own start-up paths
+  rather than through the event pipeline, because they fire around the lifecycle
+  of the exporter an export would need. When telemetry goes quiet, the reason is
+  in the container console and nowhere else.
 
 The alternative was the status quo, which cost a week of a production `secrets`
 slug serving nothing while writing `mcp.list_tools_failed` on every request. See
