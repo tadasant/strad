@@ -4073,3 +4073,41 @@ Claude Code raises or drops the cut, change the one constant and the four
 descriptions can breathe again. The structural fix is a client that fetches the
 long form on demand, from an MCP resource beside the tool, and no client does
 that today.
+
+## 83. The console will not print an unexpected error's message
+
+**What.** `describe()` and `renderUnexpected()` in `src/ui/index.ts` used to
+render `err.message` into the HTML page. They now go through `errorSummary()`
+(`src/util/error-text.ts`), which passes a `ParameterStoreError`'s message
+through — it is a method plus a resource path, and carries no value — and reduces
+everything else to its class name. `currentEnvelope()` in
+`src/secrets/parameters/gcp.ts` was the one store read on the console's five
+write paths whose `decodeEnvelope` had no `try` around it, so it now throws an
+`UnreadablePayloadError` naming the resource and DROPS the parse error rather
+than chaining it as a `cause`.
+
+**Why.** `JSON.parse` embeds about ten characters of its input in the
+`SyntaxError` it throws — `Unexpected token 's', ..."value":sk-live-CA"... is not
+valid JSON`. A parameter payload is a credential on a non-secret parameter and
+the envelope around one on a secret parameter, so on `GET /ui/:server` and all
+five `POST /ui/:server/*` actions that window rendered as visible text on a page
+whose entire claim is that it never prints bytes. The repo had already decided
+this — `errorSummary` exists for it, and three separate comments explain it —
+and had routed the console's own catch-all around the decision.
+
+**What it costs.** Debuggability, in the one branch where nothing else was
+available. An operator who hits a failure strad did not anticipate sees the class
+and a sentence saying the message was withheld and why, rather than the upstream's
+own words. Everything the console actually produces in the field is written
+around that: a 403 names the IAM binding to add, a 409 says the parameter already
+exists, a timeout says nothing was written, a payload that will not decode says
+rotating clears it, and a malformed path still says which rule it broke. The
+class is logged under `strad.console_render_failed`, whose export carries the
+event name alone.
+
+**Undo.** There is no version of this that prints the upstream's message safely,
+because the message is the leak. What would shrink the remaining cost is more
+strad-authored branches in `describe()`: every failure that gets one is a failure
+the fallthrough never has to answer for. `test/ui.secrets.error-text.test.ts` is
+the canary — it plants a credential inside a payload that will not parse and
+asserts that neither the value nor the window reaches the page or the log.

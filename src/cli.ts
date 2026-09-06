@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { mintToken } from "./auth/tokens.ts";
 import { configPathFromEnv, loadConfig } from "./config/load.ts";
+import { errorText } from "./util/error-text.ts";
 
 /**
  * strad CLI.
@@ -75,6 +76,6 @@ async function tokenMint(argv: string[]) {
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : String(err));
+  console.error(errorText(err));
   process.exit(1);
 });

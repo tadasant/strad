@@ -20,6 +20,7 @@ import { resolveServerView, serverLooksSecrets } from "../ui/resolve.ts";
 import { storeFor } from "../ui/index.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
+import { errorText } from "../util/error-text.ts";
 
 /**
  * `GET`/`POST /_strad/params/{slug}/{VARIABLE}` — a hosted server reading and
@@ -383,7 +384,7 @@ export function createParamWriteHandler(
         // its own health — so it must learn that this failed rather than reading
         // a 200 and moving on.
         const status = err instanceof ParameterStoreError ? err.status : 502;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         console.error(
           `[strad] parameter write-back failed for ${found.path}: ${message}`,
         );
@@ -454,7 +455,7 @@ export function createParamReadHandler(
         // response to it is to keep the value the deploy baked. That is not an
         // incident: it is every deployment that has not rotated yet.
         const status = err instanceof ParameterStoreError ? err.status : 502;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         if (status !== 404) {
           console.error(
             `[strad] parameter read failed for ${found.path}: ${message}`,

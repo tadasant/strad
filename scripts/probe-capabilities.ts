@@ -38,6 +38,7 @@
 import { parseArgs } from "node:util";
 import { probeCapabilities } from "../src/secrets/parameters/capabilities.ts";
 import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
+import { errorText } from "../src/util/error-text.ts";
 
 /**
  * Plain stderr, no `::error::`. A narrowed or unverifiable credential is a fact
@@ -61,7 +62,7 @@ try {
     },
   }));
 } catch (err) {
-  fail(err instanceof Error ? err.message : String(err), 2);
+  fail(errorText(err), 2);
 }
 
 const projectId = values.project;

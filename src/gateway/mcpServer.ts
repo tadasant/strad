@@ -47,6 +47,7 @@ import {
   unmatchedAllowEntries,
   type ToolPolicies,
 } from "./toolPolicy.ts";
+import { errorText } from "../util/error-text.ts";
 
 /**
  * The MCP `Server` strad builds for ONE already-authorized selection.
@@ -518,7 +519,7 @@ export async function listToolsFor(
                 slug,
                 explicit: Boolean(explicit),
                 // Stays on stdout in full; the exporter substitutes `error.kind`.
-                error: err instanceof Error ? err.message : String(err),
+                error: errorText(err),
               },
         );
 
@@ -666,7 +667,7 @@ async function listResourcesFor(
             : {
                 evt: "mcp.list_resources_failed",
                 slug,
-                error: err instanceof Error ? err.message : String(err),
+                error: errorText(err),
               },
         );
         return [];

@@ -17,7 +17,7 @@ import {
 } from "../secrets/parameters/index.ts";
 import { mcpNamespace } from "../deploy/server-namespaces.ts";
 import { waiversBySlug } from "../deploy/unseeded.ts";
-import { errorSummary } from "../secrets/provider/view.ts";
+import { errorSummary } from "../util/error-text.ts";
 import { withDeadline } from "../util/deadline.ts";
 import {
   placeholderReason,
@@ -473,8 +473,9 @@ async function attemptRead(
     // entire claim is that it never prints bytes. Truncating to 200 characters
     // does not help: the window is ~30 characters and sits well inside the cap.
     //
-    // `errorSummary` is the defence view.ts already wrote for exactly this,
-    // and reusing it is the point — a `ParameterStoreError` message is known safe
+    // `errorSummary` (`src/util/error-text.ts`) is the defence the repo wrote
+    // for exactly this, and reusing it is the point — a `ParameterStoreError`
+    // message is known safe
     // (method + resource, query and `:verb` stripped) and passes through; anything
     // else is reduced to its class name. The cap stays as a second belt.
     const summary = errorSummary(err);

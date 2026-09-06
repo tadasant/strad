@@ -16,6 +16,7 @@ import { TROUBLESHOOT_TOOL } from "../gateway/troubleshoot.ts";
 import { event } from "../telemetry/index.ts";
 import { consolePrincipal, signedInLabel } from "./console-auth.ts";
 import { esc, jsonForScript, layout, renderMessage } from "./render.ts";
+import { errorText } from "../util/error-text.ts";
 
 /**
  * `/playground/:server` — a human MCP client for ONE server, in the console.
@@ -488,8 +489,12 @@ export function statusFor(err: unknown): number {
  * wrong. The code is kept — it is the machine-readable half — just not twice.
  */
 export function readable(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  return raw.replace(/^(MCP error -?\d+: )(?=\1)/, "");
+  // `errorText` is the base — the playground's errors are the gateway's own
+  // refusals and an upstream's JSON-RPC faults, with no store read and no
+  // rendered payload anywhere in the hop. The shaping goes on top of it rather
+  // than deriving the string a second way; see `src/util/error-text.ts` for
+  // when the answer is `errorSummary` instead.
+  return errorText(err).replace(/^(MCP error -?\d+: )(?=\1)/, "");
 }
 
 /**

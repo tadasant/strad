@@ -220,8 +220,8 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     /** Clean SIGTERM or an OOM kill — the difference is one line, or its absence. */
     "strad.shutdown": ["signal"],
     /**
-     * THE EVENT NAME AND NOTHING ELSE. Both of these already reduce their error
-     * to a class name or a summary before logging, and both are still text this
+     * THE EVENT NAME AND NOTHING ELSE. All three already reduce their error to a
+     * class name or a summary before logging, and all three are still text this
      * repo did not fully author — a rendered secret can end up inside a store
      * client's exception. "This surface is failing" is the operational fact and
      * it needs no field at all; the message stays on stderr for whoever is
@@ -229,6 +229,7 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      */
     "strad.readiness_failed": [],
     "strad.store_diagnostics_failed": [],
+    "strad.console_render_failed": [],
   });
 
 /**

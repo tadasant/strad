@@ -8,6 +8,7 @@ import type { ServerAdapter } from "./adapters/types.ts";
 import type { Registry } from "./registry.ts";
 import { ServerUnconfiguredError } from "./unconfigured.ts";
 import { DeadlineError, withDeadline } from "../util/deadline.ts";
+import { errorText } from "../util/error-text.ts";
 
 /**
  * Does each mounted server actually serve tools?
@@ -212,7 +213,7 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
           unconfigured.set(slug, err.names);
           return { slug, state: "unconfigured", tools: 0, kind: adapter.kind };
         }
-        failures.set(slug, err instanceof Error ? err.message : String(err));
+        failures.set(slug, errorText(err));
         if (err instanceof LocalHostRefusedError) refused.add(slug);
         // A machine somebody switched off gets its own state and is NOT
         // degraded — see the header. Narrowed to the OFFLINE error rather than

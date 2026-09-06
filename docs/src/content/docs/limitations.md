@@ -2503,6 +2503,20 @@ See `HACKS.md` #81.
 
 ---
 
+### 83. The console will not print an unexpected error's message
+
+`JSON.parse` embeds about ten characters of its input in the `SyntaxError` it throws, and on a store path that input is a parameter payload — a credential on a non-secret parameter, the envelope around one on a secret parameter. So the console's two catch-alls, `describe()` and `renderUnexpected()`, no longer render `err.message`: they go through `errorSummary()` (`src/util/error-text.ts`), which passes a `ParameterStoreError`'s message through and reduces everything else to its class name.
+
+The cost is real and it is debuggability. An operator who hits a failure strad did not anticipate gets the class and a sentence saying the message was withheld and why, instead of the upstream's own words.
+
+What keeps that branch rare is that every failure the console actually produces has a sentence strad wrote: a 403 names the IAM binding to add, a 409 says the parameter already exists, a timeout says nothing was written, a version whose payload will not decode says that rotating clears it, and a path the console itself rejected still says which rule it broke. The class is logged under `strad.console_render_failed`, whose export carries the event name alone.
+
+**How you would know.** The page says so — it names the class and says the message was withheld. If that is all you have, the next step is another branch in `describe()`, not a wider message.
+
+See `HACKS.md` #83.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

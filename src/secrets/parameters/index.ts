@@ -16,6 +16,7 @@ export {
   type ParameterStore,
   type ResolvedNamespace,
   ParameterStoreError,
+  UnreadablePayloadError,
 } from "./types.ts";
 
 export {

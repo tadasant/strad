@@ -5,6 +5,7 @@ import {
   serviceName,
   type ResourceIdentity,
 } from "./resource.ts";
+import { errorText } from "../util/error-text.ts";
 
 /**
  * Exception reporting over the Sentry protocol, into GlitchTip.
@@ -246,7 +247,7 @@ export async function startErrorReporter(
     log({
       evt: "errors.start_failed",
       service: name,
-      error: err instanceof Error ? err.message : String(err),
+      error: errorText(err),
     });
     return DISABLED;
   }

@@ -2736,3 +2736,37 @@ credential" mean "redeploy the gateway".
   leaked into a public Actions log this way before.
 
 `test/secrets.provider.test.ts` carries the canary that enforces the first four.
+
+### Two ways to turn an error into text, and which one a store path uses
+
+An error message is text strad did not necessarily write, so there are exactly
+two ways to turn one into a string and both live in `src/util/error-text.ts`:
+
+| function            | what it prints                                                                                                  | use it when                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `errorSummary(err)` | a `ParameterStoreError`'s message, which is a method plus a resource path; **the class name** for anything else | anything that could have touched a store read, a rendered payload, or a secret value |
+| `errorText(err)`    | the message, whatever it says                                                                                   | the message is strad's own or an upstream's, and no secret is in scope               |
+
+**Every path that reads the parameter store uses `errorSummary`.** The reason is
+`JSON.parse`: V8 puts about ten characters of its input into the `SyntaxError` it
+throws, and on a store path that input is a parameter payload — which is a
+credential on a non-secret parameter, and the envelope around one on a secret
+parameter. So a store read that fails must never print its own message, and a
+`decodeEnvelope` is never left unwrapped: `currentEnvelope` and `renderOne` in
+`src/secrets/parameters/gcp.ts` both replace the parse error with a
+`ParameterStoreError` naming the resource, and **drop** the original rather than
+chaining it as a `cause` — a `cause` travels, and anything that stringifies the
+chain puts the window back.
+
+A class name on its own is not much use to an operator, so the console does not
+stop there. `describe()` in `src/ui/index.ts` writes strad's own sentence for
+every failure the console actually produces — the store refusing the credential
+(403), a name collision (409), a request that timed out, a version whose payload
+will not decode, and a path the console itself rejected — and only falls through
+to the bare class for something genuinely unexpected. That fallthrough says what
+was withheld and why, and the class is logged under
+`strad.console_render_failed`, whose export carries the event name alone.
+
+`test/ui.secrets.error-text.test.ts` is the canary: it plants a credential inside
+a payload that will not parse, drives all six console routes, and asserts that
+neither the value nor the ten-character window reaches the HTML page or the log.

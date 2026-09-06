@@ -179,3 +179,28 @@ export class ParameterStoreError extends Error {
     this.name = "ParameterStoreError";
   }
 }
+
+/**
+ * The stored payload would not decode into a strad envelope.
+ *
+ * A `ParameterStoreError` subclass rather than a class of its own so that every
+ * existing caller keeps treating it as one — including `errorSummary`
+ * (`src/util/error-text.ts`), which decides by `err.name`. The name is
+ * DELIBERATELY inherited: the message this carries is method plus resource, the
+ * one shape on a store path that is known not to hold a value, and renaming the
+ * class would reduce it to a bare word on the console page that shows it.
+ *
+ * What the subclass buys is the `instanceof` the console keys on to write the
+ * operator a sentence about what to do next — see `describe()` in
+ * `src/ui/index.ts`. The parse error that provoked it is DROPPED at the throw
+ * site and is not chained as a `cause`: `JSON.parse` embeds a window of its
+ * input in its `SyntaxError`, and here that input is the stored payload.
+ */
+export class UnreadablePayloadError extends ParameterStoreError {
+  constructor(resource: string) {
+    super(
+      `GET ${resource} failed: the stored payload is not a readable strad envelope`,
+      502,
+    );
+  }
+}

@@ -11,6 +11,7 @@ import {
   type MintedToken,
   type ServiceAccount,
 } from "./service-account.ts";
+import { errorText } from "../../util/error-text.ts";
 
 /**
  * The console's half of the capability probe: how the question is ASKED.
@@ -90,7 +91,7 @@ export async function probeCapabilities(
     // A malformed or rejected key. Report the SHAPE — the key is the payload.
     return {
       ...NO_CAPABILITIES,
-      reason: `could not mint an access token for this credential (${describe(err)})`,
+      reason: `could not mint an access token for this credential (${errorText(err)})`,
     };
   }
 
@@ -124,7 +125,7 @@ export async function probeCapabilities(
   } catch (err) {
     return {
       ...NO_CAPABILITIES,
-      reason: `projects:testIamPermissions did not complete (${describe(err)})`,
+      reason: `projects:testIamPermissions did not complete (${errorText(err)})`,
     };
   } finally {
     clearTimeout(timer);
@@ -269,8 +270,4 @@ export function cachedProbe(
       });
     return inFlight;
   };
-}
-
-function describe(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

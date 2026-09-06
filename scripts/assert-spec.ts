@@ -40,6 +40,7 @@ import {
   assertDeployableSpec,
   SpecFileError,
 } from "../src/deploy/spec-file.ts";
+import { errorText } from "../src/util/error-text.ts";
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -60,8 +61,7 @@ try {
   text = readFileSync(path, "utf8");
 } catch (err) {
   console.error(
-    `::error::cannot read the rendered spec at ${path}: ` +
-      `${err instanceof Error ? err.message : String(err)}`,
+    `::error::cannot read the rendered spec at ${path}: ` + `${errorText(err)}`,
   );
   process.exit(1);
 }

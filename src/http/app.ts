@@ -42,6 +42,7 @@ import {
   PARAM_ROUTE_PREFIX,
   STORE_REFRESH_ROUTE,
 } from "../secrets/param-route.ts";
+import { errorText } from "../util/error-text.ts";
 
 export interface AppOptions {
   config: StradConfig;
@@ -132,7 +133,7 @@ export function createApp(opts: AppOptions): Express {
       .postRaw(`/upload/${encodeURIComponent(token)}`, req, res)
       .catch((err) => {
         if (res.headersSent) return;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorText(err);
         res.status(502).json({ error: "upload_proxy_failed", message });
       });
   });

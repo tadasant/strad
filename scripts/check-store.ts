@@ -66,7 +66,7 @@ import { checkStore } from "../src/deploy/store-check.ts";
 import { resolverFromEnv } from "../src/secrets/parameters/index.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 import { parseServiceAccount } from "../src/secrets/parameters/service-account.ts";
-import { errorSummary } from "../src/secrets/provider/view.ts";
+import { errorSummary } from "../src/util/error-text.ts";
 
 function usage(message: string): never {
   console.error(`::error::${message}`);
