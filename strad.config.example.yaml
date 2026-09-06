@@ -197,7 +197,7 @@ servers:
   #
   # - slug: anki
   #   kind: local-tunnel
-  #   url: https://<your-tunnel-host>/mcp
+  #   url: https://<your-tunnel-host>/
   #   entitlements: [admin]
   #
   # The kind exists because such a server is OFFLINE MOST OF THE TIME, and that
@@ -214,6 +214,13 @@ servers:
   #     working Slack plus that one tool; `?servers=anki` alone is that one tool
   #     rather than an error.
   #
+  # THAT LAST EXEMPTION IS ABOUT AN ABSENT MACHINE, NOT A WRONG URL. A machine
+  # that answers 404 because the path is wrong is an ordinary upstream error and
+  # DOES fail a named listing, neighbours included. So take the path from the
+  # server you are tunnelling to: `/mcp` is a common convention, but the Anki
+  # add-on above serves at the ROOT of its port (`http_path` defaults to empty),
+  # which is why the url ends at the hostname.
+  #
   # `recovery:` is what that tool says. All of it is optional — without it the
   # tool falls back to generic guidance and a docs link, and it never GUESSES a
   # command. It is returned to every client entitled to the slug, so it is for
@@ -222,7 +229,7 @@ servers:
   #
   # - slug: anki
   #   kind: local-tunnel
-  #   url: https://<your-tunnel-host>/mcp
+  #   url: https://<your-tunnel-host>/
   #   entitlements: [admin]
   #   recovery:
   #     machine: "the MacBook"

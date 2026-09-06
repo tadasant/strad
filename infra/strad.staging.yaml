@@ -268,20 +268,36 @@ servers:
   # kind: local-tunnel. The Anki MCP add-on (AnkiWeb 124672614) running inside
   # Anki on Tadas's machine, reached over a tunnel that machine dials out to.
   #
-  # SHIPPED DISABLED, and it stays that way until a tunnel URL exists to point
-  # it at — a quick tunnel mints a new hostname every restart, so there is no
-  # stable value to commit here. To turn it on: start Anki, run a tunnel to
+  # SHIPPED DISABLED, on a HOST THAT CANNOT RESOLVE — `.invalid` is reserved by
+  # RFC 2606 and answers nowhere by construction. That is the point: staging
+  # does not borrow the machine, it only has to prove the kind parses and
+  # survives a render. To turn it on: start Anki, run a tunnel to
   # 127.0.0.1:3141, put the hostname in `url` and flip `enabled`. Nothing else
   # in this file changes and no secret needs seeding. (See servers/adding.md
   # §4a for the disabled-until-provisioned pattern.)
   #
+  # THE URL HAS NO PATH, AND THAT IS THE WHOLE OF IT. The add-on serves
+  # streamable HTTP at the ROOT of its port — its `http_path` setting defaults
+  # to the empty string, and its own docs connect clients to
+  # `http://127.0.0.1:3141/`. A `/mcp` suffix on the end of the hostname below
+  # therefore addresses a path nothing serves, and a 404 is a failure the
+  # kind's exemption does not cover: it is an ordinary upstream error, so
+  # `?servers=anki,slack` FAILS OUTRIGHT rather than keeping anki's place with
+  # the troubleshooting tool and serving Slack alongside it. See
+  # `src/gateway/adapters/http.ts` (`wrap`, which is narrow on purpose — only a
+  # 401/403 and an unreachable host are exempt) and the "a wrong path still
+  # FAILS an explicit listing" case in `test/local-tunnel.test.ts`. Whoever
+  # swaps a live hostname in here inherits the shape of this line — so the
+  # shape is right.
+  #
   # It costs no component and no bundle: strad runs nothing for a local-tunnel.
-  # When the machine is off — which is most of the time, by design — the slug
-  # is `unreachable` on /healthz and the deploy gate ignores it, for the same
-  # reason it ignores deepwiki having a bad afternoon.
+  # When the machine is off — which is most of the time, by design — an enabled
+  # slug reads `offline` on /healthz, which is deliberately NOT in `degraded`,
+  # and the deploy gate ignores it for the same reason it ignores deepwiki
+  # having a bad afternoon.
   - slug: anki
     kind: local-tunnel
-    url: https://anki.invalid/mcp
+    url: https://anki.invalid/
     entitlements: [admin]
     enabled: false
 

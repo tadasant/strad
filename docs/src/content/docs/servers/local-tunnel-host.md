@@ -275,7 +275,7 @@ is where the commands for **your** machine belong:
 ```yaml
 - slug: anki
   kind: local-tunnel
-  url: https://mcp.example.com/mcp
+  url: https://anki.example.com/
   recovery:
     machine: "the MacBook"
     commands:

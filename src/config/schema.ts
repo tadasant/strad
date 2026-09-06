@@ -437,7 +437,7 @@ const RemoteHttpServer = ServerBase.extend({
  *
  *   - slug: anki
  *     kind: local-tunnel
- *     url: https://anki.example.trycloudflare.com/mcp
+ *     url: https://anki.example.trycloudflare.com/
  *
  * WHY IT IS ITS OWN KIND, when the transport is identical to remote-http.
  *

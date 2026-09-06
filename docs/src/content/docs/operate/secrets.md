@@ -400,7 +400,7 @@ request path.
 # A local-tunnel server's three credentials, all its own.
 - slug: anki
   kind: local-tunnel
-  url: https://anki.example.com/mcp
+  url: https://anki.example.com/
   headers:
     CF-Access-Client-Id: "${ANKI_CF_ACCESS_CLIENT_ID}"
     CF-Access-Client-Secret: "${ANKI_CF_ACCESS_CLIENT_SECRET}"

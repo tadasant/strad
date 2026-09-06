@@ -55,11 +55,17 @@ servers:
   # tunnel is the part that adds nothing. What this exercises is the half that
   # is actually interesting: a slug whose upstream is USUALLY NOT THERE.
   #
-  # Port 3141 is the Anki MCP add-on's own default, so starting Anki is all it
-  # takes to make this route somewhere real. With Anki closed — the normal
-  # case — `?servers=anki` fails in ~5s saying the machine is unreachable, and
-  # `?servers=anki,echo` still serves echo. Both are the point.
+  # Port 3141 is the Anki MCP add-on's own default and it serves at the ROOT of
+  # that port (`http_path` defaults to the empty string), so starting Anki is
+  # all it takes to make this route somewhere real. With Anki closed — the
+  # normal case — the connection is refused at once and strad says the machine
+  # is unreachable in its own words: `?servers=anki` returns one tool,
+  # `anki__troubleshoot_host`, rather than an error, and `?servers=anki,echo`
+  # serves that tool plus echo's. Both are the point, and BOTH need the path
+  # below to stay empty: a wrong path answers 404, which is an ordinary
+  # upstream error rather than an unreachable machine, so it fails
+  # `?servers=anki,echo` outright instead of degrading to that one tool.
   - slug: anki
     kind: local-tunnel
-    url: http://127.0.0.1:3141/mcp
+    url: http://127.0.0.1:3141/
     entitlements: [admin]

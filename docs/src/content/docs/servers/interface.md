@@ -178,7 +178,7 @@ servers:
   # local-tunnel — an MCP server on a machine you own.
   - slug: anki
     kind: local-tunnel
-    url: https://your-tunnel-host.example/mcp
+    url: https://your-tunnel-host.example/
     entitlements: [admin]
     recovery:
       machine: "the MacBook"
@@ -208,6 +208,20 @@ laptop is not an outage, so three things behave differently:
   [architecture](/intro/architecture/) — and this is the one exception, because
   for this kind there is no fault being hidden. Selecting it **alone** returns
   that one tool rather than an error.
+
+#### Get the path right — a wrong one is the failure the exemption skips
+
+`url` carries the **path** as well as the host, and the exemption above covers
+only a machine that is not answering. A machine that answers `404` because the
+path is wrong is an ordinary upstream error, so it fails a named listing and
+takes its neighbours with it — the exact outcome the kind exists to avoid, from
+a typo rather than from a closed laptop.
+
+Take the path from the server you are tunnelling to, not from habit. `/mcp` is a
+common convention and plenty of servers use it, but the Anki add-on above serves
+streamable HTTP at the **root** of its port — its `http_path` setting defaults to
+the empty string — so its URL ends at the hostname. When in doubt, read the
+server's own docs for the URL it tells clients to connect to, and use that.
 
 #### `troubleshoot_host`: the tool a machine that is off still serves
 
