@@ -66,11 +66,12 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  * does not reference is a hard error, and an unwaived absent name still exits 1.
  *
  * The other way to ship a server ahead of its credential is `enabled: false` —
- * the telegram, bill-spend and pulse-subregistry entries are exactly that. It is the right
+ * the telegram and pulse-subregistry entries are exactly that. It is the right
  * choice when the slug should not be listed or entitled at all yet; `mayBeUnseeded:`
  * is the right one when it should be visible and waiting.
  */
 const PROVISIONED_STATICS = [
+  "BILL_SPEND_API_TOKEN",
   "FETCHPET_PASSWORD",
   "FETCHPET_USERNAME",
   "GCAL_IMPERSONATE_EMAIL",

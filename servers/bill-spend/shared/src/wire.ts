@@ -1,9 +1,9 @@
 /**
- * THE SHAPE OF THE WRITE, and why there is more than one of it.
+ * THE SHAPE OF THE WRITE, and why there is still more than one of it.
  *
  * `PUT /v3/spend/transactions/{transactionId}/custom-fields` is the only tool in
- * this server that changes anything, and it is the one endpoint whose contract
- * BILL states twice, differently:
+ * this server that changes anything, and BILL states its contract twice,
+ * differently:
  *
  *   - The API reference says the array items are
  *     `{customFieldId, selectedValues[], note}`, and that `selectedValues` takes
@@ -13,42 +13,47 @@
  *   - The Transactions guide's worked example says `customFieldUuid`.
  *     https://developer.bill.com/docs/transaction-management
  *
- * Both were read against the live documentation while this was written. They
- * disagree about the KEY NAME, and there is no third document that settles it.
+ * THE ENDPOINT SETTLED IT. Every shape below and several that are not below were
+ * sent to a live BILL sandbox company, each followed by a read-back:
  *
- * That would be an annoyance and not a hazard, except for what happens when the
- * body is wrong: the endpoint answers **HTTP 200 `{"status":"SUCCESS"}` and
- * discards the update**. A community implementer who actually called it reports
- * that the `tty_…` / `tvl_…` UUID forms BILL's own GETs hand back are "silently
- * rejected (the API returns SUCCESS but the update is dropped)", and that only
- * the base64 `id` form writes. That report is UNVERIFIED — one developer's field
- * note, not BILL documentation — but BILL contradicting itself corroborates that
- * the endpoint is finicky, and the failure mode is the worst one available for
- * an agent working unattended on someone's books: forty transactions reported
- * re-coded, none of them changed.
+ *   - `customFieldUuid` is a HARD 400 — `customFieldId: must not be null`. The
+ *     Transactions guide's example does not work and is not in the ladder.
+ *   - `customFieldId` accepts BOTH forms: the base64 `id` and the `tty_…` uuid.
+ *   - `selectedValues` accepts BOTH forms too, and the two mixed in one body.
  *
- * So this module does not pick a shape. It ENUMERATES them, in the order most
- * likely to work, and `setTransactionCoding` in gateway.ts tries them one at a
- * time and RE-READS THE TRANSACTION AFTER EACH ONE. Nothing here decides that a
- * write succeeded; only the read-back does. A variant that BILL answers 200 to
- * and that changes nothing is a failed variant, and the next one is tried.
+ * So the community field note this ladder was built around — that the `tty_…` /
+ * `tvl_…` uuid forms BILL's own GETs hand back are "silently rejected (the API
+ * returns SUCCESS but the update is dropped)" — is FALSE. Every uuid form
+ * persisted. The claim is recorded here because it shaped the design and because
+ * a reader will find it again; it is not evidence about this API.
  *
- * THE LADDER IS CHEAP IN THE STEADY STATE. The first variant is the one the
- * community report says works, callers are told to pass the `id` form
- * (list_coding_options returns it beside the uuid for exactly this reason), and
- * the winning variant is memoised for the life of the process — so a sweep pays
- * for the ladder once and two calls per transaction after that. It is also
- * SAFE to walk: every attempt is the same idempotent PUT of the same desired
- * state, so an attempt that does nothing costs a call and changes nothing else.
+ * WHAT IS TRUE IS THE FAILURE MODE ITSELF, and it was reproduced. Send two
+ * values to a `multiSelect: false` field and BILL answers **HTTP 200
+ * `{"status":"SUCCESS"}`, stores one of them and discards the other** — no
+ * error, no warning, a transaction coded as something other than what was asked
+ * for. That is the worst failure available to an agent working unattended on
+ * someone's books, it is what `setTransactionCoding` re-reads to catch, and it
+ * is why nothing here treats a 200 as evidence.
  *
- * WHEN BILL SETTLES ITS OWN DOCUMENTATION, this file is where the answer goes —
- * delete the variants that never win. Until then the ladder is the honest
- * encoding of what is actually known, and `variant` comes back in every
- * successful result so which one works stops being a guess.
+ * SO THE LADDER STAYS, AT TWO RUNGS, and the reason is no longer BILL's
+ * documentation — it is which identifier forms a caller happens to hold.
+ * `buildUpdateBody` returns null when a variant needs a form this deployment
+ * does not have, so `customFieldId/uuid` is what writes when only uuids are on
+ * hand (a field read out of a `list_transactions` result carries no `id`).
+ * Both rungs are proven; the `id` rung is first because it is the form
+ * `list_coding_options` returns and the tool descriptions tell callers to pass.
+ *
+ * `setTransactionCoding` in gateway.ts tries a rung and RE-READS THE TRANSACTION
+ * AFTER IT. Nothing here decides that a write succeeded; only the read-back
+ * does. A rung that BILL answers 200 to and that moves nothing is a failed rung,
+ * and the next one is tried. The winning rung is memoised for the life of the
+ * process, so a sweep pays for the ladder once and two calls per transaction
+ * after that — and walking it is SAFE, because every attempt is the same
+ * idempotent PUT of the same desired state.
  */
 
-/** The two names BILL's two documents give the same field. */
-export type FieldKey = "customFieldId" | "customFieldUuid";
+/** The one key name BILL's write endpoint accepts. `customFieldUuid` is a 400. */
+export type FieldKey = "customFieldId";
 
 /** The two identifier forms BILL hands out for one custom field or value. */
 export type IdForm = "id" | "uuid";
@@ -59,9 +64,8 @@ export type IdForm = "id" | "uuid";
  * Both are usually available: `GET /v3/spend/transactions/{id}/custom-fields`
  * and `GET /v3/spend/custom-fields/{id}/values` each return `id` AND `uuid`.
  * `GET /v3/spend/transactions` is the exception — its embedded `customFields`
- * carry `uuid` only — which is exactly why a caller who lists transactions and
- * writes straight from that result would be writing the form the community
- * report says is dropped.
+ * carry `uuid` only, which is why the second rung of the ladder exists: a caller
+ * writing straight from a transaction list holds no `id` to send.
  */
 export interface Identifier {
   id?: string;
@@ -96,23 +100,23 @@ export interface WireVariant {
 }
 
 /**
- * Every body shape this server knows how to send, best first.
+ * Every body shape this server sends, best first. Both were observed to persist
+ * against a live sandbox company; the order is about which forms a caller holds,
+ * not about which one BILL prefers.
  *
- * The order is the argument:
+ *   1. `customFieldId` + base64 `id` values — the form `list_coding_options`
+ *      returns and every tool description tells callers to pass.
+ *   2. `customFieldId` + `uuid` values — what writes when only uuids are on
+ *      hand, which is the case for a field or value read out of a
+ *      `list_transactions` result.
  *
- *   1. `customFieldId` + base64 `id` values — the reference's key name and the
- *      only value form anyone has reported actually persisting.
- *   2. `customFieldId` + `uuid` values — the reference's key name, and the value
- *      form the reference itself says is accepted. If the community report is
- *      wrong, this is what works.
- *   3. `customFieldUuid` + `uuid` values — the Transactions guide's worked
- *      example, verbatim. Last because a key name the reference does not list is
- *      the likeliest one to be ignored outright.
+ * There is no third rung. `customFieldUuid`, the Transactions guide's worked
+ * example, answers 400 `customFieldId: must not be null`.
  *
- * `selectedValues` is an ARRAY in every variant, because both BILL documents
- * agree on that much and the same community report that flagged the id form also
- * claimed a bare string — the one claim the documentation actively contradicts
- * twice. A multi-select field needs an array regardless.
+ * `selectedValues` is an ARRAY in both variants, because both BILL documents
+ * agree on that much and a multi-select field needs one regardless. BILL also
+ * accepts a bare string there — that was tested too — but an array is the
+ * documented shape and the only one that can express more than one value.
  */
 export const WIRE_VARIANTS: readonly WireVariant[] = [
   {
@@ -124,12 +128,6 @@ export const WIRE_VARIANTS: readonly WireVariant[] = [
   {
     name: "customFieldId/uuid",
     fieldKey: "customFieldId",
-    fieldForm: "uuid",
-    valueForm: "uuid",
-  },
-  {
-    name: "customFieldUuid/uuid",
-    fieldKey: "customFieldUuid",
     fieldForm: "uuid",
     valueForm: "uuid",
   },

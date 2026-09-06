@@ -22,9 +22,9 @@
 # it with no staging slug pointing at any of them — `grafana-registry` is served
 # by a per-slug instance at `/grafana-registry`, not by the conventional mount.
 #
-# SIX of the thirty-two carry `enabled: false` — telegram-ro, telegram-rw,
-# bill-spend-ro, bill-spend-rw, pulse-subregistry and grafana-registry — because
-# their credentials are not in the store yet.
+# FOUR of the thirty-two carry `enabled: false` — telegram-ro, telegram-rw,
+# pulse-subregistry and grafana-registry — because their credentials are not in
+# the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
 # every other server's deploy down with it.
@@ -155,9 +155,9 @@ bundles:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token — and the conventional `/grafana`,
   # since staging's Grafana is the per-slug `/grafana-registry` below. The
-  # PROCESS registers all twenty-two either way — including `/telegram` and
-  # `/bill-spend`, whose two slugs each are disabled until their secrets are
-  # seeded — which is what the sizing below is about.
+  # PROCESS registers all twenty-two either way — including `/telegram`, whose
+  # two slugs are disabled until their secret is seeded — which is what the
+  # sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
@@ -1134,14 +1134,6 @@ servers:
   # BILL Spend & Expense: re-coding card transactions to the right
   # chart-of-accounts value. strad's own server — servers/bill-spend.
   #
-  # DISABLED UNTIL ITS SECRET IS SEEDED, the same way telegram-ro/rw are. An
-  # unresolved `${REF}` fails the render, and the render is the WHOLE spec, so
-  # landing these enabled before the token exists would take every other slug's
-  # deploy down with it. To turn them on: set BILL_SPEND_API_TOKEN in
-  # /strad/staging/gateway/static/ (the console, /ui/secrets), delete the two
-  # `enabled:` lines below, and add the name to PROVISIONED_STATICS in
-  # test/staging-config.test.ts — the ledger that test holds this config to.
-  #
   # BILL_ENVIRONMENT IS NOT A SECRET AND IS DECLARED ANYWAY. Staging points at
   # BILL's SANDBOX, which is a separate empty company with its own token — so a
   # sweep run here cannot touch a real ledger however wrong it gets. The server
@@ -1162,7 +1154,6 @@ servers:
     bundle: bundle
     path: /bill-spend
     entitlements: [admin]
-    enabled: false
     env:
       BILL_SPEND_API_TOKEN: "${BILL_SPEND_API_TOKEN}"
       BILL_ENVIRONMENT: sandbox
@@ -1185,7 +1176,6 @@ servers:
     bundle: bundle
     path: /bill-spend
     entitlements: [admin]
-    enabled: false
     env:
       BILL_SPEND_API_TOKEN: "${BILL_SPEND_API_TOKEN}"
       BILL_ENVIRONMENT: sandbox

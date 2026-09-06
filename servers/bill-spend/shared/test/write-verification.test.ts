@@ -93,10 +93,10 @@ describe("the write is believed only after a read-back", () => {
   });
 
   it("walks past a shape BILL answers SUCCESS to and silently discards", async () => {
-    // The reported real-world behaviour: the uuid forms are accepted and
-    // dropped. A server that trusted the 200 would report this transaction
-    // re-coded and it would still say Internet/Phone.
-    const { bill, gateway } = build({ acceptsVariant: "customFieldUuid/uuid" });
+    // The measured real-world behaviour, generalised: BILL answers SUCCESS to a
+    // body it then discards. A server that trusted the 200 would report this
+    // transaction re-coded and it would still say Internet/Phone.
+    const { bill, gateway } = build({ acceptsVariant: "customFieldId/uuid" });
     const result = await gateway.setTransactionCoding({
       transaction_id: OPEN,
       field: GL,
@@ -104,7 +104,7 @@ describe("the write is believed only after a read-back", () => {
     });
 
     expect(result.changed).toBe(true);
-    expect(result.wire_variant).toBe("customFieldUuid/uuid");
+    expect(result.wire_variant).toBe("customFieldId/uuid");
     // Every earlier shape was tried, read back, and recorded as not persisted.
     expect(result.attempts.map((a) => a.variant)).toEqual(
       WIRE_VARIANTS.map((v) => v.name),
@@ -140,31 +140,31 @@ describe("the write is believed only after a read-back", () => {
   });
 
   it("remembers the shape that worked, so a sweep pays for the ladder once", async () => {
-    const { bill, gateway } = build({ acceptsVariant: "customFieldUuid/uuid" });
+    const { bill, gateway } = build({ acceptsVariant: "customFieldId/uuid" });
     await gateway.setTransactionCoding({
       transaction_id: OPEN,
       field: GL,
       value_ids: [SOFTWARE_ID],
     });
     const firstRound = bill.writes.length;
-    expect(firstRound).toBe(3);
+    expect(firstRound).toBe(WIRE_VARIANTS.length);
 
     await gateway.setTransactionCoding({
       transaction_id: OPEN,
       field: GL,
       value_ids: [MEALS_ID],
     });
-    // One more PUT, not three: the learned variant is tried first.
+    // One more PUT, not two: the learned variant is tried first.
     expect(bill.writes.length - firstRound).toBe(1);
     expect(bill.writes.at(-1)!.body).toEqual({
       customFields: [
-        { customFieldUuid: GL, selectedValues: ["tvl_0903"] },
+        { customFieldId: GL, selectedValues: ["tvl_0903"] },
       ],
     });
   });
 
   it("re-opens the ladder when a remembered shape stops working", async () => {
-    const { bill, gateway } = build({ acceptsVariant: "customFieldUuid/uuid" });
+    const { bill, gateway } = build({ acceptsVariant: "customFieldId/uuid" });
     await gateway.setTransactionCoding({
       transaction_id: OPEN,
       field: GL,
@@ -394,6 +394,57 @@ describe("regressions found in review", () => {
       note: "recoded by the monthly sweep",
     });
     expect(result.note_persisted).toBe(true);
+  });
+
+  it("does not call a write that moved NOTHING a change", async () => {
+    // OBSERVED LIVE, and it is this function's own failure mode in miniature.
+    // A note-only write to a CUSTOM_SELECTOR field asks for the values it
+    // already has (none) and a note BILL discards on that field type. The
+    // desired-state check passes VACUOUSLY — an empty selection matches an
+    // empty selection — so the old code returned `changed: true` on a
+    // transaction whose read-back was identical to the read before the PUT. A
+    // sweep would report forty transactions re-coded having touched none.
+    const { bill, gateway } = build({
+      acceptsVariant: "customFieldId/id",
+      ignoresNote: true,
+    });
+    // Clear it first, so the values genuinely have nowhere to move.
+    await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: GL,
+      value_ids: [],
+    });
+    const before = bill.transaction(OPEN).selected[GL];
+
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: GL,
+      value_ids: [],
+      note: "this note is going nowhere",
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.note_persisted).toBe(false);
+    // And no shape is named or memoised, because none of them demonstrated
+    // anything: a rung that moved nothing is evidence about nothing.
+    expect(result.wire_variant).toBeNull();
+    expect(result.wire_variant_certain).toBeUndefined();
+    expect(bill.transaction(OPEN).selected[GL]).toEqual(before);
+  });
+
+  it("counts a note that DID land as a change, with no value moving", async () => {
+    // The other side of the same diff: on a NOTE-type field there are no values
+    // to move, so the note is the only thing a change can consist of.
+    const { gateway } = build({ acceptsVariant: "customFieldId/id" });
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: "tty_project_0002",
+      value_ids: [],
+      note: "explained by the sweep",
+    });
+    expect(result.changed).toBe(true);
+    expect(result.note_persisted).toBe(true);
+    expect(result.wire_variant).toBe("customFieldId/id");
   });
 
   it("dedupes the same value passed in both identifier forms", async () => {

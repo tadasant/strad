@@ -57,7 +57,10 @@ export function setTransactionCodingTool(
       "before anything is written.\n\n" +
       "An empty `value_ids` array CLEARS the field's coding. A transaction that " +
       "already carries exactly these values is left alone and comes back with " +
-      "`changed: false` — re-running a sweep costs reads, not writes.\n\n" +
+      "`changed: false` — re-running a sweep costs reads, not writes. " +
+      "`changed` is a diff against what the transaction held BEFORE, so a call " +
+      "that moved nothing reports false even when BILL answered SUCCESS to " +
+      "it.\n\n" +
       "A LOCKED transaction is refused without a write attempt: BILL does not " +
       "accept coding changes on one, and only a human can unlock it in the web " +
       "app. Check `is_locked` in list_transactions to avoid the round trip.",

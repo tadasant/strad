@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createGateway, type BillGateway } from "../src/gateway.js";
 import { toolDefinitions } from "../src/tools.js";
+import { WIRE_VARIANTS } from "../src/wire.js";
 import { FakeBill, fixture } from "./fake-bill.js";
 
 /**
@@ -54,6 +55,45 @@ describe("list_coding_fields", () => {
     >;
     expect(fields[0]!.id).toBe("Y3VzdG9tZmllbGQ6MTAx");
     expect(fields[0]!.uuid).toBe("tty_gl_0001");
+  });
+
+  it("lists each field ONCE when BILL ignores the retired filter", async () => {
+    // MEASURED, ON A LIVE COMPANY. "Everything" needs a union of two walks
+    // because `retired` is `eq`-only and defaults to false — but
+    // `/v3/spend/custom-fields` ACCEPTS `retired:eq:true` and does not apply it,
+    // so both walks come back with every field and the union doubled each one.
+    // A caller reading a chart of accounts listed twice has no way to tell that
+    // from a company that really has two fields of the same name.
+    const { call } = build({ ignoresRetiredFilterOnFields: true });
+    const fields = (
+      await call("list_coding_fields", { include_retired: true })
+    ).json!.fields as Array<Record<string, unknown>>;
+    expect(fields.map((f) => f.name)).toEqual(["GL Account", "Project"]);
+  });
+
+  it("still finds a retired field when BILL DOES apply the filter", async () => {
+    // The other half of the same union: the dedupe must not cost the second
+    // walk its results on an endpoint that honours the filter.
+    const { call } = build({
+      fields: [
+        ...fixture().fields,
+        {
+          id: "Y3VzdG9tZmllbGQ6MzAz",
+          uuid: "tty_old_0003",
+          name: "Old Account",
+          retired: true,
+          values: [],
+        },
+      ],
+    });
+    const withRetired = (
+      await call("list_coding_fields", { include_retired: true })
+    ).json!.fields as Array<Record<string, unknown>>;
+    expect(withRetired.map((f) => f.name)).toContain("Old Account");
+
+    const without = (await call("list_coding_fields", {})).json!
+      .fields as Array<Record<string, unknown>>;
+    expect(without.map((f) => f.name)).not.toContain("Old Account");
   });
 });
 
@@ -189,7 +229,7 @@ describe("get_transaction_coding", () => {
 
 describe("set_transaction_coding as a caller sees it", () => {
   it("reports the shape that persisted, so which one works stops being folklore", async () => {
-    const { call } = build({ acceptsVariant: "customFieldUuid/uuid" });
+    const { call } = build({ acceptsVariant: "customFieldId/uuid" });
     const result = await call("set_transaction_coding", {
       transaction_id: "txn_open_0001",
       field: "tty_gl_0001",
@@ -197,7 +237,7 @@ describe("set_transaction_coding as a caller sees it", () => {
     });
     expect(result.isError).toBe(false);
     expect(result.json!.verified).toBe(true);
-    expect(result.json!.wire_variant).toBe("customFieldUuid/uuid");
+    expect(result.json!.wire_variant).toBe("customFieldId/uuid");
   });
 
   it("returns the attempt table as STRUCTURE when nothing persisted", async () => {
@@ -212,7 +252,7 @@ describe("set_transaction_coding as a caller sees it", () => {
     expect(result.isError).toBe(true);
     expect(result.json!.persisted).toBe(false);
     const attempts = result.json!.attempts as Array<Record<string, unknown>>;
-    expect(attempts).toHaveLength(3);
+    expect(attempts).toHaveLength(WIRE_VARIANTS.length);
     expect(attempts[0]!.reportedStatus).toBe("SUCCESS");
     expect(attempts[0]!.persisted).toBe(false);
   });

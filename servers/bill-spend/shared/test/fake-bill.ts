@@ -3,14 +3,18 @@
  * fake that can LIE THE WAY BILL LIES.
  *
  * `acceptsVariant` is the switch. The real endpoint answers HTTP 200
- * `{"status":"SUCCESS"}` to a body it is going to discard, and which bodies it
- * discards is the thing nobody has documented consistently. So this fake always
+ * `{"status":"SUCCESS"}` to a body it is going to discard — measured, against a
+ * live sandbox company: two values sent to a single-select field come back
+ * SUCCESS with one of them stored and the other gone. So this fake always
  * answers SUCCESS and applies the change only when the body matches the variant
- * it has been told to honour. Set it to `customFieldId/id` and the first
- * attempt lands; set it to `customFieldUuid/uuid` and the first two attempts are
- * silently dropped exactly as the field reports describe; set it to `null` and
- * nothing ever persists, which is the case the server must refuse to call a
- * success.
+ * it has been told to honour. Set it to `customFieldId/id` and the first attempt
+ * lands; set it to `customFieldId/uuid` and the first is silently dropped; set
+ * it to `null` and nothing ever persists, which is the case the server must
+ * refuse to call a success.
+ *
+ * `customFieldUuid` is a 400 here because it is a 400 there — the key name in
+ * BILL's Transactions guide answers `customFieldId: must not be null`, and no
+ * rung of the ladder sends it any more.
  *
  * It implements `BillHttp` rather than intercepting `fetch`, so a passing suite
  * is evidence about the request this server BUILDS and the reply it INTERPRETS.
@@ -85,6 +89,17 @@ export interface FakeBillOptions {
    * `CUSTOM_SELECTOR` field — the ordinary case for GL coding.
    */
   ignoresNote?: boolean;
+  /**
+   * ACCEPT `filters=retired:eq:…` on `/v3/spend/custom-fields` and then do
+   * nothing with it, which is what the live endpoint does: an unsupported filter
+   * field answers `400 …: field [x] is not supported in filter field`, `retired`
+   * does not, and the walk comes back carrying every field either way.
+   *
+   * The `/values` endpoint DOES apply the same filter, so this flag is scoped to
+   * the field list. It is off by default because the server must be correct
+   * under both behaviours, and the union-then-dedupe it does is what makes it so.
+   */
+  ignoresRetiredFilterOnFields?: boolean;
 }
 
 export class FakeBill implements BillHttp {
@@ -97,6 +112,7 @@ export class FakeBill implements BillHttp {
   private readonly failures: NonNullable<FakeBillOptions["failures"]>;
   private readonly omitIds: boolean;
   private readonly ignoresNote: boolean;
+  private readonly ignoresRetiredFilterOnFields: boolean;
 
   constructor(options: FakeBillOptions) {
     this.fields = options.fields;
@@ -105,6 +121,8 @@ export class FakeBill implements BillHttp {
     this.failures = [...(options.failures ?? [])];
     this.omitIds = options.omitIdsOnCodingRead ?? false;
     this.ignoresNote = options.ignoresNote ?? false;
+    this.ignoresRetiredFilterOnFields =
+      options.ignoresRetiredFilterOnFields ?? false;
   }
 
   /** The PUTs this fake was sent, in order. */
@@ -193,7 +211,9 @@ export class FakeBill implements BillHttp {
   }
 
   private listFields(options: RequestOptions) {
-    const wantRetired = this.retiredFilter(options);
+    const wantRetired = this.ignoresRetiredFilterOnFields
+      ? undefined
+      : this.retiredFilter(options);
     const matching = this.fields.filter(
       (f) => wantRetired === undefined || Boolean(f.retired) === wantRetired,
     );
@@ -316,28 +336,27 @@ export class FakeBill implements BillHttp {
       ?.customFields?.[0];
     if (!entry) throw new BillApiError("customFields is required", 400, []);
 
-    const fieldKey =
-      typeof entry.customFieldId === "string"
-        ? "customFieldId"
-        : typeof entry.customFieldUuid === "string"
-          ? "customFieldUuid"
-          : null;
-    if (!fieldKey) {
-      // BILL rejecting an unrecognised key outright would be the GOOD case, and
-      // is deliberately not what this fake does by default — see below.
-      throw new BillApiError("no custom field named", 400, []);
+    // VERBATIM FROM THE LIVE API: `customFieldUuid` — the key name in BILL's
+    // Transactions guide — is not an alias, it is a 400, and the message names
+    // the key it wanted instead.
+    if (typeof entry.customFieldId !== "string") {
+      throw new BillApiError("customFieldId: must not be null", 400, [
+        { code: "BDC_1101", message: "customFieldId: must not be null" },
+      ]);
     }
 
+    const fieldKey = "customFieldId";
     const fieldRef = entry[fieldKey] as string;
     const field = this.field(fieldRef);
     const selected = (entry.selectedValues ?? []) as string[];
 
     // Which form did the caller send the VALUES in? Determined by looking them
-    // up, the same way a real backend would have to.
+    // up, the same way a real backend would have to. An empty array carries no
+    // form of its own, so the FIELD reference is what is left to go on.
     const valueForm = selected.length === 0
-      ? // An empty array carries no form; treat it as matching whichever field
-        // key was used, since that is all there is to go on.
-        (fieldKey === "customFieldId" ? "id" : "uuid")
+      ? field.id === fieldRef
+        ? "id"
+        : "uuid"
       : field.values.some((v) => v.id === selected[0])
         ? "id"
         : "uuid";
