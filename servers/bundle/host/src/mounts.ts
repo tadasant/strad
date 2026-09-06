@@ -10,7 +10,7 @@
  * Everything here is a pure function of the environment it is handed, and
  * `test/mounts.test.ts` is what exercises it.
  */
-import { slugsWithPrefixedNames } from "./env-prefix.js";
+import { prefixedEnvName, slugsWithPrefixedNames } from "./env-prefix.js";
 import { log, logWarn } from "./log.js";
 
 /**
@@ -46,12 +46,30 @@ export function scrubCapabilityEnv(env: NodeJS.ProcessEnv = process.env): void {
  * that points several slugs at the conventional path — which is every strad
  * deployment today — must keep resolving without editing that config first, so
  * this only ever ADDS mounts.
+ *
+ * THE MARKER SET IS THE CALLER'S, and it is usually — not always — a tree's whole
+ * required set. `remote-filesystem` keys on its bucket alone, and `google-sheets`
+ * on the OAuth app pair rather than the refresh token that completes it, because
+ * that token is minted by a human on the slug's own console page and the page is
+ * the mount. Smaller is not looser: every name in whatever set is passed must be
+ * present, which is what keeps one stray variable from conjuring an instance.
  */
 export function extraSlugs(
   defaultSlug: string,
   markerNames: readonly string[],
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
+  // A tree loaded from `/app/trees` that does not export the list this was called
+  // with hands us `undefined`, and dereferencing it inside `buildMounts()` would
+  // exit the process — twenty-two mounts lost over one. Both halves ship in one
+  // image from one commit, so this is a floor rather than a live risk.
+  if (!Array.isArray(markerNames)) {
+    logWarn(
+      `${defaultSlug}: no marker names to discover per-slug instances by; ` +
+        `mounting the conventional path only. The tree exports no list for it.`,
+    );
+    return [];
+  }
   const discovered = slugsWithPrefixedNames(env, markerNames).filter(
     (slug) => slug !== defaultSlug,
   );
@@ -62,6 +80,53 @@ export function extraSlugs(
     );
   }
   return discovered;
+}
+
+/**
+ * Names a per-slug mount may NOT inherit from the bare environment.
+ *
+ * `slugEnvView` falls back to the bare name for anything a slug has no name of
+ * its own for. That fallback is the whole backward-compatibility story and it is
+ * right for nearly everything — a shared OAuth client, a viewer domain, an
+ * organisation id. It is wrong for a variable that IS an identity.
+ *
+ * A `google-sheets` slug is discovered on its OAuth app pair, so it mounts before
+ * anyone has connected it and its refresh token is legitimately absent. If some
+ * other server on the same bundle put a bare `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`
+ * on the container, the unconnected slug would inherit it: `missingCredentials()`
+ * would report nothing missing, the mount would say it is healthy, and every call
+ * would run against ANOTHER Google account — under a slug whose console page says
+ * it is not connected. Since one OAuth app usually serves every slug, the refresh
+ * would even succeed.
+ *
+ * So a per-slug mount reads these from its own name or not at all. Absent is the
+ * honest answer: the mount degrades and names what is missing, which is the state
+ * the connector flow expects to find.
+ *
+ * Mutates the view it is handed, like {@link scrubCapabilityEnv}. Only speaks when
+ * it actually dropped something, because a slug that was never going to inherit
+ * anything is the ordinary case.
+ */
+export function dropInheritedNames(
+  view: Record<string, string | undefined>,
+  slug: string,
+  names: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  for (const name of names) {
+    const own = prefixedEnvName(slug, name);
+    if (own !== null && env[own]) continue;
+    if (!view[name]) {
+      delete view[name];
+      continue;
+    }
+    delete view[name];
+    logWarn(
+      `${slug}: not inheriting the bare ${name} — it belongs to whichever ` +
+        `account seeded it, not to this slug. Seed ${own ?? `${name} under this slug`} ` +
+        `instead; until then this mount is degraded.`,
+    );
+  }
 }
 
 /**

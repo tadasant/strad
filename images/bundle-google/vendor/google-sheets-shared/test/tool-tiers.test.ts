@@ -18,6 +18,7 @@ import {
   missingCredentials,
   createDefaultClient,
   GOOGLE_SHEETS_ENV_NAMES,
+  GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES,
 } from "../src/index.js";
 
 test("every registered tool is in exactly one tier", () => {
@@ -62,6 +63,21 @@ test("a mount with no credential lists tools and fails calls, naming what is mis
     }),
     ["GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN"],
   );
+});
+
+test("the OAuth app pair is the credential minus the account's token", () => {
+  // The bundle host discovers a per-slug mount on these two, so that an
+  // unconnected slug still mounts and lists its tools. They are a marker set,
+  // not a credential: `missingCredentials` above still gates on all three.
+  const app: readonly string[] = GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES;
+  const credential: readonly string[] = GOOGLE_SHEETS_ENV_NAMES;
+
+  assert.deepEqual(
+    [...app],
+    ["GOOGLE_SHEETS_OAUTH_CLIENT_ID", "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET"],
+  );
+  for (const name of app) assert.ok(credential.includes(name));
+  assert.ok(!app.includes("GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN"));
 });
 
 const account = (name) => ({

@@ -108,6 +108,27 @@ seed client id + secret  →  deploy (slug mounts, degraded)
 
 An unconnected slug costs its own capability and nobody else's.
 
+The two seeded variables do a second job on the way in: the bundle host never
+sees strad's config, so a slug's own client id and secret are the only evidence
+it has that a mount was asked for. It discovers on that pair — deliberately not
+on the token, which would unmount every slug that has not been connected yet, and
+a slug has to be mounted before its console page can connect it. Seed one of the
+two without the other and the slug renders but does not mount.
+
+Which is also the reason to leave `clientIdVariable` and `clientSecretVariable`
+at their defaults. The host keys on the names the server's own tree reads, and
+`google-sheets` reads `GOOGLE_SHEETS_OAUTH_CLIENT_ID` and
+`GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`. Renaming them in the config renames what
+core seeds and reads, not what the container looks for, so the slug renders,
+deploys, and is never mounted — with nothing in any log to say why.
+
+And a mounted-but-unconnected slug reads its refresh token from **its own name or
+not at all**. The per-slug environment otherwise falls back to the bare name, and
+inheriting a bare `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` some other server put on the
+container would quietly point one slug at another account — plausibly a working
+one, since the OAuth app is usually shared. The host drops it and says so in the
+boot log; the mount stays degraded until the slug has a token of its own.
+
 ### The credential arrives under the slug's own variable name, and only that one
 
 A connector's variables are baked onto the container as

@@ -80,7 +80,10 @@ bundle, below.
 
 Three of those mounts are also mounted again, once per slug, when a deployment
 gives a slug its own credential rather than sharing the container's: `/telegram`,
-`/remote-filesystem-tmp-public` and `/google-sheets`. That is what makes six
+`/remote-filesystem-tmp-public` and `/google-sheets`. What counts as "its own"
+is per tree: telegram wants the whole credential, the artifact store wants a
+bucket, and google-sheets wants the OAuth client id and secret — never the
+refresh token, which a human mints later on the mount's own console page. That is what makes six
 `google-sheets-*` slugs over three Google accounts one server rather than three —
 see [Google Sheets](/servers/google-sheets/).
 
