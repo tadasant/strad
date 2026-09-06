@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * bundle — THE strad supplementary image. All 21 upstream MCP servers (21
+ * bundle — THE strad supplementary image. All 22 upstream MCP servers (22
  * mounts, see `buildMounts`), one container, one process, one Chromium, one
- * mcp-grafana child. The gateway's config names more SLUGS than that — 30
+ * mcp-grafana child. The gateway's config names more SLUGS than that — 32
  * supplementary-image entries in infra/strad.staging.yaml — because capability
  * variants (gmail-ro, gmail-rw, …) are several slugs pointing at ONE mount here.
  *
- * TWENTY-ONE IS THE FLOOR, not a constant. Four trees (telegram,
+ * TWENTY-TWO IS THE FLOOR, not a constant. Four trees (telegram,
  * remote-filesystem, google-sheets, grafana) mount ONE INSTANCE PER SLUG the
  * environment carries per-slug values for — see `extraSlugs` — so a container
  * told about `telegram-ro` and `telegram-rw` separately serves /telegram,
@@ -14,9 +14,9 @@
  * deployment uses: an OAuth refresh token IS one Google account and a
  * service-account token IS one Grafana, so each extra account is another mount
  * here. The conventional path is always mounted, so a config that asks for none
- * of this sees exactly the twenty-one it saw before.
+ * of this sees exactly the twenty-two it saw before.
  *
- * TWENTY-NINE of those are on one component. The other one, `zimmer-secrets`,
+ * THIRTY-ONE of those are on one component. The other one, `zimmer-secrets`,
  * runs this same image as a SECOND component, and what makes it one is the SLUG
  * rather than the store: a second entitlement and a second console page. A
  * second STORE needs no second component — `loadSecrets()` below hands the tree
@@ -45,8 +45,8 @@
  * Capability variants (gmail-ro, gmail-rw) are two strad slugs pointing at the
  * SAME path here. This host neither knows nor cares that they exist.
  *
- * BLAST RADIUS, honestly. Twenty-one servers now share a process. A crash is a
- * 21-server outage, not a 1-server outage. Everything below that CAN be made
+ * BLAST RADIUS, honestly. Twenty-two servers now share a process. A crash is a
+ * 22-server outage, not a 1-server outage. Everything below that CAN be made
  * survivable is: a browser server whose login fails is marked degraded rather
  * than killing the container (the standalone images exit — correct for them,
  * catastrophic here); a dead Chromium is relaunched on next use; an unhandled
@@ -231,6 +231,8 @@ async function buildMounts(): Promise<Mount[]> {
   mounts.push(await loadTelegram("telegram"));
   for (const slug of extraSlugs("telegram", TELEGRAM_MARKER_NAMES))
     deferred.push({ slug, load: () => loadTelegram(slug) });
+
+  mounts.push(await loadBillSpend());
 
   // --- bundle-google: gmail / calendar / docs --------------------------------
   // These build per request (their factories are cheap and hold no client), which
@@ -770,7 +772,7 @@ async function loadXTwitter(): Promise<Mount> {
     // The client caches its OAuth provider for the host process, so the factory
     // is built once here and memoised inside registerHandlers. Building it
     // LAZILY matters: `createXClientFromEnv` throws when no X credential is
-    // configured at all, and a throw at boot would take all twenty-one mounts down
+    // configured at all, and a throw at boot would take all twenty-two mounts down
     // over one unconfigured server.
     register: (s) =>
       created.registerHandlers(s, () =>
@@ -817,7 +819,7 @@ async function loadXTwitter(): Promise<Mount> {
  * agent's tools/list — rather than lose the slug entirely. Every call then fails
  * with an error naming the three variables. Same posture as remote-filesystem,
  * and for the same reason: one server's missing config must not cost the other
- * twenty their boot.
+ * twenty-one their boot.
  *
  * ONE INSTANCE PER SLUG. `telegram-ro` and `telegram-rw` are two strad slugs, and
  * for as long as they were two names for one mount they were also one MTProto
@@ -848,6 +850,40 @@ async function loadTelegram(slug: string): Promise<Mount> {
     serverName: "strad-telegram",
     capabilities: { tools: {} },
     degraded: missingCredentialsDegraded(missing),
+    register: (s) => created.registerHandlers(s),
+  };
+}
+
+/**
+ * bill-spend — strad's own BILL Spend & Expense server: re-codes card
+ * transactions to the right chart-of-accounts value.
+ *
+ * MOUNTED EVEN WITH NO CREDENTIAL, degraded, for the same reason as telegram and
+ * remote-filesystem: the token is a real company's admin credential, and a
+ * deployment that has not injected it yet should still be able to SEE the tool
+ * surface rather than lose the slug. Every call then fails with an error naming
+ * the variable.
+ *
+ * ONE MOUNT, not one per slug. `bill-spend-ro` and `bill-spend-rw` are two strad
+ * slugs pointing here, differing only in what the gateway's `tools:` policy lets
+ * them call — one BILL token is one company, so unlike telegram there is no
+ * second ACCOUNT a second instance would serve.
+ */
+async function loadBillSpend(): Promise<Mount> {
+  const mod = (await loadFromTree("bill-spend", "shared/build/index.js")) as {
+    createMCPServer: Factory;
+    missingCredentials: (env?: NodeJS.ProcessEnv) => string[];
+  };
+
+  const env = slugEnvView(process.env, "bill-spend");
+  const created = mod.createMCPServer({ version: VERSION, env });
+
+  return {
+    slug: "bill-spend",
+    tree: "bill-spend",
+    serverName: "strad-bill-spend",
+    capabilities: { tools: {} },
+    degraded: missingCredentialsDegraded(mod.missingCredentials(env)),
     register: (s) => created.registerHandlers(s),
   };
 }
@@ -1343,7 +1379,7 @@ async function main(): Promise<void> {
   //
   // NOT AWAITED, and that is deliberate. A pass is one sequential read per
   // listed variable, each with its own timeout, so awaiting it would put a slow
-  // or unreachable core directly in front of `listen()` below — twenty-one
+  // or unreachable core directly in front of `listen()` below — twenty-two
   // mounts held off serving because one credential could not be re-read. The
   // container starting with the value the deploy baked is exactly the behaviour
   // every deployment has today, so falling back to it costs nothing; blocking
@@ -1443,8 +1479,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // One stray rejection from one of twenty-one servers must not kill the other
-  // twenty. The standalone images exit here (correct, when the process IS the
+  // One stray rejection from one of twenty-two servers must not kill the other
+  // twenty-one. The standalone images exit here (correct, when the process IS the
   // server); this one logs.
   process.on("unhandledRejection", (reason) => {
     logError("unhandledRejection", reason);

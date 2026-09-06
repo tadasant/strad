@@ -10,7 +10,7 @@ import { waivedNames } from "../src/deploy/unseeded.ts";
  *
  * Three things are checked here, and they are the three that would rot:
  *
- *   1. COMPONENT COUNT. 30 servers must render as exactly THREE components —
+ *   1. COMPONENT COUNT. 32 servers must render as exactly THREE components —
  *      core, the bundle, and `bundle-zimmer-secrets`. A stray `bundle:` name in
  *      the config is a $5-$25/month regression that nobody would otherwise
  *      notice, so the number is pinned rather than merely bounded. The third one
@@ -47,7 +47,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  *
  * This is not decoration. `render-spec` resolves an `env:`/`consoleEnv:` ref at
  * RENDER time and exits 1 on one it cannot find, so a single unseeded name does
- * not degrade one slug — it fails the spec and takes all thirty-three down. That is
+ * not degrade one slug — it fails the spec and takes all thirty-five down. That is
  * the fail-loud property the store-backed deploy is built around, and it is
  * worth keeping; what it costs is that "declare the server" and "seed the
  * secret" are one atomic step, and a PR can only do the first half.
@@ -66,7 +66,7 @@ const IMAGE = "ghcr.io/tadasant/strad-bundle:latest";
  * does not reference is a hard error, and an unwaived absent name still exits 1.
  *
  * The other way to ship a server ahead of its credential is `enabled: false` —
- * the telegram and pulse-subregistry entries are exactly that. It is the right
+ * the telegram, bill-spend and pulse-subregistry entries are exactly that. It is the right
  * choice when the slug should not be listed or entitled at all yet; `mayBeUnseeded:`
  * is the right one when it should be visible and waiting.
  */
@@ -161,7 +161,7 @@ describe("staging config", () => {
     expect(credentials.every((e) => e.type === "SECRET")).toBe(true);
 
     // And it is INSTRUMENTED. The collapsed container is the one this telemetry
-    // exists for — it is where Chromium, `op` and twenty-one servers now share a
+    // exists for — it is where Chromium, `op` and twenty-two servers now share a
     // vCPU — so a bundle that renders without its identity vars is a bundle we
     // could not tell apart from the core in a dashboard.
     expect(bundle.envs.find((e) => e.key === "STRAD_COMPONENT")?.value).toBe(
@@ -233,7 +233,7 @@ describe("staging config", () => {
     const supplementary = CONFIG.servers.filter(
       (s) => s.kind === "supplementary-image",
     );
-    expect(supplementary.length).toBe(30);
+    expect(supplementary.length).toBe(32);
     for (const server of supplementary) {
       expect(server.image).toBe(IMAGE);
       // ONE image, and one bundle for everything whose difference is
@@ -273,6 +273,7 @@ describe("staging config", () => {
     "google-calendar-ro": 4,
     "onepassword-ro": 5,
     "telegram-ro": 5,
+    "bill-spend-ro": 4,
   };
 
   it.each(Object.entries(ALLOW_COUNTS))(
@@ -295,6 +296,7 @@ describe("staging config", () => {
     "google-calendar-rw",
     "onepassword-rw",
     "telegram-rw",
+    "bill-spend-rw",
   ])("%s is the full-capability tier (no policy)", (slug) => {
     const server = CONFIG.servers.find((s) => s.slug === slug);
     expect(server).toBeDefined();

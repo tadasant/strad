@@ -15,7 +15,7 @@
  * credential-dependent. CI has no credential, the probe fails closed, and the
  * count is the read-only 4 below.
  *
- * What it is really checking is that twenty-one servers, thirteen dependency trees and
+ * What it is really checking is that twenty-two servers, fourteen dependency trees and
  * one Chromium came up in ONE process without stepping on each other. Pass
  * `--tools` to print the names too.
  *
@@ -76,6 +76,14 @@ const EXPECT = {
   // get_me, list_chats, get_chat, get_chat_history, search_messages, and the one
   // write tool, send_message — which `telegram-ro` is the allow-list without.
   telegram: 6,
+  // list_coding_fields, list_coding_options, list_transactions,
+  // get_transaction_coding, and the one write tool, set_transaction_coding —
+  // which `bill-spend-ro` is the allow-list without. The count is also a
+  // SECURITY assertion: the apiToken behind this mount is unscoped ADMIN on a
+  // company's card program, so the tool surface is the only thing withholding
+  // card issuance and budget management. A sixth tool here is that boundary
+  // moving, and this is where it gets noticed.
+  "bill-spend": 5,
   // Grafana's 65 tools minus the 13 the binary's `-disable-write` removes. Not a
   // gateway allow-list: the child process does not contain them. If this number
   // moves, either the pin moved or a flag stopped being passed — and the second
@@ -107,6 +115,11 @@ const PARTIAL_SURFACES = {
 
 const TELEGRAM_TOOLS = new Set([
   "get_me", "list_chats", "get_chat", "get_chat_history", "search_messages", "send_message",
+]);
+
+const BILL_SPEND_TOOLS = new Set([
+  "list_coding_fields", "list_coding_options", "list_transactions",
+  "get_transaction_coding", "set_transaction_coding",
 ]);
 
 const X_TWITTER_TOOLS = new Set([
@@ -224,8 +237,13 @@ for (const [slug, expected] of Object.entries(EXPECT)) {
     // the count and silently narrows that slug to nothing it can call.
     const isExactTelegramSurface = slug !== "telegram" ||
       tools.length === TELEGRAM_TOOLS.size && tools.every((tool) => TELEGRAM_TOOLS.has(tool));
+    // Named for a third reason on top of the other two: this mount's credential
+    // can issue a virtual card, and the NAMES are what say it does not. A count
+    // of 5 is satisfied by a surface that swapped a read tool for `create_card`.
+    const isExactBillSpendSurface = slug !== "bill-spend" ||
+      tools.length === BILL_SPEND_TOOLS.size && tools.every((tool) => BILL_SPEND_TOOLS.has(tool));
     const ok = (expected === null || tools.length === expected) &&
-      isExactXSurface && isExactTelegramSurface;
+      isExactXSurface && isExactTelegramSurface && isExactBillSpendSurface;
     if (!ok) failed += 1;
     console.log(
       `${ok ? "ok  " : "FAIL"} /${slug}: ${tools.length} tools${expected === null ? "" : ` (expected ${expected})`}`,

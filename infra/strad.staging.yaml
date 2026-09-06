@@ -12,19 +12,19 @@
 # ---------------------------------------------------------------------------
 # CAPABILITY LIVES AT THE GATEWAY. THREE COMPONENTS, NOT THIRTEEN.
 # ---------------------------------------------------------------------------
-# This file declares thirty-three server SLUGS: thirty supplementary-image
+# This file declares thirty-five server SLUGS: thirty-two supplementary-image
 # entries, the `echo` builtin in core, the `deepwiki` remote-http canary, and
 # the `anki` local-tunnel, which ships disabled — see its entry below.
-# Twenty-nine of the thirty land on nineteen upstream mounts inside the
-# one bundle image, because capability variants share a mount; the thirtieth
+# Thirty-one of the thirty-two land on twenty upstream mounts inside the
+# one bundle image, because capability variants share a mount; the thirty-second
 # (`zimmer-secrets`) runs that same image on a component of its own. The image
-# serves twenty-one mounts: `/x-twitter`, `/google-sheets` and `/grafana` are in
+# serves twenty-two mounts: `/x-twitter`, `/google-sheets` and `/grafana` are in
 # it with no staging slug pointing at any of them — `grafana-registry` is served
 # by a per-slug instance at `/grafana-registry`, not by the conventional mount.
 #
-# FOUR of the thirty carry `enabled: false` — telegram-ro, telegram-rw,
-# pulse-subregistry and grafana-registry — because their credentials are not in
-# the store yet.
+# SIX of the thirty-two carry `enabled: false` — telegram-ro, telegram-rw,
+# bill-spend-ro, bill-spend-rw, pulse-subregistry and grafana-registry — because
+# their credentials are not in the store yet.
 # A `${NAME}` the store does not hold fails the RENDER, and the render is the
 # whole spec, so an entry that ships enabled before its secret is seeded takes
 # every other server's deploy down with it.
@@ -69,8 +69,8 @@
 # The allow-lists below are derived from each upstream's own tool-group
 # definitions, so the counts stay honest: slack 7/13 · tailscale 7/15 ·
 # monarch 10/23 · gmail 5/7/8 · google-docs 4/10/11 · google-calendar 4/7 ·
-# 1Password 5/9 · telegram 5/6. test/staging-config.test.ts asserts every one of
-# those numbers.
+# 1Password 5/9 · telegram 5/6 · bill-spend 4/5. test/staging-config.test.ts
+# asserts every one of those numbers.
 
 version: 1
 
@@ -147,7 +147,7 @@ roles:
     servers: [zimmer-secrets, secrets, echo]
 
 bundles:
-  # THE bundle. One image, one component, and eighteen of the image's twenty-one
+  # THE bundle. One image, one component, and nineteen of the image's twenty-two
   # upstream MCP servers — the bundle-api fleet, the Google servers, 1Password
   # (with the `op` CLI baked in), telegram and the three browser servers, which
   # share ONE Chromium (never one per server: see
@@ -155,14 +155,14 @@ bundles:
   # `/x-twitter`, `/google-sheets` — registered in prod, where its six slugs each
   # carry one Google account's OAuth token — and the conventional `/grafana`,
   # since staging's Grafana is the per-slug `/grafana-registry` below. The
-  # PROCESS registers all twenty-one either way — including `/telegram`, whose
-  # two slugs are disabled until their secrets are seeded — which is what the
-  # sizing below is about.
+  # PROCESS registers all twenty-two either way — including `/telegram` and
+  # `/bill-spend`, whose two slugs each are disabled until their secrets are
+  # seeded — which is what the sizing below is about.
   #
   # SIZE. 2GB, and the reasoning is measured, not guessed. With two browser
   # servers logging in concurrently the container's working set is ~760MB (the
   # single Chromium's process tree accounts for ~940MB RSS, most of it shared),
-  # and Node with twenty-one servers registered adds ~200MB. 0.5GB is absurd here;
+  # and Node with twenty-two servers registered adds ~200MB. 0.5GB is absurd here;
   # 1GB would be one bad page render from an OOM that takes all 27 slugs down
   # with it. The real constraint is CPU — 1 shared vCPU serialises Chromium's
   # rendering, and that box now also answers every Slack and Gmail call — so if
@@ -1130,3 +1130,63 @@ servers:
       TELEGRAM_API_HASH: "${TELEGRAM_API_HASH}"
       TELEGRAM_STRING_SESSION: "${TELEGRAM_STRING_SESSION}"
     # No `tools:` — all six, send_message included.
+
+  # BILL Spend & Expense: re-coding card transactions to the right
+  # chart-of-accounts value. strad's own server — servers/bill-spend.
+  #
+  # DISABLED UNTIL ITS SECRET IS SEEDED, the same way telegram-ro/rw are. An
+  # unresolved `${REF}` fails the render, and the render is the WHOLE spec, so
+  # landing these enabled before the token exists would take every other slug's
+  # deploy down with it. To turn them on: set BILL_SPEND_API_TOKEN in
+  # /strad/staging/gateway/static/ (the console, /ui/secrets), delete the two
+  # `enabled:` lines below, and add the name to PROVISIONED_STATICS in
+  # test/staging-config.test.ts — the ledger that test holds this config to.
+  #
+  # BILL_ENVIRONMENT IS NOT A SECRET AND IS DECLARED ANYWAY. Staging points at
+  # BILL's SANDBOX, which is a separate empty company with its own token — so a
+  # sweep run here cannot touch a real ledger however wrong it gets. The server
+  # defaults to sandbox with the variable unset; it is written out because the
+  # value is the entire difference between a test company and a real one, and
+  # that belongs where a human reads the config rather than in a default.
+  #
+  # THE CREDENTIAL IS UNSCOPED ADMIN. BILL issues no read-only token: the same
+  # secret that re-codes a transaction can issue a virtual card and move a
+  # budget. The server implements five tools and nothing else, which is the only
+  # boundary that exists — see servers/bill-spend/README.md. `bill-spend-ro`
+  # narrows that further to the four reads.
+  - slug: bill-spend-ro
+    kind: supplementary-image
+    title: BILL Spend & Expense (read-only)
+    description: Read card transactions and the custom fields they are coded with.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /bill-spend
+    entitlements: [admin]
+    enabled: false
+    env:
+      BILL_SPEND_API_TOKEN: "${BILL_SPEND_API_TOKEN}"
+      BILL_ENVIRONMENT: sandbox
+    tools:
+      allow:
+        - list_coding_fields
+        - list_coding_options
+        - list_transactions
+        - get_transaction_coding
+
+  # Writes to a financial record: this slug can change what a transaction is
+  # coded as, which is what the accounting sync then exports. Same credential,
+  # declared again — a family's variants each declare their own, so disabling
+  # one cannot silently strip the secret from its sibling.
+  - slug: bill-spend-rw
+    kind: supplementary-image
+    title: BILL Spend & Expense (read-write)
+    description: Read card transactions and re-code them to the right GL account.
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /bill-spend
+    entitlements: [admin]
+    enabled: false
+    env:
+      BILL_SPEND_API_TOKEN: "${BILL_SPEND_API_TOKEN}"
+      BILL_ENVIRONMENT: sandbox
+    # No `tools:` — all five, set_transaction_coding included.

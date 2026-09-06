@@ -1,0 +1,14 @@
+{
+  "name": "bill-spend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "strad's BILL Spend & Expense server — re-codes card transactions to the right chart-of-accounts value, and proves the write landed. A tree in the strad bundle image.",
+  "type": "module",
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace shared",
+    "test": "npm run test --workspace shared"
+  }
+}

@@ -98,6 +98,7 @@ export default defineConfig({
             },
             { label: "The artifact store", slug: "servers/artifact-store" },
             { label: "Telegram", slug: "servers/telegram" },
+            { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "Google Sheets", slug: "servers/google-sheets" },
             { label: "strad fetch", slug: "servers/strad-fetch" },
             { label: "Grafana", slug: "servers/grafana" },

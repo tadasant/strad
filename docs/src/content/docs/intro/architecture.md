@@ -28,7 +28,7 @@ flowchart TB
             BI["core builtins<br/>(in-process)"]
         end
         subgraph priv["Private network (VPC)"]
-            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>21 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
+            BU["bundle (internal-only)<br/>ghcr.io/tadasant/strad-bundle<br/>22 MCP servers · 1 shared Chromium<br/>apps-s-1vcpu-2gb"]
         end
     end
 
@@ -67,15 +67,15 @@ for it.
 
 A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
-`ghcr.io/tadasant/strad-bundle` container that mounts twenty-one MCP servers in
-one Node process, assembled from thirteen independently-built dependency trees.
-The staging config maps twenty-nine of its thirty `supplementary-image`
-entries onto nineteen paths, because capability variants of one upstream are two
-entries pointing at the same path. Eighteen of those are baked mounts;
+`ghcr.io/tadasant/strad-bundle` container that mounts twenty-two MCP servers in
+one Node process, assembled from fourteen independently-built dependency trees.
+The staging config maps thirty-one of its thirty-two `supplementary-image`
+entries onto twenty paths, because capability variants of one upstream are two
+entries pointing at the same path. Nineteen of those are baked mounts;
 `/x-twitter`, `/google-sheets` and `/grafana` are baked with no staging slug
-pointing at them. The nineteenth, `/grafana-registry`, is a **per-slug
+pointing at them. The twentieth, `/grafana-registry`, is a **per-slug
 instance** — a mount the host stands up only when the container carries that
-slug's own credential (see below). The thirtieth entry runs on the second
+slug's own credential (see below). The thirty-second entry runs on the second
 bundle, below.
 
 Three of those mounts are also mounted again, once per slug, when a deployment
@@ -95,8 +95,8 @@ Three numbers, three different things:
 | Number | What it counts                                                                               |
 | ------ | -------------------------------------------------------------------------------------------- |
 | **3**  | App Platform components (`core`, `bundle`, `bundle-zimmer-secrets`)                          |
-| **21** | MCP servers mounted inside the bundle image                                                  |
-| **32** | server slugs in `infra/strad.staging.yaml` (29 supplementary + `echo` + `deepwiki` + `anki`) |
+| **22** | MCP servers mounted inside the bundle image                                                  |
+| **35** | server slugs in `infra/strad.staging.yaml` (32 supplementary + `echo` + `deepwiki` + `anki`) |
 
 ### The two modes
 
@@ -360,7 +360,7 @@ The server list drives how containers are grouped:
   per slug from [its own variables](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
 - **A browser bundle needs real headroom.** Chromium costs ~1.06s per launch and
   peaks ~545MB RSS, and CPU rather than RAM is what binds it, because 1 vCPU
-  serialises rendering. strad's own deployment puts everything (21 mounted servers,
+  serialises rendering. strad's own deployment puts everything (22 mounted servers,
   one shared Chromium, the `op` CLI) in one `apps-s-1vcpu-2gb` component: the
   measured working set is ~760MB with two browser servers logging in at once.
   Several Chromiums in one component is the thing to avoid — share one browser and
@@ -368,8 +368,8 @@ The server list drives how containers are grouped:
 
 <aside class="starlight-aside starlight-aside--caution">
 
-**One process, one core, twenty-one servers is an accepted risk, not a proven
-design.** A crash in the bundle host takes all twenty-one down together, and the
+**One process, one core, twenty-two servers is an accepted risk, not a proven
+design.** A crash in the bundle host takes all twenty-two down together, and the
 single vCPU is shared with Chromium. If it turns out to be starved, the next move
 is a dedicated CPU (`apps-d-1vcpu-2gb`), not more RAM — the binding constraint is
 compute. This is what the [telemetry](/operate/telemetry/) exists to answer. See
