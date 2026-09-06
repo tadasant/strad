@@ -3,14 +3,18 @@
  * fake that can LIE THE WAY BILL LIES.
  *
  * `acceptsVariant` is the switch. The real endpoint answers HTTP 200
- * `{"status":"SUCCESS"}` to a body it is going to discard, and which bodies it
- * discards is the thing nobody has documented consistently. So this fake always
+ * `{"status":"SUCCESS"}` to a body it is going to discard — measured, against a
+ * live sandbox company: two values sent to a single-select field come back
+ * SUCCESS with the field exactly as it was. So this fake always
  * answers SUCCESS and applies the change only when the body matches the variant
- * it has been told to honour. Set it to `customFieldId/id` and the first
- * attempt lands; set it to `customFieldUuid/uuid` and the first two attempts are
- * silently dropped exactly as the field reports describe; set it to `null` and
- * nothing ever persists, which is the case the server must refuse to call a
- * success.
+ * it has been told to honour. Set it to `customFieldId/id` and the first attempt
+ * lands; set it to `customFieldId/uuid` and the first is silently dropped; set
+ * it to `null` and nothing ever persists, which is the case the server must
+ * refuse to call a success.
+ *
+ * `customFieldUuid` is a 400 here because it is a 400 there — the key name in
+ * BILL's Transactions guide answers `customFieldId: must not be null`, and no
+ * rung of the ladder sends it any more.
  *
  * It implements `BillHttp` rather than intercepting `fetch`, so a passing suite
  * is evidence about the request this server BUILDS and the reply it INTERPRETS.
@@ -85,6 +89,32 @@ export interface FakeBillOptions {
    * `CUSTOM_SELECTOR` field — the ordinary case for GL coding.
    */
   ignoresNote?: boolean;
+  /**
+   * ACCEPT `filters=retired:eq:…` on `/v3/spend/custom-fields` and then do
+   * nothing with it, which is what the live endpoint does: an unsupported filter
+   * field answers `400 …: field [x] is not supported in filter field`, `retired`
+   * does not, and the walk comes back carrying every field either way.
+   *
+   * The `/values` endpoint DOES apply the same filter, so this flag is scoped to
+   * the field list. It is off by default because the server must be correct
+   * under both behaviours, and the union-then-dedupe it does is what makes it so.
+   */
+  ignoresRetiredFilterOnFields?: boolean;
+  /**
+   * A HUMAN EDITING THE SAME TRANSACTION IN THE BILL WEB APP, once, between a
+   * write and the read-back that verifies it.
+   *
+   * This is the only cause anyone has for the `drift` branch of
+   * `WriteNotPersistedError`, and it is not exotic: this server is driven by an
+   * unattended agent against a company real people also use. The write does not
+   * land, so `persisted` is false — but the transaction is no longer what it was
+   * either, and an error telling the caller to "treat this as UNCODED" would be
+   * describing a row that has since been coded by somebody.
+   *
+   * Applied ONCE, to the next coding read, so the fake stops being a company
+   * with a poltergeist after the case under test.
+   */
+  concurrentEdit?: { fieldUuid: string; valueUuids: string[] };
 }
 
 export class FakeBill implements BillHttp {
@@ -97,6 +127,10 @@ export class FakeBill implements BillHttp {
   private readonly failures: NonNullable<FakeBillOptions["failures"]>;
   private readonly omitIds: boolean;
   private readonly ignoresNote: boolean;
+  private readonly ignoresRetiredFilterOnFields: boolean;
+  private concurrentEdit?: { fieldUuid: string; valueUuids: string[] };
+  /** Set by the first PUT, so the edit lands BETWEEN a write and its read-back. */
+  private concurrentEditArmed = false;
 
   constructor(options: FakeBillOptions) {
     this.fields = options.fields;
@@ -105,6 +139,9 @@ export class FakeBill implements BillHttp {
     this.failures = [...(options.failures ?? [])];
     this.omitIds = options.omitIdsOnCodingRead ?? false;
     this.ignoresNote = options.ignoresNote ?? false;
+    this.ignoresRetiredFilterOnFields =
+      options.ignoresRetiredFilterOnFields ?? false;
+    this.concurrentEdit = options.concurrentEdit;
   }
 
   /** The PUTs this fake was sent, in order. */
@@ -193,7 +230,9 @@ export class FakeBill implements BillHttp {
   }
 
   private listFields(options: RequestOptions) {
-    const wantRetired = this.retiredFilter(options);
+    const wantRetired = this.ignoresRetiredFilterOnFields
+      ? undefined
+      : this.retiredFilter(options);
     const matching = this.fields.filter(
       (f) => wantRetired === undefined || Boolean(f.retired) === wantRetired,
     );
@@ -278,6 +317,13 @@ export class FakeBill implements BillHttp {
 
   private readCoding(uuid: string) {
     const tx = this.transaction(uuid);
+    if (this.concurrentEdit && this.concurrentEditArmed) {
+      const { fieldUuid, valueUuids } = this.concurrentEdit;
+      // Once, and only after a PUT — the before-state read has to be the state
+      // that was really there, or there is no drift to observe.
+      this.concurrentEdit = undefined;
+      tx.selected[fieldUuid] = valueUuids;
+    }
     return {
       results: this.fieldsOf(tx).map((f) => ({
         // BOTH FORMS, which the transactions endpoint does not give — this is
@@ -316,28 +362,27 @@ export class FakeBill implements BillHttp {
       ?.customFields?.[0];
     if (!entry) throw new BillApiError("customFields is required", 400, []);
 
-    const fieldKey =
-      typeof entry.customFieldId === "string"
-        ? "customFieldId"
-        : typeof entry.customFieldUuid === "string"
-          ? "customFieldUuid"
-          : null;
-    if (!fieldKey) {
-      // BILL rejecting an unrecognised key outright would be the GOOD case, and
-      // is deliberately not what this fake does by default — see below.
-      throw new BillApiError("no custom field named", 400, []);
+    // VERBATIM FROM THE LIVE API: `customFieldUuid` — the key name in BILL's
+    // Transactions guide — is not an alias, it is a 400, and the message names
+    // the key it wanted instead.
+    if (typeof entry.customFieldId !== "string") {
+      throw new BillApiError("customFieldId: must not be null", 400, [
+        { code: "BDC_1101", message: "customFieldId: must not be null" },
+      ]);
     }
 
+    const fieldKey = "customFieldId";
     const fieldRef = entry[fieldKey] as string;
     const field = this.field(fieldRef);
     const selected = (entry.selectedValues ?? []) as string[];
 
     // Which form did the caller send the VALUES in? Determined by looking them
-    // up, the same way a real backend would have to.
+    // up, the same way a real backend would have to. An empty array carries no
+    // form of its own, so the FIELD reference is what is left to go on.
     const valueForm = selected.length === 0
-      ? // An empty array carries no form; treat it as matching whichever field
-        // key was used, since that is all there is to go on.
-        (fieldKey === "customFieldId" ? "id" : "uuid")
+      ? field.id === fieldRef
+        ? "id"
+        : "uuid"
       : field.values.some((v) => v.id === selected[0])
         ? "id"
         : "uuid";
@@ -349,6 +394,8 @@ export class FakeBill implements BillHttp {
     // shape — so the fake drops it even when the shape is the honoured one.
     const applies = this.fieldsOf(tx).some((f) => f.uuid === field.uuid);
 
+    if (this.concurrentEdit) this.concurrentEditArmed = true;
+
     // ALWAYS 200 SUCCESS. This is the behaviour under test.
     if (applies && this.acceptsVariant === variant) {
       if (typeof entry.note === "string" && !this.ignoresNote) {
@@ -359,7 +406,18 @@ export class FakeBill implements BillHttp {
         if (!v) throw new BillApiError(`no such value ${raw}`, 400, []);
         return v.uuid;
       });
-      tx.selected[field.uuid] = uuids;
+      // TOO MANY VALUES FOR A SINGLE-SELECT FIELD: SUCCESS, AND NOTHING HAPPENS.
+      // Measured against a live BILL company, across an empty field, a coded
+      // one, two values, three, and a list that included the current value —
+      // every one came back 200 SUCCESS with the field EXACTLY as it was. BILL
+      // does not take the first and drop the rest; it drops the update whole.
+      // It is the sharpest available demonstration of why a 200 is not
+      // evidence, and it is the one an agent hits by treating a single-select
+      // field as multi-select.
+      const singleSelect = field.multiSelect !== true;
+      if (!(singleSelect && uuids.length > 1)) {
+        tx.selected[field.uuid] = uuids;
+      }
     }
     return { status: "SUCCESS" };
   }

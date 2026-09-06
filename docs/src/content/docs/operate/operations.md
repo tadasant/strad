@@ -1281,13 +1281,12 @@ declares thirty-five server slugs:
   read-only and a read-write variant of one upstream are two entries sharing one
   `path`: nineteen of the bundle image's twenty-two baked mounts, plus
   `/grafana-registry`, a per-slug instance the host stands up for that slug's own
-  Grafana credential. Six of them — `telegram-ro`, `telegram-rw`,
-  `bill-spend-ro`, `bill-spend-rw`, `pulse-subregistry` and `grafana-registry` —
-  carry `enabled: false` until their
+  Grafana credential. Four of them — `telegram-ro`, `telegram-rw`,
+  `pulse-subregistry` and `grafana-registry` — carry `enabled: false` until their
   secrets are seeded, so they are skipped at render; see
   [Telegram](/servers/telegram/#not-configured-is-a-supported-state) and
   [A server whose secret is not seeded yet](#a-server-whose-secret-is-not-seeded-yet).
-- `zimmer-secrets` — a thirtieth `supplementary-image` entry, running that same
+- `zimmer-secrets` — the thirty-second `supplementary-image` entry, running that same
   image on its **own** component, `bundle-zimmer-secrets`. It is the only server
   that leaves the one bundle, and the only reason to leave it: a parameter store is
   `process.env`. See [Two stores, one

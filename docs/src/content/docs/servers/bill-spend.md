@@ -98,27 +98,33 @@ at full capability and strad decides, per slug and per call, what may run.
 on someone's books, that is the worst failure available: forty transactions
 reported re-coded, none of them changed.
 
-Two things are known, and they point the same way:
+That is measured, not inferred. Sending two values to a single-select field
+against a live BILL sandbox company comes back `200 SUCCESS` and **the field is
+exactly as it was** — the update dropped whole, no error, no warning. Probed
+across an empty field, a coded one, two values, three, and a list containing the
+value already selected: every one SUCCESS, every one discarded. It is the mistake
+an agent makes by treating a single-select field as multi-select, and BILL
+reports it as a success.
 
-- **BILL's documentation contradicts itself.** The API reference says the request
-  body's array items are `{customFieldId, selectedValues[], note}`. The
-  Transactions guide's worked example says `customFieldUuid`. There is no third
-  document that settles it.
-- **A community implementer who actually called it** reports that the `tty_…` /
-  `tvl_…` UUID forms BILL's own GETs hand back are silently rejected — SUCCESS
-  returned, update dropped — and that only the base64 `id` form writes. That is
-  unverified, one developer's field note; BILL contradicting itself corroborates
-  that the endpoint is finicky.
+So this server does not trust the reply. `servers/bill-spend/shared/src/wire.ts`
+holds the body shapes it knows how to send, best first, and the write walks that
+ladder **re-reading the transaction after every attempt and diffing it**. Nothing
+decides a write succeeded except the read-back.
 
-So this server does not pick a shape. `servers/bill-spend/shared/src/wire.ts`
-enumerates them, best first, and the write walks that ladder, **re-reading the
-transaction after every attempt and diffing it**. Nothing decides a write
-succeeded except the read-back.
+A successful result carries `verified: true` — meaning the read-back was done —
+and, when the transaction moved, the `wire_variant` that moved it. When nothing
+reaches the requested state, the tool fails with `persisted: false` and the full
+attempt table: per shape, what BILL answered and what the transaction looked like
+afterwards.
 
-A successful result carries `verified: true` and the `wire_variant` that actually
-persisted, so which shape BILL honours stops being folklore. When nothing
-persists, the tool fails with `persisted: false` and the full attempt table — per
-shape, what BILL answered and what the transaction looked like afterwards.
+**"Did not persist" and "did not change" are different claims, and the error
+checks the second one.** Usually nothing moved and "treat this as uncoded" is the
+right advice. But this server runs unattended against a company real people also
+use, so a person can edit the same transaction in the BILL web app between the
+PUT and the read-back — and then the transaction moved while this write did not.
+That failure carries `changed: true` alongside `persisted: false`, with the
+before and after, rather than telling a caller a row somebody just coded is
+uncoded.
 
 Everything else about the write follows from that:
 
@@ -136,9 +142,37 @@ Everything else about the write follows from that:
 - **The winning shape is memoised** for the life of the process, so a sweep pays
   for the ladder once. The read-back still runs on every write, and a memoised
   shape that stops working simply loses its attempt and hands back to the ladder.
+- **`changed` is a diff against the state read before the PUT**, not against the
+  state that was requested. Asking for the state a field is already in satisfies
+  "matches what was asked for" vacuously — most easily by writing only a note to
+  a `CUSTOM_SELECTOR` field, where BILL stores the values (none) and discards the
+  note — and calling that a change would be the same lie one size down.
 
-When BILL settles its own documentation, `wire.ts` is where the answer goes:
-delete the variants that never win.
+### What the ladder is actually for
+
+Two rungs, both proven against a live company, and the choice between them is
+about which identifier forms a caller holds rather than about which one BILL
+prefers:
+
+| Rung | Body | When it is the one that writes |
+| --- | --- | --- |
+| `customFieldId/id` | `{customFieldId: "<base64>", selectedValues: ["<base64>"]}` | The ordinary case — what `list_coding_options` returns |
+| `customFieldId/uuid` | `{customFieldId: "tty_…", selectedValues: ["tvl_…"]}` | When only uuids are on hand, as for a field read out of a `list_transactions` result |
+
+Two claims that shaped the original design turned out to be wrong, and both were
+settled by calling the endpoint:
+
+- **`customFieldUuid` — the key name in BILL's Transactions guide — is a hard
+  `400 customFieldId: must not be null`.** The guide's worked example does not
+  work, and that rung is gone.
+- **The uuid forms are not silently dropped.** A community field note claimed the
+  `tty_…` / `tvl_…` forms BILL's own GETs hand back are accepted and discarded
+  while only the base64 `id` writes. Every uuid form persisted, in both slots,
+  mixed freely.
+
+The read-back is not what those findings undo. It is what caught the
+single-select case above, and it is the only thing that separates "coded" from
+"coded as something else".
 
 ## Rate limits
 
@@ -185,20 +219,41 @@ the tool surface still lists, so the console and an agent can see what the
 deployment would offer, and every call fails with an error naming the variable.
 One server's missing config must not cost the other twenty-one their boot.
 
-In `infra/strad.staging.yaml` both slugs ship `enabled: false` until the token is
-seeded. An unresolved `${REF}` fails the render **deliberately**, and it fails
-the whole spec — so an entry that shipped enabled before its secret existed would
-take every other server's deploy down with it. Turning this on is three steps:
-seed `BILL_SPEND_API_TOKEN` in `/strad/staging/gateway/static/`, delete the two
-`enabled:` lines, and add the name to `PROVISIONED_STATICS` in
-`test/staging-config.test.ts`.
+Both staging slugs are enabled and point at BILL's **sandbox** — a separate empty
+test company with its own token, so a sweep run there cannot reach a real ledger
+however wrong it gets. An unresolved `${REF}` fails the render **deliberately**,
+and it fails the whole spec, so `BILL_SPEND_API_TOKEN` has to exist in
+`/strad/staging/gateway/static/` before a deploy runs.
+
+## What has been verified, and what has not
+
+All five tools have been exercised against a live BILL sandbox company end to
+end: the custom-field catalog, a field's values, the transaction list, one
+transaction's coding, and a re-code that was read back and diffed. The write
+persists, the verification is real, and the failure path fires on a write BILL
+answers SUCCESS to and discards.
+
+Three things were **not** exercised, and each needs something the sandbox does
+not have:
+
+- **A GL field that came from an accounting integration.** The sandbox company
+  has no integration connected, so no such field exists in it to read. What is
+  known is that `GET /v3/spend/custom-fields` takes no origin filter, applies no
+  type gate, and returns every custom field the company has — there is no
+  mechanism by which it could return a subset — and that the Spend & Expense API
+  has no accounting-integration endpoint at all: every plausible path 404s, and
+  the single-field GET carries no origin marker. So a company's GL field should
+  come through as an ordinary `CUSTOM_SELECTOR`, and `list_coding_fields` on the
+  production company is a free read that settles it in one call.
+- **A locked transaction.** The sandbox seeds none. The refusal is checked by the
+  unit suite against a fake, not against BILL.
+- **The rate limiter.** 60 calls per token per minute was never approached.
 
 ## Open question
 
-**Whether accounting-integration-mapped custom fields are visible and writable
-through the API at all** is not settled, and cannot be settled without a real
-company. BILL's `type` enum exposes no GL-account type and no integration-origin
-field, and its help-centre articles on the subject are client-side rendered. If
-`GET /v3/spend/custom-fields` does not surface the GL field on a company with an
-accounting integration connected, that is a genuine blocker rather than something
-to work around. It is the first thing to check once a token exists.
+`list_coding_fields` guesses which field is the chart of accounts from its NAME,
+and says it is guessing. That is not a gap that a token closes: BILL's
+custom-field `type` enum has exactly two members, `CUSTOM_SELECTOR` and `NOTE`,
+and **nothing in the payload marks a field as having come from an accounting
+integration** — confirmed against the live API, on the list endpoint and the
+single-field endpoint alike. Confirm the guess by looking at the field's values.

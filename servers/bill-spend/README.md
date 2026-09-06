@@ -82,29 +82,30 @@ user, a reimbursement, a bank or funding.
 on someone's books this is the worst failure mode available: forty transactions
 reported re-coded, none of them changed.
 
-Two things are known, and they point the same way:
+That is measured, not inferred. Sent to a live sandbox company: two values on a
+single-select field come back `200 SUCCESS` and **the field is exactly as it
+was.** Probed across an empty field, a coded one, two values, three, and a list
+containing the value already selected — every one SUCCESS, every one discarded
+whole. It is the mistake an agent makes by treating a single-select field as
+multi-select, and BILL reports it as a success.
 
-- **BILL's own documentation contradicts itself.** The [API
-  reference](https://developer.bill.com/reference/updatetransactioncustomfields)
-  says the request body's array items are `{customFieldId, selectedValues[],
-  note}`. The [Transactions
-  guide](https://developer.bill.com/docs/transaction-management)'s worked example
-  says `customFieldUuid`. Both were read against the live docs while this server
-  was written; there is no third document that settles it.
-- **A community implementer who actually called it** reports that the `tty_…` /
-  `tvl_…` UUID forms BILL's own GETs hand back are *"silently rejected (the API
-  returns SUCCESS but the update is dropped)"*, and that only the base64 `id`
-  form writes. That is `UNVERIFIED` — one developer's field note — but BILL
-  contradicting itself corroborates that the endpoint is finicky.
+So this server does not trust the reply. `shared/src/wire.ts` holds the body
+shapes it knows how to send, best first, and `setTransactionCoding` walks that
+ladder, **re-reading the transaction after every attempt and diffing it**.
+Nothing decides a write succeeded except the read-back. A result carries
+`verified: true` — meaning the read-back was done — and, when the transaction
+moved, the `wire_variant` that moved it. When nothing reaches the requested
+state, the tool fails with `persisted: false` and the full attempt table: per
+shape, what BILL answered and what the transaction looked like afterwards.
 
-So this server does not pick a shape. `shared/src/wire.ts` enumerates them, best
-first, and `setTransactionCoding` walks the ladder, **re-reading the transaction
-after every attempt and diffing it**. Nothing decides a write succeeded except
-the read-back. A result carries `verified: true` and the `wire_variant` that
-actually persisted, so which shape BILL honours stops being folklore. When
-nothing persists, the tool fails with `persisted: false` and the full attempt
-table — per shape, what BILL answered and what the transaction looked like
-afterwards.
+**"Did not persist" and "did not change" are different claims, and the error
+checks the second one.** Usually nothing moved and "treat this as uncoded" is the
+right advice. But this server runs unattended against a company real people also
+use, so a person can edit the same transaction in the BILL web app between the
+PUT and the read-back — and then the transaction moved while this write did not.
+That failure carries `changed: true` alongside `persisted: false`, with the
+before and after, rather than telling a caller a row somebody just coded is
+uncoded.
 
 Everything else about the write follows from that:
 
@@ -123,9 +124,36 @@ Everything else about the write follows from that:
 - **The winning shape is memoised** for the life of the process, so a sweep pays
   for the ladder once. The read-back still runs on every write, and a memoised
   shape that stops working simply loses its attempt.
+- **`changed` is a diff against the state read before the PUT**, not against the
+  state requested. Asking for the state a field is already in satisfies "matches
+  what was asked for" vacuously — most easily by writing only a note to a
+  `CUSTOM_SELECTOR` field, where BILL stores the values (none) and discards the
+  note — and calling that a change would be the same lie one size down.
 
-When BILL settles its own documentation, `wire.ts` is where the answer goes:
-delete the variants that never win.
+### Two rungs, and what settled the rest
+
+| Rung | Body | When it writes |
+| --- | --- | --- |
+| `customFieldId/id` | `{customFieldId: "<base64>", selectedValues: ["<base64>"]}` | The ordinary case — the form `list_coding_options` returns |
+| `customFieldId/uuid` | `{customFieldId: "tty_…", selectedValues: ["tvl_…"]}` | When only uuids are on hand, as for a field read out of `list_transactions` |
+
+Both persist. The choice between them is about which identifier forms a caller
+holds, not about which one BILL prefers — and two claims that shaped the original
+design were settled by calling the endpoint and are gone:
+
+- **`customFieldUuid` is a hard `400 customFieldId: must not be null`.** The
+  [Transactions guide](https://developer.bill.com/docs/transaction-management)'s
+  worked example does not work; the [API
+  reference](https://developer.bill.com/reference/updatetransactioncustomfields)
+  is the one that is right.
+- **The uuid forms are not silently dropped.** A community field note claimed the
+  `tty_…` / `tvl_…` forms BILL's own GETs hand back are *"silently rejected (the
+  API returns SUCCESS but the update is dropped)"* and that only the base64 `id`
+  form writes. Every uuid form persisted, in both slots, mixed freely.
+
+Neither finding undoes the read-back. It is what caught the single-select case
+above, and it is the only thing separating "coded" from "coded as something
+else".
 
 ## Credentials
 
@@ -201,27 +229,47 @@ reviewed on it and cannot change a ledger.
 cd servers/bill-spend && npm test
 ```
 
-59 tests over a fake BILL company, under Vitest against the TypeScript sources,
+71 tests over a fake BILL company, under Vitest against the TypeScript sources,
 run on every PR by the `bill-spend` CI job. The fake is the interesting part: it
 answers **200 SUCCESS to every write** and applies only the body shape it has
 been told to honour, which is exactly the failure this server is built around. So
 the suite covers the shape ladder walking past a silently-dropped write, the
-refusal to report BILL's SUCCESS when nothing persisted, the locked transaction
-refused before any PUT, a value id from the wrong field refused by name, the
-empty-array clear, a field the transaction's budget does not offer, the learned
-shape being re-opened when it stops working, and the filter composition that
-would otherwise turn an incremental sweep into a full one.
+refusal to report BILL's SUCCESS when nothing persisted, a write that moved
+nothing being refused the word "changed", the locked transaction refused before
+any PUT, a value id from the wrong field refused by name, the empty-array clear,
+a field the transaction's budget does not offer, the learned shape being
+re-opened when it stops working, the field list staying deduped on an endpoint
+that ignores its own `retired` filter, and the filter composition that would
+otherwise turn an incremental sweep into a full one.
 
 Every identifier in the fixtures is invented — no real company, transaction,
 merchant or account name appears in this repo.
 
+## Verified against a live company
+
+All five tools have been exercised end to end against a real BILL **sandbox**
+company through a real MCP client: the custom-field catalog, a field's values,
+the transaction list, one transaction's coding, and a re-code that was read back
+and diffed. The write persists, the verification is real, and the failure path
+fires on a write BILL answers SUCCESS to and discards.
+
+Three things the sandbox could not exercise: a **locked** transaction (it seeds
+none), the **rate limiter** (60/min was never approached), and — the one that
+matters — a **GL field that came from an accounting integration**.
+
 ## Open question
 
-**Whether accounting-integration-mapped custom fields are visible and writable
-through the API at all** is not settled, and cannot be settled without a real
-company. BILL's `type` enum exposes no GL-account type and no integration-origin
-field, and its help-centre articles on the subject are client-side rendered and
-unreadable. If `GET /v3/spend/custom-fields` does not surface the GL field on a
-company with an accounting integration connected, that is a genuine blocker
-rather than something to work around. It is the first thing to check once a
-token exists.
+**Whether accounting-integration-mapped custom fields are visible through the API
+at all** is still not settled, because the sandbox company has no integration
+connected and one cannot be connected through this API. What is known, measured:
+`GET /v3/spend/custom-fields` takes no origin filter and applies no type gate —
+it returns every custom field the company has, so there is no mechanism by which
+it could hide one — and the Spend & Expense API has no accounting-integration
+endpoint at all (every plausible path 404s). The single-field GET carries no
+origin marker either, which is why `likely_coding_field` is a guess about a NAME
+and says so.
+
+So a company's GL field should arrive as an ordinary `CUSTOM_SELECTOR`. That is
+reasoning, not a measurement: `list_coding_fields` against the production company
+is a free read that settles it in one call, and it is the first thing to do
+there.

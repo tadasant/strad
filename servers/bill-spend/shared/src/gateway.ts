@@ -172,9 +172,15 @@ export interface CodingWriteResult {
   field: { id?: string; uuid?: string; name?: string };
   before: SelectedValue[];
   after: SelectedValue[];
+  /**
+   * Whether the transaction ACTUALLY MOVED — `after` differs from `before`, or a
+   * requested note landed. Not "did BILL accept the request": a write asking for
+   * the state a field is already in leaves this false, and so does one whose
+   * only content was a note BILL discarded.
+   */
   changed: boolean;
   verified: true;
-  /** Which body shape actually persisted, or null when no write was needed. */
+  /** Which body shape did the moving, or null when nothing moved. */
   wire_variant: string | null;
   /**
    * Whether `wire_variant` is EVIDENCE about which shape BILL honours.
@@ -270,6 +276,45 @@ function toSelectedValue(raw: RawSelectedValue): SelectedValue {
   };
 }
 
+/**
+ * The union of a live walk and a retired walk, without the duplicates BILL
+ * creates in it.
+ *
+ * MEASURED, NOT DEFENSIVE. `filters=retired:eq:true` is ACCEPTED by
+ * `/v3/spend/custom-fields` — an unsupported filter field answers `400 …: field
+ * [x] is not supported in filter field`, and this one does not — and then it is
+ * NOT APPLIED: the walk comes back carrying every field, retired or not. So the
+ * two-walk union that "everything" requires returned each live field TWICE, and
+ * `list_coding_fields` with `include_retired: true` listed the same field twice
+ * against a real company.
+ *
+ * The same filter IS applied on `/values`, where it correctly answers with
+ * nothing. That walk gets the dedupe anyway: it is the same union, one of the
+ * two endpoints demonstrably behaves this way, and deduping is a no-op on the
+ * one that does not.
+ *
+ * The two walks stay. Dropping the retired one and reading unfiltered instead
+ * would be one call rather than two, but the parameter's documented DEFAULT is
+ * `retired:eq:false`, and this company has no retired field to tell an endpoint
+ * that ignores the filter apart from one whose default excludes them. The union
+ * is right under either behaviour; a single unfiltered walk is right under only
+ * one of them.
+ */
+function dedupeById<T extends { id?: string; uuid?: string }>(rows: T[]): T[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    // `id` first because it is the form both endpoints return when they return
+    // one — `namesTarget` below is the reminder that it is OPTIONAL on BILL's
+    // payload. A row carrying neither identifier cannot be deduped, and dropping
+    // it would be worse.
+    const key = row.id ?? row.uuid;
+    if (key === undefined) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** Case-insensitive substring, applied locally over what BILL returned. */
 function matchesQuery(text: string | undefined, query: string | undefined) {
   if (!query) return true;
@@ -345,7 +390,7 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
       PAGE_MAX.customFields,
     );
     return {
-      results: [...live.results, ...retired.results],
+      results: dedupeById([...live.results, ...retired.results]),
       truncated: retired.truncated,
     };
   }
@@ -410,9 +455,21 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
               PAGE_MAX.customFields,
             )
           : { results: [] as RawCustomField[], truncated: live.truncated };
-      const results = [...live.results, ...retired.results];
+      const results = dedupeById([...live.results, ...retired.results]);
       const truncated = live.truncated || retired.truncated;
       const fields = results
+        // THE OTHER HALF OF THE IGNORED FILTER. `dedupeById` keeps the union
+        // from doubling; this keeps the DEFAULT from over-returning. The
+        // endpoint accepts `retired:eq:false` and applies nothing, so a walk
+        // that asked for live fields comes back carrying the retired ones too —
+        // and an agent reading the default result would code a transaction to a
+        // dead account. Applied locally, so it is right whether or not BILL
+        // starts honouring its own parameter.
+        //
+        // `/values` needs no counterpart: the same filter IS applied there
+        // (`retired:eq:true` answers with nothing), and a value's own flag is
+        // `deleted` rather than `retired`.
+        .filter((f) => query.include_retired || f.retired !== true)
         .filter((f) => matchesQuery(f.name, query.query))
         .map((f) => ({
           ...(f.id === undefined ? {} : { id: f.id }),
@@ -612,6 +669,11 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         (field.uuid !== undefined && f.uuid === field.uuid);
 
       const beforeValues = (target?.selectedValues ?? []).map(toSelectedValue);
+      // THE NOTE'S BEFORE-STATE, for the same reason the values have one: a
+      // write is `changed` when the transaction MOVED, and "BILL stored the note
+      // I sent" is not that — it is also true of the note that was already
+      // there. Absent and empty are the same state here, and BILL returns both.
+      const beforeNote = target?.note ?? "";
 
       // 3. RESOLVE EVERY VALUE TO BOTH FORMS, against the field's own catalog.
       //    Two things happen here, and the second matters more: the ladder gets
@@ -667,8 +729,13 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
       // 4. ALREADY THERE? Then there is nothing to write, and saying so is more
       //    honest than sending a PUT so the result can carry a variant name. A
       //    sweep that re-runs over transactions it already coded should cost
-      //    reads, not writes.
-      if (selectionMatches(wanted, beforeValues) && request.note === undefined) {
+      //    reads, not writes — INCLUDING one that sets a note, which is why the
+      //    note is compared here rather than forcing a PUT whenever one is
+      //    supplied.
+      if (
+        selectionMatches(wanted, beforeValues) &&
+        (request.note === undefined || request.note === beforeNote)
+      ) {
         return {
           transaction_id: txId,
           field: {
@@ -680,6 +747,12 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
           changed: false,
           verified: true,
           wire_variant: null,
+          // TRUE, and reported rather than omitted. Reaching here with a note
+          // supplied means the note the caller asked for is the note the
+          // transaction already holds — which is what `note_persisted` asks —
+          // and staying silent would make "your note is already there" look
+          // like "no note was involved".
+          ...(request.note === undefined ? {} : { note_persisted: true }),
           attempts: [],
         };
       }
@@ -697,6 +770,10 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
           Number(b.name === learnedVariant) - Number(a.name === learnedVariant),
       );
       const attempts: WriteAttempt[] = [];
+      // The last read-back, kept past the loop. When no shape lands, the
+      // question "did the transaction move anyway" still has to be answered, and
+      // this is the only state that can answer it.
+      let lastObserved: SelectedValue[] | undefined;
 
       for (const variant of ordered) {
         const body = buildUpdateBody(variant, field, wanted, request.note);
@@ -728,6 +805,7 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         const observed = (observedField?.selectedValues ?? []).map(
           toSelectedValue,
         );
+        lastObserved = observed;
         // THE VALUE DIFF IS THE VERDICT, and the note is reported beside it.
         //
         // They travel in the same array item, so it is tempting to require both
@@ -738,10 +816,14 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         // the ledger had in fact changed. That is a worse lie than the one this
         // function is guarding against, in the opposite direction.
         const persisted = selectionMatches(wanted, observed);
+        const observedNote = observedField?.note ?? "";
+        // NORMALISED ON BOTH SIDES. BILL omits `note` for a field that holds
+        // none, so an un-normalised comparison would call a note that landed as
+        // empty a note that did not land — and, now that the value diff is not
+        // the only thing `changed` reads, would report a write that landed as
+        // one that did not.
         const notePersisted =
-          request.note === undefined
-            ? undefined
-            : observedField?.note === request.note;
+          request.note === undefined ? undefined : observedNote === request.note;
 
         attempts.push({
           variant: variant.name,
@@ -750,18 +832,43 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
           formsCertain,
           httpStatus,
           ...(reportedStatus === undefined ? {} : { reportedStatus }),
-          observedAfter: observed.map((v) => v.value ?? v.uuid ?? v.id ?? "?"),
-          ...(request.note === undefined
-            ? {}
-            : { observedNote: observedField?.note ?? "" }),
+          observedAfter: observed.map(describeValue),
+          ...(request.note === undefined ? {} : { observedNote }),
           persisted,
         });
 
         if (persisted) {
-          // MEMOISED ONLY WHEN IT MEANS SOMETHING. A variant that won while
-          // sending an identifier of unknown form is not a finding about BILL,
-          // and pinning the next sweep to it would be building on a guess.
-          if (formsCertain) learnedVariant = variant.name;
+          // `persisted` AND `changed` ARE DIFFERENT QUESTIONS, and conflating
+          // them reintroduced this function's own failure mode in miniature.
+          //
+          // `persisted` asks whether the selection now MATCHES what was asked
+          // for. It is satisfied VACUOUSLY when an empty selection was asked for
+          // on a field that was already empty — and that is reachable, not
+          // theoretical: a note-only write to a `CUSTOM_SELECTOR` field, where
+          // BILL stores the values (none) and discards the note it does not
+          // accept on that field type. Observed live: 200 SUCCESS, a read-back
+          // identical to the read before it, and `changed: true`. A sweep would
+          // report forty transactions re-coded having moved none of them, which
+          // is the lie this whole function exists to prevent.
+          //
+          // So the report is a real DIFF against the state read before the PUT.
+          // The note counts as movement in its own right — a note that landed on
+          // a NOTE-type field is a change even though no value moved — and it
+          // still cannot VETO one, for the reason `note_persisted` carries
+          // below.
+          const valuesMoved = !selectionMatches(beforeValues, observed);
+          // `notePersisted` alone is not movement — it is also true of a note
+          // that was already there, which is precisely a sweep re-running over
+          // transactions it already annotated. Both axes are diffed against the
+          // state read before the PUT, and neither may VETO the other: a value
+          // change that landed stays `changed: true` however the note fared.
+          const noteMoved = notePersisted === true && observedNote !== beforeNote;
+          const changed = valuesMoved || noteMoved;
+          // MEMOISED ONLY WHEN IT MEANS SOMETHING. A variant that moved nothing
+          // demonstrated nothing, and neither did one that won while sending an
+          // identifier of unknown form; pinning the next sweep to either would
+          // be building on a guess. Same test for naming it in the result.
+          if (changed && formsCertain) learnedVariant = variant.name;
           return {
             transaction_id: txId,
             field: {
@@ -770,10 +877,10 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
             },
             before: beforeValues,
             after: observed,
-            changed: true,
+            changed,
             verified: true,
-            wire_variant: variant.name,
-            wire_variant_certain: formsCertain,
+            wire_variant: changed ? variant.name : null,
+            ...(changed ? { wire_variant_certain: formsCertain } : {}),
             ...(notePersisted === undefined
               ? {}
               : { note_persisted: notePersisted }),
@@ -782,13 +889,43 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         }
       }
 
-      // Every shape tried, every one read back, none of them changed anything.
-      // A memoised variant that stopped working must not keep being tried first
-      // forever.
+      // Every shape tried, every one read back, none of them reached the
+      // requested state. A memoised variant that stopped working must not keep
+      // being tried first forever.
       learnedVariant = undefined;
-      throw new WriteNotPersistedError(txId, attempts);
+      // BUT DID IT MOVE? The error about to be thrown asserts "did NOT change"
+      // and "treat this as UNCODED" — claims about the TRANSACTION, which
+      // nothing so far has checked. They are false whenever something else moved
+      // it while this write was failing to, and the plain cause is a person
+      // editing the same transaction in the BILL web app between the PUT and the
+      // read-back; this server runs unattended against a company real people
+      // also use. Checking a claim costs one comparison. Diffed on IDENTIFIERS,
+      // because two chart-of-accounts entries can share a display string.
+      const finalObserved = lastObserved ?? beforeValues;
+      const drifted = !selectionMatches(beforeValues, finalObserved);
+      throw new WriteNotPersistedError(
+        txId,
+        attempts,
+        drifted
+          ? {
+              before: beforeValues.map(describeValue),
+              after: finalObserved.map(describeValue),
+            }
+          : undefined,
+      );
     },
   };
+}
+
+/**
+ * One value as a human reads it in an error or an attempt table.
+ *
+ * The display string when there is one, and an identifier when there is not —
+ * never nothing, because a row that renders as an empty string in a diff is
+ * indistinguishable from a row that is not there.
+ */
+function describeValue(value: SelectedValue): string {
+  return value.value ?? value.uuid ?? value.id ?? "?";
 }
 
 /** An identifier as a RESULT carries it — the two forms, without the bookkeeping. */
