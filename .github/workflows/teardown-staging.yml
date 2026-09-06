@@ -59,6 +59,13 @@ concurrency:
   # read the spec before the deploy's PUT and write it back after — handing
   # staging the image the deploy had just replaced, green, with the release run
   # reporting success.
+  #
+  # The cost is worth stating, because it is silent. GitHub keeps at most ONE
+  # PENDING run per group and cancels the older one, so an archive queued behind
+  # a deploy is dropped if anything else enters `staging-deploy` before it
+  # starts — and `alert-ci-failure.yml` deliberately does not alert on
+  # `cancelled`. That loses one night's saving. Racing a deploy loses the deploy,
+  # which is the worse of the two, so the group stays shared.
   group: staging-deploy
   cancel-in-progress: false
 
@@ -148,8 +155,13 @@ jobs:
             exit 0
           fi
 
+          # `.services[]?` rather than `.services[]`: jq exits 5 on a spec with no
+          # `services` key, and `set -e` would kill the step before the update —
+          # turning the nightly archive red, and billing staging through the
+          # night, over a log line. The tag falls back to the digest because a
+          # digest-pinned component carries no `.image.tag` at all.
           echo "Components on the spec being written:"
-          jq -r '.services[] | "  \(.name): \(.image.repository):\(.image.tag)"' "$RUNNER_TEMP/spec.json"
+          jq -r '.services[]? | "  \(.name): \(.image.repository):\(.image.tag // .image.digest // "?")"' "$RUNNER_TEMP/spec.json"
           if [ "$WANT_ARCHIVE" = "false" ]; then
             echo "Restoring the spec staging was archived ON. To put current main on it, dispatch deploy-staging.yml."
           fi
@@ -165,22 +177,23 @@ jobs:
           echo "Setting maintenance.archive=${WANT_ARCHIVE} on strad-staging (${APP_ID})..."
           doctl apps update "$APP_ID" --spec "$RUNNER_TEMP/spec.next.json" --wait --format ID,DefaultIngress
 
-      - name: Report what the app is now
-        # `continue-on-error`, because this is a read-back, not the act. The
-        # update above already waited; a flaky list here must not turn a
-        # successful archive red and send someone to re-run it.
-        continue-on-error: true
-        env:
-          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-          DIGITALOCEAN_CONTEXT: default
-        run: |
-          set -euo pipefail
-          APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}')
-          if [ -z "$APP_ID" ]; then
-            echo "No strad-staging app."
-            exit 0
+          # RE-READ AND DIFF, because a PUT that succeeded is not evidence the
+          # field landed. `doctl` decodes the spec into godo's struct with
+          # `encoding/json`, which drops a field it does not know — so a doctl
+          # older than `AppMaintenanceSpec` accepts this spec, returns 200,
+          # deploys, and leaves the app billing. The failure is invisible from
+          # here and costs a month of the bill this workflow exists to stop.
+          # HACKS.md #84 is the same rule against a different API: an upstream
+          # that can answer success and change nothing gets read back.
+          GOT=$(doctl apps spec get "$APP_ID" --format json \
+            | jq -r 'if .maintenance.archive == true then "true" else "false" end')
+          if [ "$GOT" != "$WANT_ARCHIVE" ]; then
+            echo "::error::the update returned success but maintenance.archive is '${GOT}', not '${WANT_ARCHIVE}'. Check that this runner's doctl is new enough to know the field."
+            exit 1
           fi
-          STATE=$(doctl apps spec get "$APP_ID" --format json \
-            | jq -r 'if .maintenance.archive == true then "ARCHIVED (billing stopped)" else "RUNNING" end')
-          echo "strad-staging (${APP_ID}) is now: ${STATE}"
-          echo "https://staging.strad.tadasant.com serves App Platform's offline page while archived; the domain and its certificate stay attached."
+          if [ "$GOT" = "true" ]; then
+            echo "strad-staging (${APP_ID}) is ARCHIVED; billing for its components has stopped."
+            echo "https://staging.strad.tadasant.com serves App Platform's offline page — the domain and its certificate stay attached."
+          else
+            echo "strad-staging (${APP_ID}) is RUNNING again."
+          fi

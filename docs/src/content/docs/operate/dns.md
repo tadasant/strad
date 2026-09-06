@@ -59,10 +59,13 @@ wiring above are per-app and neither survives a recreation:
   app, because one left attached may keep pointing at the deleted app for up to
   24 hours and be unavailable to a new app meanwhile.
 
-Certificate issuance is the third cost: `strad.tadasant.com`'s certificate carries
-`notBefore` 77 minutes after that app was created. An archive keeps the app, so
-none of the three applies — the offline page is served over the same live
-certificate.
+Certificate issuance is the third cost, and the least certain: the **prod**
+certificate carries a `notBefore` 77 minutes after the `strad-prod` app was
+created, which is the closest thing to a measurement this deployment has. It is
+one observation, and `notBefore` is when the CA signed rather than when the
+hostname started serving — read it as "about an hour, probably", not as a number
+to plan against. An archive keeps the app, so none of the three applies: the
+offline page is served over the same live certificate.
 :::
 
 :::danger[An omitted `domains` field deletes the domain]

@@ -2374,12 +2374,15 @@ before saying so — the error names the interruption and says to re-run it, whi
 **Undo.** Drop `releaseRun` from the `resolveDeployTag` call in
 `scripts/resolve-image-tag.ts`; delete `releaseRunLookup`, `ReleaseRun`,
 `deadRun` and `ImageSource.republish` from `src/deploy/imageTag.ts`; drop
-`actions: read` from `deploy-staging.yml` AND from `release-image.yml`, which
-grants it as that workflow's caller; drop `GITHUB_TOKEN` from the two tag steps;
-and delete the corresponding tests. The walk then waits out its budget on every
-dead build again. Dropping only the caller's grant is the same undo with no
-symptom — the lookup 403s and is swallowed — which is what
-`test/image-tag.bundle.test.ts` reads both workflows to prevent. To undo the cancellation half:
+`actions: read` from `deploy-staging.yml` and from any caller that grants it
+down; drop `GITHUB_TOKEN` from the two tag steps; and delete the corresponding
+tests. The walk then waits out its budget on every dead build again. Dropping
+only a caller's grant is the same undo with no symptom — the lookup 403s and is
+swallowed — which is what `test/staging-on-demand.test.ts` asserts over every
+caller of `deploy-staging.yml` there is. Staging is on demand (#85), so today
+there is no caller at all and only the workflow's own grant is load-bearing;
+that test is what keeps the coupling honest when one returns. To undo the
+cancellation half:
 delete `.github/workflows/reheal-bundle-image.yml`, drop `healIsComing` and the
 `INTERRUPTED` branch in `deadRun`, drop `ReleaseRun.runAttempt`,
 `ReleaseRun.event` and `ImageSource.reheal` with it, and drop
@@ -3591,7 +3594,7 @@ workflow shares is LOADED and RUN on every pull request. It was not, and that is
 what this entry is about; what a PR still cannot exercise is the second half of
 the release path.
 
-**Why.** Of the fourteen workflows in this repo, two ran on `pull_request`. All
+**Why.** Of the sixteen workflows in this repo, two ran on `pull_request`. All
 eight release workflows and `deploy-staging.yml` did not, and `build-push` was
 loaded by nothing else — so the first execution of a change to the release path
 was also its first production run, and its failure mode is a red `main` plus, when
@@ -4198,9 +4201,14 @@ reason. Archiving also does not stop billing for databases or dedicated egress
 IPs; `strad-staging` has neither, and a spec that grows one silently keeps
 billing through the night.
 
-**Undo.** None wanted. The delete route becomes viable only if the custom domain
-stops being App Platform's to issue — a Cloudflare-terminated proxy, say, which
-`docs/operate/dns` explains this deployment deliberately does not use for the
-gateway. Hack #18 is the same full-replace rule pointed the other way, and it is
-what makes the restore free: a spec with no `maintenance` block clears `archive`,
-so the renderer needed no change.
+**Undo.** Delete the `schedule:` block from `teardown-staging.yml` and staging
+stays up at roughly $49/month; the `workflow_dispatch` half is worth keeping
+either way. There is no per-run way to hold staging past 07:00 UTC for a long
+investigation — re-dispatch `deploy-staging.yml`, or edit the cron. What is NOT
+undoable is the archive-instead-of-delete decision: the delete route becomes
+viable only if the custom domain stops being App Platform's to issue — a
+Cloudflare-terminated proxy, say, which `docs/operate/dns` explains this
+deployment deliberately does not use for the gateway. Hack #18 is the same
+full-replace rule pointed the other way, and it is what makes the restore free: a
+spec with no `maintenance` block clears `archive`, so the renderer needed no
+change.

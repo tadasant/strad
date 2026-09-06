@@ -5,6 +5,7 @@ import {
   calledWorkflow,
   workflow,
   workflowFiles,
+  type Step,
 } from "./helpers/workflow-graph.js";
 
 /**
@@ -40,9 +41,53 @@ const RELEASE = ".github/workflows/release-image.yml";
 
 /** Every `run:` script in a workflow, jobs that only `uses:` another aside. */
 function scripts(file: string): string {
-  return Object.values(workflow(file).jobs ?? {})
-    .flatMap((j) => j.steps ?? [])
+  return steps(file)
     .map((s) => s.run ?? "")
+    .join("\n");
+}
+
+/** Every step of every job, so a scan can see `env:`/`with:`/`uses:` too. */
+function steps(file: string): Step[] {
+  return Object.values(workflow(file).jobs ?? {}).flatMap((j) => j.steps ?? []);
+}
+
+/**
+ * Whether the shell stops on the branch that prints `message`.
+ *
+ * The distinction these tests turn on: a guard that PRINTS and a guard that
+ * STOPS look identical to a grep, and only one of them is a guard. Take the
+ * line the message is on, and require a non-zero `exit` inside the same
+ * `if`-block — before the block closes, so an `exit 1` further down the script
+ * on some other path does not count.
+ */
+function exitsAfter(script: string, message: string): boolean {
+  const lines = script.split("\n");
+  const at = lines.findIndex((l) => l.includes(message));
+  if (at === -1) return false;
+  const indent = (l: string) => l.length - l.trimStart().length;
+  const inside = indent(lines[at]!);
+  for (const line of lines.slice(at + 1)) {
+    const text = line.trim();
+    if (text === "") continue;
+    // `fi`/`else` at or below the message's indentation closes its branch.
+    if (indent(line) < inside || /^(fi|else|elif |esac|;;)/.test(text))
+      return false;
+    if (/^exit\s+[1-9]/.test(text)) return true;
+  }
+  return false;
+}
+
+/**
+ * Everything a step could carry a credential through, as text.
+ *
+ * A workflow's secrets do not appear in its `run:` — they arrive through
+ * `env:`, `with:`, or an action's own inputs, which is exactly how
+ * `DIGITALOCEAN_ACCESS_TOKEN` reaches the step below. A scan of `run:` alone is
+ * blind to the only channel it is meant to be watching.
+ */
+function stepSurface(file: string): string {
+  return steps(file)
+    .map((s) => JSON.stringify({ uses: s.uses, env: s.env, with: s.with }))
     .join("\n");
 }
 
@@ -124,10 +169,10 @@ describe("teardown-staging.yml", () => {
     expect(existsSync(TEARDOWN), `${TEARDOWN} is missing`).toBe(true);
   });
 
-  const doc = workflow(TEARDOWN);
-  const run = scripts(TEARDOWN);
+  const run = existsSync(TEARDOWN) ? scripts(TEARDOWN) : "";
 
   it("runs nightly and on request", () => {
+    const doc = workflow(TEARDOWN);
     expect(Object.keys(doc.on ?? {}).sort()).toEqual([
       "schedule",
       "workflow_dispatch",
@@ -155,14 +200,21 @@ describe("teardown-staging.yml", () => {
     ).toContain(".maintenance.archive = $want");
   });
 
-  it("refuses to act on an app that is not strad-staging", () => {
+  it("refuses to act on an app that is not strad-staging, and STOPS", () => {
     // The one thing between this workflow and archiving prod is a name resolved
     // out of a list, and archiving is a full outage of whatever it hits. The
     // spec that comes back has to agree.
-    expect(run).toMatch(
-      /NAME.*!=.*"strad-staging"|"\$NAME" != "strad-staging"/,
-    );
-    expect(run).toContain("Refusing to touch it");
+    //
+    // The `exit` is the assertion, not the message. A guard that prints
+    // "Refusing to touch it" and then falls through to the update is a nightly
+    // cron that archives prod while announcing that it will not — and a test
+    // that greps for the sentence passes on exactly that.
+    expect(run).toContain('"$NAME" != "strad-staging"');
+    expect(
+      exitsAfter(run, "Refusing to touch it"),
+      `${TEARDOWN} says "Refusing to touch it" and does not exit non-zero. ` +
+        `The message is not the guard.`,
+    ).toBe(true);
   });
 
   it("cannot race a deploy", () => {
@@ -171,7 +223,7 @@ describe("teardown-staging.yml", () => {
     // lets a scheduled archive read the spec before a deploy's PUT and write it
     // back after, handing staging the image the deploy had just replaced.
     const mine = (
-      doc as unknown as {
+      workflow(TEARDOWN) as unknown as {
         concurrency?: { group?: string; "cancel-in-progress"?: boolean };
       }
     ).concurrency;
@@ -193,15 +245,47 @@ describe("teardown-staging.yml", () => {
     // It talks to DigitalOcean and to nothing else: no ghcr login, no GCP, no
     // checkout of this repo. `packages: write` here would put a registry
     // credential on a nightly schedule for no reason.
-    expect(doc.permissions).toEqual({ contents: "read" });
-    expect(run).not.toMatch(/GCP_SA_KEY|GHCR_PULL_TOKEN|GITHUB_TOKEN/);
+    //
+    // Scanned over `env:`/`with:`/`uses:` as well as `run:`, because that is
+    // where a workflow's secrets actually live — `DIGITALOCEAN_ACCESS_TOKEN`
+    // included. A `run:`-only scan is blind to the one channel it is watching.
+    expect(workflow(TEARDOWN).permissions).toEqual({ contents: "read" });
+    const surface = stepSurface(TEARDOWN) + "\n" + scripts(TEARDOWN);
+    expect(surface).not.toMatch(/GCP_SA_KEY|GHCR_PULL_TOKEN|GITHUB_TOKEN/);
+    expect(surface).not.toMatch(/docker\/login-action|actions\/checkout/);
+    // Guard the guard: the scan has to be able to SEE a credential in `env:`,
+    // and this is the one the workflow legitimately carries.
+    expect(stepSurface(TEARDOWN)).toContain("DIGITALOCEAN_ACCESS_TOKEN");
   });
 
-  it("says so rather than going green when it cannot ask", () => {
+  it("says so AND fails when it cannot ask", () => {
     // `awk` exits 0 on no match, so an unreachable API produces the same empty
     // app id as an app that genuinely is not there. A nightly run that reported
     // "nothing to archive" through an outage would hide exactly the bill this
-    // workflow exists to stop.
-    expect(run).toContain("doctl apps list failed");
+    // workflow exists to stop — and it would hide it just as well while
+    // printing this message, so the exit is again what is asserted.
+    expect(
+      exitsAfter(run, "doctl apps list failed"),
+      `${TEARDOWN} reports a failed \`doctl apps list\` and carries on.`,
+    ).toBe(true);
+  });
+
+  it("re-reads the app and fails if the archive did not land", () => {
+    // A PUT that returned success is not evidence the field landed: doctl
+    // decodes the spec with `encoding/json`, which drops a field it does not
+    // know, so a doctl predating `AppMaintenanceSpec` deploys happily and
+    // leaves the app billing. Same rule as HACKS.md #84.
+    expect(run).toContain("doctl apps spec get");
+    expect(
+      exitsAfter(run, "maintenance.archive is"),
+      `${TEARDOWN} does not fail when the read-back disagrees with what it ` +
+        `asked for, so a doctl too old to know the field archives nothing and ` +
+        `goes green.`,
+    ).toBe(true);
+    // …and the read-back has to happen AFTER the update, or it re-reads the
+    // state the workflow already knew.
+    expect(run.lastIndexOf("doctl apps update")).toBeLessThan(
+      run.lastIndexOf("doctl apps spec get"),
+    );
   });
 });
