@@ -2433,37 +2433,6 @@ See `HACKS.md` #76.
 
 ---
 
-### 77. The console index describes a multi-store slug by its first store
-
-A `consoleStores:` slug puts several parameter stores on one `/ui/<slug>` page,
-selected with `?project=`. The console INDEX at `/ui` did not follow: it renders
-one card per slug, and the roster's "which project holds this store" answer is a
-single id resolved in this order — the resolver's own `STRAD_PARAMS_PROJECT_ID`
-if this process holds one, else the first enabled supplementary server that
-declares a project at all, and within it `consoleEnv.SECRETS_PROJECT_ID`, then
-`env.SECRETS_PROJECT_ID`, then the FIRST store. The first store is the answer
-only when nothing earlier in that order gave one.
-
-**What it costs.** The roster prints copy-pasteable `gcloud` commands for a
-missing secret. If the name lives in a namespace owned by a store other than the
-first, the printed command names the wrong `--project`. It fails legibly rather
-than writing anywhere wrong — but it is a wrong answer to a question a human
-asked.
-
-**How you would know.** A `gcloud parameters ...` command copied off `/ui` returns
-`NOT_FOUND` for a parameter you can see listed on `/ui/<slug>?project=<the other
-one>`. The `SECRETS_PROJECT_ID`-outvotes-the-list case is caught earlier:
-`check-config` emits a `::warning::` when that name and the first store disagree
-on the server the roster would answer from.
-
-**The fix.** `storeForPath` already resolves a path to the one store that covers
-it, across both several slugs and several stores per slug. The index should ask it
-rather than reading a project off the config.
-
-See `HACKS.md` #77.
-
----
-
 ### 78. One `/mcp` container fronting several stores lists `get_secret_value` for all of them
 
 `mcpStores:` lets one secrets container front several GCP projects. An MCP tool
@@ -2579,6 +2548,33 @@ The two documentation puzzles the ladder was built around are settled, both by c
 **How you would know.** The tool tells you, either way — that is the entire design. What it still cannot tell you is whether an accounting-integration-mapped GL field is exposed through this API; the sandbox company has no integration connected, BILL's custom-field `type` enum has no GL-account member and no integration-origin marker, and that question needs the production company to answer. `GET /v3/spend/custom-fields` takes no origin filter and returns every field a company has, so there is no mechanism by which it could hide one — but that is reasoning, not a measurement.
 
 See `HACKS.md` #84 and [BILL Spend & Expense](/servers/bill-spend/).
+
+---
+
+### 86. The console's `gcloud secrets` recipe names the parameter store's project
+
+The roster prints a paste-ready Secret Manager recipe for a missing `${NAME}` —
+`gcloud secrets create strad-<env>-<NAME> --project <P>` — and `<P>` is the
+**parameter store's** project. The deploy workflow reads `strad-<env>-*` from a
+different one, and `infra/strad.staging.yaml` instructs that the two differ, so
+that the parameter store's credentials cannot reach strad's own secrets.
+
+**What it costs.** It is the one route on that page that does not fail legibly.
+A paste against the wrong `--project` **succeeds**: the operator believes the
+name is seeded, and the next deploy fails on that same name with nothing pointing
+at where the value went. The parameter-path routes beside it resolve per
+namespace and this one cannot — a Secret Manager name is not a parameter path,
+so there is no namespace to resolve it by.
+
+**How you would know.** `gcloud secrets create` copied off `/ui` reports success,
+and the deploy still refuses the name. The secret is sitting in the parameter
+store's project.
+
+**The fix.** Say less — drop `--project` and name the constraint in prose — or
+let the deployment declare its deploy-secrets project and use that for the
+Secret Manager routes.
+
+See `HACKS.md` #86.
 
 ---
 

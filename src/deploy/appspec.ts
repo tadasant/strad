@@ -353,11 +353,16 @@ function sharedConsoleAdminCredential(config: StradConfig): string[] {
  * in `storeProject()`. See the call site.
  *
  * `storeProject()` (src/ui/secret-status.ts) answers "which project holds the
- * store" for the console INDEX, and the roster's copy-pasteable `gcloud`
- * commands are built from the answer. Its order is: the RESOLVER's own project
- * id if this process holds one, else the FIRST enabled supplementary server that
- * declares a project at all — and within that server, `consoleEnv.`, then `env.`,
- * then `consoleStores[0]`, then `mcpStores[0]`.
+ * store" for the DEPLOYMENT — the console index's header note, `store.project`
+ * on `/api/secrets/readiness`, and the roster's Secret Manager routes. Its order
+ * is: the RESOLVER's own project id if this process holds one, else the FIRST
+ * enabled supplementary server that declares a project at all — and within that
+ * server, `consoleEnv.`, then `env.`, then `consoleStores[0]`, then
+ * `mcpStores[0]`.
+ *
+ * A parameter PATH is not answered from that order at all: `storeProjectForPath()`
+ * beside it resolves each one to the store whose namespaces cover it, so the
+ * roster's per-path `gcloud` commands do not follow this disagreement.
  *
  * Both of those preambles matter, and getting either wrong would make this
  * annotation assert something false:
@@ -377,9 +382,7 @@ function sharedConsoleAdminCredential(config: StradConfig): string[] {
  * a command against the wrong `--project` errors rather than writing anywhere —
  * so the cost is a wrong answer handed to a human, not a wrong write.
  *
- * The ORDERING itself is not changed here; that is issue #261, which wants the
- * index to resolve per-namespace through `storeForPath()` rather than off a
- * config field at all. This says the two disagree.
+ * The ORDERING itself is not changed here. This says the two disagree.
  */
 function consoleProjectDisagreement(config: StradConfig): string[] {
   for (const server of config.servers) {
@@ -415,10 +418,12 @@ function consoleProjectDisagreement(config: StradConfig): string[] {
           : ` and does not list "${declared}" at all`) +
         `. storeProject() prefers SECRETS_PROJECT_ID over this server's ` +
         `consoleStores:, and this is the first server it asks — so the console ` +
-        `index and the roster's copy-pasteable gcloud commands describe ` +
-        `"${declared}" while the store page defaults to "${projects[0]}". (A ` +
-        `deployment whose resolver sets STRAD_PARAMS_PROJECT_ID overrides both.) ` +
-        `Drop the leftover SECRETS_PROJECT_ID, or make it name the default store.`,
+        `index header and /api/secrets/readiness describe "${declared}" while ` +
+        `the store page defaults to "${projects[0]}". (A deployment whose ` +
+        `resolver sets STRAD_PARAMS_PROJECT_ID overrides both. The roster's ` +
+        `per-path gcloud commands follow neither: each resolves to the store ` +
+        `whose namespaces cover its own path.) Drop the leftover ` +
+        `SECRETS_PROJECT_ID, or make it name the default store.`,
     ];
   }
   return [];

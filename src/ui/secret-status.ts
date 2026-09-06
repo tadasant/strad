@@ -8,8 +8,10 @@ import {
 } from "../secrets/provider/hydrate.ts";
 import {
   gatewayNamespace,
+  normaliseNamespace,
   staticNamespace,
 } from "../secrets/parameters/namespace.ts";
+import { resolveServerView, serverLooksSecrets } from "./resolve.ts";
 import {
   resolverFromEnv,
   RESOLVER_ENV,
@@ -1964,6 +1966,157 @@ export function storeProject(
 }
 
 /**
+ * Which project holds the store that owns ONE parameter path.
+ *
+ * `storeProject()` answers for the DEPLOYMENT — a single default, which is the
+ * right shape for a page header and the wrong shape for a command a human is
+ * invited to paste. A `consoleStores:` slug fronts N stores on one `/ui/<slug>`
+ * page, each with its own project and its own namespaces, so "which project" is
+ * a question about the PATH and not about the deployment: a `${NAME}` missing
+ * out of the second store's namespace is created with the second store's
+ * `--project`, and naming the first store's would be a wrong answer to the
+ * question the roster exists to answer.
+ *
+ * The stores come from `resolveServerView` where a console view can see them,
+ * which is the one place that knows how a console store is declared, so the
+ * index reads the same declarations the page that writes to it reads. The
+ * NAMESPACE TEST is the one `storeForPath` in `src/http/params.ts` applies to
+ * the write-back route, and deliberately so: a path is owned by the store whose
+ * namespace covers it, however the store was declared. The two are not the same
+ * function and do not answer identically — `storeForPath` falls back to a lone
+ * candidate that covers nothing, and refuses two covering stores even when they
+ * share a project. This is stricter in both directions, because falling back
+ * here costs a less specific answer rather than a refused write.
+ *
+ * Nothing here reads a VALUE. The bag is the process environment (a store's
+ * project and namespaces are config literals; only its credential needs the real
+ * bag, and no credential is used) and the answer reaches a printed string, never
+ * a store selection for resolution.
+ *
+ * Anything other than exactly one covering store — no namespaces declared at
+ * all, a path outside every one of them, two stores both claiming it — falls
+ * back to the deployment default. An ambiguous answer stated confidently is
+ * worse than the default, which at least says when it was guessed.
+ */
+export function storeProjectForPath(
+  config: StradConfig,
+  path: string,
+  env: NodeJS.ProcessEnv,
+): {
+  project: string;
+  guessed: boolean;
+} {
+  const project = projectOwning(declaredStores(config, env), path);
+  return project ? { project, guessed: false } : storeProject(config, env);
+}
+
+/** One declared parameter store, reduced to the two fields this file needs. */
+interface DeclaredStore {
+  project: string;
+  namespaces: string[];
+}
+
+/**
+ * Every parameter store this deployment declares, however it declared them.
+ *
+ * Flattened across BOTH dimensions the way `storeForPath` flattens them:
+ * several secrets SLUGS, and several stores on one slug. A store is a
+ * (project, namespaces) pair here whichever shape it arrived in, because that is
+ * all a printed `--project` needs.
+ *
+ * THREE SHAPES, and one server never contributes two of them. The console's
+ * `consoleStores:` and the single-store `SECRETS_*` env vars both arrive through
+ * `resolveServerView`, which already refuses to merge them — a config that
+ * declares its stores has said what they are. `mcpStores:` is the third, and it
+ * is read straight off the config here because the console view cannot see it:
+ * it is the `/mcp` half's list, and a server declaring it may not also carry
+ * `SECRETS_PROJECT_ID` under `env:` (src/config/schema.ts refuses that), so it
+ * reaches no console view at all. Leaving it out would answer such a path from
+ * `storeProject()`, whose `mcpStores[0]` fallback is the same first-store guess
+ * this exists to replace.
+ */
+function declaredStores(
+  config: StradConfig,
+  env: NodeJS.ProcessEnv,
+): DeclaredStore[] {
+  const forEnv = STORE_CACHE.get(config);
+  const hit = forEnv?.get(env);
+  if (hit) return hit;
+
+  const bag: SecretBag = Object.fromEntries(
+    Object.entries(env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+
+  const stores: DeclaredStore[] = [];
+  const add = (project: string | undefined, namespaces: string[]): void => {
+    // An unresolved `${REF}` is not a project id, and `storeProject()` refuses
+    // one for the same reason: it would print a command that cannot run.
+    if (!project || project.includes("${")) return;
+    stores.push({ project, namespaces });
+  };
+
+  for (const server of config.servers) {
+    // A DISABLED server is not this deployment's source of truth for anything —
+    // the rule `storeProject()` applies above, for the same reason.
+    if (!server.enabled) continue;
+    if (serverLooksSecrets(server)) {
+      const view = resolveServerView(config, server.slug, bag);
+      if (view.kind !== "secrets") continue;
+      for (const store of view.stores) add(store.projectId, store.namespaces);
+      continue;
+    }
+    if (server.kind !== "supplementary-image") continue;
+    for (const store of server.mcpStores) add(store.project, store.namespaces);
+  }
+
+  const cache = forEnv ?? new WeakMap<NodeJS.ProcessEnv, DeclaredStore[]>();
+  cache.set(env, stores);
+  STORE_CACHE.set(config, cache);
+  return stores;
+}
+
+/**
+ * Memoised per (config, env), because both are read-only inputs to this answer.
+ *
+ * The index calls `fixTargets()` once per actionable requirement and
+ * `unobservableTarget()` once per unobservable block, and each call would
+ * otherwise re-resolve every secrets server's view — which parses a service
+ * account key per store. On a fleet-sized config that is a page render's
+ * dominant cost, spent recomputing a list of (project, namespaces) pairs that
+ * cannot have changed: a parsed config is not mutated, and a store's project and
+ * namespaces are config literals or deploy-time env.
+ */
+const STORE_CACHE = new WeakMap<
+  StradConfig,
+  WeakMap<NodeJS.ProcessEnv, DeclaredStore[]>
+>();
+
+/**
+ * The one project whose store covers this path, or null if that is not decided.
+ *
+ * Null covers three different situations and deliberately does not tell them
+ * apart, because the caller does the same thing in all three: no store declares
+ * a namespace, the path is outside every declared namespace, or two stores in
+ * DIFFERENT projects both claim it. The last is the case `storeForPath` refuses
+ * outright rather than picking a first — printing one of two projects with the
+ * same confidence as a certain answer is the failure this function exists to
+ * stop, so it falls back to the deployment default, which says when it guessed.
+ */
+function projectOwning(stores: DeclaredStore[], path: string): string | null {
+  const owners = new Set(
+    stores
+      .filter((s) =>
+        s.namespaces.some((ns) => path.startsWith(normaliseNamespace(ns))),
+      )
+      .map((s) => s.project),
+  );
+  const [only] = [...owners];
+  return owners.size === 1 && only !== undefined ? only : null;
+}
+
+/**
  * Where to look when the console cannot look for you.
  *
  * The same shape as a `fixTargets` entry and deliberately so — a reader who has
@@ -1977,7 +2130,14 @@ export function unobservableTarget(
   scope: UnobservableScope,
   env: NodeJS.ProcessEnv,
 ): FixTarget {
-  const { project, guessed } = storeProject(config, env);
+  // The namespace IS the path here, so the store that owns it is knowable: this
+  // asks which store covers it rather than which store the deployment defaults
+  // to. On a single-store deployment they are the same answer.
+  const { project, guessed } = storeProjectForPath(
+    config,
+    scope.namespace,
+    env,
+  );
   return {
     store: "GCP Parameter Manager (index) + Secret Manager (value)",
     resource: `${scope.namespace}*`,
@@ -2015,13 +2175,30 @@ export function fixTargets(
 ): FixTarget[] {
   const gatewayEnv = config.gateway.env;
   const storeBacked = config.gateway.secrets.provider !== "env";
-  const { project, guessed } = storeProject(config, env);
   const namespace = gatewayNamespace(gatewayEnv);
   const path = `${namespace}${requirement.name}`;
   const smName = `strad-${gatewayEnv}-${requirement.name}`;
-  const projectNote = guessed
-    ? ` (project inferred from the naming convention — this deployment does not declare one)`
-    : "";
+
+  // TWO DIFFERENT QUESTIONS, and a multi-store deployment answers them
+  // differently. A PARAMETER PATH is owned by whichever store's namespaces cover
+  // it — `storeProjectForPath` — because that is the store a human has to create
+  // it in. A `strad-<env>-*` SECRET MANAGER secret is NOT a parameter path, so
+  // no namespace covers it and there is no per-path answer to give; it keeps the
+  // deployment default. That default is the PARAMETER STORE's project, which is
+  // not necessarily where the deploy workflow reads `strad-<env>-*` from — see
+  // HACKS.md #86. Routing it through a namespace it does not live under would
+  // replace one wrong answer with another.
+  const deployment = storeProject(config, env);
+  const stores = declaredStores(config, env);
+  /** The project a PARAMETER PATH is created in — its owning store's, or the default. */
+  const ownerOf = (resource: string): { project: string; guessed: boolean } => {
+    const project = projectOwning(stores, resource);
+    return project ? { project, guessed: false } : deployment;
+  };
+  const projectNoteFor = (guessed: boolean): string =>
+    guessed
+      ? ` (project inferred from the naming convention — this deployment does not declare one)`
+      : "";
 
   const targets: FixTarget[] = [];
 
@@ -2034,16 +2211,17 @@ export function fixTargets(
   if (requirement.managed) {
     const slug = requirement.paramsSlugs[0] ?? requirement.slugs[0] ?? "";
     const ns = staticNamespace(gatewayEnv, slug);
+    const owner = ownerOf(`${ns}${requirement.name}`);
     targets.push({
       store: "GCP Parameter Manager (index) + Secret Manager (value)",
       resource: `${ns}${requirement.name}`,
-      project,
+      project: owner.project,
       detail:
         `A managed parameter: "${slug}" sets \`params: true\`, so everything under its ` +
         `static namespace is resolved at render time and injected into that server's ` +
         `environment. This is the only place it goes — it is not a \${NAME} reference, so ` +
         `the gateway namespace and strad-${gatewayEnv}-* do nothing for it. It reaches the ` +
-        `container at the NEXT DEPLOY, not on write.${projectNote}`,
+        `container at the NEXT DEPLOY, not on write.${projectNoteFor(owner.guessed)}`,
       commands: [
         `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
         `# Then redeploy: a supplementary image's environment is baked at render time.`,
@@ -2063,30 +2241,31 @@ export function fixTargets(
     targets.push({
       store: "GCP Secret Manager (deploy environment only)",
       resource: smName,
-      project,
+      project: deployment.project,
       detail:
         `This name is referenced only from a consoleEnv: map, and consoleEnv: is read from ` +
         `the DEPLOY environment — never from the parameter store, because it carries the ` +
         `console's store-admin credential. Seed it in Secret Manager, where the deploy ` +
-        `workflow reads every strad-${gatewayEnv}-* secret, then redeploy.${projectNote}`,
-      commands: secretManagerCommands(smName, project),
+        `workflow reads every strad-${gatewayEnv}-* secret, then redeploy.${projectNoteFor(deployment.guessed)}`,
+      commands: secretManagerCommands(smName, deployment.project),
     });
     return targets;
   }
 
+  const shared = ownerOf(path);
   const storeTarget: FixTarget = {
     store: "GCP Parameter Manager (index) + Secret Manager (value)",
     resource: path,
-    project,
+    project: shared.project,
     detail: storeBacked
       ? `gateway.secrets.provider is "${config.gateway.secrets.provider}", so the gateway ` +
         `reads this path at runtime. A value added here lands within ` +
         `gateway.secrets.negativeTtlSeconds (${config.gateway.secrets.negativeTtlSeconds}s) ` +
         `with no redeploy — and it is the same path the next deploy's preflight checks.` +
-        projectNote
+        projectNoteFor(shared.guessed)
       : `gateway.secrets.provider is "env" on this deployment, so a value here is DEPLOY-time ` +
         `input: the render reads it and bakes it into the app spec. It does not reach the ` +
-        `running gateway on its own.${projectNote}`,
+        `running gateway on its own.${projectNoteFor(shared.guessed)}`,
     // The console is the route to recommend: a parameter is a Parameter Manager
     // entry plus (for a secret one) a Secret Manager secret, addressed by a
     // FLATTENED id that `parameterId()` derives from the path. Printing a gcloud
@@ -2102,13 +2281,13 @@ export function fixTargets(
   const bakedTarget: FixTarget = {
     store: "GCP Secret Manager",
     resource: smName,
-    project,
+    project: deployment.project,
     detail:
       `The deploy workflow loads every strad-${gatewayEnv}-* secret into its job ` +
       `environment, and scripts/render-spec.ts turns each referenced \${NAME} into a ` +
       `SECRET env var on the app spec. Adding a version here takes effect on the next ` +
-      `deploy, not immediately.${projectNote}`,
-    commands: secretManagerCommands(smName, project),
+      `deploy, not immediately.${projectNoteFor(deployment.guessed)}`,
+    commands: secretManagerCommands(smName, deployment.project),
   };
 
   // THE SERVER'S OWN NAMESPACE — on a store-backed deployment, the route to
@@ -2149,27 +2328,31 @@ export function fixTargets(
 
   const perServerTargets: FixTarget[] =
     storeBacked && (runtimeRef || bakedRef)
-      ? requirement.slugs.map((slug) => ({
-          store: "GCP Parameter Manager (index) + Secret Manager (value)",
-          resource: `${staticNamespace(gatewayEnv, slug)}${requirement.name}`,
-          project,
-          detail:
-            `"${slug}" resolves \${${requirement.name}} from its OWN namespace before the ` +
-            `shared one, so this is where a credential that belongs to this server goes. ` +
-            `${lands} The next deploy's preflight accepts it in place of ${path}.` +
-            (requirement.slugs.length > 1
-              ? ` ${requirement.slugs.length} servers reference this name, and the ` +
-                `deploy demands that EVERY one of them resolve it: a value here covers ` +
-                `"${slug}" alone, and the others still need ${namespace} or a value of ` +
-                `their own.`
-              : "") +
-            consoleCaveat +
-            projectNote,
-          commands: [
-            `# Console: namespace ${mcpNamespace(gatewayEnv)} · prefix "${slug}/static/" · variable ${requirement.name}`,
-          ],
-          href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
-        }))
+      ? requirement.slugs.map((slug) => {
+          const resource = `${staticNamespace(gatewayEnv, slug)}${requirement.name}`;
+          const owner = ownerOf(resource);
+          return {
+            store: "GCP Parameter Manager (index) + Secret Manager (value)",
+            resource,
+            project: owner.project,
+            detail:
+              `"${slug}" resolves \${${requirement.name}} from its OWN namespace before the ` +
+              `shared one, so this is where a credential that belongs to this server goes. ` +
+              `${lands} The next deploy's preflight accepts it in place of ${path}.` +
+              (requirement.slugs.length > 1
+                ? ` ${requirement.slugs.length} servers reference this name, and the ` +
+                  `deploy demands that EVERY one of them resolve it: a value here covers ` +
+                  `"${slug}" alone, and the others still need ${namespace} or a value of ` +
+                  `their own.`
+                : "") +
+              consoleCaveat +
+              projectNoteFor(owner.guessed),
+            commands: [
+              `# Console: namespace ${mcpNamespace(gatewayEnv)} · prefix "${slug}/static/" · variable ${requirement.name}`,
+            ],
+            href: `/ui/secrets?ns=${encodeURIComponent(staticNamespace(gatewayEnv, slug))}`,
+          };
+        })
       : [];
 
   targets.push(
@@ -2189,10 +2372,12 @@ export function fixTargets(
   // reach for.
   if (!storeBacked) {
     for (const slug of requirement.paramsSlugs) {
+      const resource = `${staticNamespace(gatewayEnv, slug)}${requirement.name}`;
+      const owner = ownerOf(resource);
       targets.push({
         store: "GCP Parameter Manager + Secret Manager (a different mechanism)",
-        resource: `${staticNamespace(gatewayEnv, slug)}${requirement.name}`,
-        project,
+        resource,
+        project: owner.project,
         detail:
           `NOT a fix for this row — noted because it is the adjacent thing to reach for. ` +
           `"${slug}" sets \`params: true\`, so everything under its static namespace is ` +
@@ -2202,7 +2387,7 @@ export function fixTargets(
           `parameter namespace — and a value here leaves the deploy failing exactly as it ` +
           `does now. Use it to replace the \`${requirement.name}\` entry in that server's ` +
           `env: with a managed parameter, which is a config change.` +
-          projectNote,
+          projectNoteFor(owner.guessed),
         commands: [
           `# Console: prefix "${slug}/static/", variable ${requirement.name}`,
           `# ...then DELETE the \${${requirement.name}} entry from ${slug}'s env: in the config.`,

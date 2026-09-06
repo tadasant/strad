@@ -3800,6 +3800,21 @@ role next to the other principals on that page.
 
 ## 77. The console index still describes a multi-store slug by its FIRST store
 
+**✅ RESOLVED.** The roster asks which store's namespaces COVER a path instead of
+reading a project off the config: `storeProjectForPath()` in
+`src/ui/secret-status.ts` flattens the declared stores through
+`resolveServerView` — the same both-dimensions flattening `storeForPath` applies
+to the write-back route — and every parameter path `fixTargets()` prints is
+named with the project that owns it. A path no store covers, and a path two
+stores in different projects both claim, fall back to the deployment default
+rather than stating one of two answers confidently. `storeProject()` still
+answers for the DEPLOYMENT, which is what the page header and
+`/api/secrets/readiness` want. A `strad-<env>-*` Secret Manager secret keeps that
+default because it is NOT a parameter path — no namespace covers it, so there is
+no per-path answer to give. That default is itself the wrong project for a Secret
+Manager name on a deployment whose two projects differ, which is #86 and is not
+this entry.
+
 **What.** `consoleStores:` puts N parameter stores on one `/ui/<slug>` page. The
 console INDEX at `/ui` did not change with it: it still renders one card per
 secrets slug, and `storeProject()` in `src/ui/secret-status.ts` answers "which
@@ -3809,26 +3824,15 @@ first enabled supplementary server that declares a project at all — and within
 that server `consoleEnv.SECRETS_PROJECT_ID`, then `env.SECRETS_PROJECT_ID`, then
 `consoleStores[0]`. So a slug declaring `consoleStores:` is described by its
 first entry only when nothing earlier in that order answered; a leftover
-`SECRETS_PROJECT_ID` outvotes the list entirely. `check-config` now emits a
+`SECRETS_PROJECT_ID` outvotes the list entirely. `check-config` emits a
 `::warning::` when that name and the first store disagree, which makes the
 mismatch visible without changing the order.
 
-**Why it is a hack.** `storeProject()` feeds the copy-pasteable `gcloud`
+**Why it was a hack.** `storeProject()` feeds the copy-pasteable `gcloud`
 commands the roster prints for a missing secret. On a multi-store slug whose
 second store owns the namespace a missing name lives in, the printed command
-names the wrong `--project` — it will fail, legibly, rather than write anywhere
-wrong, but it is a wrong answer handed to a human who asked for a right one.
-
-It is bounded by which deployments can hit it. It needs a `consoleStores:` slug
-whose stores hold DIFFERENT projects AND a `${NAME}` the roster reports missing
-out of a non-first store. The prod migration that this field exists for has that
-shape, so this is a real state and not a theoretical one.
-
-**Undo.** Make the roster's store diagnosis per NAMESPACE rather than per
-deployment: `storeForPath` in `src/http/params.ts` already resolves a path to the
-one store that covers it, across both dimensions (several slugs, several stores
-per slug), so the index can ask the same question the write-back route asks
-instead of picking a project off the config. Tracked in tadasant/strad#261.
+named the wrong `--project` — it would fail, legibly, rather than write anywhere
+wrong, but it was a wrong answer handed to a human who asked for a right one.
 
 ---
 
@@ -4248,3 +4252,31 @@ deployment deliberately does not use for the gateway. Hack #18 is the same
 full-replace rule pointed the other way, and it is what makes the restore free: a
 spec with no `maintenance` block clears `archive`, so the renderer needed no
 change.
+
+---
+
+## 86. The console's `gcloud secrets` recipe names the PARAMETER STORE's project
+
+**What.** The roster prints a paste-ready Secret Manager recipe for a missing
+`${NAME}` — `gcloud secrets create strad-<env>-<NAME> --project <P> …` — and `<P>`
+is `storeProject()`, whose own doc says what it answers: _"Which GCP project
+holds the parameter store."_ Its whole chain reads parameter-store facts. The
+deploy workflow reads `strad-<env>-*` from `secrets.GCP_PROJECT_ID` instead, and
+`infra/strad.staging.yaml` does not merely permit those to differ — it INSTRUCTS
+that they differ, so that the parameter store's viewer and admin cannot reach
+strad's own secrets.
+
+**Why it is a hack.** The console reads no deploy-environment fact, so it has
+nothing better to reach for and prints the one project id it holds. It is the one
+route on this page that does NOT fail legibly: a paste against the wrong
+`--project` SUCCEEDS, the operator believes the name is seeded, and the next
+deploy fails on the same name with nothing pointing at where the value went.
+The parameter-path routes beside it resolve per namespace (#77) and this one
+cannot, because a Secret Manager name is not a parameter path — there is no
+namespace to resolve it by.
+
+**Undo.** Either say less — drop `--project` and name the constraint in prose,
+since a command a human has to complete beats one that is confidently wrong — or
+let the deployment declare the deploy-secrets project and use it for the Secret
+Manager routes, leaving `storeProject()` answering for the parameter store, which
+is what it is named for. Tracked in tadasant/strad#315.
