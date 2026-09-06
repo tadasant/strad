@@ -1804,9 +1804,13 @@ above names a different parameter path, and on a deployment whose
 [`consoleStores:`](#one-console-page-many-stores) partition the namespaces between
 projects those paths can live in different ones — so the project printed beside a
 route is the project of the store whose `namespaces:` **cover** that route's path.
-It is the same question `storeForPath` asks of a write, flattened across both
-dimensions (several secrets slugs, several stores per slug), so the index cannot
-describe a store differently from the page that writes to it.
+It is the same **namespace test** `storeForPath` applies to a write, over stores
+flattened across both dimensions (several secrets slugs, several stores per
+slug), so the index reads the same declarations the page that writes to it reads.
+The two are not one function and do not answer identically — `storeForPath` falls
+back to a lone candidate that covers nothing, where this falls back to the
+deployment default. Falling back here costs a less specific answer; there it
+costs a refused write.
 
 Where the namespaces decide nothing the deployment's default answers instead: the
 resolver's own `STRAD_PARAMS_PROJECT_ID` if this process holds one, else the
@@ -1819,10 +1823,20 @@ declares a namespace at all, the path lies outside every declared namespace, or
 two stores in different projects both claim it — the ambiguity `storeForPath`
 refuses outright for a write.
 
-A `strad-<env>-<NAME>` Secret Manager route keeps the deployment default rather
-than a store's project, because it is not a parameter path: the deploy workflow
-reads those secrets out of the deployment's own project however the parameter
-stores are partitioned.
+A `strad-<env>-<NAME>` Secret Manager route keeps the deployment default, because
+it is not a parameter path — no namespace covers it, so there is no per-path
+answer to give. Note that the default is the **parameter store's** project, and
+the deploy workflow reads `strad-<env>-*` from a project that
+[need not be the same one](/limitations/#86-the-consoles-gcloud-secrets-recipe-names-the-parameter-stores-project).
+
+**A covering namespace outranks the resolver's own `STRAD_PARAMS_PROJECT_ID`,**
+which is one store among several on a partitioned deployment and simply the wrong
+project for a path another store owns. Where the two disagree about a namespace
+the gateway resolves `${NAME}` references from, the resolver is the one telling
+the truth about what gets READ — a console store declaring a namespace in a
+project the resolver does not read would send a human to create a value nothing
+resolves. Nothing checks that they agree, and `check-config` structurally cannot:
+which project the resolver holds is a deploy-environment fact, not a config one.
 
 A `consoleEnv:`-only name gets one route and it is not the store — that value is
 read from the deploy environment only, because it carries the console's

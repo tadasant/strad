@@ -1977,12 +1977,16 @@ export function storeProject(
  * `--project`, and naming the first store's would be a wrong answer to the
  * question the roster exists to answer.
  *
- * The stores come from `resolveServerView`, the one place that knows how a store
- * is declared — a `consoleStores:` entry, or the single-store `SECRETS_*` env
- * shape — so the index cannot describe a store differently from the page that
- * shows it. The namespace test is the one `storeForPath` in `src/http/params.ts`
- * applies to the write-back route, and deliberately so: a path is owned by the
- * store whose namespace covers it, however the store was declared.
+ * The stores come from `resolveServerView` where a console view can see them,
+ * which is the one place that knows how a console store is declared, so the
+ * index reads the same declarations the page that writes to it reads. The
+ * NAMESPACE TEST is the one `storeForPath` in `src/http/params.ts` applies to
+ * the write-back route, and deliberately so: a path is owned by the store whose
+ * namespace covers it, however the store was declared. The two are not the same
+ * function and do not answer identically — `storeForPath` falls back to a lone
+ * candidate that covers nothing, and refuses two covering stores even when they
+ * share a project. This is stricter in both directions, because falling back
+ * here costs a less specific answer rather than a refused write.
  *
  * Nothing here reads a VALUE. The bag is the process environment (a store's
  * project and namespaces are config literals; only its credential needs the real
@@ -2015,15 +2019,30 @@ interface DeclaredStore {
 /**
  * Every parameter store this deployment declares, however it declared them.
  *
- * Flattened across BOTH dimensions, exactly as `storeForPath` flattens them:
- * several secrets SLUGS, and several stores on one slug's `consoleStores:`. A
- * store is a (project, namespaces) pair here whichever shape it arrived in,
- * because that is all a printed `--project` needs.
+ * Flattened across BOTH dimensions the way `storeForPath` flattens them:
+ * several secrets SLUGS, and several stores on one slug. A store is a
+ * (project, namespaces) pair here whichever shape it arrived in, because that is
+ * all a printed `--project` needs.
+ *
+ * THREE SHAPES, and one server never contributes two of them. The console's
+ * `consoleStores:` and the single-store `SECRETS_*` env vars both arrive through
+ * `resolveServerView`, which already refuses to merge them — a config that
+ * declares its stores has said what they are. `mcpStores:` is the third, and it
+ * is read straight off the config here because the console view cannot see it:
+ * it is the `/mcp` half's list, and a server declaring it may not also carry
+ * `SECRETS_PROJECT_ID` under `env:` (src/config/schema.ts refuses that), so it
+ * reaches no console view at all. Leaving it out would answer such a path from
+ * `storeProject()`, whose `mcpStores[0]` fallback is the same first-store guess
+ * this exists to replace.
  */
 function declaredStores(
   config: StradConfig,
   env: NodeJS.ProcessEnv,
 ): DeclaredStore[] {
+  const forEnv = STORE_CACHE.get(config);
+  const hit = forEnv?.get(env);
+  if (hit) return hit;
+
   const bag: SecretBag = Object.fromEntries(
     Object.entries(env).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -2031,22 +2050,48 @@ function declaredStores(
   );
 
   const stores: DeclaredStore[] = [];
+  const add = (project: string | undefined, namespaces: string[]): void => {
+    // An unresolved `${REF}` is not a project id, and `storeProject()` refuses
+    // one for the same reason: it would print a command that cannot run.
+    if (!project || project.includes("${")) return;
+    stores.push({ project, namespaces });
+  };
+
   for (const server of config.servers) {
     // A DISABLED server is not this deployment's source of truth for anything —
     // the rule `storeProject()` applies above, for the same reason.
     if (!server.enabled) continue;
-    if (!serverLooksSecrets(server)) continue;
-    const view = resolveServerView(config, server.slug, bag);
-    if (view.kind !== "secrets") continue;
-    for (const store of view.stores) {
-      // An unresolved `${REF}` is not a project id, and `storeProject()` refuses
-      // one for the same reason: it would print a command that cannot run.
-      if (!store.projectId || store.projectId.includes("${")) continue;
-      stores.push({ project: store.projectId, namespaces: store.namespaces });
+    if (serverLooksSecrets(server)) {
+      const view = resolveServerView(config, server.slug, bag);
+      if (view.kind !== "secrets") continue;
+      for (const store of view.stores) add(store.projectId, store.namespaces);
+      continue;
     }
+    if (server.kind !== "supplementary-image") continue;
+    for (const store of server.mcpStores) add(store.project, store.namespaces);
   }
+
+  const cache = forEnv ?? new WeakMap<NodeJS.ProcessEnv, DeclaredStore[]>();
+  cache.set(env, stores);
+  STORE_CACHE.set(config, cache);
   return stores;
 }
+
+/**
+ * Memoised per (config, env), because both are read-only inputs to this answer.
+ *
+ * The index calls `fixTargets()` once per actionable requirement and
+ * `unobservableTarget()` once per unobservable block, and each call would
+ * otherwise re-resolve every secrets server's view — which parses a service
+ * account key per store. On a fleet-sized config that is a page render's
+ * dominant cost, spent recomputing a list of (project, namespaces) pairs that
+ * cannot have changed: a parsed config is not mutated, and a store's project and
+ * namespaces are config literals or deploy-time env.
+ */
+const STORE_CACHE = new WeakMap<
+  StradConfig,
+  WeakMap<NodeJS.ProcessEnv, DeclaredStore[]>
+>();
 
 /**
  * The one project whose store covers this path, or null if that is not decided.
@@ -2137,10 +2182,12 @@ export function fixTargets(
   // TWO DIFFERENT QUESTIONS, and a multi-store deployment answers them
   // differently. A PARAMETER PATH is owned by whichever store's namespaces cover
   // it — `storeProjectForPath` — because that is the store a human has to create
-  // it in. A `strad-<env>-*` SECRET MANAGER secret is not a parameter path at
-  // all: the deploy workflow reads those out of the deployment's own project,
-  // whatever the parameter stores are partitioned into, so those targets keep
-  // the deployment default.
+  // it in. A `strad-<env>-*` SECRET MANAGER secret is NOT a parameter path, so
+  // no namespace covers it and there is no per-path answer to give; it keeps the
+  // deployment default. That default is the PARAMETER STORE's project, which is
+  // not necessarily where the deploy workflow reads `strad-<env>-*` from — see
+  // HACKS.md #86. Routing it through a namespace it does not live under would
+  // replace one wrong answer with another.
   const deployment = storeProject(config, env);
   const stores = declaredStores(config, env);
   /** The project a PARAMETER PATH is created in — its owning store's, or the default. */

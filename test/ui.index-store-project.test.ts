@@ -189,6 +189,58 @@ servers:
         adminKeyVar: OTHER_SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON
 `);
 
+/**
+ * A resolver project that NO store declares.
+ *
+ * Every "it falls back" assertion below is made against this rather than against
+ * `storeProject(config, {})`, because on these fixtures the deployment default
+ * IS the first declared store — so the obvious assertion is satisfied equally by
+ * a correct fallback and by the first-covering-store pick this function exists
+ * to refuse.
+ */
+const RESOLVER_PROJECT = "resolver-only-project";
+const RESOLVER: NodeJS.ProcessEnv = {
+  STRAD_PARAMS_PROJECT_ID: RESOLVER_PROJECT,
+};
+
+/**
+ * The same partition declared on the `/mcp` half instead of the console's.
+ *
+ * `mcpStores:` reaches no console view — `resolveServerView` does not read it,
+ * and the schema refuses a server that declares it alongside a
+ * `SECRETS_PROJECT_ID` under `env:` — so it is the shape that would silently
+ * keep the first-store answer if the roster asked the console view alone.
+ */
+const MCP_ONLY = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: test
+  secrets: { provider: gcp-parameter-store }
+auth: { staticTokens: { enabled: true } }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /secrets
+    entitlements: [admin]
+    env:
+      GATEWAY_SECRETS_SERVICE_ACCOUNT_KEY_JSON: "\${GATEWAY_ADMIN_KEY}"
+      SERVER_SECRETS_SERVICE_ACCOUNT_KEY_JSON: "\${SERVER_ADMIN_KEY}"
+    mcpStores:
+      - project: "${GATEWAY_PROJECT}"
+        namespaces: ["${GATEWAY_NS}"]
+        viewerKeyVar: GATEWAY_SECRETS_SERVICE_ACCOUNT_KEY_JSON
+      - project: "${SERVER_PROJECT}"
+        namespaces: ["${SERVER_NS}"]
+        viewerKeyVar: SERVER_SECRETS_SERVICE_ACCOUNT_KEY_JSON
+`);
+
 /** The `${SHOP_PASSWORD}` requirement, read off the config rather than built. */
 function shopPassword(config = MULTI): SecretRequirement {
   const req = collectRequirements(config).find(
@@ -239,6 +291,45 @@ describe("a multi-store slug's fix targets", () => {
     expect(baked!.commands.join("\n")).toContain(
       `--project ${storeProject(MULTI, {}).project}`,
     );
+  });
+
+  it("routes a MANAGED parameter by its own static namespace", () => {
+    // A managed parameter takes an early return with ONE target, so it does not
+    // go through the routes above at all — and it is the case where the path is
+    // most obviously a server's own: `params: true` resolves everything under
+    // that namespace and nothing else.
+    const managed = fixTargets(
+      MULTI,
+      { ...shopPassword(), managed: true, paramsSlugs: ["shop"] },
+      {},
+    );
+    expect(managed).toHaveLength(1);
+    expect(managed[0]!.resource).toBe(
+      "/strad/test/mcp/shop/static/SHOP_PASSWORD",
+    );
+    expect(managed[0]!.project).toBe(SERVER_PROJECT);
+  });
+
+  it("routes the params: true note by its namespace on an env deployment", () => {
+    // Under `provider: env` the per-server route is dropped and this note takes
+    // its place, LAST and labelled as not a fix. It still names a parameter
+    // path, so it still has an owning store.
+    const envProvider = parseConfig(
+      MULTI_YAML.replace("  secrets: { provider: gcp-parameter-store }\n", ""),
+    );
+    const targets = fixTargets(
+      envProvider,
+      { ...shopPassword(envProvider), paramsSlugs: ["shop"] },
+      {},
+    );
+    const note = targets[targets.length - 1]!;
+    expect(note.resource).toBe("/strad/test/mcp/shop/static/SHOP_PASSWORD");
+    expect(note.detail).toContain("NOT a fix for this row");
+    expect(note.project).toBe(SERVER_PROJECT);
+    // …and the Secret Manager route beside it keeps the deployment default.
+    expect(
+      targets.find((t) => t.resource === "strad-test-SHOP_PASSWORD")!.project,
+    ).toBe(storeProject(envProvider, {}).project);
   });
 
   it("points the namespace popout at the store that owns THAT namespace", () => {
@@ -294,11 +385,14 @@ describe("storeProjectForPath", () => {
   });
 
   it("falls back to the deployment default for a path no store covers", () => {
-    // Not a guess dressed up as an answer: the default says when it was guessed,
-    // and the row prints that caveat.
-    expect(storeProjectForPath(MULTI, "/somewhere/else/X", {})).toEqual(
-      storeProject(MULTI, {}),
-    );
+    // Asserted against a project NO STORE DECLARES, so "fell back" and "picked a
+    // store anyway" cannot both satisfy it. The obvious spelling — comparing to
+    // `storeProject()` under an empty env — passes either way, because the
+    // default IS the first store there.
+    expect(storeProjectForPath(MULTI, "/somewhere/else/X", RESOLVER)).toEqual({
+      project: RESOLVER_PROJECT,
+      guessed: false,
+    });
   });
 
   it("falls back rather than picking one of two stores that both claim a path", () => {
@@ -311,9 +405,17 @@ describe("storeProjectForPath", () => {
     // it is a warning (`crossServerNamespaceOverlap`) because a config that
     // works today can carry one. So the fixture is two secrets slugs on two
     // bundles, which is the shape a deployment can actually be in.
+    //
+    // Against RESOLVER for the same reason as above: both overlapping stores
+    // cover this path, so an implementation that took the first covering one
+    // would return a project this assertion rejects.
     expect(
-      storeProjectForPath(OVERLAPPING, "/strad/test/mcp/shop/static/X", {}),
-    ).toEqual(storeProject(OVERLAPPING, {}));
+      storeProjectForPath(
+        OVERLAPPING,
+        "/strad/test/mcp/shop/static/X",
+        RESOLVER,
+      ),
+    ).toEqual({ project: RESOLVER_PROJECT, guessed: false });
   });
 
   it("ignores a DISABLED server's stores, like storeProject() does", () => {
@@ -324,8 +426,45 @@ describe("storeProjectForPath", () => {
       ),
     );
     expect(
-      storeProjectForPath(off, "/strad/test/mcp/shop/static/X", {}),
-    ).toEqual(storeProject(off, {}));
+      storeProjectForPath(off, "/strad/test/mcp/shop/static/X", RESOLVER),
+    ).toEqual({ project: RESOLVER_PROJECT, guessed: false });
+    // …and that really is the disabled server doing it: enabled, it answers.
+    expect(
+      storeProjectForPath(MULTI, "/strad/test/mcp/shop/static/X", RESOLVER),
+    ).toEqual({ project: SERVER_PROJECT, guessed: false });
+  });
+
+  it("refuses a project id that is still an unresolved ${REF}", () => {
+    // `storeProject()` walks past one for the same reason: it would print a
+    // command that cannot run. A store whose project is a ref is not a store
+    // this can name, so the path falls back rather than printing "${…}".
+    const unresolved = parseConfig(
+      MULTI_YAML.replace(
+        `project: "${SERVER_PROJECT}"`,
+        'project: "${SOME_PROJECT_REF}"',
+      ),
+    );
+    expect(
+      storeProjectForPath(
+        unresolved,
+        "/strad/test/mcp/shop/static/X",
+        RESOLVER,
+      ),
+    ).toEqual({ project: RESOLVER_PROJECT, guessed: false });
+  });
+
+  it("reads an mcpStores: server too, which no console view can see", () => {
+    // The /mcp half's list. A server declaring it may not also carry
+    // SECRETS_PROJECT_ID under env: (the schema refuses that), so it reaches no
+    // console view — and leaving it out would answer its paths from
+    // storeProject(), whose mcpStores[0] fallback is the same first-store guess
+    // this replaces.
+    expect(
+      storeProjectForPath(MCP_ONLY, "/strad/test/mcp/shop/static/X", RESOLVER),
+    ).toEqual({ project: SERVER_PROJECT, guessed: false });
+    expect(
+      storeProjectForPath(MCP_ONLY, "/strad/test/gateway/static/X", RESOLVER),
+    ).toEqual({ project: GATEWAY_PROJECT, guessed: false });
   });
 });
 
