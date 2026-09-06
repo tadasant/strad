@@ -1,0 +1,199 @@
+name: Teardown staging
+
+# Staging is ON DEMAND. This workflow puts it to sleep; deploy-staging.yml is the
+# only thing that wakes it up with current code.
+#
+# IT ARCHIVES THE APP RATHER THAN DELETING IT, and that is the whole design
+# rather than a detail. `strad-staging` serves a custom domain,
+# `staging.strad.tadasant.com`, whose certificate App Platform issues and renews
+# for THAT app. Deleting the app to save the bill would cost both:
+#
+#   - DigitalOcean's own instruction is to remove a custom domain BEFORE deleting
+#     the app it belongs to, because a domain left attached "may continue
+#     pointing to the deleted app for up to 24 hours, making the domain
+#     unavailable for use with a new app until DNS updates". A nightly delete and
+#     a next-morning create land inside that window every time.
+#   - The CNAME that points the custom domain at the app names the app's OWN
+#     starter hostname (`strad-staging-wy9v5.ondigitalocean.app`), which App
+#     Platform assigns per app after its first successful deployment. A recreated
+#     app is a new app with a new starter hostname, and the record is in
+#     Cloudflare — a zone nothing in this repo holds a credential for. So the
+#     "up" direction would stop being free and start being a human editing DNS.
+#
+# Archiving keeps the app, the id, the starter hostname, the custom domain and
+# its certificate, and "stops incurring charges for the app's components".
+# `strad-staging` has no database and no dedicated egress IP, which are the two
+# things archiving does NOT stop billing for.
+#
+# The way back up needs nothing from this file. An App Platform spec update is a
+# full REPLACE, so a spec with no `maintenance` block clears `archive` — and
+# `maintenance.archive` is a `bool` with `omitempty` in DigitalOcean's own API
+# client, so DigitalOcean's documented restore (`archive: false`) is byte-for-byte
+# the spec render-spec.ts already emits. deploy-staging.yml therefore restores
+# staging as a side effect of deploying it, with no change and no new step.
+# HACKS.md #18 is the same full-replace rule pointed the other way.
+
+on:
+  workflow_dispatch:
+    inputs:
+      restore:
+        description: >-
+          Wake staging on exactly the spec it was archived on, without
+          re-rendering. Seconds rather than minutes, and deliberately NOT a
+          deploy: it brings back the image that was running when staging went to
+          sleep. Dispatch deploy-staging.yml to put current main on it.
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    # 07:00 UTC, which is the middle of the night in the timezone that uses this
+    # app. Staging stood up during the day is asleep by morning, so the bill is
+    # the days staging was WANTED rather than the days since anyone last touched
+    # it. Nothing is lost by sleeping through a day nobody asked for it.
+    - cron: "0 7 * * *"
+
+concurrency:
+  # THE SAME GROUP deploy-staging.yml uses, deliberately. Both workflows PUT the
+  # whole app spec, and `cancel-in-progress: false` makes the second one queue
+  # rather than race. A scheduled archive that fired mid-deploy would otherwise
+  # read the spec before the deploy's PUT and write it back after — handing
+  # staging the image the deploy had just replaced, green, with the release run
+  # reporting success.
+  #
+  # The cost is worth stating, because it is silent. GitHub keeps at most ONE
+  # PENDING run per group and cancels the older one, so an archive queued behind
+  # a deploy is dropped if anything else enters `staging-deploy` before it
+  # starts — and `alert-ci-failure.yml` deliberately does not alert on
+  # `cancelled`. That loses one night's saving. Racing a deploy loses the deploy,
+  # which is the worse of the two, so the group stays shared.
+  group: staging-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  power:
+    runs-on: self-hosted
+    environment: staging
+    steps:
+      - name: Install doctl
+        # Binary only, for the same reason deploy-staging.yml gives: given a
+        # token this action runs `doctl auth init`, which writes it in cleartext
+        # to a $HOME every runner process on this box shares. The step below
+        # supplies the token through its own env instead.
+        uses: digitalocean/action-doctl@v2
+        with:
+          no_auth: "true"
+
+      - name: Archive or restore strad-staging
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          DIGITALOCEAN_CONTEXT: default
+          # `inputs.restore` is null on a `schedule:` run, and the nightly run is
+          # the one that must never be a restore. Fold it to a literal here so
+          # the shell reads a word rather than an empty string.
+          WANT_ARCHIVE: ${{ inputs.restore && 'false' || 'true' }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+
+          # Zimmer's "safe no-op without the secret" idiom, the same way round as
+          # deploy-staging.yml's preflight: a SCHEDULED run with no DO token has
+          # nothing to say and stays green, while someone who dispatched this
+          # asked for it and gets an error.
+          if [ -z "${DIGITALOCEAN_ACCESS_TOKEN:-}" ]; then
+            if [ "$MANUAL" = "true" ]; then
+              echo "::error::DIGITALOCEAN_ACCESS_TOKEN is not set; cannot reach App Platform."
+              exit 1
+            fi
+            echo "::warning::skipping staging teardown — DIGITALOCEAN_ACCESS_TOKEN is not set."
+            exit 0
+          fi
+
+          # `awk` exits 0 on no match, so an app that is merely UNREACHABLE lands
+          # in the same empty $APP_ID as one that does not exist. Separate them
+          # before reading anything into the emptiness: a nightly run that went
+          # green saying "nothing to archive" while the API was down would hide
+          # the bill it exists to stop.
+          if ! APPS=$(doctl apps list --format ID,Spec.Name --no-header 2>"$RUNNER_TEMP/doctl.err"); then
+            echo "::error::doctl apps list failed:"
+            cat "$RUNNER_TEMP/doctl.err" >&2
+            exit 1
+          fi
+          APP_ID=$(printf '%s\n' "$APPS" | awk '$2=="strad-staging"{print $1}')
+          if [ -z "$APP_ID" ]; then
+            echo "No strad-staging app exists; nothing to do."
+            exit 0
+          fi
+
+          # THE SPEC IS JOB-PRIVATE, for the reason src/deploy/spec-file.ts
+          # records: `runs-on: self-hosted` means several runner processes share
+          # one machine and one /tmp, and this repo's staging deploy and
+          # tadasant-internal's prod deploy have both landed on the same box.
+          # RUNNER_TEMP is per runner installation and emptied between jobs.
+          #
+          # It is also not log-safe. Secret values come back as DigitalOcean's
+          # `EV[…]` ciphertext rather than plaintext, and they are still not
+          # something to echo — they go straight back where they came from.
+          doctl apps spec get "$APP_ID" --format json > "$RUNNER_TEMP/spec.json"
+
+          # The one thing between this workflow and prod is a name resolved from
+          # a list. Assert it against the spec that came back rather than trusting
+          # the row it was read from — a two-app account is one `awk` field index
+          # away from archiving the wrong one, and archiving is a full outage of
+          # whatever it hits.
+          NAME=$(jq -r '.name // ""' "$RUNNER_TEMP/spec.json")
+          if [ "$NAME" != "strad-staging" ]; then
+            echo "::error::app $APP_ID reports name '${NAME}', not strad-staging. Refusing to touch it."
+            exit 1
+          fi
+
+          NOW=$(jq -r 'if .maintenance.archive == true then "true" else "false" end' "$RUNNER_TEMP/spec.json")
+          if [ "$NOW" = "$WANT_ARCHIVE" ]; then
+            echo "strad-staging is already $([ "$NOW" = true ] && echo archived || echo running); nothing to do."
+            exit 0
+          fi
+
+          # `.services[]?` rather than `.services[]`: jq exits 5 on a spec with no
+          # `services` key, and `set -e` would kill the step before the update —
+          # turning the nightly archive red, and billing staging through the
+          # night, over a log line. The tag falls back to the digest because a
+          # digest-pinned component carries no `.image.tag` at all.
+          echo "Components on the spec being written:"
+          jq -r '.services[]? | "  \(.name): \(.image.repository):\(.image.tag // .image.digest // "?")"' "$RUNNER_TEMP/spec.json"
+          if [ "$WANT_ARCHIVE" = "false" ]; then
+            echo "Restoring the spec staging was archived ON. To put current main on it, dispatch deploy-staging.yml."
+          fi
+
+          # `archive: false` is DigitalOcean's documented restore, and their API
+          # client drops it on the wire (`omitempty` on a bool), so what is PUT
+          # in that case is a spec with an empty `maintenance` — which the full
+          # replace reads as "not archived". Writing it explicitly is for the
+          # reader of this file, not for App Platform.
+          jq --argjson want "$WANT_ARCHIVE" '.maintenance.archive = $want' \
+            "$RUNNER_TEMP/spec.json" > "$RUNNER_TEMP/spec.next.json"
+
+          echo "Setting maintenance.archive=${WANT_ARCHIVE} on strad-staging (${APP_ID})..."
+          doctl apps update "$APP_ID" --spec "$RUNNER_TEMP/spec.next.json" --wait --format ID,DefaultIngress
+
+          # RE-READ AND DIFF, because a PUT that succeeded is not evidence the
+          # field landed. `doctl` decodes the spec into godo's struct with
+          # `encoding/json`, which drops a field it does not know — so a doctl
+          # older than `AppMaintenanceSpec` accepts this spec, returns 200,
+          # deploys, and leaves the app billing. The failure is invisible from
+          # here and costs a month of the bill this workflow exists to stop.
+          # HACKS.md #84 is the same rule against a different API: an upstream
+          # that can answer success and change nothing gets read back.
+          GOT=$(doctl apps spec get "$APP_ID" --format json \
+            | jq -r 'if .maintenance.archive == true then "true" else "false" end')
+          if [ "$GOT" != "$WANT_ARCHIVE" ]; then
+            echo "::error::the update returned success but maintenance.archive is '${GOT}', not '${WANT_ARCHIVE}'. Check that this runner's doctl is new enough to know the field."
+            exit 1
+          fi
+          if [ "$GOT" = "true" ]; then
+            echo "strad-staging (${APP_ID}) is ARCHIVED; billing for its components has stopped."
+            echo "https://staging.strad.tadasant.com serves App Platform's offline page — the domain and its certificate stay attached."
+          else
+            echo "strad-staging (${APP_ID}) is RUNNING again."
+          fi

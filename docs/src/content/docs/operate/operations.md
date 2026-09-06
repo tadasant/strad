@@ -1,6 +1,6 @@
 ---
 title: Operations & CI
-description: The GitHub Actions workflows that build, test, release, deploy, and seed secrets for strad — ci, release-image, deploy-staging, and secrets-sync.
+description: The GitHub Actions workflows that build, test, release, deploy, tear down, and seed secrets for strad — ci, release-image, deploy-staging, teardown-staging, and secrets-sync.
 sidebar:
   order: 2
 ---
@@ -372,7 +372,21 @@ the same guard for the same reason.
    that was just built.
 4. Fire the cross-repo `repository_dispatch` to `tadasant-internal`
    (best-effort).
-5. Call `deploy-staging.yml` (`secrets: inherit`) with the new version.
+
+It does **not** deploy anywhere. It used to end by calling `deploy-staging.yml`
+with the version it had just cut, and that one line is why staging was never off:
+`main` moves several times a day, so any teardown was undone by the next merge.
+Staging is [on demand](#teardown-stagingyml--put-it-to-sleep) now.
+
+That trade is real and it is worth naming. Every image this workflow cut used to
+be smoke-tested on real infrastructure within minutes of the merge, and now
+nothing is until someone dispatches `deploy-staging.yml`. What is left in its
+place is the pre-merge half: `ci.yml` builds both images through the same shared
+action on every PR, and `bundle_image` boots the bundle and enumerates its tools.
+Neither of those puts the image on App Platform.
+
+Prod was never downstream of the deploy and is unaffected. It is reached by the
+`repository_dispatch` **step** in step 4, inside the build job.
 
 `:latest` is mutable, and what a platform does with a mutable tag is not
 something the tag's publisher controls. A `:latest` that has drifted off the
@@ -919,10 +933,12 @@ rather than a matter of passing the right input:
 A branch build also reads the shared buildx cache but never writes it, so it
 cannot affect what `main` builds from.
 
-**Restoring staging to `main`** needs no teardown: dispatch `deploy-staging.yml`
-on `main` with `build` left off. It renders `main`'s config against the
-`sha-<commit>` image built for that commit — so the next merge to `main` restores
-staging on its own regardless.
+**Restoring staging to `main`** is one dispatch: run `deploy-staging.yml` on
+`main` with `build` left off. It renders `main`'s config against the
+`sha-<commit>` image built for that commit. Nothing restores it on its own —
+merging to `main` no longer deploys staging, so a branch left on staging stays
+there until someone replaces it or the nightly
+[teardown](#teardown-stagingyml--put-it-to-sleep) archives it.
 
 <aside class="starlight-aside starlight-aside--caution">
 
@@ -933,6 +949,78 @@ mounts have moved out from under the routes the deployed spec carries. Build and
 deploy have to happen together, which is what the `build: true` dispatch does.
 
 </aside>
+
+## `teardown-staging.yml` — put it to sleep
+
+Staging is **on demand**. This workflow is the "down" direction:
+`workflow_dispatch` plus a nightly `schedule:` at 07:00 UTC. The "up" direction is
+`deploy-staging.yml`, unchanged.
+
+```bash
+gh workflow run teardown-staging.yml                    # sleep now
+gh workflow run teardown-staging.yml -f restore=true    # wake on the archived spec
+gh workflow run deploy-staging.yml                      # wake on current main
+```
+
+It **archives** the app — `maintenance.archive: true` on the live spec — rather
+than deleting it. Archiving stops App Platform billing for all three components
+(~$49/month: `core` $12, `bundle` $25, `bundle-zimmer-secrets` $12) while keeping
+the app id, the starter hostname, the custom domain and its certificate.
+
+### Why not just delete the app
+
+`deploy-staging.yml` is create-or-update, so deleting the app looks free — the
+next deploy would rebuild it from the rendered spec. The domain is what makes it
+not free:
+
+- DigitalOcean instructs you to remove a custom domain **before** deleting its
+  app, because a domain left attached may keep pointing at the deleted app for
+  **up to 24 hours**, unavailable to a new app meanwhile. A nightly delete and a
+  next-morning create land inside that window every time.
+- `staging.strad.tadasant.com` CNAMEs `strad-staging-wy9v5.ondigitalocean.app` —
+  the app's own starter hostname, assigned per app after its first successful
+  deployment. A recreated app answers on different characters, and that record
+  lives in Cloudflare, which no credential in this repo can write. See
+  [DNS & domains](/operate/dns/).
+- Certificate issuance is the smallest of the three, and not free either: prod's
+  certificate carries `notBefore` 77 minutes after that app was created.
+
+None of that applies to an archive. The app never stops existing, so nothing is
+re-issued and nothing is re-pointed.
+
+### The restore is free, and that is hack #18 pointing the right way
+
+An App Platform spec update is a full replace, so a spec with **no** `maintenance`
+block clears `archive`. `maintenance.archive` is a `bool` with `omitempty` in
+DigitalOcean's API client, which means their documented restore — write
+`archive: false` — puts the same bytes on the wire as omitting the block. So
+`render-spec` needed no change and `deploy-staging.yml` needed no new step: a
+deploy restores staging as a side effect of deploying it.
+
+`restore=true` is the cheap inverse for when you want back exactly what was
+archived: it skips the GCP secret read, the render and the smoke test, though it
+still restarts every container and waits for the deployment. It deliberately is
+not a deploy, and the run prints the image tags it is restoring so nobody
+mistakes an archived spec for current `main`.
+
+### What it refuses to do
+
+| Guard                                                                               | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No `doctl apps delete`, ever                                                        | see above; asserted in `test/staging-on-demand.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Re-reads the spec and refuses any app not named `strad-staging`                     | the only thing between a nightly cron and archiving prod is a name resolved out of a list, and an archive is a full outage of whatever it hits                                                                                                                                                                                                                                                                                                                   |
+| Re-reads it AGAIN after the update, and fails if `maintenance.archive` did not land | `doctl` decodes the spec with `encoding/json`, which drops a field it does not know — so a `doctl` predating `AppMaintenanceSpec` would PUT, return success, deploy, and leave the app billing. Same rule as [limitations #84](/limitations/)                                                                                                                                                                                                                    |
+| Shares `deploy-staging.yml`'s `staging-deploy` concurrency group                    | both workflows PUT the whole spec; queuing rather than racing stops an archive from reading the spec before a deploy's PUT and writing it back after. It costs something: GitHub keeps at most **one pending run** per group, so an archive queued behind a deploy is cancelled if anything else enters the group first — one night's saving, lost silently, since `alert-ci-failure.yml` does not alert on `cancelled`. Losing a deploy is the worse of the two |
+| Fails loudly when `doctl apps list` fails                                           | `awk` exits 0 on no match, so an unreachable API and an absent app produce the same empty id — a green "nothing to archive" through an outage would hide the bill this exists to stop                                                                                                                                                                                                                                                                            |
+| No token but `DIGITALOCEAN_ACCESS_TOKEN`                                            | it talks to DigitalOcean and nothing else: no checkout, no ghcr login, no GCP                                                                                                                                                                                                                                                                                                                                                                                    |
+
+A scheduled run with no DO token skips and stays green; a `workflow_dispatch` with
+the same gap fails loudly. Same idiom as `deploy-staging.yml`'s preflight.
+
+An archived app **still exists** — `doctl apps list` shows it, and
+`https://staging.strad.tadasant.com` serves App Platform's offline page over a
+live certificate. Read liveness from `maintenance.archive`, not from the app's
+presence.
 
 ## Seeding secrets
 

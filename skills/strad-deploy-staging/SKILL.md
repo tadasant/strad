@@ -6,15 +6,16 @@ description: >
   Platform app (`strad-staging`) rendered from `infra/strad.staging.yaml`. The
   `Deploy staging` workflow deploys a published image tag
   (`ghcr.io/tadasant/strad:<version>`, defaulting to the `sha-<commit>` built for
-  the checked-out ref) — so the normal path is a
-  merge to `main`, which builds the image and then deploys it — and a manual
-  `workflow_dispatch` either re-pins staging to an existing tag (rollback) or,
-  with `build: true`, builds the dispatched BRANCH's core and bundle images under
-  branch-scoped tags and deploys those. Covers dispatching the run, deploying an
-  unmerged branch and restoring `main`, the App-Platform full-replace hazard,
-  verifying the live host, rollback, and what an agent session can and cannot do
-  without DO/GCP credentials. Production is NOT deployed from this repo — it lives
-  in tadasant-internal.
+  the checked-out ref). Staging is ON DEMAND: merging to `main` does not deploy
+  it, and `teardown-staging.yml` archives it every night at 07:00 UTC, so the
+  only path to staging is a `workflow_dispatch` — which either re-pins staging to
+  an existing tag (rollback) or, with `build: true`, builds the dispatched
+  BRANCH's core and bundle images under branch-scoped tags and deploys those.
+  Covers dispatching the run, deploying an unmerged branch and restoring `main`,
+  the nightly archive and how to wake staging from it, the App-Platform
+  full-replace hazard, verifying the live host, rollback, and what an agent
+  session can and cannot do without DO/GCP credentials. Production is NOT
+  deployed from this repo — it lives in tadasant-internal.
 user-invocable: true
 ---
 
@@ -43,13 +44,31 @@ image built for that same ref, so both layers come from one commit.
   only) instead builds **both** images — core and bundle — from the dispatched ref
   and deploys those, which is how an unmerged branch gets onto staging.
 
-- **The normal path to staging is a merge to `main`.** `release-image.yml` runs on
-  push to `main` (ignoring `**/*.md` and `docs/**`): it computes the
-  [effective version](https://docs.strad.tadasant.com/operate/deploy-model/#versioning),
-  builds and pushes `ghcr.io/tadasant/strad:<version>` (+ `:latest`, `:sha-<sha>`),
-  and then **calls `deploy-staging.yml` (`secrets: inherit`) with that version**.
-  So merging to `main` builds the image _and_ rolls staging onto it in one chain.
-  No manual step is required for the happy path.
+- **Staging is ON DEMAND — merging to `main` does not deploy it.**
+  `release-image.yml` runs on push to `main` (ignoring `**/*.md` and `docs/**`):
+  it computes the
+  [effective version](https://docs.strad.tadasant.com/operate/deploy-model/#versioning)
+  and builds and pushes `ghcr.io/tadasant/strad:<version>` (+ `:latest`,
+  `:sha-<sha>`). It stops there. Every route to staging below is a dispatch, and
+  there is no happy path that needs no manual step.
+
+- **`teardown-staging.yml` archives staging nightly at 07:00 UTC**, which stops
+  App Platform billing for its three components. An archived app is not a deleted
+  one: `doctl apps list` still shows it, and `https://staging.strad.tadasant.com`
+  serves App Platform's offline page over a live certificate — so **an offline
+  page is the expected state, not an incident.** To wake it:
+
+  ```bash
+  gh workflow run deploy-staging.yml                    # current main, a full render
+  gh workflow run teardown-staging.yml -f restore=true  # exactly what was archived, no render
+  ```
+
+  Expect to re-dispatch if your investigation crosses 07:00 UTC. Read liveness
+  from `maintenance.archive` in the spec, never from the app's existence:
+
+  ```bash
+  doctl apps spec get "$APP_ID" --format json | jq '.maintenance.archive // false'
+  ```
 
 - **With `build` left off, a manual `Deploy staging` re-pins staging to an
   existing published tag.** Use it to redeploy the current image, or to roll
@@ -78,11 +97,11 @@ image built for that same ref, so both layers come from one commit.
   branch to do this.** Those are the release path: they move `:latest` and notify
   prod. Both refuse to run on any ref but `main`, so the attempt fails fast.
 
-- **Restoring staging to `main` needs no teardown.** Dispatch `Deploy staging` on
-  `main` with `build` left off, and it renders `main`'s config against the
-  `sha-<commit>` image built for that commit —
-  identical to what the release path does. The next merge to `main` also restores
-  it on its own. A branch deploy is not durable state; nothing has to be cleaned
+- **Restoring staging to `main` is one dispatch.** Run `Deploy staging` on `main`
+  with `build` left off, and it renders `main`'s config against the `sha-<commit>`
+  image built for that commit. Nothing restores it on its own — a branch left on
+  staging stays there until someone replaces it or the nightly archive puts it to
+  sleep. A branch deploy is still not durable state; nothing has to be cleaned
   up.
 
 - **No deploy ships a mutable tag — this has actually bitten.** Dispatching

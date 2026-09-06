@@ -2390,12 +2390,15 @@ before saying so — the error names the interruption and says to re-run it, whi
 **Undo.** Drop `releaseRun` from the `resolveDeployTag` call in
 `scripts/resolve-image-tag.ts`; delete `releaseRunLookup`, `ReleaseRun`,
 `deadRun` and `ImageSource.republish` from `src/deploy/imageTag.ts`; drop
-`actions: read` from `deploy-staging.yml` AND from `release-image.yml`, which
-grants it as that workflow's caller; drop `GITHUB_TOKEN` from the two tag steps;
-and delete the corresponding tests. The walk then waits out its budget on every
-dead build again. Dropping only the caller's grant is the same undo with no
-symptom — the lookup 403s and is swallowed — which is what
-`test/image-tag.bundle.test.ts` reads both workflows to prevent. To undo the cancellation half:
+`actions: read` from `deploy-staging.yml` and from any caller that grants it
+down; drop `GITHUB_TOKEN` from the two tag steps; and delete the corresponding
+tests. The walk then waits out its budget on every dead build again. Dropping
+only a caller's grant is the same undo with no symptom — the lookup 403s and is
+swallowed — which is what `test/staging-on-demand.test.ts` asserts over every
+caller of `deploy-staging.yml` there is. Staging is on demand (#85), so today
+there is no caller at all and only the workflow's own grant is load-bearing;
+that test is what keeps the coupling honest when one returns. To undo the
+cancellation half:
 delete `.github/workflows/reheal-bundle-image.yml`, drop `healIsComing` and the
 `INTERRUPTED` branch in `deadRun`, drop `ReleaseRun.runAttempt`,
 `ReleaseRun.event` and `ImageSource.reheal` with it, and drop
@@ -3607,7 +3610,7 @@ workflow shares is LOADED and RUN on every pull request. It was not, and that is
 what this entry is about; what a PR still cannot exercise is the second half of
 the release path.
 
-**Why.** Of the fourteen workflows in this repo, two ran on `pull_request`. All
+**Why.** Of the sixteen workflows in this repo, two ran on `pull_request`. All
 eight release workflows and `deploy-staging.yml` did not, and `build-push` was
 loaded by nothing else — so the first execution of a change to the release path
 was also its first production run, and its failure mode is a red `main` plus, when
@@ -4172,3 +4175,56 @@ separates "coded" from "reported as coded".
 `servers/bill-spend/shared/test/write-verification.test.ts` is the canary — its
 fake answers SUCCESS to every shape and applies only the one it was told to
 honour, so a server that started trusting the reply goes red there.
+
+---
+
+## 85. Staging is archived rather than deleted, because an App Platform app cannot be recreated onto its own custom domain
+
+**What.** `strad-staging` is on demand. `teardown-staging.yml` puts it to sleep
+nightly by setting `maintenance.archive: true` on the live spec, which stops
+App Platform billing for all three components; `deploy-staging.yml` brings it
+back, and needs no change to do so. What the workflow does NOT do is
+`doctl apps delete`, which is the obvious implementation and the one the
+originating issue proposed.
+
+**Why.** The app serves `staging.strad.tadasant.com` on a certificate App
+Platform issues and renews for that app, reached by a Cloudflare CNAME naming
+that app's own starter hostname. Deleting the app costs both ends of that:
+
+- DigitalOcean's [own
+  instruction](https://docs.digitalocean.com/products/app-platform/how-to/manage-domains/#remove-a-custom-domain)
+  is to remove a custom domain BEFORE deleting the app, because a domain left
+  attached "may continue pointing to the deleted app for up to 24 hours, making
+  the domain unavailable for use with a new app until DNS updates". A nightly
+  delete and a next-morning create land inside that window every time.
+- The starter hostname is assigned per app after its first successful
+  deployment. `staging.strad.tadasant.com` CNAMEs
+  `strad-staging-wy9v5.ondigitalocean.app`; a recreated app answers on some other
+  five characters, and that record lives in Cloudflare, where nothing in this
+  repo holds a credential. The "up" direction would stop being free and start
+  being a human editing DNS.
+
+Cert issuance is the third cost and the smallest: prod's certificate carries
+`notBefore` 77 minutes after that app was created, so a recreation would also
+serve nothing on the custom domain for about an hour after the DNS was fixed.
+
+**What it costs.** An archived app is not a deleted one, so the assumption that
+`doctl apps list` shows only live apps is now wrong for `strad-staging`.
+Anything that reads liveness from the app's existence — a monitor, a future
+script — sees an app that is present and serving App Platform's offline page.
+`teardown-staging.yml`'s read-back reports the archive state for exactly that
+reason. Archiving also does not stop billing for databases or dedicated egress
+IPs; `strad-staging` has neither, and a spec that grows one silently keeps
+billing through the night.
+
+**Undo.** Delete the `schedule:` block from `teardown-staging.yml` and staging
+stays up at roughly $49/month; the `workflow_dispatch` half is worth keeping
+either way. There is no per-run way to hold staging past 07:00 UTC for a long
+investigation — re-dispatch `deploy-staging.yml`, or edit the cron. What is NOT
+undoable is the archive-instead-of-delete decision: the delete route becomes
+viable only if the custom domain stops being App Platform's to issue — a
+Cloudflare-terminated proxy, say, which `docs/operate/dns` explains this
+deployment deliberately does not use for the gateway. Hack #18 is the same
+full-replace rule pointed the other way, and it is what makes the restore free: a
+spec with no `maintenance` block clears `archive`, so the renderer needed no
+change.

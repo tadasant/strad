@@ -383,6 +383,38 @@ The gun is still loaded for every other field.
 **Undo:** none available — it is how the API works. Verify both custom domains serve
 a 200 after every deploy.
 
+### 85. Staging is asleep, not gone — and it is archived rather than deleted for a reason
+
+Staging is on demand. `teardown-staging.yml` archives `strad-staging` nightly,
+which stops App Platform billing for all three components; dispatching
+`deploy-staging.yml` brings it back. Merging to `main` no longer deploys it, so
+**nothing smoke-tests a released image on real infrastructure until someone asks
+it to** — that is the trade, made deliberately, because the app billed 30 days a
+month for roughly 5 days of use.
+
+The teardown does not delete the app, and could not. `strad-staging` serves
+`staging.strad.tadasant.com` on a certificate App Platform issues for that app,
+reached by a Cloudflare CNAME naming that app's own
+`strad-staging-wy9v5.ondigitalocean.app` starter hostname. DigitalOcean's own
+instruction is to remove a custom domain before deleting the app it belongs to,
+because a domain left attached may keep pointing at the deleted app **for up to
+24 hours** and be unavailable to a new one meanwhile — and the replacement app
+would answer on a different starter hostname anyway, in a DNS zone nothing in
+this repo holds a credential for. See [DNS & domains](/operate/dns/).
+
+Two consequences to know about:
+
+- **An archived app still exists.** `doctl apps list` shows it, and
+  `https://staging.strad.tadasant.com` serves App Platform's offline page over a
+  live certificate. Liveness has to be read from `maintenance.archive`, not from
+  the app's presence.
+- **Archiving does not stop billing for databases or dedicated egress IPs.**
+  `strad-staging` has neither today. One added to the spec would keep billing
+  through the night, silently.
+
+**Undo:** disable the `schedule:` in `teardown-staging.yml` to keep staging up,
+at roughly $49/month.
+
 ### 23. The per-server images still exist, and must
 
 `strad-bundle-api`, `strad-server-good-eggs`, `strad-server-fetchpet`,

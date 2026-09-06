@@ -45,6 +45,29 @@ flowchart LR
 
 The default region is `nyc`.
 
+:::caution[The domain is why staging is archived and not deleted]
+Staging is [on demand](/operate/operations/#teardown-stagingyml--put-it-to-sleep),
+and the teardown archives the app rather than deleting it. Both halves of the
+wiring above are per-app and neither survives a recreation:
+
+- The CNAME target is the app's **own** starter hostname
+  (`strad-staging-wy9v5.ondigitalocean.app`), assigned per app after its first
+  successful deployment. A recreated app answers on different characters, and the
+  record is in Cloudflare — a zone nothing in `tadasant/strad` holds a credential
+  for, so fixing it is a human editing DNS.
+- DigitalOcean instructs you to remove a custom domain **before** deleting its
+  app, because one left attached may keep pointing at the deleted app for up to
+  24 hours and be unavailable to a new app meanwhile.
+
+Certificate issuance is the third cost, and the least certain: the **prod**
+certificate carries a `notBefore` 77 minutes after the `strad-prod` app was
+created, which is the closest thing to a measurement this deployment has. It is
+one observation, and `notBefore` is when the CA signed rather than when the
+hostname started serving — read it as "about an hour, probably", not as a number
+to plan against. An archive keeps the app, so none of the three applies: the
+offline page is served over the same live certificate.
+:::
+
 :::danger[An omitted `domains` field deletes the domain]
 An App Platform spec update is a **full replace**. Omitting `domains` detaches the
 custom domain — and the app stays healthy on its `*.ondigitalocean.app` ingress
