@@ -1183,15 +1183,12 @@ describe("deploy-staging.yml", () => {
     expect(workflowPermissions(workflow)).toContain("actions: read");
   });
 
-  it("is granted `actions: read` by the workflow that CALLS it", () => {
-    // The load-bearing half, and the one that fails silently. A called workflow
-    // may narrow its caller's permissions but never widen them, so dropping the
-    // grant from release-image.yml regresses every automatic deploy to the
-    // 900-second blind wait — with this suite green and no annotation anywhere.
-    const caller = readFileSync(".github/workflows/release-image.yml", "utf8");
-    expect(caller).toContain("uses: ./.github/workflows/deploy-staging.yml");
-    expect(workflowPermissions(caller)).toContain("actions: read");
-  });
+  // The other half of that grant — that whatever CALLS this workflow passes
+  // `actions: read` down — lives in test/staging-on-demand.test.ts, over every
+  // caller there is rather than over release-image.yml by name. Staging is on
+  // demand now, so today there is no caller at all: the release path stopped
+  // deploying it, and a test naming that one file would have had to be deleted
+  // rather than kept honest.
 
   it("installs doctl after the secrets read and before anything that can fail", () => {
     // "Dump the failing container's logs" runs on `failure()` from the secrets

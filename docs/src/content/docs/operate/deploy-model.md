@@ -18,6 +18,7 @@ flowchart LR
     subgraph oss["tadasant/strad (OSS)"]
         RI["release-image.yml"]
         DS["deploy-staging.yml"]
+        TD["teardown-staging.yml"]
         IMG["ghcr.io/tadasant/strad:&lt;version&gt;"]
         STG["strad-staging<br/>(App Platform)"]
     end
@@ -26,7 +27,8 @@ flowchart LR
         PROD["strad prod<br/>(App Platform)"]
     end
     RI -->|"build + push"| IMG
-    RI -->|"deploy same image"| DS --> STG
+    IMG -.->|"deployed on request"| DS --> STG
+    TD -->|"nightly archive"| STG
     RI -->|"repository_dispatch<br/>strad-image-published {version, sha}"| CFG
     IMG -->|"pulled by"| PROD
     CFG --> PROD
@@ -42,6 +44,10 @@ flowchart LR
   core and bundle images under branch-scoped tags and deploys them — without
   moving `:latest` or touching the handshake below. See [deploying a
   branch](/operate/operations/#deploying-a-branch-to-staging).
+- **Staging is on demand.** `release-image.yml` does not deploy it, and
+  `teardown-staging.yml` archives it nightly. Cutting an image is therefore no
+  longer smoke-tested on real infrastructure; putting one on staging is a
+  dispatch. See [`teardown-staging.yml`](/operate/operations/#teardown-stagingyml--put-it-to-sleep).
 - **A deploy ships an immutable tag — for every component.** `:latest` exists for
   humans and for `docker pull`; no deploy uses it. `render-spec` refuses a core
   image on a mutable tag outright, and `deploy-staging.yml` resolves

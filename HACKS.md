@@ -4156,3 +4156,51 @@ separates "coded" from "reported as coded".
 `servers/bill-spend/shared/test/write-verification.test.ts` is the canary — its
 fake answers SUCCESS to every shape and applies only the one it was told to
 honour, so a server that started trusting the reply goes red there.
+
+---
+
+## 85. Staging is archived rather than deleted, because an App Platform app cannot be recreated onto its own custom domain
+
+**What.** `strad-staging` is on demand. `teardown-staging.yml` puts it to sleep
+nightly by setting `maintenance.archive: true` on the live spec, which stops
+App Platform billing for all three components; `deploy-staging.yml` brings it
+back, and needs no change to do so. What the workflow does NOT do is
+`doctl apps delete`, which is the obvious implementation and the one the
+originating issue proposed.
+
+**Why.** The app serves `staging.strad.tadasant.com` on a certificate App
+Platform issues and renews for that app, reached by a Cloudflare CNAME naming
+that app's own starter hostname. Deleting the app costs both ends of that:
+
+- DigitalOcean's [own
+  instruction](https://docs.digitalocean.com/products/app-platform/how-to/manage-domains/#remove-a-custom-domain)
+  is to remove a custom domain BEFORE deleting the app, because a domain left
+  attached "may continue pointing to the deleted app for up to 24 hours, making
+  the domain unavailable for use with a new app until DNS updates". A nightly
+  delete and a next-morning create land inside that window every time.
+- The starter hostname is assigned per app after its first successful
+  deployment. `staging.strad.tadasant.com` CNAMEs
+  `strad-staging-wy9v5.ondigitalocean.app`; a recreated app answers on some other
+  five characters, and that record lives in Cloudflare, where nothing in this
+  repo holds a credential. The "up" direction would stop being free and start
+  being a human editing DNS.
+
+Cert issuance is the third cost and the smallest: prod's certificate carries
+`notBefore` 77 minutes after that app was created, so a recreation would also
+serve nothing on the custom domain for about an hour after the DNS was fixed.
+
+**What it costs.** An archived app is not a deleted one, so the assumption that
+`doctl apps list` shows only live apps is now wrong for `strad-staging`.
+Anything that reads liveness from the app's existence — a monitor, a future
+script — sees an app that is present and serving App Platform's offline page.
+`teardown-staging.yml`'s read-back reports the archive state for exactly that
+reason. Archiving also does not stop billing for databases or dedicated egress
+IPs; `strad-staging` has neither, and a spec that grows one silently keeps
+billing through the night.
+
+**Undo.** None wanted. The delete route becomes viable only if the custom domain
+stops being App Platform's to issue — a Cloudflare-terminated proxy, say, which
+`docs/operate/dns` explains this deployment deliberately does not use for the
+gateway. Hack #18 is the same full-replace rule pointed the other way, and it is
+what makes the restore free: a spec with no `maintenance` block clears `archive`,
+so the renderer needed no change.

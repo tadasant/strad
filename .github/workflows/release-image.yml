@@ -1,6 +1,15 @@
 name: Release image
 
-# Build the strad image and push it to ghcr, then roll staging onto it.
+# Build the strad image and push it to ghcr. It does NOT deploy anywhere.
+#
+# Staging is on demand: dispatch deploy-staging.yml to stand it up, and
+# teardown-staging.yml archives it nightly. A deploy job HERE is what would put
+# it back on every merge and undo any teardown — `main` moves several times a
+# day — and `strad-staging` billing 30 days a month for roughly 5 days of use is
+# what that cost. Removing it is a real trade, not a free saving: no image is
+# smoke-tested on live infrastructure until somebody asks for it. What remains is
+# the pre-merge half, which ci.yml holds — it builds both images through the same
+# shared action and boots the bundle on every pull request.
 #
 # Versioning (deterministic, no commit-back) — zimmer's scheme:
 #   - The committed VERSION file is the MANUAL floor, e.g. "0.1.0".
@@ -31,17 +40,10 @@ concurrency:
 permissions:
   contents: read
   packages: write
-  # For the deploy-staging.yml job below, whose image-tag steps ask whether the
-  # release run that owes a missing image is still going. A called workflow may
-  # narrow what its caller grants but never widen it, so withholding this here
-  # is what would make that lookup fail — not a permission on the other side.
-  actions: read
 
 jobs:
   build-and-push:
     runs-on: self-hosted
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Refuse to release from anything but main
         # This workflow is the release path: it moves `:latest` and notifies
@@ -208,11 +210,17 @@ jobs:
             cat "$RUNNER_TEMP/dispatch.out" 2>/dev/null || true
           fi
 
-  deploy-staging:
-    # Staging tracks whatever image we just cut. Prod is a separate, deliberate
-    # act, and it lives in tadasant-internal with a different DO token.
-    needs: build-and-push
-    uses: ./.github/workflows/deploy-staging.yml
-    secrets: inherit
-    with:
-      version: ${{ needs.build-and-push.outputs.version }}
+# There is no deploy job here, and the job above declares no `outputs:` for the
+# same reason: the version it computes has no consumer inside this workflow. To
+# put this release on staging, dispatch deploy-staging.yml with `version` set to
+# the number this run prints; omit it for the newest.
+#
+# Nothing here reaches prod except the `repository_dispatch` STEP inside
+# build-and-push. A deploy job is downstream of that step and never upstream of
+# it, so its absence cannot affect prod — a separate, deliberate act living in
+# tadasant-internal with a different DigitalOcean token.
+#
+# deploy-staging.yml keeps its `workflow_call` surface. A caller must grant it
+# `actions: read` — a called workflow may narrow its caller's permissions and
+# never widen them — which test/staging-on-demand.test.ts asserts for whatever
+# callers exist.
