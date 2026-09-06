@@ -866,7 +866,7 @@ construction, and it is the one that produced a **dead control** in production:
 the entry rendered an `ISSUE` button over a `<dialog>` that was never emitted, so
 the click did nothing at all ([#259](https://github.com/tadasant/strad/issues/259),
 live on `craigslist`). The popout is built from the probe outcome instead — which
-component holds the value, which of the five ways the question went unanswered,
+component holds the value, which of the five ways the probe went unanswered,
 and the `/strad/<env>/mcp/<slug>/static/*` prefix to look under — so the badge
 leads somewhere. It is still not an observation. Making it one is the same pin
 bump, on that component's image.
@@ -879,17 +879,29 @@ did. A `READY` badge is never earned by checking a part rather than the whole
 first line there: the `unverified` headline ("nothing here was established
 either") would contradict the rows under it.
 
-**One edge of that shape remains.** A `params: true` **builtin** runs inside
-core, which resolves its parameters itself: the panel's whole vocabulary is about
-a component core is not, so a builtin gets no panel — an inert `ISSUE` chip where
-it has no rows, and its `${NAME}` rows plus the summary sentence where it has
-some. The headline and the summary do name the namespace; what is missing is the
-panel's three facts — which component, why the question went unanswered, and the
-link into the parameters console
-([#264](https://github.com/tadasant/strad/issues/264)). `echo` in staging is that
-shape, and because `core` is never probed the gap is permanent for it: nothing an
-operator seeds clears the badge, and `/api/secrets/readiness` reports
-`ready: false` for as long as the deployment carries such a server.
+**A `params: true` builtin's panel says something else entirely, and the badge
+still never goes green.** A builtin runs inside a strad process, which resolves
+its parameters itself, per tool call, out of the resolver's snapshot — so the
+container panel's whole vocabulary (a private URL to bind, an image to repin, a
+container to redeploy, a value that lands at the next deploy) is false about it.
+A confidently wrong panel is worse than an inert chip, so it got no panel at all
+before [#264](https://github.com/tadasant/strad/issues/264); it has three reasons
+of its own — `in-process`, `delegated`, `inert` — whose sentence about when a
+write takes effect is `gateway.secrets.ttlSeconds` rather than a deploy. What
+that does **not** do is make the parameters observable. `core` is never probed,
+so the gap is permanent for `echo` in staging: nothing an operator seeds clears
+the badge, and `/api/secrets/readiness` reports `ready: false` for as long as the
+deployment carries such a server. The badge leads somewhere; it still cannot be
+cleared.
+
+**And on one shape the two doors disagree about the credential.** The panel
+reproduces `resolverFromEnv`'s three exits, so a key JSON that is _set and
+unparseable_ reads as `inert` with the key named as the problem.
+`/api/secrets/readiness` derives its `resolverCredential` from set-ness instead,
+so on that deployment it reports a credential as present and says `params: true`
+servers resolve their parameters. The JSON field is self-consistent about what it
+measures — its own `detail` says "are not both set" — and changing what a
+published field means is a wider decision than the panel that surfaced it.
 
 **The `cannot render` diagnosis can lose a race and simply not appear.**
 `readStoreDiagnostics` gives its two store reads six seconds together, and the

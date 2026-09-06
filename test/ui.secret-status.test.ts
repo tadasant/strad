@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
+import { resolverFromEnv } from "../src/secrets/parameters/index.ts";
 import type { BundleProbeOutcome } from "../src/gateway/bundle-presence.ts";
 import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
@@ -16,6 +17,8 @@ import {
   deriveServerStatuses,
   fixTargets,
   observe,
+  resolverCredential,
+  unobservableTarget,
   placeholderReason,
   secretLookup,
   SOURCE_TOOLTIP,
@@ -1493,11 +1496,10 @@ ${extra}`);
     expect(scopeFor(undefined)?.reason).toBe("unwired");
   });
 
-  it("is ABSENT for a `params: true` builtin, whose params core resolves itself", () => {
-    // The panel's every sentence is about a component core is not. A builtin's
-    // bundle defaults to `core`, its managed parameters are resolved in-process
-    // through the resolver TTL, and there is no ${core.PRIVATE_URL} to bind and
-    // no container to redeploy — so a scope here would be confidently wrong.
+  it("never gives a BUILTIN the probe vocabulary, whatever the probes say", () => {
+    // The five reasons above are answers to a question that was ASKED of a
+    // container. A builtin has none, so none of them may reach it — not even
+    // when a bundle of the same name happens to have been probed.
     const builtin = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
@@ -1512,10 +1514,256 @@ servers:
     entitlements: [admin]
     params: true
 `);
-    const [s] = deriveServerStatuses(builtin, []);
+    const [s] = deriveServerStatuses(builtin, [], {
+      probes: new Map<string, BundleProbeOutcome>([
+        ["core", { kind: "unreachable", detail: "ECONNREFUSED" }],
+      ]),
+    });
     expect(s!.state).toBe("unverified");
     expect(s!.requirements).toHaveLength(0);
-    expect(s!.unobservable).toBeUndefined();
+    expect([
+      "unwired",
+      "unsupported",
+      "unreachable",
+      "unmanifested",
+      "silent",
+    ]).not.toContain(s!.unobservable?.reason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The builtin's own scope (#264)
+// ---------------------------------------------------------------------------
+
+describe("deriveServerStatuses — a `params: true` builtin's scope", () => {
+  // THE SHAPE THE PANEL USED TO HAVE NOTHING TRUE TO SAY ABOUT.
+  //
+  // A builtin has no container. `optionsFor` (src/gateway/registry.ts) merges
+  // everything under /strad/{env}/mcp/{slug}/static/ over its resolved
+  // `options:` on every tool call, out of the resolver's snapshot — so the
+  // supplementary-image panel's every sentence (a private URL to bind, an image
+  // to repin, a container to redeploy, a value that lands at the next deploy) is
+  // false about it. It got no panel at all until #264, and an inert ISSUE chip
+  // was the floor.
+  const cfg = (extra = "", bundle = "core") =>
+    parseConfig(`
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+${bundle === "core" ? "  []" : `  - name: ${bundle}`}
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: ${bundle}
+    entitlements: [admin]
+    params: true
+${extra}`);
+
+  /** An environment with the resolver credential the registry keys off. */
+  const RESOLVING = {
+    STRAD_PARAMS_PROJECT_ID: "strad-secrets-test",
+    STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: JSON.stringify({
+      client_email: "resolver@strad-secrets-test.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+    }),
+  };
+
+  it("is `in-process`: THIS process resolves them, within the TTL, no deploy", () => {
+    const [s] = deriveServerStatuses(cfg(), [], undefined, RESOLVING);
+    expect(s!.state).toBe("unverified");
+    expect(s!.requirements).toHaveLength(0);
+    const scope = s!.unobservable;
+    expect(scope?.reason).toBe("in-process");
+    // `core`, which the supplementary-image scope promises never to say.
+    expect(scope?.component).toBe("core");
+    expect(scope?.namespace).toBe("/strad/test/mcp/echo/static/");
+    // The three claims that make it a different panel rather than a reworded one.
+    expect(scope?.detail).toContain("THIS process resolves these");
+    expect(scope?.detail).toContain("EVERY TOOL CALL");
+    expect(scope?.detail).toContain("gateway.secrets.ttlSeconds (3600s)");
+    // And the four the old panel would have made, none of which is true here.
+    expect(scope?.detail).not.toContain("PRIVATE_URL");
+    expect(scope?.detail).not.toContain("Rebuild that image and repin");
+    expect(scope?.detail).not.toContain("Redeploy that component");
+    expect(scope?.detail).not.toContain("NEXT DEPLOY");
+  });
+
+  it("is `inert` when the deployment holds no resolver credential", () => {
+    // `Registry.build` gets a null resolver and skips the merge outright, so
+    // these parameters are read by NOTHING — and a panel promising a TTL would
+    // send someone to write a value that takes effect at no point at all.
+    const [s] = deriveServerStatuses(cfg(), [], undefined, {});
+    const scope = s!.unobservable;
+    expect(scope?.reason).toBe("inert");
+    expect(scope?.component).toBe("core");
+    expect(scope?.detail).toContain("INERT");
+    expect(scope?.detail).toContain("STRAD_PARAMS_PROJECT_ID");
+    expect(scope?.detail).toContain("runs on its options: alone");
+    expect(scope?.detail).not.toContain("EVERY TOOL CALL");
+    const target = unobservableTarget(cfg(), scope!, {});
+    expect(target.detail).toContain(
+      "Set STRAD_PARAMS_PROJECT_ID and STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON first",
+    );
+    expect(target.commands[1]).toBe(
+      "# But first: this deployment sets no STRAD_PARAMS_PROJECT_ID, so nothing reads them.",
+    );
+  });
+
+  it("tells a key JSON the resolver cannot parse apart from an absent one", () => {
+    // BOTH RESOLVE NOTHING AND THEY TAKE OPPOSITE ACTIONS. `resolverFromEnv`
+    // returns null for either, so a panel that reported both as "the variables
+    // are not set" would send this operator to look at two variables that are
+    // sitting right there.
+    const [s] = deriveServerStatuses(cfg(), [], undefined, {
+      ...RESOLVING,
+      STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: "{ not json",
+    });
+    const scope = s!.unobservable;
+    expect(scope?.reason).toBe("inert");
+    expect(scope?.detail).toContain("cannot ");
+    expect(scope?.detail).toContain("parse as a service-account key");
+    expect(scope?.detail).not.toContain("sets no STRAD_PARAMS_PROJECT_ID");
+    // And the "where to look" block agrees with it. Half a fix here is worse
+    // than none: a panel that diagnosed the key and then told the reader to set
+    // two variables that are already set would contradict itself in one popout.
+    const target = unobservableTarget(cfg(), scope!, {
+      ...RESOLVING,
+      STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: "{ not json",
+    });
+    expect(target.detail).toContain(
+      "Fix STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON first",
+    );
+    expect(target.commands[1]).toContain(
+      "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON does not parse",
+    );
+    expect(target.detail).not.toContain("Set STRAD_PARAMS_PROJECT_ID and");
+  });
+
+  it("agrees with `resolverFromEnv`, which is the predicate the registry uses", () => {
+    // THE SEAM. `builtinScope` re-derives the registry's condition rather than
+    // being handed it, so the two are pinned together over the shapes that
+    // separate them — including the ones `parseServiceAccount` rejects, which
+    // are exactly what an approximation would get wrong.
+    const KEY = "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON";
+    const cases: NodeJS.ProcessEnv[] = [
+      {},
+      { STRAD_PARAMS_PROJECT_ID: "p" },
+      { [KEY]: RESOLVING[KEY] },
+      RESOLVING,
+      { STRAD_PARAMS_PROJECT_ID: "p", [KEY]: "{ not json" },
+      { STRAD_PARAMS_PROJECT_ID: "p", [KEY]: "null" },
+      { STRAD_PARAMS_PROJECT_ID: "p", [KEY]: '"a string"' },
+      { STRAD_PARAMS_PROJECT_ID: "p", [KEY]: '{"client_email":"a@b"}' },
+    ];
+    for (const env of cases) {
+      expect(resolverCredential(env) === "present", JSON.stringify(env)).toBe(
+        resolverFromEnv(env) !== null,
+      );
+    }
+  });
+
+  it("keys `inert` off the resolver credential, NOT off the provider flip", () => {
+    // The two come apart, and the registry's own condition is the credential:
+    // `params:` resolution is wired to STRAD_PARAMS_*, so a `provider: env`
+    // deployment that sets it does resolve a builtin's parameters. Staging's
+    // `echo` was a usable rotation observatory before the flip for that reason.
+    const envProvider = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: test
+  secrets: { provider: env }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+`);
+    expect(envProvider.gateway.secrets.provider).toBe("env");
+    const [s] = deriveServerStatuses(envProvider, [], undefined, RESOLVING);
+    expect(s!.unobservable?.reason).toBe("in-process");
+  });
+
+  it("will not promise a TTL for a component with no credential to use", () => {
+    // The `delegated` TTL is a promise about a process this one cannot see, and
+    // an unconditional one would be the same falsehood `inert` exists to
+    // prevent, one component over. Core holding no credential is evidence about
+    // that component — the app spec gives it core's — and not an observation of
+    // it, so the sentence is conditional rather than either asserted or dropped.
+    const [s] = deriveServerStatuses(
+      cfg("", "bundle-builtins"),
+      [],
+      undefined,
+      {},
+    );
+    const scope = s!.unobservable;
+    expect(scope?.reason).toBe("delegated");
+    expect(scope?.detail).toContain("most likely skipped there too");
+    expect(scope?.detail).not.toContain("reaches that process within the TTL");
+    // AND THE FIX BLOCK BELOW IT. The scope's detail and its "where to look"
+    // block are one popout, and the action is taken from the second — so a
+    // hedge in one and an unconditional TTL promise in the other is the panel
+    // contradicting itself in consecutive paragraphs.
+    const target = unobservableTarget(cfg("", "bundle-builtins"), scope!, {});
+    expect(target.detail).toContain("most likely reaches nothing");
+    expect(target.detail).not.toContain("with NO deploy");
+    expect(target.commands[1]).toContain(
+      'core sets no STRAD_PARAMS_PROJECT_ID, and "bundle-builtins" is given core\'s',
+    );
+    expect(target.commands[1]).not.toContain("No redeploy.");
+  });
+
+  it("is `delegated` for a builtin core only proxies to", () => {
+    // Mounted in another component running the strad image in bundle mode. THAT
+    // process resolves the parameters, per call, through its own resolver — so
+    // the TTL claim holds and the "this process" claim does not. It is not
+    // probed either: `expectedKeys` enumerates only the bundles holding
+    // supplementary images.
+    const [s] = deriveServerStatuses(
+      cfg("", "bundle-builtins"),
+      [],
+      undefined,
+      RESOLVING,
+    );
+    const scope = s!.unobservable;
+    expect(scope?.reason).toBe("delegated");
+    expect(scope?.component).toBe("bundle-builtins");
+    expect(scope?.detail).toContain("bundle-builtins");
+    expect(scope?.detail).toContain("bundle mode");
+    expect(scope?.detail).toContain("with no redeploy");
+    // Not "core resolves this", which is the one thing `in-process` says.
+    expect(scope?.detail).not.toContain("THIS process resolves these");
+  });
+
+  it("rides along on a graded entry too, beside the rows", () => {
+    // The mixed shape, on a builtin: one resolving `${NAME}` in `options:`, and
+    // a namespace nothing read. The rows are graded; the scope is the part they
+    // do not cover.
+    const [s] = deriveServerStatuses(
+      cfg(`    options:\n      greeting: "\${SOME_REF}"`),
+      [
+        {
+          requirement: requirement("SOME_REF"),
+          state: "present",
+          source: "GSM",
+          detail: "",
+          evidence: { by: "none" },
+        },
+      ],
+      undefined,
+      RESOLVING,
+    );
+    expect(s!.state).toBe("unverified");
+    expect(s!.requirements).toHaveLength(1);
+    expect(s!.unobservable?.reason).toBe("in-process");
   });
 });
 
@@ -1674,14 +1922,15 @@ servers:
     expect(s!.unobservable).toBeUndefined();
   });
 
-  it("demotes a `params: true` BUILTIN too, with no scope behind it", () => {
+  it("demotes a `params: true` BUILTIN too, and gives it its own scope", () => {
     // The shape `infra/strad.staging.yaml` actually ships: `echo`, `params:
     // true`, and one `${STRAD_ENV}` in `options:`. Core never probes itself, so
     // the gap is permanent and the demotion is the honest answer — the same one
     // the zero-row branch has always given a bare `params: true` builtin.
     //
-    // No scope: `unobservableScope` refuses to build one for a builtin, whose
-    // parameters core resolves itself. That is #264, and it is a floor.
+    // The scope is `in-process` rather than absent (#264): the demotion is
+    // unchanged, and the badge behind it opens on a panel that says which
+    // process resolves the namespace rather than on nothing.
     const builtin = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
@@ -1702,7 +1951,9 @@ servers:
     expect(s!.state).toBe("unverified");
     expect(badgeFor(s!.state)).toBe("ISSUE");
     expect(s!.requirements).toHaveLength(1);
-    expect(s!.unobservable).toBeUndefined();
+    expect(s!.unobservable?.component).toBe("core");
+    // No env passed, so no resolver credential: the honest reason is `inert`.
+    expect(s!.unobservable?.reason).toBe("inert");
     // NOT "that is not what this server runs on": `optionsFor` merges the
     // parameters OVER the resolved options, so the reference IS part of it.
     expect(s!.summary).toContain("not all of what it needs");
@@ -1800,11 +2051,11 @@ servers:
   });
 
   it("says nothing false about a BUILTIN, whose namespace core DOES read", () => {
-    // The trap this test exists for. A `params: true` builtin gets no panel, so
-    // the headline and the summary are the whole of its popout — and both must
-    // stay narrow. `optionsFor` resolves that namespace in THIS process, per
-    // tool call, so "nothing could read it" would be flatly false about the one
-    // server most likely to render this line.
+    // The trap this test exists for. The headline and the summary must stay
+    // narrow: `optionsFor` resolves that namespace in THIS process, per tool
+    // call, so "nothing could read it" would be flatly false about the one
+    // server most likely to render this line. The panel below them says the
+    // positive half of the same fact (#264), in the builtin's own vocabulary.
     const builtin = parseConfig(`
 version: 1
 gateway: { name: strad, env: test }
@@ -1838,11 +2089,198 @@ servers:
     expect(dialog).toContain("THIS PAGE does not");
     expect(dialog).not.toContain("nothing here could read");
     expect(dialog).not.toContain("nothing here was established either");
-    // No panel — `unobservableScope` builds none for a builtin — so the badge
-    // still opens on the requirement rows rather than on an empty dialog.
-    expect(dialog).not.toContain('<code class="sec-component">');
+    // The rows, and then the panel below them.
     expect(dialog).toContain('<code class="sec-var">');
     expect(dialog).toContain("/strad/test/mcp/echo/static/");
+    expect(dialog).toContain('<code class="sec-component">core</code>');
+    // `env: {}` above holds no resolver credential, so the panel is the honest
+    // `inert` one rather than the TTL promise.
+    expect(dialog).toContain("not resolved at all");
+    expect(dialog).toContain("no resolver credential on this deployment");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The builtin's panel, as MARKUP (#264)
+// ---------------------------------------------------------------------------
+
+describe("renderIndex — the `params: true` builtin's popout", () => {
+  // A CONFIDENTLY WRONG PANEL IS WORSE THAN NO PANEL, so this asserts the exact
+  // prose rather than that a block was emitted. Every sentence here is a claim
+  // about how a builtin's managed parameters actually resolve, and the
+  // supplementary image beside it must still get the panel it always got.
+  const cfg = (kind: "builtin" | "supplementary-image") =>
+    parseConfig(
+      kind === "builtin"
+        ? `
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles: []
+servers:
+  - slug: echo
+    kind: builtin
+    module: "./servers/echo.js"
+    bundle: core
+    entitlements: [admin]
+    params: true
+`
+        : `
+version: 1
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+roles: { admin: { servers: ["*"] } }
+bundles:
+  - name: bundle-internal
+servers:
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:sha-7344fb47
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+    params: true
+`,
+    );
+
+  const RESOLVING = {
+    STRAD_PARAMS_PROJECT_ID: "strad-secrets-test",
+    STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON: JSON.stringify({
+      client_email: "resolver@strad-secrets-test.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----",
+    }),
+  };
+
+  const dialogFor = (
+    kind: "builtin" | "supplementary-image",
+    env: NodeJS.ProcessEnv = RESOLVING,
+  ) => {
+    const config = cfg(kind);
+    const presence =
+      kind === "builtin"
+        ? undefined
+        : {
+            probes: new Map<string, BundleProbeOutcome>([
+              ["bundle-internal", { kind: "unwired" }],
+            ]),
+          };
+    const [status] = deriveServerStatuses(config, [], presence, env);
+    const html = renderIndex({
+      config,
+      statuses: [status!],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env,
+      boot: [],
+    });
+    // BOUNDED at this dialog's own close tag. The page carries a help dialog
+    // further down whose state legend uses "not visible here", and a slice to
+    // the end of the document would let it answer for this panel.
+    const start = html.indexOf('<dialog class="fixdlg"');
+    return html.slice(start, html.indexOf("</dialog>", start));
+  };
+
+  it("opens on a panel at all, rather than rendering an inert chip", () => {
+    const html = renderIndex({
+      config: cfg("builtin"),
+      statuses: [
+        deriveServerStatuses(cfg("builtin"), [], undefined, RESOLVING)[0]!,
+      ],
+      principal: {
+        kind: "system-token",
+        id: "t",
+        label: "t",
+        roles: ["admin"],
+      },
+      env: RESOLVING,
+      boot: [],
+    });
+    // The button and the dialog it names, which is the pairing #259 broke.
+    expect(html).toContain('data-fix-open="fix-echo"');
+    expect(html).toContain('<dialog class="fixdlg" id="fix-echo"');
+    expect(html).not.toContain(
+      '<span class="chip chip-bad chip-badge" title="Something is outstanding',
+    );
+  });
+
+  it("says which process resolves them, and that a write lands on a TTL", () => {
+    const dialog = dialogFor("builtin");
+    expect(dialog).toContain("resolved in this process");
+    expect(dialog).toContain("resolved per tool call, within the TTL");
+    expect(dialog).toContain(
+      "THIS process resolves these, and no component holds them.",
+    );
+    expect(dialog).toContain("gateway.secrets.ttlSeconds (3600s)");
+    expect(dialog).toContain(
+      "Established by: nothing on this page. This process does resolve these values",
+    );
+    // The pasteable lines, which are where the container assumption lives on
+    // the other branch.
+    expect(dialog).toContain(
+      "# Console: prefix &quot;/strad/test/mcp/echo/static/&quot; — every managed parameter this server gets.",
+    );
+    expect(dialog).toContain(
+      "# Then nothing: this gateway process re-reads this prefix within 3600s. No redeploy.",
+    );
+    // The TTL is the upper bound, not the wait: a console write calls
+    // `forgetStoreReading` -> `invalidate()` -> `resolver.forget()`, and the
+    // registry's parameter view reads through that same resolver.
+    expect(dialog).toContain("drops the snapshot");
+    expect(dialog).toContain(
+      "/ui/secrets?ns=%2Fstrad%2Ftest%2Fmcp%2Fecho%2Fstatic%2F",
+    );
+  });
+
+  it("says NONE of the four things that are true only of a container", () => {
+    const dialog = dialogFor("builtin");
+    for (const wrong of [
+      "PRIVATE_URL",
+      "Rebuild that image and repin",
+      "NEXT DEPLOY",
+      "not visible here",
+    ]) {
+      expect(dialog, wrong).not.toContain(wrong);
+    }
+    expect(dialog).not.toContain("Then redeploy");
+  });
+
+  it("tells an operator NOT to seed when the merge is not running", () => {
+    const dialog = dialogFor("builtin", {});
+    expect(dialog).toContain("not resolved at all");
+    expect(dialog).toContain(
+      "takes effect at no point at all — not on write, not on a TTL, not on a deploy",
+    );
+    expect(dialog).toContain(
+      "# But first: this deployment sets no STRAD_PARAMS_PROJECT_ID, so nothing reads them.",
+    );
+    // And it must not promise the TTL the other branch does.
+    expect(dialog).not.toContain("No redeploy.");
+  });
+
+  it("leaves a SUPPLEMENTARY IMAGE's panel exactly as it was", () => {
+    const dialog = dialogFor("supplementary-image");
+    expect(dialog).toContain(
+      '<code class="sec-component">bundle-internal</code>',
+    );
+    expect(dialog).toContain("not visible here");
+    expect(dialog).toContain("no private URL bound");
+    expect(dialog).toContain(
+      "Established by: nothing. This gateway process is not the component that holds these values, and it never sees them.",
+    );
+    expect(dialog).toContain(
+      "A value written here reaches the container at the NEXT DEPLOY, not on write.",
+    );
+    expect(dialog).toContain(
+      "# Then redeploy &quot;bundle-internal&quot;: a supplementary image&#39;s environment is baked at render time.",
+    );
+    // And none of the builtin's vocabulary leaks onto it.
+    expect(dialog).not.toContain("resolved in this process");
+    expect(dialog).not.toContain("No redeploy.");
   });
 });
 
