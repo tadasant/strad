@@ -273,9 +273,19 @@ async function buildMounts(): Promise<Mount[]> {
   // OAuth refresh token belongs to ONE Google account, and a deployment that wants
   // several accounts wants several mounts. The conventional path is always served
   // (degraded when nothing gave it a credential); each slug the environment
-  // carries a full OAuth set for gets its own.
+  // carries an OAuth CLIENT for gets its own.
+  //
+  // The client id and secret, NOT the refresh token: this is the one tree whose
+  // credential is completed AFTER the deploy, by a human clicking Connect on the
+  // slug's own console page, and that page only exists once the slug is deployed.
+  // Discovering on all three would unmount every slug that has not been connected
+  // yet — the exact state the renderer's inject-only-if-present produces — so the
+  // console would offer a Connect button for a path the container does not serve.
   mounts.push(loadGoogleSheets(google.sheets, "google-sheets"));
-  for (const slug of extraSlugs("google-sheets", google.sheets.GOOGLE_SHEETS_ENV_NAMES))
+  for (const slug of extraSlugs(
+    "google-sheets",
+    google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES,
+  ))
     deferred.push({ slug, load: async () => loadGoogleSheets(google.sheets, slug) });
 
   // --- secrets --------------------------------------------------------------
@@ -429,8 +439,12 @@ async function loadPulseSubregistry(): Promise<Mount> {
 interface GoogleSheetsModule {
   createMCPServer: Factory;
   missingCredentials: (env: Record<string, string | undefined>) => string[];
-  /** The variables ONE account's credential is made of. Owned by the tree. */
-  GOOGLE_SHEETS_ENV_NAMES: readonly string[];
+  /**
+   * The OAuth app half of one account's credential — the two variables a human
+   * seeds before consent, and the marker set per-slug discovery keys on. Owned
+   * by the tree, like the credential itself.
+   */
+  GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES: readonly string[];
 }
 
 /**
@@ -611,6 +625,11 @@ async function loadGoogleTree(): Promise<GoogleTree> {
  * server reads. So a config with six google-sheets slugs produces six mounts here,
  * each holding exactly one account's token, without this file knowing any of their
  * names.
+ *
+ * A slug is DISCOVERED on the OAuth app pair and MOUNTED whatever it holds, so
+ * the six exist from the first deploy, before any of them has a token. That is
+ * the state `degraded` below describes, and it is the only state in which a human
+ * can mint the token: the Connect button lives on the slug's console page.
  *
  * The READ/WRITE half of a slug's name is NOT decided here. This mount serves all
  * eight tools and strad's gateway withholds the four writes from a `-ro` slug

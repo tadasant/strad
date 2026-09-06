@@ -56,10 +56,18 @@ Each slug supplies three variables, for exactly one Google account:
 | `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN` | The token for **this slug's** Google account |
 
 The client id and secret are usually the same across slugs — one OAuth app — and
-the refresh token is what differs. A slug missing any of the three still mounts
+the refresh token is what differs. A slug missing its refresh token still mounts
 and still lists its tools; it is marked `degraded` in `/healthz` and every tool
 call fails naming what is absent. That is deliberate: a slug that vanishes when
-its credential is late is a slug nobody can diagnose.
+its credential is late is a slug nobody can diagnose — and the token is always
+late, because the console page that mints it is the mount.
+
+The **client id and secret are what the bundle host looks for**, not the token: a
+slug the container carries both of under
+[its own per-slug names](/operate/secrets/#what-a-servers-variables-are-called-on-the-box)
+gets an instance of its own, whether or not it has ever been connected. Seed only
+one of the two and there is no mount — the host has no config to read, so a
+complete marker set is the only evidence a deployment asked for one.
 
 ## The read tier is the gateway's, and can also be Google's
 
@@ -164,7 +172,9 @@ The refresh token never passes through a human's hands, a shell, or an agent.
 Until a slug is connected the mount lists its tools and every call fails naming
 what is absent. That is the designed state, not a broken one — and it is what
 makes step 4 possible, because the slug has to be deployed before its console page
-exists.
+exists. Step 3 is therefore load-bearing twice over: the two variables it seeds
+are the credential's OAuth half **and** the only thing that tells the bundle to
+mount the slug at all.
 
 ### When it stops working
 

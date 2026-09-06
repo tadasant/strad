@@ -37,6 +37,30 @@ describe("the marker names the bundle host looks for", () => {
     }
   });
 
+  it("are google-sheets' OAuth app pair, and NOT its refresh token", () => {
+    // This tree is the one whose credential is completed after the deploy, so
+    // the marker set is deliberately a SUBSET of it: the two variables a human
+    // seeds before consent. Discovery on all three would unmount every slug that
+    // has not been connected yet — and a slug has to be mounted for its console
+    // page to offer the Connect button that mints the third.
+    const tree = readFileSync(
+      "images/bundle-google/vendor/google-sheets-shared/src/server.ts",
+      "utf8",
+    );
+    const markers = tree.match(
+      /GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES = \[([^\]]*)\]/,
+    );
+    expect(markers).not.toBeNull();
+    expect(markers![1]).toContain("GOOGLE_SHEETS_OAUTH_CLIENT_ID");
+    expect(markers![1]).toContain("GOOGLE_SHEETS_OAUTH_CLIENT_SECRET");
+    expect(markers![1]).not.toContain("GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN");
+    // The host names no google-sheets variable of its own: it discovers on the
+    // list above, read off the built tree. So the rename this file exists to
+    // catch is the CONSTANT moving, not the variables inside it.
+    expect(host).toContain("google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
+    expect(tree).toContain("export const GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
+  });
+
   it("are remote-filesystem's real prefix and bucket suffix", () => {
     const config = readFileSync(
       "servers/remote-filesystem/shared/src/config.ts",

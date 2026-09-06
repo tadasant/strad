@@ -172,6 +172,58 @@ describe("extraSlugs", () => {
     expect(found).toEqual(["remote-fs-archive"]);
   });
 
+  /**
+   * google-sheets is discovered on a MARKER set that is deliberately smaller than
+   * the tree's credential: the client id and secret, never the refresh token.
+   *
+   * The token is minted by a consent flow on the slug's own console page, which
+   * only exists once the slug is deployed and mounted. Requiring it here would
+   * unmount every slug that has not been connected yet, which is every slug on
+   * its first deploy.
+   */
+  const SHEETS_MARKERS = [
+    "GOOGLE_SHEETS_OAUTH_CLIENT_ID",
+    "GOOGLE_SHEETS_OAUTH_CLIENT_SECRET",
+  ];
+
+  it("finds an UNCONNECTED google-sheets slug, which has no refresh token yet", () => {
+    const found = extraSlugs("google-sheets", SHEETS_MARKERS, {
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+    } as NodeJS.ProcessEnv);
+
+    expect(found).toEqual(["google-sheets-tadas412-ro"]);
+  });
+
+  it("finds a connected google-sheets slug too — the token is not a marker", () => {
+    const found = extraSlugs("google-sheets", SHEETS_MARKERS, {
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_SECRET: "secret",
+      GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "token",
+    } as NodeJS.ProcessEnv);
+
+    expect(found).toEqual(["google-sheets-tadas412-ro"]);
+  });
+
+  it("still requires EVERY marker: the id alone is not a google-sheets slug", () => {
+    // The marker set is smaller, not optional. A slug seeded half way through
+    // step 3 of the runbook is not a deployment asking for a mount, and neither
+    // is a stray `..__GOOGLE_SHEETS_OAUTH_CLIENT_ID` belonging to nobody.
+    expect(
+      extraSlugs("google-sheets", SHEETS_MARKERS, {
+        GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_CLIENT_ID: "id",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
+
+    // And the token on its own — the half a connector flow writes — conjures
+    // nothing either, because it is not in the marker set at all.
+    expect(
+      extraSlugs("google-sheets", SHEETS_MARKERS, {
+        GOOGLE_SHEETS_TADAS412_RO__GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN: "token",
+      } as NodeJS.ProcessEnv),
+    ).toEqual([]);
+  });
+
   it("discovers nothing when the tree names no required variables", () => {
     // A tree whose marker list is empty has declared no complete set to look
     // for, so ANY prefixed variable would otherwise stand up an instance of it.
@@ -317,6 +369,14 @@ describe("the mounts that use these verdicts", () => {
     // Two call sites: loadTelegram and loadGoogleSheets. Three, once a third
     // tree grows a `missingCredentials()` — this is a floor, not a count.
     expect(calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("discovers google-sheets slugs on the OAuth app pair, not the token", () => {
+    // The design this pins: a connector slug must mount BEFORE it is connected,
+    // because the console page that mints its token is the mount. Passing the
+    // tree's full credential list here would put that cycle back.
+    expect(host).toContain("google.sheets.GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES");
+    expect(host).not.toContain("google.sheets.GOOGLE_SHEETS_ENV_NAMES");
   });
 
   it("gets remote-filesystem's verdict from the shared helper", () => {

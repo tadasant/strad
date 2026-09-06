@@ -108,6 +108,13 @@ seed client id + secret  →  deploy (slug mounts, degraded)
 
 An unconnected slug costs its own capability and nobody else's.
 
+The two seeded variables do a second job on the way in: the bundle host never
+sees strad's config, so a slug's own client id and secret are the only evidence
+it has that a mount was asked for. It discovers on that pair — deliberately not
+on the token, which would unmount every slug that has not been connected yet, and
+a slug has to be mounted before its console page can connect it. Seed one of the
+two without the other and the slug renders but does not mount.
+
 ### The credential arrives under the slug's own variable name, and only that one
 
 A connector's variables are baked onto the container as

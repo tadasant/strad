@@ -40,6 +40,25 @@ export const GOOGLE_SHEETS_ENV_NAMES = [
   'GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN',
 ] as const;
 
+/**
+ * The OAuth APP half of that credential — everything except the account's token.
+ *
+ * These two are the ones a human seeds BEFORE anything is connected; the third
+ * is minted by a consent flow that cannot run until the slug is deployed and
+ * serving. So they, and not {@link GOOGLE_SHEETS_ENV_NAMES}, are what says "a
+ * deployment asked for a mount here": the strad bundle host keys its per-slug
+ * discovery on this list, which is what lets an unconnected slug mount, list its
+ * tools, and report itself degraded until the token lands.
+ *
+ * It is a marker set, not a credential. {@link missingCredentials} still gates on
+ * all three, so a mount discovered by these two fails every call until the third
+ * arrives.
+ */
+export const GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES = [
+  'GOOGLE_SHEETS_OAUTH_CLIENT_ID',
+  'GOOGLE_SHEETS_OAUTH_CLIENT_SECRET',
+] as const;
+
 export type EnvLike = Readonly<Record<string, string | undefined>>;
 
 /** Which of {@link GOOGLE_SHEETS_ENV_NAMES} this environment does not carry. */

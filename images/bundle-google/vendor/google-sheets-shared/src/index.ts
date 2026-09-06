@@ -4,6 +4,7 @@ export {
   missingCredentials,
   GOOGLE_SHEETS_SCOPES,
   GOOGLE_SHEETS_ENV_NAMES,
+  GOOGLE_SHEETS_OAUTH_APP_ENV_NAMES,
   type IGoogleSheetsClient,
   type CreateMCPServerOptions,
   type ClientFactory,
