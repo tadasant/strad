@@ -313,3 +313,144 @@ describe("a field the transaction does not offer", () => {
     expect(bill.transaction("txn_nofield_0003").selected[GL]).toBeUndefined();
   });
 });
+
+describe("regressions found in review", () => {
+  it("does not match the WRONG field on the read-back when BILL omits `id`", async () => {
+    // `id` is OPTIONAL on BILL's coding payload, and a bare `f.id === field.id`
+    // is `undefined === undefined` — TRUE for the first field in the list,
+    // whatever it is. The read-back then diffed a different field's values, and
+    // a write BILL discarded came back `verified: true`. That is exactly the
+    // failure this whole server exists to prevent, reintroduced by an unguarded
+    // comparison, so it gets a test of its own.
+    const { bill, gateway } = build({
+      omitIdsOnCodingRead: true,
+      acceptsVariant: null, // BILL says SUCCESS to everything and keeps nothing
+    });
+
+    await expect(
+      gateway.setTransactionCoding({
+        transaction_id: OPEN,
+        field: GL,
+        value_ids: [],
+      }),
+    ).rejects.toBeInstanceOf(WriteNotPersistedError);
+
+    // And the ledger really is untouched, which is what makes the above the
+    // right answer rather than merely a different one.
+    expect(bill.transaction(OPEN).selected[GL]).toEqual(["tvl_0901"]);
+  });
+
+  it("still verifies correctly against the right field when `id` is absent", async () => {
+    // The guard must not overcorrect into never matching: with only `uuid`
+    // available on both sides, a real write still has to be recognised.
+    const { gateway } = build({
+      omitIdsOnCodingRead: true,
+      acceptsVariant: "customFieldId/uuid",
+    });
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: GL,
+      value_ids: [SOFTWARE_ID],
+    });
+    expect(result.changed).toBe(true);
+    expect(result.after.map((v) => v.value)).toEqual([
+      "Software & Subscriptions",
+    ]);
+  });
+
+  it("does not call a landed re-code a failure because BILL dropped the note", async () => {
+    // `note` and `selectedValues` travel in one array item, but BILL honours
+    // `note` only on a NOTE-type field and ignores it on a CUSTOM_SELECTOR —
+    // the ordinary case for GL coding. Requiring both would report a
+    // transaction that WAS re-coded as `WriteNotPersistedError`, telling the
+    // caller to treat it as UNCODED when the ledger had changed. That is a
+    // worse lie than the one being guarded against, in the other direction.
+    const { bill, gateway } = build({
+      acceptsVariant: "customFieldId/id",
+      ignoresNote: true,
+    });
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: GL,
+      value_ids: [SOFTWARE_ID],
+      note: "recoded by the monthly sweep",
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.after.map((v) => v.value)).toEqual([
+      "Software & Subscriptions",
+    ]);
+    // Reported, not hidden: the values landed and the note did not.
+    expect(result.note_persisted).toBe(false);
+    expect(bill.writes).toHaveLength(1);
+  });
+
+  it("reports note_persisted: true when BILL does store it", async () => {
+    const { gateway } = build({ acceptsVariant: "customFieldId/id" });
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: GL,
+      value_ids: [SOFTWARE_ID],
+      note: "recoded by the monthly sweep",
+    });
+    expect(result.note_persisted).toBe(true);
+  });
+
+  it("dedupes the same value passed in both identifier forms", async () => {
+    // list_coding_options returns `id` AND `uuid`, so passing both for one value
+    // is an easy mistake. `selectionMatches` compares SIZES and BILL stores a
+    // set, so without deduping the write lands and is reported as not landing.
+    const { bill, gateway } = build();
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      field: GL,
+      value_ids: [SOFTWARE_ID, SOFTWARE_UUID],
+    });
+    expect(result.changed).toBe(true);
+    expect(bill.writes).toHaveLength(1);
+    expect(bill.writes[0]!.body).toEqual({
+      customFields: [{ customFieldId: GL_ID, selectedValues: [SOFTWARE_ID] }],
+    });
+    expect(bill.transaction(OPEN).selected[GL]).toEqual([SOFTWARE_UUID]);
+  });
+
+  it("does not memoise, or claim, a variant that sent an unknown identifier form", async () => {
+    // The field is not on this transaction, so its forms could not be looked up
+    // and the caller's string went in both slots. A variant that "won" on that
+    // is evidence about nothing, and pinning the next sweep to it would be
+    // building on a guess.
+    const { gateway } = build({ acceptsVariant: "customFieldId/id" });
+    const result = await gateway.setTransactionCoding({
+      transaction_id: OPEN,
+      // The Project field, which txn_open_0001 does list — but referenced in a
+      // way the before-state can resolve, so this one IS certain.
+      field: "tty_project_0002",
+      value_ids: ["Y3VzdG9tZmllbGR2YWx1ZTo3MDE"],
+    });
+    expect(result.wire_variant_certain).toBe(true);
+  });
+
+  it("rethrows an auth failure instead of blaming the value ids for it", async () => {
+    // Walking the ladder through a dead token spends three calls and then
+    // reports `WriteNotPersistedError`, whose message blames the value ids and
+    // the budget — none of it true, and the actual diagnosis lost.
+    const { gateway } = build({
+      failures: [
+        {
+          path: `/v3/spend/transactions/${OPEN}/custom-fields`,
+          method: "PUT",
+          status: 401,
+        },
+      ],
+    });
+    const error = await gateway
+      .setTransactionCoding({
+        transaction_id: OPEN,
+        field: GL,
+        value_ids: [SOFTWARE_ID],
+      })
+      .catch((e: unknown) => e as Error);
+    expect(error).not.toBeInstanceOf(WriteNotPersistedError);
+    expect(error.name).toBe("AuthError");
+  });
+});

@@ -1179,7 +1179,7 @@ credential. See [Known limitations](/limitations/).
 
 `infra/strad.staging.yaml` is the live staging config, and it deliberately
 exercises all four server kinds so the deploy path is proven end-to-end. It
-declares thirty-three server slugs:
+declares thirty-five server slugs:
 
 - `echo` — a `builtin` in `core`, in-process.
 - `deepwiki` — a `remote-http` server (`https://mcp.deepwiki.com/mcp`), a

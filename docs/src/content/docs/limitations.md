@@ -1764,7 +1764,7 @@ ever rebuilt with a rootless or hand-installed docker, where buildx lives in
 
 **Serialising the workflows was the alternative.** A `concurrency:` group would
 have ended it too, at the cost of every push taking the sum of its builds rather
-than the longest — the bundle alone is thirteen dependency trees. Isolation costs a
+than the longest — the bundle alone is fourteen dependency trees. Isolation costs a
 `mkdir`.
 
 ### 49. The Telegram MTProto library is archived upstream
@@ -1858,11 +1858,12 @@ Only the bundle's internal health route, which nothing outside the app can reach
 shows the mount at all.
 
 **Undo:** per slug, seed the names it references — the three `TELEGRAM_*` values
-for the telegram pair, `PULSEMCP_SUBREGISTRY_API_KEY` for `pulse-subregistry` —
+for the telegram pair, `BILL_SPEND_API_TOKEN` for the bill-spend pair,
+`PULSEMCP_SUBREGISTRY_API_KEY` for `pulse-subregistry` —
 then delete that entry's `enabled:` line and add each seeded name to
 `PROVISIONED_STATICS` in `test/staging-config.test.ts`.
 
-### 56. Per-slug variable names are emitted for every server; only four of the thirteen trees can read one
+### 56. Per-slug variable names are emitted for every server; only five of the fourteen trees can read one
 
 Every supplementary server's `env:` lands on its bundle twice — under the bare
 name and under `<SLUG>__<NAME>` — with no condition attached, so what a server's
@@ -1877,10 +1878,13 @@ they read is the bare name. Two slugs on one path resolving one variable
 differently is still a hard error — one process cannot hold two credentials,
 whatever the variables are called.
 
-**Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`)
-and `grafana` read an injected environment.** The other nine trees in the bundle
-image are vendored upstream code that reads `process.env` directly, often lazily
-at call time, so they see the bare names only. The renderer cannot tell which tree an image contains — an image is a tag in
+**Only `telegram`, `remote-filesystem`, `bundle-google` (for `google-sheets`),
+`grafana` and `bill-spend` read an injected environment.** The other nine trees
+in the bundle image are vendored upstream code that reads `process.env` directly,
+often lazily at call time, so they see the bare names only. `bill-spend` reads
+the injected view for one mount rather than one per slug: one BILL token is one
+company, so `bill-spend-ro` and `bill-spend-rw` share it and differ only in what
+the gateway's `tools:` policy lets them call. The renderer cannot tell which tree an image contains — an image is a tag in
 someone else's config — so a slug of another tree given its own path renders,
 warns, and serves nothing, because the image has no mount at that path.
 Reachability reports the deployment `degraded`, which is where you would see it.

@@ -23,8 +23,10 @@
 import type { BillHttp } from "./client.js";
 import { PAGE_MAX, paginate } from "./client.js";
 import {
+  AuthError,
   InputError,
   LockedTransactionError,
+  RateLimitError,
   WriteNotPersistedError,
   type WriteAttempt,
 } from "./errors.js";
@@ -33,6 +35,7 @@ import {
   buildUpdateBody,
   resolveIdentifier,
   selectionMatches,
+  unresolvedIdentifier,
   WIRE_VARIANTS,
   type Identifier,
   type SelectedValue,
@@ -173,6 +176,22 @@ export interface CodingWriteResult {
   verified: true;
   /** Which body shape actually persisted, or null when no write was needed. */
   wire_variant: string | null;
+  /**
+   * Whether `wire_variant` is EVIDENCE about which shape BILL honours.
+   *
+   * False when an identifier's form could not be looked up, so the winning
+   * attempt sent bytes whose form nobody knows. The write is no less verified —
+   * the read-back is what decides that — but the variant name is not a finding.
+   */
+  wire_variant_certain?: boolean;
+  /**
+   * Present only when the write asked for a `note`. BILL accepts `note` on a
+   * `NOTE`-type field and ignores it on a `CUSTOM_SELECTOR`, so this is reported
+   * BESIDE the value diff rather than folded into it: a coding change that
+   * really landed must not be reported as a failure because a note BILL was
+   * never going to store did not appear.
+   */
+  note_persisted?: boolean;
   attempts: WriteAttempt[];
 }
 
@@ -291,7 +310,7 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
    */
   const catalogs = new Map<
     string,
-    { values: SelectedValue[]; expires: number }
+    { values: SelectedValue[]; truncated: boolean; expires: number }
   >();
 
   /**
@@ -331,15 +350,29 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
     };
   }
 
-  async function valueCatalog(field: string): Promise<SelectedValue[]> {
+  /**
+   * One field's values, with whether the walk saw ALL of them.
+   *
+   * `truncated` is carried rather than dropped because the caller uses this to
+   * decide that an id does not exist, and a catalog that stopped at its page
+   * bound cannot support that conclusion.
+   */
+  async function valueCatalog(
+    field: string,
+  ): Promise<{ values: SelectedValue[]; truncated: boolean }> {
     const cached = catalogs.get(field);
-    if (cached && cached.expires > now()) return cached.values;
+    if (cached && cached.expires > now())
+      return { values: cached.values, truncated: cached.truncated };
     // Retired values included. A caller coding to one is doing something odd,
     // and refusing it as "no such value" would be the wrong diagnosis for it.
-    const { results } = await fetchValues(field, true, CATALOG_LIMIT);
+    const { results, truncated } = await fetchValues(field, true, CATALOG_LIMIT);
     const values = results.map(toSelectedValue);
-    catalogs.set(field, { values, expires: now() + CATALOG_TTL_MS });
-    return values;
+    catalogs.set(field, {
+      values,
+      truncated,
+      expires: now() + CATALOG_TTL_MS,
+    });
+    return { values, truncated };
   }
 
   async function readCoding(transactionId: string) {
@@ -542,12 +575,13 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         ? {
             ...(target.id === undefined ? {} : { id: target.id }),
             ...(target.uuid === undefined ? {} : { uuid: target.uuid }),
+            resolved: true,
           }
         : // A field the transaction does not currently list is not necessarily a
           // mistake — an untagged optional field can be absent — so the caller's
-          // own reference is used, in both slots, and the ladder skips whichever
-          // variant that turns out not to fit.
-          { id: fieldRef, uuid: fieldRef };
+          // own reference goes in both slots so a write is still possible, and
+          // `resolved: false` records that nothing here knows which form it is.
+          unresolvedIdentifier(fieldRef);
 
       if (!target) {
         // Said out loud rather than swallowed: the likeliest reason a field is
@@ -560,6 +594,22 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
             `transaction's budget is accepted and discarded`,
         );
       }
+
+      /**
+       * Does one read-back entry name the field this write is about?
+       *
+       * GUARDED ON BOTH SIDES, and that is not defensive spelling. `id` is
+       * OPTIONAL on BILL's payload, so a bare `f.id === field.id` is
+       * `undefined === undefined` — true — for the FIRST field in the list
+       * whenever neither carries an `id`. The read-back would then diff the
+       * wrong field's values, and a write BILL discarded could come back
+       * `verified: true`. That is the exact failure this whole function exists
+       * to prevent, reintroduced by a two-character omission, so the same
+       * guard `selectionMatches` uses lives here too.
+       */
+      const namesTarget = (f: { id?: string; uuid?: string }): boolean =>
+        (field.id !== undefined && f.id === field.id) ||
+        (field.uuid !== undefined && f.uuid === field.uuid);
 
       const beforeValues = (target?.selectedValues ?? []).map(toSelectedValue);
 
@@ -575,33 +625,54 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         const catalog = await valueCatalog(fieldRef);
         const unknown: string[] = [];
         for (const raw of valueIds) {
-          const resolved = resolveIdentifier(raw, catalog);
-          if (!resolved) unknown.push(raw);
-          else desired.push(resolved);
+          const resolved = resolveIdentifier(raw, catalog.values);
+          if (resolved) desired.push(resolved);
+          // A TRUNCATED CATALOG CANNOT CONVICT. `fetchValues` stops at its page
+          // bound, so on a chart of accounts longer than that bound an id can be
+          // perfectly valid and simply not in the pages we read. Refusing it
+          // would block a correct write on this server's own budget, so the
+          // string goes through unresolved instead and the read-back — which is
+          // the real safety net — decides. Only a COMPLETE catalog is evidence
+          // that an id does not exist.
+          else if (catalog.truncated) desired.push(unresolvedIdentifier(raw));
+          else unknown.push(raw);
         }
         if (unknown.length > 0) {
           throw new InputError(
             `${unknown.length} of the ${valueIds.length} value id(s) given ` +
               `(${unknown.join(", ")}) belong to no value of custom field ` +
               `"${target?.name ?? fieldRef}" — BILL's catalog for that field ` +
-              `holds ${catalog.length} value(s) and none of them has that id or ` +
-              `uuid. Nothing was written. Call list_coding_options with ` +
-              `field="${fieldRef}" and pass the \`id\` it returns; an id from a ` +
-              `DIFFERENT custom field is accepted by the write endpoint and then ` +
-              `discarded.`,
+              `holds ${catalog.values.length} value(s) and none of them has ` +
+              `that id or uuid. Nothing was written. Call list_coding_options ` +
+              `with field="${fieldRef}" and pass the \`id\` it returns; an id ` +
+              `from a DIFFERENT custom field is accepted by the write endpoint ` +
+              `and then discarded.`,
           );
         }
       }
+
+      // DEDUPED, because `selectionMatches` compares SIZES and BILL stores a
+      // set. The same value passed twice — trivially, its `id` and its `uuid`,
+      // both of which list_coding_options returns — would ask for two entries,
+      // get the one BILL actually stores back, and be reported as a write that
+      // did not land when it did.
+      const seen = new Set<string>();
+      const wanted = desired.filter((d) => {
+        const key = d.uuid ?? d.id ?? "";
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
 
       // 4. ALREADY THERE? Then there is nothing to write, and saying so is more
       //    honest than sending a PUT so the result can carry a variant name. A
       //    sweep that re-runs over transactions it already coded should cost
       //    reads, not writes.
-      if (selectionMatches(desired, beforeValues) && request.note === undefined) {
+      if (selectionMatches(wanted, beforeValues) && request.note === undefined) {
         return {
           transaction_id: txId,
           field: {
-            ...field,
+            ...identifierOf(field),
             ...(target?.name === undefined ? {} : { name: target.name }),
           },
           before: beforeValues,
@@ -613,6 +684,12 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         };
       }
 
+      // Whether the winning variant will be EVIDENCE. A variant that sent an
+      // identifier whose form nobody looked up proves nothing about which shape
+      // BILL honours, so it is reported as uncertain and never memoised.
+      const formsCertain =
+        field.resolved !== false && wanted.every((d) => d.resolved !== false);
+
       // 5. THE LADDER. Each variant is a PUT followed by a re-read and a diff.
       //    Nothing here treats BILL's `{"status":"SUCCESS"}` as evidence.
       const ordered = [...WIRE_VARIANTS].sort(
@@ -622,7 +699,7 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
       const attempts: WriteAttempt[] = [];
 
       for (const variant of ordered) {
-        const body = buildUpdateBody(variant, field, desired, request.note);
+        const body = buildUpdateBody(variant, field, wanted, request.note);
         if (!body) continue;
 
         let httpStatus = 200;
@@ -634,37 +711,43 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
           );
           reportedStatus = reply?.status;
         } catch (err) {
-          // A REFUSAL IS INFORMATION, NOT THE END. A body shape BILL rejects
-          // outright is the good case — it is loud — and the next shape in the
-          // ladder is exactly what a rejection argues for. Only a failure with
-          // no shapes left is fatal, and the status is kept so the final error
-          // can show what each one said.
+          // A BODY-SHAPED REFUSAL IS INFORMATION, NOT THE END: it is the loud
+          // case, and the next shape in the ladder is exactly what it argues
+          // for. A failure that is NOT about the body is a different thing, and
+          // walking the ladder through one would spend three calls and then
+          // blame the value ids in a `WriteNotPersistedError` for what was
+          // really a dead token or a spent rate-limit budget. So those two are
+          // rethrown with their own diagnosis intact.
+          if (err instanceof AuthError || err instanceof RateLimitError) throw err;
           httpStatus = errorStatus(err);
           if (httpStatus === 0) throw err;
         }
 
         const after = await readCoding(txId);
-        const observedField = after.find(
-          (f) => f.id === field.id || f.uuid === field.uuid,
-        );
+        const observedField = after.find(namesTarget);
         const observed = (observedField?.selectedValues ?? []).map(
           toSelectedValue,
         );
-        // THE NOTE IS PART OF THE DIFF, not a rider on it. `note` and
-        // `selectedValues` travel in the same array item, so a shape BILL
-        // half-honours would land the values and drop the note — and a
-        // `verified: true` covering only the values would be the same
-        // overstatement this whole function exists to avoid. Checked only when
-        // a note was asked for: BILL returns the field's existing note on every
-        // read, and demanding it match `undefined` would fail every write.
-        const persisted =
-          selectionMatches(desired, observed) &&
-          (request.note === undefined || observedField?.note === request.note);
+        // THE VALUE DIFF IS THE VERDICT, and the note is reported beside it.
+        //
+        // They travel in the same array item, so it is tempting to require both
+        // — but BILL accepts `note` only on a `NOTE`-type field and ignores it
+        // on a `CUSTOM_SELECTOR`, which is the ordinary case here. Folding it in
+        // would mean a transaction that really was re-coded coming back as
+        // `WriteNotPersistedError`, telling a caller to treat it as UNCODED when
+        // the ledger had in fact changed. That is a worse lie than the one this
+        // function is guarding against, in the opposite direction.
+        const persisted = selectionMatches(wanted, observed);
+        const notePersisted =
+          request.note === undefined
+            ? undefined
+            : observedField?.note === request.note;
 
         attempts.push({
           variant: variant.name,
           fieldKey: variant.fieldKey,
           valueForm: variant.valueForm,
+          formsCertain,
           httpStatus,
           ...(reportedStatus === undefined ? {} : { reportedStatus }),
           observedAfter: observed.map((v) => v.value ?? v.uuid ?? v.id ?? "?"),
@@ -675,11 +758,14 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
         });
 
         if (persisted) {
-          learnedVariant = variant.name;
+          // MEMOISED ONLY WHEN IT MEANS SOMETHING. A variant that won while
+          // sending an identifier of unknown form is not a finding about BILL,
+          // and pinning the next sweep to it would be building on a guess.
+          if (formsCertain) learnedVariant = variant.name;
           return {
             transaction_id: txId,
             field: {
-              ...field,
+              ...identifierOf(field),
               ...(target?.name === undefined ? {} : { name: target.name }),
             },
             before: beforeValues,
@@ -687,6 +773,10 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
             changed: true,
             verified: true,
             wire_variant: variant.name,
+            wire_variant_certain: formsCertain,
+            ...(notePersisted === undefined
+              ? {}
+              : { note_persisted: notePersisted }),
             attempts,
           };
         }
@@ -698,6 +788,14 @@ export function createGateway(options: CreateGatewayOptions): BillGateway {
       learnedVariant = undefined;
       throw new WriteNotPersistedError(txId, attempts);
     },
+  };
+}
+
+/** An identifier as a RESULT carries it — the two forms, without the bookkeeping. */
+function identifierOf(field: Identifier): { id?: string; uuid?: string } {
+  return {
+    ...(field.id === undefined ? {} : { id: field.id }),
+    ...(field.uuid === undefined ? {} : { uuid: field.uuid }),
   };
 }
 

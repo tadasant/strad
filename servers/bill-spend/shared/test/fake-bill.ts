@@ -19,7 +19,7 @@
  */
 
 import type { BillHttp, RequestOptions } from "../src/client.js";
-import { BillApiError } from "../src/errors.js";
+import { AuthError, BillApiError, RateLimitError } from "../src/errors.js";
 
 export interface FakeValue {
   id: string;
@@ -47,6 +47,8 @@ export interface FakeTransaction {
   updatedTime?: string;
   /** fieldUuid -> the value uuids currently selected. */
   selected: Record<string, string[]>;
+  /** fieldUuid -> the note BILL currently holds for it. */
+  notes?: Record<string, string>;
   /** Fields this transaction offers at all. Defaults to every field. */
   fieldUuids?: string[];
 }
@@ -62,12 +64,27 @@ export interface FakeBillOptions {
   fields: FakeField[];
   transactions: FakeTransaction[];
   /**
+   * Omit `id` from `GET /transactions/{id}/custom-fields`, keeping only `uuid`.
+   *
+   * BILL marks `id` DEPRECATED and it is OPTIONAL in the schema, so a deployment
+   * that stops receiving it is a shape the server has to survive — and it is the
+   * shape that turned an `f.id === field.id` read-back match into
+   * `undefined === undefined`, i.e. "the first field in the list, whatever it
+   * is". A fake that always emits both forms can never catch that.
+   */
+  omitIdsOnCodingRead?: boolean;
+  /**
    * The one body shape this fake actually honours, by `WireVariant.name`.
    * `null` means every shape is answered SUCCESS and every shape is discarded.
    */
   acceptsVariant: string | null;
   /** Fail the next N requests to this path with this status. */
   failures?: Array<{ path: string; method?: string; status: number; body?: unknown }>;
+  /**
+   * Apply `selectedValues` and IGNORE `note`, which is what BILL does on a
+   * `CUSTOM_SELECTOR` field — the ordinary case for GL coding.
+   */
+  ignoresNote?: boolean;
 }
 
 export class FakeBill implements BillHttp {
@@ -78,12 +95,16 @@ export class FakeBill implements BillHttp {
   private readonly fields: FakeField[];
   private readonly transactions: FakeTransaction[];
   private readonly failures: NonNullable<FakeBillOptions["failures"]>;
+  private readonly omitIds: boolean;
+  private readonly ignoresNote: boolean;
 
   constructor(options: FakeBillOptions) {
     this.fields = options.fields;
     this.transactions = options.transactions;
     this.acceptsVariant = options.acceptsVariant;
     this.failures = [...(options.failures ?? [])];
+    this.omitIds = options.omitIdsOnCodingRead ?? false;
+    this.ignoresNote = options.ignoresNote ?? false;
   }
 
   /** The PUTs this fake was sent, in order. */
@@ -111,6 +132,15 @@ export class FakeBill implements BillHttp {
     );
     if (failureIndex >= 0) {
       const failure = this.failures.splice(failureIndex, 1)[0]!;
+      // Classified the way the real client classifies, so a test about "does
+      // the ladder walk through THIS kind of failure" is asking the question it
+      // means to ask.
+      if (failure.status === 401 || failure.status === 403) {
+        throw new AuthError(`fake failure ${failure.status}`, failure.status, []);
+      }
+      if (failure.status === 429) {
+        throw new RateLimitError(`fake failure 429`, 429, []);
+      }
       throw new BillApiError(
         `fake failure ${failure.status}`,
         failure.status,
@@ -250,15 +280,21 @@ export class FakeBill implements BillHttp {
     const tx = this.transaction(uuid);
     return {
       results: this.fieldsOf(tx).map((f) => ({
-        id: f.id,
+        // BOTH FORMS, which the transactions endpoint does not give — this is
+        // the asymmetry the whole server is arranged around. `id` is optional
+        // in BILL's schema though, so `omitIdsOnCodingRead` drops it.
+        ...(this.omitIds ? {} : { id: f.id }),
         uuid: f.uuid,
         name: f.name,
+        note: tx.notes?.[f.uuid],
         isRequired: false,
-        // BOTH FORMS, which the transactions endpoint does not give — this is
-        // the asymmetry the whole server is arranged around.
         selectedValues: (tx.selected[f.uuid] ?? []).map((valueUuid) => {
           const v = f.values.find((x) => x.uuid === valueUuid)!;
-          return { id: v.id, uuid: v.uuid, value: v.value };
+          return {
+            ...(this.omitIds ? {} : { id: v.id }),
+            uuid: v.uuid,
+            value: v.value,
+          };
         }),
       })),
     };
@@ -315,6 +351,9 @@ export class FakeBill implements BillHttp {
 
     // ALWAYS 200 SUCCESS. This is the behaviour under test.
     if (applies && this.acceptsVariant === variant) {
+      if (typeof entry.note === "string" && !this.ignoresNote) {
+        tx.notes = { ...(tx.notes ?? {}), [field.uuid]: entry.note };
+      }
       const uuids = selected.map((raw) => {
         const v = field.values.find((x) => x.id === raw || x.uuid === raw);
         if (!v) throw new BillApiError(`no such value ${raw}`, 400, []);

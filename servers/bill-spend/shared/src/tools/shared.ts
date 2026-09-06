@@ -3,9 +3,7 @@
  * coercion, and the one error path they all share.
  */
 
-import { ConfigError } from "../config.js";
 import {
-  BillApiError,
   InputError,
   LockedTransactionError,
   RateLimitError,
@@ -73,14 +71,20 @@ export function fail(err: unknown): ToolResult {
  * about which shape BILL actually honours.
  */
 function failWithDetail(err: Error, detail: Record<string, unknown>): ToolResult {
+  // The WHOLE document goes through `redact`, not just the message. `detail`
+  // carries the attempt table, and an attempt's `observedAfter` / `observedNote`
+  // are strings BILL authored — the same provenance the message has, and the
+  // same reason to scrub them.
   return {
     content: [
       {
         type: "text",
-        text: JSON.stringify(
-          { error: err.name, message: redact(err.message), ...detail },
-          null,
-          2,
+        text: redact(
+          JSON.stringify(
+            { error: err.name, message: err.message, ...detail },
+            null,
+            2,
+          ),
         ),
       },
     ],
@@ -129,13 +133,11 @@ export async function guard(
           : { retry_after_seconds: err.retryAfterSeconds }),
       });
     }
-    if (
-      err instanceof ConfigError ||
-      err instanceof InputError ||
-      err instanceof BillApiError
-    ) {
-      return fail(err);
-    }
+    // Everything else — ConfigError, InputError, BillApiError and anything
+    // unforeseen — is one redacted sentence. Each already carries a message
+    // written for the caller; what separates them is the recovery, and the
+    // classes above are the ones whose recovery needs STRUCTURE rather than
+    // prose.
     return fail(err);
   }
 }

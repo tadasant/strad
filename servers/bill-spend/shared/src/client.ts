@@ -147,6 +147,24 @@ export interface CreateHttpOptions {
 
 const DEFAULT_MAX_RETRIES = 3;
 
+/**
+ * The two ceilings on how long ONE tool call may sit inside a retry.
+ *
+ * `Retry-After` is a number BILL chooses, and honouring it unbounded is how a
+ * single `Retry-After: 3600` parks an MCP tool call for three hours inside a
+ * process shared with twenty-one other servers. Core's own `src/http/retry.ts`
+ * takes the same position and is where the shape comes from: cap a single
+ * sleep, cap the sum, and STOP RETRYING when a server-named wait exceeds what
+ * is left rather than sleeping through it.
+ *
+ * The numbers are larger than core's because BILL's window is a minute: waiting
+ * out most of one is reasonable inside a call, and waiting out an hour is not.
+ * When the budget is spent the caller gets a `RateLimitError` carrying BILL's
+ * own `retryAfterSeconds`, so the wait moves to where it can be scheduled.
+ */
+const MAX_DELAY_MS = 30_000;
+const TOTAL_DELAY_MS = 60_000;
+
 export function createHttp(options: CreateHttpOptions): BillHttp {
   const { config } = options;
   const doFetch = options.fetchImpl ?? fetch;
@@ -200,6 +218,7 @@ export function createHttp(options: CreateHttpOptions): BillHttp {
 
     async request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
       let attempt = 0;
+      let spentMs = 0;
       for (;;) {
         const { status, headers, body } = await once(path, opts);
         if (status >= 200 && status < 300) return body as T;
@@ -225,15 +244,31 @@ export function createHttp(options: CreateHttpOptions): BillHttp {
         if (isTransient(status) && attempt < maxRetries) {
           const after = retryAfterSeconds(headers);
           // BILL's own guidance is 2^n seconds. Its `Retry-After` wins when it
-          // sends one, because it knows when the window rolls over and we do not.
-          const waitMs = after !== undefined ? after * 1000 : 2 ** attempt * 1000;
+          // sends one, because it knows when the window rolls over and we do
+          // not. The jitter is on the computed term only: several servers in
+          // one container backing off in lockstep re-collide on the same second.
+          const wanted =
+            after !== undefined
+              ? after * 1000
+              : 2 ** attempt * 1000 * (1 + Math.random() * 0.25);
+          const waitMs = Math.min(wanted, MAX_DELAY_MS, TOTAL_DELAY_MS - spentMs);
+          // A wait longer than the budget is not slept through, it ENDS the
+          // retrying — the caller is told how long BILL asked for and can
+          // schedule it, which a blocked tool call cannot.
+          if (waitMs > 0 && wanted <= MAX_DELAY_MS && wanted <= TOTAL_DELAY_MS - spentMs) {
+            logWarning(
+              `HTTP ${status} on ${opts.method ?? "GET"} ${path}; retry ` +
+                `${attempt + 1}/${maxRetries} in ${Math.round(waitMs)}ms`,
+            );
+            await sleep(waitMs);
+            spentMs += waitMs;
+            attempt += 1;
+            continue;
+          }
           logWarning(
-            `HTTP ${status} on ${opts.method ?? "GET"} ${path}; retry ` +
-              `${attempt + 1}/${maxRetries} in ${waitMs}ms`,
+            `HTTP ${status} on ${opts.method ?? "GET"} ${path}; not retrying — ` +
+              `the wait (${Math.round(wanted)}ms) exceeds this call's budget`,
           );
-          await sleep(waitMs);
-          attempt += 1;
-          continue;
         }
 
         if (status === 429) {

@@ -109,6 +109,12 @@ export interface WriteAttempt {
   fieldKey: string;
   /** Which identifier form the values were sent in: `id` or `uuid`. */
   valueForm: string;
+  /**
+   * Whether `variant` is evidence. False when an identifier's form could not be
+   * looked up, so the bytes sent were of an unknown form and the attempt says
+   * nothing about which shape BILL honours.
+   */
+  formsCertain?: boolean;
   /** BILL's HTTP status, and its `status` field when it answered 200. */
   httpStatus: number;
   reportedStatus?: string;

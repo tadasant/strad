@@ -18,6 +18,14 @@ const PREFIX = "[bill-spend]";
 /**
  * Anything shaped like the credential this server holds.
  *
+ * A BACKSTOP, NOT THE PRIMARY DEFENCE. The exact rule — scrub the literal token
+ * — lives in client.ts, which is the only module holding the value. This one
+ * catches a credential-shaped run in text nobody anticipated, and it is a length
+ * threshold, so it necessarily trades false positives against false negatives:
+ * an identifier this long would be redacted out of the very `InputError` that
+ * names it. The threshold sits above every BILL identifier observed and the
+ * exact rule covers the case that matters, so the trade lands here.
+ *
  * A BILL Spend & Expense apiToken is a long opaque run of base64url-ish
  * characters. The threshold is deliberately below any token length seen, and
  * deliberately above the identifiers this server prints constantly: a BILL

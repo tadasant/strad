@@ -66,6 +66,23 @@ export type IdForm = "id" | "uuid";
 export interface Identifier {
   id?: string;
   uuid?: string;
+  /**
+   * FALSE when this server could not learn which form the string is.
+   *
+   * A caller passes one opaque string per value and BILL hands `id` and `uuid`
+   * back from different endpoints, so normally both forms are LOOKED UP (see
+   * `resolveIdentifier`) and this is true. When the lookup is impossible — a
+   * field the transaction does not currently list, or a value catalog that hit
+   * its page bound — the string goes in both slots so a write is still possible,
+   * and this says so.
+   *
+   * It is not cosmetic: a variant that "used" an unresolved identifier sent
+   * bytes whose form nobody knows, so it is evidence about nothing. The caller
+   * gets `wire_variant_certain: false` and the winning variant is NOT memoised,
+   * because the whole value of the memo is that it names a shape that was
+   * observed to work.
+   */
+  resolved?: boolean;
 }
 
 export interface WireVariant {
@@ -227,5 +244,17 @@ export function resolveIdentifier(
   return {
     ...(match.id === undefined ? {} : { id: match.id }),
     ...(match.uuid === undefined ? {} : { uuid: match.uuid }),
+    resolved: true,
   };
+}
+
+/**
+ * The identifier for a string whose form could not be looked up.
+ *
+ * Both slots, so every variant can still build a body and the read-back still
+ * decides — and `resolved: false`, so nothing downstream mistakes the attempt
+ * that happened to land for evidence about which form BILL honours.
+ */
+export function unresolvedIdentifier(raw: string): Identifier {
+  return { id: raw, uuid: raw, resolved: false };
 }

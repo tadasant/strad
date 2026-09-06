@@ -11,7 +11,10 @@ import {
   type ToolDefinition,
 } from "./shared.js";
 
-const MAX_LIMIT = 1000;
+// Five pages of 100 per walk, and `fetchValues` may walk twice for retired
+// values — so at most ten of the sixty calls a minute inside one tool call.
+// `paginate`'s own bound exists to stop a single call eating the budget.
+const MAX_LIMIT = 500;
 const DEFAULT_LIMIT = 200;
 
 /**

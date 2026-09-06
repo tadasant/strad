@@ -119,7 +119,7 @@ describe("BILL's error shape", () => {
 });
 
 describe("the 60-calls-per-minute budget", () => {
-  it("retries a 429 with backoff before giving up", async () => {
+  it("retries a 429 with exponential backoff, jittered", async () => {
     const slept: number[] = [];
     const { impl } = scriptedFetch([
       { status: 429, body: [{ code: "BDC_1144" }] },
@@ -134,13 +134,19 @@ describe("the 60-calls-per-minute budget", () => {
       },
     });
     await http.request("/v3/spend/transactions");
-    expect(slept).toEqual([1000, 2000]);
+    // 2^n seconds, BILL's own guidance, plus up to 25% jitter — several servers
+    // in one container backing off in lockstep re-collide on the same second.
+    expect(slept).toHaveLength(2);
+    expect(slept[0]).toBeGreaterThanOrEqual(1000);
+    expect(slept[0]).toBeLessThan(1250);
+    expect(slept[1]).toBeGreaterThanOrEqual(2000);
+    expect(slept[1]).toBeLessThan(2500);
   });
 
-  it("honours Retry-After over its own backoff", async () => {
+  it("honours a Retry-After that fits the budget", async () => {
     const slept: number[] = [];
     const { impl } = scriptedFetch([
-      { status: 429, body: [], headers: { "retry-after": "37" } },
+      { status: 429, body: [], headers: { "retry-after": "12" } },
       { status: 200, body: {} },
     ]);
     const http = createHttp({
@@ -151,7 +157,33 @@ describe("the 60-calls-per-minute budget", () => {
       },
     });
     await http.request("/v3/spend/transactions");
-    expect(slept).toEqual([37_000]);
+    // Exactly BILL's number, unjittered: it knows when its window rolls over.
+    expect(slept).toEqual([12_000]);
+  });
+
+  it("refuses to sleep through a Retry-After longer than one tool call may take", async () => {
+    // Honouring `Retry-After` unbounded is how a single `Retry-After: 3600`
+    // parks an MCP tool call for an hour inside a process shared with
+    // twenty-one other servers. The wait is handed to the CALLER, which can
+    // schedule it, instead of being slept through here.
+    const slept: number[] = [];
+    const { impl, seen } = scriptedFetch([
+      { status: 429, body: [], headers: { "retry-after": "3600" } },
+    ]);
+    const http = createHttp({
+      config: CONFIG,
+      fetchImpl: impl,
+      sleep: async (ms) => {
+        slept.push(ms);
+      },
+    });
+    const error = await http
+      .request("/v3/spend/transactions")
+      .catch((e: unknown) => e as RateLimitError);
+    expect(error).toBeInstanceOf(RateLimitError);
+    expect(error.retryAfterSeconds).toBe(3600);
+    expect(slept, "nothing was slept through").toEqual([]);
+    expect(seen, "and no further call was spent").toHaveLength(1);
   });
 
   it("surfaces a typed rate-limit error once the budget is spent", async () => {

@@ -15,10 +15,14 @@ export interface CreateMCPServerOptions {
   /**
    * The environment this instance reads. Defaults to `process.env`.
    *
-   * The bundle host passes a SLUG-SCOPED VIEW (`BILL_SPEND_RO__BILL_SPEND_API_TOKEN`
-   * ahead of `BILL_SPEND_API_TOKEN`), which is what would let one container run
-   * two slugs against two different BILL companies. Nothing in this server may
-   * reach past it to a global, or the two instances quietly become one.
+   * The bundle host passes a MOUNT-SCOPED VIEW — `slugEnvView(process.env,
+   * "bill-spend")`, so `BILL_SPEND__BILL_SPEND_API_TOKEN` is read ahead of the
+   * bare `BILL_SPEND_API_TOKEN`. There is one mount and no per-slug instance,
+   * because one BILL token is one company: `bill-spend-ro` and `bill-spend-rw`
+   * are two strad slugs over the same credential, told apart by the gateway's
+   * `tools:` policy rather than by their environment. Nothing in this server may
+   * reach past the view to a global anyway — that is what would make a second
+   * instance possible if a second company ever needed one.
    */
   env?: NodeJS.ProcessEnv;
 }

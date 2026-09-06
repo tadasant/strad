@@ -69,13 +69,13 @@ A bundle runs **one image**, and any number of servers may share it, each on its
 own `path`. strad's own deployment has one main bundle: a
 `ghcr.io/tadasant/strad-bundle` container that mounts twenty-two MCP servers in
 one Node process, assembled from fourteen independently-built dependency trees.
-The staging config maps twenty-nine of its thirty `supplementary-image`
-entries onto nineteen paths, because capability variants of one upstream are two
-entries pointing at the same path. Eighteen of those are baked mounts;
+The staging config maps thirty-one of its thirty-two `supplementary-image`
+entries onto twenty paths, because capability variants of one upstream are two
+entries pointing at the same path. Nineteen of those are baked mounts;
 `/x-twitter`, `/google-sheets` and `/grafana` are baked with no staging slug
-pointing at them. The nineteenth, `/grafana-registry`, is a **per-slug
+pointing at them. The twentieth, `/grafana-registry`, is a **per-slug
 instance** — a mount the host stands up only when the container carries that
-slug's own credential (see below). The thirtieth entry runs on the second
+slug's own credential (see below). The thirty-second entry runs on the second
 bundle, below.
 
 Three of those mounts are also mounted again, once per slug, when a deployment

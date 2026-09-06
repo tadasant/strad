@@ -9,6 +9,9 @@ import {
   readEnvironment,
 } from "../src/config.js";
 import { redact } from "../src/logging.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+
 import { createMCPServer } from "../src/server.js";
 import { parseToolGroups, toolNames } from "../src/tools.js";
 
@@ -146,21 +149,41 @@ describe("the server with no credentials at all", () => {
     expect(toolNames()).toHaveLength(5);
   });
 
-  it("fails a CALL with an error naming the variable", async () => {
+  it("fails a CALL with an error naming the variable, through the real factory", async () => {
+    // Driven through `registerHandlers` and a real CallTool request rather than
+    // a hand-rolled factory, because the thing under test is the DEFAULT lazy
+    // gateway reading `options.env`. A test that supplies its own factory would
+    // still pass if this server started reading `process.env` past the injected
+    // view — which is the bug the injection exists to prevent.
     const { server, registerHandlers } = createMCPServer({
       version: "test",
+      // A token in the AMBIENT environment that the injected view does not
+      // carry. If anything reaches past `env`, this call succeeds and the test
+      // fails, which is exactly the signal wanted.
       env: {},
     });
     await registerHandlers(server);
-    const { toolDefinitions } = await import("../src/tools.js");
-    const tools = toolDefinitions(async () => {
-      const { loadConfig: load } = await import("../src/config.js");
-      load({});
-      throw new Error("unreachable");
-    });
-    const result = await tools[0]!.handler({});
+
+    // A real MCP client over a linked in-memory transport — the same path the
+    // bundle host serves, minus the HTTP.
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "test" });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const result = (await client.callTool({
+      name: "list_coding_fields",
+      arguments: {},
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    await client.close();
+
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain(ENV.apiToken);
+    // And it names the sandbox form, which is how a human gets unstuck.
+    expect(result.content[0]!.text).toContain("create-sandbox-company");
   });
 });
 
