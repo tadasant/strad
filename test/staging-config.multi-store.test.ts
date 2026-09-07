@@ -51,6 +51,24 @@ const STRAD_STORE = "strad-secrets-staging";
 const ZIMMER_STORE = "zimmer-secrets-staging";
 
 /**
+ * THE FENCE, spelled out once, in the order the config spells it.
+ *
+ * Both entries are the PARENT of a documented leaf, and both are here because
+ * Zimmer is renaming its bucket `/zimmer/{env}/mcp/` -> `/zimmer/{env}/secrets/`
+ * (tadasant/zimmer#926) with no rename verb, so parameters exist at both paths
+ * for the migration's duration. Order is behaviour: `selectNamespace` falls back
+ * to `namespaces[0]`, so `secrets` first is the default view and the default
+ * create target.
+ *
+ * It is a literal rather than a read of the config because the point of the
+ * assertions below is to disagree with the config when someone edits it — a
+ * `consoleEnv:` typo parses, renders and deploys clean (Zod strips unknown keys)
+ * while dropping the fence it was meant to set, and a fence that is too wide
+ * fails OPEN.
+ */
+const ZIMMER_NAMESPACES = ["/zimmer/staging/secrets/", "/zimmer/staging/mcp/"];
+
+/**
  * A distinct, recognisable value per referenced name, so a swap between the two
  * stores is visible rather than merely absent. A `*_KEY_JSON` name gets a
  * well-formed service-account key whose `client_email` names the ref it came
@@ -114,7 +132,7 @@ describe("two parameter stores, one strad", () => {
       "/strad/staging/mcp/",
     );
     expect(envValue("bundle-zimmer-secrets", "SECRETS_NAMESPACES")).toBe(
-      "/zimmer/staging/mcp/static/",
+      ZIMMER_NAMESPACES.join(","),
     );
 
     // The viewer keys are the thing that must not cross. Each bundle holds
@@ -125,6 +143,54 @@ describe("two parameter stores, one strad", () => {
     expect(
       envValue("bundle-zimmer-secrets", "SECRETS_SERVICE_ACCOUNT_KEY_JSON"),
     ).toBe(dummy("ZIMMER_SECRETS_VIEWER_KEY_JSON"));
+  });
+
+  it("fences zimmer-secrets to the same two PARENT namespaces on both halves, strictly", () => {
+    // THE NAMESPACE FENCE, asserted against what the deploy actually RENDERS
+    // rather than against what the YAML appears to say. Both are needed and they
+    // fail differently:
+    //
+    //   - the MCP half is the string baked onto `bundle-zimmer-secrets`, which
+    //     `loadConfig()` splits on commas (servers/secrets/shared/src/config.ts).
+    //   - the console half is what `resolveServerView` resolves out of core's
+    //     rendered environment, which is where a `consoleEnv:` typo disappears:
+    //     the schema strips unknown keys, so the misspelling parses, renders and
+    //     deploys clean while the fence it was meant to set is simply absent.
+    //     A fence that is too wide fails OPEN, so "the YAML parses" proves
+    //     nothing here.
+    const zimmer = onlyStore(
+      resolveServerView(CONFIG, "zimmer-secrets", CORE_ENV),
+    );
+
+    expect(
+      envValue("bundle-zimmer-secrets", "SECRETS_NAMESPACES")?.split(","),
+    ).toEqual(ZIMMER_NAMESPACES);
+    expect(zimmer.namespaces).toEqual(ZIMMER_NAMESPACES);
+
+    // AND THE TWO HALVES ARE THE SAME LIST, which is a property of this slug and
+    // not an accident. `withNamespacedFallback` maps `ZIMMER_SECRETS_SECRETS_*`
+    // down to the bare name with `??=`, and `env:`/`consoleEnv:` are merged
+    // before it runs — so with `SECRETS_NAMESPACES` set bare under `env:`, a
+    // namespaced twin under `consoleEnv:` would be INERT. Widening the console
+    // therefore widens `/mcp`, and that is the accepted trade here (same viewer
+    // credential either way, and Google refuses it every secret value). If this
+    // ever needs to diverge, the route is `consoleStores:`, not a second key.
+    expect(zimmer.namespaces).toEqual(
+      envValue("bundle-zimmer-secrets", "SECRETS_NAMESPACES")?.split(","),
+    );
+
+    // STRICT is what makes the list a limit rather than a set of suggestions, and
+    // it is the reason the entries below must be parents: under strict,
+    // `selectNamespace` is exact membership.
+    expect(zimmer.namespacesStrict).toBe(true);
+
+    // PARENTS, never the `.../static/` leaf. A pinned leaf makes every per-server
+    // sibling of it unaddressable on create and invisible on browse — the console
+    // falls back to namespaces[0] rather than erroring.
+    for (const ns of zimmer.namespaces) {
+      expect(ns.startsWith("/zimmer/staging/")).toBe(true);
+      expect(ns.endsWith("/static/")).toBe(false);
+    }
   });
 
   it("routes each slug to its own bundle, from the same path", () => {
@@ -164,8 +230,10 @@ describe("two parameter stores, one strad", () => {
     expect(strad.projectId).toBe(STRAD_STORE);
     expect(zimmer.projectId).toBe(ZIMMER_STORE);
 
-    expect(zimmer.namespaces).toEqual(["/zimmer/staging/mcp/static/"]);
-    expect(strad.namespaces).not.toContain("/zimmer/staging/mcp/static/");
+    expect(zimmer.namespaces).toEqual(ZIMMER_NAMESPACES);
+    for (const ns of ZIMMER_NAMESPACES) {
+      expect(strad.namespaces).not.toContain(ns);
+    }
 
     // THE CREDENTIAL, which is the half that fails silently. Bare `consoleEnv:`
     // names on the second slug would leave `/ui/secrets` rendering strad's
