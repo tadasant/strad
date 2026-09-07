@@ -41,6 +41,17 @@ export interface ToolDefinition {
  */
 export type GatewayFactory = () => Promise<BillGateway>;
 
+/**
+ * The longest description a client will actually show an agent.
+ *
+ * NOT AN MCP LIMIT — the protocol puts no ceiling on `description` at all. It is
+ * where Claude Code cuts one, and it reports the cut in its own connection log
+ * rather than to the server, so the tail of a longer description is text no
+ * agent on that client ever reads. `HACKS.md` #82 has the incident;
+ * `test/tools.test.ts` asserts this over every tool here.
+ */
+export const DESCRIPTION_BUDGET = 2048;
+
 /** The `field` parameter copy. Every tool that takes one uses this text. */
 export const FIELD_DESCRIPTION =
   "Which custom field, as the `id` or `uuid` from list_coding_fields (or from " +
@@ -209,13 +220,22 @@ export function optionalBool(
 }
 
 /**
- * An ISO-8601 instant, refused here rather than at BILL.
+ * A date or an ISO-8601 instant, refused here rather than at BILL.
  *
  * BILL answers a malformed datetime filter with a generic 400 that does not name
  * the parameter, and the failure a caller most wants caught is the one that does
  * NOT error: a filter BILL cannot parse and silently ignores turns "everything
  * updated since yesterday" into "everything", which is a sweep over the whole
  * ledger reported as an incremental one.
+ *
+ * The instant is normalised, not sent: `billFilterDate` in
+ * `servers/bill-spend/shared/src/filters.ts` reduces it to the `yyyy-MM-dd`
+ * BILL's filter grammar actually accepts.
+ *
+ * A TIME OF DAY MUST CARRY A ZONE. `Date.parse` reads `2026-09-06T12:00:00`
+ * as CONTAINER-LOCAL time, so the same argument would mean different instants
+ * on two deployments of the same image — an undeclared dependency on `TZ`
+ * inside a filter whose whole job is to bound a window correctly.
  */
 export function isoInstant(
   raw: Record<string, unknown>,
@@ -223,11 +243,17 @@ export function isoInstant(
 ): string | undefined {
   const value = optionalString(raw, key);
   if (value === undefined) return undefined;
+  // Anchored rather than left to `Date.parse`, which also accepts "2026",
+  // "2026-09" and "Sep 6 2026" — each of which silently becomes some instant a
+  // caller did not name.
+  const shape = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2}))?$/;
   const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
+  if (!shape.test(value) || Number.isNaN(parsed)) {
     throw new InputError(
-      `\`${key}\`="${value}" is not a date-time. Use ISO-8601 with a zone, ` +
-        `e.g. "2026-09-01T00:00:00Z".`,
+      `\`${key}\`="${value}" is not a date or a zoned date-time. Use a date, ` +
+        `e.g. "2026-09-01", or ISO-8601 WITH a zone, e.g. ` +
+        `"2026-09-01T00:00:00Z" — a time of day with no zone would mean ` +
+        `whatever the server's clock is set to.`,
     );
   }
   return new Date(parsed).toISOString();

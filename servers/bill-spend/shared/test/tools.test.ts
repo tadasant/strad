@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createGateway, type BillGateway } from "../src/gateway.js";
+import { DESCRIPTION_BUDGET } from "../src/tools/shared.js";
 import { toolDefinitions } from "../src/tools.js";
 import { WIRE_VARIANTS } from "../src/wire.js";
 import { FakeBill, fixture } from "./fake-bill.js";
@@ -35,6 +36,22 @@ function build(overrides: Parameters<typeof fixture>[0] = {}) {
   };
   return { bill, tools, tool, call };
 }
+
+describe("every tool description", () => {
+  it("fits the characters a client will actually show an agent", () => {
+    // HACKS.md #82: 2048 is not an MCP limit, it is where Claude Code cuts a
+    // description — and it reports the cut in its own log rather than to the
+    // server, so the tail of a longer one is text no agent ever reads. This tool
+    // grew past it once already, losing the paragraph saying date filters are
+    // day-granular. The long form lives in `docs/servers/bill-spend.md`, which
+    // has no budget.
+    const { tools } = build();
+    const over = tools
+      .filter((t) => t.description.length > DESCRIPTION_BUDGET)
+      .map((t) => `${t.name} (${t.description.length})`);
+    expect(over).toEqual([]);
+  });
+});
 
 describe("list_coding_fields", () => {
   it("ranks the field whose name looks like a chart of accounts first", async () => {
@@ -166,8 +183,121 @@ describe("list_transactions", () => {
     });
     const query = bill.calls.at(-1)!.query;
     expect(query.filters).toBe(
-      "updatedTime:gte:2026-09-01T00:00:00.000Z,isLocked:eq:false,transactionType:eq:CLEAR",
+      "updatedTime:gte:2026-08-31,isLocked:eq:false,transactionType:eq:CLEAR",
     );
+  });
+
+  it("sends BILL a DATE, because an ISO instant is four colons of broken grammar", async () => {
+    // The bug this replaced: `updatedTime:gte:2026-09-01T00:00:00.000Z` is a
+    // 422 "Invalid filter request format. Expect (field:operator:value)." from
+    // BILL, because the grammar is split on `:` and the instant carries four of
+    // them. Every date filter on this tool failed, so the incremental sweep the
+    // description promises was a full-history scan.
+    const { bill, call } = build();
+    await call("list_transactions", {
+      occurred_after: "2026-05-01T00:00:00Z",
+      occurred_before: "2026-08-31T23:59:59Z",
+      updated_after: "2026-09-01T00:00:00Z",
+      updated_before: "2026-09-30T00:00:00Z",
+    });
+    expect(bill.calls.at(-1)!.query.filters).toBe(
+      [
+        "updatedTime:gte:2026-08-31",
+        "updatedTime:lte:2026-10-02",
+        "occurredTime:gte:2026-04-30",
+        "occurredTime:lte:2026-09-02",
+      ].join(","),
+    );
+  });
+
+  it("rounds each bound OUTWARD, so the window can only be too wide", async () => {
+    // BILL resolves a filter date to the instant that day STARTS at, in a zone
+    // it does not document. Rounding inward would silently drop a sweep's most
+    // recent day; rounding outward costs rows the caller can see and discard.
+    // The upper bound moves TWO days, for the reason `filters.test.ts` proves:
+    // one leaves an instant late in the day about an hour of margin, which any
+    // zone east of UTC eats.
+    const { bill, call } = build();
+    await call("list_transactions", {
+      occurred_after: "2026-09-06T23:59:00Z",
+      occurred_before: "2026-09-06T23:59:00Z",
+    });
+    const terms = (bill.calls.at(-1)!.query.filters as string).split(",");
+    expect(terms).toContain("occurredTime:gte:2026-09-05");
+    expect(terms).toContain("occurredTime:lte:2026-09-08");
+  });
+
+  it("refuses a window whose end precedes its start", async () => {
+    // BILL answers an inverted window with zero rows — indistinguishable from
+    // "nothing matched" — and once the bounds are widened it can answer with a
+    // WIDE result instead, which is worse.
+    const { bill, call } = build();
+    const result = await call("list_transactions", {
+      occurred_after: "2026-09-30T00:00:00Z",
+      occurred_before: "2026-09-01T00:00:00Z",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("window");
+    expect(bill.calls).toEqual([]);
+  });
+
+  it("refuses a time of day with no zone, which would mean the server's clock", async () => {
+    // `Date.parse` reads it as container-local time, so the same argument would
+    // mean different instants on two deployments of the same image.
+    const { bill, call } = build();
+    const result = await call("list_transactions", {
+      occurred_after: "2026-09-01T12:00:00",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("zone");
+    expect(bill.calls).toEqual([]);
+  });
+
+  it("takes a bare date as readily as an instant", async () => {
+    const { bill, call } = build();
+    await call("list_transactions", { occurred_after: "2026-09-01" });
+    expect(bill.calls.at(-1)!.query.filters).toBe("occurredTime:gte:2026-08-31");
+  });
+
+  it("echoes the terms it actually sent, which are not the ones asked for", async () => {
+    const { call } = build();
+    const result = await call("list_transactions", {
+      occurred_after: "2026-09-01T12:00:00Z",
+    });
+    expect(result.json!.filters_applied).toEqual(["occurredTime:gte:2026-08-31"]);
+  });
+
+  it("filters on is_reviewed, the only review-related thing this API offers", async () => {
+    // BILL accepts `isReviewed` as a filter field, does not return it on a
+    // transaction, and exposes no endpoint that SETS it. A sweep can skip what a
+    // human already ticked off; it cannot tick anything off.
+    const { bill, call } = build();
+    await call("list_transactions", { is_reviewed: false });
+    expect(bill.calls.at(-1)!.query.filters).toBe("isReviewed:eq:false");
+  });
+
+  it("never builds a term BILL's grammar cannot parse", async () => {
+    // THE CANARY FOR THE WHOLE BUG CLASS. A filter term is positional, split on
+    // `:` and `,`, with no escape — so a value carrying either character is not
+    // a filter that matches something else, it is a request BILL rejects. This
+    // asserts the shape of every term the tool can emit, so a filter added later
+    // with an unsanitised value fails here rather than in a sweep.
+    const { bill, call } = build();
+    await call("list_transactions", {
+      occurred_after: "2026-05-01T00:00:00Z",
+      occurred_before: "2026-08-31T23:59:59Z",
+      updated_after: "2026-09-01T00:00:00Z",
+      updated_before: "2026-09-30T00:00:00Z",
+      is_locked: false,
+      is_reviewed: false,
+      merchant_name: "Comcast",
+      transaction_type: "CLEAR",
+    });
+    const terms = (bill.calls.at(-1)!.query.filters as string).split(",");
+    expect(terms).toHaveLength(8);
+    for (const term of terms) {
+      expect(term).toMatch(/^[A-Za-z]+:(eq|gte|lte):[^,:]+$/);
+    }
   });
 
   it("refuses a date it cannot parse instead of sending a filter BILL ignores", async () => {
@@ -187,6 +317,18 @@ describe("list_transactions", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.text).toContain("comma");
+  });
+
+  it("refuses a merchant name containing a colon, which breaks the same grammar", async () => {
+    // The date bug in its other costume: BILL answers `merchantName:eq:Foo: Bar`
+    // with the same 422 it answers an ISO instant with.
+    const { bill, call } = build();
+    const result = await call("list_transactions", {
+      merchant_name: "Foo: The Store",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("colon");
+    expect(bill.calls).toEqual([]);
   });
 
   it("refuses an unknown transaction type rather than widening the read", async () => {

@@ -2563,6 +2563,34 @@ See `HACKS.md` #84 and [BILL Spend & Expense](/servers/bill-spend/).
 
 ---
 
+### 87. BILL's transaction filters are day-granular, so strad widens every date window
+
+`GET /v3/spend/transactions` takes one `filters` parameter whose grammar is `{field}:{op}:{value}`, split on `:` and `,` with no quoting and no escape sequence. A value carrying either separator is not a filter that matches something else — it is a request BILL rejects: `occurredTime:gte:2026-09-01T00:00:00Z` comes back `422 Invalid filter request format. Expect (field:operator:value).`, because an ISO-8601 instant is four colons long, so no date filter can be expressed as one. That is why a real sweep of four months of transactions had to cursor-page the entire history and narrow client-side, and why `updated_after` — the documented mechanism for an incremental run — reached nothing.
+
+What BILL accepts on a time field is a bare `yyyy-MM-dd`, with `gte` and `lte` as the only operators, and **the date means the instant that day starts at, not the day it covers**. Against a company whose transactions all occurred at `2026-09-06T06:03Z`, `occurredTime:lte:2026-09-06` matched nothing and `occurredTime:lte:2026-09-07` matched all of them — so truncating an instant to its own date drops a sweep's most recent day, silently.
+
+So each bound is floored to its UTC day and moved **outward**: the window strad asks for can only be too wide, never too narrow, and the result echoes the terms actually sent as `filters_applied`. The two moves are different sizes — a day back below, two days on above — because flooring has already moved the bound backwards by its own time of day, which is the safe direction for a lower bound and the dangerous one for an upper one. A single day above would leave `2026-09-06T23:00Z` bounded by midnight on the 7th, an hour of margin, which any zone east of UTC eats. The sizes are what make the window bracket the caller's instant under every offset from UTC-12 to UTC+14 — which matters because BILL does not document which zone its midnight is in, and measuring it would not settle it anyway: a Spend & Expense company has its own locale, so the boundary is a per-company fact strad cannot carry. Too wide is a row a caller can see and discard against its own `occurred_time`; too narrow is a transaction nobody learns about.
+
+**How you would know.** `filters_applied` in every result says exactly what was asked of BILL, and it is deliberately not the window you named.
+
+See `HACKS.md` #87 and [BILL Spend & Expense](/servers/bill-spend/).
+
+---
+
+### 88. Nothing in BILL's Spend & Expense API marks a transaction reviewed
+
+A sweep can re-code a transaction and cannot tick it off, so a human still passes through the BILL web app afterwards. That is BILL's gap, not a missing tool: `is_reviewed` works as a **filter** — a run can skip what was already reviewed — but BILL does not return the field on a transaction, and no endpoint sets it.
+
+Established by calling the sandbox rather than by reading the docs. BILL's own documentation index enumerates the whole Spend & Expense transaction family — list, get, update, the 3DS challenge, three receipt endpoints and three custom-field endpoints — and there is no review or approval endpoint among them. All eight plausible paths (`/reviews`, `/review`, `/approve`, `/approvals`, `/status` under a transaction; `/v3/spend/reviews`, `/v3/spend/review-policies`, `/v3/spend/transaction-reviews`) answer `404 Page Not Found`, and the router discriminates: `PATCH` on a transaction answers `405` naming the allowed methods, so a 404 there means the route is absent rather than the verb wrong. The one transaction mutator, `PUT /v3/spend/transactions/{id}`, documents exactly one body field, `budgetId`.
+
+And it fails the way #84 fails: seven review-shaped bodies through that PUT — `isReviewed`, `reviewed`, `reviewStatus`, `review`, `reviews`, `reviewers` and `status: APPROVED` — each answered **HTTP 200 with a full transaction body and `updatedTime` moved**, while `reviews` and `reviewers` stayed empty and `isReviewed:eq:true` went on matching nothing. A tool built on that reply would report an unattended monthly sweep as forty transactions reviewed with none of them changed. strad ships no such tool — and the restraint is also a security one, because the apiToken behind this mount is unscoped admin on a card program and the five-tool surface is the only thing withholding card issuance.
+
+**How you would know.** `list_transactions` says it in its own description, so an agent planning a sweep reads the gap before it promises anyone a tick.
+
+See `HACKS.md` #88 and [BILL Spend & Expense](/servers/bill-spend/).
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:
