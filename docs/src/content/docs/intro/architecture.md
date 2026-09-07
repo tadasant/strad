@@ -350,6 +350,25 @@ The console holds no `/mcp` token and mints none — see
 [the console playground](/auth/overview/#the-console-playground) for why the
 session stops one layer short of the wire.
 
+### What `/mcp` answers when strad itself fails
+
+A failure strad does not otherwise classify — anything that throws below the
+authentication step, including the MCP SDK driving a caller-supplied body — is a
+**500 `{"error":"internal_error"}`** and nothing more. No message, no class, no
+upstream text: the same rule the rest of this endpoint keeps
+([telemetry](/operate/telemetry/)). The class name is written to the container's
+stderr under `strad.route_failed`, and the request is counted with an
+`internal_error` outcome so it shows up in the request metrics.
+
+That answer exists because the alternative was the container. Express 4 drops
+the promise an async handler returns and routes its rejection nowhere, and this
+process treats an unhandled rejection as fatal — so a defect that should have
+cost one caller one response used to cost every concurrent request on the
+component. Every async route in strad is therefore mounted through one wrapper,
+`asyncRoute` in `src/http/async-route.ts`, which awaits the handler and hands
+the failure to that route's own renderer: JSON for `/mcp` and the machine
+routes, an HTML page for the console.
+
 ## Sizing bundles
 
 The server list drives how containers are grouped:

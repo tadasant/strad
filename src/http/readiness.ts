@@ -6,6 +6,7 @@ import {
 } from "../auth/index.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { asyncRoute, jsonFailure } from "./async-route.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
@@ -372,11 +373,13 @@ export interface ReadinessHandlerOptions {
 export function createReadinessHandler(
   opts: ReadinessHandlerOptions,
 ): RequestHandler {
-  // Express 4 does not catch a rejected async handler, so everything below is
-  // guarded here: an unhandled rejection would leave the caller's request open
-  // until its own timeout, which for a machine consumer is the worst answer of
-  // the three (worse than a 500, which at least tells it something).
-  return async (req: Request, res: Response) => {
+  // Guarded by `asyncRoute` (src/http/async-route.ts): an unhandled rejection
+  // would leave the caller's request open until its own timeout, which for a
+  // machine consumer is the worst answer of the three (worse than a 500, which
+  // at least tells it something) — and in this process it would also exit the
+  // container. The two `try` blocks below stay: they answer 401 and
+  // `readiness_failed` specifically, and a catch-all cannot.
+  return asyncRoute(async (req: Request, res: Response) => {
     let principal: Principal;
     try {
       principal = await authenticateMcp(
@@ -460,5 +463,5 @@ export function createReadinessHandler(
       });
       if (!res.headersSent) res.status(500).json({ error: "readiness_failed" });
     }
-  };
+  }, jsonFailure("readiness"));
 }

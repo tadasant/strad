@@ -30,6 +30,7 @@ import type { SecretBag } from "../secrets/index.ts";
 import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
+import { asyncRoute, jsonFailure } from "./async-route.ts";
 import { createReadinessHandler } from "./readiness.ts";
 import { createPresenceHandler } from "./presence.ts";
 import { PRESENCE_ROUTE } from "../secrets/presence.ts";
@@ -183,15 +184,31 @@ export function createApp(opts: AppOptions): Express {
   });
 
   // --- the endpoint -------------------------------------------------------
+  //
+  // Through `asyncRoute` (src/http/async-route.ts), which is not optional here:
+  // `handleMcp` is async, Express 4 drops the promise it returns, and an
+  // unhandled rejection exits this process. The throw surface below the auth
+  // catch is the widest in the repo — the MCP SDK driven over a caller-supplied
+  // body and a caller-controlled socket — so the failure answer is a 500 to the
+  // one caller rather than a restart for all of them.
+  //
+  // `jsonFailure` and not a renderer of its own, because the body is the point:
+  // a fixed word. This endpoint says nothing to an agent about how it failed
+  // (src/telemetry/redact.ts), and the class name it does record stays on
+  // stderr. The metric side of the failure is the router's — it sets the
+  // `internal_error` outcome on the way out.
   app.all(
     "/mcp",
-    createMcpHandler({
-      config: opts.config,
-      registry: opts.registry,
-      tokenStore: opts.tokenStore,
-      mode: opts.mode,
-      env,
-    }),
+    asyncRoute(
+      createMcpHandler({
+        config: opts.config,
+        registry: opts.registry,
+        tokenStore: opts.tokenStore,
+        mode: opts.mode,
+        env,
+      }),
+      jsonFailure("mcp"),
+    ),
   );
 
   if (opts.mode === "core") {
@@ -482,51 +499,60 @@ function mountConsole(
     beginLogin(res, sanitizeNext(req.query.next));
   });
 
-  app.get("/console/oauth/callback", async (req, res) => {
-    if (!google || !sessions) {
-      res.status(404).json({ error: "google_oauth_not_configured" });
-      return;
-    }
+  // Wrapped, because everything down to `google.completeAuth` runs outside this
+  // handler's own `try`: unsealing the transaction cookie, clearing it, the
+  // state comparison and the session cookie it issues on the way out. Any of
+  // them throwing on a callback a browser can reach unauthenticated would be an
+  // unhandled rejection, and this process exits on one.
+  app.get(
+    "/console/oauth/callback",
+    asyncRoute(async (req, res) => {
+      if (!google || !sessions) {
+        res.status(404).json({ error: "google_oauth_not_configured" });
+        return;
+      }
 
-    const tx = unsealCookie<OauthTxPayload>(
-      sessions.tx,
-      req.headers.cookie,
-      OAUTH_TX_COOKIE,
-    );
-    // Spend the transaction, whatever happens next. This is a Set-Cookie on the
-    // RESPONSE, so it binds a browser and not a script that kept the value —
-    // what actually stops a replayed callback is Google's authorization code
-    // being single-use. Clearing it is still right: it keeps a stale tab from
-    // re-entering the flow and bounds how long the verifier lives.
-    clearOauthTxCookie(res, env);
-
-    // No transaction cookie is a stale tab, a cross-origin forgery, or a login
-    // begun more than ten minutes ago. None of them is a sign-in.
-    if (!tx) {
-      res.status(400).json({ error: "unknown_state" });
-      return;
-    }
-    // The state in the URL must be the state we sealed for THIS browser. The
-    // signature proves the cookie is ours; this proves the callback is its
-    // partner, which is the CSRF check.
-    if (!stateMatches(String(req.query.state ?? ""), tx.state)) {
-      res.status(400).json({ error: "state_mismatch" });
-      return;
-    }
-
-    try {
-      const identity = await google.completeAuth(
-        String(req.query.code ?? ""),
-        tx.verifier,
+      const tx = unsealCookie<OauthTxPayload>(
+        sessions.tx,
+        req.headers.cookie,
+        OAUTH_TX_COOKIE,
       );
-      issueSessionCookie(res, sessions.session, identity, env);
-      // Back to the page they asked for, as a human expects — not JSON.
-      res.redirect(302, sanitizeNext(tx.next));
-    } catch (err) {
-      const message = err instanceof AuthError ? err.message : "sign-in failed";
-      res.status(403).json({ error: "forbidden", message });
-    }
-  });
+      // Spend the transaction, whatever happens next. This is a Set-Cookie on the
+      // RESPONSE, so it binds a browser and not a script that kept the value —
+      // what actually stops a replayed callback is Google's authorization code
+      // being single-use. Clearing it is still right: it keeps a stale tab from
+      // re-entering the flow and bounds how long the verifier lives.
+      clearOauthTxCookie(res, env);
+
+      // No transaction cookie is a stale tab, a cross-origin forgery, or a login
+      // begun more than ten minutes ago. None of them is a sign-in.
+      if (!tx) {
+        res.status(400).json({ error: "unknown_state" });
+        return;
+      }
+      // The state in the URL must be the state we sealed for THIS browser. The
+      // signature proves the cookie is ours; this proves the callback is its
+      // partner, which is the CSRF check.
+      if (!stateMatches(String(req.query.state ?? ""), tx.state)) {
+        res.status(400).json({ error: "state_mismatch" });
+        return;
+      }
+
+      try {
+        const identity = await google.completeAuth(
+          String(req.query.code ?? ""),
+          tx.verifier,
+        );
+        issueSessionCookie(res, sessions.session, identity, env);
+        // Back to the page they asked for, as a human expects — not JSON.
+        res.redirect(302, sanitizeNext(tx.next));
+      } catch (err) {
+        const message =
+          err instanceof AuthError ? err.message : "sign-in failed";
+        res.status(403).json({ error: "forbidden", message });
+      }
+    }, jsonFailure("console_oauth_callback")),
+  );
 
   app.get("/console/logout", (_req, res) => {
     clearSessionCookie(res, env);

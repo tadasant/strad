@@ -230,6 +230,21 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.readiness_failed": [],
     "strad.store_diagnostics_failed": [],
     "strad.console_render_failed": [],
+    /**
+     * A route whose handler rejected with nothing underneath it catching —
+     * emitted by the one guard every async route wears
+     * (`src/http/async-route.ts`). Before that guard existed the same event was
+     * a container exit, so this line is the difference between "a request
+     * failed" and "the component restarted", which is the operational question
+     * it answers.
+     *
+     * `route` is the only field, and it is a word written down at the mount
+     * site — `mcp`, `readiness`, `params_write` — never a path or a slug from
+     * the wire. The error is reduced to its CLASS NAME by the renderer and
+     * stays on stderr: an exception raised under /mcp can quote a request body
+     * or an upstream's response, and neither is text this repo authored.
+     */
+    "strad.route_failed": ["route"],
   });
 
 /**
@@ -367,6 +382,14 @@ const THROTTLED = new Set([
   "mcp.server_unconfigured",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
+  // A handler that rejects is a bug rather than a routine refusal, so this one
+  // is expected to be silent — but the surface it guards is /mcp, whose input a
+  // caller controls, and "a bug a client can drive on demand" is exactly the
+  // shape this set exists for. It carries no `slug`, so it keys on one global
+  // bucket, which is the right granularity: what an operator needs from the log
+  // channel is that this is happening at all, and strad.mcp.requests carries the
+  // rate under `outcome=internal_error`. stdout is not throttled.
+  "strad.route_failed",
 ]);
 const THROTTLE_MS = 60_000;
 const lastExported = new Map<string, number>();
