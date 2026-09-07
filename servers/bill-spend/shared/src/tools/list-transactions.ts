@@ -27,6 +27,21 @@ const SORTS = [
   "merchantName:desc",
 ];
 
+/** Refuse a window whose end precedes its start, naming both values. */
+function assertOrdered(
+  fromKey: string,
+  from: string | undefined,
+  toKey: string,
+  to: string | undefined,
+): void {
+  if (from === undefined || to === undefined) return;
+  if (Date.parse(from) <= Date.parse(to)) return;
+  throw new InputError(
+    `\`${fromKey}\`="${from}" is after \`${toKey}\`="${to}", so the window ` +
+      `is empty. Swap them, or drop one.`,
+  );
+}
+
 /**
  * The transactions to work on, and the state each one is already in.
  *
@@ -57,7 +72,7 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
       "token is limited to 60 calls a minute.\n\n" +
       "DATE FILTERS ARE DAY-GRANULAR and the window comes back WIDER than you " +
       "ask for: BILL takes only `yyyy-MM-dd` on a time field and reads it as " +
-      "that day's START, so each bound is rounded a day outward. " +
+      "that day's START, so each bound is rounded outward to whole days. " +
       "`filters_applied` is what was actually sent. Rows outside your instant " +
       "can appear; none inside it are dropped. Narrow against each row's own " +
       "`occurred_time` if you need the instant rather than the day.\n\n" +
@@ -98,20 +113,20 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
           type: "string",
           description:
             "Only transactions changed at or before this time (date or ISO-8601 " +
-            "instant, rounded outward to a whole day).",
+            "instant, rounded outward to whole days).",
         },
         occurred_after: {
           type: "string",
           description:
             "Only purchases made at or after this time (date or ISO-8601 " +
-            "instant, rounded outward to a whole day). Use this for a " +
+            "instant, rounded outward to whole days). Use this for a " +
             "date-bounded backfill; use `updated_after` for a sweep.",
         },
         occurred_before: {
           type: "string",
           description:
             "Only purchases made at or before this time (date or ISO-8601 " +
-            "instant, rounded outward to a whole day).",
+            "instant, rounded outward to whole days).",
         },
         is_locked: {
           type: "boolean",
@@ -165,20 +180,51 @@ export function listTransactionsTool(gateway: GatewayFactory): ToolDefinition {
         // Every value that reaches a term goes through `filters.ts`, which owns
         // the one rule the grammar has: `,` and `:` are structural and have no
         // escape. A time field additionally collapses to the `yyyy-MM-dd` BILL
-        // accepts, widened a day outward so the window can only be too wide.
+        // accepts, widened outward so the window can only be too wide.
         const filters: string[] = [];
         const updatedAfter = isoInstant(input, "updated_after");
         const updatedBefore = isoInstant(input, "updated_before");
         const occurredAfter = isoInstant(input, "occurred_after");
         const occurredBefore = isoInstant(input, "occurred_before");
+        // AN INVERTED WINDOW IS REFUSED, not sent. BILL answers one with zero
+        // rows, which is indistinguishable from "nothing matched" — and once the
+        // bounds are widened it can answer with a WIDE result instead, which is
+        // worse. Both are a caller reading the wrong thing about somebody's
+        // books and being told nothing went wrong.
+        assertOrdered("updated_after", updatedAfter, "updated_before", updatedBefore);
+        assertOrdered(
+          "occurred_after",
+          occurredAfter,
+          "occurred_before",
+          occurredBefore,
+        );
+
         if (updatedAfter)
-          filters.push(dateFilterTerm("updatedTime", "from", updatedAfter));
+          filters.push(
+            dateFilterTerm("updated_after", "updatedTime", "from", updatedAfter),
+          );
         if (updatedBefore)
-          filters.push(dateFilterTerm("updatedTime", "to", updatedBefore));
+          filters.push(
+            dateFilterTerm("updated_before", "updatedTime", "to", updatedBefore),
+          );
         if (occurredAfter)
-          filters.push(dateFilterTerm("occurredTime", "from", occurredAfter));
+          filters.push(
+            dateFilterTerm(
+              "occurred_after",
+              "occurredTime",
+              "from",
+              occurredAfter,
+            ),
+          );
         if (occurredBefore)
-          filters.push(dateFilterTerm("occurredTime", "to", occurredBefore));
+          filters.push(
+            dateFilterTerm(
+              "occurred_before",
+              "occurredTime",
+              "to",
+              occurredBefore,
+            ),
+          );
 
         const isLocked = optionalBool(input, "is_locked");
         if (isLocked !== undefined) filters.push(`isLocked:eq:${isLocked}`);

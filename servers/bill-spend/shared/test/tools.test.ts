@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createGateway, type BillGateway } from "../src/gateway.js";
+import { DESCRIPTION_BUDGET } from "../src/tools/shared.js";
 import { toolDefinitions } from "../src/tools.js";
 import { WIRE_VARIANTS } from "../src/wire.js";
 import { FakeBill, fixture } from "./fake-bill.js";
@@ -37,7 +38,7 @@ function build(overrides: Parameters<typeof fixture>[0] = {}) {
 }
 
 describe("every tool description", () => {
-  it("fits the 2048 characters a client will actually show an agent", () => {
+  it("fits the characters a client will actually show an agent", () => {
     // HACKS.md #82: 2048 is not an MCP limit, it is where Claude Code cuts a
     // description — and it reports the cut in its own log rather than to the
     // server, so the tail of a longer one is text no agent ever reads. This tool
@@ -46,7 +47,7 @@ describe("every tool description", () => {
     // has no budget.
     const { tools } = build();
     const over = tools
-      .filter((t) => t.description.length > 2048)
+      .filter((t) => t.description.length > DESCRIPTION_BUDGET)
       .map((t) => `${t.name} (${t.description.length})`);
     expect(over).toEqual([]);
   });
@@ -202,9 +203,9 @@ describe("list_transactions", () => {
     expect(bill.calls.at(-1)!.query.filters).toBe(
       [
         "updatedTime:gte:2026-08-31",
-        "updatedTime:lte:2026-10-01",
+        "updatedTime:lte:2026-10-02",
         "occurredTime:gte:2026-04-30",
-        "occurredTime:lte:2026-09-01",
+        "occurredTime:lte:2026-09-02",
       ].join(","),
     );
   });
@@ -213,14 +214,43 @@ describe("list_transactions", () => {
     // BILL resolves a filter date to the instant that day STARTS at, in a zone
     // it does not document. Rounding inward would silently drop a sweep's most
     // recent day; rounding outward costs rows the caller can see and discard.
+    // The upper bound moves TWO days, for the reason `filters.test.ts` proves:
+    // one leaves an instant late in the day about an hour of margin, which any
+    // zone east of UTC eats.
     const { bill, call } = build();
     await call("list_transactions", {
       occurred_after: "2026-09-06T23:59:00Z",
-      occurred_before: "2026-09-06T00:00:01Z",
+      occurred_before: "2026-09-06T23:59:00Z",
     });
     const terms = (bill.calls.at(-1)!.query.filters as string).split(",");
     expect(terms).toContain("occurredTime:gte:2026-09-05");
-    expect(terms).toContain("occurredTime:lte:2026-09-07");
+    expect(terms).toContain("occurredTime:lte:2026-09-08");
+  });
+
+  it("refuses a window whose end precedes its start", async () => {
+    // BILL answers an inverted window with zero rows — indistinguishable from
+    // "nothing matched" — and once the bounds are widened it can answer with a
+    // WIDE result instead, which is worse.
+    const { bill, call } = build();
+    const result = await call("list_transactions", {
+      occurred_after: "2026-09-30T00:00:00Z",
+      occurred_before: "2026-09-01T00:00:00Z",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("window");
+    expect(bill.calls).toEqual([]);
+  });
+
+  it("refuses a time of day with no zone, which would mean the server's clock", async () => {
+    // `Date.parse` reads it as container-local time, so the same argument would
+    // mean different instants on two deployments of the same image.
+    const { bill, call } = build();
+    const result = await call("list_transactions", {
+      occurred_after: "2026-09-01T12:00:00",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("zone");
+    expect(bill.calls).toEqual([]);
   });
 
   it("takes a bare date as readily as an instant", async () => {

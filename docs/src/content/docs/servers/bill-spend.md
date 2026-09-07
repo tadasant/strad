@@ -108,10 +108,9 @@ filters=occurredTime:gte:2026-09-01T00:00:00Z
 -> 422 Invalid filter request format. Expect (field:operator:value).
 ```
 
-An ISO-8601 instant is four colons long, which is why every date filter on this
-tool was broken until the wire form was fixed. What BILL accepts on a time field
-is a bare `yyyy-MM-dd` and nothing finer, with `gte` and `lte` as the only
-operators — `gt`, `lt`, `eq`, `in` and `isnull` are each a 400 naming the
+An ISO-8601 instant is four colons long, so no date filter can be expressed as
+an instant. What BILL accepts on a time field is a bare `yyyy-MM-dd` and nothing
+finer, with `gte` and `lte` as the only operators — `gt`, `lt`, `eq`, `in` and `isnull` are each a 400 naming the
 operator.
 
 **A date means the instant the day starts at, not the day it covers.** Against a
@@ -121,15 +120,22 @@ matched all of them. So truncating an instant to its own date drops a sweep's
 most recent day.
 
 So `occurred_after`, `occurred_before`, `updated_after` and `updated_before` take
-a date **or** an instant, and each bound is moved a day **outward**: the window
-strad asks BILL for can only be too wide, never too narrow. The result echoes the
-terms actually sent as `filters_applied`, and rows outside the exact instant come
-back — narrow against each row's own `occurred_time` if the day is not enough.
+a date **or** an instant, and each bound is floored to its UTC day and moved
+**outward**: the window strad asks BILL for can only be too wide, never too
+narrow. The result echoes the terms actually sent as `filters_applied`, and rows
+outside the exact instant come back — narrow against each row's own
+`occurred_time` if the day is not enough.
 
-The widening is a whole day because BILL does not document which zone that
-midnight is in, and a company has its own locale — so the boundary is a
-per-company fact strad cannot carry. Too wide is a row a caller can see and
-discard; too narrow is a transaction nobody learns about. See
+**The two moves are different sizes, and that is the correctness argument.** A
+lower bound goes back one day and an upper bound forward two, because flooring
+has already moved the bound backwards by its own time of day — the safe direction
+below, the dangerous one above. A single day on the upper bound would leave
+`2026-09-06T23:00Z` bounded by midnight on the 7th, an hour of margin, which any
+zone east of UTC eats. The sizes are what make the window bracket the caller's
+instant under **every** offset from UTC-12 to UTC+14, which matters because BILL
+does not document which zone its midnight is in and a company has its own locale,
+so the boundary is a per-company fact strad cannot carry. Too wide is a row a
+caller can see and discard; too narrow is a transaction nobody learns about. See
 [limitations](/limitations) for the rest.
 
 ### Review status is readable, barely, and not settable

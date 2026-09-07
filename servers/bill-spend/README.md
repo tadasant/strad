@@ -80,18 +80,21 @@ user, a reimbursement, a bank or funding.
 BILL's `filters` grammar is `{field}:{op}:{value},{field}:{op}:{value}` — split
 on `:` and `,`, with **no quoting and no escape**. An ISO-8601 instant is four
 colons long, so `occurredTime:gte:2026-09-01T00:00:00Z` is a
-`422 Invalid filter request format`, and every date filter on this tool was
-broken until the wire form was fixed. What BILL takes on a time field is a bare
-`yyyy-MM-dd`, with `gte` and `lte` the only operators.
+`422 Invalid filter request format` and no date filter can be expressed as an
+instant. What BILL takes on a time field is a bare `yyyy-MM-dd`, with `gte` and
+`lte` the only operators.
 
 **A date is the instant the day starts at.** `occurredTime:lte:2026-09-06`
 matched nothing against a company whose transactions occurred at
 `2026-09-06T06:03Z`; `lte:2026-09-07` matched all of them. So truncating an
 instant to its own date drops a sweep's most recent day. `shared/src/filters.ts`
-moves each bound a day **outward** instead — the window can only be too wide —
-and the result echoes what was sent as `filters_applied`. The widening is a whole
-day because BILL does not document the zone that midnight is in, and a company
-has its own locale — so it is a per-company fact this server cannot carry.
+floors each bound to its UTC day and moves it **outward** instead — a day back
+for a lower bound, two days on for an upper one, since flooring has already moved
+it backwards by its time of day — and the result echoes what was sent as
+`filters_applied`. The window can only be too wide. The sizes are what make that
+true under **every** zone offset, which matters because BILL does not document
+the zone its midnight is in and a company has its own locale, so it is a
+per-company fact this server cannot carry.
 
 **Review status is a read, and barely one.** `is_reviewed` filters; BILL does not
 return the field on a transaction; and nothing in the Spend & Expense v3 API

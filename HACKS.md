@@ -4088,7 +4088,9 @@ from the module too. Until then the grep is cheaper than the seam.
 **What.** Every tool description in `servers/remote-filesystem/` is held at or
 under 2048 characters by `DESCRIPTION_BUDGET` in
 `servers/remote-filesystem/shared/src/tools/shared.ts`, asserted over every tool
-the server defines. Four of the seven were over that line: `upload_file` at 4111
+the server defines. `servers/bill-spend/` holds the same budget, under its own
+copy of the constant — `list_transactions` reached 2148 characters there and lost
+the paragraph saying its date filters are day-granular. Four of the seven were over that line: `upload_file` at 4111
 characters, `get_upload_url` at 3580, `refresh_link` at 3463 and
 `set_sensitivity` at 2589. All four were rewritten to fit.
 
@@ -4329,10 +4331,16 @@ instant. `GET /v3/spend/transactions` takes one `filters` parameter whose gramma
 is `{field}:{op}:{value}`, split on `:` and `,` with **no quoting and no escape**,
 and on a time field the only value it accepts is a bare `yyyy-MM-dd`. So
 `servers/bill-spend/shared/src/filters.ts` reduces the caller's instant to a date
-and moves each bound a day OUTWARD — `occurred_after` back one, `occurred_before`
-forward one. The result echoes the terms actually sent as `filters_applied`, and
-the tool description tells a caller to narrow against each row's own
-`occurred_time` if it needs the instant rather than the day.
+floors each bound to its UTC day and moves it OUTWARD — a lower bound back one
+day, an upper bound forward two. The result echoes the terms actually sent as
+`filters_applied`, and the tool description tells a caller to narrow against each
+row's own `occurred_time` if it needs the instant rather than the day.
+
+The two sizes differ because flooring has ALREADY moved the bound backwards by
+its own time of day: the safe direction below, the dangerous one above. A single
+day above leaves `2026-09-06T23:00Z` bounded by midnight on the 7th — an hour of
+margin, which any zone east of UTC eats — and an earlier revision of this shipped
+exactly that, with prose claiming zone-independence it had not earned.
 
 **Why.** Two measurements against the sandbox, both of which cost the fleet real
 work. First, the four date parameters were **entirely broken** until this: an
@@ -4349,20 +4357,20 @@ matched all of them. The naive truncation is therefore not merely imprecise, it
 **drops a sweep's most recent day** — silently, which is the failure mode this
 server exists to refuse.
 
-The widening is a day rather than nothing because BILL does not document which
-zone that midnight is in, and measuring it would not help: a Spend & Expense
-company has its own locale, so the boundary is a per-company fact this server
-cannot carry — and the sandbox cannot even settle the sandbox, its transactions
-sharing one timestamp three minutes from the only boundary that separates UTC
-from US Mountain. A day either way is wider than any zone offset, so the window
-can only be too wide. Too wide is a row a caller can see and discard; too
+The widening exists at all because BILL does not document which zone that
+midnight is in, and measuring it would not help: a Spend & Expense company has
+its own locale, so the boundary is a per-company fact this server cannot carry —
+and the sandbox cannot even settle the sandbox, its transactions sharing one
+timestamp three minutes from the only boundary that separates UTC from US
+Mountain. The two sizes are chosen so the caller's instant is inside the window
+under every offset from UTC-12 to UTC+14, so the answer stops mattering. Too wide is a row a caller can see and discard; too
 narrow is a transaction nobody learns about.
 
 **Undo.** BILL accepting a time-of-day on `occurredTime` / `updatedTime`, or
-documenting the zone. The first removes the widening; the second reduces it to
-nothing on the lower bound and one day on the upper. Neither is announced, so
-`servers/bill-spend/shared/test/filters.test.ts` pins the
-arithmetic and the tool echoes what it sent.
+documenting the zone. The first removes the widening; the second shrinks it.
+Neither is announced, so `servers/bill-spend/shared/test/filters.test.ts` checks
+the bracketing property across every hour of the day and every offset from UTC-12
+to UTC+14, and the tool echoes what it sent.
 
 ---
 
@@ -4379,16 +4387,17 @@ than by reading the docs — which is the standard this product earned in #84.
 BILL's own documentation index enumerates the whole Spend & Expense transaction
 family: list, get, update, the 3DS challenge, the three receipt endpoints and the
 three custom-field endpoints. There is no review or approval endpoint among them,
-and every plausible path — `/reviews`, `/review`, `/approve`, `/approvals`,
-`/status`, `/v3/spend/reviews`, `/v3/spend/review-policies` — answers `404 Page
-Not Found`. The router discriminates: `PATCH` on a transaction answers `405` and
+and all eight plausible paths — `/reviews`, `/review`, `/approve`,
+`/approvals` and `/status` under a transaction; `/v3/spend/reviews`,
+`/v3/spend/review-policies` and `/v3/spend/transaction-reviews` — answer `404
+Page Not Found`. The router discriminates: `PATCH` on a transaction answers `405` and
 names the allowed methods, so a 404 there means the route is absent rather than
 the verb wrong.
 
 The one transaction mutator, `PUT /v3/spend/transactions/{id}`, documents exactly
-one body field — `budgetId` — and its behaviour is #84's all over again: six
+one body field — `budgetId` — and its behaviour is #84's all over again: seven
 different review-shaped bodies (`isReviewed`, `reviewed`, `reviewStatus`,
-`review`, `reviews`, `reviewers`, and `status: APPROVED`) each came back **HTTP
+`review`, `reviews`, `reviewers` and `status: APPROVED`) each came back **HTTP
 200 with a full transaction body and `updatedTime` moved**, while `reviews` and
 `reviewers` stayed empty and `isReviewed:eq:true` went on matching nothing. A
 tool built on that reply would report an unattended monthly sweep as forty
