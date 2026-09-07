@@ -145,52 +145,56 @@ describe("two parameter stores, one strad", () => {
     ).toBe(dummy("ZIMMER_SECRETS_VIEWER_KEY_JSON"));
   });
 
-  it("fences zimmer-secrets to the same two PARENT namespaces on both halves, strictly", () => {
-    // THE NAMESPACE FENCE, asserted against what the deploy actually RENDERS
-    // rather than against what the YAML appears to say. Both are needed and they
-    // fail differently:
+  it("fences zimmer-secrets to the same two PARENT namespaces on both halves", () => {
+    // THE NAMESPACE FENCE. Three assertions, and each reaches a different depth,
+    // because the ways this breaks are not the same failure:
     //
-    //   - the MCP half is the string baked onto `bundle-zimmer-secrets`, which
-    //     `loadConfig()` splits on commas (servers/secrets/shared/src/config.ts).
-    //   - the console half is what `resolveServerView` resolves out of core's
-    //     rendered environment, which is where a `consoleEnv:` typo disappears:
-    //     the schema strips unknown keys, so the misspelling parses, renders and
-    //     deploys clean while the fence it was meant to set is simply absent.
-    //     A fence that is too wide fails OPEN, so "the YAML parses" proves
-    //     nothing here.
+    //   1. the MCP half is a STRING BAKED ONTO `bundle-zimmer-secrets` by
+    //      renderAppSpec, which `loadConfig()` splits on commas
+    //      (servers/secrets/shared/src/config.ts). Asserted against the rendered
+    //      spec, because the spec is what deploys.
+    //   2. the console half is what `resolveServerView` reads. Note it reads the
+    //      PARSED CONFIG, not core's environment — `CORE_ENV` is only the bag
+    //      `${NAME}` refs resolve against, and both of these values are literals.
+    //      That is still the assertion that catches a `consoleEnv:` typo, because
+    //      the schema strips the unknown key at PARSE time.
+    //   3. so the flag's actual landing on `core` is a separate question, and it
+    //      gets its own assertion below. A fence that is too wide fails OPEN, so
+    //      "the YAML parses" proves nothing at any of the three depths.
     const zimmer = onlyStore(
       resolveServerView(CONFIG, "zimmer-secrets", CORE_ENV),
     );
+    const mcpHalf = envValue(
+      "bundle-zimmer-secrets",
+      "SECRETS_NAMESPACES",
+    )?.split(",");
 
-    expect(
-      envValue("bundle-zimmer-secrets", "SECRETS_NAMESPACES")?.split(","),
-    ).toEqual(ZIMMER_NAMESPACES);
-    expect(zimmer.namespaces).toEqual(ZIMMER_NAMESPACES);
+    expect(mcpHalf).toEqual(ZIMMER_NAMESPACES);
 
-    // AND THE TWO HALVES ARE THE SAME LIST, which is a property of this slug and
-    // not an accident. `withNamespacedFallback` maps `ZIMMER_SECRETS_SECRETS_*`
-    // down to the bare name with `??=`, and `env:`/`consoleEnv:` are merged
-    // before it runs — so with `SECRETS_NAMESPACES` set bare under `env:`, a
-    // namespaced twin under `consoleEnv:` would be INERT. Widening the console
-    // therefore widens `/mcp`, and that is the accepted trade here (same viewer
-    // credential either way, and Google refuses it every secret value). If this
-    // ever needs to diverge, the route is `consoleStores:`, not a second key.
-    expect(zimmer.namespaces).toEqual(
-      envValue("bundle-zimmer-secrets", "SECRETS_NAMESPACES")?.split(","),
-    );
+    // THE TWO HALVES ARE THE SAME LIST, which is a property of this slug rather
+    // than an accident, so it is asserted against the other half and not against
+    // the literal. `withNamespacedFallback` maps `ZIMMER_SECRETS_SECRETS_*` down
+    // to the bare name with `??=`, and `env:`/`consoleEnv:` are merged before it
+    // runs — so with `SECRETS_NAMESPACES` set bare under `env:`, a namespaced
+    // twin under `consoleEnv:` would be INERT. Widening the console therefore
+    // widens `/mcp`, and that is the accepted trade here (same viewer credential
+    // either way, and Google refuses it every secret value). If the two ever need
+    // to diverge, the route is `consoleStores:`, not a second key.
+    expect(zimmer.namespaces).toEqual(mcpHalf);
 
-    // STRICT is what makes the list a limit rather than a set of suggestions, and
-    // it is the reason the entries below must be parents: under strict,
-    // `selectNamespace` is exact membership.
+    // STRICT, on the console half only — the MCP half has no lax mode to turn
+    // off, since `storeForPath` refuses every path no namespace claims. It is
+    // what makes the list a limit rather than a set of suggestions, and therefore
+    // what makes the PARENT the right level: `selectNamespace` is exact
+    // membership, so a pinned leaf leaves every per-server sibling unaddressable
+    // on create and invisible on browse.
     expect(zimmer.namespacesStrict).toBe(true);
-
-    // PARENTS, never the `.../static/` leaf. A pinned leaf makes every per-server
-    // sibling of it unaddressable on create and invisible on browse — the console
-    // falls back to namespaces[0] rather than erroring.
-    for (const ns of zimmer.namespaces) {
-      expect(ns.startsWith("/zimmer/staging/")).toBe(true);
-      expect(ns.endsWith("/static/")).toBe(false);
-    }
+    // ...and it is only binding if it actually reaches the component the console
+    // runs on. `consoleEnv:` is resolved onto CORE alone, and nothing above would
+    // notice if renderAppSpec stopped emitting it.
+    expect(envValue("core", "ZIMMER_SECRETS_SECRETS_NAMESPACES_STRICT")).toBe(
+      "true",
+    );
   });
 
   it("routes each slug to its own bundle, from the same path", () => {

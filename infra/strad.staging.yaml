@@ -821,11 +821,21 @@ servers:
       # strad.prod.yaml (private) already carries the same pair on its
       # `zimmer-secrets-staging` console store.
       #
-      # WHY THE PARENT, not the `.../static/` leaf this used to pin. Under STRICT
-      # `selectNamespace` (src/ui/index.ts) is EXACT membership, so a pinned leaf
-      # makes every per-server sibling of it — /zimmer/staging/secrets/<slug>/ —
+      # WHY THE PARENT, not a `.../static/` leaf. Under STRICT `selectNamespace`
+      # (src/ui/index.ts) is EXACT membership, so a pinned leaf makes every
+      # per-server sibling of it — /zimmer/staging/secrets/<slug>/ —
       # unaddressable and, on a browse, invisible: the console silently falls back
-      # to namespaces[0] rather than erroring.
+      # to namespaces[0] rather than erroring. The parent is still not a wildcard:
+      # a create names the leaf as its `prefix` field, which lands BETWEEN the
+      # namespace and the variable, so the path written is unchanged.
+      #
+      # A CONSEQUENCE, since both entries here are exact-membership addresses.
+      # `list_parameters` resolves its namespace argument through
+      # storeForNamespace, which is `includes()` and not a prefix test, so an
+      # agent passes one of these two verbatim — `list_managed_namespaces` is
+      # what reports them, and a stale leaf comes back as a named refusal. The
+      # console's equivalent is quieter: a bookmarked `?ns=` naming a namespace
+      # not on this list falls back to namespaces[0] with no error.
       #
       # ORDER IS BEHAVIOUR. `secrets` first makes it the default view and the
       # default create target, which during the migration is the bucket that
