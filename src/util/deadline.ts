@@ -1,10 +1,24 @@
 import type { SelfClassifyingError } from "../telemetry/redact.ts";
 
 /**
- * The one deadline helper, with one contract.
+ * The two deadline helpers, and the one difference between them.
  *
- * There were four, privately defined, and they split two-and-two on every axis:
- * two rejected on expiry and two resolved a sentinel; two took an
+ * `withDeadline` bounds how long a CALLER waits and abandons the work. Some work
+ * cannot be cancelled — an MCP `listTools()` over a live transport, a store read
+ * mid-decode — so abandoning it is the honest thing that helper can offer.
+ *
+ * `withRequestDeadline` bounds a `fetch`, which CAN be cancelled, so it does
+ * both: the caller stops waiting and the request stops running. Node's `fetch`
+ * has no overall timeout of its own, so an upstream that accepts the connection
+ * and then stalls holds a request for undici's 300s header timeout and forever
+ * if it trickles bytes — an unbounded outbound call is a socket and an Express
+ * handler parked for five minutes, per attempt.
+ *
+ * Everything below the split is shared: both REJECT on expiry, both leave what a
+ * failure means to the caller's own catch, and neither logs.
+ *
+ * There were four private `withDeadline`s once, and they split two-and-two on
+ * every axis: two rejected on expiry and two resolved a sentinel; two took an
  * already-started promise and two took a thunk; the two that rejected unref'd
  * their timer and the two that swallowed held the event loop open.
  *
@@ -14,8 +28,8 @@ import type { SelfClassifyingError } from "../telemetry/redact.ts";
  * message — and nothing in any of the four said which kind a reader was looking
  * at, so a fifth copy taken from the shortest would omit it silently.
  *
- * So this module deliberately does the least: it races the work against a timer
- * and REJECTS when the timer wins. What a failure means, what gets logged, and
+ * So both helpers here deliberately do the least: they bound the wait and
+ * REJECT when the bound wins. What a failure means, what gets logged, and
  * what is safe to show a human all stay in the caller's own catch, where the
  * defence is visible at the site that needs it. See `src/ui/secret-status.ts`
  * and `src/secrets/store-diagnostics.ts` for the two catches that must
@@ -85,5 +99,52 @@ export async function withDeadline<T>(
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Run `work` against a fresh `AbortSignal.timeout(timeoutMs)`, and turn the
+ * expiry THAT signal caused into the error the caller's own module already
+ * throws.
+ *
+ * The signal is the point: a `fetch` handed one is cancelled when the deadline
+ * fires, so nothing is left running behind the caller that stopped waiting.
+ * `AbortSignal.timeout` is the shape the bounded call sites in this repo already
+ * use (`src/secrets/parameters/gcp.ts`, `src/deploy/imageTag.ts`); what this adds
+ * is the mapping, because a bare abort is a `DOMException` — not an `Error`
+ * subclass any module can name — and a caller that lets one escape has a failure
+ * its own handlers do not recognise.
+ *
+ * `onExpiry` builds that error. It is a thunk rather than a value so the message
+ * costs nothing on the path that does not time out, and each site keeps its own
+ * error type: `AuthError` for the console handshake, `ConnectorError` for the
+ * consent exchange, and so on.
+ *
+ * Nothing is cleared when the work wins the race, and nothing needs to be: Node
+ * does not let the timer behind an `AbortSignal.timeout` hold the event loop
+ * open, so a deadline that outlives its request costs one pending timer and
+ * never a process that refuses to exit.
+ *
+ * ONLY OUR OWN EXPIRY IS MAPPED. `fetch` rejects with the aborting signal's own
+ * `reason` object, so identity — not the error's name — says whose deadline
+ * fired. A caller that joined a signal of its own (`probeWithDeadline` in
+ * `src/secrets/parameters/capabilities.ts` does, and `createGcpParameterStore`
+ * replaces this one outright) still gets ITS abort back unchanged, rather than a
+ * sentence naming a bound that was not the one enforced.
+ */
+export async function withRequestDeadline<T>(
+  timeoutMs: number,
+  work: (signal: AbortSignal) => Promise<T>,
+  onExpiry: () => Error,
+): Promise<T> {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  try {
+    return await work(deadline);
+  } catch (err) {
+    // `aborted` is checked first because `reason` is `undefined` until the
+    // signal fires, and `undefined === undefined` would map a thrown
+    // `undefined` into an expiry that never happened.
+    if (deadline.aborted && err === deadline.reason) throw onExpiry();
+    throw err;
   }
 }

@@ -742,6 +742,14 @@ function refusalMessage(code: string, entry: ConnectorServer): string {
         `Refused: strad could not prove which Google account consented, so it ` +
         `could not check the result against ${account}. Nothing was written.`
       );
+    case "exchange_timed_out":
+      return (
+        `Refused: Google did not answer the authorization code exchange in ` +
+        `time, so strad stopped waiting. Nothing was written and the stored ` +
+        `credential is unchanged. Connecting again mints a fresh code; if it ` +
+        `keeps timing out, check the Google Cloud status page before looking ` +
+        `at this server's OAuth client.`
+      );
     case "exchange_failed":
       return (
         `Refused: Google would not exchange the authorization code. It may have ` +

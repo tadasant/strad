@@ -149,9 +149,11 @@ export function createGcpParameterStore(
    * Bounded and retried exactly like the calls it authorizes. It is on the same
    * critical path — `call()` awaits it before it has a `Response` to abort — so
    * a token endpoint that hangs or throttles takes down every read regardless of
-   * what the per-request signal below promises. The mint's own `fetchImpl` is
-   * wrapped rather than `mintAccessToken` being taught about deadlines: the
-   * deadline belongs to this store's configuration, not to the JWT exchange.
+   * what the per-request signal below promises. The mint carries a default
+   * deadline of its own, and the wrapper below REPLACES it: this store's
+   * `timeoutMs` is a deployment's choice about its own reads, and a bearer
+   * fetched on the way to one is part of that read rather than a call with a
+   * bound of its own.
    */
   async function token(): Promise<string> {
     if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;

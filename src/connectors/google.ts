@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { verifyGoogleIdToken } from "../auth/google.ts";
+import { withRequestDeadline } from "../util/deadline.ts";
 
 /**
  * The Google half of a console connector: build the consent URL, exchange the
@@ -35,6 +36,19 @@ const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 
 /**
+ * How long the code exchange waits on Google before it is a refusal.
+ *
+ * Ten seconds, the number src/auth/google.ts bounds the console's own handshake
+ * with: a different OAuth client and a different flow, but the same endpoint and
+ * the same human waiting on a redirect. Node's `fetch` has no overall timeout,
+ * so without it a stalled token endpoint holds this callback for undici's 300s
+ * header timeout — and an authorization code is single-use and short-lived, so
+ * every second past the point the exchange could have worked is spent on a code
+ * that will be refused anyway.
+ */
+const EXCHANGE_TIMEOUT_MS = 10_000;
+
+/**
  * The scopes strad adds to every connector consent, on top of the config's.
  *
  * They are how the callback learns WHICH account consented. Without them the
@@ -53,6 +67,7 @@ export const IDENTITY_SCOPES = ["openid", "email"] as const;
 /** A closed set. Every one of these is a strad word, safe to log and export. */
 export type ConnectorErrorCode =
   | "exchange_failed"
+  | "exchange_timed_out"
   | "no_refresh_token"
   | "no_identity"
   | "identity_unverified"
@@ -179,29 +194,51 @@ export async function exchangeCode(
     code_verifier: input.verifier,
   });
 
-  const res = await fetchImpl(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  // THE BODY READ IS INSIDE THE DEADLINE, not merely the response. A host that
+  // sends its headers and then trickles the body is the stall a header timeout
+  // never catches, and a rejection that arrives after this call returned would
+  // reach `src/ui/connector.ts` as a bare `DOMException` — classified
+  // `store_failed`, "the write was refused", on a flow that never got a token.
+  const json = await withRequestDeadline(
+    EXCHANGE_TIMEOUT_MS,
+    async (signal) => {
+      const res = await fetchImpl(TOKEN_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+        signal,
+      });
 
-  if (!res.ok) {
-    // The STATUS and nothing else. Google's body on a failed exchange carries
-    // `error_description`, which is upstream text — and on a redirect-URI
-    // mismatch it quotes the URI back, which is ours but sets the precedent.
-    throw new ConnectorError(
-      "exchange_failed",
-      `Google refused the authorization code (HTTP ${res.status}). The code may ` +
-        `have expired, been used already, or been issued for a different OAuth ` +
-        `client than the one this server's namespace holds.`,
-    );
-  }
+      if (!res.ok) {
+        // The STATUS and nothing else. Google's body on a failed exchange
+        // carries `error_description`, which is upstream text — and on a
+        // redirect-URI mismatch it quotes the URI back, which is ours but sets
+        // the precedent.
+        throw new ConnectorError(
+          "exchange_failed",
+          `Google refused the authorization code (HTTP ${res.status}). The code may ` +
+            `have expired, been used already, or been issued for a different OAuth ` +
+            `client than the one this server's namespace holds.`,
+        );
+      }
 
-  const json = (await res.json()) as {
-    refresh_token?: unknown;
-    id_token?: unknown;
-    scope?: unknown;
-  };
+      return (await res.json()) as {
+        refresh_token?: unknown;
+        id_token?: unknown;
+        scope?: unknown;
+      };
+    },
+    // A CODE FROM THE CLOSED SET, like every other refusal here, because the
+    // callback puts it in a query string and an event field. A timeout is not
+    // `exchange_failed`: Google refusing a code and Google not answering send a
+    // human to different places, and the page's sentence for each says so.
+    () =>
+      new ConnectorError(
+        "exchange_timed_out",
+        `The authorization code exchange timed out after ` +
+          `${EXCHANGE_TIMEOUT_MS}ms. Nothing was written.`,
+      ),
+  );
 
   const refreshToken =
     typeof json.refresh_token === "string" && json.refresh_token !== ""
@@ -238,6 +275,14 @@ export async function exchangeCode(
   // The ONE proof of identity, verified against Google's signing keys with this
   // slug's own client id as the audience — so an ID token minted for a different
   // OAuth client cannot be replayed into this flow.
+  //
+  // Its refusals are `AuthError`s and they stay that way. That class is the
+  // console LOGIN's, so one reaching `src/ui/connector.ts` is classified
+  // `store_failed` — which is wrong, and is wrong for every verifier refusal on
+  // this route rather than only for the bounded one above. Translating them here
+  // would coarsen a set of specific diagnoses ("audience mismatch", "signed by
+  // an unknown key") into one code, which is a decision about this flow's
+  // vocabulary and not about deadlines.
   const claims = await verifyGoogleIdToken(idToken, input.clientId);
 
   if (!claims.email || claims.email_verified !== true) {

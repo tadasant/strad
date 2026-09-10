@@ -29,6 +29,7 @@ function storeOn(
   fetchImpl: typeof fetch,
   retry?: Partial<typeof DEFAULT_RETRY_BUDGET>,
   snapshotTtlMs = 0,
+  timeoutMs?: number,
 ) {
   return createGcpParameterStore({
     projectId: "p",
@@ -44,6 +45,7 @@ function storeOn(
     fetchImpl,
     retry,
     snapshotTtlMs,
+    timeoutMs,
   });
 }
 
@@ -386,5 +388,37 @@ describe("enumerating the store once per deploy", () => {
     refuse = false;
     await expect(cached.list(`/strad/${ENV}/mcp/`)).resolves.toEqual([]);
     expect(calls.length).toBeGreaterThan(afterFailure);
+  });
+});
+
+describe("the store's own deadline governs the bearer it fetches", () => {
+  it("replaces the mint's default rather than inheriting it", async () => {
+    // `mintAccessToken` carries a ten-second default for callers that name no
+    // deadline. This store names one, and wraps the mint's `fetchImpl` to say
+    // so, because a bearer fetched on the way to a read is part of that read.
+    // Drop that wrapper and a deployment that configured `timeoutMs` gets the
+    // mint's number instead — silently, and only on the path that stalls.
+    const impl = (async (input: string | URL, init?: RequestInit) =>
+      String(input).endsWith("/token")
+        ? new Promise<never>((_resolve, reject) => {
+            const signal = init?.signal;
+            signal?.addEventListener("abort", () => reject(signal.reason));
+          })
+        : new Response("{}", { status: 200 })) as unknown as typeof fetch;
+
+    const started = Date.now();
+    const err = await storeOn(impl, { attempts: 1 }, 0, 30)
+      .list(`/strad/${ENV}/mcp/`)
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+    // The store's 30ms, not the mint's 10s — measured, because the assertion is
+    // about WHOSE bound fired and the two differ by three orders of magnitude.
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // And the abort keeps its own identity: `withRequestDeadline` maps only the
+    // expiry ITS signal caused, so this is not reported as the mint's 408.
+    expect((err as Error).name).toBe("TimeoutError");
   });
 });

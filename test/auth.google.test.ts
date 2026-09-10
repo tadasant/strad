@@ -119,12 +119,16 @@ interface StubOptions {
 
 let jwksFetches = 0;
 let tokenRequests: URLSearchParams[] = [];
+/** The signal each endpoint was called with, keyed by URL. */
+let signals: Record<string, unknown> = {};
 
 function stubFetch(options: StubOptions = {}) {
   jwksFetches = 0;
   tokenRequests = [];
+  signals = {};
   vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
     const url = String(input);
+    signals[url] = init?.signal;
     if (url === JWKS_URI) {
       jwksFetches += 1;
       const status = options.jwksStatus ?? 200;
@@ -398,6 +402,161 @@ describe("getJwks", () => {
       await provider.verifyIdToken(rs256(LONG_LIVED()));
       expect(jwksFetches).toBe(2);
     });
+  });
+});
+
+/**
+ * Both calls in the handshake are bounded, and a bound that expires is an
+ * `AuthError`.
+ *
+ * Neither half of this can be observed with fake timers: `AbortSignal.timeout`
+ * is armed by Node itself rather than through the global `setTimeout` that
+ * `vi.useFakeTimers()` replaces, so a faked clock never fires it. So the module
+ * is left asking for its real ten seconds — asserted, because the number is the
+ * point — and `AbortSignal.timeout` is spied to hand back a five-millisecond
+ * signal instead. Everything past that is real: a real abort, undici's real
+ * `TimeoutError` reason, and the module's own mapping over it.
+ */
+describe("the outbound calls are bounded", () => {
+  /** The bound the module asks for, and the one the test actually waits. */
+  const GOOGLE_TIMEOUT_MS = 10_000;
+  const FAST_MS = 5;
+
+  /** Ask for ten seconds, wait five milliseconds. Returns what was asked. */
+  function fastDeadlines(): number[] {
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const asked: number[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      asked.push(ms);
+      return real(FAST_MS);
+    });
+    return asked;
+  }
+
+  /**
+   * A host that accepts the connection and then says nothing — the failure
+   * undici would otherwise sit on for 300 seconds. It settles ONLY when the
+   * caller's signal aborts it, exactly as a real `fetch` does, so a call site
+   * that passed no signal would hang this test rather than pass it.
+   */
+  function stallAt(target: string) {
+    vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      signals[url] = init?.signal;
+      if (url === target) {
+        return new Promise<never>((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        });
+      }
+      if (url === JWKS_URI) {
+        return new Response(JSON.stringify({ keys: [GOOGLE_KEY.jwk] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ id_token: rs256(claims()) }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("carries a signal on both calls of a handshake that succeeds", async () => {
+    // The bound is wired on the paths that work, not only on the one under
+    // test: an options object that lost its `signal` would leave both of the
+    // assertions below undefined and every other case in this file green.
+    stubFetch({ tokenBody: { id_token: rs256(claims()) } });
+    await provider.completeAuth("the-code", "the-verifier");
+    for (const url of [TOKEN_ENDPOINT, JWKS_URI]) {
+      expect(signals[url]).toBeInstanceOf(AbortSignal);
+      // Live, not spent: a signal that had already fired would satisfy the
+      // instance check and abort the request it was handed to.
+      expect((signals[url] as AbortSignal).aborted).toBe(false);
+    }
+  });
+
+  it("turns a stalled token exchange into an AuthError naming the bound", async () => {
+    const asked = fastDeadlines();
+    stallAt(TOKEN_ENDPOINT);
+
+    const err = await provider.completeAuth("the-code", "the-verifier").then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    // The CLASS is the load-bearing half: `/console/oauth/callback`
+    // (src/http/app.ts) handles `AuthError` and would send a raw `DOMException`
+    // to its catch-all instead.
+    expect(err).toBeInstanceOf(AuthError);
+    expect((err as Error).message).toBe(
+      `google token exchange timed out after ${GOOGLE_TIMEOUT_MS}ms`,
+    );
+    expect(asked).toEqual([GOOGLE_TIMEOUT_MS]);
+    // And the request was CANCELLED, not merely abandoned: an unbounded socket
+    // per hung sign-in is what this exists to stop.
+    expect((signals[TOKEN_ENDPOINT] as AbortSignal).aborted).toBe(true);
+  });
+
+  it("turns a stalled JWKS fetch into an AuthError naming the bound", async () => {
+    const asked = fastDeadlines();
+    stallAt(JWKS_URI);
+
+    const err = await provider.verifyIdToken(rs256(claims())).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(AuthError);
+    expect((err as Error).message).toBe(
+      `google JWKS fetch timed out after ${GOOGLE_TIMEOUT_MS}ms`,
+    );
+    expect(asked).toEqual([GOOGLE_TIMEOUT_MS]);
+    expect((signals[JWKS_URI] as AbortSignal).aborted).toBe(true);
+  });
+
+  it("does not cache a timed-out JWKS fetch", async () => {
+    // A rejected fetch must leave nothing behind — neither a cached key nor the
+    // in-flight promise — or one bad Google second is a console that refuses
+    // every login until it is redeployed.
+    fastDeadlines();
+    stallAt(JWKS_URI);
+    await expect(provider.verifyIdToken(rs256(claims()))).rejects.toThrow(
+      AuthError,
+    );
+
+    vi.restoreAllMocks();
+    stubFetch();
+    const identity = await provider.verifyIdToken(rs256(claims()));
+    expect(identity.email).toBe("person@tadasant.com");
+  });
+});
+
+describe("getJwks — one fetch per cold cache", () => {
+  it("joins concurrent verifications to a single request", async () => {
+    // N sign-ins arriving on a cold cache used to be N requests for one answer,
+    // and each of them is one of the stalls the deadline above exists for.
+    const [first, second] = await Promise.all([
+      provider.verifyIdToken(rs256(claims())),
+      provider.verifyIdToken(rs256(claims())),
+    ]);
+    expect(first.email).toBe(second.email);
+    expect(jwksFetches).toBe(1);
+  });
+
+  it("does not poison the cache with a failed in-flight fetch", async () => {
+    // The risk the sharing introduces: an entry holding a REJECTED promise is a
+    // login that keeps failing on a network second that has long passed.
+    stubFetch({ jwksStatus: 503 });
+    await expect(provider.verifyIdToken(rs256(claims()))).rejects.toThrow(
+      /failed to fetch Google JWKS: 503/,
+    );
+    stubFetch();
+    const identity = await provider.verifyIdToken(rs256(claims()));
+    expect(identity.email).toBe("person@tadasant.com");
+    expect(jwksFetches).toBe(1);
   });
 });
 

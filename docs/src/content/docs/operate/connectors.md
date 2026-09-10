@@ -213,6 +213,14 @@ never silently overstates how narrow the stored credential is.
   (`/console/oauth/callback`), which returns a session rather than a credential.
 - No server-side state, so the flow works across core replicas and survives a
   redeploy mid-consent.
+- The code exchange is bounded at **ten seconds** and the request is cancelled
+  when the bound expires. Node's `fetch` has no overall timeout, so an unbounded
+  exchange holds the callback for undici's 300-second header timeout against a
+  token endpoint that stalls — and an authorization code is single-use and
+  short-lived, so waiting past the point the exchange could have worked buys
+  nothing. The refusal is its own code (`exchange_timed_out`), separate from
+  `exchange_failed`: Google refusing a code and Google not answering send a human
+  to different places, and the page's sentence for each says so.
 
 ### What is never exposed
 
