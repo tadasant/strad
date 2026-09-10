@@ -28,8 +28,8 @@ import { VIEWER_ACCOUNT } from "./fake-parameter-manager.js";
  *      arrival, and the human lands somewhere other than the prose around the
  *      link says they will. A `?param=` carrying the canonical path is exactly
  *      that — the console reads `project` and `ns` on `/ui/:server` and nothing
- *      else, so a parameter named there never arrives (#273). `the link carries
- *      no key the console does not read` below is the pin on it.
+ *      else, so a parameter named there never arrives (#273). `the tool writes
+ *      no key the page it opens does not read` below is the pin on it.
  *
  * Nothing here touches Parameter Manager: no store is reachable in this file,
  * and none is consulted. The capability lookup is injected for the same reason
