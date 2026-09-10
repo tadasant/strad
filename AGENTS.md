@@ -21,6 +21,19 @@ is `artifacts/references/PRODUCTION_INVARIANTS.md` (reference id
 _desired_ invariants: not all of them hold, and work in this repo should move
 toward them, not away. If a change moves away from one, say so.
 
+**Ops without box access.** The "Operability" invariant has a design side that
+every strad PR has to meet. A feature is a design defect if operating it needs a
+shell on a running container (`doctl apps console`) or a step applied by hand
+outside the deploy: a one-off script, an edit to the live app spec, a manual
+restart. Every operational step a feature implies (seeding or rotating a
+credential, re-encoding a stored parameter, a config change) goes through a
+deploy, an idempotent or scheduled job, strad's own console / API / `/mcp`
+surface, or a GitHub Actions workflow. A PR that cannot avoid such a step says so
+in its body and records the step in `HACKS.md` and
+`docs/src/content/docs/limitations.md`, so it never ships as an unmarked
+"then run X on the box". Break-glass access is for incidents; routine operation
+does not use it.
+
 - Use a feature branch off the latest `main`; `main` is protected and lands via PR.
 - `npm test` (Vitest) runs unit tests plus a real-MCP-client, in-process E2E.
 - `npm run typecheck`, `npm run lint`, `npm run format:check` — all three gate CI.
