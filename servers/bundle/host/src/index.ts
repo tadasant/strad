@@ -61,6 +61,7 @@ import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
 import { slugEnvView } from "./env-prefix.js";
+import { requireInternalToken } from "./internal-auth.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
   dropInheritedNames,
@@ -1436,8 +1437,19 @@ async function main(): Promise<void> {
   const app = express();
   app.disable("x-powered-by");
 
+  // The gate every MCP mount below sits behind: the shared STRAD_INTERNAL_TOKEN
+  // core presents on each proxied request, compared the way `/_strad/presence`
+  // already compares it, fail-closed when the token is unset. See
+  // `internal-auth.ts` for why "internal_ports: [8080]" was never the answer.
+  const internalOnly = requireInternalToken(process.env, timingSafeEqual);
+
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 21 servers behind one health check, "ok: true" alone is not information.
+  // with 22 servers behind one health check, "ok: true" alone is not information.
+  //
+  // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
+  // token, and a 401 here is a component App Platform takes out of service — an
+  // authorization fix that costs availability. It names slugs and paths and no
+  // credential, which is what makes leaving it open affordable.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -1456,6 +1468,7 @@ async function main(): Promise<void> {
     if (!mount.upload) continue;
     app.post(
       `/${mount.slug}/upload/:token`,
+      internalOnly,
       express.raw({ type: "*/*", limit: "100mb" }),
       (req, res) => {
         void mount
@@ -1512,14 +1525,20 @@ async function main(): Promise<void> {
     res.status(answer.status).set(answer.headers).json(answer.body);
   });
 
+  // Every mount, behind the internal token. `internalOnly` runs before the
+  // handler rather than as `app.use`, so the two routes above it — `/healthz`
+  // and `/_strad/presence` — keep the treatment each already had: one open, one
+  // authorized inside `presenceResponse` with the same comparator and the same
+  // two statuses. Double-gating presence would only change which of two
+  // identical refusals a caller reads.
   for (const mount of mounts) {
     if (mount.sessionful) {
       const { post, session } = sessionfulHandler(mount);
-      app.post(`/${mount.slug}`, (req, res) => void post(req, res));
-      app.get(`/${mount.slug}`, (req, res) => void session(req, res));
-      app.delete(`/${mount.slug}`, (req, res) => void session(req, res));
+      app.post(`/${mount.slug}`, internalOnly, (req, res) => void post(req, res));
+      app.get(`/${mount.slug}`, internalOnly, (req, res) => void session(req, res));
+      app.delete(`/${mount.slug}`, internalOnly, (req, res) => void session(req, res));
     } else {
-      app.all(`/${mount.slug}`, statelessHandler(mount));
+      app.all(`/${mount.slug}`, internalOnly, statelessHandler(mount));
     }
   }
 

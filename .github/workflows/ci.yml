@@ -397,6 +397,18 @@ jobs:
     env:
       BUNDLE_IMAGE: strad-bundle:ci-${{ github.run_id }}-${{ github.run_attempt }}
       BUNDLE_CONTAINER: bundle-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      # The fail-closed container gets its own per-run NAME rather than
+      # "$BUNDLE_CONTAINER-closed", so the `if: always()` teardown can name a
+      # bare variable — `test/ci-workflow.isolation.test.ts` insists on that, and
+      # it is right to: a teardown target built by string concatenation is one
+      # edit away from reaping a concurrent job's container.
+      BUNDLE_CLOSED_CONTAINER: bundle-ci-closed-${{ github.run_id }}-${{ github.run_attempt }}
+      # Not a secret: it is this job's throwaway stand-in for the token the
+      # deploy bakes onto every supplementary component. The mounts are gated on
+      # it (servers/bundle/host/src/internal-auth.ts), so a container booted
+      # without one fails closed and smokes nothing — which is exactly what the
+      # "refuses to serve" step below boots a second container to prove.
+      STRAD_INTERNAL_TOKEN: ci-internal-token
     steps:
       - uses: actions/checkout@v4
       # The builder is a shared resource too, and the sharpest one: every job on
@@ -464,6 +476,7 @@ jobs:
           echo "image=$BUNDLE_IMAGE container=$BUNDLE_CONTAINER"
           docker run -d --name "$BUNDLE_CONTAINER" --label strad-ci=1 \
             -e DANGEROUSLY_SKIP_ELICITATIONS=true \
+            -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN" \
             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
@@ -474,6 +487,85 @@ jobs:
             sleep 2
           done
           docker exec "$BUNDLE_CONTAINER" node /app/scripts/smoke.mjs
+
+      # BOTH DIRECTIONS OF THE GATE, against the real image.
+      #
+      # The failure this guards is OPEN, and a green smoke above proves only the
+      # served half: a middleware wired to the wrong env name, or a comparator
+      # that returns true for everything, looks exactly like a fix. So assert the
+      # refusals too, and assert that `/healthz` is still reachable WITHOUT a
+      # token — App Platform's prober holds none, and gating it would take the
+      # component out of service.
+      - name: A mount refuses a request that presents no token, or the wrong one
+        run: |
+          set -euo pipefail
+          probe() {
+            docker exec "$BUNDLE_CONTAINER" node -e '
+              const [url, auth, want] = process.argv.slice(1); // `node -e` puts the first user arg at argv[1], not argv[2]
+              const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+              if (auth) headers.authorization = auth;
+              fetch(url, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "gate-probe", version: "1" } } }),
+              }).then(async (r) => {
+                const body = (await r.text()).slice(0, 160);
+                if (r.status !== Number(want)) throw new Error(`expected ${want}, got ${r.status}: ${body}`);
+                console.log(`  ${want} as expected${auth ? "" : " (no Authorization header)"}: ${body}`);
+              }).catch((e) => { console.error(String(e.message ?? e)); process.exit(1); });
+            ' "$@"
+          }
+          echo "no token:"
+          probe http://127.0.0.1:8080/gmail "" 401
+          echo "wrong token:"
+          probe http://127.0.0.1:8080/gmail "Bearer not-the-token" 401
+          echo "right token:"
+          probe http://127.0.0.1:8080/gmail "Bearer $STRAD_INTERNAL_TOKEN" 200
+          echo "healthz stays open:"
+          docker exec "$BUNDLE_CONTAINER" node -e '
+            fetch("http://127.0.0.1:8080/healthz").then((r) => {
+              if (r.status !== 200) { console.error(`healthz answered ${r.status} with no token`); process.exit(1); }
+              console.log("  200 with no Authorization header");
+            });
+          '
+
+      # FAIL CLOSED, in a container rather than a unit test.
+      #
+      # A host that cannot tell core from anything else in the VPC must serve
+      # nothing — `router.ts` has said so for the strad image since it was
+      # written. The unit test asserts the decision; this asserts the process
+      # built from it. Its own container, because STRAD_INTERNAL_TOKEN is
+      # `process.env` and the one above has it.
+      #
+      # `--json` on the smoke rather than the asserting invocation: with no token
+      # every mount records an error, which is the point, and the asserting form
+      # would just print 22 identical failures.
+      - name: With no STRAD_INTERNAL_TOKEN the host refuses to serve any mount
+        run: |
+          set -euo pipefail
+          docker run -d --name "$BUNDLE_CLOSED_CONTAINER" --label strad-ci=1 \
+            -e DANGEROUSLY_SKIP_ELICITATIONS=true \
+            -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket \
+            -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket \
+            -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example \
+            -e SECRETS_PROJECT_ID=ci -e SECRETS_NAMESPACES=/strad/staging/mcp/ \
+            "$BUNDLE_IMAGE"
+          for i in $(seq 1 60); do
+            if docker exec "$BUNDLE_CLOSED_CONTAINER" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          docker exec "$BUNDLE_CLOSED_CONTAINER" node /app/scripts/smoke.mjs --json > bundle-tools-closed.json
+          node -e '
+            const dump = JSON.parse(require("fs").readFileSync("bundle-tools-closed.json", "utf8"));
+            const entries = Object.entries(dump.mounts);
+            if (entries.length === 0) throw new Error("no mounts in the dump — /healthz did not list any");
+            const served = entries.filter(([, m]) => m.tools);
+            if (served.length) throw new Error(`FAILED OPEN: ${served.length} mount(s) served with no internal token: ${served.map(([p]) => p).join(", ")}`);
+            const wrong = entries.filter(([, m]) => !/HTTP 503/.test(m.error ?? ""));
+            if (wrong.length) throw new Error(`expected 503 from every mount, got: ${wrong.map(([p, m]) => `${p}: ${m.error}`).join("; ")}`);
+            console.log(`${entries.length}/${entries.length} mounts refused with 503 and none served`);
+          '
+          docker rm -f "$BUNDLE_CLOSED_CONTAINER" >/dev/null
 
       # The join the two jobs never made. `--json` dumps every mount's real tool
       # NAMES; check-tool-policy matches each config's `tools:` entries against
@@ -510,7 +602,7 @@ jobs:
         run: |
           set -euo pipefail
           MULTI="$BUNDLE_CONTAINER-multi"
-          docker run -d --name "$MULTI" --label strad-ci=1             -e DANGEROUSLY_SKIP_ELICITATIONS=true             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
+          docker run -d --name "$MULTI" --label strad-ci=1             -e DANGEROUSLY_SKIP_ELICITATIONS=true             -e STRAD_INTERNAL_TOKEN="$STRAD_INTERNAL_TOKEN"             -e GCS_PROJECT_ID=ci -e GCS_BUCKET=ci-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_BUCKET=ci-rfs-bucket             -e REMOTE_FILESYSTEM_TMP_PUBLIC_SENSITIVE_VIEWER_DOMAIN=ci.example             -e SECRETS_STORES='[{"project":"ci-staging","namespaces":["/strad/staging/mcp/"],"viewerKeyVar":"SECRETS_SERVICE_ACCOUNT_KEY_JSON"},{"project":"ci-prod","namespaces":["/strad/prod/mcp/"],"viewerKeyVar":"CI_PROD_VIEWER_KEY_JSON"}]'             "$BUNDLE_IMAGE"
           for i in $(seq 1 60); do
             if docker exec "$MULTI" node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))" 2>/dev/null; then break; fi
             sleep 2
@@ -546,6 +638,7 @@ jobs:
         if: always()
         run: |
           docker rm -f "$BUNDLE_CONTAINER" 2>/dev/null || true
+          docker rm -f "$BUNDLE_CLOSED_CONTAINER" 2>/dev/null || true
           docker rmi -f "$BUNDLE_IMAGE" 2>/dev/null || true
 
   verify_lockfile:

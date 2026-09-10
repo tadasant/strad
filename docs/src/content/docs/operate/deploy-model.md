@@ -649,7 +649,9 @@ config to a booted image's real tool names:
 
 ```bash
 # with the bundle container up (this is what CI runs; it names its container
-# per run, so substitute yours)
+# per run, so substitute yours). The mounts are gated on STRAD_INTERNAL_TOKEN, and
+# the script reads it from the container's own environment — so the container has
+# to have been started with one.
 docker exec <container> node /app/scripts/smoke.mjs --json > bundle-tools.json
 
 npm run policy:check -- --tools bundle-tools.json \

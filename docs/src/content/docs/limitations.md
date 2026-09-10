@@ -41,21 +41,6 @@ it. None of those makes the boundary physical.
 two. **Undo:** there is no clean one. Restoring physics means one container per
 capability tier, which is the topology that was deliberately removed.
 
-### 13. The bundle serves `/mcp` with no bearer auth of its own
-
-The `strad-bundle` container serves its mounts unauthenticated. Its only protection
-is that it is an internal-only App Platform component — `internal_ports: [8080]`, no
-public route — reachable solely by the core over the private network. Anything else
-that got into the VPC could talk to it directly.
-
-A strad-image bundle (one holding `builtin` servers) does _not_ have this problem;
-it requires `STRAD_INTERNAL_TOKEN` with a constant-time compare. The supplementary
-path never grew the equivalent.
-
-**Undo:** add `headers: { Authorization: "Bearer ${STRAD_INTERNAL_TOKEN}" }` to the
-server entries and have the bundle host reject requests without it. The token is
-already in the component's environment.
-
 ### 16. The gateway can't gate MCP Apps on client capabilities
 
 strad's `/mcp` is deliberately stateless, so it sees a client's `initialize`
@@ -2128,6 +2113,20 @@ a boundary.
 the matching one when it proxies, so each component holds only its own. That makes
 the caller's identity a property of the credential rather than a claim, and
 narrows the presence route by the same stroke.
+
+:::note[HACKS #13 is resolved, and this is what it left behind]
+`HACKS.md` #13 records that the `strad-bundle` container served its mounts with
+no bearer auth at all, protected only by being an internal-only App Platform
+component. Both halves of that seam hold: core adds
+`Authorization: Bearer ${STRAD_INTERNAL_TOKEN}` to every `supplementary-image`
+adapter from the code rather than from a `headers:` entry, and the bundle host
+gates every mount on it through the same comparator its presence route uses — 401
+for a missing or wrong token, 503 when the token is unset, nothing served either
+way. `/healthz` stays open, because App Platform's prober holds no credential.
+
+What is above is what that leaves: one token, so the gate authenticates "a strad
+container" rather than "core".
+:::
 
 ### 65. strad-fetch's scraped-page cache is shared by every caller of the slug
 
