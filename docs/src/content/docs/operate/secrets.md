@@ -2573,13 +2573,24 @@ and the NAME of each store's key) and the container reads that. Declaring both
 shapes is refused by `check-config` rather than resolved to one of them.
 
 `SECRETS_CONSOLE_URL` is where `open_secrets_manager` sends a human, and the link
-it hands back is that value carrying two keys: `param=`, the canonical path, and
-`project=`, **the store that path resolved to**. The value may carry a query string
+it hands back is that value carrying one key of the tool's own making: `project=`,
+**the store the path resolved to**. The value may carry a query string
 of its own — `.../ui/secrets?project=zimmer-secrets-prod` is how one console page
-fronting several stores addresses a particular one — and both keys are joined onto
-it with `&`, replacing rather than duplicating a key it already carried. A value
+fronting several stores addresses a particular one — and `project` is joined onto
+it with `&`, replacing rather than duplicating a key it already carried. Every
+other key the operator wrote passes through untouched. A value
 with no scheme, such as a bare `/ui/secrets`, is used as written — apart from a
 trailing slash on its path, and a re-encoding of any query it carried.
+
+**The link opens a parameter list, not a parameter.** The console has no
+per-parameter page: `/ui/:server` reads `project` and `ns` off the query string
+and renders the rows of one namespace. So the tool lands a human on the right
+store and its `instructions` tell the agent to name the parameter in the message
+it sends, which is the part a URL cannot carry. A `?param=` carrying the
+canonical path would be discarded on arrival — the console reads no such key — so
+the link carries none, and the promise of a parameter-level landing is retracted
+rather than implemented
+([#273](https://github.com/tadasant/strad/issues/273)).
 
 **The resolved store beats the configured one.** One container fronts N stores
 behind ONE `SECRETS_CONSOLE_URL`, so a `?project=` written into that variable is
@@ -2607,11 +2618,6 @@ information is a console whose project set is **disjoint** from the MCP server's
 where the operator's constant named a store the console does have; no config here
 is shaped that way, and the answer if one ever is would be to reconcile the two
 lists.
-
-One thing that link does not do yet, and it is filed: the console reads `project`
-and `ns` off the query string and **not** `param`, so a human lands on the right
-store's page rather than on the parameter
-([#273](https://github.com/tadasant/strad/issues/273)).
 
 ##### The path selects the store, and the store selects the capability
 

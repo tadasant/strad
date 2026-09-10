@@ -442,21 +442,22 @@ test("calling EVERY tool with EVERY argument shape never yields a canary", async
   await close();
 });
 
-test("open_secrets_manager returns a console deep link, not a value", async () => {
+test("open_secrets_manager returns a console link, not a value", async () => {
   const { client, config, close } = await fixture();
   const res = await client.callTool({
     name: "open_secrets_manager",
     arguments: { secret: P_KEY },
   });
   const payload = JSON.parse(res.content[0].text);
-  // The link names the store the path resolved to as well as the parameter —
-  // see console-link.test.ts for why the store is on the link at all.
+  // The link names the store the path resolved to, and nothing finer: the
+  // console has no per-parameter page, so the parameter is named in the
+  // `instructions` instead. See console-link.test.ts.
   assert.equal(
     payload.url,
-    `https://staging.strad.tadasant.com/ui/secrets?param=${encodeURIComponent(P_KEY)}` +
-      `&project=${config.stores[0].project}`,
+    `https://staging.strad.tadasant.com/ui/secrets?project=${config.stores[0].project}`,
   );
   assert.equal(payload.project, config.stores[0].project);
+  assert.ok(payload.instructions.includes(P_KEY), payload.instructions);
   await close();
 });
 

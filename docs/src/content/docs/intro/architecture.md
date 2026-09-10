@@ -452,7 +452,8 @@ flowchart LR
   Google answers `403` to the only call that would return one. Its four read
   tools are `list_managed_namespaces`, `list_parameters`, `get_parameter`
   (non-secret values only; it refuses a secret), and `open_secrets_manager` (a
-  deep link that hands a human the console URL); a fifth, `refresh_gateway`, makes
+  link that lands a human on the console page the value lives on); a fifth,
+  `refresh_gateway`, makes
   the gateway [re-read the store now](/operate/secrets/#one-reading-of-the-store-per-process)
   and touches nothing in it.
 - The **admin** is the SSO-gated console (`/ui/secrets`), on the core component
