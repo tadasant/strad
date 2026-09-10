@@ -173,7 +173,7 @@ export function toolDefinitions(
         "Get a link to the strad console page where a HUMAN can add, rotate, reveal or delete a secret " +
         "value. This is how you help with a secret you must never see: hand the user this URL. The console " +
         "is gated by Google Workspace SSO and is the only place a secret value can be written or read. " +
-        "The link opens that store's parameter LIST — the console has no per-parameter page, so NAME the " +
+        "The link opens the store's parameter LIST — the console has no per-parameter page, so NAME the " +
         "parameter in your message and the human finds its row there. " +
         (multi
           ? "Pass the CANONICAL PATH rather than a bare variable name: the path is what selects the store, " +
@@ -543,10 +543,14 @@ export function registerTools(server: Server, deps: ToolDeps): void {
                   "selects, which may not be the one holding this value."
                 : undefined,
             instructions:
-              "Send this link to the human, AND TELL THEM WHICH PARAMETER YOU MEAN — the link opens " +
-              "the console's parameter list for the store" +
-              (secret ? ` and does not select "${secret}" on it` : "") +
-              ", so they find the row by name. They sign in with Google Workspace SSO and can add, " +
+              "Send this link to the human. " +
+              (secret
+                ? "AND TELL THEM WHICH PARAMETER YOU MEAN: the link opens the console's parameter " +
+                  `list for the store and does not select "${secret}" on it, so they find the row ` +
+                  "by name. "
+                : "It opens the console's parameter list for the store, so name the parameter you " +
+                  "mean and they find the row by name. ") +
+              "They sign in with Google Workspace SSO and can add, " +
               "rotate, reveal or delete the value there. Do not ask them to paste the value back " +
               "to you — nothing on this server, and no agent, needs it.",
           });
@@ -765,12 +769,13 @@ function writeDenial(
  *
  * IT WRITES ONE KEY, AND IT IS ONE THE CONSOLE READS. The canonical path is not
  * among them: `src/ui/index.ts` reads `project` and `ns` on `/ui/:server` and
- * nothing else, so a `?param=` naming the parameter is discarded on arrival —
- * silently, on a page that looks entirely correct, while the tool's own
- * `instructions` tell a human they are being sent to that parameter (#273).
- * There is no per-parameter view to land on either: the console renders a LIST.
- * What an honest link can do is open that list on the right store, so the
- * parameter is named in the prose the agent hands over, not in the URL.
+ * nothing else, so a `?param=` naming the parameter would be discarded on
+ * arrival — silently, on a page that looks entirely correct. That was #273: a
+ * link that named a parameter no handler read, and prose around it that told a
+ * human they were being sent to that parameter. There is no per-parameter view
+ * to land on either, because the console renders a LIST. What an honest link can
+ * do is open that list on the right store, so the parameter is named in the
+ * prose the agent hands over rather than in the URL.
  *
  * `project` IS THE RESOLVED STORE'S AND OVERRIDES WHATEVER THE CONFIG CARRIED.
  * One container fronts N stores behind ONE `SECRETS_CONSOLE_URL`, and the console

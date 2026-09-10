@@ -272,9 +272,10 @@ front several stores and select between them with `?project=` — and `project` 
 joined onto whatever is already there with `&`, replacing rather than duplicating
 a key it already carried — and a `ns=` the new `project` orphans is dropped, since
 a namespace belongs to exactly one store. Every other key the operator wrote
-passes through untouched. A value with no scheme, such as a bare `/ui/secrets`, is
-used as written, apart from a trailing slash on its path and a re-encoding of any
-query it carried.
+passes through untouched, including a `param=` left over from an older link —
+this helper writes no such key and does not rewrite one it did not write. A value
+with no scheme, such as a bare `/ui/secrets`, is used as written, apart from a
+trailing slash on its path and a re-encoding of any query it carried.
 
 ## `refresh_gateway` — make the gateway re-read the store now
 

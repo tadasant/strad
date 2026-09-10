@@ -47,24 +47,16 @@ const PARAM_A = `${NS_A}telegram-rw/static/TELEGRAM_SESSION`;
 const PARAM_B = `${NS_B}telegram-rw/static/TELEGRAM_SESSION`;
 
 /**
- * Every query key the console reads, from a sweep of `req.query` across `src/`.
- * `code`, `next`, `state` and `token` are the SSO round trip, `servers` and
- * `prefix` belong to other pages, and `connected`/`error` are the connector
- * flash — `/ui/:server`, the page this link opens, reads `project` and `ns`.
- * A key outside this set is inert: the console drops it on the floor.
+ * Every key `/ui/:server` reads, and the whole of it: `selectStore` takes
+ * `req.query.project` and `selectNamespace` takes `req.query.ns`
+ * (`src/ui/index.ts`). A sweep of `req.query` across `src/` turns up eight more
+ * — `code`, `next`, `state` and `token` (the SSO round trip), `connected` and
+ * `error` (the connector flash), `prefix`, and `servers` (which is `/mcp`'s
+ * selection query, not a console page at all) — and not one of them is read by
+ * the page this link opens. So the set below, not that sweep, is what a key on
+ * this link has to be in; anything else is dropped on the floor.
  */
-const CONSOLE_READS = [
-  "code",
-  "connected",
-  "error",
-  "next",
-  "ns",
-  "prefix",
-  "project",
-  "servers",
-  "state",
-  "token",
-];
+const PAGE_READS = ["ns", "project"];
 
 const CAPS_NONE = {
   readSecretValues: false,
@@ -146,12 +138,14 @@ async function advertised(consoleUrl?: string) {
     .consoleUrl as string | undefined;
 }
 
-test("the link carries no key the console does not read", async () => {
+test("the tool writes no key the page it opens does not read", async () => {
   // THE DEFECT (#273). A `?param=` on this link is read by no handler in
   // `src/ui/`, so it lands the human on the store's parameter list with the
-  // parameter silently dropped — while the tool's `instructions` and the README
-  // describe a landing on the parameter itself. This pins the emitted key set,
-  // so a helper that writes an inert key fails here rather than in a browser.
+  // parameter silently dropped, under prose describing a landing on the
+  // parameter itself. What is pinned is the set of keys the HELPER ADDS —
+  // `SECRETS_CONSOLE_URL` is free-form config and an operator's own keys ride
+  // along untouched, which is the test below this one — so the subset is taken
+  // against what the configured URL already carried.
   const cases: [string, string | undefined, SecretsStore[]][] = [
     ["https://strad.tadasant.com/ui/secrets", PARAM, ONE_STORE],
     ["https://strad.tadasant.com/ui/secrets", undefined, ONE_STORE],
@@ -159,22 +153,32 @@ test("the link carries no key the console does not read", async () => {
     ["https://strad.tadasant.com/ui/secrets///", PARAM, ONE_STORE],
     ["https://strad.tadasant.com/ui/secrets", "TELEGRAM_SESSION", TWO_STORES],
     ["https://strad.tadasant.com/ui/secrets", PARAM_B, TWO_STORES],
+    // A configured query string is the shape a multi-store console is deployed
+    // with, and it is the one where "what did the helper add" is a real question.
+    ["https://strad.tadasant.com/ui/secrets?project=proj-a", PARAM_B, TWO_STORES],
+    [
+      `https://strad.tadasant.com/ui/secrets?project=proj-a&ns=${encodeURIComponent(NS_A)}`,
+      PARAM_B,
+      TWO_STORES,
+    ],
     // The unparseable branch splices its own query, so it is a second
     // implementation of the same rule and gets the same pin.
     ["/ui/secrets", PARAM, ONE_STORE],
+    ["/ui/secrets?project=zimmer-secrets-prod", PARAM, ONE_STORE],
     ["not a url at all", PARAM, ONE_STORE],
   ];
   for (const [configured, secret, stores] of cases) {
     const { url } = await link(configured, secret, stores);
-    const keys = keysOn(url!);
+    const carried = new Set(keysOn(configured));
+    const added = keysOn(url!).filter((k) => !carried.has(k));
     assert.ok(
-      !keys.includes("param"),
-      `${configured} + ${secret} emitted a param key: ${url}`,
+      !added.includes("param"),
+      `${configured} + ${secret} added a param key: ${url}`,
     );
-    for (const key of keys) {
+    for (const key of added) {
       assert.ok(
-        CONSOLE_READS.includes(key),
-        `${configured} + ${secret} emitted "${key}", which the console never reads: ${url}`,
+        PAGE_READS.includes(key),
+        `${configured} + ${secret} added "${key}", which /ui/:server never reads: ${url}`,
       );
     }
   }
@@ -306,10 +310,10 @@ test("a console URL that already carries a query string joins with '&'", async (
 test("a key this tool does not own is the operator's, and passes through", async () => {
   // `SECRETS_CONSOLE_URL` is free-form deployment config. The only key written
   // here is `project`, and the only one dropped is an `ns` that override
-  // orphans — so a stale `?param=` an operator wrote is left exactly as they
-  // wrote it. It is inert either way (the console does not read it), and
-  // rewriting a key this function no longer owns would be the coupling #273 was
-  // about, in the other direction.
+  // orphans — so a `?param=` an operator wrote is left exactly as they wrote it.
+  // It is inert either way (the console does not read it), and rewriting a key
+  // this function does not own would be the coupling #273 was about, in the
+  // other direction.
   const { url } = await link(
     "https://strad.tadasant.com/ui/secrets?param=%2Fstale%2FOLD&view=a%2Fb",
     PARAM,

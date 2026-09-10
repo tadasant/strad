@@ -453,8 +453,8 @@ flowchart LR
   tools are `list_managed_namespaces`, `list_parameters`, `get_parameter`
   (non-secret values only; it refuses a secret), and `open_secrets_manager` (a
   link that lands a human on the console page the value lives on); a fifth,
-  `refresh_gateway`, makes
-  the gateway [re-read the store now](/operate/secrets/#one-reading-of-the-store-per-process)
+  `refresh_gateway`, makes the gateway
+  [re-read the store now](/operate/secrets/#one-reading-of-the-store-per-process)
   and touches nothing in it.
 - The **admin** is the SSO-gated console (`/ui/secrets`), on the core component
   only. It reads and writes both kinds. Its credential arrives via `consoleEnv:`,
