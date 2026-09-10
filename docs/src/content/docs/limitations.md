@@ -279,6 +279,20 @@ ambiguity is inherent — the edge answers on the origin's behalf and says the
 same thing either way — and it is the one way a broken thing goes unreported
 here.
 
+---
+
+### 89. The console link opens a parameter list, not a parameter
+
+`open_secrets_manager` is how an agent helps with a secret it must never see: it hands back a URL for a human to open. That URL addresses a **store** and a **namespace** — never a parameter. On a namespace with dozens of rows the human scans for the one the agent meant, and the agent's job is to name it, which is what the tool's `instructions` tell it to do.
+
+The reason is the console rather than the tool: `/ui/:server` reads `project` and `ns` off the query string and renders the rows of one namespace, and those rows carry no identity a URL could address. So a parameter-level landing is not a key away — it is a per-row anchor, a selected state, and a query key to read them with.
+
+The tool did carry the canonical path as `?param=`, which bought the human nothing (no handler read it) and cost them a false expectation, since the prose around the link promised the parameter. That claim is withdrawn rather than implemented, and `the tool writes no key the page it opens does not read` in `servers/secrets/shared/test/console-link.test.ts` pins the emitted key set against what `/ui/:server` actually reads, so the mismatch cannot return quietly.
+
+**How you would know.** The `instructions` the tool returns say it: the link opens the store's parameter list, and the parameter is named in the message the agent sends.
+
+See `HACKS.md` #89 and [Secrets](/operate/secrets/).
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth

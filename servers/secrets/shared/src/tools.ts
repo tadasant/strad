@@ -32,9 +32,9 @@ import type { ParametersWriter } from "./write-client.js";
  * value lives in Secret Manager and `get_parameter` never returns it.
  *
  * That is enough for the thing an agent actually needs to do: tell a human WHICH
- * secret to go set, and hand them a link that lands on it — `open_secrets_manager`,
- * lifted from reframe-secrets, where the same idea is put well: the agent helps
- * without ever holding the thing.
+ * secret to go set, and hand them a link to the console page it lives on —
+ * `open_secrets_manager`, lifted from reframe-secrets, where the same idea is put
+ * well: the agent helps without ever holding the thing.
  *
  * ONE CONTAINER, N STORES, AND THE PATH IS WHAT BINDS A CALL TO ONE OF THEM.
  * Every tool that takes a canonical path resolves it to exactly one store
@@ -46,7 +46,7 @@ import type { ParametersWriter } from "./write-client.js";
  *
  * `open_secrets_manager` resolves too, and it is the one place where the answer
  * is not a gate: it reads nothing and writes nothing, so the store it finds
- * LABELS the deep link (`?project=`) rather than admitting a call. A path it
+ * LABELS the link (`?project=`) rather than admitting a call. A path it
  * cannot resolve therefore costs the link its store, not the call.
  */
 
@@ -170,9 +170,11 @@ export function toolDefinitions(
     {
       name: "open_secrets_manager",
       description:
-        "Get a deep link into the strad console where a HUMAN can add, rotate, reveal or delete a secret " +
+        "Get a link to the strad console page where a HUMAN can add, rotate, reveal or delete a secret " +
         "value. This is how you help with a secret you must never see: hand the user this URL. The console " +
         "is gated by Google Workspace SSO and is the only place a secret value can be written or read. " +
+        "The link opens the store's parameter LIST — the console has no per-parameter page, so NAME the " +
+        "parameter in your message and the human finds its row there. " +
         (multi
           ? "Pass the CANONICAL PATH rather than a bare variable name: the path is what selects the store, " +
             "and the link carries that store so the console opens on the project the value actually lives in."
@@ -183,9 +185,10 @@ export function toolDefinitions(
           secret: {
             type: "string",
             description:
-              "Optional. A canonical path or variable name to focus in the console. A canonical path also " +
-              `selects the store the link opens on (${nsList}); a bare variable name cannot, and the console ` +
-              "then opens on whichever store it is configured to show first.",
+              "Optional. The canonical path of the parameter this is about. It selects the STORE the link " +
+              `opens on (${nsList}); a bare variable name cannot, and the console then opens on whichever ` +
+              "store it is configured to show first. Either way the parameter itself is not carried by the " +
+              "URL — say which one you mean in your message to the human.",
           },
         },
         additionalProperties: false,
@@ -505,13 +508,16 @@ export function registerTools(server: Server, deps: ToolDeps): void {
           // `secret` is documented as a canonical path OR a bare variable name,
           // and a variable name resolves to no store by construction.
           //
-          // What resolving buys is the store. One container fronting N stores
-          // has ONE `SECRETS_CONSOLE_URL`, and the console picks its store from
-          // `?project=` — so a link that names no store lands on whichever one
-          // the operator hardcoded into that variable, or on the console's first
-          // store, for every parameter including the ones in the other N-1.
+          // What resolving buys is the store, and the store is ALL the URL can
+          // carry. One container fronting N stores has ONE `SECRETS_CONSOLE_URL`,
+          // and the console picks its store from `?project=` — so a link that
+          // names no store lands on whichever one the operator hardcoded into
+          // that variable, or on the console's first store, for every parameter
+          // including the ones in the other N-1. The parameter travels in the
+          // `instructions` instead: the console has no per-parameter view, so
+          // there is nothing finer for a URL to address (#273).
           const found = secret ? resolve(secret) : undefined;
-          const url = consoleLink(config, secret, found?.store);
+          const url = consoleLink(config, found?.store);
           if (!url) {
             return error(
               "No console URL is configured for this server (SECRETS_CONSOLE_URL).",
@@ -537,7 +543,14 @@ export function registerTools(server: Server, deps: ToolDeps): void {
                   "selects, which may not be the one holding this value."
                 : undefined,
             instructions:
-              "Send this link to the human. They sign in with Google Workspace SSO and can add, " +
+              "Send this link to the human. " +
+              (secret
+                ? "AND TELL THEM WHICH PARAMETER YOU MEAN: the link opens the console's parameter " +
+                  `list for the store and does not select "${secret}" on it, so they find the row ` +
+                  "by name. "
+                : "It opens the console's parameter list for the store, so name the parameter you " +
+                  "mean and they find the row by name. ") +
+              "They sign in with Google Workspace SSO and can add, " +
               "rotate, reveal or delete the value there. Do not ask them to paste the value back " +
               "to you — nothing on this server, and no agent, needs it.",
           });
@@ -749,10 +762,20 @@ function writeDenial(
 }
 
 /**
- * The console link: the parameter, and the STORE it lives in, as query keys.
+ * The console link: the STORE the parameter lives in, as a query key.
  *
- * `https://strad/ui/secrets` + `/strad/staging/mcp/.../VAR` in `proj-b`
- *   -> `https://strad/ui/secrets?param=%2Fstrad%2Fstaging%2Fmcp%2F...%2FVAR&project=proj-b`
+ * `https://strad/ui/secrets` + a path in `proj-b`
+ *   -> `https://strad/ui/secrets?project=proj-b`
+ *
+ * IT WRITES ONE KEY, AND IT IS ONE THE CONSOLE READS. The canonical path is not
+ * among them: `src/ui/index.ts` reads `project` and `ns` on `/ui/:server` and
+ * nothing else, so a `?param=` naming the parameter would be discarded on
+ * arrival — silently, on a page that looks entirely correct. That was #273: a
+ * link that named a parameter no handler read, and prose around it that told a
+ * human they were being sent to that parameter. There is no per-parameter view
+ * to land on either, because the console renders a LIST. What an honest link can
+ * do is open that list on the right store, so the parameter is named in the
+ * prose the agent hands over rather than in the URL.
  *
  * `project` IS THE RESOLVED STORE'S AND OVERRIDES WHATEVER THE CONFIG CARRIED.
  * One container fronts N stores behind ONE `SECRETS_CONSOLE_URL`, and the console
@@ -763,8 +786,7 @@ function writeDenial(
  * is the same failure with a different constant. The path resolved to exactly one
  * store; that answer is strictly better than a constant, so it wins.
  *
- * This writes a query key the CONSOLE owns, which is a widening of the coupling
- * that already writes `param`, not a new one. The console's `consoleStores:` is
+ * The console's `consoleStores:` is
  * configured separately from this server's `mcpStores:`, so the id may name a
  * store the console does not front — and there `selectStore` falls back to its
  * first store rather than erroring, which is the same landing a link that named
@@ -789,11 +811,12 @@ function writeDenial(
  * console is configured with. A bare `?` join makes that one query string whose
  * `project` value is the whole rest of the link, and the console reads an
  * unrecognised `?project=` as a stale bookmark and falls back to the first store —
- * a deep link that opens silently on the WRONG store. So the join goes through
+ * a link that opens silently on the WRONG store. So the join goes through
  * `URLSearchParams`, which joins with `&` and REPLACES rather than duplicates a key
- * the configured URL already carries (a duplicate `param` is read as the first one,
- * which is the configured one and not ours; a duplicate `project` reaches Express
- * as an array, which `selectStoreStrict` refuses — the first-store fallback again).
+ * the configured URL already carries (a duplicate `project` reaches Express as an
+ * array, which `selectStoreStrict` refuses — the first-store fallback again). Keys
+ * this function does not own pass through as the operator wrote them; the one it
+ * writes is `project`, and the one it may drop is the `ns` that override orphans.
  *
  * An UNPARSEABLE `consoleUrl` is assembled by hand instead, because free-form
  * config is not this function's to reject: `new URL()` throws where a string
@@ -806,7 +829,6 @@ function writeDenial(
  */
 function consoleLink(
   config: SecretsConfig,
-  param?: string,
   store?: SecretsStore,
 ): string | undefined {
   if (!config.consoleUrl) return undefined;
@@ -826,7 +848,6 @@ function consoleLink(
     const q = head.indexOf("?");
     const base = (q === -1 ? head : head.slice(0, q)).replace(/\/+$/, "");
     const search = new URLSearchParams(q === -1 ? "" : head.slice(q + 1));
-    if (param) search.set("param", param);
     if (store) {
       search.set("project", store.project);
       if (!store.namespaces.includes(search.get("ns") ?? "")) {
@@ -840,7 +861,6 @@ function consoleLink(
   // `#` may follow it, and eating the last character of a query value or a
   // hash route is not what this ever meant.
   url.pathname = url.pathname.replace(/\/+$/, "");
-  if (param) url.searchParams.set("param", param);
   if (store) {
     url.searchParams.set("project", store.project);
     if (!store.namespaces.includes(url.searchParams.get("ns") ?? "")) {

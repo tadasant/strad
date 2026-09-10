@@ -4412,3 +4412,30 @@ sixth tool that does not work is that decision made for nothing.
 **Undo.** BILL shipping a review endpoint on the Spend & Expense v3 API. Until
 then a human ticks transactions off in the BILL web app, and the read-side
 `is_reviewed` filter is what keeps a sweep from proposing the same rows twice.
+
+---
+
+## 89. The console link opens a parameter LIST, so `open_secrets_manager` names the parameter in prose
+
+**What.** `open_secrets_manager` hands an agent a URL for a human to open, and
+that URL addresses a STORE (`?project=`) and a namespace (`?ns=`) — never a
+parameter. The parameter travels in the tool's `instructions` instead, which tell
+the agent to name it in the message it sends. On a namespace with dozens of rows
+the human scans rather than clicks.
+
+**Why.** The console has no per-parameter page and its rendered rows carry no
+identity to link to, so honouring a parameter in the URL means a new query key on
+`/ui/:server`, a per-row anchor in `render.ts` and a selected state — a console
+affordance that does not exist. The tool did splice the canonical path on as
+`?param=`, which cost the same scan and additionally told the human they were
+being sent to the parameter: `/ui/:server` reads `project` and `ns` and nothing
+else, so the key was dropped on arrival. Between building the affordance and
+retracting the claim, the issue picked the retraction (#273), and the emitted key
+set is now pinned by `the tool writes no key the page it opens does not read` in
+`servers/secrets/shared/test/console-link.test.ts`.
+
+**Undo.** Build the console side: a stable per-row anchor in the secrets page
+render, a `?param=` read on `/ui/:server` that selects that row, and a fallback to
+the plain page when the name matches nothing — the console already falls back that
+way on an unrecognised `?project=`. Then the helper writes the key again and the
+test's `PAGE_READS` grows by one.

@@ -71,7 +71,7 @@ export interface SecretsStore {
 export interface SecretsConfig {
   /** At least one. Ordered as configured; the first is nobody's default. */
   stores: SecretsStore[];
-  /** Where the human console lives, for `open_secrets_manager`'s deep link. */
+  /** Where the human console lives, for `open_secrets_manager`'s link. */
   consoleUrl?: string;
   /** Test seams. Unset in production. */
   apiBase?: string;
