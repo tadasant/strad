@@ -1,4 +1,5 @@
 import { createSign } from "node:crypto";
+import { withRequestDeadline } from "../../util/deadline.ts";
 
 /**
  * The signed-JWT bearer flow (RFC 7523), shared by every GCP client in strad.
@@ -12,7 +13,7 @@ import { createSign } from "node:crypto";
  * access token", so that is the only thing that lives here.
  *
  * No SDK: the core gateway ships four runtime deps and stays that way. This is
- * `fetch` + `node:crypto`, nothing else.
+ * `fetch` + `node:crypto` and strad's own deadline helper, nothing else.
  */
 
 export interface ServiceAccount {
@@ -23,6 +24,20 @@ export interface ServiceAccount {
 export type FetchLike = typeof fetch;
 
 export const TOKEN_URL = "https://oauth2.googleapis.com/token";
+
+/**
+ * How long the exchange waits on Google before it is a failure.
+ *
+ * A DEFAULT, not a policy: a caller with a deadline of its own passes a
+ * `fetchImpl` carrying its own signal, and this one gets out of the way of it —
+ * `createGcpParameterStore` replaces the signal with the store's configured
+ * `timeoutMs`, and `probeCapabilities` joins the console's six-second abandon.
+ * What ten seconds is for is the caller that has no deadline: this mint sits
+ * upstream of every GCP client in strad, so an unbounded exchange hangs a
+ * SECRETS READ and a bucket listing rather than merely a login, and Node's
+ * `fetch` would hold it for undici's 300s header timeout.
+ */
+const MINT_TIMEOUT_MS = 10_000;
 
 /** The scope Parameter Manager and Secret Manager are reached with. */
 export const SCOPE_CLOUD_PLATFORM =
@@ -89,14 +104,29 @@ export async function mintAccessToken(
     createSign("RSA-SHA256").update(signingInput).sign(pem, "base64"),
   );
 
-  const res = await fetchImpl(tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: `${signingInput}.${signature}`,
-    }),
-  });
+  const res = await withRequestDeadline(
+    MINT_TIMEOUT_MS,
+    (signal) =>
+      fetchImpl(tokenUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion: `${signingInput}.${signature}`,
+        }),
+        signal,
+      }),
+    // The module's own error, so `authReason` and the console's GcsError
+    // mapping read it the way they read a 403. `408` because a stall is not
+    // worth repeating: it is outside `TRANSIENT_STATUSES`
+    // (`src/http/retry.ts`), so the store's retry loop reports the deadline
+    // once instead of spending four of them on the same silent endpoint.
+    () =>
+      new ServiceAccountAuthError(
+        `token exchange timed out after ${MINT_TIMEOUT_MS}ms`,
+        408,
+      ),
+  );
 
   if (!res.ok) {
     throw new ServiceAccountAuthError(

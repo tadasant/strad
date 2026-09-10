@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { verifyGoogleIdToken } from "../auth/google.ts";
+import { withRequestDeadline } from "../util/deadline.ts";
 
 /**
  * The Google half of a console connector: build the consent URL, exchange the
@@ -35,6 +36,19 @@ const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 
 /**
+ * How long the code exchange waits on Google before it is a refusal.
+ *
+ * Ten seconds, the number src/auth/google.ts bounds the console's own handshake
+ * with: a different OAuth client and a different flow, but the same endpoint and
+ * the same human waiting on a redirect. Node's `fetch` has no overall timeout,
+ * so without it a stalled token endpoint holds this callback for undici's 300s
+ * header timeout — and an authorization code is single-use and short-lived, so
+ * every second past the point the exchange could have worked is spent on a code
+ * that will be refused anyway.
+ */
+const EXCHANGE_TIMEOUT_MS = 10_000;
+
+/**
  * The scopes strad adds to every connector consent, on top of the config's.
  *
  * They are how the callback learns WHICH account consented. Without them the
@@ -53,6 +67,7 @@ export const IDENTITY_SCOPES = ["openid", "email"] as const;
 /** A closed set. Every one of these is a strad word, safe to log and export. */
 export type ConnectorErrorCode =
   | "exchange_failed"
+  | "exchange_timed_out"
   | "no_refresh_token"
   | "no_identity"
   | "identity_unverified"
@@ -179,11 +194,26 @@ export async function exchangeCode(
     code_verifier: input.verifier,
   });
 
-  const res = await fetchImpl(TOKEN_ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body,
-  });
+  const res = await withRequestDeadline(
+    EXCHANGE_TIMEOUT_MS,
+    (signal) =>
+      fetchImpl(TOKEN_ENDPOINT, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body,
+        signal,
+      }),
+    // A CODE FROM THE CLOSED SET, like every other refusal here, because the
+    // callback puts it in a query string and an event field. A timeout is not
+    // `exchange_failed`: Google refusing a code and Google not answering send a
+    // human to different places, and the page's sentence for each says so.
+    () =>
+      new ConnectorError(
+        "exchange_timed_out",
+        `The authorization code exchange timed out after ` +
+          `${EXCHANGE_TIMEOUT_MS}ms. Nothing was written.`,
+      ),
+  );
 
   if (!res.ok) {
     // The STATUS and nothing else. Google's body on a failed exchange carries

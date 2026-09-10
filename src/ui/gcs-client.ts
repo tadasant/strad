@@ -34,6 +34,7 @@ import {
   type MintedToken,
   type ServiceAccount,
 } from "../secrets/parameters/service-account.ts";
+import { withRequestDeadline } from "../util/deadline.ts";
 
 /** One object in a bucket. Field names mirror the GCS JSON API. */
 export interface GcsObject {
@@ -72,6 +73,18 @@ export interface ListOptions {
  */
 const SCOPE = "https://www.googleapis.com/auth/devstorage.read_only";
 const STORAGE_API = "https://storage.googleapis.com/storage/v1";
+
+/**
+ * How long one listing waits on GCS before the page says so.
+ *
+ * The caller is a human looking at a console page that has not painted, and
+ * Node's `fetch` bounds nothing on its own, so an unbounded listing is a browser
+ * tab spinning for undici's 300s header timeout over a bucket that is never
+ * going to answer. Ten seconds is the number strad waits on Google elsewhere
+ * (src/auth/google.ts, and the mint this listing already goes through); a
+ * healthy list of a thousand objects is well inside it.
+ */
+const LIST_TIMEOUT_MS = 10_000;
 
 /** Injectable so tests can drive the client without touching the network. */
 export type { FetchLike } from "../secrets/parameters/service-account.ts";
@@ -129,9 +142,20 @@ export function createGcsLister(fetchImpl: FetchLike = fetch): GcsLister {
     if (options.pageToken) url.searchParams.set("pageToken", options.pageToken);
     url.searchParams.set("maxResults", String(options.maxResults ?? 1000));
 
-    const res = await fetchImpl(url, {
-      headers: { authorization: `Bearer ${token}` },
-    });
+    const res = await withRequestDeadline(
+      LIST_TIMEOUT_MS,
+      (signal) =>
+        fetchImpl(url, {
+          headers: { authorization: `Bearer ${token}` },
+          signal,
+        }),
+      // A GcsError, because that is what this module's callers switch on and
+      // what the console renders a status out of. `504` says the failure is
+      // upstream of the console rather than a refusal it could explain — the
+      // bound is on THIS end, and the listing changes nothing, so retrying is
+      // safe and is what the page suggests.
+      () => new GcsError(`GCS list timed out after ${LIST_TIMEOUT_MS}ms`, 504),
+    );
 
     if (!res.ok) {
       const body = await safeText(res);

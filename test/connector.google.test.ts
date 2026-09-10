@@ -360,6 +360,82 @@ describe("the exchange", () => {
   });
 });
 
+describe("the exchange is bounded", () => {
+  /** What the module asks for, and what this test is willing to wait. */
+  const EXCHANGE_TIMEOUT_MS = 10_000;
+  const FAST_MS = 5;
+
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * A token endpoint that accepts the request and then says nothing. It settles
+   * ONLY on the caller's signal, exactly as a real `fetch` does, so an exchange
+   * that passed no signal would hang this test rather than pass it.
+   *
+   * `AbortSignal.timeout` is armed by Node rather than through the global
+   * `setTimeout` a faked clock replaces, so the module keeps asking for its real
+   * ten seconds and the spy hands back five milliseconds. What is asked for is
+   * asserted; everything after the abort is real.
+   */
+  function stalledExchange(): { asked: number[]; fetchImpl: typeof fetch } {
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const asked: number[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      asked.push(ms);
+      return real(FAST_MS);
+    });
+    const fetchImpl = ((_input: unknown, init?: RequestInit) =>
+      new Promise<never>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason));
+      })) as typeof fetch;
+    return { asked, fetchImpl };
+  }
+
+  it("refuses with a code from the closed set rather than a raw abort", async () => {
+    const { asked, fetchImpl } = stalledExchange();
+
+    const err = await exchange(fetchImpl).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    // A `DOMException` reaching the callback would be a `store_failed` in the
+    // query string and in `strad.connector_refused` — the code for "the write
+    // was refused", on a flow that never got as far as a token.
+    expect(err).toBeInstanceOf(ConnectorError);
+    expect((err as ConnectorError).code).toBe("exchange_timed_out");
+    expect((err as Error).message).toMatch(
+      /timed out after 10000ms\. Nothing was written\./,
+    );
+    expect(asked).toEqual([EXCHANGE_TIMEOUT_MS]);
+  });
+
+  it("carries a live signal on the exchange that succeeds", async () => {
+    let seen: unknown;
+    const underlying = stubGoogle();
+    await exchange(((input: unknown, init?: RequestInit) => {
+      seen = init?.signal;
+      return underlying(input as string, init);
+    }) as typeof fetch);
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect((seen as AbortSignal).aborted).toBe(false);
+  });
+
+  it("says nothing about the code, the secret or the token when it times out", async () => {
+    // The module's standing rule, applied to the new refusal: every sentence
+    // here is strad's own, and this one interpolates a constant.
+    const { fetchImpl } = stalledExchange();
+    const message = await exchange(fetchImpl).then(
+      () => "",
+      (err: Error) => err.message,
+    );
+    expect(message).not.toBe("");
+    expect(message).not.toContain(CLIENT_SECRET);
+    expect(message).not.toContain("4/0AX-authorization-code");
+  });
+});
+
 describe("what a refusal is allowed to say", () => {
   it("reports a failed exchange by STATUS, never by Google's own words", async () => {
     const upstream =

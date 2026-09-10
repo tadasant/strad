@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DeadlineError, withDeadline } from "../src/util/deadline.ts";
+import {
+  DeadlineError,
+  withDeadline,
+  withRequestDeadline,
+} from "../src/util/deadline.ts";
 import { errorKind } from "../src/telemetry/redact.ts";
 
 describe("withDeadline", () => {
@@ -125,3 +129,99 @@ function spyOnTimers() {
   }) as unknown as typeof setTimeout);
   return { armed, cleared: vi.spyOn(global, "clearTimeout") };
 }
+
+describe("withRequestDeadline", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("resolves the work's value when it beats the clock", async () => {
+    await expect(
+      withRequestDeadline(
+        1000,
+        async () => "listed",
+        () => new Error("unreachable"),
+      ),
+    ).resolves.toBe("listed");
+  });
+
+  it("hands the work a signal that is live, and aborts it at the deadline", async () => {
+    // The signal is the difference between this helper and `withDeadline`: a
+    // `fetch` handed one is CANCELLED at the bound, so nothing is left running
+    // behind a caller that stopped waiting.
+    let seen: AbortSignal | undefined;
+    await withRequestDeadline(
+      10,
+      (signal) => {
+        seen = signal;
+        return new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason));
+        });
+      },
+      () => new Error("expired"),
+    ).catch(() => {});
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(seen?.aborted).toBe(true);
+    // undici's own name for the reason an `AbortSignal.timeout` gives.
+    expect((seen?.reason as Error).name).toBe("TimeoutError");
+  });
+
+  it("maps ITS OWN expiry onto the caller's error", async () => {
+    // The reason the mapping is here at all: an abort is a `DOMException`, not
+    // an `Error` subclass a module can name, so a caller that let one escape
+    // would hand its own handlers a class they do not recognise.
+    const mapped = new Error("google timed out");
+    await expect(
+      withRequestDeadline(
+        10,
+        (signal) =>
+          new Promise<never>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason));
+          }),
+        () => mapped,
+      ),
+    ).rejects.toBe(mapped);
+  });
+
+  it("lets the work's own failure through unchanged", async () => {
+    const boom = new SyntaxError("Unexpected token @");
+    await expect(
+      withRequestDeadline(
+        1000,
+        () => Promise.reject(boom),
+        () => new Error("unreachable"),
+      ),
+    ).rejects.toBe(boom);
+  });
+
+  it("does NOT claim an abort that a different signal caused", async () => {
+    // The guard that keeps a bound honest. `probeCapabilities` joins a signal
+    // of its own and `createGcpParameterStore` replaces this one outright, so
+    // an abort can arrive from a deadline that is not this one — and reporting
+    // it as "timed out after 10000ms" would name a bound nobody enforced.
+    const caller = new AbortController();
+    const err = await withRequestDeadline(
+      5,
+      async (signal) => {
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve()),
+        );
+        caller.abort(
+          new DOMException("the caller stopped waiting", "AbortError"),
+        );
+        throw caller.signal.reason;
+      },
+      () => new Error("mapped, and wrongly so"),
+    ).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBe(caller.signal.reason);
+  });
+
+  it("does not build the error on the path that does not expire", async () => {
+    // `onExpiry` is a thunk so a message — several of which interpolate a
+    // constant into a sentence — costs nothing on every successful call.
+    const onExpiry = vi.fn(() => new Error("expired"));
+    await withRequestDeadline(1000, async () => "ok", onExpiry);
+    expect(onExpiry).not.toHaveBeenCalled();
+  });
+});

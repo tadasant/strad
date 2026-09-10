@@ -725,6 +725,17 @@ The budget is small on purpose. Every read must still SETTLE — the runtime pro
 serves stale values when a refresh rejects, but has nothing to react to if a promise
 never settles — so retrying widens that bound rather than removing it.
 
+Every attempt is bounded, and so is the bearer it travels with. The store gives
+each request a fresh deadline of its own — a signal that has already fired would
+abort the next attempt instantly — and it hands that same deadline to the
+service-account token exchange it makes on the way, because a bearer fetched for a
+read is part of that read. The shared exchange carries a **ten-second** default of
+its own for callers that name no deadline, so no mint anywhere — a secrets read, a
+capability probe, a bucket listing — waits on a stalled token endpoint for undici's
+300 seconds. Its expiry is a `408` rather than a `504`: a stall is outside the
+transient set above, so the retry loop reports the deadline once instead of
+spending four of them on the same silent endpoint.
+
 None of that is specific to Parameter Manager, so none of it lives there. The
 policy — which statuses mean "not now", how `Retry-After` is read, how the
 backoff is jittered, and what a budget bounds — is `src/http/retry.ts`, and the
@@ -2242,13 +2253,16 @@ seconds — the bound the `/mcp` door uses for the same thing, for the reason it
 was written down with: a network blip is not an answer.
 
 Concurrent renders join one in-flight probe rather than each minting their own,
-and **that sharing is only safe because the probe is guaranteed to end.** Nothing
-about the probe itself guarantees it: the token mint carries no abort signal, and
-Node's `fetch` has no overall timeout, so a token endpoint that accepts a
-connection and then stalls holds the request until undici gives up at 300
-seconds, or forever if it trickles bytes. A shared entry cleared when the probe
-settles is an entry such a mint never clears, which made `GET /ui/:server` for
-that store hang on every later request until core was redeployed, with nothing
+and **that sharing is only safe because the probe is guaranteed to end.** The
+probe's own legs do not guarantee it on this page's terms: each carries a bound
+belonging to its own caller — the mint's ten-second default and the permissions
+call's `timeoutMs` — and neither of them answers "how long may a page render
+wait". An unbounded mint answered it worst of all, and that is the incident behind
+this paragraph: Node's `fetch` has no overall timeout, so a token endpoint that
+accepts a connection and then stalls holds the request until undici gives up at
+300 seconds, or forever if it trickles bytes. A shared entry cleared when the
+probe settles is an entry such a mint never clears, which made `GET /ui/:server`
+for that store hang on every later request until core was redeployed, with nothing
 logged and nothing timing out. Rotating a credential through this console is
 exactly what an operator could then not do.
 

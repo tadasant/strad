@@ -136,13 +136,13 @@ export async function probeCapabilities(
 /**
  * How long ONE caller waits on a probe before it is treated as unanswered.
  *
- * The probe's two legs are bounded differently and one of them is not bounded
- * at all: `probeCapabilities` aborts the `testIamPermissions` fetch after
- * `DEFAULT_TIMEOUT_MS`, but it builds that AbortController AFTER the token mint
- * returns, and `mintAccessToken` passes no signal. Node's `fetch` has no overall
- * timeout of its own, so a token endpoint that accepts the connection and then
- * stalls holds the request for undici's 300s header timeout — and indefinitely
- * if it trickles bytes.
+ * The probe's two legs are bounded separately and by their own callers'
+ * numbers: `probeCapabilities` aborts the `testIamPermissions` fetch after
+ * `DEFAULT_TIMEOUT_MS`, and it builds that AbortController AFTER the token mint
+ * returns — which is covered by the ten-second default the mint itself carries
+ * (`src/secrets/parameters/service-account.ts`). Added up they are a bound on
+ * the probe; what they are not is a bound on how long a PAGE RENDER waits, which
+ * is a different question with a different answer.
  *
  * SIX SECONDS IS THE /mcp DOOR'S NUMBER, deliberately. The `secrets` mount's
  * memo in `servers/secrets/shared/src/server.ts` already bounds the same probe
@@ -220,13 +220,17 @@ function probeWithDeadline(
  *
  * Concurrent renders join ONE probe rather than stampeding Google, and the entry
  * is cleared when that probe settles. Sharing a promise is only safe if the
- * promise settles, and `probeCapabilities` on its own carries no guarantee that
- * it will: its token mint passes no abort signal and Node's `fetch` has no
- * overall timeout. A raw probe in this entry, cleared in `.finally()`, is
- * therefore an entry a stalled mint never clears — and every later render of
- * that store's page joins the same hanging promise for the life of the process,
- * unlogged and untimed, with a redeploy the only cure. Which is exactly what an
- * operator trying to rotate a credential through this console cannot reach for.
+ * promise settles, and a probe left to the deadlines its two legs carry
+ * THEMSELVES settles in its own time rather than in this page's: the mint's
+ * ten-second default and the CRM call's `DEFAULT_TIMEOUT_MS` are one caller's
+ * bound each, and neither is the bound a render needs. An entry that inherited
+ * them, cleared in `.finally()`, is one every later render of that store's page
+ * joins for however long the slowest leg takes, unlogged and untimed by anything
+ * the console chose. An UNBOUNDED leg is the worst version of it and the reason
+ * this paragraph exists: a mint that never settles is an entry that is never
+ * cleared, so every later render joins the same hanging promise for the life of
+ * the process, with a redeploy the only cure — which is exactly what an operator
+ * trying to rotate a credential through this console cannot reach for.
  *
  * So the entry holds a probe bounded by construction. The deadline is what makes
  * the memo's own claim true — an answer for `ttlMs`, a non-answer for

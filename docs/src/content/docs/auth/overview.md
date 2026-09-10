@@ -110,6 +110,27 @@ redirect URI would be the relative string `/console/oauth/callback`, which Googl
 rejects, so an unset `publicUrl` keeps the gate on its 401 rather than sending
 anyone into that.
 
+### Both calls to Google are bounded at ten seconds
+
+The callback makes two outbound calls — the code exchange at
+`oauth2.googleapis.com/token`, then the JWKS fetch behind the ID-token
+verification — and both are on the one route. Node's `fetch` has no overall
+timeout of its own, so a Google endpoint that accepts the connection and then
+stalls holds a request for undici's 300-second header timeout, and forever if it
+trickles bytes. That is a sign-in that hangs rather than fails, holding an Express
+handler and a socket for every attempt a human makes at a login that is never
+going to arrive.
+
+So each call carries a ten-second deadline, the request is **cancelled** when it
+expires, and the expiry arrives as the same `AuthError` every other refusal on
+this path uses — `google token exchange timed out after 10000ms`. Ten seconds is
+strad talking to Google rather than a configured upstream, so it is a constant and
+not a config key; a healthy handshake answers in well under a second.
+
+The JWKS fetch is additionally **single-flight**: concurrent sign-ins on a cold
+cache join one request rather than making one each, and the shared promise is
+dropped the moment it settles either way, so a failed fetch is never cached.
+
 `next` is sanitised to a same-origin absolute path. A scheme-relative `//host`, a
 full URL, a backslash, or **any** C0 control character or DEL falls back to `/ui`
 — not just CR/LF, because a browser also strips TAB and FF while parsing a URL, so

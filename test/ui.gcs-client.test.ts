@@ -1,6 +1,14 @@
 import { generateKeyPairSync } from "node:crypto";
 import type { Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Registry } from "../src/gateway/registry.ts";
@@ -180,6 +188,101 @@ describe("createGcsLister mints through the shared service-account flow", () => 
 
     expect(err).toBeInstanceOf(GcsError);
     expect((err as GcsError).status).toBe(502);
+  });
+});
+
+describe("both legs of a listing are bounded", () => {
+  /** What each module asks for, and what this test is willing to wait. */
+  const TIMEOUT_MS = 10_000;
+  const FAST_MS = 5;
+
+  afterEach(() => vi.restoreAllMocks());
+
+  /**
+   * A host that accepts the request and then says nothing, at one of the two
+   * endpoints a listing touches. It settles ONLY on the caller's signal, as a
+   * real `fetch` does, so a leg that passed no signal would hang this test.
+   *
+   * `AbortSignal.timeout` is armed by Node rather than through the global
+   * `setTimeout` a faked clock replaces, so both modules keep asking for their
+   * real ten seconds and the spy hands back five milliseconds.
+   */
+  function stalling(at: "token" | "list"): {
+    asked: number[];
+    fetchImpl: typeof fetch;
+  } {
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const asked: number[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      asked.push(ms);
+      return real(FAST_MS);
+    });
+    const ok = stub(OK_TOKEN).fetchImpl;
+    const fetchImpl = ((input: URL | string, init?: RequestInit) => {
+      const stalls =
+        at === "token"
+          ? String(input) === TOKEN_URL
+          : String(input) !== TOKEN_URL;
+      if (!stalls) return ok(input as string, init);
+      return new Promise<never>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason));
+      });
+    }) as unknown as typeof fetch;
+    return { asked, fetchImpl };
+  }
+
+  it("turns a stalled token exchange into a GcsError the console can render", async () => {
+    const { asked, fetchImpl } = stalling("token");
+
+    const err = await createGcsLister(fetchImpl)(ACCOUNT, {
+      bucket: "demo",
+    }).catch((e: unknown) => e);
+
+    // Same shape as a refused exchange: the class src/ui/index.ts branches on
+    // and a status it renders. `408` and not `504` because a stall is not worth
+    // repeating — it is outside `TRANSIENT_STATUSES` (src/http/retry.ts), so the
+    // parameter store's retry loop reports the deadline once rather than
+    // spending four of them on the same silent endpoint.
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as GcsError).status).toBe(408);
+    expect((err as GcsError).message).toBe(
+      `GCS token exchange timed out after ${TIMEOUT_MS}ms`,
+    );
+    expect(asked).toEqual([TIMEOUT_MS]);
+  });
+
+  it("turns a stalled object listing into a 504 GcsError", async () => {
+    const { asked, fetchImpl } = stalling("list");
+
+    const err = await createGcsLister(fetchImpl)(ACCOUNT, {
+      bucket: "demo",
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as GcsError).status).toBe(504);
+    expect((err as GcsError).message).toBe(
+      `GCS list timed out after ${TIMEOUT_MS}ms`,
+    );
+    // Both legs asked for a bound: the mint's, then the listing's.
+    expect(asked).toEqual([TIMEOUT_MS, TIMEOUT_MS]);
+  });
+
+  it("carries a live signal on both legs of a listing that succeeds", async () => {
+    const seen: unknown[] = [];
+    const ok = stub(OK_TOKEN).fetchImpl;
+    const list = createGcsLister(((input: URL | string, init?: RequestInit) => {
+      seen.push(init?.signal);
+      return ok(input as string, init);
+    }) as unknown as typeof fetch);
+
+    await list(ACCOUNT, { bucket: "demo" });
+
+    expect(seen).toHaveLength(2);
+    for (const signal of seen) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect((signal as AbortSignal).aborted).toBe(false);
+    }
   });
 });
 
