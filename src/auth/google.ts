@@ -11,14 +11,23 @@ import { withRequestDeadline } from "../util/deadline.ts";
  * to that Workspace domain. So we check `hd`, and we do not check the suffix.
  *
  * Both outbound calls — the token exchange and the JWKS fetch — are bounded at
- * ten seconds, and both are on ONE route: `GET /console/oauth/callback`. Node's
- * `fetch` has no overall timeout, so an unbounded call at either site is a
- * sign-in that hangs for undici's 300s header timeout, holding an Express
- * handler and a socket for every attempt a human makes at a login that is never
- * going to arrive. Ten seconds is strad talking to Google — a value, not a
- * config knob, because there is no deployment whose choice this is — and a
- * healthy handshake answers in well under a second, so only something already
- * broken ever reaches it.
+ * ten seconds. Node's `fetch` has no overall timeout, so an unbounded call at
+ * either site is a sign-in that hangs for undici's 300s header timeout, holding
+ * an Express handler and a socket for every attempt a human makes at a login
+ * that is never going to arrive. Ten seconds is strad talking to Google — a
+ * value, not a config knob, because there is no deployment whose choice this is
+ * — and a healthy handshake answers in well under a second, so only something
+ * already broken ever reaches it.
+ *
+ * The two calls do NOT share a route. Both are on `GET /console/oauth/callback`
+ * for a console login, but `verifyGoogleIdToken` is exported and the connector
+ * consent flow (`src/connectors/google.ts`) calls it from its own callback, so
+ * the JWKS deadline bounds that route too. What does not travel there is this
+ * module's error CLASS: `AuthError` is the login route's word, and every one of
+ * them — this deadline's included — reaches the connector callback as a failure
+ * it classifies `store_failed`. That is true of the verifier's refusals
+ * generally rather than of the deadline in particular; a fast wrong answer is
+ * still an improvement on a five-minute hang.
  *
  * Fully implemented and ready. It activates the moment GOOGLE_CLIENT_ID and
  * GOOGLE_CLIENT_SECRET are present; until then the console falls back to the
@@ -99,7 +108,7 @@ export class GoogleOAuthProvider {
     // The deadline covers the body read as well as the response, because a
     // response that trickles its bytes is the stall a header timeout never
     // catches. The expiry arrives as an `AuthError` like every other refusal on
-    // this path — `/console/oauth/callback` (src/http/app.ts) handles that class
+    // this path — `/console/oauth/callback` (`src/http/app.ts`) handles that class
     // and would send a bare `DOMException` to its catch-all instead.
     const json = await withRequestDeadline(
       GOOGLE_TIMEOUT_MS,
@@ -184,6 +193,17 @@ let jwksCache: { keys: Jwk[]; expiresAt: number } | null = null;
 let jwksInFlight: Promise<Jwk[]> | null = null;
 
 /**
+ * Which reset era a fetch belongs to.
+ *
+ * `resetJwksCache()` can run while a fetch is in the air, and dropping the
+ * in-flight promise does not stop the request behind it. A late lander writing
+ * the key it fetched BEFORE the reset would defeat the reset it was told
+ * nothing about, so it checks the era it started in and keeps its keys to
+ * itself when the era has moved on.
+ */
+let jwksEra = 0;
+
+/**
  * Drop the cached JWKS, forcing the next verification to re-fetch. The cache is
  * process-wide, so a test that stubs `fetch` for one case would otherwise be
  * answered by the key a previous case installed.
@@ -195,13 +215,14 @@ let jwksInFlight: Promise<Jwk[]> | null = null;
 export function resetJwksCache(): void {
   jwksCache = null;
   jwksInFlight = null;
+  jwksEra += 1;
 }
 
 async function getJwks(): Promise<Jwk[]> {
   if (jwksCache && jwksCache.expiresAt > Date.now()) return jwksCache.keys;
   if (jwksInFlight) return jwksInFlight;
 
-  const flight = fetchJwks();
+  const flight = fetchJwks(jwksEra);
   jwksInFlight = flight;
   try {
     return await flight;
@@ -213,7 +234,7 @@ async function getJwks(): Promise<Jwk[]> {
   }
 }
 
-async function fetchJwks(): Promise<Jwk[]> {
+async function fetchJwks(era: number): Promise<Jwk[]> {
   const fetched = await withRequestDeadline(
     GOOGLE_TIMEOUT_MS,
     async (signal) => {
@@ -232,7 +253,9 @@ async function fetchJwks(): Promise<Jwk[]> {
       new AuthError(`google JWKS fetch timed out after ${GOOGLE_TIMEOUT_MS}ms`),
   );
 
-  jwksCache = { keys: fetched.keys, expiresAt: Date.now() + fetched.ttlMs };
+  if (era === jwksEra) {
+    jwksCache = { keys: fetched.keys, expiresAt: Date.now() + fetched.ttlMs };
+  }
   return fetched.keys;
 }
 

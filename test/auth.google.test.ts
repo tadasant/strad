@@ -470,8 +470,12 @@ describe("the outbound calls are bounded", () => {
     // assertions below undefined and every other case in this file green.
     stubFetch({ tokenBody: { id_token: rs256(claims()) } });
     await provider.completeAuth("the-code", "the-verifier");
-    expect(signals[TOKEN_ENDPOINT]).toBeInstanceOf(AbortSignal);
-    expect(signals[JWKS_URI]).toBeInstanceOf(AbortSignal);
+    for (const url of [TOKEN_ENDPOINT, JWKS_URI]) {
+      expect(signals[url]).toBeInstanceOf(AbortSignal);
+      // Live, not spent: a signal that had already fired would satisfy the
+      // instance check and abort the request it was handed to.
+      expect((signals[url] as AbortSignal).aborted).toBe(false);
+    }
   });
 
   it("turns a stalled token exchange into an AuthError naming the bound", async () => {

@@ -239,11 +239,12 @@ describe("both legs of a listing are bounded", () => {
       bucket: "demo",
     }).catch((e: unknown) => e);
 
-    // Same shape as a refused exchange: the class src/ui/index.ts branches on
-    // and a status it renders. `408` and not `504` because a stall is not worth
-    // repeating — it is outside `TRANSIENT_STATUSES` (src/http/retry.ts), so the
-    // parameter store's retry loop reports the deadline once rather than
-    // spending four of them on the same silent endpoint.
+    // Same shape as a refused exchange: the class `src/ui/index.ts` branches on
+    // and a status it renders. `408` and not `504` because no retry policy
+    // should read a deadline this end enforced as "not now" — it is outside
+    // `TRANSIENT_STATUSES` (`src/http/retry.ts`), so a caller that loops on
+    // status reports the bound once rather than spending four of them on an
+    // endpoint that is already silent.
     expect(err).toBeInstanceOf(GcsError);
     expect((err as GcsError).status).toBe(408);
     expect((err as GcsError).message).toBe(
@@ -266,6 +267,79 @@ describe("both legs of a listing are bounded", () => {
     );
     // Both legs asked for a bound: the mint's, then the listing's.
     expect(asked).toEqual([TIMEOUT_MS, TIMEOUT_MS]);
+  });
+
+  /** A 200 whose body opens, trickles, and errors the way undici does on abort. */
+  function trickling(): typeof fetch {
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => real(FAST_MS));
+    const ok = stub(OK_TOKEN).fetchImpl;
+    return ((input: URL | string, init?: RequestInit) => {
+      if (String(input) === TOKEN_URL) return ok(input as string, init);
+      const signal = init?.signal;
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"items":['));
+          signal?.addEventListener("abort", () =>
+            controller.error(signal.reason),
+          );
+        },
+      });
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+  }
+
+  it("maps a body that stalls AFTER the headers, not just a silent host", async () => {
+    // The stall a header timeout never catches, and the one a deadline gets
+    // wrong if only the `fetch` call is inside it: GCS answers 200 with a
+    // thousand objects to come and then trickles. The rejection surfaces out of
+    // `res.json()`, so a mapping that ended at the response would hand the
+    // console a raw `DOMException` — no class to branch on, no status to render.
+    const err = await createGcsLister(trickling())(ACCOUNT, {
+      bucket: "demo",
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as GcsError).status).toBe(504);
+  });
+
+  it("does not relabel a stalled token body as unreadable JSON", async () => {
+    // The mint's parse catch answers `502` — which IS in `TRANSIENT_STATUSES`
+    // (`src/http/retry.ts`) — so an abort mistaken for a malformed body is a
+    // deadline a caller's retry loop would spend four times over. The deadline
+    // keeps its own name: `408`.
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => real(FAST_MS));
+    const fetchImpl = ((_input: URL | string, init?: RequestInit) => {
+      const signal = init?.signal;
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"access_'));
+          signal?.addEventListener("abort", () =>
+            controller.error(signal.reason),
+          );
+        },
+      });
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    const err = await createGcsLister(fetchImpl)(ACCOUNT, {
+      bucket: "demo",
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(GcsError);
+    expect((err as GcsError).status).toBe(408);
+    expect((err as GcsError).message).toContain("timed out");
   });
 
   it("carries a live signal on both legs of a listing that succeeds", async () => {

@@ -411,6 +411,42 @@ describe("the exchange is bounded", () => {
     expect(asked).toEqual([EXCHANGE_TIMEOUT_MS]);
   });
 
+  it("maps a body that stalls AFTER the headers, not just a silent host", async () => {
+    // The failure a header timeout never catches, and the one an options-object
+    // deadline gets wrong if only the `fetch` call is inside it: Google answers
+    // 200, then trickles. The rejection arrives out of `res.json()`, so a
+    // mapping that ended at the response would let a `DOMException` reach
+    // `src/ui/connector.ts` — classified `store_failed`, "the parameter store
+    // refused the write", on a flow that never got as far as a token.
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => real(FAST_MS));
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      // A body that opens and never closes, erroring the way undici does when
+      // the caller's signal cancels the stream mid-read.
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"refresh_'));
+          signal?.addEventListener("abort", () =>
+            controller.error(signal.reason),
+          );
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const err = await exchange(fetchImpl).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(ConnectorError);
+    expect((err as ConnectorError).code).toBe("exchange_timed_out");
+  });
+
   it("carries a live signal on the exchange that succeeds", async () => {
     let seen: unknown;
     const underlying = stubGoogle();

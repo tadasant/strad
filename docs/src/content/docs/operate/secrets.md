@@ -726,15 +726,19 @@ serves stale values when a refresh rejects, but has nothing to react to if a pro
 never settles — so retrying widens that bound rather than removing it.
 
 Every attempt is bounded, and so is the bearer it travels with. The store gives
-each request a fresh deadline of its own — a signal that has already fired would
-abort the next attempt instantly — and it hands that same deadline to the
-service-account token exchange it makes on the way, because a bearer fetched for a
-read is part of that read. The shared exchange carries a **ten-second** default of
-its own for callers that name no deadline, so no mint anywhere — a secrets read, a
-capability probe, a bucket listing — waits on a stalled token endpoint for undici's
-300 seconds. Its expiry is a `408` rather than a `504`: a stall is outside the
-transient set above, so the retry loop reports the deadline once instead of
-spending four of them on the same silent endpoint.
+each request a deadline minted fresh for that attempt — a signal that has already
+fired would abort the next one instantly — and it gives the service-account token
+exchange it makes on the way a deadline of the same length, because a bearer
+fetched for a read is part of that read rather than a call with a bound of its
+own.
+
+The shared exchange also carries a **ten-second** default for callers that name no
+deadline at all, which is what the capability probe and the console's bucket
+browser reach it through: no mint anywhere waits on a stalled token endpoint for
+undici's 300 seconds. Its expiry is a `408` rather than a `504` because no retry
+policy should read a deadline this end enforced as "not now" — `408` is outside
+the transient set above, so a caller that loops on status reports the bound once
+rather than spending four of them on an endpoint that is already silent.
 
 None of that is specific to Parameter Manager, so none of it lives there. The
 policy — which statuses mean "not now", how `Retry-After` is read, how the

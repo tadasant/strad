@@ -131,6 +131,14 @@ The JWKS fetch is additionally **single-flight**: concurrent sign-ins on a cold
 cache join one request rather than making one each, and the shared promise is
 dropped the moment it settles either way, so a failed fetch is never cached.
 
+The ID-token verifier is shared with the [connector consent
+flow](/operate/connectors/), which calls it from its own callback, so that route
+is bounded by the same ten seconds. What does not travel with it is the error
+class: `AuthError` is this route's word, and one raised inside the verifier
+reaches the connector callback as a failure it reports generically. That is true
+of every verifier refusal on that route rather than of the deadline in
+particular.
+
 `next` is sanitised to a same-origin absolute path. A scheme-relative `//host`, a
 full URL, a backslash, or **any** C0 control character or DEL falls back to `/ui`
 — not just CR/LF, because a browser also strips TAB and FF while parsing a URL, so

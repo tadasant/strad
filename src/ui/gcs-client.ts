@@ -81,7 +81,7 @@ const STORAGE_API = "https://storage.googleapis.com/storage/v1";
  * Node's `fetch` bounds nothing on its own, so an unbounded listing is a browser
  * tab spinning for undici's 300s header timeout over a bucket that is never
  * going to answer. Ten seconds is the number strad waits on Google elsewhere
- * (src/auth/google.ts, and the mint this listing already goes through); a
+ * (`src/auth/google.ts`, and the mint this listing already goes through); a
  * healthy list of a thousand objects is well inside it.
  */
 const LIST_TIMEOUT_MS = 10_000;
@@ -142,13 +142,39 @@ export function createGcsLister(fetchImpl: FetchLike = fetch): GcsLister {
     if (options.pageToken) url.searchParams.set("pageToken", options.pageToken);
     url.searchParams.set("maxResults", String(options.maxResults ?? 1000));
 
-    const res = await withRequestDeadline(
+    // THE BODY READ IS INSIDE THE DEADLINE, not merely the response. A listing
+    // of a thousand objects is a body worth stalling in, and a rejection that
+    // arrived after this call returned would leave the console a raw
+    // `DOMException` — no class to branch on and no status to render.
+    const json = await withRequestDeadline(
       LIST_TIMEOUT_MS,
-      (signal) =>
-        fetchImpl(url, {
+      async (signal) => {
+        const res = await fetchImpl(url, {
           headers: { authorization: `Bearer ${token}` },
           signal,
-        }),
+        });
+
+        if (!res.ok) {
+          const body = await safeText(res);
+          throw new GcsError(
+            `GCS list failed: ${res.status} ${res.statusText}`,
+            res.status,
+            body,
+          );
+        }
+
+        return (await res.json()) as {
+          items?: {
+            name: string;
+            size?: string;
+            updated?: string;
+            contentType?: string;
+            storageClass?: string;
+          }[];
+          prefixes?: string[];
+          nextPageToken?: string;
+        };
+      },
       // A GcsError, because that is what this module's callers switch on and
       // what the console renders a status out of. `504` says the failure is
       // upstream of the console rather than a refusal it could explain — the
@@ -156,27 +182,6 @@ export function createGcsLister(fetchImpl: FetchLike = fetch): GcsLister {
       // safe and is what the page suggests.
       () => new GcsError(`GCS list timed out after ${LIST_TIMEOUT_MS}ms`, 504),
     );
-
-    if (!res.ok) {
-      const body = await safeText(res);
-      throw new GcsError(
-        `GCS list failed: ${res.status} ${res.statusText}`,
-        res.status,
-        body,
-      );
-    }
-
-    const json = (await res.json()) as {
-      items?: {
-        name: string;
-        size?: string;
-        updated?: string;
-        contentType?: string;
-        storageClass?: string;
-      }[];
-      prefixes?: string[];
-      nextPageToken?: string;
-    };
 
     return {
       objects: (json.items ?? []).map((it) => ({
