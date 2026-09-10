@@ -4,15 +4,15 @@
  * A bundle component sits on the private network with `internal_ports: [8080]`
  * and no public route. That is a REACHABILITY property, not an authorization
  * one — anything else that got into the VPC could reach these mounts, and every
- * upstream credential behind them. The strad image has always said so in
- * as many words (`authenticateInternal` in `src/gateway/router.ts`); this image
- * mounted every server with no gate at all until now, which is `HACKS.md` #13.
+ * upstream credential behind them. The strad image says so in as many words
+ * (`authenticateInternal` in `src/gateway/router.ts`); this image mounted every
+ * server with no gate at all, which is `HACKS.md` #13.
  *
  * The decision is `authorizePresence`, unchanged, from the module vendored out
  * of core (`npm run presence:sync`). Reusing it rather than writing a second
  * constant-time compare is the point: `/_strad/presence` and every `/mcp` mount
- * on this host now answer the same token the same way, with the same
- * fail-closed rule and the same two statuses.
+ * on this host answer the same token the same way, with the same fail-closed
+ * rule and the same two statuses.
  *
  *   - `STRAD_INTERNAL_TOKEN` unset → **503**, and NOTHING is served. Fail closed:
  *     a process that cannot tell core from anything else in the VPC must not
@@ -22,6 +22,12 @@
  *     boot without it), so 503 is a bug in the deployment, not a state to serve
  *     through.
  *   - token absent or wrong → **401**.
+ *
+ * The strad image's gate refuses both cases as one `Unauthenticated`, which
+ * `serve()` renders as 401. Same rule — nothing is served without the token —
+ * and one more bit of detail in the answer, because this host already drew that
+ * distinction on `/_strad/presence` and a mount answering the same credential
+ * differently from the route beside it would be the odd thing.
  *
  * `/healthz` deliberately stays OPEN. App Platform polls it from outside this
  * process with no credential; gating it would take the component down as

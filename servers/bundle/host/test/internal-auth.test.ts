@@ -94,27 +94,48 @@ describe("the decision", () => {
   });
 });
 
-/** A mount-shaped route behind the middleware, served over a real socket. */
-function serve(env: NodeJS.ProcessEnv): Promise<{ url: string; server: Server }> {
+/**
+ * A mount-shaped route behind the middleware, served over a real socket.
+ *
+ * The route shape mirrors `index.ts`: the gate, THEN the body parser, then the
+ * handler. `parsed` records whether the parser ran, which is the only way to see
+ * the ordering from outside — a request refused after its body was read looks
+ * identical on the wire to one refused before.
+ */
+function serve(env: NodeJS.ProcessEnv): Promise<{
+  url: string;
+  server: Server;
+  parsed: () => number;
+}> {
   const app = express();
   const internalOnly = requireInternalToken(env, timingSafeEqual);
+  let parsed = 0;
+  const jsonBody = express.json({ limit: "20mb" });
+  const countingBody = (req: never, res: never, next: () => void): void => {
+    parsed += 1;
+    jsonBody(req, res, next);
+  };
   app.get("/healthz", (_req, res) => {
     res.status(200).json({ ok: true });
   });
-  app.all("/gmail", internalOnly, (_req, res) => {
+  app.all("/gmail", internalOnly, countingBody, (_req, res) => {
     res.status(200).json({ served: true });
   });
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
-      resolve({ url: `http://127.0.0.1:${port}`, server });
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        server,
+        parsed: () => parsed,
+      });
     });
   });
 }
 
 describe("a mount behind the middleware", () => {
-  let gated: { url: string; server: Server };
-  let tokenless: { url: string; server: Server };
+  let gated: Awaited<ReturnType<typeof serve>>;
+  let tokenless: Awaited<ReturnType<typeof serve>>;
 
   beforeAll(async () => {
     gated = await serve({ STRAD_INTERNAL_TOKEN: TOKEN } as NodeJS.ProcessEnv);
@@ -169,6 +190,34 @@ describe("a mount behind the middleware", () => {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(res.status).toBe(503);
+  });
+
+  // A refusal must not cost what serving would have cost. `express.json` was
+  // mounted with `app.use` at first, which runs in stack-registration order —
+  // in front of every mount's gate — so an unauthenticated caller got 20MB of
+  // body read and parsed before being told no.
+  it("refuses without reading the body", async () => {
+    const before = gated.parsed();
+    const refused = await fetch(`${gated.url}/gmail`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(refused.status).toBe(401);
+    expect(gated.parsed()).toBe(before);
+
+    // …and still parses it for a caller that presents the token, which is the
+    // half a gate placed too early would break.
+    const served = await fetch(`${gated.url}/gmail`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(served.status).toBe(200);
+    expect(gated.parsed()).toBe(before + 1);
   });
 
   // App Platform's health prober holds no credential. Gating /healthz would

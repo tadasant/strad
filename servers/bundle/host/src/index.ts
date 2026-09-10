@@ -1492,9 +1492,15 @@ async function main(): Promise<void> {
   }
 
   // Gmail attachments, GCS uploads and document bodies are big; the 100kb default
-  // would truncate them into confusing protocol errors. Keep this AFTER the raw
-  // upload routes so JSON artifacts are stored as bytes rather than parsed away.
-  app.use(express.json({ limit: "20mb" }));
+  // would truncate them into confusing protocol errors.
+  //
+  // Named and attached PER ROUTE rather than mounted with `app.use`. A global
+  // parser runs in stack-registration order, so it would run in front of every
+  // mount's `internalOnly` — and an unauthenticated caller would get 20MB of its
+  // body read and parsed before being told no. The raw upload routes above make
+  // the same point from the other side: JSON artifacts there are stored as bytes
+  // rather than parsed away, which is why they had to be registered first.
+  const jsonBody = express.json({ limit: "20mb" });
 
   // Presence, for the console that cannot see this process.
   //
@@ -1513,7 +1519,7 @@ async function main(): Promise<void> {
   // implementation rather than two. What stays here is what only this process
   // knows — when it booted, and the version to report when the deploy baked no
   // STRAD_VERSION.
-  app.post(PRESENCE_ROUTE, (req, res) => {
+  app.post(PRESENCE_ROUTE, jsonBody, (req, res) => {
     const answer = presenceResponse({
       authorization: req.get("authorization"),
       body: req.body,
@@ -1525,20 +1531,22 @@ async function main(): Promise<void> {
     res.status(answer.status).set(answer.headers).json(answer.body);
   });
 
-  // Every mount, behind the internal token. `internalOnly` runs before the
-  // handler rather than as `app.use`, so the two routes above it — `/healthz`
-  // and `/_strad/presence` — keep the treatment each already had: one open, one
-  // authorized inside `presenceResponse` with the same comparator and the same
-  // two statuses. Double-gating presence would only change which of two
-  // identical refusals a caller reads.
+  // Every mount, behind the internal token — and `internalOnly` comes BEFORE
+  // `jsonBody`, so an unauthorized request is refused without its body having
+  // been read. The gate is attached per route rather than with `app.use` so the
+  // two routes above keep the treatment each already had: `/healthz` open for a
+  // prober that holds no credential, and `/_strad/presence` authorized inside
+  // `presenceResponse` with the same comparator and the same two statuses.
+  // Double-gating presence would only change which of two identical refusals a
+  // caller reads.
   for (const mount of mounts) {
     if (mount.sessionful) {
       const { post, session } = sessionfulHandler(mount);
-      app.post(`/${mount.slug}`, internalOnly, (req, res) => void post(req, res));
-      app.get(`/${mount.slug}`, internalOnly, (req, res) => void session(req, res));
-      app.delete(`/${mount.slug}`, internalOnly, (req, res) => void session(req, res));
+      app.post(`/${mount.slug}`, internalOnly, jsonBody, (req, res) => void post(req, res));
+      app.get(`/${mount.slug}`, internalOnly, jsonBody, (req, res) => void session(req, res));
+      app.delete(`/${mount.slug}`, internalOnly, jsonBody, (req, res) => void session(req, res));
     } else {
-      app.all(`/${mount.slug}`, internalOnly, statelessHandler(mount));
+      app.all(`/${mount.slug}`, internalOnly, jsonBody, statelessHandler(mount));
     }
   }
 
