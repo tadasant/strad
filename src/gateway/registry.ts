@@ -235,6 +235,13 @@ export class Registry {
           // ${bundle-name.PRIVATE_URL} into this env var at deploy time; it
           // resolves to http://bundle-name:8080 — ~4ms away, and never
           // reachable from the internet.
+          //
+          // "Never reachable from the internet" is a reachability property, not
+          // an authorization one, so the internal token rides along here too —
+          // from the code, unconditionally, rather than from a `headers:` entry
+          // each of thirty-two config entries would have to remember. The other
+          // half is the bundle host refusing a request without it
+          // (`servers/bundle/host/src/internal-auth.ts`).
           const base = privateUrlFor(server.bundle, env);
           adapters.set(
             server.slug,
@@ -244,9 +251,12 @@ export class Registry {
               endpoint: async () =>
                 resolving(server.slug, async () => ({
                   url: joinUrl(base, server.path),
-                  headers: await resolveMapAsync(
-                    server.headers,
-                    secrets.forServer(server.slug),
+                  headers: withInternalToken(
+                    await resolveMapAsync(
+                      server.headers,
+                      secrets.forServer(server.slug),
+                    ),
+                    env,
                   ),
                 })),
               timeoutMs: server.timeoutMs,
@@ -346,6 +356,28 @@ export function internalHeaders(
 ): Record<string, string> {
   const token = env.STRAD_INTERNAL_TOKEN;
   return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * The internal token, added to a supplementary component's configured headers.
+ *
+ * A configured `Authorization` WINS. The internal token is strad's own
+ * credential for its own containers; a `supplementary-image` entry that spells
+ * an authorization header is naming an upstream's, and quietly replacing it
+ * would break that server for the sake of a component the operator has told us
+ * is not one of ours. The match is case-insensitive because HTTP header names
+ * are, and because emitting both spellings is worse than either: `fetch` folds a
+ * record into `Headers` by APPENDING, so `Authorization` plus `authorization`
+ * would go out as one comma-joined value neither side can parse.
+ */
+export function withInternalToken(
+  headers: Record<string, string>,
+  env: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const declared = Object.keys(headers).some(
+    (name) => name.toLowerCase() === "authorization",
+  );
+  return declared ? headers : { ...internalHeaders(env), ...headers };
 }
 
 /**

@@ -338,22 +338,43 @@ one (hack #4).
 
 ---
 
-## 13. good-eggs `/mcp` has no bearer auth of its own
+## 13. A supplementary component's `/mcp` has no bearer auth of its own
 
-**What.** The good-eggs container serves `/mcp` unauthenticated. Its only
-protection is the network boundary: it is an internal-only App Platform component
-(`internal_ports: [8080]`, no public route), reachable solely by the core over
-the private network. This matches the proven browser-bundle PoC.
+**✅ RESOLVED.** Core presents the internal token to every `supplementary-image`
+component, and the `strad-bundle` host refuses a mount request without it.
 
-**Why.** The core→supplementary proxy path does not send an internal token by
-default (unlike the builtin-in-bundle path), so wiring token auth means adding a
-`headers:` entry on the config plus a check in `remote/`. Kept minimal for the
-first cut; reachability is already gated by the private network.
+**What.** The `strad-bundle` container — twenty-two mounts, and every upstream
+credential behind them — serves every mount unauthenticated. Its only protection
+is the network boundary: an internal-only App Platform component
+(`internal_ports: [8080]`, no public route), reachable by core over the private
+network. That is a REACHABILITY property, not an authorization one, and
+`src/gateway/router.ts` says so in as many words about the other half of the same
+seam. Anything else that gets into the VPC can talk to the mounts directly.
 
-**Undo (hardening).** Add `headers: { Authorization: "Bearer ${STRAD_INTERNAL_TOKEN}" }`
-to the good-eggs server entry and have `remote/` reject requests without it
-(`STRAD_INTERNAL_TOKEN` is already present in the bundle's env). Then the bundle
-authenticates the core even if the private network is ever breached.
+**Why.** The core→supplementary proxy path sends no internal token, unlike the
+builtin-in-bundle path, so the entry described the remedy as a config change:
+a `headers:` entry on the server entry plus a check in the image. That was the
+wrong shape. Thirty-two `supplementary-image` entries would each have had to
+remember the block, and the one that forgot would be silently open.
+
+**Undone by.** Two halves, in code rather than in config:
+
+- `withInternalToken()` in `src/gateway/registry.ts` adds
+  `Authorization: Bearer ${STRAD_INTERNAL_TOKEN}` to every `supplementary-image`
+  adapter, unconditionally and with no config entry involved. A configured
+  `Authorization` still wins — that one names an upstream's credential, not
+  strad's.
+- `requireInternalToken()` in `servers/bundle/host/src/internal-auth.ts` gates
+  every mount on it, through the same `authorizePresence` comparator
+  `/_strad/presence` already used: **401** for a missing or wrong token, **503**
+  when `STRAD_INTERNAL_TOKEN` is unset, and nothing served either way.
+
+`/healthz` stays open deliberately — App Platform's prober holds no credential,
+and a 401 there is a component taken out of service.
+
+**What remains.** The token is ONE shared secret broadcast to every supplementary
+component (#63), so the gate authenticates "a strad container" rather than
+"core". Per-component tokens are that entry's exit, not this one's.
 
 ---
 

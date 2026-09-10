@@ -61,6 +61,7 @@ import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
 import { slugEnvView } from "./env-prefix.js";
+import { requireInternalToken } from "./internal-auth.js";
 import { errMessage, log, logError, logWarn } from "./log.js";
 import {
   dropInheritedNames,
@@ -1436,8 +1437,19 @@ async function main(): Promise<void> {
   const app = express();
   app.disable("x-powered-by");
 
+  // The gate every MCP mount below sits behind: the shared STRAD_INTERNAL_TOKEN
+  // core presents on each proxied request, compared the way `/_strad/presence`
+  // already compares it, fail-closed when the token is unset. See
+  // `internal-auth.ts` for why "internal_ports: [8080]" was never the answer.
+  const internalOnly = requireInternalToken(process.env, timingSafeEqual);
+
   // Liveness for App Platform. Reports every mount and whether it is degraded —
-  // with 21 servers behind one health check, "ok: true" alone is not information.
+  // with 22 servers behind one health check, "ok: true" alone is not information.
+  //
+  // Deliberately OUTSIDE `internalOnly`. The platform's health prober holds no
+  // token, and a 401 here is a component App Platform takes out of service — an
+  // authorization fix that costs availability. It names slugs and paths and no
+  // credential, which is what makes leaving it open affordable.
   app.get("/healthz", (_req, res) => {
     res.status(200).json({
       ok: true,
@@ -1456,6 +1468,7 @@ async function main(): Promise<void> {
     if (!mount.upload) continue;
     app.post(
       `/${mount.slug}/upload/:token`,
+      internalOnly,
       express.raw({ type: "*/*", limit: "100mb" }),
       (req, res) => {
         void mount
@@ -1479,9 +1492,15 @@ async function main(): Promise<void> {
   }
 
   // Gmail attachments, GCS uploads and document bodies are big; the 100kb default
-  // would truncate them into confusing protocol errors. Keep this AFTER the raw
-  // upload routes so JSON artifacts are stored as bytes rather than parsed away.
-  app.use(express.json({ limit: "20mb" }));
+  // would truncate them into confusing protocol errors.
+  //
+  // Named and attached PER ROUTE rather than mounted with `app.use`. A global
+  // parser runs in stack-registration order, so it would run in front of every
+  // mount's `internalOnly` — and an unauthenticated caller would get 20MB of its
+  // body read and parsed before being told no. The raw upload routes above make
+  // the same point from the other side: JSON artifacts there are stored as bytes
+  // rather than parsed away, which is why they had to be registered first.
+  const jsonBody = express.json({ limit: "20mb" });
 
   // Presence, for the console that cannot see this process.
   //
@@ -1500,7 +1519,7 @@ async function main(): Promise<void> {
   // implementation rather than two. What stays here is what only this process
   // knows — when it booted, and the version to report when the deploy baked no
   // STRAD_VERSION.
-  app.post(PRESENCE_ROUTE, (req, res) => {
+  app.post(PRESENCE_ROUTE, jsonBody, (req, res) => {
     const answer = presenceResponse({
       authorization: req.get("authorization"),
       body: req.body,
@@ -1512,14 +1531,22 @@ async function main(): Promise<void> {
     res.status(answer.status).set(answer.headers).json(answer.body);
   });
 
+  // Every mount, behind the internal token — and `internalOnly` comes BEFORE
+  // `jsonBody`, so an unauthorized request is refused without its body having
+  // been read. The gate is attached per route rather than with `app.use` so the
+  // two routes above keep the treatment each already had: `/healthz` open for a
+  // prober that holds no credential, and `/_strad/presence` authorized inside
+  // `presenceResponse` with the same comparator and the same two statuses.
+  // Double-gating presence would only change which of two identical refusals a
+  // caller reads.
   for (const mount of mounts) {
     if (mount.sessionful) {
       const { post, session } = sessionfulHandler(mount);
-      app.post(`/${mount.slug}`, (req, res) => void post(req, res));
-      app.get(`/${mount.slug}`, (req, res) => void session(req, res));
-      app.delete(`/${mount.slug}`, (req, res) => void session(req, res));
+      app.post(`/${mount.slug}`, internalOnly, jsonBody, (req, res) => void post(req, res));
+      app.get(`/${mount.slug}`, internalOnly, jsonBody, (req, res) => void session(req, res));
+      app.delete(`/${mount.slug}`, internalOnly, jsonBody, (req, res) => void session(req, res));
     } else {
-      app.all(`/${mount.slug}`, statelessHandler(mount));
+      app.all(`/${mount.slug}`, internalOnly, jsonBody, statelessHandler(mount));
     }
   }
 

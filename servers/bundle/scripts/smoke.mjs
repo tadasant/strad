@@ -37,6 +37,19 @@ const BASE = process.env.SMOKE_BASE ?? `http://127.0.0.1:${process.env.PORT ?? 8
 const SHOW_TOOLS = process.argv.includes("--tools");
 const AS_JSON = process.argv.includes("--json");
 
+/**
+ * The mounts are gated on the internal token core presents (host
+ * `src/internal-auth.ts`), so this script has to present it too. It runs INSIDE
+ * the container, where `STRAD_INTERNAL_TOKEN` is already in `process.env` — the
+ * deploy bakes it onto every supplementary component, and CI passes it to
+ * `docker run`.
+ *
+ * `/healthz` is deliberately not gated and is fetched without it below, which is
+ * also how this script proves the platform's health prober still gets through.
+ */
+const TOKEN = process.env.STRAD_INTERNAL_TOKEN;
+const AUTH = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
+
 /** The mounts, and the tool count each should list at FULL capability. */
 const EXPECT = {
   slack: 13, // upstream's 9 plus the fork's four DM tools
@@ -133,11 +146,27 @@ async function rpc(path, body, sessionId) {
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
+      ...AUTH,
       ...(sessionId ? { "mcp-session-id": sessionId } : {}),
     },
     body: JSON.stringify(body),
   });
   const text = await res.text();
+  // The gate answers `{ "error": … }` with no `jsonrpc` field, and it answers it
+  // BEFORE any mount runs — so without this the next line reads `result` off
+  // undefined and every mount fails with a TypeError that names neither the
+  // status nor the token. 401 is a missing or wrong STRAD_INTERNAL_TOKEN; 503 is
+  // a container booted without one, which fails closed on purpose.
+  if (res.status === 401 || res.status === 503) {
+    let detail = text.slice(0, 200);
+    try {
+      detail = JSON.parse(text).error ?? detail;
+    } catch {}
+    throw new Error(
+      `HTTP ${res.status} from ${path}: ${detail}` +
+        (TOKEN ? "" : " (STRAD_INTERNAL_TOKEN is not set in this environment)"),
+    );
+  }
   // A streamable-HTTP response is either JSON or an SSE frame carrying JSON.
   const payload = text.startsWith("event:") || text.startsWith("data:")
     ? JSON.parse(text.split("\n").find((l) => l.startsWith("data:")).slice(5))

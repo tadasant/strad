@@ -130,14 +130,24 @@ Because that bundle is itself a strad that already namespaces its tools, the ada
 strips and restores the inner `<slug>__` prefix so you never see
 `bundled__bundled__whoami`.
 
+A `supplementary-image` component gets the same header, on the same terms — the
+gateway adds it to every such adapter rather than asking each config entry for a
+`headers:` block. A configured `Authorization` wins, because that one names an
+upstream's credential rather than strad's.
+
 <aside class="starlight-aside starlight-aside--note">
 
-**The private network is not an authorization story.** A strad-image bundle has no
-public route, but it still requires the shared `STRAD_INTERNAL_TOKEN` (constant-time
-compare) — anything else in the VPC could otherwise reach it. The `strad-bundle`
-image is the exception on its MCP mounts, and it is an open one: they have no bearer
-auth of their own and rely on having no public route. See `HACKS.md` #13. Its
-presence route does not share that exception — see below.
+**The private network is not an authorization story.** A bundle has no public
+route, but it still requires the shared `STRAD_INTERNAL_TOKEN`, compared in
+constant time — anything else in the VPC could otherwise reach it. That holds for
+both images: the strad image checks it in `authenticateInternal`, and the
+`strad-bundle` host checks it in front of every mount, through the same comparator
+its presence route uses. Neither serves anything when the token is unset — the
+strad image calls that 401 like any other refusal, the `strad-bundle` host calls
+it 503, the same distinction its presence route already drew — and both leave
+`/healthz` open, because App Platform's prober holds no credential. See
+[Known limitations #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter)
+for what one shared token still does not distinguish.
 
 </aside>
 

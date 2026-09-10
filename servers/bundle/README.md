@@ -186,6 +186,12 @@ docker exec <container> node /app/scripts/smoke.mjs [--tools]
 ```
 
 Lists tools from every mount and asserts the full-capability counts. It needs no
-credentials, which is why CI runs it on every PR. For `secrets` the count (4)
-is a security assertion: a fifth tool on a server whose contract is "no tool
+upstream credentials, which is why CI runs it on every PR. For `secrets` the count
+(4) is a security assertion: a fifth tool on a server whose contract is "no tool
 returns a SECRET value" is exactly what CI should catch.
+
+It does need the one credential the mounts are gated on: it reads
+`STRAD_INTERNAL_TOKEN` out of the container's own environment and presents it as a
+bearer token, exactly as core does. A deployed container always has it. A
+container run without one fails closed and every mount answers `503`, which the
+script reports as such rather than as a broken mount.
