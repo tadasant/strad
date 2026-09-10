@@ -138,6 +138,11 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       // renderer wrote to stderr. The span status is set here rather than left
       // to the `close` listener's `status >= 500` rule because a failure part
       // way through a streamed response has already sent a 200.
+      //
+      // Both are no-ops on a request the CLIENT abandoned: `close` fired first
+      // and the books are shut. That case is already legible — an aborted
+      // request is an aborted request — and the one this covers is the failure
+      // strad itself produced while the caller was still listening.
       outcome = "internal_error";
       span.setStatus({ code: SpanStatusCode.ERROR });
       throw err;

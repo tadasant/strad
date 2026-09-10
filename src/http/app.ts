@@ -122,22 +122,38 @@ export function createApp(opts: AppOptions): Express {
 
   app.disable("x-powered-by");
   app.set("trust proxy", true);
-  app.post("/mcp-upload/:slug/:token", (req, res) => {
-    const slug = req.params.slug;
-    const token = req.params.token;
-    const adapter = slug ? opts.registry.get(slug) : undefined;
-    if (adapter?.kind !== "supplementary-image" || !adapter.postRaw || !token) {
-      res.status(404).json({ error: "not_found" });
-      return;
-    }
-    void adapter
-      .postRaw(`/upload/${encodeURIComponent(token)}`, req, res)
-      .catch((err) => {
-        if (res.headersSent) return;
-        const message = errorText(err);
-        res.status(502).json({ error: "upload_proxy_failed", message });
-      });
-  });
+  // Its own answer rather than `jsonFailure`'s default, because this route
+  // RELAYS the upstream's message on purpose: the caller is a supplementary
+  // container's client, the proxied hop is strad's own private network, and "why
+  // could the gateway not reach it" is the only useful thing to say. 502, not
+  // 500 — the failure is a hop, not this process.
+  app.post(
+    "/mcp-upload/:slug/:token",
+    asyncRoute(
+      async (req, res) => {
+        const slug = req.params.slug;
+        const token = req.params.token;
+        const adapter = slug ? opts.registry.get(slug) : undefined;
+        if (
+          adapter?.kind !== "supplementary-image" ||
+          !adapter.postRaw ||
+          !token
+        ) {
+          res.status(404).json({ error: "not_found" });
+          return;
+        }
+        await adapter.postRaw(`/upload/${encodeURIComponent(token)}`, req, res);
+      },
+      jsonFailure(
+        "mcp_upload",
+        (err) => ({
+          error: "upload_proxy_failed",
+          message: errorText(err),
+        }),
+        502,
+      ),
+    ),
+  );
   app.use(express.json({ limit: "4mb" }));
 
   // --- health -------------------------------------------------------------

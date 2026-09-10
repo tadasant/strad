@@ -352,22 +352,30 @@ session stops one layer short of the wire.
 
 ### What `/mcp` answers when strad itself fails
 
-A failure strad does not otherwise classify — anything that throws below the
-authentication step, including the MCP SDK driving a caller-supplied body — is a
-**500 `{"error":"internal_error"}`** and nothing more. No message, no class, no
-upstream text: the same rule the rest of this endpoint keeps
-([telemetry](/operate/telemetry/)). The class name is written to the container's
-stderr under `strad.route_failed`, and the request is counted with an
-`internal_error` outcome so it shows up in the request metrics.
+A failure strad does not otherwise classify — anything that throws at or below
+the authentication step, including the MCP SDK driving a caller-supplied body —
+is a **500 `{"error":"internal_error"}`** and nothing more. No message, no class,
+no upstream text: the same rule the rest of this endpoint keeps
+([telemetry](/operate/telemetry/)). The class is written to the container's
+stderr under `strad.route_failed` and exported as that event's `error.kind`, and
+the request is counted with an `internal_error` outcome so the failure shows up
+in the request metrics rather than only in a log.
 
-That answer exists because the alternative was the container. Express 4 drops
-the promise an async handler returns and routes its rejection nowhere, and this
-process treats an unhandled rejection as fatal — so a defect that should have
-cost one caller one response used to cost every concurrent request on the
+That answer exists because the alternative is the container. Express 4 drops the
+promise an async handler returns and routes its rejection nowhere, and this
+process treats an unhandled rejection as fatal — so without a guard, a defect
+that costs one caller one response costs every concurrent request on the
 component. Every async route in strad is therefore mounted through one wrapper,
 `asyncRoute` in `src/http/async-route.ts`, which awaits the handler and hands
 the failure to that route's own renderer: JSON for `/mcp` and the machine
 routes, an HTML page for the console.
+
+One consequence is worth stating, because it is a narrowing. These failures are
+no longer fatal, so they no longer reach the [exception
+reporter](/operate/telemetry/#exception-reporting--glitchtip-over-the-sentry-protocol), which saw them as unhandled
+rejections and carried a stack. What replaces the stack is the metric — an
+`internal_error` outcome is countable and alertable, where a restart was neither
+— plus the event's kind and the class on stderr.
 
 ## Sizing bundles
 

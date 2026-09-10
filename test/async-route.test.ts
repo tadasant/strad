@@ -1,3 +1,9 @@
+import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import {
+  InMemoryLogRecordExporter,
+  LoggerProvider,
+  SimpleLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
 import express, { type Request, type Response } from "express";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -9,6 +15,11 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { asyncRoute, jsonFailure } from "../src/http/async-route.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
+import {
+  disableEventExport,
+  enableEventExport,
+  resetEventThrottle,
+} from "../src/telemetry/index.ts";
 import type { Capabilities } from "../src/secrets/parameters/index.ts";
 import {
   EnvSecretProvider,
@@ -68,7 +79,7 @@ describe("asyncRoute", () => {
       // The rejection went somewhere. `unhandledRejection` fires on a later
       // turn of the loop than the response, so give it one.
       await new Promise((r) => setTimeout(r, 20));
-      expect(rejections).toEqual([]);
+      expect(ours(rejections)).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
@@ -86,7 +97,7 @@ describe("asyncRoute", () => {
       // answers nothing, so an HTTP round trip here would only measure a
       // timeout. What is under test is the turn AFTER the renderer.
       const handler = asyncRoute(
-        () => Promise.reject(new Error("first")),
+        () => Promise.reject(new Error(`first ${CANARY}`)),
         () => {
           throw new Error("the renderer failed too");
         },
@@ -94,7 +105,7 @@ describe("asyncRoute", () => {
       handler({} as Request, {} as Response, () => {});
       await new Promise((r) => setTimeout(r, 20));
 
-      expect(rejections).toEqual([]);
+      expect(ours(rejections)).toEqual([]);
       const logged = errs.mock.calls.map((c) => String(c[0])).join("\n");
       expect(logged).toContain("route failure renderer threw");
       // The class, not the message — the same rule the renderers keep.
@@ -140,16 +151,112 @@ describe("jsonFailure", () => {
     }
   });
 
-  it("writes nothing to a response that has already been sent", () => {
+  it("ends a half-streamed response rather than leaving the caller hanging", () => {
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // Headers are out, so there is no status left to set — but /mcp streams,
+      // and a response left open costs the caller its own timeout and leaks the
+      // in-flight gauge, whose books are closed on `close`.
+      let ended = false;
+      const res = {
+        headersSent: true,
+        writableEnded: false,
+        status() {
+          throw new Error("must not be called");
+        },
+        end() {
+          ended = true;
+        },
+      } as unknown as Response;
+
+      jsonFailure("mcp")(res, new Error(CANARY));
+      expect(ended).toBe(true);
+    } finally {
+      errs.mockRestore();
+    }
+  });
+
+  it("leaves an already-ended response alone", () => {
     const errs = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const res = {
         headersSent: true,
+        writableEnded: true,
         status() {
           throw new Error("must not be called");
         },
+        end() {
+          throw new Error("must not be called");
+        },
       } as unknown as Response;
-      expect(() => jsonFailure("mcp")(res, new Error("x"))).not.toThrow();
+
+      expect(() => jsonFailure("mcp")(res, new Error(CANARY))).not.toThrow();
+    } finally {
+      errs.mockRestore();
+    }
+  });
+});
+
+// ===========================================================================
+// What the guard's event ships
+// ===========================================================================
+
+describe("strad.route_failed, exported", () => {
+  async function withExporter(
+    run: (exporter: InMemoryLogRecordExporter) => void,
+  ): Promise<void> {
+    const exporter = new InMemoryLogRecordExporter();
+    const provider = new LoggerProvider({
+      processors: [new SimpleLogRecordProcessor({ exporter })],
+    });
+    logs.disable();
+    logs.setGlobalLoggerProvider(provider);
+    enableEventExport("strad-test", "0.0.0");
+    try {
+      resetEventThrottle();
+      run(exporter);
+    } finally {
+      disableEventExport();
+      await provider.shutdown().catch(() => {});
+      logs.disable();
+    }
+  }
+
+  it("carries the route and a classified kind, and never the error text", async () => {
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withExporter((exporter) => {
+        const res = { headersSent: true, writableEnded: true } as Response;
+        jsonFailure("mcp")(res, new Error(`ECONNREFUSED ${CANARY}`));
+
+        const [record] = exporter.getFinishedLogRecords();
+        expect(record?.severityNumber).toBe(SeverityNumber.ERROR);
+        expect(record?.attributes["route"]).toBe("mcp");
+        // From redact.ts's fixed vocabulary, not from the message.
+        expect(record?.attributes["error.kind"]).toBe("upstream_unavailable");
+        expect(JSON.stringify(record?.attributes)).not.toContain(CANARY);
+        expect(record?.attributes["error"]).toBeUndefined();
+      });
+    } finally {
+      errs.mockRestore();
+    }
+  });
+
+  it("throttles per ROUTE, so one failing route cannot hide another", async () => {
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withExporter((exporter) => {
+        const res = { headersSent: true, writableEnded: true } as Response;
+        // This event carries no `slug`, so keying the throttle on `slug` alone
+        // would put every route in one 60s bucket and drop the second one.
+        for (let i = 0; i < 5; i++) jsonFailure("mcp")(res, new Error("x"));
+        jsonFailure("params_write")(res, new Error("x"));
+
+        const shipped = exporter
+          .getFinishedLogRecords()
+          .map((r) => r.attributes["route"]);
+        expect(shipped).toEqual(["mcp", "params_write"]);
+      });
     } finally {
       errs.mockRestore();
     }
@@ -213,8 +320,11 @@ servers:
     ({ server, baseUrl } = await listenOn(app));
   });
 
-  afterAll(() => {
-    server?.close();
+  afterAll(async () => {
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      server?.close(() => resolve());
+    });
   });
 
   async function post(): Promise<globalThis.Response> {
@@ -260,7 +370,7 @@ servers:
       // container down and the other two would never have been answered.
       for (let i = 0; i < 3; i++) expect((await post()).status).toBe(500);
       await new Promise((r) => setTimeout(r, 20));
-      expect(rejections).toEqual([]);
+      expect(ours(rejections)).toEqual([]);
 
       const health = await fetch(`${baseUrl}/healthz`);
       expect(health.status).toBe(200);
@@ -368,8 +478,11 @@ servers:
     ({ server, baseUrl } = await listenOn(app));
   });
 
-  afterAll(() => {
-    server?.close();
+  afterAll(async () => {
+    server?.closeAllConnections();
+    await new Promise<void>((resolve) => {
+      server?.close(() => resolve());
+    });
   });
 
   it("is a 500 HTML page, not the JSON a machine route would answer", async () => {
@@ -392,6 +505,20 @@ servers:
 });
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Only the rejections this suite planted.
+ *
+ * `unhandledRejection` is a PROCESS listener, so an unrelated rejection anywhere
+ * in this worker would otherwise fail an assertion that is not about it. Every
+ * error these tests throw carries the canary, which is what makes the filter
+ * exact rather than approximate.
+ */
+function ours(rejections: unknown[]): unknown[] {
+  return rejections.filter((r) =>
+    String((r as Error)?.message).includes(CANARY),
+  );
+}
 
 async function listenOn(
   app: ReturnType<typeof express>,

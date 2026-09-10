@@ -283,7 +283,7 @@ the process, and for each one the exact fields that may go with it.
 | `mcp.unavailable`                                                                      | 424 fail-closed: a slug asked for and not entitled                                                                                                                          |
 | `mcp.policy_unmatched_tools`                                                           | a `tools:` typo silently narrowing a toolset                                                                                                                                |
 | `strad.readiness_failed` / `_store_diagnostics_failed` / `strad.console_render_failed` | the event name only — that surface is failing                                                                                                                               |
-| `strad.route_failed`                                                                   | a route handler rejected and nothing under it caught — the route name only                                                                                                  |
+| `strad.route_failed`                                                                   | a route handler rejected and nothing under it caught — the route word, plus `error.kind`                                                                                    |
 | `strad.listening` / `strad.secrets_hydrated`                                           | what this build mounted, and which keys resolved                                                                                                                            |
 | `strad.shutdown`                                                                       | a clean SIGTERM. Its **absence** is an OOM kill                                                                                                                             |
 | `strad.param_written` / `_write_failed` / `_refused`                                   | a server persisting a credential that rotated under it                                                                                                                      |
@@ -328,11 +328,13 @@ mint metric series at will.
 
 Every exportable event a client can drive — `mcp.list_tools_failed`,
 `mcp.list_resources_failed`, `mcp.local_machine_offline`,
-`mcp.policy_unmatched_tools` and `mcp.unavailable` — is throttled to one exported
-record per slug per minute, for the same queue-starvation reason. A repeated
-fault is therefore under-reported by up to a minute in the ingestor; the streams
-are never throttled, and `strad.mcp.tool_surface` carries the same fact
-continuously. Fault events export at `SeverityNumber.ERROR`, so
+`mcp.server_unconfigured`, `mcp.policy_unmatched_tools`, `mcp.unavailable` and
+`strad.route_failed` — is throttled to one exported record per bucket per minute,
+for the same queue-starvation reason. The bucket is the slug, except for
+`strad.route_failed`, which carries none and buckets on the route instead, so a
+flood on one route cannot hide another route's first record. A repeated fault is
+therefore under-reported by up to a minute in the ingestor; the streams are never
+throttled, and `strad.mcp.tool_surface` carries the same fact continuously. Fault events export at `SeverityNumber.ERROR`, so
 `severity >= ERROR` finds them.
 
 ### The second table: what does not leave, and why

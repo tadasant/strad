@@ -1,5 +1,7 @@
 import type { Request, RequestHandler, Response } from "express";
 import { event } from "../telemetry/index.ts";
+import { errorKind } from "../telemetry/redact.ts";
+import { errorSummary } from "../util/error-text.ts";
 
 /**
  * The guard every async Express route in this process wears.
@@ -56,30 +58,47 @@ export function asyncRoute(
 }
 
 /**
- * The failure answer for a machine-facing route: a 500 with a fixed body.
+ * The failure answer for a machine-facing route: a fixed body at a fixed status.
  *
  * `route` is one of a handful of words written down at the call sites in this
  * repo, which is what makes it exportable (see `src/telemetry/events.ts`); the
- * error is reduced to its CLASS NAME and goes no further than stderr. That is
- * the same discipline `src/telemetry/redact.ts` keeps everywhere else: an
- * exception raised under `/mcp` can quote a request body or an upstream's
- * response, and neither is text this repo authored.
+ * error is reduced by `errorSummary` — the class name, and a message only for
+ * the one class whose message is known not to carry a value — and stays on
+ * stderr; what ships beside `route` is `error.kind`, one of the fixed words in
+ * `src/telemetry/redact.ts`. That is the same discipline redact.ts keeps
+ * everywhere else: an exception raised under `/mcp` can quote a request body or
+ * an upstream's response, and neither is text this repo authored.
  *
- * `headersSent` is checked because a handler can fail halfway through a
- * streamed response. There is no status left to set by then; the record of the
- * failure is still worth writing.
+ * `body` may be a function of the error for the one route that relays an
+ * upstream's message on purpose. `headersSent` is checked because a handler can
+ * fail halfway through a streamed response — there is no status left to set by
+ * then, but the response still has to be ENDED, or the caller waits out its own
+ * timeout and `/mcp` never closes its metric books (they are closed on `close`,
+ * see `src/gateway/router.ts`).
  */
 export function jsonFailure(
   route: string,
-  body: Record<string, unknown> = { error: "internal_error" },
+  body:
+    Record<string, unknown> | ((err: unknown) => Record<string, unknown>) = {
+    error: "internal_error",
+  },
+  status = 500,
 ): (res: Response, err: unknown) => void {
   return (res, err) => {
     event({
       evt: "strad.route_failed",
       route,
-      error: err instanceof Error ? err.name : "unknown",
+      error: errorSummary(err),
+      // The classification, computed HERE rather than left to the exporter's
+      // CLASSIFY_ERROR substitution: that path derives a kind from the `error`
+      // field, and this renderer never puts a message in it. `errorKind`
+      // returns one of a fixed set of words this repo wrote.
+      "error.kind": errorKind(err),
     });
-    if (res.headersSent) return;
-    res.status(500).json(body);
+    if (res.headersSent) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    res.status(status).json(typeof body === "function" ? body(err) : body);
   };
 }
