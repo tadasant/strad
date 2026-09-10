@@ -122,9 +122,31 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       span.end();
     });
 
-    await context.with(trace.setSpan(context.active(), span), () =>
-      serve(req, res, span, (o) => (outcome = o)),
-    );
+    try {
+      await context.with(trace.setSpan(context.active(), span), () =>
+        serve(req, res, span, (o) => (outcome = o)),
+      );
+    } catch (err) {
+      // The ANSWER to a failure here is the route guard's — this handler is
+      // mounted through `asyncRoute` (src/http/async-route.ts), which renders
+      // the 500. What has to happen before the rethrow is the BOOKKEEPING,
+      // because the books are closed by the `close` listener above and by then
+      // this frame is gone.
+      //
+      // Without the outcome, a request that failed inside strad is counted as
+      // `ok` in strad.mcp.requests and the only trace of it is whatever the
+      // renderer wrote to stderr. The span status is set here rather than left
+      // to the `close` listener's `status >= 500` rule because a failure part
+      // way through a streamed response has already sent a 200.
+      //
+      // Both are no-ops on a request the CLIENT abandoned: `close` fired first
+      // and the books are shut. That case is already legible — an aborted
+      // request is an aborted request — and the one this covers is the failure
+      // strad itself produced while the caller was still listening.
+      outcome = "internal_error";
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    }
   };
 
   async function serve(
@@ -320,9 +342,16 @@ export function createMcpHandler(opts: McpHandlerOptions) {
       sessionIdGenerator: undefined,
     });
 
+    // `.catch(() => {})` on both, and not for tidiness: this fires on EVERY
+    // request including every aborted one, a close can reject on a socket that
+    // is already gone, and an unhandled rejection takes this process down (see
+    // src/telemetry/errors.ts). There is nothing to do about a teardown that
+    // fails — the response is over — which is why the handler is empty rather
+    // than logging. Same shape as `servers/bundle/host/src/index.ts` and
+    // `src/gateway/adapters/http.ts`.
     res.on("close", () => {
-      void transport.close();
-      void server.close();
+      void transport.close().catch(() => {});
+      void server.close().catch(() => {});
     });
 
     await server.connect(transport);

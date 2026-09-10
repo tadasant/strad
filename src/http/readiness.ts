@@ -6,6 +6,7 @@ import {
 } from "../auth/index.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { asyncRoute, jsonFailure } from "./async-route.ts";
 import { entitledServers } from "../gateway/entitlements.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
@@ -372,93 +373,103 @@ export interface ReadinessHandlerOptions {
 export function createReadinessHandler(
   opts: ReadinessHandlerOptions,
 ): RequestHandler {
-  // Express 4 does not catch a rejected async handler, so everything below is
-  // guarded here: an unhandled rejection would leave the caller's request open
-  // until its own timeout, which for a machine consumer is the worst answer of
-  // the three (worse than a 500, which at least tells it something).
-  return async (req: Request, res: Response) => {
-    let principal: Principal;
-    try {
-      principal = await authenticateMcp(
-        req.headers.authorization,
-        opts.tokenStore,
-        opts.config.gateway.env,
-      );
-    } catch (err) {
-      if (err instanceof Unauthenticated) {
-        // The same opaque 401 /mcp returns. Telling a caller WHICH half of their
-        // token failed tells an attacker which half they got right.
-        res
-          .status(401)
-          .json({ error: "unauthenticated", message: "invalid token" });
+  // Guarded by `asyncRoute` (src/http/async-route.ts): an unhandled rejection
+  // would leave the caller's request open until its own timeout, which for a
+  // machine consumer is the worst answer of the three (worse than a 500, which
+  // at least tells it something) — and in this process it would also exit the
+  // container. The two `try` blocks below stay: they answer 401 and
+  // `readiness_failed` specifically, and a catch-all cannot.
+  return asyncRoute(
+    async (req: Request, res: Response) => {
+      let principal: Principal;
+      try {
+        principal = await authenticateMcp(
+          req.headers.authorization,
+          opts.tokenStore,
+          opts.config.gateway.env,
+        );
+      } catch (err) {
+        if (err instanceof Unauthenticated) {
+          // The same opaque 401 /mcp returns. Telling a caller WHICH half of their
+          // token failed tells an attacker which half they got right.
+          res
+            .status(401)
+            .json({ error: "unauthenticated", message: "invalid token" });
+          return;
+        }
+        res.status(500).json({ error: "readiness_failed" });
         return;
       }
-      res.status(500).json({ error: "readiness_failed" });
-      return;
-    }
 
-    // AUTHENTICATED IS NOT ENTITLED, and this report is deployment-wide.
-    //
-    // `/mcp` narrows the identical credential through entitledServers() — the
-    // query string proposes, the token disposes — so a surface that authenticated
-    // like /mcp and then answered for EVERY server would be a strict widening on
-    // the same token: a narrow role would learn every slug, every referenced
-    // secret NAME, the canonical paths, the project id, and the presence state of
-    // strad's own boot keys.
-    //
-    // The report cannot be meaningfully narrowed instead, because `ready` is a
-    // claim about the GATEWAY. A per-token subset would make the same field mean
-    // different things to different callers, which for a machine consumer is
-    // worse than a refusal. So the credential has to match the scope: entitled to
-    // every enabled server, or nothing. Zimmer's `admin` token (`servers: ["*"]`)
-    // passes; a per-server token does not.
-    const entitled = entitledServers(principal, opts.config);
-    const enabled = opts.config.servers.filter((s) => s.enabled);
-    if (enabled.some((s) => !entitled.has(s.slug))) {
-      res.status(403).json({
-        error: "forbidden",
-        message:
-          "This report covers every server on the gateway, so it requires a token " +
-          "entitled to every server on the gateway.",
-      });
-      return;
-    }
-
-    try {
-      const reading = await readDeploymentSecretStatus({
-        config: opts.config,
-        bag: opts.secrets,
-        env: opts.env,
-        secretProvider: opts.secretProvider,
-        fetchImpl: opts.fetchImpl,
-        presence: opts.presence,
-        store: opts.diagnosticStore,
-      });
-
-      // The RESPONSE is never cached: the answer changes the moment someone
-      // seeds a value, and a stale `ready: false` held by an intermediary is
-      // exactly the thing that would keep a fixed connector looking broken.
+      // AUTHENTICATED IS NOT ENTITLED, and this report is deployment-wide.
       //
-      // What is bounded rather than instant is the store READING behind it, and
-      // by one number: `gateway.secrets.ttlSeconds`. Each `${NAME}` lookup is
-      // performed per request but answered from the runtime provider's
-      // namespace snapshot, which that TTL governs; the store's own account of
-      // itself (the index + render pass) is held for the same TTL, capped at a
-      // minute, so a hard poller cannot turn this endpoint into a full render
-      // pass per request. The second one declares its staleness rather than
-      // hiding it: `store.diagnosis.ageSeconds` says how old those reads are.
-      res.set("cache-control", "no-store");
-      res.json(buildReadiness({ config: opts.config, env: opts.env, reading }));
-    } catch (err) {
-      // `observe()` already degrades a sick backend to per-name `error` states,
-      // so reaching here means something structural failed. The message is
-      // withheld rather than echoed: this is the one path whose error text did
-      // not come from code that promises to be value-free.
-      event({
-        evt: "strad.readiness_failed",
-        error: errorSummary(err),
-      });
-      if (!res.headersSent) res.status(500).json({ error: "readiness_failed" });
-    }
-  };
+      // `/mcp` narrows the identical credential through entitledServers() — the
+      // query string proposes, the token disposes — so a surface that authenticated
+      // like /mcp and then answered for EVERY server would be a strict widening on
+      // the same token: a narrow role would learn every slug, every referenced
+      // secret NAME, the canonical paths, the project id, and the presence state of
+      // strad's own boot keys.
+      //
+      // The report cannot be meaningfully narrowed instead, because `ready` is a
+      // claim about the GATEWAY. A per-token subset would make the same field mean
+      // different things to different callers, which for a machine consumer is
+      // worse than a refusal. So the credential has to match the scope: entitled to
+      // every enabled server, or nothing. Zimmer's `admin` token (`servers: ["*"]`)
+      // passes; a per-server token does not.
+      const entitled = entitledServers(principal, opts.config);
+      const enabled = opts.config.servers.filter((s) => s.enabled);
+      if (enabled.some((s) => !entitled.has(s.slug))) {
+        res.status(403).json({
+          error: "forbidden",
+          message:
+            "This report covers every server on the gateway, so it requires a token " +
+            "entitled to every server on the gateway.",
+        });
+        return;
+      }
+
+      try {
+        const reading = await readDeploymentSecretStatus({
+          config: opts.config,
+          bag: opts.secrets,
+          env: opts.env,
+          secretProvider: opts.secretProvider,
+          fetchImpl: opts.fetchImpl,
+          presence: opts.presence,
+          store: opts.diagnosticStore,
+        });
+
+        // The RESPONSE is never cached: the answer changes the moment someone
+        // seeds a value, and a stale `ready: false` held by an intermediary is
+        // exactly the thing that would keep a fixed connector looking broken.
+        //
+        // What is bounded rather than instant is the store READING behind it, and
+        // by one number: `gateway.secrets.ttlSeconds`. Each `${NAME}` lookup is
+        // performed per request but answered from the runtime provider's
+        // namespace snapshot, which that TTL governs; the store's own account of
+        // itself (the index + render pass) is held for the same TTL, capped at a
+        // minute, so a hard poller cannot turn this endpoint into a full render
+        // pass per request. The second one declares its staleness rather than
+        // hiding it: `store.diagnosis.ageSeconds` says how old those reads are.
+        res.set("cache-control", "no-store");
+        res.json(
+          buildReadiness({ config: opts.config, env: opts.env, reading }),
+        );
+      } catch (err) {
+        // `observe()` already degrades a sick backend to per-name `error` states,
+        // so reaching here means something structural failed. The message is
+        // withheld rather than echoed: this is the one path whose error text did
+        // not come from code that promises to be value-free.
+        event({
+          evt: "strad.readiness_failed",
+          error: errorSummary(err),
+        });
+        if (!res.headersSent)
+          res.status(500).json({ error: "readiness_failed" });
+      }
+      // The route's own word, not `internal_error`: a machine consumer switching
+      // on `error` should not meet a second shape on the same status.
+    },
+    jsonFailure("readiness", { error: "readiness_failed" }),
+  );
 }

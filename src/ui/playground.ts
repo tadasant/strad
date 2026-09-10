@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Express, RequestHandler, Request, Response } from "express";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
+import { asyncRoute, jsonFailure } from "../http/async-route.ts";
 import { entitledServers, resolveSelection } from "../gateway/entitlements.ts";
 import { buildGatewayServer } from "../gateway/mcpServer.ts";
 import type { Registry } from "../gateway/registry.ts";
@@ -176,11 +177,17 @@ export function mountPlayground(
     );
   });
 
+  // `asyncRoute` (src/http/async-route.ts) on both POST routes, and not because
+  // `withSession` is unguarded — its own `try` renders the upstream's words to
+  // the human who asked for them. It is what runs OUTSIDE that `try`: `decide()`,
+  // the linked transport pair, `buildGatewayServer()`, `consolePrincipal()`, and
+  // on the call route the body reading above it. An unhandled rejection out of
+  // any of those exits this process.
   app.post(
     "/playground/:server/tools/list",
     gate,
     requireJson,
-    async (req, res) => {
+    asyncRoute(async (req, res) => {
       await withSession(req, res, opts, policies, async (client, server) => {
         const listed = await client.listTools();
         const version = client.getServerVersion();
@@ -201,14 +208,14 @@ export function mountPlayground(
           tools: listed.tools.map((t) => shapeTool(t, server.slug)),
         });
       });
-    },
+    }, PLAYGROUND_FAILURE),
   );
 
   app.post(
     "/playground/:server/tools/call",
     gate,
     requireJson,
-    async (req, res) => {
+    asyncRoute(async (req, res) => {
       const body = req.body as { tool?: unknown; arguments?: unknown };
       const tool = typeof body?.tool === "string" ? body.tool : "";
       const args =
@@ -262,9 +269,23 @@ export function mountPlayground(
           result,
         });
       });
-    },
+    }, PLAYGROUND_FAILURE),
   );
 }
+
+/**
+ * The catch-all answer for both POST routes.
+ *
+ * `{ ok: false, error }` rather than the bare `{ error }` the machine routes
+ * answer with, because the page's own `failure()` reads exactly those two fields
+ * — a body it cannot read renders as "unknown error". The sentence is strad's
+ * own: reaching here means nothing in `withSession` classified the failure, so
+ * there is no upstream text worth trusting.
+ */
+const PLAYGROUND_FAILURE = jsonFailure("playground", {
+  ok: false,
+  error: "The console hit an unexpected error.",
+});
 
 /**
  * The second CSRF lock, in front of both POST routes.

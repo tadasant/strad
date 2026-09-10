@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
   consolePrincipal,
@@ -210,15 +211,17 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     );
   });
 
-  app.get(UI_PREFIX, gate, async (req, res) => {
-    // Express 4 does not catch a rejected async handler, so guard it here: any
-    // unexpected error becomes a 500 page rather than a hung request.
-    try {
-      await handleIndex(req, res, opts);
-    } catch (err) {
-      renderUnexpected(res, err);
-    }
-  });
+  // `asyncRoute` (src/http/async-route.ts), here and on every other console
+  // route: Express 4 does not catch a rejected async handler, so an unexpected
+  // error becomes a 500 page rather than a hung request — and, in this process,
+  // rather than an exit. `renderUnexpected` is passed in rather than reached
+  // for, which is what keeps this page's wording separate from the connector's
+  // (see the note on that function).
+  app.get(
+    UI_PREFIX,
+    gate,
+    asyncRoute((req, res) => handleIndex(req, res, opts), renderUnexpected),
+  );
 
   // `/playground/:server` and its two POST routes. Same gate, same process, and
   // deliberately NOT under `/ui/:server` — that path is the per-server resource
@@ -251,15 +254,14 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     res.redirect(302, UI_PREFIX);
   });
 
-  app.get(SERVER_ROUTE, gate, async (req, res) => {
-    // Express 4 does not catch a rejected async handler, so guard it here: any
-    // unexpected error becomes a 500 page rather than a hung request.
-    try {
-      await handleServerView(req, res, opts, gcsList);
-    } catch (err) {
-      renderUnexpected(res, err);
-    }
-  });
+  app.get(
+    SERVER_ROUTE,
+    gate,
+    asyncRoute(
+      (req, res) => handleServerView(req, res, opts, gcsList),
+      renderUnexpected,
+    ),
+  );
 
   for (const action of [
     "create",
@@ -269,13 +271,15 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     "delete",
     "refresh",
   ] as const) {
-    app.post(`${SERVER_ROUTE}/${action}`, gate, form, async (req, res) => {
-      try {
-        await handleSecretAction(action, req, res, opts);
-      } catch (err) {
-        renderUnexpected(res, err);
-      }
-    });
+    app.post(
+      `${SERVER_ROUTE}/${action}`,
+      gate,
+      form,
+      asyncRoute(
+        (req, res) => handleSecretAction(action, req, res, opts),
+        renderUnexpected,
+      ),
+    );
   }
 }
 

@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
+import { asyncRoute, jsonFailure } from "./async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
 import { authorizePresence } from "../secrets/presence.ts";
@@ -332,73 +333,70 @@ function target(
 export function createParamWriteHandler(
   opts: ParamsHandlerOptions,
 ): RequestHandler {
-  return (req: Request, res: Response) => {
-    void (async () => {
-      const found = target(req, res, opts, writableTarget);
-      if (!found) return;
+  // The inner `try` below is kept: it turns a store failure into a SPECIFIC
+  // status, which a catch-all cannot. What `asyncRoute` covers is everything
+  // ahead of it — the target lookup, the body parse, the store resolution — none
+  // of which was guarded at all.
+  return asyncRoute(async (req: Request, res: Response) => {
+    const found = target(req, res, opts, writableTarget);
+    if (!found) return;
 
-      const parsed = parseParamWriteRequest(req.body);
-      if (!parsed.ok) {
-        res.status(parsed.status).json({ error: parsed.error });
-        return;
-      }
+    const parsed = parseParamWriteRequest(req.body);
+    if (!parsed.ok) {
+      res.status(parsed.status).json({ error: parsed.error });
+      return;
+    }
 
-      const resolved = storeForPath(
-        opts.config,
-        opts.secrets,
-        found.path,
-        opts,
+    const resolved = storeForPath(opts.config, opts.secrets, found.path, opts);
+    if (!resolved.store) {
+      res
+        .status(503)
+        .json({ error: "store_unavailable", message: resolved.reason });
+      return;
+    }
+
+    try {
+      // `rotate()` and nothing else. It already applies the base64url envelope
+      // and, for a secret parameter, writes only to Secret Manager so the
+      // per-parameter `secretAccessor` grant survives. A second write path
+      // here would be a second chance to get both of those wrong.
+      await resolved.store.rotate(found.path, parsed.value);
+      // Both halves of what this process holds about the store, exactly as
+      // a console write drops them: the runtime providers' reading, and the
+      // diagnosis pass `/ui` and `/api/secrets/readiness` reuse for up to a
+      // minute. Without the second, a connector that has just healed itself
+      // through this route keeps reading as broken to whoever polls readiness.
+      opts.secretProvider?.invalidate();
+      forgetDeploymentDiagnosis({
+        env: opts.env,
+        store: opts.diagnosticStore,
+      });
+      event({
+        evt: "strad.param_written",
+        slug: found.slug,
+        variable: found.variable,
+      });
+      res.status(200).json({ protocol: PARAM_PROTOCOL, ok: true });
+    } catch (err) {
+      // LOUD. A failed write means the caller's next restart comes back with a
+      // dead credential, and the caller is the only thing that can say so in
+      // its own health — so it must learn that this failed rather than reading
+      // a 200 and moving on.
+      const status = err instanceof ParameterStoreError ? err.status : 502;
+      const message = errorSummary(err);
+      console.error(
+        `[strad] parameter write-back failed for ${found.path}: ${message}`,
       );
-      if (!resolved.store) {
-        res
-          .status(503)
-          .json({ error: "store_unavailable", message: resolved.reason });
-        return;
-      }
-
-      try {
-        // `rotate()` and nothing else. It already applies the base64url envelope
-        // and, for a secret parameter, writes only to Secret Manager so the
-        // per-parameter `secretAccessor` grant survives. A second write path
-        // here would be a second chance to get both of those wrong.
-        await resolved.store.rotate(found.path, parsed.value);
-        // Both halves of what this process holds about the store, exactly as
-        // a console write drops them: the runtime providers' reading, and the
-        // diagnosis pass `/ui` and `/api/secrets/readiness` reuse for up to a
-        // minute. Without the second, a connector that has just healed itself
-        // through this route keeps reading as broken to whoever polls readiness.
-        opts.secretProvider?.invalidate();
-        forgetDeploymentDiagnosis({
-          env: opts.env,
-          store: opts.diagnosticStore,
-        });
-        event({
-          evt: "strad.param_written",
-          slug: found.slug,
-          variable: found.variable,
-        });
-        res.status(200).json({ protocol: PARAM_PROTOCOL, ok: true });
-      } catch (err) {
-        // LOUD. A failed write means the caller's next restart comes back with a
-        // dead credential, and the caller is the only thing that can say so in
-        // its own health — so it must learn that this failed rather than reading
-        // a 200 and moving on.
-        const status = err instanceof ParameterStoreError ? err.status : 502;
-        const message = errorSummary(err);
-        console.error(
-          `[strad] parameter write-back failed for ${found.path}: ${message}`,
-        );
-        event({
-          evt: "strad.param_write_failed",
-          slug: found.slug,
-          variable: found.variable,
-        });
-        res
-          .status(status >= 400 && status < 600 ? status : 502)
-          .json({ error: "write_failed", message });
-      }
-    })();
-  };
+      event({
+        evt: "strad.param_write_failed",
+        slug: found.slug,
+        variable: found.variable,
+      });
+      res
+        .status(status >= 400 && status < 600 ? status : 502)
+        .json({ error: "write_failed", message });
+    }
+  }, jsonFailure("params_write"));
 }
 
 /**
@@ -417,56 +415,49 @@ export function createParamWriteHandler(
 export function createParamReadHandler(
   opts: ParamsHandlerOptions,
 ): RequestHandler {
-  return (req: Request, res: Response) => {
-    void (async () => {
-      const found = target(req, res, opts, readableTarget);
-      if (!found) return;
+  return asyncRoute(async (req: Request, res: Response) => {
+    const found = target(req, res, opts, readableTarget);
+    if (!found) return;
 
-      const resolved = storeForPath(
-        opts.config,
-        opts.secrets,
-        found.path,
-        opts,
-      );
-      if (!resolved.store) {
-        res
-          .status(503)
-          .json({ error: "store_unavailable", message: resolved.reason });
-        return;
-      }
+    const resolved = storeForPath(opts.config, opts.secrets, found.path, opts);
+    if (!resolved.store) {
+      res
+        .status(503)
+        .json({ error: "store_unavailable", message: resolved.reason });
+      return;
+    }
 
-      try {
-        const value = await resolved.store.reveal(found.path);
-        // The record a runtime refresh would otherwise not leave. Config strings
-        // only, never the value — see telemetry/events.ts.
-        event({
-          evt: "strad.param_read",
-          slug: found.slug,
-          variable: found.variable,
-        });
-        // Never cached, for the same reason the presence route is not: the
-        // answer changes the moment the caller itself writes a new one, and a
-        // stale hit is a dead credential handed to a fresh container.
-        res
-          .set("cache-control", "no-store")
-          .json({ protocol: PARAM_PROTOCOL, value });
-      } catch (err) {
-        // A parameter nobody has seeded is a 404, and the caller's correct
-        // response to it is to keep the value the deploy baked. That is not an
-        // incident: it is every deployment that has not rotated yet.
-        const status = err instanceof ParameterStoreError ? err.status : 502;
-        const message = errorSummary(err);
-        if (status !== 404) {
-          console.error(
-            `[strad] parameter read failed for ${found.path}: ${message}`,
-          );
-        }
-        res
-          .status(status >= 400 && status < 600 ? status : 502)
-          .json({ error: "read_failed", message });
+    try {
+      const value = await resolved.store.reveal(found.path);
+      // The record a runtime refresh would otherwise not leave. Config strings
+      // only, never the value — see telemetry/events.ts.
+      event({
+        evt: "strad.param_read",
+        slug: found.slug,
+        variable: found.variable,
+      });
+      // Never cached, for the same reason the presence route is not: the
+      // answer changes the moment the caller itself writes a new one, and a
+      // stale hit is a dead credential handed to a fresh container.
+      res
+        .set("cache-control", "no-store")
+        .json({ protocol: PARAM_PROTOCOL, value });
+    } catch (err) {
+      // A parameter nobody has seeded is a 404, and the caller's correct
+      // response to it is to keep the value the deploy baked. That is not an
+      // incident: it is every deployment that has not rotated yet.
+      const status = err instanceof ParameterStoreError ? err.status : 502;
+      const message = errorSummary(err);
+      if (status !== 404) {
+        console.error(
+          `[strad] parameter read failed for ${found.path}: ${message}`,
+        );
       }
-    })();
-  };
+      res
+        .status(status >= 400 && status < 600 ? status : 502)
+        .json({ error: "read_failed", message });
+    }
+  }, jsonFailure("params_read"));
 }
 
 /**

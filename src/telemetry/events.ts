@@ -230,6 +230,29 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.readiness_failed": [],
     "strad.store_diagnostics_failed": [],
     "strad.console_render_failed": [],
+    /**
+     * A route whose handler rejected with nothing underneath it catching —
+     * emitted by the one guard every async route wears
+     * (`src/http/async-route.ts`). Without that guard the same condition is a
+     * container exit, so this line is the difference between "a request failed"
+     * and "the component restarted", which is the operational question it
+     * answers.
+     *
+     * `route` is a word written down at the mount site — `mcp`, `readiness`,
+     * `params_write` — never a path or a slug from the wire. `error.kind` comes
+     * from the same closed vocabulary CLASSIFY_ERROR uses, computed by the
+     * renderer rather than substituted here, because this renderer keeps the
+     * message out of `error` in the first place: an exception raised under /mcp
+     * can quote a request body or an upstream's response, and neither is text
+     * this repo authored. What lands in `error` is the class, and it stays on
+     * stderr.
+     *
+     * These failures are no longer fatal, so they no longer reach the exception
+     * reporter, which used to see them as unhandled rejections and carry a
+     * stack. This record and the `internal_error` request outcome are what
+     * replace it.
+     */
+    "strad.route_failed": ["route", "error.kind"],
   });
 
 /**
@@ -367,6 +390,13 @@ const THROTTLED = new Set([
   "mcp.server_unconfigured",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
+  // A handler that rejects is a bug rather than a routine refusal, so this one
+  // is expected to be silent — but the surface it guards is /mcp, whose input a
+  // caller controls, and "a bug a client can drive on demand" is exactly the
+  // shape this set exists for. It keys on `route` rather than `slug` (see the
+  // key below), so a flood on one route does not hide the first record from
+  // another. stdout is not throttled.
+  "strad.route_failed",
 ]);
 const THROTTLE_MS = 60_000;
 const lastExported = new Map<string, number>();
@@ -405,7 +435,10 @@ export function event(payload: Record<string, unknown>): void {
   if (!allowed) return;
 
   if (THROTTLED.has(evt)) {
-    const key = `${evt}:${String(payload.slug ?? "")}`;
+    // `route` beside `slug` because the newest member of this set carries no
+    // slug: without it, one failing route's 60s bucket would swallow every
+    // other route's first record.
+    const key = `${evt}:${String(payload.slug ?? payload.route ?? "")}`;
     const now = Date.now();
     const last = lastExported.get(key);
     if (last !== undefined && now - last < THROTTLE_MS) return;

@@ -1,5 +1,6 @@
 import type { Express, Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
+import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import { sanitizeNext, stateMatches } from "../auth/session.ts";
@@ -104,21 +105,21 @@ export function mountConnector(
   // `oauth` cannot shadow the callback. Two segments would not match `/ui/:server`
   // anyway; ordering it here means that stays true if the route ever gains an
   // optional segment.
-  app.get(CONNECTOR_CALLBACK_PATH, gate, (req, res) => {
-    void handleCallback(req, res, opts).catch((err) => {
-      renderUnexpected(res, err);
-    });
-  });
+  app.get(
+    CONNECTOR_CALLBACK_PATH,
+    gate,
+    asyncRoute((req, res) => handleCallback(req, res, opts), renderUnexpected),
+  );
 
   // POST, not GET: it mints a transaction and redirects to a third party, and a
   // GET would be reachable from an <img> tag on any page in the world. The
   // session cookie is SameSite=Lax, so a cross-site POST arrives with no cookie
   // and the gate 401s it — the same CSRF posture as every other console write.
-  app.post(`${SERVER_ROUTE}/connect`, gate, (req, res) => {
-    void handleConnect(req, res, opts).catch((err) => {
-      renderUnexpected(res, err);
-    });
-  });
+  app.post(
+    `${SERVER_ROUTE}/connect`,
+    gate,
+    asyncRoute((req, res) => handleConnect(req, res, opts), renderUnexpected),
+  );
 }
 
 // ---------------------------------------------------------------------------
