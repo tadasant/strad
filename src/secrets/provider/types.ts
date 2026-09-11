@@ -9,9 +9,10 @@
  *
  * `loadSecrets` (see ../index.ts) snapshots a whole bag ONCE, at boot, from the
  * process environment. That is the right thing for a deployment whose secrets
- * arrive as App Platform SECRET env vars, and `EnvSecretProvider` is exactly
- * that, behind this interface. What it cannot do is notice a change, because
- * process.env does not change under a running container.
+ * arrive as App Platform SECRET env vars, and `EnvSecretProvider` reads the same
+ * source, one name at a time, behind this interface. What neither can do is
+ * notice a change, because process.env does not change under a running
+ * container.
  *
  * `null` means DEFINITIVELY ABSENT — the provider reached its backend and the
  * name was not there. A backend that is unreachable throws instead; the two are

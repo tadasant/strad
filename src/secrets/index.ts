@@ -9,15 +9,16 @@
  * resolves references in CI, at deploy time, and bakes the results onto the
  * spec as SECRET env vars — which is why changing one of those means a
  * redeploy. `SecretBag`, `loadSecrets` and `resolveMap` are those two paths.
- * `resolveRefs`, the single-value resolver `resolveMap` is built on, stays
- * private to this module: nothing outside it resolves one string against a bag,
- * and its behaviour is asserted through `resolveMap`.
+ * `resolveRefs`, the single-value resolver `resolveMap` is built on, is private
+ * to this module: nothing outside it calls it, and its behaviour is asserted
+ * through `resolveMap`. The console's non-throwing counterpart is `tryResolve`
+ * in `src/ui/resolve.ts`.
  *
  * The bag is every string-valued entry of the environment, read at the moment
  * `loadSecrets` is called. App Platform SECRET env vars are indistinguishable
  * from plain ones at runtime, which is exactly what this wants, and boot calls
- * it after hydration, so a store-backed deployment's bag carries what the store
- * supplied.
+ * it after hydration, so a store-backed deployment's bag carries the boot keys
+ * hydration pulled from the store.
  *
  * A snapshot cannot notice a rotation. The read path a running gateway takes for
  * a server's `${NAME}` is `src/secrets/provider/` — one name in, one value or

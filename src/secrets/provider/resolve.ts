@@ -4,8 +4,8 @@ import { SecretNotFoundError, type SecretProvider } from "./types.ts";
 /**
  * Resolve `${NAME}` references against a runtime provider.
  *
- * The synchronous `resolveRefs` in ../index.ts resolves against a STATIC bag and
- * is still the right tool for the deploy-side renderer, which holds every value
+ * The synchronous `resolveMap` in ../index.ts resolves against a STATIC bag and
+ * is the right tool for the deploy-side renderer, which holds every value
  * in hand and produces a document. These are its runtime counterparts: they ask
  * a provider, one name at a time, at the moment the value is needed.
  *
