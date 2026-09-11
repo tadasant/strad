@@ -6,8 +6,7 @@
  * four runtime deps (mcp-sdk, express, yaml, zod) and stays that way. Pulling in
  * the Storage SDK — hundreds of transitive packages, gRPC, the whole auth stack —
  * to render a read-only object browser would bloat the image the core is
- * intentionally lean about (see src/secrets/index.ts, which lazy-imports its GCP
- * dep for the same reason).
+ * intentionally lean about.
  *
  * So this is the minimum that lists a bucket: mint an OAuth2 access token from a
  * service-account key (the shared signed-JWT flow), then hit the GCS JSON API

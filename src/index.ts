@@ -125,7 +125,7 @@ async function main(): Promise<void> {
   // Every `${NAME}` a SERVER references goes through `secretProvider` instead,
   // on the request path. That is the difference between a secret you must
   // redeploy to change and one you do not.
-  const secrets = await loadSecrets();
+  const secrets = loadSecrets();
 
   // Boot-time guard, before anything can serve a request.
   assertDevBypassAllowed(config, env);

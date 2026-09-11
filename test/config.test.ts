@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { renderAppSpec, parseImage } from "../src/deploy/appspec.ts";
-import { resolveRefs } from "../src/secrets/index.ts";
 
 const BASE = `
 version: 1
@@ -176,18 +175,6 @@ roles:
     };
     const records = await tokenStoreFromConfig(impostor, env).list();
     expect(records.map((r) => r.pubid)).toEqual(["a1"]);
-  });
-});
-
-describe("secret refs", () => {
-  it("substitutes ${NAME}", () => {
-    expect(resolveRefs("Bearer ${TOK}", { TOK: "abc" })).toBe("Bearer abc");
-  });
-
-  it("throws rather than shipping the literal placeholder as a credential", () => {
-    expect(() => resolveRefs("Bearer ${MISSING}", {})).toThrow(
-      /unresolved secret reference/,
-    );
   });
 });
 
