@@ -35,6 +35,13 @@ name: Release a supplementary image
 # `refuse-off-main` guard mean exactly what they meant when this body lived in
 # the caller. `github.actor` likewise.
 #
+# `release-bundle-image.yml` IS a caller, and it is the one to be careful around:
+# `strad-bundle:latest` is what live staging tracks, and the bundle is the one
+# image whose absence cannot heal itself. Three of the five inputs below exist
+# for it — `file:`, `cache-scope:` and `refuse-off-main:` — and each defaults to
+# the value that is wrong for it, silently. `test/workflow-release-callers.test.ts`
+# asserts all three on that caller for exactly that reason.
+#
 # `release-image.yml` (the core image) is deliberately not a caller: it does
 # considerably more than build and push. Neither is `release-onepassword-image.yml`,
 # which loads the image it built and asserts the pinned `op` CLI inside it before

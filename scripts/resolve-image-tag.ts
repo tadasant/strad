@@ -12,11 +12,12 @@
  *   core    release-image.yml builds every commit except docs-only ones, so the
  *           walk steps past `**\/*.md` and `docs/**` and stops hard anywhere
  *           else.
- *   bundle  release-bundle-image.yml is `paths:`-filtered — twelve entries: the
- *           twelve trees the Dockerfile bakes, the bundle host, and the workflow
- *           itself — so most commits cut no bundle image and stepping past them
- *           is the normal case. That filter is READ from the workflow, not
- *           copied here.
+ *   bundle  release-bundle-image.yml is `paths:`-filtered — the fourteen trees
+ *           the Dockerfile bakes, the bundle host, the workflow itself and the
+ *           shared release body it delegates to — so most commits cut no bundle
+ *           image and stepping past them is the normal case. That filter is READ
+ *           from the workflow, not copied here, and no count of it is written
+ *           down anywhere a reader could trust over the list itself.
  *
  * Either way a commit that SHOULD have published and did not is a hard stop: the
  * release is still building or it failed, and deploying an older image against
