@@ -17,6 +17,7 @@ import {
 import type { RuntimeConfig } from "../config/runtime.ts";
 import { ConfigRejected } from "../config/runtime.ts";
 import {
+  AccessControlChanged,
   ImmutableFieldChanged,
   NotRuntimeCreatable,
   RUNTIME_CREATABLE_KINDS,
@@ -293,6 +294,9 @@ function handleEdit(
       copyable: [],
       revision: runtime.overlay().revision,
       source: runtime.sources().get(slug) ?? "file",
+      // The checked-in document declares it, so its access control is the
+      // deploy's — see assertNoAccessControlChange.
+      accessLocked: runtime.fileSlugs().has(slug),
       signedInAs: signedInLabel(res),
     }),
   );
@@ -343,6 +347,16 @@ async function handleSave(
    */
   const copiedFrom =
     typeof body.copiedFrom === "string" ? body.copiedFrom : undefined;
+
+  /**
+   * Whether the checked-in document declares the slug being written.
+   *
+   * Read from the BODY rather than from a parsed entry, because
+   * `entryFromForm` can throw on malformed input and this has to be known in
+   * order to redraw the form that reports the throw.
+   */
+  const targetSlug = String(body.slug ?? original ?? "");
+  const accessLocked = runtime.fileSlugs().has(targetSlug);
   const carrySource =
     before ??
     (copiedFrom ? rawEntry(runtime.document(), copiedFrom) : undefined);
@@ -357,12 +371,13 @@ async function handleSave(
           config: runtime.config(),
           // What they typed, not what was stored — a refusal that clears the
           // form is a refusal that costs the work.
-          entry: entryFromForm(body, carry),
+          entry: entryFromForm(body, carry, accessLocked),
           ...(original ? { slug: original } : {}),
           kind,
           copyable: original ? [] : copyable(runtime, kind),
           ...(copiedFrom ? { copiedFrom } : {}),
           revision: runtime.overlay().revision,
+          accessLocked,
           source: original
             ? (runtime.sources().get(original) ?? "file")
             : "store",
@@ -390,7 +405,7 @@ async function handleSave(
 
   let entry: Record<string, unknown>;
   try {
-    entry = entryFromForm(body, carry);
+    entry = entryFromForm(body, carry, accessLocked);
     requireSlug(entry);
     // `original` is undefined on an Add, so an Add onto an existing slug is a
     // collision rather than a replace. On an Edit it is the slug being edited,
@@ -410,6 +425,9 @@ async function handleSave(
     }
     // 409: what they asked for is well-formed, the roster it assumed is not.
     if (err instanceof SlugCollision) {
+      return redraw({ tone: "error", message: err.message }, 409);
+    }
+    if (err instanceof AccessControlChanged) {
       return redraw({ tone: "error", message: err.message }, 409);
     }
     throw err;
@@ -618,6 +636,7 @@ function pruned(entry: Record<string, unknown>): Record<string, unknown> {
 export function entryFromForm(
   body: Record<string, unknown>,
   before?: Record<string, unknown>,
+  accessLocked = false,
 ): Record<string, unknown> {
   const kind = str(body, "kind");
 
@@ -651,6 +670,16 @@ export function entryFromForm(
   // The form's own fields are authoritative — including when they are now
   // blank. Everything else on the original entry survives untouched.
   const owned = new Set([...Object.keys(common), ...formFieldsFor(kind)]);
+  if (accessLocked) {
+    // The form rendered these disabled, and a disabled input submits NOTHING —
+    // so owning them here would read "the human cleared the roles" out of a
+    // form that never offered them the chance. Hand them back to the carried
+    // entry, which is where the checked-in values are.
+    owned.delete("entitlements");
+    owned.delete("tools");
+    delete common.entitlements;
+    delete common.tools;
+  }
   const carried = Object.fromEntries(
     Object.entries(before ?? {}).filter(([k]) => !owned.has(k)),
   );

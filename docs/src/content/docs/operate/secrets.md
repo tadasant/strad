@@ -383,6 +383,24 @@ Before this, only the second namespace existed, so a name was a deployment-wide
 singleton: `telegram-ro` and `telegram-rw` both write `${TELEGRAM_API_HASH}` and
 could not be given different credentials, whatever was seeded where.
 
+### An entry authored at runtime reads layer 1 only
+
+A server entry added through [`gateway.configStore`](/operate/runtime-config/) —
+from the console at `/connectors`, or from the `connectors` builtin over `/mcp` —
+resolves its `${NAME}` refs against `/strad/{env}/mcp/{slug}/static/` and stops
+there. Layer 2 is not behind it.
+
+The caller of a runtime write chooses both the name and the URL it is
+interpolated into, so a chain ending at the gateway namespace and core's process
+environment would let such an entry read a credential it has no claim on and send
+it to a host that caller picked. `forServerIsolated` is the narrowed provider;
+[what a runtime write may
+reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach) has the
+reasoning and the other bound that goes with it.
+
+An entry the checked-in config declares is unaffected — both layers, in the order
+above. The bound follows provenance, not the ref syntax.
+
 ### A connector's variables are read from that namespace WITHOUT being referenced
 
 An `oauth:` connector names three variables — the OAuth client id, the client

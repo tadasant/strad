@@ -2861,6 +2861,15 @@ window still lose one, silently, and the loser is whichever wrote first. What
 bounds it is that writes are rare and come from one component: core is the only
 thing holding the admin credential, whichever door the write arrived through.
 
+**Neither gap means a runtime write is unbounded.** Two rules bound what a write
+may reach, as distinct from who may make one: a runtime-authored entry's
+`${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
+namespace and nothing else, so a connector `url:` cannot read core's process
+environment and send it off-box, and a runtime write may not change
+`entitlements:` or `tools:` on a slug the checked-in document declares. Both are
+in [Who may write, and what a write may
+reach](/operate/runtime-config/#who-may-write-and-what-a-write-may-reach).
+
 **Undo:** for the first, a credential path a running container reads rather than
 receives — what `paramsRefresh:` does for a value behind an already-listed name,
 widened to a name the spec never listed, which needs the bundle host to discover

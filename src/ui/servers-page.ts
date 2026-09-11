@@ -231,6 +231,15 @@ ${addMenu}
 
 export interface FormOptions {
   config: StradConfig;
+  /**
+   * Whether the checked-in config declares this slug.
+   *
+   * True locks the role checkboxes and the two tools fields, because
+   * `assertNoAccessControlChange` will refuse a write that moves them. A form
+   * that offers a control the save path rejects is a form that wastes the
+   * human's typing and teaches them the page is unreliable.
+   */
+  accessLocked?: boolean;
   /** The entry being edited, raw. Absent for a create. */
   entry?: Record<string, unknown>;
   /** The slug being edited. Absent for a create. */
@@ -308,16 +317,27 @@ function input(
   }${attrs.disabled ? " disabled" : ""} value="${esc(value)}" />`;
 }
 
-function area(name: string, value: string, rows = 4, id?: string): string {
-  return `<textarea class="in" name="${esc(name)}"${id ? ` id="${esc(id)}"` : ""} rows="${rows}">${esc(
-    value,
-  )}</textarea>`;
+function area(
+  name: string,
+  value: string,
+  rows = 4,
+  id?: string,
+  disabled = false,
+): string {
+  return `<textarea class="in" name="${esc(name)}"${id ? ` id="${esc(id)}"` : ""} rows="${rows}"${
+    disabled ? " disabled" : ""
+  }>${esc(value)}</textarea>`;
 }
 
-function checkbox(name: string, checked: boolean, label: string): string {
+function checkbox(
+  name: string,
+  checked: boolean,
+  label: string,
+  disabled = false,
+): string {
   return `<label class="field-check"><input type="checkbox" name="${esc(name)}"${
     checked ? " checked" : ""
-  } /> ${esc(label)}</label>`;
+  }${disabled ? " disabled" : ""} /> ${esc(label)}</label>`;
 }
 
 /** `GET /connectors/new` and `GET /connectors/:slug` — one form, two modes. */
@@ -392,14 +412,27 @@ ${field(
     ${
       roles.length > 0
         ? roles
-            .map((r) => checkbox(`entitlement:${r}`, entitled.has(r), r))
+            .map((r) =>
+              checkbox(
+                `entitlement:${r}`,
+                entitled.has(r),
+                r,
+                opts.accessLocked,
+              ),
+            )
             .join("\n")
         : `<span class="empty">This config declares no roles, so nothing can be entitled to this server.</span>`
     }
   </div>
   <span class="field-h">Which roles may select this server. A token holding
   none of them cannot reach it, whatever it puts in <code>?servers=</code>. A
-  server with no role is configured and unreachable.</span>
+  server with no role is configured and unreachable.${
+    opts.accessLocked
+      ? ` <strong>Fixed here:</strong> the checked-in config declares this
+         server, and who reaches it stays with the deploy. Change it there, or
+         point a new slug at the same upstream.`
+      : ""
+  }</span>
 </div>
 <div class="field">
   <span class="field-l">Enabled</span>
@@ -422,16 +455,21 @@ ${field(
   const policy = `
 ${field(
   "Tools: allow",
-  area("toolsAllow", lines(tools.allow), 4, "toolsAllow"),
+  area("toolsAllow", lines(tools.allow), 4, "toolsAllow", opts.accessLocked),
   `One tool name per line. An allow list is EXHAUSTIVE — a tool not named here
    is refused on <code>tools/call</code> and hidden from <code>tools/list</code>,
    so a tool the upstream renames silently disappears. Leave blank to allow
-   everything the upstream serves.`,
+   everything the upstream serves.${
+     opts.accessLocked
+       ? ` <strong>Fixed here:</strong> the checked-in config declares this
+          server, so its tool policy stays with the deploy.`
+       : ""
+   }`,
   { optional: true, id: "toolsAllow" },
 )}
 ${field(
   "Tools: deny",
-  area("toolsDeny", lines(tools.deny), 3, "toolsDeny"),
+  area("toolsDeny", lines(tools.deny), 3, "toolsDeny", opts.accessLocked),
   "One tool name per line, subtracted from whatever the allow list left. Use this when you want everything except a handful.",
   { optional: true, id: "toolsDeny" },
 )}

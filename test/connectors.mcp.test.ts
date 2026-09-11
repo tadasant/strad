@@ -16,6 +16,7 @@ import { createApp } from "../src/http/app.ts";
 import {
   EnvSecretProvider,
   sharedSecretProviders,
+  type ServerSecretProviders,
 } from "../src/secrets/provider/index.ts";
 
 /**
@@ -76,12 +77,36 @@ const upstreamToken = mintToken({
 
 const env: NodeJS.ProcessEnv = {
   STRAD_TOKENS: JSON.stringify([mcpToken.record]),
-  // What `${NOTES_TOKEN}` in the added connector's headers resolves to. The
-  // ref, not a literal, because that is the pattern this surface pushes — and
-  // because `get_connector` redacts a literal, which is what makes copying one
-  // through impossible on purpose.
-  NOTES_TOKEN: upstreamToken.plaintext,
 };
+
+/**
+ * The per-slug namespaces a store-backed deployment would hold.
+ *
+ * A runtime-authored entry resolves its `${NAME}` refs against its OWN
+ * namespace and nothing else (`forServerIsolated`), so a credential for one has
+ * to be here rather than in `env` — which is exactly the production shape, and
+ * exactly what stops a runtime `url:` reaching core's environment. Modelled
+ * rather than faked away, because a test that put the credential in `env` would
+ * pass only by exercising the chain this feature is not allowed to use.
+ */
+const slugSecrets: Record<string, Record<string, string>> = {
+  "notes-personal": { NOTES_TOKEN: upstreamToken.plaintext },
+  "notes-work": { NOTES_TOKEN: upstreamToken.plaintext },
+};
+
+function providers(): ServerSecretProviders {
+  const shared = new EnvSecretProvider(env);
+  return {
+    shared,
+    forServer: () => shared,
+    forServerIsolated: (slug) => ({
+      name: "slug-namespace",
+      get: (variable) => Promise.resolve(slugSecrets[slug]?.[variable] ?? null),
+      invalidate: () => undefined,
+    }),
+    invalidate: () => shared.invalidate(),
+  };
+}
 
 let upstream: Server;
 let upstreamUrl: string;
@@ -107,7 +132,7 @@ async function boot(
   const build = async (next: StradConfig) => {
     const registry = await Registry.build({
       config: next,
-      secrets: sharedSecretProviders(new EnvSecretProvider(env)),
+      secrets: providers(),
       mode: "core",
       env,
       runtime: () => runtimeRef.current,

@@ -2,6 +2,7 @@ import {
   EMPTY_OVERLAY,
   assertCreatable,
   assertEditable,
+  assertNoAccessControlChange,
   fileSlugs,
   mergeOverlay,
   sourcesFor,
@@ -108,6 +109,12 @@ export class RuntimeConfig {
     entry: Record<string, unknown>,
     before?: Record<string, unknown>,
   ): void {
+    // Before anything else, and on BOTH paths: a runtime write never moves the
+    // access control of a server the checked-in document declares. Keyed on the
+    // base document rather than on edit-vs-create, because remove-then-recreate
+    // is structurally a create and would otherwise walk around it.
+    assertNoAccessControlChange(this.base, entry);
+
     if (before) {
       assertEditable(before, entry);
       return;
@@ -183,7 +190,34 @@ export class RuntimeConfig {
         ]);
       }
 
-      await this.rebuild(result.config);
+      // PUBLISHED BEFORE THE REBUILD, and this ordering is load-bearing.
+      //
+      // The rebuild reads `sources()` to learn which slugs the overlay authored,
+      // because those resolve their `${NAME}` refs against their own namespace
+      // and nothing else (src/gateway/registry.ts). Publishing afterwards would
+      // mean the rebuild for the write that ADDS a slug still sees the previous
+      // overlay — so the new entry would not be in the runtime-authored set,
+      // and would be built with the full provider chain down to the process
+      // environment. That is the exfiltration path, reopened by an ordering.
+      //
+      // Everything below restores both fields on any failure, so a refusal
+      // still leaves the holder reporting exactly what it is serving.
+      const previousConfig = this.currentConfig;
+      const previousOverlay = this.currentOverlay;
+      this.currentConfig = result.config;
+      this.currentOverlay = overlay;
+
+      const restore = () => {
+        this.currentConfig = previousConfig;
+        this.currentOverlay = previousOverlay;
+      };
+
+      try {
+        await this.rebuild(result.config);
+      } catch (err) {
+        restore();
+        throw err;
+      }
 
       try {
         await this.store.write(overlay);
@@ -196,8 +230,11 @@ export class RuntimeConfig {
         //
         // Same rollback discipline as the parameter store's own create/rotate
         // (src/secrets/parameters/gcp.ts): a write that half-fails must be
-        // visible rather than plausible.
-        await this.rebuild(this.currentConfig).catch(() => {
+        // visible rather than plausible. `restore()` runs FIRST so the rebuild
+        // below reads the old sources, for the same reason the publish above
+        // runs first.
+        restore();
+        await this.rebuild(previousConfig).catch(() => {
           // The rollback failed too, so the process is serving a roster that is
           // not in the store and not what this holder reports. Nothing here can
           // fix that; saying so is the most this path can do.
@@ -209,9 +246,6 @@ export class RuntimeConfig {
         });
         throw err;
       }
-
-      this.currentConfig = result.config;
-      this.currentOverlay = overlay;
 
       // `by` is deliberately NOT on this record. It is a console identity — a
       // person's email — and the stored overlay already carries it for the
@@ -268,9 +302,19 @@ export class RuntimeConfig {
         return false;
       }
 
+      // Published before the rebuild, for the reason `apply` spells out: the
+      // rebuild reads `sources()`, and a slug this poll is adopting has to be
+      // in the runtime-authored set while its adapter is built.
+      const previousConfig = this.currentConfig;
+      const previousOverlay = this.currentOverlay;
+      this.currentConfig = result.config;
+      this.currentOverlay = next;
+
       try {
         await this.rebuild(result.config);
       } catch {
+        this.currentConfig = previousConfig;
+        this.currentOverlay = previousOverlay;
         event({
           evt: "strad.config_reload_failed",
           reason: "rebuild_failed",
@@ -278,9 +322,6 @@ export class RuntimeConfig {
         });
         return false;
       }
-
-      this.currentConfig = result.config;
-      this.currentOverlay = next;
       event({
         evt: "strad.config_reloaded",
         revision: next.revision,

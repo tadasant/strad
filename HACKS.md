@@ -4936,6 +4936,16 @@ The MCP door inherits that window rather than widening it: `save_connector`
 takes `expectedRevision` optionally, so a caller that read the roster first gets
 the same refusal, and one that did not gets the same last-writer-wins.
 
+**Neither gap means a runtime write is unbounded.** Two rules bound what one may
+reach, as distinct from who may make one. A runtime-authored entry's `${NAME}`
+refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/` namespace
+and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`), so a
+connector `url:` cannot read core's process environment and send it off-box. And
+a runtime write may not change `entitlements:` or `tools:` on a slug the
+checked-in document declares (`assertNoAccessControlChange`,
+`src/config/overlay.ts`), keyed on the document so remove-then-recreate is bound
+too. `docs/src/content/docs/operate/runtime-config.md` has both.
+
 **Why.** The first is physics, not policy: nothing in a running App Platform
 container can be handed a new environment variable, and a feature that pretended
 otherwise would ship a Save button whose result is a mount that lists no tools.

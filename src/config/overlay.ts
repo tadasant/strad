@@ -566,6 +566,60 @@ export function slugsIn(config: StradConfig): Set<string> {
 }
 
 export class SlugCollision extends Error {}
+export class AccessControlChanged extends Error {}
+
+/** `entitlements` / `tools`, compared without caring about order or absence. */
+function accessShape(entry: Record<string, unknown> | undefined): string {
+  const roles = Array.isArray(entry?.entitlements)
+    ? [...entry.entitlements].map(String).sort()
+    : [];
+  const tools = isPlainObject(entry?.tools) ? entry.tools : {};
+  const list = (v: unknown) =>
+    Array.isArray(v) ? [...v].map(String).sort() : [];
+  return JSON.stringify({
+    roles,
+    allow: list(tools.allow),
+    deny: list(tools.deny),
+  });
+}
+
+/**
+ * A runtime write may not change WHO reaches a server the checked-in document
+ * declares, or WHICH of its tools they get there.
+ *
+ * `entitlements:` and `tools:` are strad's two access-control decisions, and
+ * both are on the merge gate's permanent hold list — the ones where "the cost
+ * of being wrong is a disclosure no revert reaches". A roster editor that can
+ * move them is an access-control editor, and for a server the DEPLOY
+ * authorised, that authority belongs to the deploy: a human wrote those lines
+ * and a human reviewed them.
+ *
+ * Keyed on the checked-in document rather than on "is this an edit", because
+ * the alternative has an obvious way around it. Removing a file-declared slug
+ * and re-creating it through the overlay is, structurally, a create — so a rule
+ * that only bound edits would be bypassed by two calls instead of one. A slug
+ * the file names is bound however the write arrives, and stays bound while a
+ * removal is standing.
+ *
+ * A slug only the OVERLAY declares is unbound: nothing in the checked-in
+ * document is being overruled, and giving a connector you just created a role
+ * is the feature rather than an escalation.
+ */
+export function assertNoAccessControlChange(
+  baseDoc: unknown,
+  entry: Record<string, unknown>,
+): void {
+  const declared = rawEntry(baseDoc, String(entry.slug));
+  if (!declared) return;
+  if (accessShape(declared) === accessShape(entry)) return;
+  throw new AccessControlChanged(
+    `entitlements: and tools: cannot be changed at runtime on ${String(entry.slug)}, ` +
+      `because the checked-in config declares it. Those two decide who reaches ` +
+      `this server and which of its tools they get, and for a server the deploy ` +
+      `authorised they stay with the deploy. Change them in the checked-in ` +
+      `config, or point a NEW slug at the same upstream.`,
+  );
+}
 
 /**
  * Refuse a write that would land on a slug belonging to a DIFFERENT entry.

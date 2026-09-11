@@ -465,7 +465,15 @@ describe("assertEditable", () => {
     ).toThrow(/env/);
   });
 
-  it("allows a supplementary entry's tools policy and entitlements to move", () => {
+  it("does not itself bound tools policy or entitlements — that is a separate rule", () => {
+    // `assertEditable` is about fields only a DEPLOY can deliver. Who reaches a
+    // server and which of its tools they get is a different question with a
+    // different answer: `assertNoAccessControlChange`, keyed on the checked-in
+    // document rather than on edit-vs-create, and tested in
+    // test/connectors.isolation.test.ts. Both run from
+    // `RuntimeConfig.assertAcceptable`, so a write passes only if it clears
+    // both — this test is about the first one in isolation.
+
     const before = {
       slug: "g",
       kind: "supplementary-image",

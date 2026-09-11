@@ -99,6 +99,35 @@ describe("RuntimeConfig.apply", () => {
     expect((await wrapped.read()).servers.upserts).toHaveLength(1);
   });
 
+  it("publishes the new overlay BEFORE the rebuild reads it", async () => {
+    /**
+     * The ordering that decides whether a newly-added slug is treated as
+     * runtime-authored. `Registry.build` reads `sources()` to learn which
+     * entries resolve their `${NAME}` refs against their own namespace only;
+     * publishing after the rebuild meant the write that ADDS a slug rebuilt
+     * with the PREVIOUS overlay, so the new entry got the full provider chain
+     * down to the process environment — the exfiltration path, reopened by an
+     * ordering. Found against a live gateway, not by the unit tests.
+     */
+    const seen: (string | undefined)[] = [];
+    const runtime = runtimeWith(new MemoryConfigStore(), () => {
+      seen.push(runtime.sources().get("delta"));
+      return Promise.resolve();
+    });
+
+    await runtime.apply(plus(DELTA));
+    expect(seen).toEqual(["store"]);
+  });
+
+  it("un-publishes it again when the rebuild throws", async () => {
+    const runtime = runtimeWith(new MemoryConfigStore(), () =>
+      Promise.reject(new Error("nope")),
+    );
+    await expect(runtime.apply(plus(DELTA))).rejects.toThrow("nope");
+    expect(runtime.sources().has("delta")).toBe(false);
+    expect(runtime.overlay()).toEqual(EMPTY_OVERLAY);
+  });
+
   it("refuses an invalid roster without touching the store or the gateway", async () => {
     const store = new MemoryConfigStore();
     const rebuild = vi.fn(() => Promise.resolve());

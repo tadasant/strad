@@ -7,6 +7,7 @@ import type {
 import type { RuntimeConfig } from "../config/runtime.ts";
 import { ConfigRejected } from "../config/runtime.ts";
 import {
+  AccessControlChanged,
   ImmutableFieldChanged,
   NotRuntimeCreatable,
   RUNTIME_CREATABLE_KINDS,
@@ -165,7 +166,10 @@ const WRITE_TOOLS: Tool[] = [
       "written unless it passes. Kinds that can be created: " +
       RUNTIME_CREATABLE_KINDS.join(", ") +
       " — a `builtin` never can, because its module has to ship inside the image, and a " +
-      "`supplementary-image` only onto a mount this deployment already runs.",
+      "`supplementary-image` only onto a mount this deployment already runs. For a slug " +
+      "the CHECKED-IN config declares, `entitlements:` and `tools:` cannot be changed " +
+      "here at all: those decide who reaches that server and which of its tools they " +
+      "get, and for a server the deploy authorised they stay with the deploy.",
     inputSchema: {
       type: "object",
       properties: {
@@ -491,7 +495,8 @@ async function write(
     if (
       err instanceof NotRuntimeCreatable ||
       err instanceof ImmutableFieldChanged ||
-      err instanceof SlugCollision
+      err instanceof SlugCollision ||
+      err instanceof AccessControlChanged
     ) {
       return FAILURE(err.message);
     }

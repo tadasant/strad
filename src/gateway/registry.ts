@@ -163,6 +163,28 @@ export class Registry {
     const resolving = <T>(slug: string, resolve: () => Promise<T>) =>
       resolvingFor(slug, waived.get(slug) ?? EMPTY, resolve);
 
+    /**
+     * Slugs the RUNTIME overlay authored, rather than the checked-in document.
+     *
+     * Their `${NAME}` refs resolve against the slug's own namespace and nothing
+     * else — see `forServerIsolated`. The caller of a runtime write chooses
+     * both the name and the URL it lands in, so the ordinary chain (which ends
+     * at core's process environment) would turn a connector's `url:` into a
+     * credential exfiltration primitive.
+     *
+     * Read from the roster holder at BUILD time, which is correct because the
+     * registry is rebuilt on every roster change — the set is never stale.
+     */
+    const runtimeAuthored = new Set<string>();
+    for (const [slug, source] of opts.runtime?.()?.sources() ?? []) {
+      if (source === "store") runtimeAuthored.add(slug);
+    }
+    /** This slug's secret provider, narrowed when the roster authored it. */
+    const providerFor = (slug: string) =>
+      runtimeAuthored.has(slug)
+        ? secrets.forServerIsolated(slug)
+        : secrets.forServer(slug);
+
     const resolver = opts.resolver;
     const paramCache = resolver
       ? new NamespaceView((namespace) => resolver.resolve(namespace), {
@@ -177,7 +199,7 @@ export class Registry {
       (server: Extract<StradConfig["servers"][number], { kind: "builtin" }>) =>
       async (): Promise<Record<string, unknown>> => {
         const base = await resolving(server.slug, () =>
-          resolveOptionsAsync(server.options, secrets.forServer(server.slug)),
+          resolveOptionsAsync(server.options, providerFor(server.slug)),
         );
         if (!server.params || !paramCache) return base;
         // `params: true` takes the slug's namespace WHOLESALE, which since the
@@ -253,7 +275,7 @@ export class Registry {
               kind: server.kind,
               endpoint: async () =>
                 resolving(server.slug, async () => {
-                  const provider = secrets.forServer(server.slug);
+                  const provider = providerFor(server.slug);
                   const url = await resolveRefsAsync(server.url, provider);
                   const headers = await resolveMapAsync(
                     server.headers,
@@ -322,7 +344,7 @@ export class Registry {
                   headers: withInternalToken(
                     await resolveMapAsync(
                       server.headers,
-                      secrets.forServer(server.slug),
+                      providerFor(server.slug),
                     ),
                     env,
                   ),
