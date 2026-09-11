@@ -99,7 +99,9 @@ changes what a mount executes. So everything strad cannot honour is a **hard
 error** rather than a default: `type: "stdio"`, `type: "sse"`, `oauth`,
 `command` / `args` / `env` on a remote entry, pipe-chained interpolation
 (`${env:A | value:b}`), the `input` and `op` schemes and every other scheme, a
-bare `${NAME}`, and a `${...}` in `title` or `description`. A key that is not a
+bare `${NAME}`, a `${...}` in `title` or `description`, and a `value:` literal
+carrying `$`, `{` or `}` (the SEP defines no escape, and a literal is spliced
+into a value that is scanned for `${NAME}` later). A key that is not a
 legal strad slug is an error too, with the slug it would have been offered as a
 suggestion and never applied — `My_Server` and `my-server` are two legal SEP
 names that fold to one slug, and a slug names this server's variables on the box.

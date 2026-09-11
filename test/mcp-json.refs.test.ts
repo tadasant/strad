@@ -10,7 +10,6 @@
 import { describe, expect, it } from "vitest";
 import {
   McpJsonError,
-  hasInterpolation,
   rewriteInterpolations,
 } from "../src/config/mcp-json-refs.ts";
 
@@ -49,11 +48,6 @@ describe("mcp.json interpolation — what is rewritten", () => {
       "https://mcp.deepwiki.com/mcp",
     );
   });
-
-  it("reports whether a string carries anything to rewrite", () => {
-    expect(hasInterpolation("Bearer ${env:T}")).toBe(true);
-    expect(hasInterpolation("Bearer literal")).toBe(false);
-  });
 });
 
 describe("mcp.json interpolation — what is refused", () => {
@@ -88,10 +82,32 @@ describe("mcp.json interpolation — what is refused", () => {
     refuses("${env:9LIVES}", /does not name an environment variable/);
   });
 
-  it("refuses a ${value:...} literal that would look like a reference", () => {
-    // Spliced in, it would become a `${NAME}` nobody wrote, resolved later by
-    // a renderer that cannot tell the difference.
-    refuses("${value:a${b}", /may not contain/);
+  it("refuses a ${value:...} literal carrying any of $, { or }", () => {
+    // Spliced in, one of these can assemble a `${NAME}` nobody wrote, resolved
+    // later by a renderer that cannot tell the difference — and the substring
+    // `${` is not the thing to refuse, because the two characters can arrive
+    // from two different places.
+    refuses("${value:a$b}", /may not contain/);
+    refuses("${value:a{b}", /may not contain/);
+    refuses("${value:$}{SECRET}", /may not contain/);
+    refuses("${value:$}${value:{SECRET}}", /may not contain/);
+  });
+
+  it("never echoes a payload in a refusal — a value: literal is a config literal", () => {
+    for (const value of [
+      "${env:FOO | value:hunter2}",
+      "${hunter2 with a space}",
+      "${env:hunter2-with-dash}",
+      "${vault:hunter2}",
+      "${value:hunter2$}",
+    ]) {
+      try {
+        rewriteInterpolations(value, at);
+        expect.unreachable();
+      } catch (err) {
+        expect((err as Error).message).not.toContain("hunter2");
+      }
+    }
   });
 
   it("refuses an unterminated interpolation", () => {

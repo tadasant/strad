@@ -963,7 +963,8 @@ servers:
 
 Not "equivalent to" — **identical**, field for field and default for default.
 `test/mcp-json.catalog-parity.test.ts` asserts it over every `remote-http` entry
-in the configs this repo ships.
+the dialect can carry in the configs this repo ships (one with `oauth:` or
+`oauthRefresh:` stays in the YAML interface, and is skipped there).
 
 ### The mapping, and where it stops
 
@@ -974,7 +975,7 @@ in the configs this repo ships.
 | `headers`                            | `headers`                                      |
 | `title`, `description`               | `title`, `description`                         |
 | `${env:NAME}`                        | `${NAME}`                                      |
-| `${value:literal}`                   | the literal                                    |
+| `${value:literal}`                   | the literal — which may not contain `$`, `{` or `}` |
 
 **One of the four kinds is expressible, and it is the one the format was
 designed for.** The rest is refused by name rather than guessed at:
@@ -1058,11 +1059,12 @@ desugared entries are **appended** to `servers:`, so `roles:`, `auth:` and
 `bundles:` are in the same document and the cliff above is one line from closed.
 This is the form to reach for.
 
-**On its own.** A file that is *just* an `mcp.json` — `mcpServers` and no
-`version:` — is also a config strad loads. `version: 1` and an empty `auth:` are
-supplied, which are the only two root fields with no default. JSON is a subset of
-YAML, so it is the same parser and there is no second one. Adding `roles:` to
-such a file still works — only `version:` flips it out of this mode:
+**On its own.** A file that is *just* an `mcp.json` — `mcpServers` and none of
+`version:`, `gateway:`, `bundles:` or `servers:` — is also a config strad loads.
+`version: 1` and an empty `auth:` are supplied, which are the only two root
+fields with no default. JSON is a subset of YAML, so it is the same parser and
+there is no second one. `roles:` and `auth:` may be added to such a file without
+leaving this mode — they are the two keys it gains on its way to being reachable:
 
 ```json
 {
@@ -1078,7 +1080,8 @@ such a file still works — only `version:` flips it out of this mode:
 ```
 
 `npm run config:check -- --config ./mcp.json` validates one the way a deploy
-would.
+would. A `$schema` key at the root is reported as unknown there, like any other
+key the config does not define — SEP-2633 publishes no schema to name.
 
 ### Unknown keys
 

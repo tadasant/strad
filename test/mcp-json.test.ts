@@ -171,6 +171,40 @@ mcpServers:
     expect(cfg.roles.agent?.servers).toEqual(["deepwiki"]);
   });
 
+  it("is not whole-document mode once a strad-only root key is present", () => {
+    // A strad config that merely forgot `version:` keeps failing the schema the
+    // way it always did, rather than having the answer written in for it.
+    expect(() =>
+      parseConfig(`
+gateway: { name: strad, env: test }
+auth: { staticTokens: { enabled: true } }
+mcpServers: {}
+`),
+    ).toThrow(/version/);
+  });
+
+  it("takes an empty mcpServers: map as nothing to add", () => {
+    const { config, dialect } = parseConfigWithDialect(
+      `${BASE}\nmcpServers: {}\n`,
+    );
+    expect(config.servers).toEqual([]);
+    expect(dialect.used).toBe(true);
+    expect(dialect.slugs).toEqual([]);
+  });
+
+  it("leaves a servers: that is not a list for the schema to refuse", () => {
+    // Never replaced by the desugared entries and passed clean.
+    expect(() =>
+      parseConfig(`${BASE}
+servers: oops
+mcpServers:
+  deepwiki:
+    type: streamable-http
+    url: https://mcp.deepwiki.com/mcp
+`),
+    ).toThrow(/servers: Expected array/);
+  });
+
   it("leaves a config with no mcpServers: on exactly the path it was on", () => {
     const { dialect } = parseConfigWithDialect(`${BASE}
 servers:
@@ -264,11 +298,21 @@ describe("mcp.json — the slug charset mismatch", () => {
     expect(cfg.servers[0]?.slug).toBe("my-server");
   });
 
-  it("refuses a key that is not even a legal mcp.json server name", () => {
-    refuse(
-      `\n  "not.a.name":\n    type: streamable-http\n    url: https://e.com/mcp\n`,
-      /not a legal mcp\.json server name/,
-    );
+  it("refuses a key that is not even a legal mcp.json server name — once", () => {
+    // Not followed by the slug rule calling the same name "a legal mcp.json
+    // server name" in its next breath.
+    try {
+      parseConfig(
+        withMcpServers(
+          `\n  "not.a.name":\n    type: streamable-http\n    url: https://e.com/mcp\n`,
+        ),
+      );
+      expect.unreachable();
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toMatch(/not a legal mcp\.json server name/);
+      expect(message).not.toMatch(/is a legal mcp\.json server name/);
+    }
   });
 
   it("refuses an override that is not a legal slug", () => {
@@ -375,6 +419,27 @@ describe("mcp.json — what has no analog is refused by name", () => {
   it("refuses a mcpServers: that is not a map", () => {
     expect(() => parseConfig(`${BASE}\nmcpServers: [a, b]\n`)).toThrow(
       /map of server names/,
+    );
+    expect(() => parseConfig(`${BASE}\nmcpServers: null\n`)).toThrow(
+      /map of server names/,
+    );
+  });
+
+  it("refuses a strad: block or a header value of the wrong type, at the key written", () => {
+    refuse(
+      `\n  x:\n    type: streamable-http\n    url: https://e.com/mcp\n    strad: 5\n`,
+      /mcpServers\.x\.strad/,
+    );
+    refuse(
+      `\n  x:\n    type: streamable-http\n    url: https://e.com/mcp\n    headers: { A: 5 }\n`,
+      /mcpServers\.x\.headers\.A/,
+    );
+  });
+
+  it("refuses a value: literal that would splice into a reference", () => {
+    refuse(
+      `\n  x:\n    type: streamable-http\n    url: https://e.com/mcp\n    headers: { A: "\${value:$}{SECRET}" }\n`,
+      /may not contain/,
     );
   });
 });

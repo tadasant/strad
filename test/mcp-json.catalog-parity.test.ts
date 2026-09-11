@@ -46,22 +46,27 @@ const REMOTES: { file: string; server: RemoteHttpServer }[] = CONFIGS.flatMap(
     ),
 );
 
+/**
+ * `${NAME}` -> `${env:NAME}`: the mechanical rewrite, in the direction the
+ * dialect will undo. Applied to both fields strad resolves a reference in, so a
+ * catalog entry carrying one has to survive the round trip rather than fail it
+ * as a bare-reference refusal.
+ */
+function toSepRefs(value: string): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, "${env:$1}");
+}
+
 /** The same server, written as SEP-2633 would write it. */
 function asMcpJson(server: RemoteHttpServer): unknown {
   const entry: Record<string, unknown> = {
     type: "streamable-http",
-    url: server.url,
+    url: toSepRefs(server.url),
   };
   if (server.title !== undefined) entry.title = server.title;
   if (server.description !== undefined) entry.description = server.description;
   if (Object.keys(server.headers).length > 0) {
-    // `${NAME}` -> `${env:NAME}`: the mechanical rewrite, in the direction the
-    // dialect will undo. A header strad resolves has to survive the round trip.
     entry.headers = Object.fromEntries(
-      Object.entries(server.headers).map(([k, v]) => [
-        k,
-        v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, "${env:$1}"),
-      ]),
+      Object.entries(server.headers).map(([k, v]) => [k, toSepRefs(v)]),
     );
   }
   entry.strad = {

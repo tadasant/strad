@@ -4657,7 +4657,9 @@ can say that strad cannot honour is a HARD ERROR rather than a default:
 `type: "stdio"`, `type: "sse"`, the `oauth` object, `command` / `args` / `env` on
 a remote entry, pipe-chained interpolation (`${env:A | value:b}`), the `input`
 and `op` schemes and every other scheme, a bare `${NAME}`, and a `${...}` in
-`title` or `description`. A `mcpServers` key that is not a legal strad slug is
+`title` or `description`, and a `value:` literal carrying `$`, `{` or `}` — the
+SEP defines no escape, and a literal is spliced into a value that is scanned for
+`${NAME}` later. A `mcpServers` key that is not a legal strad slug is
 also a hard error, with the slug it would have been offered as a suggestion but
 never applied.
 

@@ -70,10 +70,8 @@ export class McpJsonError extends Error {
  */
 const ELEMENT_RE = /^([A-Za-z][A-Za-z0-9+.-]*):([\s\S]*)$/;
 
-/** Where a rewrite failed, for the error message — a key path, never a value. */
-export type RefField = string;
-
-function refuse(where: RefField, reason: string): never {
+/** `where` is a key path for the error message, never a value. */
+function refuse(where: string, reason: string): never {
   throw new McpJsonError(`${where}: ${reason}`);
 }
 
@@ -82,15 +80,19 @@ function refuse(where: RefField, reason: string): never {
  *
  * Returns strad's own `${NAME}` for `env:`, and the literal for `value:`.
  */
-function rewriteOne(payload: string, where: RefField): string {
+function rewriteOne(payload: string, where: string): string {
+  // Every message below names the FIELD and, at most, a scheme or a variable
+  // NAME — never the payload as written. A `${value:...}` payload is a config
+  // literal, and this message reaches stderr, the CI annotation and the
+  // exception reporter.
   if (payload.includes("|")) {
     refuse(
       where,
-      `pipe-chained interpolation \${${payload}} is not supported. ` +
-        `SEP-2633 resolves a chain left to right and takes the first non-empty ` +
-        `value; strad resolves a reference once — the renderer bakes it at ` +
-        `deploy time, the provider reads it per request — and neither can see ` +
-        `the other's fallback. Write a single \${env:NAME} or \${value:literal}.`,
+      `pipe-chained interpolation is not supported. SEP-2633 resolves a chain ` +
+        `left to right and takes the first non-empty value; strad resolves a ` +
+        `reference once — the renderer bakes it at deploy time, the provider ` +
+        `reads it per request — and neither can see the other's fallback. ` +
+        `Write a single \${env:NAME} or \${value:literal}.`,
     );
   }
 
@@ -113,8 +115,8 @@ function rewriteOne(payload: string, where: RefField): string {
     }
     refuse(
       where,
-      `\${${trimmed}} is not a scheme-qualified interpolation. SEP-2633 ` +
-        `expects \${scheme:value} — strad accepts \`env\` and \`value\`.`,
+      `an interpolation is not scheme-qualified. SEP-2633 expects ` +
+        `\${scheme:value} — strad accepts \`env\` and \`value\`.`,
     );
   }
 
@@ -125,7 +127,7 @@ function rewriteOne(payload: string, where: RefField): string {
     if (!isEnvName(rest)) {
       refuse(
         where,
-        `\${env:${rest}} does not name an environment variable ` +
+        `an \${env:...} does not name an environment variable ` +
           `(letters, digits and underscores; not starting with a digit).`,
       );
     }
@@ -133,13 +135,18 @@ function rewriteOne(payload: string, where: RefField): string {
   }
 
   if (scheme === "value") {
-    // A literal that could itself be read as a reference would be a `${NAME}`
-    // nobody wrote, resolved later by something that cannot tell the difference.
-    if (rest.includes("${")) {
+    // A literal is spliced into a value that is scanned for `${NAME}` later,
+    // by something that cannot tell a reference the operator wrote from one
+    // the splice assembled. Refusing the substring `${` is not enough —
+    // `${value:$}{SECRET}` puts the `$` in the literal and the `{` in the
+    // surrounding text. Refusing the three characters is: a `${` can then only
+    // come from the source text, where it is an interpolation of its own.
+    if (/[${}]/.test(rest)) {
       refuse(
         where,
-        `\${value:...} may not contain "\${" — the literal is spliced into a ` +
-          `config value that is scanned for \${NAME} references later.`,
+        `a \${value:...} literal may not contain "$", "{" or "}" — it is ` +
+          `spliced into a config value that is scanned for \${NAME} ` +
+          `references later, and SEP-2633 defines no escape for them.`,
       );
     }
     return rest;
@@ -169,26 +176,35 @@ function rewriteOne(payload: string, where: RefField): string {
  * a literal header. `where` names the field for the error message and is one of
  * the dialect's own key paths, never a value.
  */
-export function rewriteInterpolations(value: string, where: RefField): string {
+export function rewriteInterpolations(value: string, where: string): string {
   let out = "";
   let i = 0;
+  let emitted = 0;
   for (;;) {
     const open = value.indexOf("${", i);
     if (open === -1) {
       out += value.slice(i);
-      return out;
+      break;
     }
     const close = value.indexOf("}", open + 2);
     if (close === -1) {
       refuse(where, 'an interpolation is opened with "${" and never closed.');
     }
     out += value.slice(i, open);
-    out += rewriteOne(value.slice(open + 2, close), where);
+    const replacement = rewriteOne(value.slice(open + 2, close), where);
+    if (replacement.startsWith("${")) emitted += 1;
+    out += replacement;
     i = close + 1;
   }
-}
-
-/** Whether a string carries anything this module would rewrite or refuse. */
-export function hasInterpolation(value: string): boolean {
-  return value.includes("${");
+  // The invariant the `value:` guard exists for, checked on the way out: every
+  // `${` in the result is one this function emitted for an `env:`. Anything
+  // else is a reference assembled out of pieces, and it is refused here rather
+  // than resolved later against a name nobody wrote.
+  if (out.split("${").length - 1 !== emitted) {
+    refuse(
+      where,
+      `the rewritten value contains a \${ that no \${env:NAME} produced.`,
+    );
+  }
+  return out;
 }

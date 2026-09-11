@@ -60,11 +60,13 @@
  *   right there in the same document and the reachability cliff is one line away
  *   from being closed.
  *
- *   WHOLE DOCUMENT. A file that is just an `mcp.json` — `mcpServers` and no
- *   `version:`. `version: 1` and an empty `auth:` are supplied, which are the
- *   only two root fields with no default, so a pasted `mcp.json` is a config
- *   `npm run config:check` can validate and strad can boot. It will serve
- *   nothing to anyone until roles and entitlements exist; the notices say so.
+ *   WHOLE DOCUMENT. A file that is just an `mcp.json` — `mcpServers` and none
+ *   of `version:`, `gateway:`, `bundles:` or `servers:`. `version: 1` and an
+ *   empty `auth:` are supplied, which are the only two root fields with no
+ *   default, so a pasted `mcp.json` is a config `npm run config:check` can
+ *   validate and strad can boot. It will serve nothing to anyone until roles
+ *   and entitlements exist; the notices say so, and `roles:` can be added to
+ *   the file without leaving this mode.
  *
  * JSON is a subset of YAML, so both forms are parsed by the one YAML parser in
  * `src/config/load.ts` and no second parser is introduced.
@@ -75,7 +77,7 @@ import { Role, SLUG, ToolPolicySchema } from "./schema.ts";
 import { McpJsonError, rewriteInterpolations } from "./mcp-json-refs.ts";
 
 /** The root key that says a document is speaking the dialect. */
-export const MCP_SERVERS_KEY = "mcpServers";
+const MCP_SERVERS_KEY = "mcpServers";
 
 /**
  * SEP-2633's server-name production.
@@ -101,6 +103,17 @@ const ENTRY_KEYS = [
   "headers",
   "oauth",
   "strad",
+] as const;
+
+/**
+ * Root keys whose presence makes a document a strad config with an
+ * `mcpServers:` in it, rather than an `mcp.json` on its own.
+ */
+const WHOLE_DOCUMENT_DISQUALIFIERS = [
+  "version",
+  "gateway",
+  "bundles",
+  "servers",
 ] as const;
 
 /** Every key the `strad:` extension defines. */
@@ -215,7 +228,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /** Whether a parsed document speaks the dialect at all. */
-export function hasMcpServers(doc: unknown): boolean {
+function hasMcpServers(doc: unknown): boolean {
   return isPlainObject(doc) && MCP_SERVERS_KEY in doc;
 }
 
@@ -293,11 +306,16 @@ function desugarEntry(
   };
 
   // --- identity ------------------------------------------------------------
+  //
+  // A name the FORMAT does not allow ends the entry here: the slug rule below
+  // would otherwise call the same name "a legal mcp.json server name" in its
+  // next breath.
   if (!SEP_NAME_RE.test(name)) {
     refuse(
       `${at(name)}: "${name}" is not a legal mcp.json server name ` +
         `(SEP-2633: ^[a-zA-Z0-9_[\\]-]+$).`,
     );
+    return undefined;
   }
 
   const override = entry.strad?.slug;
@@ -378,7 +396,8 @@ function desugarEntry(
   // --- values --------------------------------------------------------------
   //
   // Interpolation is rewritten in the two fields strad RESOLVES a reference in
-  // (see `UNHOSTED_SECRET_FIELDS` in src/config/schema.ts). A `${...}` anywhere
+  // (`unhostedRefFields` in src/config/schema.ts; the third, `oauthRefresh`,
+  // is not expressible here). A `${...}` anywhere
   // else would be rewritten into a `${NAME}` nothing looks up, and would ship as
   // that literal text — so it is refused rather than passed through.
   const rewrite = (value: string, field: string): string | undefined => {
@@ -498,16 +517,29 @@ export function desugarDocument(doc: unknown): DesugarResult {
     if (entry) desugared.push(entry);
   }
 
-  // A document with no `version:` is an mcp.json rather than a strad config.
-  // `version` and `auth` are the only two root fields with no default, so
-  // supplying them is what makes a pasted file parseable — and nothing else is
-  // supplied, because everything else already has an answer.
-  const whole = !("version" in doc);
+  // A document carrying none of the root keys only a strad config writes is
+  // an mcp.json rather than a strad config. `version` and `auth` are the only
+  // two root fields with no default, so supplying them is what makes a pasted
+  // file parseable — and nothing else is supplied, because everything else
+  // already has an answer. `roles:` and `auth:` do not disqualify it: they are
+  // the two keys a pasted file gains on its way to being reachable.
+  //
+  // The test is the KEYS and not just `version`, so a strad config that merely
+  // forgot `version:` keeps failing the schema the way it always did rather
+  // than having the answer written in for it.
+  const whole = WHOLE_DOCUMENT_DISQUALIFIERS.every((key) => !(key in doc));
 
-  const existing = Array.isArray(doc.servers) ? (doc.servers as unknown[]) : [];
   const out: Record<string, unknown> = { ...doc };
   delete out[MCP_SERVERS_KEY];
-  out.servers = [...existing, ...desugared];
+  // Appended to a list, never to anything else: a `servers:` that is not a
+  // list is left exactly as written for the schema to refuse, rather than
+  // replaced by the desugared entries and passed clean.
+  if (doc.servers === undefined || Array.isArray(doc.servers)) {
+    out.servers = [
+      ...((doc.servers as unknown[] | undefined) ?? []),
+      ...desugared,
+    ];
+  }
   if (whole) {
     out.version = 1;
     if (!("auth" in out)) out.auth = {};
