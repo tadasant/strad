@@ -12,6 +12,7 @@ import {
   type StoreRefreshResponse,
 } from "../secrets/param-route.ts";
 import {
+  gatewayParameterPath,
   parameterPath,
   ParameterStoreError,
   type ParameterStore,
@@ -512,5 +513,116 @@ export function createStoreRefreshHandler(
       ok: true,
       refreshed: true,
     } satisfies StoreRefreshResponse);
+  };
+}
+
+/**
+ * The same write-back, for a credential that rotated INSIDE core.
+ *
+ * A `remote-http` server with `oauthRefresh:` is proxied by core itself, so
+ * when its token endpoint issues a new refresh token there is no bundle to
+ * call the route above — the minter is already in the process holding the
+ * admin credential. This is that route's write with the HTTP taken out: the
+ * same `storeForPath`, the same `rotate()`, the same two invalidations, the
+ * same two events. The store path is composed from the config's slug and the
+ * config's own `${NAME}` (`soleRefName` in src/config/schema.ts), never from a
+ * request.
+ *
+ * ## Where it writes: where the reader reads
+ *
+ * A server's `${NAME}` resolves from `/strad/{env}/mcp/{slug}/static/` first
+ * and the gateway namespace second (src/secrets/provider). The write follows the
+ * same order and stops at the first path that exists: the server's own path, or
+ * — only on a definite 404 there — the gateway path. A path that could not be
+ * checked stops the walk, because writing the second layer while the first may
+ * hold the value would persist a token nothing reads. Neither path existing
+ * means the value came from the environment (`envFallback`), which strad cannot
+ * write; so does `gateway.secrets.provider: env`. Both are reported, never
+ * thrown: a rotation that cannot be persisted still serves this process, and
+ * the next restart is the one that fails — which is what the stderr line says.
+ *
+ * Writing the gateway path is safe because the schema refuses two
+ * `oauthRefresh:` servers minting from one `${NAME}`: a shared name there is
+ * one server's refresh token, not a credential another server also reads.
+ *
+ * ## The read before the write
+ *
+ * The parameter is REVEALED first, and the write goes ahead only if the value
+ * held is one the minter's lineage produced (`ours`). Between the exchange
+ * that rotated the token and this write, a human can re-seed the slug with
+ * another account's token in `/ui/secrets`; a blind `rotate()` after that
+ * would put the old account's rotation on top of the new seed, and the slug
+ * would serve the old account again with nothing failing. The read shrinks
+ * that window from a store round-trip to the gap between two calls; there is
+ * no compare-and-set on the store to close it entirely, and `HACKS.md` #91
+ * says so.
+ */
+export function createParameterWriteBack(
+  opts: Omit<ParamsHandlerOptions, "now">,
+): (
+  slug: string,
+  variable: string,
+  value: string,
+  ours: (current: string) => boolean,
+) => Promise<void> {
+  return async (slug, variable, value, ours) => {
+    const refuse = (reason: string): void => {
+      console.warn(
+        `[strad] could not persist the rotated \${${variable}} for "${slug}": ` +
+          `${reason}. It is held in memory; a restart reads the stored one, ` +
+          `which the provider has invalidated.`,
+      );
+      event({ evt: "strad.param_write_failed", slug, variable });
+    };
+
+    if (opts.config.gateway.secrets.provider !== "gcp-parameter-store") {
+      refuse(
+        "gateway.secrets.provider is env, so the value lives in the " +
+          "deployment's environment and there is no store to write to",
+      );
+      return;
+    }
+
+    const env = opts.config.gateway.env;
+    for (const path of [
+      parameterPath(env, slug, variable),
+      gatewayParameterPath(env, variable),
+    ]) {
+      const resolved = storeForPath(opts.config, opts.secrets, path, opts);
+      if (!resolved.store) {
+        refuse(resolved.reason);
+        return;
+      }
+      let current: string;
+      try {
+        current = await resolved.store.reveal(path);
+      } catch (err) {
+        if (err instanceof ParameterStoreError && err.status === 404) continue;
+        refuse(errorSummary(err));
+        return;
+      }
+      if (!ours(current)) {
+        refuse(
+          "the stored value is not one this process minted — it was re-seeded " +
+            "since the exchange, so the rotation is left unwritten and the " +
+            "seeded value stands",
+        );
+        return;
+      }
+      try {
+        await resolved.store.rotate(path, value);
+      } catch (err) {
+        refuse(errorSummary(err));
+        return;
+      }
+      opts.secretProvider?.invalidate();
+      forgetDeploymentDiagnosis({ env: opts.env, store: opts.diagnosticStore });
+      event({ evt: "strad.param_written", slug, variable });
+      return;
+    }
+    refuse(
+      "neither this server's namespace nor the gateway's holds it, so it " +
+        "resolves from the environment",
+    );
   };
 }

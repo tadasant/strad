@@ -195,6 +195,26 @@ servers:
   #   headers:
   #     Authorization: "Bearer ${APIFY_TOKEN}"
   #   mayBeUnseeded: [APIFY_TOKEN]
+  #
+  # An upstream whose bearer EXPIRES — OAuth-per-user, short-lived access
+  # tokens — takes `oauthRefresh:` instead of an Authorization header. strad
+  # holds the refresh token, mints the access token itself (before expiry, and
+  # again on a 401), and writes a rotated refresh token back to the store so a
+  # restart reads the live one. `refreshToken` and `clientSecret` must each be
+  # exactly one ${NAME}: a credential lives in the store, and the write-back
+  # needs a name. The first refresh token comes from an out-of-band consent
+  # and is seeded in /ui/secrets. See docs: servers/interface.
+  #
+  # - slug: granola
+  #   kind: remote-http
+  #   url: https://mcp.granola.ai/mcp
+  #   entitlements: [admin]
+  #   oauthRefresh:
+  #     tokenUrl: https://mcp-auth.granola.ai/oauth2/token
+  #     clientId: ${GRANOLA_CLIENT_ID}
+  #     refreshToken: ${GRANOLA_REFRESH_TOKEN}
+  #     resource: https://mcp.granola.ai/mcp
+  #   mayBeUnseeded: [GRANOLA_REFRESH_TOKEN]
 
   # --- kind: local-tunnel ---------------------------------------------------
   # An MCP server running on a machine YOU own — a laptop, a desktop — reached

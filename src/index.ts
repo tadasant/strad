@@ -5,6 +5,7 @@ import { mountTargets } from "./gateway/mount-health.ts";
 import { ToolSurfaceMonitor } from "./gateway/reachability.ts";
 import { Registry, type Mode } from "./gateway/registry.ts";
 import { createApp } from "./http/app.ts";
+import { createParameterWriteBack } from "./http/params.ts";
 import { loadSecrets } from "./secrets/index.ts";
 import { resolverFromEnv } from "./secrets/parameters/index.ts";
 import {
@@ -138,6 +139,21 @@ async function main(): Promise<void> {
     bundleName,
     env,
     resolver,
+    // Where a `remote-http` server's rotated refresh token is persisted. Core
+    // only: core is the component holding the store-admin credential, and the
+    // only one that proxies an unhosted server. Same store, same `rotate()`,
+    // same invalidation as the bundle write-back route — see
+    // src/http/params.ts.
+    writeBack:
+      mode === "core"
+        ? createParameterWriteBack({
+            config,
+            env,
+            secrets,
+            secretProvider: secretProviders,
+            diagnosticStore: resolver,
+          })
+        : undefined,
   });
 
   const tokenStore = tokenStoreFromConfig(config, env);

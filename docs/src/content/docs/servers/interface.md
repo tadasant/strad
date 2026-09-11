@@ -160,6 +160,83 @@ re-resolved on every operation, so rotating `GRANOLA_TOKEN` in a store-backed
 deployment takes effect on the running gateway: the adapter notices the endpoint
 changed and rebuilds its upstream connection.
 
+#### `oauthRefresh:` — a bearer that expires, minted by strad
+
+A static bearer works until it expires. An upstream that authenticates each
+user with OAuth hands out short-lived access tokens and one long-lived refresh
+token, and a static header cannot follow that. `oauthRefresh:` holds the refresh
+token and has strad mint the access token itself:
+
+```yaml
+- slug: granola
+  kind: remote-http
+  url: https://mcp.granola.ai/mcp
+  entitlements: [admin]
+  oauthRefresh:
+    tokenUrl: https://mcp-auth.granola.ai/oauth2/token
+    clientId: ${GRANOLA_CLIENT_ID}
+    refreshToken: ${GRANOLA_REFRESH_TOKEN}
+    resource: https://mcp.granola.ai/mcp
+  mayBeUnseeded: [GRANOLA_REFRESH_TOKEN] # deploy before anyone has authorized
+```
+
+| Field          | Default      | Meaning                                                                                                                                        |
+| -------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tokenUrl`     | _(required)_ | The token endpoint. `https`, or `http` to a loopback host. A literal or a `${NAME}`.                                                           |
+| `clientId`     | _(required)_ | The OAuth client id. A literal or a `${NAME}`.                                                                                                 |
+| `clientSecret` | _(none)_     | For a confidential client, as exactly one `${NAME}`. Omit it for a public client (dynamic registration + PKCE, the MCP authorization shape). |
+| `clientAuth`   | `basic`      | How a client secret is sent: `basic` (HTTP Basic, RFC 6749's default) or `post` (in the form body). Ignored without a secret.                  |
+| `refreshToken` | _(required)_ | Exactly one `${NAME}`. The reference is also the name a rotated token is written back to.                                                      |
+| `scope`        | _(none)_     | Sent on every refresh. Omit it to keep what was granted.                                                                                      |
+| `resource`     | _(none)_     | RFC 8707 `resource`, sent on every refresh. An MCP-spec authorization server expects it; set it to the server's `url`.                        |
+
+Every field resolves like `url:` and `headers:`: per operation, through the
+server's own namespace first. strad sends `Authorization: Bearer <access token>`
+itself, so a configured `Authorization` header beside it is refused.
+
+**When it mints.** Once, on first use. Again 60 seconds before `expires_in`
+runs out (a tenth of the lifetime for a token shorter than ten minutes), so a
+request never carries a token that is about to lapse. And again when the
+upstream answers `401`: the refused token is dropped, a new one is minted, and
+the operation is tried once more. A `401` means the upstream refused the request
+before running it, so the retry cannot run a tool twice. A token with no
+`expires_in` is used until the upstream refuses it.
+
+**It does not stampede.** Concurrent requests share one exchange. A burst of
+`401`s on one stale token costs one refresh. A token minted less than 30 seconds
+ago is not dropped on a `401`, because a token that fresh was not refused for
+its age.
+
+**A failed refresh is this server's failure alone.** A refused refresh token
+(`invalid_grant`), a refused client, or a token endpoint that does not answer
+fails this slug's calls with a sentence strad wrote. The reachability probe
+marks the slug degraded, and every other server carries on. A refusal is
+remembered for 60 seconds and an outage for 5, so a dead refresh token does not
+cost a token-endpoint round trip per request. Seeding a new refresh token clears
+the backoff on the next call. A token still inside its lifetime keeps being
+served through a failed refresh.
+
+**One refresh token, one server.** Each slug gets its own minter. No cache is
+shared between servers, and everything a minter holds is tied to the refresh
+token the store handed it. Re-seed the slug with another account's token and
+the old account's access token is dropped before the next request, along with
+any refresh still in flight for it. Two enabled servers minting from one
+`${NAME}` are refused, because a provider that rotates on use would have each
+one revoke the other's token.
+
+**Rotation is written back.** When the token endpoint issues a new refresh
+token, core writes it to the store, to the parameter the reader reads, so a
+restart reads the live one. Where there is no store to write to, the rotation is
+held in memory and a restart reads a token the provider has already killed. See
+[Secrets](/operate/secrets/#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server)
+for where it writes, and [Limitations](/limitations/) #91.
+
+**What it does not do.** strad does not run the authorization itself. The first
+refresh token comes from an out-of-band consent (for Granola, dynamic client
+registration and PKCE against its authorize endpoint), and a human seeds it in
+`/ui/secrets`. An in-console authorize flow for arbitrary providers is
+[tadasant/strad#32](https://github.com/tadasant/strad/issues/32).
+
 ### 2. `local-tunnel`
 
 Proxy an MCP server running on **a machine you own** — a laptop, a desktop —
@@ -654,6 +731,12 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
   is what makes the credential deliverable: a connector's variables are emitted
   under the per-slug name alone, and the bundle host reads those only for the
   server that is alone on its own path.
+- A `remote-http` server's `oauthRefresh.refreshToken`, or its `clientSecret`,
+  is anything but exactly one `${NAME}`: a literal would be a credential
+  committed to the config, and the write-back needs a name. Also refused: an
+  `Authorization` header beside `oauthRefresh:`, a literal `tokenUrl` that is
+  neither `https` nor loopback `http`, and two enabled servers minting from one
+  refresh-token `${NAME}`.
 - **A server references one of its own connector's variables as a `${NAME}`.**
   Those three are injected from the slug's own namespace, and a reference to the
   refresh token would fail every server's deploy until a human had completed a

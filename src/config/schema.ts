@@ -411,6 +411,55 @@ const ServerBase = z.object({
 });
 
 /**
+ * `oauthRefresh:` — this upstream takes short-lived OAuth access tokens, and
+ * strad holds the refresh token that mints them.
+ *
+ *   - slug: granola
+ *     kind: remote-http
+ *     url: https://mcp.granola.ai/mcp
+ *     oauthRefresh:
+ *       tokenUrl: https://mcp-auth.granola.ai/oauth2/token
+ *       clientId: ${GRANOLA_CLIENT_ID}
+ *       refreshToken: ${GRANOLA_REFRESH_TOKEN}
+ *       resource: https://mcp.granola.ai/mcp
+ *
+ * strad sends `Authorization: Bearer <access token>` itself, minting a new one
+ * before the old one expires or when the upstream answers 401. A provider that
+ * rotates refresh tokens on use has the new one written back to the parameter
+ * store through core's admin credential, so a restart reads the live one. See
+ * src/gateway/adapters/oauth-refresh.ts.
+ *
+ * Every field is resolved per operation like `url:` and `headers:`, through the
+ * server's own namespace first. `refreshToken` and `clientSecret` must each be
+ * exactly one `${NAME}` — a literal is a credential committed to the config, and
+ * the write-back needs a NAME to write to. The `superRefine` below enforces it.
+ */
+const OAuthRefreshSchema = z.object({
+  /** The token endpoint. https, or http to a loopback host. May be a `${NAME}`. */
+  tokenUrl: z.string().min(1),
+  /** The OAuth client id. A literal, or a `${NAME}`. */
+  clientId: z.string().min(1),
+  /** The client secret, for a confidential client. Omit for a public (PKCE) one. */
+  clientSecret: z.string().min(1).optional(),
+  /**
+   * How a client secret is sent: `basic` (HTTP Basic, RFC 6749's default) or
+   * `post` (in the form body). Ignored without a `clientSecret` — a public
+   * client sends its `client_id` in the body either way.
+   */
+  clientAuth: z.enum(["basic", "post"]).default("basic"),
+  /** The refresh token, as exactly one `${NAME}`. */
+  refreshToken: z.string().min(1),
+  /** `scope`, sent on every refresh. Omit to keep what was granted. */
+  scope: z.string().min(1).optional(),
+  /**
+   * RFC 8707 `resource`, sent on every refresh. An MCP-spec authorization
+   * server expects it and binds the token to it: set it to the server's `url`.
+   * Omit for a provider that does not know the parameter.
+   */
+  resource: z.string().min(1).optional(),
+});
+
+/**
  * kind: remote-http
  *
  * Proxy an MCP server that already exists somewhere on the internet.
@@ -421,11 +470,15 @@ const ServerBase = z.object({
  *     url: https://mcp.granola.ai/mcp
  *     headers:
  *       Authorization: "Bearer ${GRANOLA_TOKEN}"
+ *
+ * A static bearer is the simple case. An upstream whose access tokens expire
+ * takes `oauthRefresh:` instead — see {@link OAuthRefreshSchema}.
  */
 const RemoteHttpServer = ServerBase.extend({
   kind: z.literal("remote-http"),
   url: z.string().url(),
   headers: HeaderMap,
+  oauthRefresh: OAuthRefreshSchema.optional(),
 });
 
 /**
@@ -765,6 +818,61 @@ export function isUnhosted(
   server: ServerConfig,
 ): server is Extract<ServerConfig, { kind: (typeof UNHOSTED_KINDS)[number] }> {
   return (UNHOSTED_KINDS as readonly string[]).includes(server.kind);
+}
+
+/**
+ * Every field of an unhosted server that strad resolves a `${NAME}` from, in its
+ * own process: the `url:`, each `headers:` value, and — for a `remote-http` that
+ * mints its bearer — each `oauthRefresh:` field.
+ *
+ * NAMED FIELDS, not a walk of the whole object, so a `${...}`-looking string in
+ * a `description` or a `recovery:` note cannot invent a requirement. One list,
+ * so the deploy gate, the per-server namespace layer and the console roster
+ * cannot disagree about which names a server reads.
+ */
+export function unhostedRefFields(
+  server: Extract<ServerConfig, { kind: (typeof UNHOSTED_KINDS)[number] }>,
+): string[] {
+  const out = [server.url, ...Object.values(server.headers)];
+  if (server.kind === "remote-http" && server.oauthRefresh) {
+    const o = server.oauthRefresh;
+    out.push(o.tokenUrl, o.clientId, o.refreshToken);
+    for (const optional of [o.clientSecret, o.scope, o.resource]) {
+      if (optional !== undefined) out.push(optional);
+    }
+  }
+  return out;
+}
+
+/**
+ * An https URL, or an http one to a loopback host. The runtime twin is
+ * `tokenUrlAllowed` in src/gateway/adapters/oauth-refresh.ts, which also covers
+ * a `tokenUrl` that only resolves at request time.
+ */
+function loopbackOrHttps(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol === "https:") return true;
+  return (
+    url.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+  );
+}
+
+/**
+ * The NAME in a value that is exactly one `${NAME}` and nothing else, or null.
+ *
+ * What `oauthRefresh.refreshToken` must be: the write-back composes a store path
+ * from this name, and a value with anything around the reference — or no
+ * reference at all — has no single name to write a rotated token back to.
+ */
+export function soleRefName(value: string): string | null {
+  const names = secretRefsIn(value);
+  return names.length === 1 && value === `\${${names[0]}}` ? names[0]! : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,6 +1255,74 @@ export const StradConfig = z
       }
     }
 
+    // OAUTH REFRESH on a remote-http server.
+    //
+    // Four rules. The first two keep a credential out of the config and give
+    // the write-back a name to write to. The third keeps two principals off one
+    // header. The fourth keeps one refresh token in one minter: a provider that
+    // rotates on use kills the token each exchange spends, so two servers
+    // sharing one would each invalidate the other's on every refresh.
+    const refreshOwners = new Map<string, string>();
+    for (const s of cfg.servers) {
+      if (s.kind !== "remote-http" || !s.oauthRefresh) continue;
+      const o = s.oauthRefresh;
+      const issue = (message: string): void =>
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `server "${s.slug}" ${message}`,
+          path: ["servers"],
+        });
+
+      const variable = soleRefName(o.refreshToken);
+      if (variable === null) {
+        issue(
+          `sets oauthRefresh.refreshToken to something other than exactly one ` +
+            `\${NAME}. A refresh token is a credential: it lives in the store ` +
+            `and is referenced, e.g. refreshToken: "\${GRANOLA_REFRESH_TOKEN}". ` +
+            `The reference is also the name a rotated token is written back to.`,
+        );
+      }
+      if (
+        o.clientSecret !== undefined &&
+        soleRefName(o.clientSecret) === null
+      ) {
+        issue(
+          `sets oauthRefresh.clientSecret to something other than exactly one ` +
+            `\${NAME}. A client secret is a credential: reference it from the ` +
+            `store rather than writing it into the config.`,
+        );
+      }
+      if (
+        Object.keys(s.headers).some((h) => h.toLowerCase() === "authorization")
+      ) {
+        issue(
+          `declares both oauthRefresh: and an Authorization header. With ` +
+            `oauthRefresh: strad sends the minted access token as the bearer; ` +
+            `delete the header.`,
+        );
+      }
+      if (refsIn(o.tokenUrl).length === 0 && !loopbackOrHttps(o.tokenUrl)) {
+        issue(
+          `sets oauthRefresh.tokenUrl to "${o.tokenUrl}". It must be an https ` +
+            `URL (plain http is allowed only for a loopback host): the refresh ` +
+            `token travels in the request body.`,
+        );
+      }
+      if (variable !== null && s.enabled) {
+        const owner = refreshOwners.get(variable);
+        if (owner !== undefined) {
+          issue(
+            `and server "${owner}" both mint from \${${variable}}. One refresh ` +
+              `token belongs to one server: a provider that rotates on use ` +
+              `invalidates the token each refresh spends, so the two would ` +
+              `revoke each other's. Give each its own name.`,
+          );
+        } else {
+          refreshOwners.set(variable, s.slug);
+        }
+      }
+    }
+
     // OAUTH CONNECTORS.
     //
     // Three rules, and the third is the one that keeps a fleet deployable.
@@ -1292,8 +1468,7 @@ export const StradConfig = z
         for (const value of Object.values(s.consoleEnv)) scan(value);
       }
       if (isUnhosted(s)) {
-        scan(s.url);
-        for (const value of Object.values(s.headers)) scan(value);
+        for (const value of unhostedRefFields(s)) scan(value);
       } else if (s.kind === "builtin") {
         for (const value of Object.values(s.options)) {
           if (typeof value === "string") scan(value);
@@ -1894,6 +2069,7 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
  */
 export type ServerKind = ServerConfig["kind"];
 export type RemoteHttpServer = z.infer<typeof RemoteHttpServer>;
+export type OAuthRefresh = z.infer<typeof OAuthRefreshSchema>;
 export type LocalTunnelServer = z.infer<typeof LocalTunnelServer>;
 export type SupplementaryImageServer = z.infer<typeof SupplementaryImageServer>;
 export type BuiltinServer = z.infer<typeof BuiltinServer>;

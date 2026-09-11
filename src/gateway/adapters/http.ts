@@ -80,6 +80,11 @@ class Conn {
    */
   constructor(
     readonly client: Client,
+    /**
+     * The endpoint this connection's transport was built with — the credential
+     * every request on it carries. What a `401` on it is reported against.
+     */
+    readonly endpoint: HttpEndpoint,
     private readonly onClosed: () => void,
   ) {}
 
@@ -251,6 +256,17 @@ export class HttpServerAdapter implements ServerAdapter {
        * a tool call raises and in the troubleshooting tool the listing offers.
        */
       host?: LocalHost;
+      /**
+       * The upstream answered `401` to a request carrying `rejected`.
+       *
+       * Set when the credential is MINTED rather than configured (a
+       * `remote-http` with `oauthRefresh:`): the callback tells the minter which
+       * access token was refused, and the operation is tried ONCE more, against
+       * whatever `endpoint()` resolves to next. A `401` is the upstream refusing
+       * the request before running it, so the retry cannot run a tool twice.
+       * Unset, a `401` is an ordinary upstream failure, as it always was.
+       */
+      onUnauthorized?: (rejected: HttpEndpoint) => void;
     },
   ) {
     this.slug = opts.slug;
@@ -277,6 +293,24 @@ export class HttpServerAdapter implements ServerAdapter {
     const startedAt = this.epoch;
     const endpoint = await this.opts.endpoint();
     const fingerprint = fingerprintOf(endpoint);
+
+    if (
+      startedAt !== this.epoch &&
+      this.fingerprint !== null &&
+      this.fingerprint !== fingerprint
+    ) {
+      // A STRAGGLER: this resolution began before a credential change another
+      // caller has already installed, and it disagrees with that change. It
+      // cannot say which of the two is current, so it must not build anything
+      // from what it holds — a transport built here would carry a superseded
+      // credential under a fingerprint that reads "current", and nothing would
+      // ever replace it. Resolve again instead. For a minted bearer this is the
+      // difference between a re-seeded account and the account it replaced.
+      if (attemptsLeft > 1 && !this.closed) {
+        return this.connect(attemptsLeft - 1);
+      }
+      throw this.wrap(new StaleCredentialError(this.slug), "connect");
+    }
 
     if (
       startedAt === this.epoch &&
@@ -389,6 +423,9 @@ export class HttpServerAdapter implements ServerAdapter {
               : { timeout: connectTimeoutMs },
           ),
         );
+      } catch (err) {
+        if (isUnauthorized(err)) this.opts.onUnauthorized?.(endpoint);
+        throw err;
       } finally {
         // Whatever happened, the connect deadline stops applying: on success
         // the transport goes on to serve tool calls, and on failure it is
@@ -408,7 +445,9 @@ export class HttpServerAdapter implements ServerAdapter {
         void client.close().catch(() => {});
         throw new StaleCredentialError(this.slug);
       }
-      const conn: Conn = new Conn(client, () => this.live.delete(conn));
+      const conn: Conn = new Conn(client, endpoint, () =>
+        this.live.delete(conn),
+      );
       this.live.add(conn);
       this.conn = conn;
       return conn;
@@ -616,6 +655,7 @@ export class HttpServerAdapter implements ServerAdapter {
       return await this.hop(op, () => run(conn.client));
     } catch (err) {
       if (isConnectionFault(err)) this.retire(conn);
+      if (isUnauthorized(err)) this.opts.onUnauthorized?.(conn.endpoint);
       // A request failure CAN be an offline verdict, and usually is the first
       // one anyone sees: the connection is cached, so shutting a laptop is
       // discovered by a request running on a socket that has just died rather
@@ -648,29 +688,55 @@ export class HttpServerAdapter implements ServerAdapter {
     );
   }
 
+  /**
+   * Run one operation, and run it once more if the upstream refused a MINTED
+   * credential.
+   *
+   * By the time the first attempt's `401` reaches here, `onUnauthorized` has
+   * already told the minter which token was refused and the connection carrying
+   * it is retired, so the second attempt resolves the endpoint afresh and
+   * handshakes with whatever the minter hands back. Once, because an upstream
+   * that refuses a token minted a moment ago will refuse the next one too, and
+   * the minter's own floor is what stops that becoming a refresh per request.
+   */
+  private async authorized<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (err) {
+      if (!this.opts.onUnauthorized || !isUnauthorized(err) || this.closed) {
+        throw err;
+      }
+      return run();
+    }
+  }
+
   async listTools(): Promise<Tool[]> {
-    const conn = await this.leased();
-    const res = await this.lease(conn, "list_tools", (client) =>
-      client.listTools({}, { timeout: this.opts.timeoutMs }),
-    );
-    return res.tools.map((t) => ({ ...t, name: this.strip(t.name) }));
+    return this.authorized(async () => {
+      const conn = await this.leased();
+      const res = await this.lease(conn, "list_tools", (client) =>
+        client.listTools({}, { timeout: this.opts.timeoutMs }),
+      );
+      return res.tools.map((t) => ({ ...t, name: this.strip(t.name) }));
+    });
   }
 
   async callTool(
     name: string,
     args: Record<string, unknown>,
   ): Promise<CallToolResult> {
-    const conn = await this.leased();
-    const res = await this.lease(conn, "call_tool", (client) =>
-      client.callTool(
-        { name: this.restore(name), arguments: args },
-        undefined,
-        {
-          timeout: this.opts.timeoutMs,
-        },
-      ),
-    );
-    return res as unknown as CallToolResult;
+    return this.authorized(async () => {
+      const conn = await this.leased();
+      const res = await this.lease(conn, "call_tool", (client) =>
+        client.callTool(
+          { name: this.restore(name), arguments: args },
+          undefined,
+          {
+            timeout: this.opts.timeoutMs,
+          },
+        ),
+      );
+      return res as unknown as CallToolResult;
+    });
   }
 
   /**
@@ -689,6 +755,10 @@ export class HttpServerAdapter implements ServerAdapter {
    * answer has to come from the handshake or from the code on the wire.
    */
   async listResources(): Promise<Resource[]> {
+    return this.authorized(() => this.listResourcesOnce());
+  }
+
+  private async listResourcesOnce(): Promise<Resource[]> {
     const conn = await this.leased();
     if (!conn.client.getServerCapabilities()?.resources) {
       // Nothing was sent, so there is nothing to release but the lease itself.
@@ -715,6 +785,10 @@ export class HttpServerAdapter implements ServerAdapter {
    * tools-only slug — most of them — to be told `-32601` every time.
    */
   async readResource(uri: string): Promise<ReadResourceResult> {
+    return this.authorized(() => this.readResourceOnce(uri));
+  }
+
+  private async readResourceOnce(uri: string): Promise<ReadResourceResult> {
     const conn = await this.leased();
     if (!conn.client.getServerCapabilities()?.resources) {
       conn.release();
@@ -756,6 +830,9 @@ export class HttpServerAdapter implements ServerAdapter {
           signal: controller.signal,
         } as RequestInit & { duplex: "half" }),
       );
+      // Reported, not retried: the body is the caller's request stream, and it
+      // has been read. The next operation mints.
+      if (upstream.status === 401) this.opts.onUnauthorized?.(endpoint);
       res.status(upstream.status);
       upstream.headers.forEach((value, key) => {
         if (key.toLowerCase() === "transfer-encoding") return;
@@ -942,6 +1019,15 @@ function offlineVerdict(
     }
   }
   return null;
+}
+
+/**
+ * An HTTP `401` from the upstream, through the `UpstreamError` wrapper or raw.
+ * `StreamableHTTPError.code` is the HTTP status.
+ */
+function isUnauthorized(err: unknown): boolean {
+  const cause = err instanceof UpstreamError ? err.cause : err;
+  return cause instanceof StreamableHTTPError && cause.code === 401;
 }
 
 /** A JSON-RPC `-32601`, through the `UpstreamError` wrapper or raw. */

@@ -6,7 +6,11 @@ import { ENV_NAME_SOURCE } from "../config/env-name.ts";
 import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { ListResult } from "./gcs-client.ts";
-import type { SecretsStore, ServerView } from "./resolve.ts";
+import type {
+  SecretsPageSummary,
+  SecretsStore,
+  ServerView,
+} from "./resolve.ts";
 import type { ParameterMeta } from "../secrets/parameters/index.ts";
 import { serverConsolePath } from "./paths.ts";
 import {
@@ -337,6 +341,12 @@ export interface SecretsViewOptions {
    * renderer stays a pure function of what it is handed.
    */
   revealNonSecret: RevealPosture;
+  /**
+   * The OTHER secrets pages on this gateway — every one but this — for the
+   * strip under the breadcrumb. Empty on a gateway with one, and then there is
+   * no strip. See siblingStrip.
+   */
+  siblingPages: SecretsPageSummary[];
   signedInAs?: string;
   /** A one-shot banner after an action ("Created FOO"). */
   flash?: { tone: "ok" | "error"; message: string };
@@ -465,6 +475,7 @@ export function renderSecrets(opts: SecretsViewOptions): string {
 
   const body = `
 <nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+${siblingStrip(opts.siblingPages)}
 
 <section class="browse-head">
   <div class="stat"><span class="stat-n">${parameters.length}</span><span class="stat-l">parameters</span></div>
@@ -613,6 +624,55 @@ function storePicker(
     </select>
     <noscript><button class="btn nsgo">Go</button></noscript>
   </form>`;
+}
+
+/**
+ * The other secrets pages on this gateway, under the breadcrumb.
+ *
+ * The index lists every page, but a reader who lands on one directly — a
+ * bookmark, a link out of `open_secrets_manager` — sees only this page's
+ * namespaces and nothing saying there are others. "Why can't I see namespace X
+ * here?" was asked twice on one deployment by someone on the right console and
+ * the wrong page. The strip is the answer on the page the question is asked on.
+ *
+ * It names a sibling by slug, and each of its stores by project and namespaces:
+ * what the reader would see by opening it, and nothing more. A project links to
+ * its own store when the sibling fronts several, so the click lands where the
+ * namespace is rather than on that page's first store.
+ *
+ * Nothing at all on a gateway with one secrets page. "The others:" followed by
+ * nothing is a sentence with no content, and the breadcrumb already leads back
+ * to the index.
+ */
+function siblingStrip(siblings: SecretsPageSummary[]): string {
+  if (siblings.length === 0) return "";
+  const items = siblings
+    .map((page) => {
+      const href = serverConsolePath(page.slug);
+      const stores = page.stores
+        .map((s) => {
+          const project = s.projectId
+            ? page.stores.length > 1
+              ? `<a class="sibling-project" href="${href}?project=${encodeURIComponent(s.projectId)}"><code>${esc(s.projectId)}</code></a>`
+              : `<code>${esc(s.projectId)}</code>`
+            : "";
+          const namespaces = s.namespaces
+            .map((n) => `<span class="sibling-ns">${esc(n)}</span>`)
+            .join("");
+          return `<span class="sibling-store">${project}${namespaces}</span>`;
+        })
+        .join("");
+      return `
+    <li class="sibling"><a class="sibling-slug" href="${href}">${esc(page.slug)}</a>${
+      page.enabled ? "" : `<span class="chip chip-off">disabled</span>`
+    }${stores}</li>`;
+    })
+    .join("");
+  return `<nav class="siblings" aria-label="Other secrets pages on this gateway">
+  <p class="siblings-l">One of ${siblings.length + 1} secrets pages on this gateway. A namespace that is not on this page may be on another:</p>
+  <ul class="sibling-list">${items}
+  </ul>
+</nav>`;
 }
 
 /**
@@ -1337,6 +1397,12 @@ export function renderMessage(opts: {
    * failed on its own; this keeps that true.
    */
   otherStores?: { href: string; label: string }[];
+  /**
+   * The other secrets PAGES on this gateway, for the same strip a healthy
+   * secrets page carries. A broken page is where a reader is likeliest to be
+   * looking for somewhere else to go. See siblingStrip.
+   */
+  siblingPages?: SecretsPageSummary[];
 }): string {
   const tone = opts.tone ?? "info";
   const others = opts.otherStores?.length
@@ -1346,6 +1412,7 @@ export function renderMessage(opts: {
     : "";
   const body = `
 ${opts.breadcrumbToIndex ? `<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a></nav>` : ""}
+${siblingStrip(opts.siblingPages ?? [])}
 <div class="state state-${tone}">
   <div class="state-icon">${opts.icon ?? INFO_SVG}</div>
   <p class="state-title">${esc(opts.heading)}</p>
@@ -1570,6 +1637,17 @@ code{font-family:var(--font-mono);font-size:.84em;background:var(--bg-code);
 .crumb:hover{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .crumb-current{color:var(--g1);font-weight:500}
 .crumb-sep{color:var(--g4);padding:0 .1rem}
+
+/* Sibling secrets pages */
+.siblings{font-size:.82rem;color:var(--g3);margin:-.6rem 0 1.25rem}
+.siblings-l{margin:0 0 .35rem}
+.sibling-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.3rem}
+.sibling{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap;font-family:var(--font-mono)}
+.sibling-slug{color:var(--text-accent);font-weight:500}
+.sibling-slug:hover,.sibling-project:hover code{text-decoration:underline}
+.sibling-store{display:inline-flex;align-items:baseline;gap:.45rem;flex-wrap:wrap}
+.sibling-store+.sibling-store::before{content:"·";color:var(--g4)}
+.sibling-ns{color:var(--g2)}
 
 /* Browse head */
 .browse-head{display:flex;align-items:center;gap:1.6rem;flex-wrap:wrap;

@@ -234,6 +234,58 @@ export function serverLooksSecrets(server: ServerConfig): boolean {
   return declaresSecrets(server, declaredEnv(server));
 }
 
+/**
+ * One secrets page, as ANOTHER page names it: where it is and which stores it
+ * fronts. Declared config and nothing else — no credential, no parameter, no
+ * status — because it is rendered on a page that is not this one.
+ */
+export interface SecretsPageSummary {
+  slug: string;
+  /** A disabled server still has a page; the index marks it, so this does too. */
+  enabled: boolean;
+  stores: { projectId: string; namespaces: string[] }[];
+}
+
+/**
+ * Every secrets page on this gateway, in config order.
+ *
+ * Three things have to agree: the index's `Manage →` link, the page it points
+ * at, and this list. `declaredEnv` keeps the link from being narrower than the
+ * page; this keeps a page's list of its SIBLINGS from disagreeing with either.
+ * (The console's one declaration that outranks detection — a connector's
+ * `oauth:` — is applied where the page is, in `src/ui/index.ts`, because the
+ * connector module sits downstream of this one.) Both halves are reused rather than
+ * restated: WHICH servers comes from `serverLooksSecrets`, the predicate the
+ * index asks per card, and WHAT each one fronts comes from `resolveServerView`,
+ * the resolution the sibling page itself renders. A second detection path here
+ * would be a strip naming a page the index does not offer, or skipping one it
+ * does.
+ *
+ * Navigation, not authorization. The `/ui` gate is a Workspace-principal check
+ * that never reads `entitlements:`, so a console-only slug with
+ * `entitlements: []` has a page and is listed like any other. Nothing here is
+ * anything a signed-in reader cannot already see by opening the page it names.
+ */
+export function secretsPages(
+  config: StradConfig,
+  secrets: SecretBag,
+): SecretsPageSummary[] {
+  const pages: SecretsPageSummary[] = [];
+  for (const server of config.servers.filter(serverLooksSecrets)) {
+    const view = resolveServerView(config, server.slug, secrets);
+    if (view.kind !== "secrets") continue;
+    pages.push({
+      slug: server.slug,
+      enabled: server.enabled,
+      stores: view.stores.map((s) => ({
+        projectId: s.projectId,
+        namespaces: s.namespaces,
+      })),
+    });
+  }
+  return pages;
+}
+
 /** The GCS detector: the server declares a bucket or GCS credentials. */
 export function serverLooksGcs(server: ServerConfig): boolean {
   return declaresGcs(declaredEnv(server));
