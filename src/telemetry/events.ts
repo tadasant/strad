@@ -132,6 +132,37 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
       "unconfigured",
     ],
     /**
+     * A bundle reports a slug's mount degraded — it lists its tools and says
+     * its calls will fail — or serving again. From the tool-surface monitor,
+     * in core, on change only (gateway/reachability.ts).
+     *
+     * The bundle's own words are the thing to keep out, and they never get this
+     * far: its `degraded` value is `login failed: ${error.message}` and the
+     * like, and `parseBundleHealth` (gateway/mount-health.ts) reads it for its
+     * truthiness and drops it. Where each field comes from, at the one call
+     * site that emits it: `slug` and `bundle` are the CONFIG's own
+     * `supplementary-image` entry — a bundle's reported slugs and paths are
+     * only matched against the config's, never copied out — and `state` is a
+     * `MountState`, one of two words this repo wrote (`degraded`, `ok`). The
+     * `reason` on a degraded payload is strad's own constant sentence, for the
+     * stream; it is not on this list, because it says nothing a query needs.
+     *
+     * Info, not a `_degraded` fault, on purpose: one bit cannot tell a failed
+     * login from a credential a human deferred, and a deferred credential is
+     * documented as paging nobody. `strad.mcp.mount_degraded` is the channel
+     * to alert on, scoped by slug.
+     */
+    "strad.mount_state": ["slug", "bundle", "state"],
+    /**
+     * A bundle's report on its mounts became unreadable, or readable again.
+     *
+     * Worth a record because in between, `strad.mcp.mount_degraded` holds its
+     * last value for that bundle's slugs. `bundle` is from the config; `outcome`
+     * is a `BundleReportOutcome`, a closed set of this repo's words
+     * (`ok`, `unreachable`, `unrecognised`, `unwired`). No status line, no body.
+     */
+    "strad.mount_report": ["bundle", "outcome"],
+    /**
      * A slug that could not be listed because a `mayBeUnseeded:` credential has
      * not been seeded yet.
      *

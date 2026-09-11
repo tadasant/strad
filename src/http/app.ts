@@ -211,6 +211,16 @@ export function createApp(opts: AppOptions): Express {
   // SLUGS ONLY. Which `${NAME}` is missing stays in the logs and the console;
   // this route is unauthenticated and a secret name is not a thing to publish.
   //
+  // `mountDegraded` is the third list, and the other half of the picture: the
+  // slugs whose BUNDLE says their mount is unwell while it lists its tools — a
+  // stale login is the case that ran for weeks. Also beside `degraded` rather
+  // than in it, so the deploy gate that reads the surface state never fails on
+  // it; the staging deploy annotates it instead. Slugs and one of two words per
+  // surface (`mount`), and never the bundle's reason — that text is dropped
+  // where it is parsed (gateway/mount-health.ts). `mountUnread` names the slugs
+  // no reading covered, so an unreadable bundle is never an empty, all-clear
+  // `mountDegraded`.
+  //
   // `ok` stays true regardless. This route is liveness; a degraded upstream is
   // not a reason to restart core.
   app.get("/healthz", (_req, res) => {
@@ -229,6 +239,12 @@ export function createApp(opts: AppOptions): Express {
             },
             degraded: surfaces.degraded,
             unconfigured: surfaces.unconfigured,
+            ...(surfaces.mountDegraded
+              ? { mountDegraded: surfaces.mountDegraded }
+              : {}),
+            ...(surfaces.mountUnread
+              ? { mountUnread: surfaces.mountUnread }
+              : {}),
           }
         : {}),
     });

@@ -77,6 +77,16 @@ interface GatewayInstruments {
    * is re-exported at its last value forever. See gateway/reachability.ts.
    */
   toolSurface: Gauge;
+  /**
+   * 1 when the bundle hosting a slug's mount reports it degraded, 0 when it
+   * reports it serving.
+   *
+   * `toolSurface`'s blind spot: a mount can list every tool and fail every call
+   * (a stale login), and only the bundle knows. Same two attributes as
+   * `toolSurface`, both from the config, so the two join slug for slug — and the
+   * bundle's reason for it is on neither. See gateway/mount-health.ts.
+   */
+  mountDegraded: Gauge;
 
   toolCalls: Counter;
   toolCallDuration: Histogram;
@@ -125,6 +135,10 @@ export function instruments(): GatewayInstruments {
     toolSurface: meter.createGauge("strad.mcp.tool_surface", {
       description:
         "Tools each mounted server is currently serving; 0 means it serves nothing",
+    }),
+    mountDegraded: meter.createGauge("strad.mcp.mount_degraded", {
+      description:
+        "1 when the bundle hosting a server's mount reports it degraded (a failed login, a missing credential), 0 when it reports it serving",
     }),
     toolCalls: meter.createCounter("strad.mcp.tool_calls", {
       description: "tools/call invocations, by server and outcome",

@@ -276,6 +276,21 @@ single-method client does. A failure that only appears when a client mixes
 methods is invisible to it by construction — see
 [known limitations #40](/limitations/#40-the-tool-surface-monitor-asks-one-question-so-it-can-only-catch-one-kind-of-failure).
 
+A listing that works is also not a call that works. A mount whose login went stale
+lists every tool and fails every call, and only the bundle knows — its `/healthz`
+names each mount it holds and whether that mount is degraded. So in core the
+monitor also reads each bundle's `/healthz` on the same interval
+(`src/gateway/mount-health.ts`), one request per bundle, and carries the answer
+**beside** the surface state: a `mount` word (`ok` / `degraded`) on each
+`supplementary-image` slug it read, `mountDegraded` and `mountUnread` lists on
+`/healthz`, the
+[`strad.mcp.mount_degraded`](/operate/telemetry/#stradmcpmount_degraded--does-the-bundle-say-a-mount-is-unwell)
+gauge, and `strad.mount_state` on change, at Info. Beside and never
+inside: `degraded` stays "serves no tools", which is what the deploy gate and the
+fast retry read. What crosses from the bundle is one bit per mount, matched onto
+the config's own slugs by path; the bundle's reason for it is upstream text and is
+dropped where it is parsed.
+
 Selection is re-checked at `tools/call` time too: `tools/list` filters by the
 current `?servers=`, but a client could call any tool name it saw on a prior
 request, so authorization is re-enforced on the action itself.

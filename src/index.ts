@@ -1,6 +1,7 @@
 import { tokenStoreFromConfig } from "./auth/index.ts";
 import { assertDevBypassAllowed } from "./auth/dev.ts";
 import { configPathFromEnv, loadConfig } from "./config/load.ts";
+import { mountTargets } from "./gateway/mount-health.ts";
 import { ToolSurfaceMonitor } from "./gateway/reachability.ts";
 import { Registry, type Mode } from "./gateway/registry.ts";
 import { createApp } from "./http/app.ts";
@@ -168,9 +169,17 @@ async function main(): Promise<void> {
   // VALIDATED rather than coerced: `Number("")` is 0 and `Number("60s")` is NaN,
   // and setTimeout clamps both to 1ms — a typo would turn this into a hot loop
   // probing every upstream continuously.
+  //
+  // In core it also asks each bundle what it says about its own mounts, because
+  // a mount can list every tool and fail every call — a stale login — and only
+  // the bundle knows. Core is the process that routes those slugs and holds the
+  // bundles' private URLs; a bundle-mode process mounts no supplementary slug
+  // and has nothing to ask. See gateway/mount-health.ts.
   const toolSurfaces = new ToolSurfaceMonitor({
     registry,
     intervalMs: positiveMs(env.STRAD_TOOL_SURFACE_INTERVAL_MS, 60_000),
+    mounts:
+      mode === "core" ? { targets: mountTargets(config), env } : undefined,
   });
 
   const app = createApp({
