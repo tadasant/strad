@@ -31,6 +31,14 @@ deployment you're changing — `infra/strad.staging.yaml` for staging, or
 - **`builtin`** — set `module` and `bundle` (`core` = in-process, anything else =
   a bundle component), plus optional `options`.
 
+A `remote-http` server can also be written in the [`mcp.json`
+dialect](/servers/interface/#mcpservers--the-draft-sep-2633-input-dialect) —
+draft SEP-2633's `mcpServers:` map, beside `servers:` in the same file — which is
+useful when you are pasting an entry a client already has. It desugars into
+exactly the `remote-http` entry above, and the rest of this page is unchanged: an
+entry written that way still needs step 2, and still declares its `tools:` policy
+in step 3b. The other three kinds have no expression in the format.
+
 ## 2. Wire entitlements — both directions
 
 Access requires **two** agreements. Grant the role on the server _and_ name the
@@ -54,6 +62,12 @@ servers:
 If either half is missing, the server is unreachable and a request for it returns
 [`424`](/intro/concepts/#the-424-contract). This is deliberate — strad fails
 closed.
+
+An entry written in the `mcp.json` dialect declares its half under
+`strad: { entitlements: [...] }`. If it declares nothing — which is what a
+pasted `mcp.json` looks like, since the format has no notion of who a server is
+for — it attaches with `entitlements: []` and `npm run config:check` warns,
+naming the slug and both halves of the fix.
 
 ## 3. Declare any bundle it needs
 

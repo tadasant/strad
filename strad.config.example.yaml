@@ -9,7 +9,7 @@
 # holds no cloud credentials.
 #
 # This file is an EXAMPLE: it shows every shape the schema allows, with fewer
-# servers than a real deployment. infra/strad.staging.yaml is the real one — 27
+# servers than a real deployment. infra/strad.staging.yaml is the real one — 35
 # server slugs across 3 App Platform components.
 
 version: 1
@@ -87,6 +87,33 @@ auth:
     # here so a DB-backed store arrives as a new value, not a new key.
     # See HACKS.md #6.
     store: env
+
+  # strad's OWN OAuth 2.1 authorization server, in front of /mcp. This is what
+  # lets an interactive MCP client — claude.ai's custom-connector dialog — be
+  # handed a URL and connect through a Google sign-in, with no token pasted
+  # anywhere. It is ADDITIVE: staticTokens above keeps working unchanged, and
+  # /mcp accepts either credential.
+  #
+  # Enabling the flag is not enough. GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET must
+  # be set (the SAME OAuth client the console login uses, with
+  # <publicUrl>/oauth/callback/google added to its authorized redirect URIs),
+  # and there must be key material — STRAD_OAUTH_KEY, else
+  # CONSOLE_SESSION_SECRET, else GOOGLE_CLIENT_SECRET. A deployment missing a
+  # half says so at boot and serves no authorization-server metadata.
+  mcpOAuth:
+    enabled: true
+    # Optional: defaults to auth.google.hostedDomain above. Verified against the
+    # ID token's `hd` claim AND the email suffix, on every authorization and on
+    # every refresh. A config that enables the flow and declares neither is a
+    # hard error — a flow with no domain to enforce admits whoever arrives.
+    hostedDomain: tadasant.com
+    # NOT defaulted from auth.google.roles: that grant is the console's, and
+    # inheriting it would mean this flag silently widened what /mcp hands out.
+    # Empty is fail-closed — the flow completes and every ?servers= gets a 424.
+    roles: [admin]
+    # Access tokens expire on this cadence; refresh tokens never expire, and are
+    # revoked at Google. See docs/auth/overview.md.
+    accessTokenTtlSeconds: 3600
 
   # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while
   # Google OAuth credentials are being provisioned. Requires ALLOW_DEV_AUTH=true.
@@ -778,3 +805,49 @@ servers:
   #   entitlements: [admin]
   #   env:
   #     MY_SERVER_TOKEN: "${MY_SERVER_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# mcpServers: — the same file every other MCP client reads
+# ---------------------------------------------------------------------------
+#
+# An OPTIONAL second dialect for the SAME server list, in the shape of draft
+# SEP-2633's `mcp.json`. Entries here are desugared into `servers:` above before
+# the schema sees them — `type: streamable-http` becomes `kind: remote-http`,
+# the key becomes the slug, `${env:NAME}` becomes `${NAME}` — so nothing
+# downstream knows the dialect exists and `servers:` stays the contract.
+#
+# SEP-2633 is an OPEN DRAFT, not a merged standard, and there is no published
+# JSON schema for it yet — which is why nothing here names a `$schema`. It
+# covers exactly one of strad's four kinds. `supplementary-image` and `builtin`
+# are deployment topology and an in-process import, and neither is expressible
+# in a client config; `type: stdio` looks like the nearest analog to a container
+# and is not one, so it is refused rather than guessed at. So is `type: sse`,
+# and so is the SEP's `oauth:` object, which is being renegotiated upstream.
+#
+# `strad:` is the one extension: the gateway-only fields the format has no slot
+# for. Without it an entry attaches a server with `entitlements: []` — fail
+# closed, and reachable by NOBODY. That is what an `mcp.json` means on a gateway
+# (the format assumes the config's reader is its only user), so it is not
+# defaulted away; `npm run config:check` warns for every such slug and boot
+# emits `strad.mcp_json_unentitled`.
+#
+# A file that is JUST an mcp.json — `mcpServers` and no `version:` — is also a
+# config strad will load: `version: 1` and an empty `auth:` are supplied, which
+# are the only two root fields with no default. It boots and serves nothing to
+# anyone until roles and entitlements exist.
+#
+# See docs: servers/interface.
+mcpServers:
+  # SEP-2633's own worked example, attached to strad. The host is RFC 2606
+  # reserved and this entry ships disabled: it is here to be read and to be
+  # validated by `npm run config:check`, not to be reached.
+  analytics:
+    title: Analytics
+    description: What the server provides.
+    type: streamable-http
+    url: https://mcp.analytics.example.com/mcp
+    headers:
+      X-API-Key: "${env:ANALYTICS_API_KEY}"
+    strad:
+      entitlements: [admin]
+      enabled: false

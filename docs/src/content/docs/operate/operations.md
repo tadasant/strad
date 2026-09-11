@@ -1349,8 +1349,15 @@ declares thirty-five server slugs:
 Roles are `admin: ["*"]`, a deliberately narrow `echo-only: [echo]` — which
 keeps the [424 fail-closed path](/intro/concepts/#the-424-contract) meaningful —
 and `zimmer: [zimmer-secrets, secrets, echo]`, the role Zimmer's own sessions
-hold. `google.enabled` is `false` (it flips true when OAuth creds land) and
-`consoleDevBypass.enabled` is `true`.
+hold. `google.enabled` is `false` (it flips true when OAuth creds land),
+`mcpOAuth.enabled` is `false` for the same reason and at the same moment — both
+need `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, and the OAuth client must also
+list `https://staging.strad.tadasant.com/oauth/callback/google` among its
+authorized redirect URIs — and `consoleDevBypass.enabled` is `true`. Flipping
+`mcpOAuth` without those seeded is not a dead end: the authorization server does
+not run, publishes no metadata, says why at boot, and `/mcp` keeps accepting
+static tokens exactly as it does now. See
+[Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
 
 The breadth of `zimmer` is a security decision rather than a default, and it is
 asserted rather than described. Twenty-one of staging's slugs carry a real

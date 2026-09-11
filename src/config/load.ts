@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { StradConfig } from "./schema.ts";
+import { desugarDocument, type DesugarResult } from "./mcp-json.ts";
 
 /**
  * Load and validate the config.
@@ -19,14 +20,24 @@ import { StradConfig } from "./schema.ts";
  * Validation is strict and happens at boot. A config that names an undefined
  * role, or puts two container images in one bundle, is a deployment that
  * misbehaves in a way nobody notices for a week — so it refuses to start.
+ *
+ * ## Two dialects, one schema
+ *
+ * The document may also carry `mcpServers:` — draft SEP-2633's `mcp.json` — and
+ * those entries are DESUGARED into `servers:` before the schema sees them. JSON
+ * is a subset of YAML, so there is one parser here either way; the dialect is a
+ * document transform, not a second parse. See `src/config/mcp-json.ts`. The YAML
+ * interface is authoritative and a document that does not write `mcpServers:`
+ * takes exactly the path it always did.
  */
 export async function loadConfig(
   path: string,
   env: NodeJS.ProcessEnv = process.env,
+  onDialect?: (dialect: DesugarResult) => void,
 ): Promise<StradConfig> {
   const inline = env.STRAD_CONFIG_YAML;
   if (inline && inline.trim() !== "") {
-    return parseConfig(inline, "STRAD_CONFIG_YAML");
+    return parseAndNotify(inline, "STRAD_CONFIG_YAML", onDialect);
   }
 
   let raw: string;
@@ -43,22 +54,71 @@ export async function loadConfig(
     throw err;
   }
 
-  return parseConfig(raw, path);
+  return parseAndNotify(raw, path, onDialect);
+}
+
+/** Parse, and hand the caller what the dialect did — once, and only if it ran. */
+function parseAndNotify(
+  raw: string,
+  path: string,
+  onDialect?: (dialect: DesugarResult) => void,
+): StradConfig {
+  const result = parseConfigWithDialect(raw, path);
+  if (onDialect && result.dialect.used) onDialect(result.dialect);
+  return result.config;
 }
 
 /**
- * The YAML document, before the schema has seen it.
+ * The YAML document, before the schema OR the dialect has seen it.
  *
- * Exposed for the strict check (src/config/strict.ts), which needs the source
- * shape to say which keys the schema dropped.
+ * Exposed for `src/deploy/config-inline.ts`, which round-trips the document it
+ * bakes into `STRAD_CONFIG_YAML` and must compare the text as WRITTEN — the
+ * container re-runs the desugar for itself at boot.
  */
 export function parseYamlDocument(raw: string): unknown {
   return parseYaml(raw);
 }
 
-export function parseConfig(raw: string, path = "<inline>"): StradConfig {
-  const doc: unknown = parseYamlDocument(raw);
-  const result = StradConfig.safeParse(doc);
+/**
+ * The document the schema actually parses: YAML in, `mcpServers:` folded away.
+ *
+ * Exposed for the strict check (src/config/strict.ts), which needs the source
+ * shape to say which keys the schema dropped — and which has to diff against
+ * THIS document rather than the raw one, because the raw one carries a key
+ * (`mcpServers`) the schema has never heard of and a `servers:` list shorter
+ * than the parsed one.
+ */
+export function configDocument(raw: string): DesugarResult {
+  return desugarDocument(parseYamlDocument(raw));
+}
+
+export interface ParsedConfig {
+  config: StradConfig;
+  /** What the `mcp.json` dialect contributed. `used: false` for a plain config. */
+  dialect: DesugarResult;
+}
+
+/**
+ * Parse, and say what the dialect did.
+ *
+ * The dialect's own refusals are reported BEFORE the schema's, and on their own:
+ * a document whose `mcpServers:` did not desugar has a `servers:` list missing
+ * those entries, so every schema error after that point would be a consequence
+ * of the first failure rather than a finding.
+ */
+export function parseConfigWithDialect(
+  raw: string,
+  path = "<inline>",
+): ParsedConfig {
+  const dialect = configDocument(raw);
+  if (dialect.errors.length > 0) {
+    throw new Error(
+      `invalid mcp.json dialect at ${path}:\n` +
+        dialect.errors.map((e) => `  - ${e}`).join("\n"),
+    );
+  }
+
+  const result = StradConfig.safeParse(dialect.doc);
 
   if (!result.success) {
     const problems = result.error.issues
@@ -67,7 +127,11 @@ export function parseConfig(raw: string, path = "<inline>"): StradConfig {
     throw new Error(`invalid config at ${path}:\n${problems}`);
   }
 
-  return result.data;
+  return { config: result.data, dialect };
+}
+
+export function parseConfig(raw: string, path = "<inline>"): StradConfig {
+  return parseConfigWithDialect(raw, path).config;
 }
 
 export function configPathFromEnv(

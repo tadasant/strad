@@ -27,7 +27,7 @@ import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
  * them is what lets src/secrets/env-prefix.ts promise injectivity rather than hope
  * for it.
  */
-const SLUG = z
+export const SLUG = z
   .string()
   .max(63, "slug must be at most 63 characters")
   .regex(
@@ -49,7 +49,7 @@ const SecretRef = z.string();
 const HeaderMap = z.record(SecretRef).default({});
 
 /** Roles a principal can hold. A role grants access to a set of servers. */
-const Role = z
+export const Role = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,62}$/, "role must be lowercase alphanumeric");
 
@@ -77,7 +77,7 @@ const Role = z
  *
  * Enforced on tools/call, not just tools/list — see gateway/toolPolicy.ts.
  */
-const ToolPolicySchema = z
+export const ToolPolicySchema = z
   .object({
     allow: z.array(z.string().min(1)).min(1).optional(),
     deny: z.array(z.string().min(1)).min(1).optional(),
@@ -939,8 +939,11 @@ const BundleConfig = z.object({
  * strad is on the open internet. There is no network perimeter — no tailnet,
  * no VPN, no IP allowlist. Auth is the ONLY gate. Two doors:
  *
- *   /mcp      — machines. Static system tokens ONLY. Never unauthenticated,
- *               never dev-bypassable. This is enforced in code, not config.
+ *   /mcp      — machines and interactive MCP clients. A static system token, or
+ *               an access token strad's own authorization server issued
+ *               (`mcpOAuth`, below). Never unauthenticated, never
+ *               dev-bypassable, and never a console session — which of those
+ *               two credentials it takes is enforced in code, not config.
  *   /console  — humans. Google OAuth (Workspace `hd` claim), with a dev bypass
  *               that itself still requires ADMIN_BOOTSTRAP_TOKEN, and — outside
  *               prod — a single-use login token either one can mint for an
@@ -978,6 +981,70 @@ const AuthConfig = z.object({
       store: z.enum(["env"]).default("env"),
     })
     .default({ enabled: true, store: "env" }),
+
+  /**
+   * strad's OWN OAuth 2.1 authorization server, in front of `/mcp`.
+   *
+   * This is what lets an interactive MCP client — claude.ai's custom-connector
+   * dialog is the one it was built for — be handed a URL and nothing else, and
+   * arrive at a working connection through a sign-in rather than through a
+   * token somebody pasted out of band. strad issues the tokens; Google
+   * authenticates the human behind them.
+   *
+   * It is ADDITIVE. `staticTokens` is untouched by it: `/mcp` accepts either
+   * credential, and a machine client holding a long-lived
+   * `strad_<env>_<pubid>_<secret>` is unaffected whether this is on or off.
+   *
+   * Enabling it is not enough on its own, for the same reason `auth.google` is
+   * not (see `resolveMcpOAuth` in src/auth/mcp-oauth/index.ts): the Google
+   * OAuth client and a signing key must also exist, and a half-configured
+   * deployment says so at boot rather than redirecting a human into a flow that
+   * cannot finish.
+   */
+  mcpOAuth: z
+    .object({
+      enabled: z.boolean().default(false),
+      /**
+       * The Google Workspace domain a token holder must belong to, verified
+       * against the ID token's `hd` claim AND the email suffix — on every
+       * authorization and on every refresh.
+       *
+       * Optional, and it falls back to `auth.google.hostedDomain`: the two
+       * doors of one deployment answer to one Workspace, and making this
+       * mandatory would be asking an operator to write the same string twice.
+       * Set it only to point `/mcp` at a different Workspace from the console's.
+       * A deployment that enables this with neither is refused by the
+       * superRefine below — the alternative is a gateway that would accept the
+       * first Google account to arrive.
+       */
+      hostedDomain: z.string().min(1).optional(),
+      /**
+       * Roles granted to a verified member of the domain.
+       *
+       * Deliberately NOT defaulted from `auth.google.roles`. That grant is the
+       * console's, and an OAuth login at `/mcp` inheriting it would mean
+       * enabling this flag silently widened what `/mcp` hands out. `[]` is the
+       * fail-closed default: the flow completes, the token verifies, and every
+       * `?servers=` gets the ordinary 424. Boot warns when it is empty.
+       */
+      roles: z.array(Role).default([]),
+      /**
+       * Access-token lifetime, seconds. One hour is the conventional default
+       * and what an MCP client expects to refresh against.
+       *
+       * The floor is five minutes because an access token is verified with no
+       * lookup: it cannot be revoked before it expires, so a short life IS the
+       * revocation window. The ceiling is a day because the same sentence read
+       * the other way is a reason not to let one run long.
+       */
+      accessTokenTtlSeconds: z
+        .number()
+        .int()
+        .min(300)
+        .max(86_400)
+        .default(3600),
+    })
+    .default({ enabled: false, roles: [], accessTokenTtlSeconds: 3600 }),
 
   /**
    * Console dev bypass: sign in to /console without Google OAuth, by presenting
@@ -1154,6 +1221,43 @@ export const StradConfig = z
         });
       }
       seen.add(s.slug);
+    }
+
+    // THE OAUTH DOMAIN CONSTRAINT MUST NAME A DOMAIN.
+    //
+    // `auth.mcpOAuth.hostedDomain` falls back to `auth.google.hostedDomain`, so
+    // most deployments write it once. A deployment that enables the flow and
+    // declares NEITHER has no domain to enforce, and a flow with no domain to
+    // enforce admits the first Google account that arrives at it. Refusing here
+    // is the difference between a config error at `npm run config:check` and a
+    // gateway that hands `/mcp` to the internet.
+    if (
+      cfg.auth.mcpOAuth.enabled &&
+      cfg.auth.mcpOAuth.hostedDomain === undefined &&
+      cfg.auth.google?.hostedDomain === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "auth.mcpOAuth.enabled is true but no hosted domain is declared. " +
+          "Set auth.mcpOAuth.hostedDomain, or auth.google.hostedDomain, to the " +
+          "Google Workspace domain whose members may hold a token for /mcp.",
+        path: ["auth", "mcpOAuth", "hostedDomain"],
+      });
+    }
+
+    // A ROLE NAMED THERE MUST EXIST, on the same reasoning as a server's
+    // entitlements below: an OAuth login carrying a role no `roles:` block
+    // defines is a sign-in that completes and then gets a 424 for every slug,
+    // with nothing anywhere saying why.
+    for (const role of cfg.auth.mcpOAuth.roles) {
+      if (!cfg.roles[role]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `auth.mcpOAuth.roles grants unknown role "${role}"`,
+          path: ["auth", "mcpOAuth", "roles"],
+        });
+      }
     }
 
     // Every referenced role must be defined, or entitlement checks silently

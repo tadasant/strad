@@ -117,7 +117,10 @@ describe("the gap this closes", () => {
     // The pre-flip check: red, by name. With auth.google.enabled that absence is
     // a front-door outage on /ui, not a dormant one.
     const check = await checkStore(fake.store, config);
-    expect(check.missing).toStrictEqual(["GOOGLE_CLIENT_ID"]);
+    expect(check.missing).toStrictEqual([
+      "GOOGLE_CLIENT_ID",
+      "STRAD_OAUTH_KEY",
+    ]);
     expect(check.namespace).toBe(NAMESPACE);
   });
 
@@ -291,7 +294,10 @@ describe("--resolve: presence is not resolvability", () => {
       },
     };
     const check = await checkStore(cannotRender, config, { resolve: true });
-    expect(check.missing).toStrictEqual(["GOOGLE_CLIENT_ID"]);
+    expect(check.missing).toStrictEqual([
+      "GOOGLE_CLIENT_ID",
+      "STRAD_OAUTH_KEY",
+    ]);
     expect(check.render?.error).toBeTruthy();
     expect(check.render?.rendered).toStrictEqual([]);
     // Everything the namespace does hold is unproven, not absent.
@@ -397,13 +403,13 @@ describe("scripts/check-store.ts", () => {
       `::error file=`, // annotated for GitHub, on the config file
     );
     expect(result.stderr).toContain(`GOOGLE_CLIENT_ID is not in ${NAMESPACE}`);
-    expect(result.stdout).toContain("9 of 10 expected name(s) present");
+    expect(result.stdout).toContain("9 of 11 expected name(s) present");
   });
 
   it("reports the same names without failing, in report mode", async () => {
     const result = await check(["--mode", "report"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("9 of 10 expected name(s) present");
+    expect(result.stdout).toContain("9 of 11 expected name(s) present");
     expect(result.stdout).toContain("GOOGLE_CLIENT_ID");
     expect(result.stdout).toContain("reported, not failed");
     // Reported, not annotated red: a partially-seeded namespace mid-migration is
@@ -489,7 +495,7 @@ describe("scripts/check-store.ts", () => {
       "report",
     ]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("0 of 10 expected name(s) present");
+    expect(result.stdout).toContain("0 of 11 expected name(s) present");
     expect(result.stdout).toContain("/strad/nowhere/");
   });
 

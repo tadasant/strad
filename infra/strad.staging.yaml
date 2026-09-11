@@ -105,6 +105,18 @@ auth:
   staticTokens:
     enabled: true
     store: env # reserved; no code reads it, and `env` is the only value
+  # strad's own OAuth 2.1 authorization server in front of /mcp, so an
+  # interactive MCP client can connect through a Google sign-in rather than a
+  # pasted token. It flips to true with `auth.google` above and for the same
+  # reason: both need GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET, and the OAuth
+  # client must list https://staging.strad.tadasant.com/oauth/callback/google
+  # among its authorized redirect URIs. Enabled without those, the server does
+  # not run, publishes no metadata, and says so at boot — /mcp keeps taking
+  # static tokens exactly as it does now.
+  mcpOAuth:
+    enabled: false
+    hostedDomain: tadasant.com
+    roles: [admin]
   consoleDevBypass:
     enabled: true
     roles: [admin]

@@ -191,6 +191,7 @@ not a confession.
 | `servers/good-eggs/**` — the basket read, a cart tool, what a result may claim        | `limitations.md`, and `servers/good-eggs/FORK.md`                                                                             |
 | `servers/strad-fetch/**` — a strategy, the cache bounds, an env name, the tool        | `servers/strad-fetch.md`, `limitations.md`, and `servers/strad-fetch/FORK.md`                                                 |
 | `scripts/check-config.ts`, `src/config/strict.ts` — the config CI gate                | `operate/deploy-model.md`, `servers/interface.md`                                                                             |
+| `src/config/mcp-json.ts`, `mcp-json-refs.ts` — the draft SEP-2633 input dialect       | `servers/interface.md`, `servers/adding.md`, `limitations.md`, **and** `strad.config.example.yaml`                            |
 | `scripts/check-store.ts`, `src/deploy/store-check.ts` — the pre-flip gate             | `operate/deploy-model.md`, `operate/secrets.md`                                                                               |
 | `src/deploy/preflight.ts` — what a deploy demands of the store                        | `operate/secrets.md`, `limitations.md`                                                                                        |
 | `src/deploy/unseeded.ts`, `src/gateway/unconfigured.ts` — the `mayBeUnseeded:` waiver | `operate/secrets.md`, `servers/interface.md`, `servers/adding.md`, `operate/deploy-model.md`, `limitations.md`                |
@@ -273,6 +274,12 @@ slop behind when you fix a stale fact.
   `tools/list`. Probed on an interval, logged when it changes for the worse,
   published on `/healthz` as `degraded`, asserted by the staging deploy.
 - `src/config/schema.ts` — the Zod config schema. It is the product's contract.
+- `src/config/mcp-json.ts` — draft SEP-2633's `mcp.json` as an INPUT DIALECT, not
+  a replacement. `mcpServers:` is desugared into `servers:` before the schema
+  sees the document, so the `ServerConfig` union is unchanged and nothing
+  downstream knows the dialect exists. It covers `kind: remote-http` and refuses
+  everything else by name — the format is a CLIENT config and has no way to say
+  deployment topology or a two-way entitlement. `HACKS.md` #93 is the reasoning.
 - `src/config/strict.ts` — the deploy-time strict parse. Zod strips unknown keys
   and boot stays lenient on purpose (a rollback must not become an outage), so
   "did I typo a key" is answered here, by `scripts/check-config.ts`.

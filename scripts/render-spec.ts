@@ -335,6 +335,14 @@ if (storeBacked) {
   // GOOGLE_CLIENT_SECRET. Set it to rotate every console session (the kill
   // switch) without touching the OAuth client. See src/auth/session.ts.
   secret("CONSOLE_SESSION_SECRET");
+  // Optional: the key strad's own authorization server derives its token,
+  // client-registration and cookie keys from. Absent, it falls back to
+  // CONSOLE_SESSION_SECRET and then GOOGLE_CLIENT_SECRET, so the /mcp OAuth
+  // flow works on a deployment that has only provisioned an OAuth client. Set
+  // it to get the kill switch: rotating it kills every access token, refresh
+  // token and dynamic client registration, and leaves console sessions signed
+  // in. See src/auth/mcp-oauth/keys.ts.
+  secret("STRAD_OAUTH_KEY");
 }
 
 // --- telemetry (OTLP) -------------------------------------------------------

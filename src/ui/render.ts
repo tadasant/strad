@@ -56,6 +56,13 @@ export interface LayoutOptions {
    */
   footNote?: string;
   /**
+   * Left-hand footer text. Same reasoning one step further: the OAuth consent
+   * and refusal screens (`src/ui/oauth-consent.ts`) are reached mid-flow by a
+   * human who has no console session and may never get one, so calling them
+   * "human console" names the wrong surface.
+   */
+  footLead?: string;
+  /**
    * Heading and accessible name for the Help dialog. Defaults to the console
    * guide; a page whose guide is about something narrower says so.
    */
@@ -112,7 +119,7 @@ ${opts.body}
 </main>
 ${opts.help ? helpDialog(opts.help, opts.helpTitle ?? "Console guide") : ""}
 <footer class="foot">
-  <span>strad · human console</span>
+  <span>${esc(opts.footLead ?? "strad · human console")}</span>
   <span class="foot-sep">·</span>
   <span>${esc(opts.footNote ?? "SSO-gated · humans only")}</span>
 </footer>
