@@ -78,7 +78,12 @@ does not use it.
     one of them stops answering `cache-control: no-store` and the console renders
     a cached "absent" for a credential that is present. Each tree keeps only the
     three-line express adapter, and injects its own `node:crypto`
-    `timingSafeEqual` — the module stays import-free.
+    `timingSafeEqual` — the module stays import-free. It also carries
+    `bearerToken` and `constantTimeEquals`, the one `Authorization` parse and
+    the one comparator every door in BOTH trees authenticates with; core binds
+    them in `src/auth/credential.ts`. A drifted copy is the host's mounts
+    answering a header differently from core's doors, which is the thing
+    `test/auth-header.doors.test.ts` exists to rule out.
   - `npm run wire:sync` (`--only wire`) re-vendors
     `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the
     envelope shape — into `servers/secrets`. Both halves address the SAME GCP

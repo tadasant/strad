@@ -43,6 +43,17 @@
  * one file compile in both, and it is why `node:crypto`'s `timingSafeEqual` is
  * INJECTED by the caller rather than imported here. `npm run presence:sync`
  * writes the copy and `test/vendored.sync.test.ts` fails CI if it drifts.
+ *
+ * ## It is also where every door reads and compares a credential
+ *
+ * Being the one module both trees compile makes it the only place a rule can
+ * live once for both of them. So `bearerToken` — how an `Authorization` header
+ * yields a credential — and `constantTimeEquals` — how two credentials are
+ * compared — are here, and every door of the gateway goes through them: the
+ * public `/mcp`, the console's header path, the internal token on a bundle's
+ * `/mcp` and on the `/_strad/*` routes, in either image. Core reaches them
+ * through `src/auth/credential.ts`, which binds the comparator to
+ * `node:crypto`; the host tree imports them from its vendored copy.
  */
 
 /**
@@ -338,6 +349,9 @@ export function parsePresenceRequest(body: unknown): PresenceRequest {
  * credential is already strictly stronger than the surface — a holder can proxy
  * `/mcp` to every server on this component — so this adds no reach it did not
  * have.
+ *
+ * The header is read with `bearerToken`, the same rule as every other door, and
+ * that is not a parameter: the parse is not something a caller gets to loosen.
  */
 export function authorizePresence(
   header: string | undefined,
@@ -352,7 +366,7 @@ export function authorizePresence(
       error: "internal token not configured",
     };
   }
-  const presented = header?.replace(/^Bearer\s+/i, "").trim();
+  const presented = bearerToken(header);
   if (!presented || !equals(presented, expected)) {
     return { ok: false, status: 401, error: "invalid internal token" };
   }
@@ -360,7 +374,33 @@ export function authorizePresence(
 }
 
 /**
- * The comparator the presence route compares a token with, in both trees.
+ * The credential an `Authorization` header carries, or null.
+ *
+ * ONE rule for every door in both trees. The `Bearer` scheme is required, in
+ * any case (RFC 7235 makes scheme names case-insensitive), then a space, then
+ * the credential, trimmed; a header with no scheme, another scheme, or nothing
+ * after the scheme is null. Required rather than optional because an optional
+ * prefix — `header.replace(/^Bearer\s+/i, "")` — returns a header with no
+ * scheme unchanged, so it accepts a bare `Authorization: <token>` that a strict
+ * door beside it refuses: the same header, answered two ways, and nobody chose
+ * the difference.
+ *
+ * Every caller strad has sends the scheme: `internalHeaders()` in
+ * `src/gateway/registry.ts`, the host's parameter write-back client, the
+ * bundle smoke, and any `/mcp` client.
+ */
+export function bearerToken(header: string | undefined): string | null {
+  if (!header) return null;
+  const space = header.indexOf(" ");
+  if (space < 0 || header.slice(0, space).toLowerCase() !== "bearer") {
+    return null;
+  }
+  const token = header.slice(space + 1).trim();
+  return token === "" ? null : token;
+}
+
+/**
+ * The comparator every door compares a credential with, in both trees.
  *
  * It is a compare of BYTES, not of UTF-16 code units: two strings of equal
  * `.length` can encode to different numbers of bytes, and a token is bytes.
@@ -373,11 +413,11 @@ export function authorizePresence(
  * `node:crypto` in scope passes it and gets the C implementation; the fallback
  * is a JS loop with no early exit, for a caller that has none. Either way the
  * framing — the utf-8 encode, the length guard, the "a mismatch must not throw"
- * rule — is one function rather than one per tree.
- *
- * Other doors of the gateway hand-roll their own — `http/params.ts`,
- * `auth/tokens.ts`, `auth/session.ts` — and consolidating those is a separate
- * question about four doors and one shared secret, not about this route.
+ * rule — is one function rather than one per tree, and rather than one per
+ * door: core's `secretEquals` (`src/auth/credential.ts`) is this function with
+ * `node:crypto` passed in. A length guard written wrong here is wrong on every
+ * door at once, which is why `test/auth-header.doors.test.ts` asserts it
+ * directly rather than through any one route.
  */
 export function constantTimeEquals(
   a: string,

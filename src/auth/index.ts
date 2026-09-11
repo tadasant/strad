@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import type { StradConfig } from "../config/schema.ts";
+import { bearerToken } from "./credential.ts";
 import { EnvTokenStore, verifyToken, type TokenStore } from "./tokens.ts";
 
 /**
@@ -39,7 +39,7 @@ export async function authenticateMcp(
   store: TokenStore,
   expectedEnv: string,
 ): Promise<Principal> {
-  const raw = bearer(authorizationHeader);
+  const raw = bearerToken(authorizationHeader);
   if (!raw) {
     throw new Unauthenticated(
       "missing bearer token",
@@ -59,22 +59,6 @@ export async function authenticateMcp(
     label: verdict.record.label,
     roles: verdict.record.roles,
   };
-}
-
-function bearer(header: string | undefined): string | null {
-  if (!header) return null;
-  const [scheme, ...rest] = header.split(" ");
-  if (!scheme || scheme.toLowerCase() !== "bearer") return null;
-  const value = rest.join(" ").trim();
-  return value === "" ? null : value;
-}
-
-/** Constant-time string compare for the console bootstrap token. */
-export function secretEquals(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
 }
 
 export function tokenStoreFromConfig(

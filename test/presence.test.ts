@@ -175,9 +175,17 @@ describe("authorizePresence", () => {
     }
   });
 
-  it("accepts the shared internal token, with or without the Bearer prefix", () => {
+  it("accepts the shared internal token under the Bearer scheme, in any case", () => {
     expect(authorizePresence("Bearer secret", "secret")).toEqual({ ok: true });
-    expect(authorizePresence("secret", "secret")).toEqual({ ok: true });
+    expect(authorizePresence("bEaReR secret", "secret")).toEqual({ ok: true });
+  });
+
+  it("refuses the right token with no scheme", () => {
+    expect(authorizePresence("secret", "secret")).toEqual({
+      ok: false,
+      status: 401,
+      error: "invalid internal token",
+    });
   });
 });
 

@@ -1,4 +1,5 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { secretEquals } from "./credential.ts";
 
 /**
  * Static system tokens — the credential headless agents use against /mcp.
@@ -60,18 +61,6 @@ export function mintToken(opts: {
 
 function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
-}
-
-/**
- * Constant-time compare of two hex digests.
- *
- * Both sides are SHA-256 hex, so they are always the same length — but compare
- * lengths first anyway, because timingSafeEqual throws on a length mismatch and
- * a thrown exception is itself a timing signal.
- */
-function hashesEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
 }
 
 export interface ParsedToken {
@@ -187,12 +176,15 @@ export async function verifyToken(
   const record = await store.get(parsed.pubid);
 
   // Always hash and compare, even for an unknown pubid. Returning early on
-  // "not found" — before doing the sha256 + timingSafeEqual that a *known*
+  // "not found" — before doing the sha256 + constant-time compare that a *known*
   // pubid triggers — is a remotely measurable timing difference that reveals
   // which token IDs exist. So we compare the presented secret against the real
   // hash when we have one, and against a fixed dummy when we don't, then decide.
   const digest = sha256(parsed.secret);
-  const matches = hashesEqual(digest, record?.hash ?? DUMMY_HASH);
+  // `secretEquals` is length-guarded, so a record whose `hash` is not a
+  // SHA-256 hex digest is a mismatch rather than a throw, which would itself be
+  // a timing signal.
+  const matches = secretEquals(digest, record?.hash ?? DUMMY_HASH);
 
   if (!record) return { ok: false, reason: "unknown" };
   if (record.revokedAt) return { ok: false, reason: "revoked" };

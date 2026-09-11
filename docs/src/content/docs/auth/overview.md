@@ -16,6 +16,32 @@ Which door accepts which credential is enforced **in code**, not config. The MCP
 authenticator accepts nothing but a static token — not a console session, not the
 dev bypass, and emphatically not "no header means dev mode."
 
+## Every door reads `Authorization` the same way
+
+Different doors take different credentials, but every one that reads an
+`Authorization` header reads it by one rule: `/mcp` and `/api/secrets/readiness`
+(a static token), the console's `/ui` gate and `/console` (the bootstrap token,
+when it comes as a header rather than `?token=`), and the shared
+`STRAD_INTERNAL_TOKEN` on a bundle's `/mcp`, on `/_strad/presence`, and on core's
+`/_strad/params` and `/_strad/store/refresh`.
+
+- **The scheme is required.** `Authorization: Bearer <credential>`, with the scheme
+  in any case (`bearer`, `BEARER` — scheme names are case-insensitive) and a space
+  before the credential.
+- **A header that is only the credential is refused.** `Authorization: <token>`
+  gets the door's ordinary `401`, and so does another scheme or a `Bearer` with
+  nothing after it. A hand-rolled `curl` against a component needs the scheme too:
+  `curl -H "Authorization: Bearer $STRAD_INTERNAL_TOKEN" …`.
+- **One comparator.** The credential is compared in constant time over its utf-8
+  bytes, and a length mismatch is a plain no rather than a throw.
+
+The parse (`bearerToken`) and the comparator are written once, in
+`src/secrets/presence.ts`, because that is the module vendored byte-identical into
+the bundle host image: the host's MCP mounts and its presence route read and
+compare the internal token with the same code core does. Core reaches them through
+`src/auth/credential.ts`. `test/auth-header.doors.test.ts` asks every door the
+same questions, including a scheme-less header carrying the right credential.
+
 ## `/mcp` — static system tokens (agents)
 
 Every `/mcp` request must present a static token in `Authorization: Bearer …`.

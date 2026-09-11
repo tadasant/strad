@@ -338,9 +338,15 @@ describe("presenceResponse", () => {
       }
     });
 
-    it("takes the token bare, and with the Bearer prefix and odd spacing", () => {
-      expect(ask({ authorization: INTERNAL }).status).toBe(200);
+    it("takes the token under any casing of the scheme, with odd spacing", () => {
       expect(ask({ authorization: `bearer  ${INTERNAL}  ` }).status).toBe(200);
+      expect(ask({ authorization: `BEARER ${INTERNAL}` }).status).toBe(200);
+    });
+
+    it("401s the right token with no scheme — the rule every door reads by", () => {
+      const response = ask({ authorization: INTERNAL });
+      expect(response.status).toBe(401);
+      expect(response.body).toEqual({ error: "invalid internal token" });
     });
 
     it("authorizes BEFORE parsing, so a refusal teaches nothing about the body", () => {

@@ -1,4 +1,5 @@
 import express, { type Express } from "express";
+import { bearerToken } from "../auth/credential.ts";
 import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import {
   googleProviderFromEnv,
@@ -591,6 +592,5 @@ function consoleToken(
   header: string | undefined,
 ): string | undefined {
   if (typeof queryToken === "string" && queryToken) return queryToken;
-  const bearer = header?.replace(/^Bearer\s+/i, "").trim();
-  return bearer || undefined;
+  return bearerToken(header) ?? undefined;
 }

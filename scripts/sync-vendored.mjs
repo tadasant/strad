@@ -76,6 +76,11 @@ export const VENDORED = [
     // whose suite CI reaches last. A second handler is one of them dropping
     // `cache-control: no-store` and the console rendering a cached "absent" for
     // a credential that is present.
+    //
+    // And the one `Authorization` parse and constant-time comparator every door
+    // uses, in both trees — this is the only module both of them compile, so it
+    // is the only place that rule can be written once. A drift is the host's
+    // mounts accepting a header core's doors refuse.
     id: "presence",
     source: "src/secrets/presence.ts",
     label: "the presence vocabulary and its route",

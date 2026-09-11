@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { bearerToken } from "../auth/credential.ts";
 import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import type { Principal } from "../auth/index.ts";
 import {
@@ -70,7 +71,7 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
       typeof req.query.token === "string" && req.query.token
         ? req.query.token
         : undefined;
-    const fromHeader = bearer(req.headers.authorization);
+    const fromHeader = bearerToken(req.headers.authorization) ?? undefined;
     const cookies = req.headers.cookie;
 
     // The `?token=` drives the bypass sign-in flow: a valid one is upgraded to
@@ -208,9 +209,4 @@ function cleanUrl(req: Request): string {
  */
 function here(req: Request): string {
   return req.method === "GET" ? cleanUrl(req) : "/ui";
-}
-
-function bearer(header: string | undefined): string | undefined {
-  const m = header?.match(/^Bearer\s+(.+)$/i);
-  return m?.[1] ? m[1].trim() : undefined;
 }
