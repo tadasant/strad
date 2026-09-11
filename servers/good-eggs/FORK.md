@@ -425,14 +425,18 @@ nothing else. What changed is what the tool claims about it:
   says an empty result means "none on those two pages" and not "none available",
   and tells the caller to treat any `$0.00` item in a `search_for_grocery` result
   as a freebie too.
-- The **empty result** says the same, in the result itself: *"No $0.00 items on
-  the Good Eggs homepage and /fresh-picks, the only two pages this tool checks"*,
-  then *"This does NOT mean no free items are available"*.
-- A **non-empty result** names the pages it came from and says other `$0.00`
-  items may be listed elsewhere. It says "$0.00 items", not "deals/freebies" —
-  the sweep matches a `$0.00` price and nothing else, so it never returned a deal.
-- An **error** says whether free items exist is UNKNOWN, not none — the rule
-  `get_cart` and `get_favorites` already follow.
+- The **empty result** says the same, in the result itself: *"This check found
+  no $0.00 items on the Good Eggs homepage and /fresh-picks, the only two pages
+  it looks at"*, then *"This does NOT mean no free items are available"*. It is
+  phrased as what the check found rather than as a fact about the pages, because
+  a scrape that waits a fixed three seconds and never scrolls can miss a tile
+  that is there.
+- A **non-empty result** names the pages it came from, says other `$0.00` items
+  may be listed elsewhere, and points at `search_for_grocery` results. It says
+  "$0.00 items", not "deals/freebies" — the sweep matches a `$0.00` price and
+  nothing else, so it never returned a deal.
+- An **error** names the two pages too, and says whether free items exist is
+  UNKNOWN, not none — the rule `get_cart` and `get_favorites` already follow.
 
 **Why.** During the 2026-08-23 weekly shop the tool answered *"No free items or
 deals currently available."* while two `$0.00` "TRY ME!" Reelie chip samples were
@@ -447,7 +451,10 @@ not built. It is a new traversal, and Good Eggs' search UI may not expose a pric
 filter at all. `HACKS.md` #90 records the gap.
 
 `shared/test/freebie-scope.test.ts` pins the description and all three results
-through the tool surface, over a stubbed client.
+through the tool surface, over a stubbed client. It also drives the real
+`searchFreebieGroceries()` over a fake page through `setSharedBrowserProvider`
+and pins that it visits the homepage and `/fresh-picks` and nothing else, so the
+strings cannot quietly understate a sweep that grows a third page.
 
 ## Deltas that predate this fork
 

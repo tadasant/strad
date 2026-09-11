@@ -4466,10 +4466,10 @@ test's `PAGE_READS` grows by one.
 ## 90. The good-eggs freebie tool checks two pages, so it says so rather than claiming the store
 
 **What.** `search_for_freebie_groceries` sweeps `$0.00` tiles off the Good Eggs
-homepage and `/fresh-picks` and nowhere else. Its description and every result
-name those two pages. An empty result says it does NOT mean no free items are
-available, and points the caller at `$0.00` items in `search_for_grocery`
-results. `servers/good-eggs/FORK.md` #10 has the before and after.
+homepage and `/fresh-picks` and nowhere else. Its description and every result,
+errors included, name those two pages. An empty result says what this check
+found, says it does NOT mean no free items are available, and points the caller
+at `$0.00` items in `search_for_grocery` results. `servers/good-eggs/FORK.md` #10 has the before and after.
 
 **Why.** Its upstream answer to an empty sweep was _"No free items or deals
 currently available."_ On the 2026-08-23 shop that sentence stood while two `$0.00`
