@@ -182,7 +182,9 @@ export function createApp(opts: AppOptions): Express {
   // than in it, so the deploy gate that reads the surface state never fails on
   // it; the staging deploy annotates it instead. Slugs and one of two words per
   // surface (`mount`), and never the bundle's reason — that text is dropped
-  // where it is parsed (gateway/mount-health.ts).
+  // where it is parsed (gateway/mount-health.ts). `mountUnread` names the slugs
+  // no reading covered, so an unreadable bundle is never an empty, all-clear
+  // `mountDegraded`.
   //
   // `ok` stays true regardless. This route is liveness; a degraded upstream is
   // not a reason to restart core.
@@ -204,6 +206,9 @@ export function createApp(opts: AppOptions): Express {
             unconfigured: surfaces.unconfigured,
             ...(surfaces.mountDegraded
               ? { mountDegraded: surfaces.mountDegraded }
+              : {}),
+            ...(surfaces.mountUnread
+              ? { mountUnread: surfaces.mountUnread }
               : {}),
           }
         : {}),

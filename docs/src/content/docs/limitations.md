@@ -116,9 +116,11 @@ That second blind spot is **reported, not gated**. The bundle's `/healthz` carri
 per-mount `degraded` string for exactly this, and core reads it on the monitor's
 interval: a
 [`strad.mcp.mount_degraded`](/operate/telemetry/#stradmcpmount_degraded--does-the-bundle-say-a-mount-is-unwell)
-gauge per slug, `strad.mount_degraded` / `_recovered` events, `mountDegraded` on
-core's [`/healthz`](/operate/operations/#health-and-console-surface), and a warning
-from the staging deploy. What crosses is one bit per slug — the bundle's reason is
+gauge per slug, a `strad.mount_state` event on change, `mountDegraded` and
+`mountUnread` on core's [`/healthz`](/operate/operations/#health-and-console-surface),
+and a warning from the staging deploy. So the monitor does ask a second question —
+of the bundle rather than of the mount — and the heading above is about the one
+it asks the mount. What crosses is one bit per slug — the bundle's reason is
 upstream text (`login failed: …` quoting whatever page the login died on) and is
 dropped where core parses it. So:
 
@@ -130,11 +132,15 @@ dropped where core parses it. So:
   the reason; nothing core exports does.
 - **The gauge holds its last value while a bundle cannot be read.** Under cumulative
   temporality a series with no new reading keeps exporting the old one.
-  `strad.mount_report` says when a bundle's report went unreadable and when it came
-  back, and `strad.mcp.tool_surface` shows a bundle that is down.
-- **The deploy's read is one moment.** It waits for one probe that started after
-  the step did, which is after most boot-time logins resolve; a login that fails
-  later reaches the gauge, not that run.
+  `mountUnread` names the slugs affected, `strad.mount_report` says when a bundle's
+  report went unreadable and when it came back, and `strad.mcp.tool_surface` shows
+  a bundle that is down.
+- **The deploy's read is one moment.** It waits for a core observation newer than
+  the one its first read saw, which is after most boot-time logins resolve; a
+  login that fails later reaches the gauge, not that run.
+- **It does not page.** `strad.mount_state` ships at Info, because one bit cannot
+  tell a failed login from a credential deferred on purpose. Alert on the gauge,
+  scoped by slug.
 
 **Undo:** two halves. Give the probe a mixed-method shape — a concurrent
 `tools/list` + `resources/list` per slug, with "answers one but not both"

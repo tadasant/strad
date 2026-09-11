@@ -75,12 +75,14 @@ export type MountState = "ok" | "degraded";
 /**
  * How reading one bundle's report went.
  *
- * `unreachable` is no answer inside the deadline, or a non-2xx status.
- * `unrecognised` is a 2xx whose body is not a bundle host's report — a
- * standalone supplementary image, or a bundle whose `/healthz` shape moved.
- * `unwired` is no private URL bound for the component, which a core registry
- * refuses to boot with, so it is here for the probe's own honesty rather than
- * because a live deployment produces it.
+ * `unreachable` is no answer inside the deadline, or a status that is neither
+ * a 2xx nor a 404/405. `unrecognised` is a component that ANSWERED and not as a
+ * bundle host: a 404/405 for `/healthz` (a standalone supplementary image with
+ * no such route), a body that is not a report, or a report that names none of
+ * the paths core routes to it — a bundle whose `/healthz` shape moved, which
+ * must not read as "nothing is degraded". `unwired` is no private URL bound for
+ * the component, which a core registry refuses to boot with, so it is here for
+ * the probe's own honesty rather than because a live deployment produces it.
  */
 export type BundleReportOutcome =
   "ok" | "unwired" | "unreachable" | "unrecognised";
@@ -94,6 +96,12 @@ export interface MountHealthReading {
   mounts: Map<string, MountState>;
   /** bundle -> how reading its report went. */
   bundles: Map<string, BundleReportOutcome>;
+  /**
+   * The config slugs with NO reading this probe, in target order: their bundle
+   * could not be read, or its report did not list their path. Carried so that
+   * "nothing is degraded" and "nothing could be read" never look the same.
+   */
+  unread: string[];
 }
 
 export interface MountHealthOptions {
@@ -154,16 +162,33 @@ export async function probeMountHealth(
   );
 
   for (const [bundle, result] of results) {
-    bundles.set(bundle, result.outcome);
-    if (result.outcome !== "ok") continue;
-    for (const target of byBundle.get(bundle) ?? []) {
-      const degraded = result.report.get(normalisePath(target.path));
-      if (degraded === undefined) continue;
-      mounts.set(target.slug, degraded ? "degraded" : "ok");
+    const targets = byBundle.get(bundle) ?? [];
+    let matched = 0;
+    if (result.outcome === "ok") {
+      for (const target of targets) {
+        const degraded = result.report.get(normalisePath(target.path));
+        if (degraded === undefined) continue;
+        mounts.set(target.slug, degraded ? "degraded" : "ok");
+        matched += 1;
+      }
     }
+    // A report that names NONE of the paths core routes to this component is
+    // not a report about them — a renamed field, or a `/healthz` of some other
+    // shape — and calling it `ok` would publish "nothing is degraded" about
+    // mounts nobody looked at.
+    bundles.set(
+      bundle,
+      result.outcome === "ok" && matched === 0
+        ? "unrecognised"
+        : result.outcome,
+    );
   }
 
-  return { mounts, bundles };
+  return {
+    mounts,
+    bundles,
+    unread: opts.targets.filter((t) => !mounts.has(t.slug)).map((t) => t.slug),
+  };
 }
 
 type BundleRead =
@@ -191,7 +216,18 @@ async function readBundle(
     const res = await doFetch(`${base.replace(/\/$/, "")}/healthz`, {
       signal: controller.signal,
     });
-    if (!res.ok) return { outcome: "unreachable" };
+    if (!res.ok) {
+      // Read nothing from it, and release the connection now rather than at
+      // garbage collection: this runs every probe, and the timer that would
+      // otherwise abort it is cleared in `finally`.
+      await res.body?.cancel().catch(() => {});
+      return {
+        outcome:
+          res.status === 404 || res.status === 405
+            ? "unrecognised"
+            : "unreachable",
+      };
+    }
     // Inside the deadline, not after it: a component that sends its headers and
     // trickles the body is the stall a headers-only bound does not catch.
     const report = parseBundleHealth(await res.json());

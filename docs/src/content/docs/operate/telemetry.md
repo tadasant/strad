@@ -255,9 +255,13 @@ value, the same trap the `state` word is kept off `tool_surface` for. The reason
 on the bundle's own `/healthz` and in its container log.
 
 A slug with no reading records nothing, so while a bundle's report cannot be read
-the series holds its last value. `strad.mount_report` (below) says when that starts
-and stops, and `strad.mcp.tool_surface` shows a bundle that is down. It is reported
-and never gated on — see
+the series holds its last value. core's `/healthz` names those slugs in
+`mountUnread`, `strad.mount_report` (below) says when a bundle's report became
+unreadable and when it came back, and `strad.mcp.tool_surface` shows a bundle that
+is down. The event that goes with the gauge, `strad.mount_state`, ships at **Info**:
+one bit cannot tell a failed login from a credential a human deferred on purpose,
+and the deferred case pages nobody, so alert on the gauge and scope it by slug. It
+is reported and never gated on — see
 [known limitations #40](/limitations/#40-the-tool-surface-monitor-asks-one-question-so-it-can-only-catch-one-kind-of-failure).
 
 ## What strad will never send
@@ -320,7 +324,7 @@ the process, and for each one the exact fields that may go with it.
 | `strad.tool_surface_unconfigured`                                                      | a slug waiting on a `mayBeUnseeded:` credential                                                                                                                             |
 | `mcp.server_unconfigured`                                                              | the same, on a listing that named the slug                                                                                                                                  |
 | `strad.tool_surface`                                                                   | the fleet summary, on change                                                                                                                                                |
-| `strad.mount_degraded` / `_recovered`                                                  | a bundle says a slug's mount is unwell, or serving again — the config's slug and bundle, never the bundle's reason                                                          |
+| `strad.mount_state`                                                                    | a mount went `degraded` or `ok` by its bundle's account — config slug and bundle, no reason. Info: a bit cannot tell a failed login from a deferral                         |
 | `strad.mount_report`                                                                   | a bundle's mount report went unreadable or came back — `outcome` is `ok` / `unreachable` / `unrecognised` / `unwired`                                                       |
 | `mcp.unavailable`                                                                      | 424 fail-closed: a slug asked for and not entitled                                                                                                                          |
 | `mcp.policy_unmatched_tools`                                                           | a `tools:` typo silently narrowing a toolset                                                                                                                                |

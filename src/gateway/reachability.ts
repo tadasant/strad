@@ -156,8 +156,18 @@ export interface ToolSurfaceSnapshot {
    * different thing per server (HACKS.md #40), so it is reported and never
    * gated on. Slugs only — the bundle's reason is dropped where it is parsed.
    * Absent when nothing reads the bundles: a bundle-mode process, or a test.
+   *
+   * Degraded AMONG THE MOUNTS READ this probe — which is why `mountUnread` sits
+   * beside it.
    */
   mountDegraded?: string[];
+  /**
+   * The `supplementary-image` slugs with no mount reading this probe: their
+   * bundle could not be read, or did not list their path. Without it, a bundle
+   * whose report went unreadable would publish an empty `mountDegraded` — "all
+   * clear" about mounts nobody looked at. Slugs only, like its neighbours.
+   */
+  mountUnread?: string[];
 }
 
 export interface ProbeOptions {
@@ -314,6 +324,7 @@ export function withMountHealth(
     mountDegraded: surfaces
       .filter((s) => s.mount === "degraded")
       .map((s) => s.slug),
+    mountUnread: reading.unread,
   };
 }
 
@@ -599,32 +610,45 @@ export class ToolSurfaceMonitor {
       });
 
       // Transitions against the last KNOWN state, so a bundle that could not be
-      // read for a probe does not turn its degraded mounts into a recovery.
+      // read for a probe does not turn its degraded mounts into a recovery. A
+      // mount first seen serving needs no line.
       const was = this.previousMount.get(surface.slug);
       this.previousMount.set(surface.slug, state);
       if (was === state) continue;
-      const bundle = bundleOf.get(surface.slug);
+      if (was === undefined && state === "ok") continue;
 
-      if (state === "degraded") {
-        this.warn({
-          evt: "strad.mount_degraded",
-          slug: surface.slug,
-          bundle,
-          // OURS, and constant. The bundle's own reason is not in scope here.
-          reason:
-            "the bundle hosting this slug's mount reports it degraded: it lists " +
-            "its tools, and says its calls will fail — a failed login, or a " +
-            "credential that is missing or was rejected. The bundle's own " +
-            "/healthz and log say which; that text is the bundle's, and core " +
-            "does not carry it.",
-        });
-      } else if (was !== undefined) {
-        this.log({ evt: "strad.mount_recovered", slug: surface.slug, bundle });
-      }
+      // `log`, not `warn`, and NOT a `_degraded` event — so Info, and nothing
+      // that keys on `severity >= ERROR` pages on it. One bit cannot tell a
+      // failed login from a credential a human deferred on purpose
+      // (`mayBeUnseeded:` on a bundle's `env:` leaves the mount to say so
+      // itself), and the deferred case is documented as never paging. The
+      // gauge carries the same fact for an alert scoped by slug.
+      this.log({
+        evt: "strad.mount_state",
+        slug: surface.slug,
+        bundle: bundleOf.get(surface.slug),
+        state,
+        // OURS, and constant. The bundle's own reason is not in scope here.
+        ...(state === "degraded"
+          ? {
+              reason:
+                "the bundle hosting this slug's mount reports it degraded: it " +
+                "lists its tools, and says its calls will fail — a failed login, " +
+                "or a credential that is missing or was rejected. The bundle's " +
+                "own /healthz and log say which; that text is the bundle's, and " +
+                "core does not carry it.",
+            }
+          : {}),
+      });
     }
 
     for (const [bundle, outcome] of reading.bundles) {
       const was = this.previousReport.get(bundle);
+      // Before a bundle has EVER been read, `unreachable` is the ordinary
+      // shape of a deploy — core boots before its bundles — and the tool-surface
+      // probe already reports a bundle that stays down. So it is not recorded
+      // as a state to move away from, and the `ok` that follows is silent too.
+      if (was === undefined && outcome === "unreachable") continue;
       this.previousReport.set(bundle, outcome);
       if (was === outcome) continue;
       // A bundle read cleanly from the first probe needs no line; the moment

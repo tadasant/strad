@@ -281,10 +281,11 @@ lists every tool and fails every call, and only the bundle knows — its `/healt
 names each mount it holds and whether that mount is degraded. So in core the
 monitor also reads each bundle's `/healthz` on the same interval
 (`src/gateway/mount-health.ts`), one request per bundle, and carries the answer
-**beside** the surface state: a `mount` word (`ok` / `degraded`) per
-`supplementary-image` slug, a `mountDegraded` list on `/healthz`, the
+**beside** the surface state: a `mount` word (`ok` / `degraded`) on each
+`supplementary-image` slug it read, `mountDegraded` and `mountUnread` lists on
+`/healthz`, the
 [`strad.mcp.mount_degraded`](/operate/telemetry/#stradmcpmount_degraded--does-the-bundle-say-a-mount-is-unwell)
-gauge, and `strad.mount_degraded` / `_recovered` on change. Beside and never
+gauge, and `strad.mount_state` on change, at Info. Beside and never
 inside: `degraded` stays "serves no tools", which is what the deploy gate and the
 fast retry read. What crosses from the bundle is one bit per mount, matched onto
 the config's own slugs by path; the bundle's reason for it is upstream text and is

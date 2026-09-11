@@ -54,8 +54,8 @@ import {
  * every call, because its login went stale. The fake bundle below is therefore
  * a real MCP upstream AND a bundle host `/healthz`: `/fetchpet` answers
  * `tools/list` with a tool, so the tool-surface probe reads it `ok`, while
- * `/healthz` says the mount is degraded. Before gateway/mount-health.ts, that
- * second fact reached nothing.
+ * `/healthz` says the mount is degraded. gateway/mount-health.ts is what carries
+ * that second fact out of the bundle.
  *
  * The other half is the boundary. The bundle's reason is upstream-authored
  * prose — `login failed: ${error.message}` — and the reason used here carries a
@@ -105,7 +105,7 @@ servers:
 /** What the fake bundle's `/healthz` says. Mutated by the tests. */
 const bundleState: {
   fetchpet: string | null;
-  healthz: "report" | "500" | "html";
+  healthz: "report" | "500" | "404" | "html" | "slugs" | "partial";
 } = { fetchpet: REASON, healthz: "report" };
 
 function fakeBundle(): express.Express {
@@ -120,8 +120,21 @@ function fakeBundle(): express.Express {
       res.status(500).send(`<pre>${CANARY}</pre>`);
       return;
     }
+    if (bundleState.healthz === "404") {
+      res.status(404).send(`Cannot GET /healthz ${CANARY}`);
+      return;
+    }
     if (bundleState.healthz === "html") {
       res.status(200).type("text/html").send(`<!DOCTYPE html>${CANARY}`);
+      return;
+    }
+    if (bundleState.healthz === "slugs") {
+      // strad's OWN /healthz in bundle mode: `servers` is a list of slugs.
+      res.json({ ok: true, mode: "bundle", servers: ["fetchpet", "gmail"] });
+      return;
+    }
+    if (bundleState.healthz === "partial") {
+      res.json({ servers: [{ slug: "fetchpet", path: "/fetchpet" }] });
       return;
     }
     res.json({
@@ -259,7 +272,8 @@ describe("parseBundleHealth — the boundary", () => {
     expect(parseBundleHealth("ok")).toBeNull();
     expect(parseBundleHealth({ ok: true })).toBeNull();
     // Core's own /healthz in bundle mode: `servers` is a list of SLUG strings.
-    // Not a report — but also not malformed enough to throw on.
+    // It parses to no mounts, and the probe then calls a report that names
+    // none of core's paths `unrecognised` — see the probe's cases below.
     expect(parseBundleHealth({ servers: ["a", "b"] })).toEqual(new Map());
   });
 
@@ -294,6 +308,7 @@ describe("probeMountHealth", () => {
         ["gmail-rw", "ok"],
       ]),
     );
+    expect(reading.unread).toEqual([]);
     // The mount core does not route to is not in it — neither its slug nor its
     // path nor its reason.
     expect(
@@ -306,6 +321,33 @@ describe("probeMountHealth", () => {
     const reading = await probeMountHealth({ targets: targets(), env });
     expect(reading.bundles.get("bundle")).toBe("unreachable");
     expect(reading.mounts.size).toBe(0);
+    // Nothing read is not nothing degraded: every slug is named as unread.
+    expect(reading.unread).toEqual(["fetchpet", "gmail-ro", "gmail-rw"]);
+  });
+
+  it("says `unrecognised` for a 404 — a component with no such route answered", async () => {
+    bundleState.healthz = "404";
+    const reading = await probeMountHealth({ targets: targets(), env });
+    expect(reading.bundles.get("bundle")).toBe("unrecognised");
+    expect(reading.mounts.size).toBe(0);
+  });
+
+  it("says `unrecognised`, not `ok`, for a report that names none of core's paths", async () => {
+    // A `/healthz` whose shape moved must not publish "nothing is degraded"
+    // about mounts nobody looked at.
+    bundleState.healthz = "slugs";
+    const reading = await probeMountHealth({ targets: targets(), env });
+    expect(reading.bundles.get("bundle")).toBe("unrecognised");
+    expect(reading.mounts.size).toBe(0);
+    expect(reading.unread).toEqual(["fetchpet", "gmail-ro", "gmail-rw"]);
+  });
+
+  it("reads the paths a report does list, and names the ones it does not as unread", async () => {
+    bundleState.healthz = "partial";
+    const reading = await probeMountHealth({ targets: targets(), env });
+    expect(reading.bundles.get("bundle")).toBe("ok");
+    expect(reading.mounts).toEqual(new Map([["fetchpet", "ok"]]));
+    expect(reading.unread).toEqual(["gmail-ro", "gmail-rw"]);
   });
 
   it("says `unrecognised` for a 2xx that is not a bundle host's report", async () => {
@@ -377,6 +419,7 @@ describe("the monitor, on the case that ran for weeks", () => {
     expect(by("healthy")).not.toHaveProperty("mount");
 
     expect(snap.mountDegraded).toEqual(["fetchpet"]);
+    expect(snap.mountUnread).toEqual([]);
     // Beside `degraded`, never in it: the deploy gate reads that list.
     expect(snap.degraded).toEqual([]);
   });
@@ -389,6 +432,7 @@ describe("the monitor, on the case that ran for weeks", () => {
       warn: () => {},
     }).refresh();
     expect(snap).not.toHaveProperty("mountDegraded");
+    expect(snap).not.toHaveProperty("mountUnread");
     expect(snap.surfaces.every((s) => s.mount === undefined)).toBe(true);
   });
 
@@ -404,9 +448,10 @@ describe("the monitor, on the case that ran for weeks", () => {
     await m.refresh();
     expect(mountLines()).toEqual([
       expect.objectContaining({
-        evt: "strad.mount_degraded",
+        evt: "strad.mount_state",
         slug: "fetchpet",
         bundle: "bundle",
+        state: "degraded",
       }),
     ]);
 
@@ -424,7 +469,7 @@ describe("the monitor, on the case that ran for weeks", () => {
     ]);
 
     // Readable again, still degraded: the report line, and no second
-    // `_degraded` for a state that never changed.
+    // `degraded` line for a state that never changed.
     lines.length = 0;
     bundleState.healthz = "report";
     await m.refresh();
@@ -437,7 +482,43 @@ describe("the monitor, on the case that ran for weeks", () => {
     bundleState.fetchpet = null;
     await m.refresh();
     expect(mountLines()).toEqual([
-      { evt: "strad.mount_recovered", slug: "fetchpet", bundle: "bundle" },
+      {
+        evt: "strad.mount_state",
+        slug: "fetchpet",
+        bundle: "bundle",
+        state: "ok",
+      },
+    ]);
+  });
+
+  it("says nothing about a bundle that is not up yet on the first probe — core boots first", async () => {
+    const lines: Record<string, unknown>[] = [];
+    const m = monitor({
+      log: (e) => lines.push(e),
+      warn: (e) => lines.push(e),
+    });
+    const reportLines = () =>
+      lines.filter((l) => l.evt === "strad.mount_report");
+
+    // The ordinary shape of a deploy: the bundle is not answering yet, and
+    // then it is. Neither is a line; the tool-surface probe covers a bundle
+    // that stays down.
+    bundleState.healthz = "500";
+    await m.refresh();
+    bundleState.healthz = "report";
+    await m.refresh();
+    expect(reportLines()).toEqual([]);
+
+    // A report that is UNRECOGNISED on the first probe is a line: that one
+    // does not fix itself as the deploy converges.
+    const m2 = monitor({
+      log: (e) => lines.push(e),
+      warn: (e) => lines.push(e),
+    });
+    bundleState.healthz = "slugs";
+    await m2.refresh();
+    expect(reportLines()).toEqual([
+      { evt: "strad.mount_report", bundle: "bundle", outcome: "unrecognised" },
     ]);
   });
 });
@@ -496,7 +577,7 @@ describe("what leaves the process: the gauge", () => {
 });
 
 describe("what leaves the process: the exported log and the streams", () => {
-  it("ships `strad.mount_degraded` with the config's slug and bundle, at ERROR, and none of the bundle's words anywhere", async () => {
+  it("ships `strad.mount_state` with the config's slug and bundle and one of two words, at Info, and none of the bundle's words anywhere", async () => {
     const exporter = new InMemoryLogRecordExporter();
     const provider = new LoggerProvider({
       processors: [new SimpleLogRecordProcessor({ exporter })],
@@ -515,24 +596,36 @@ describe("what leaves the process: the exported log and the streams", () => {
       bundleState.fetchpet = null;
       await m.refresh();
 
-      const records = exporter.getFinishedLogRecords();
-      const degraded = records.find((r) => r.body === "strad.mount_degraded");
-      expect(degraded?.severityNumber).toBe(SeverityNumber.ERROR);
-      expect(degraded?.attributes).toEqual({
-        "strad.evt": "strad.mount_degraded",
-        slug: "fetchpet",
-        bundle: "bundle",
-      });
-      const recovered = records.find((r) => r.body === "strad.mount_recovered");
-      expect(recovered?.severityNumber).toBe(SeverityNumber.INFO);
-      expect(recovered?.attributes).toEqual({
-        "strad.evt": "strad.mount_recovered",
-        slug: "fetchpet",
-        bundle: "bundle",
-      });
+      const records = exporter
+        .getFinishedLogRecords()
+        .filter((r) => r.body === "strad.mount_state");
+      // Info both ways. One bit cannot tell a failed login from a credential a
+      // human deferred on purpose, and the deferred case pages nobody; the
+      // gauge is the channel an alert is scoped on.
+      expect(records.map((r) => r.severityNumber)).toEqual([
+        SeverityNumber.INFO,
+        SeverityNumber.INFO,
+      ]);
+      expect(records.map((r) => r.attributes)).toEqual([
+        {
+          "strad.evt": "strad.mount_state",
+          slug: "fetchpet",
+          bundle: "bundle",
+          state: "degraded",
+        },
+        {
+          "strad.evt": "strad.mount_state",
+          slug: "fetchpet",
+          bundle: "bundle",
+          state: "ok",
+        },
+      ]);
+      // Nothing on stderr: none of this is a `_failed` / `_degraded` fault.
+      expect(err.mock.calls.join("\n")).not.toContain("strad.mount_");
 
-      expect(JSON.stringify(records)).not.toContain(CANARY);
-      expect(JSON.stringify(records)).not.toMatch(/login failed/i);
+      const everything = JSON.stringify(exporter.getFinishedLogRecords());
+      expect(everything).not.toContain(CANARY);
+      expect(everything).not.toMatch(/login failed/i);
 
       // The streams too. They are never shipped, but core has no business
       // repeating the bundle's words: the bundle's own log already holds them,
@@ -540,7 +633,7 @@ describe("what leaves the process: the exported log and the streams", () => {
       const streamed = [...out.mock.calls, ...err.mock.calls]
         .map((c) => c.map(String).join(" "))
         .join("\n");
-      expect(streamed).toContain("strad.mount_degraded");
+      expect(streamed).toContain("strad.mount_state");
       expect(streamed).not.toContain(CANARY);
       expect(streamed).not.toMatch(/login failed/i);
     } finally {
@@ -573,17 +666,48 @@ describe("core's /healthz", () => {
         ok: boolean;
         degraded: string[];
         mountDegraded: string[];
+        mountUnread: string[];
         toolSurfaces: { servers: { slug: string; mount?: string }[] };
       };
       expect(res.status).toBe(200);
       expect(body.ok).toBe(true);
       expect(body.degraded).toEqual([]);
       expect(body.mountDegraded).toEqual(["fetchpet"]);
+      expect(body.mountUnread).toEqual([]);
       expect(
         body.toolSurfaces.servers.find((s) => s.slug === "fetchpet")?.mount,
       ).toBe("degraded");
       expect(raw).not.toContain(CANARY);
       expect(raw).not.toMatch(/login failed/i);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("never reads an unreadable bundle as all clear", async () => {
+    // An empty `mountDegraded` alone would say "nothing is degraded" about
+    // mounts nobody looked at; `mountUnread` is what says so.
+    bundleState.healthz = "500";
+    const m = monitor({ log: () => {}, warn: () => {} });
+    await m.refresh();
+    const app = createApp({
+      config: CONFIG,
+      registry,
+      tokenStore: tokenStoreFromConfig(CONFIG, env),
+      mode: "core",
+      env,
+      toolSurfaces: () => m.snapshot(),
+    });
+    const server = await listen(app);
+    try {
+      const raw = await (await fetch(`${addressOf(server)}/healthz`)).text();
+      const body = JSON.parse(raw) as {
+        mountDegraded: string[];
+        mountUnread: string[];
+      };
+      expect(body.mountDegraded).toEqual([]);
+      expect(body.mountUnread).toEqual(["fetchpet", "gmail-ro", "gmail-rw"]);
+      expect(raw).not.toContain(CANARY);
     } finally {
       server.close();
     }

@@ -650,7 +650,14 @@ Not "down", and not "gone". It gets its own state everywhere state is reported â
 **for a reference strad's own process resolves**: a `url:`, a `headers:` map, a
 builtin's `options:`. A `supplementary-image`'s `env:` is a variable on a
 container strad does not run, so a waiver there means the component simply ships
-without it and the slug's state is whatever that server reports about itself.
+without it and the slug's state is whatever that server reports about itself. When
+that server is a bundle mount that reports itself `degraded` for the missing
+variable, core reads it as one bit: the slug appears in `/healthz`'s
+`mountDegraded`, [`strad.mcp.mount_degraded`](/operate/telemetry/#stradmcpmount_degraded--does-the-bundle-say-a-mount-is-unwell)
+reads 1, and `strad.mount_state` logs it at **Info**. One bit cannot tell this
+deferral from a failed login, which is why that event is not a fault and pages
+nothing; an alert on the gauge is scoped by slug, and should leave a deferred slug
+out.
 
 | Surface                            | Says                                                              |
 | ---------------------------------- | ----------------------------------------------------------------- |

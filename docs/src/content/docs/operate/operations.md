@@ -758,9 +758,11 @@ healthy app once left three slugs serving nothing at all — see
 [Known limitations](/limitations/).
 
 **It then reports, and never gates on, which mounts their bundle calls degraded.**
-After the telemetry report, a step waits for one core probe that started after it
-did — the bundles' logins run in the background at boot and take up to ~30s to
-fail — and prints `/healthz`'s `mountDegraded` as a `::warning::`. A mount that
+After the telemetry report, a step waits for a core observation newer than the one
+its first read saw — the bundles' logins run in the background at boot and take
+up to ~30s to fail — and prints `/healthz`'s `mountDegraded` as a `::warning::`,
+and `mountUnread` as a second one, since "nothing degraded" only covers the mounts
+that were read. A mount that
 lists its tools and fails every call is what the smoke test cannot see (fetchpet
 did it for weeks), but "degraded" means a different thing per server, so the step
 exits 0 on it; it goes yellow only when it could not read the list at all, and
@@ -1445,10 +1447,12 @@ fails CI on the PR rather than the deploy after it.
   so the route stays instant, and no upstream-authored text appears in them: a
   state word, a count and a kind, about slugs this route already named. In core it
   also carries `mountDegraded`, and a `mount` word (`ok` / `degraded`) on each
-  `supplementary-image` surface: what the bundle hosting that slug says about its
-  mount — a mount can list its tools and fail every call on a stale login. It is
-  a third list rather than part of `degraded`, and it carries slugs and words
-  only; the bundle's own reason stays on the bundle's `/healthz`.
+  `supplementary-image` surface it read: what the bundle hosting that slug says
+  about its mount — a mount can list its tools and fail every call on a stale
+  login. It is a third list rather than part of `degraded`, and `mountUnread`
+  beside it names the slugs no reading covered, so an unreadable bundle never
+  reads as all clear. Slugs and words only; the bundle's own reason stays on the
+  bundle's `/healthz`.
 - **`/mcp`** is handled by `app.all("/mcp", …)` and always requires a token.
 - **`/console`**, `/console/login`, `/console/oauth/callback` and
   `/console/logout` are mounted only in `core` mode. Login state — the PKCE

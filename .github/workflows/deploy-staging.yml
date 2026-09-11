@@ -877,9 +877,9 @@ jobs:
         # answer yes and fail every call: fetchpet's login went stale and it
         # spent weeks listing four tools and returning `Login failed` to all of
         # them (strad#28), through every deploy in that window. Only the bundle
-        # knows, and core now asks it — `mountDegraded` on core's /healthz, the
-        # slugs whose bundle reports their mount degraded
-        # (src/gateway/mount-health.ts).
+        # knows, and core asks it — `mountDegraded` on core's /healthz, the slugs
+        # whose bundle reports their mount degraded, and `mountUnread`, the ones
+        # no reading covered (src/gateway/mount-health.ts).
         #
         # REPORTS, NEVER GATES. "Degraded" means a different thing per server —
         # a failed login the next call retries, a credential staging never had,
@@ -890,9 +890,9 @@ jobs:
         #
         # AFTER the telemetry step, on purpose: the logins run in the background
         # once a bundle boots and take up to ~30s to fail, and core re-reads the
-        # bundles on its probe interval. So this waits for one observation that
-        # started after this step did, rather than reading the one the smoke
-        # test passed on, which predates most logins.
+        # bundles on its probe interval. So this waits for a core observation
+        # NEWER than the one its own first read saw, rather than trusting the one
+        # the smoke test passed on, which predates most logins.
         #
         # What it prints is slugs from core's config — core's /healthz carries
         # nothing else from the bundle, and never the bundle's reason — so this
@@ -932,12 +932,16 @@ jobs:
           fi
           [ "$fresh" = true ] || echo "no probe landed in 150s; reporting the last observation."
 
-          degraded=$(printf '%s' "$body" | jq -r '.mountDegraded | join(", ")')
-          if [ -z "$degraded" ]; then
-            echo "OK: no bundle reports a degraded mount."
-          else
+          degraded=$(printf '%s' "$body" | jq -r '.mountDegraded | join(", ")' 2>/dev/null) || degraded=''
+          unread=$(printf '%s' "$body" | jq -r '(.mountUnread // []) | join(", ")' 2>/dev/null) || unread=''
+          if [ -n "$degraded" ]; then
             echo "::warning::the bundle reports these mounts degraded — they list their tools and say their calls will fail: ${degraded}%0ANot failing the deploy on it. The reason is on the bundle's own /healthz and in its container log; strad.mcp.mount_degraded carries the same fact."
           fi
+          # "Nothing degraded" is only a claim about the mounts that were READ.
+          if [ -n "$unread" ]; then
+            echo "::warning::core could not read the bundle's report for these mounts, so they were not checked: ${unread}"
+          fi
+          [ -z "$degraded" ] && [ -z "$unread" ] && echo "OK: every mount was read, and no bundle reports one degraded."
           printf '%s' "$body" | jq -c '[.toolSurfaces.servers[] | select(.mount) | {slug, mount}]' || true
           exit 0
 
