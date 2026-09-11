@@ -4751,7 +4751,29 @@ listing or revoking issued grants**, because there is no list — a stateless to
 leaves no record to render. What the console could honestly show is the door's
 configuration and a link to Google's own access page.
 
-**Why.** The alternative to all four is a database, and adding one to strad for
+Two more properties follow from open registration rather than from the missing
+datastore, and they belong beside the four above because they are the same kind
+of thing — stated, not worked around:
+
+5. **strad's domain is an open redirector to anyone who can POST.** Registration
+   takes no credential, and RFC 6749 §4.1.2.1 requires an authorization error to
+   be delivered to the client's registered `redirect_uri`. Compose them and a
+   stranger registers `redirect_uris: ["https://evil.example/x"]`, then sends
+   somebody `GET /oauth/authorize?client_id=…&redirect_uri=https://evil.example/x
+&response_type=bogus` — which `302`s off strad's domain with no cookie, no
+   consent and no Google hop. This is inherent to every authorization server with
+   open dynamic registration; the value it has is phishing (a link that begins
+   with the gateway's hostname), not access, since nothing about it yields a
+   token. The alternative is to render those errors as pages, which would break
+   the machine-readable error the spec exists to give a legitimate client.
+
+6. **One browser runs one authorization at a time.** The in-flight transaction is
+   a single cookie at a fixed name, so a second `/oauth/authorize` started in the
+   same browser overwrites the first, and the first tab comes back to "this
+   sign-in has expired". Ten-minute window, one human, and the fix is to start
+   that connection again.
+
+**Why.** The alternative to the first four is a database, and adding one to strad for
 this is a larger decision than this feature: the console session took the same
 stateless road for the same reasons (no datastore, more than one replica
 possible, a redeploy must not sign everyone out), and `STRAD_TOKENS` is the
@@ -4773,4 +4795,7 @@ and 4 go away together — spent codes become rows, refresh tokens rotate with t
 old one marked dead, and an access-token denylist becomes possible. 3 stays
 Google's shape unless strad mints its own grant identity, which it should not. 5
 is a console page over that store, and is the natural second half of this work;
-until there is a store there is nothing for it to read.
+until there is a store there is nothing for it to read. 5 goes away only by
+closing registration, which would take the acceptance test with it; 6 by keying
+the transaction cookie per authorization, which is a small change nobody has
+needed yet.

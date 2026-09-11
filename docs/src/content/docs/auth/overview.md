@@ -262,7 +262,18 @@ most 512 characters.
 There is **no client table**. The `client_id` _is_ the registration: a signed,
 sealed record carrying the name and the redirect URIs. Any replica can validate
 a registration any other replica issued, and a tampered `client_id` is not a
-client — which is what stops someone adding a redirect URI to steal a code.
+client — which is what stops someone adding a redirect URI to steal a code. It
+also means the registration travels in every `/oauth/authorize` URL, which is
+why the redirect URIs are capped in total as well as individually.
+
+One thing open registration composes into, stated rather than worked around:
+because an authorization error must be delivered to the registered
+`redirect_uri`, **strad's domain is an open redirector to anyone who can POST**.
+Registering `https://evil.example/x` and handing somebody an `/oauth/authorize`
+link on strad's hostname `302`s them off it — with no cookie, no consent and no
+Google hop, so nothing about it yields a token. The value is phishing rather than
+access, and it is inherent to open dynamic registration. See
+[Known limitations](/limitations/).
 
 ### The flow, and what each step refuses
 
@@ -320,9 +331,10 @@ token**, and re-runs the Workspace test on _that_. Two things follow.
 
 - **The domain is re-enforced on every refresh**, against Google rather than
   against a claim strad sealed an hour ago. An account that has left the
-  Workspace, been suspended or been deleted fails here. The configured domain is
-  re-read too, so re-pointing a deployment ends every live grant at its next
-  refresh.
+  Workspace, been suspended or been deleted fails here. Re-pointing the
+  deployment at another Workspace ends every live grant too — at the next
+  refresh after the deploy that changed it, since a strad config change is a
+  deploy.
 - **Revocation is durable and individual, and does not need a database.**
   Revoking strad from the account's own Google security page, from the Workspace
   admin console, or through `POST /oauth/revoke` — which calls Google — kills the
@@ -405,9 +417,14 @@ names the roles a verified member of the domain holds, and from there
 agreement between a role's `servers` and a server's `entitlements`, the same
 `424` for a slug the principal cannot have.
 
-Roles are read from the **current config at verification time**, never from the
-token — the same rule the console session follows, and for the same reason:
-tightening the config has to take effect on tokens already issued.
+Roles are read from **config at verification time**, never from the token — the
+same rule the console session follows, and for the same reason: tightening the
+config has to take effect on tokens already issued, not only on the ones minted
+after it. Be precise about _when_, though: a strad config change is a **deploy**
+(the document is baked into the app spec), so "already issued" means it lands
+when the process restarts rather than within the hour. The same goes for the
+hosted domain, which is re-checked on every access token and every refresh
+against the config this process booted with.
 
 `auth.mcpOAuth.roles` is deliberately **not** defaulted from `auth.google.roles`.
 That grant is the console's, and inheriting it would mean flipping a flag

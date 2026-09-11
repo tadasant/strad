@@ -52,8 +52,8 @@ import type { Sealer } from "../session.ts";
  *     read and a comparison that can never be exact.
  *   - No userinfo. `https://claude.ai@attacker.example/cb` reads as the first
  *     host and resolves to the second.
- *   - A bounded count and length, because every one of them rides inside every
- *     client id, which rides inside a URL and a cookie.
+ *   - A bounded count, a bounded length, and a bounded TOTAL, because every one
+ *     of them rides inside every client id, which rides inside a URL.
  */
 
 /** The sealed record. Small on purpose: it is inside every client id. */
@@ -99,6 +99,25 @@ export type RegistrationError =
 const MAX_REDIRECT_URIS = 8;
 const MAX_URI_CHARS = 512;
 const MAX_NAME_CHARS = 128;
+
+/**
+ * The bound that actually matters: the TOTAL length of the registered redirect
+ * URIs.
+ *
+ * Every one of them rides inside the `client_id`, and the `client_id` rides in
+ * the `/oauth/authorize` QUERY STRING on a real browser navigation. Eight URIs
+ * at 512 characters each is a legal registration under the two caps above and a
+ * five-kilobyte client id — which is a request line long enough to be refused
+ * by a proxy nobody in this flow controls, in a way no error message would
+ * explain.
+ *
+ * A kilobyte is comfortably more than any real client needs (claude.ai's
+ * callback is forty characters) and keeps the client id under about 1.5 kB.
+ * It is checked as a sum rather than per entry so that the registration a
+ * client gets back is one the authorization endpoint can actually be reached
+ * with.
+ */
+const MAX_URIS_TOTAL_CHARS = 1024;
 
 /** A registration is valid for a hundred years, which is "does not expire". */
 const CLIENT_TTL_MS = 100 * 365 * 24 * 60 * 60 * 1000;
@@ -148,6 +167,15 @@ export function registerClient(
     const problem = redirectUriProblem(candidate);
     if (problem) return refuse("invalid_redirect_uri", problem);
     if (!uris.includes(candidate)) uris.push(candidate);
+  }
+  const total = uris.reduce((sum, uri) => sum + uri.length, 0);
+  if (total > MAX_URIS_TOTAL_CHARS) {
+    return refuse(
+      "invalid_redirect_uri",
+      `the redirect_uris total ${total} characters; at most ` +
+        `${MAX_URIS_TOTAL_CHARS} may be registered at once, because every one ` +
+        `of them travels inside the client_id.`,
+    );
   }
 
   // The three fields a client may assert about the flow it wants. strad serves

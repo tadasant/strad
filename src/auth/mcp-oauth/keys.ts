@@ -29,9 +29,17 @@ import { Sealer } from "../session.ts";
  * DOMAIN SEPARATION, as in `session.ts`: one input keying material, six derived
  * keys, one per kind of value. A refresh token presented as an access token, or
  * a client registration presented as an authorization code, is unreadable
- * garbage rather than a type confusion. The salt differs from the console's, so
- * a console cookie and an OAuth token are not merely different values under one
- * key — they are under different keys entirely.
+ * garbage rather than a type confusion.
+ *
+ * It is the HKDF `info` string that does that work, and it is worth saying
+ * exactly which half separates these from the CONSOLE's cookies, because the
+ * six keys here do not all take the same route. The four `Cipher` keys are
+ * derived under this module's own salt; the two `Sealer` keys are derived by
+ * `src/auth/session.ts`, under the console's salt, and are separated from the
+ * console's own keys by their `info` alone. Both are sufficient — HKDF's
+ * `info` is the field the RFC gives this job — but only one of them is a
+ * different salt, so do not read the salt as the thing keeping an OAuth token
+ * away from a console session.
  *
  * THE KEY ITSELF is `STRAD_OAUTH_KEY` when set, else the console's own chain
  * (`CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET`). The fallback is what
@@ -101,14 +109,13 @@ export class Cipher {
   /** The payload, or null for anything this key did not seal. */
   open<T extends { v: 1 }>(token: string | undefined): T | null {
     if (!token) return null;
-    let raw: Buffer;
-    try {
-      raw = Buffer.from(token, "base64url");
-    } catch {
-      return null;
-    }
+    const raw = Buffer.from(token, "base64url");
     if (raw.length <= IV_BYTES + TAG_BYTES) return null;
 
+    // One `try`, around everything that can throw. `Buffer.from(…,
+    // "base64url")` above is not one of them — Node drops characters outside
+    // the alphabet rather than raising — which is why the length guard is what
+    // rejects a truncated value there.
     try {
       const decipher = createDecipheriv(
         "aes-256-gcm",

@@ -90,8 +90,18 @@ export interface GrantIdentity {
  * checks is the thing `/oauth/authorize` validated.
  */
 export interface AuthorizationRequest {
-  /** The sealed client id, verbatim — the consent screen names what is in it. */
-  clientId: string;
+  /**
+   * `clientFingerprint(client_id)` — the grant's binding to its client.
+   *
+   * The FINGERPRINT and not the client id itself, and that is a size decision
+   * rather than a tidiness one. A `client_id` carries the whole sealed
+   * registration, which grows with every redirect URI in it; this shape travels
+   * in a COOKIE, and a browser silently drops one past about 4 kB. A client
+   * registering near the bounds in `clients.ts` would have got its `201`, been
+   * sent to Google, come back, and been told its sign-in had expired — forever,
+   * with the failure naming the wrong cause. 43 characters, always.
+   */
+  cid: string;
   /** The exact registered redirect URI this authorization is delivered to. */
   redirectUri: string;
   /** RFC 7636 `code_challenge`. S256 always; there is no method field. */

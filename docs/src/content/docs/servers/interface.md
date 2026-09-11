@@ -902,6 +902,55 @@ it is a single-value enum so a config cannot name a store strad does not have.
 That datastore is the subject of [known limitation #6](/limitations/#6-token-records-live-in-an-env-var-not-a-database).
 The token model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
+## `auth.mcpOAuth`
+
+strad's own OAuth 2.1 authorization server, in front of `/mcp`. It is what lets
+an interactive MCP client — one handed a URL and nothing else — connect through
+a Google sign-in instead of a pasted token.
+
+```yaml
+auth:
+  mcpOAuth:
+    enabled: false # default
+    hostedDomain: tadasant.com # optional; falls back to auth.google.hostedDomain
+    roles: [admin] # default []
+    accessTokenTtlSeconds: 3600 # default; min 300, max 86400
+```
+
+It is **additive**. `auth.staticTokens` is untouched by it, `/mcp` accepts either
+credential, and a machine client holding a long-lived
+`strad_<env>_<pubid>_<secret>` is unaffected whether this is on or off.
+
+`enabled: true` is not enough on its own, for the same reason it is not for
+`auth.google`: `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` must both be set,
+and there must be at least 24 characters of key material — `STRAD_OAUTH_KEY`,
+else `CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET`. A deployment missing
+a half runs no authorization server, publishes no metadata, serves a `404` at
+every `/oauth/*` path, and says which half at boot. The Google OAuth client must
+also list `<publicUrl>/oauth/callback/google` among its authorized redirect URIs;
+that one cannot be checked from inside the process.
+
+`hostedDomain` is the Workspace whose members may hold a token, verified against
+the ID token's `hd` claim **and** the email suffix, on every authorization and on
+every refresh. Omitting it falls back to `auth.google.hostedDomain`, because the
+two doors of one deployment normally answer to one Workspace. Enabling the flow
+with **neither** declared is a hard error at `npm run config:check` — a flow with
+no domain to enforce admits the first Google account that arrives at it.
+
+`roles` is what a verified member holds at `/mcp`, and from there `?servers=`
+behaves exactly as it does for a static token. It is deliberately **not**
+defaulted from `auth.google.roles`: that grant is the console's, and inheriting
+it would mean enabling this flag silently widened what `/mcp` hands out. The
+default `[]` is fail-closed — the flow completes, the token verifies, and every
+`?servers=` gets the ordinary `424` — and boot warns when it is empty. A role no
+`roles:` block defines is a config error.
+
+`accessTokenTtlSeconds` is also the revocation window, because an access token is
+verified with no lookup and cannot be revoked before it expires. That is what the
+five-minute floor is for. Refresh tokens carry no expiry at all and are revoked
+at Google. The whole model is in
+[Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
+
 ## `mcpServers:` — the draft SEP-2633 input dialect
 
 strad accepts a second **input dialect** for the same server list: the

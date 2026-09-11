@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { authenticateMcp, Unauthenticated } from "../src/auth/index.ts";
 import {
   clientFingerprint,
@@ -135,11 +135,14 @@ function pkce(): { verifier: string; challenge: string } {
   };
 }
 
-async function newClient(uris = [CLAUDE_CALLBACK]): Promise<string> {
+async function newClient(
+  uris = [CLAUDE_CALLBACK],
+  name = "Claude",
+): Promise<string> {
   const res = await fetch(`${base}/oauth/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ client_name: "Claude", redirect_uris: uris }),
+    body: JSON.stringify({ client_name: name, redirect_uris: uris }),
   });
   return ((await res.json()) as { client_id: string }).client_id;
 }
@@ -551,6 +554,61 @@ describe("replay and binding", () => {
     expect(landed.searchParams.get("iss")).toBe(base);
   });
 
+  it("delivers access_denied when the human presses Deny, and mints nothing", async () => {
+    const clientId = await newClient();
+    const { challenge } = pkce();
+    const { consent } = await signIn(clientId, challenge);
+    const approval =
+      /name="approval" value="([^"]+)"/.exec(await consent.text())?.[1] ?? "";
+    const denied = await fetch(`${base}/oauth/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ approval, decision: "deny" }),
+      redirect: "manual",
+    });
+    expect(denied.status).toBe(302);
+    const back = new URL(denied.headers.get("location") ?? "");
+    expect(back.origin + back.pathname).toBe(CLAUDE_CALLBACK);
+    expect(back.searchParams.get("error")).toBe("access_denied");
+    // The whole point: no code was minted, so there is nothing to exchange.
+    expect(back.searchParams.get("code")).toBeNull();
+  });
+
+  it("refuses a code once its sixty seconds are up", async () => {
+    const g = await grant();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 61_000);
+    try {
+      const stale = await token({
+        grant_type: "authorization_code",
+        code: g.code,
+        client_id: g.clientId,
+        code_verifier: g.verifier,
+      });
+      expect(stale.status).toBe(400);
+      expect(stale.json.error_description).toContain("unknown or expired");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refuses a token request that repeats a different redirect_uri", async () => {
+    const g = await grant();
+    // Including an EMPTY one: `redirect_uri=` is a parameter the caller sent,
+    // so it has to fail the comparison rather than skip it.
+    for (const redirect_uri of ["https://claude.ai/other", ""]) {
+      const res = await token({
+        grant_type: "authorization_code",
+        code: g.code,
+        client_id: g.clientId,
+        code_verifier: g.verifier,
+        redirect_uri,
+      });
+      expect(res.status, JSON.stringify(redirect_uri)).toBe(400);
+      expect(res.json.error_description).toContain("redirect_uri");
+    }
+  });
+
   it("refuses a callback with no transaction cookie", async () => {
     const res = await fetch(
       `${base}/oauth/callback/google?code=x&state=${google.lastState}`,
@@ -598,6 +656,60 @@ describe("revocation", () => {
     // Never a 400: a revocation endpoint that told you whether a token existed
     // would be an oracle for which tokens exist.
     expect(res.status).toBe(200);
+  });
+});
+
+describe("what a registered client cannot make the flow do", () => {
+  it("escapes a hostile client_name rather than rendering it", async () => {
+    // The one untrusted string that reaches HTML. Registration is open, so the
+    // name is whatever a stranger POSTed.
+    const hostile = "</p><img src=x onerror=alert(1)>";
+    const clientId = await newClient([CLAUDE_CALLBACK], hostile);
+    const { challenge } = pkce();
+    const { consent } = await signIn(clientId, challenge);
+    const html = await consent.text();
+    expect(html).not.toContain("<img src=x");
+    expect(html).toContain("&lt;/p&gt;&lt;img src=x");
+  });
+
+  it("refuses a registration whose redirect_uris would not fit in a URL", async () => {
+    // Eight URIs of 512 characters clears both per-entry bounds and produces a
+    // five-kilobyte client_id, which travels in the /authorize query string.
+    const long = (n: number) =>
+      `https://claude.ai/cb?p=${"a".repeat(n - "https://claude.ai/cb?p=".length)}`;
+    const res = await fetch(`${base}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        redirect_uris: Array.from({ length: 8 }, (_, i) => `${long(500)}${i}`),
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_redirect_uri");
+  });
+
+  it("keeps the transaction cookie inside what a browser will store", async () => {
+    // The cookie carries the authorization request, and a browser silently
+    // drops one past about 4kB — which would look like a sign-in that expires
+    // instantly, forever, naming the wrong cause. The fingerprint is in it, not
+    // the whole client id.
+    const clientId = await newClient([
+      `https://claude.ai/cb?p=${"a".repeat(400)}`,
+      `https://claude.com/cb?p=${"b".repeat(400)}`,
+    ]);
+    const started = await authorize({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: `https://claude.ai/cb?p=${"a".repeat(400)}`,
+      code_challenge: pkce().challenge,
+      code_challenge_method: "S256",
+      state: "x".repeat(256),
+    });
+    expect(started.status).toBe(302);
+    const cookie =
+      (started.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    expect(cookie.length).toBeLessThan(3500);
   });
 });
 

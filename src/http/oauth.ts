@@ -317,7 +317,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
     // over a word that was never going to matter.
 
     const request: AuthorizationRequest = {
-      clientId,
+      cid: clientFingerprint(clientId),
       redirectUri,
       challenge,
       ...(clientState !== undefined ? { state: clientState } : {}),
@@ -514,12 +514,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return;
     }
 
-    const code = mintCode(
-      oauth.keys.code,
-      approval,
-      clientFingerprint(approval.clientId),
-      now(),
-    );
+    const code = mintCode(oauth.keys.code, approval, approval.cid, now());
     const url = new URL(approval.redirectUri);
     url.searchParams.set("code", code);
     if (approval.state !== undefined)
@@ -625,8 +620,11 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return;
     }
     // RFC 6749 §4.1.3: the `redirect_uri`, when the authorization carried one,
-    // must be repeated identically.
-    const redirectUri = str(body.redirect_uri);
+    // must be repeated identically. `sent()` and not `str()` here, because
+    // `str()` reads an EMPTY parameter as an absent one — and `redirect_uri=`
+    // with nothing after it is a parameter the caller sent, so it has to fail
+    // the comparison rather than skip it.
+    const redirectUri = sent(body.redirect_uri);
     if (redirectUri !== undefined && redirectUri !== code.redirectUri) {
       tokenError(
         res,
@@ -655,8 +653,8 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return;
     }
     // RFC 8707 §2.2: a `resource` on the token request narrows, and may only
-    // name what the authorization was for.
-    const requested = str(body.resource);
+    // name what the authorization was for. `sent()`, for the reason above.
+    const requested = sent(body.resource);
     if (
       requested !== undefined &&
       normalizeResource(requested) !== code.resource
@@ -730,16 +728,25 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
         err instanceof HostedDomainRefused
           ? "the account is no longer a member of the required Google Workspace."
           : "the Google grant behind this refresh token is no longer valid.";
-      refused(
-        "refresh",
+      denied(
         err instanceof HostedDomainRefused ? "wrong_domain" : "google_dead",
       );
       tokenError(res, 400, "invalid_grant", reason);
       return;
     }
-    // The domain is also re-read from the CURRENT config, so turning the flow
-    // off or re-pointing it at another Workspace ends every live grant at the
-    // next refresh rather than at the issuer's discretion.
+    // Belt and braces, and worth being precise about what it is NOT. The
+    // provider was built with this same `hostedDomain` from this same
+    // `resolveMcpOAuth`, and `enforceDomain` already ran inside `refresh()` —
+    // so on any real deployment this branch is unreachable, and it is not a
+    // re-read of live config. Changing `auth.mcpOAuth.hostedDomain` is a config
+    // change, and a strad config change is a DEPLOY (the document is baked into
+    // the app spec), so it lands when this process restarts rather than at the
+    // next refresh.
+    //
+    // What it does buy is that a future provider which took its domain from
+    // somewhere else cannot quietly become the only thing enforcing the
+    // constraint. The check is one comparison on a path that already made a
+    // network call.
     if (identity.hd !== oauth.hostedDomain) {
       denied("wrong_domain");
       tokenError(
@@ -751,7 +758,7 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
       return;
     }
 
-    const requested = str(body.resource);
+    const requested = sent(body.resource);
     if (
       requested !== undefined &&
       normalizeResource(requested) !== payload.resource
@@ -868,6 +875,13 @@ export function mountMcpOAuth(app: Express, opts: McpOAuthRoutesOptions): void {
  * names an account, and neither belongs in a shared cache or a back-button
  * replay.
  *
+ * `no-referrer` because the consent screen is rendered AT
+ * `/oauth/callback/google?code=<google's authorization code>&state=…`, and
+ * `layout()` pulls stylesheets from `fonts.googleapis.com`. A modern browser
+ * sends only the origin cross-origin, so this is not a live leak — but a page
+ * whose own URL carries an authorization code should not be relying on a
+ * browser default to keep it out of a third party's logs.
+ *
  * The other two are the anti-clickjacking pair, and a consent screen is the
  * canonical thing they exist for: an "Approve" button an attacker can frame
  * invisibly and trick someone into clicking is a grant nobody meant to give.
@@ -882,6 +896,7 @@ function page(res: Response, status: number, html: string): void {
     .status(status)
     .type("html")
     .set("Cache-Control", "no-store")
+    .set("Referrer-Policy", "no-referrer")
     .set("X-Frame-Options", "DENY")
     .set("Content-Security-Policy", "frame-ancestors 'none'")
     .send(html);
@@ -926,9 +941,26 @@ function single(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** The same rule for a form body. */
+/**
+ * The same rule for a form body, with an empty value read as absent.
+ *
+ * Right for the fields where empty and missing mean the same thing — a
+ * `client_id=` with nothing after it is not a client id. Wrong for the two
+ * fields that are compared against the grant, which use `sent()` instead.
+ */
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * A form field exactly as the caller sent it, empty string included.
+ *
+ * For `redirect_uri` and `resource` on the token endpoint, where the check is
+ * "if you sent one, it must match". Folding `""` into `undefined` there turns a
+ * value that cannot match into a check that does not run.
+ */
+function sent(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 /** The client's own short id, for a log line. Never the whole registration. */
@@ -954,7 +986,7 @@ function validTx(tx: TxPayload): boolean {
     typeof tx.googleRedirectUri === "string" &&
     typeof r === "object" &&
     r !== null &&
-    typeof r.clientId === "string" &&
+    typeof r.cid === "string" &&
     typeof r.redirectUri === "string" &&
     typeof r.challenge === "string" &&
     typeof r.resource === "string"

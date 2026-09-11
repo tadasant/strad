@@ -453,7 +453,21 @@ hidden:
   with no lookup. The one-hour default is therefore also the revocation window,
   which is what the five-minute floor on `accessTokenTtlSeconds` is for.
 
-And a fifth thing that is absent rather than degraded: **the console cannot list
+Two more follow from **open registration** instead, and are stated for the same
+reason:
+
+- **strad's domain is an open redirector to anyone who can POST.** Registration
+  takes no credential, and RFC 6749 requires an authorization error to be
+  delivered to the client's registered `redirect_uri` — so a stranger can
+  register `https://evil.example/x` and then hand somebody an `/oauth/authorize`
+  link on strad's hostname that `302`s straight off it, with no cookie, no
+  consent and no Google hop. Inherent to open dynamic registration; the value is
+  phishing rather than access, because nothing about it yields a token.
+- **One browser runs one authorization at a time.** The in-flight transaction is
+  one cookie at a fixed name, so a second `/oauth/authorize` in the same browser
+  overwrites the first and that tab comes back to "this sign-in has expired".
+
+And a last thing that is absent rather than degraded: **the console cannot list
 or revoke issued grants**, because a stateless token leaves no record to render.
 Revoking access today means Google's own security page, the Workspace admin
 console, or `POST /oauth/revoke`.

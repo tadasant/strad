@@ -256,9 +256,16 @@ export function enforceDomain(
   email: string | undefined,
   expected: string,
 ): void {
-  if (hd !== expected) throw new HostedDomainRefused(expected, email);
-  const suffix = `@${expected.toLowerCase()}`;
-  if (!email || !email.toLowerCase().endsWith(suffix)) {
+  // Case-folded on BOTH sides. A domain name is case-insensitive, Google emits
+  // `hd` lowercased, and an operator who writes `hostedDomain: Tadasant.com` in
+  // the config would otherwise get a deployment where every single sign-in is
+  // refused — with the refusal page saying the account is not a member of a
+  // Workspace it plainly is.
+  const want = expected.toLowerCase();
+  if (!hd || hd.toLowerCase() !== want) {
+    throw new HostedDomainRefused(expected, email);
+  }
+  if (!email || !email.toLowerCase().endsWith(`@${want}`)) {
     throw new HostedDomainRefused(expected, email);
   }
 }
