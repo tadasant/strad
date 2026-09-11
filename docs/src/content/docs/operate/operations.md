@@ -589,6 +589,17 @@ There is no `latest` fallback left here either. The deploy always passes
 `--bundle-image` and `--require-immutable-images`, which makes `render-spec`
 refuse to emit a spec in which **any** component ships a tag that moves.
 
+`--bundle-image` is repeatable, once per image repository. Staging names one, so
+it passes one; a config mounting a second first-party image passes a second
+occurrence for it. Matching is by registry and repository, not by component name
+or argument order, and **each occurrence has to match something on its own** — a
+sibling that did match does not excuse one that did not. That is deliberate:
+without it, adding a second override would be a way to let the first one go stale
+in silence, which is the failure the flag exists to prevent. It also means
+disabling the last slug on a repository has to drop that repository's
+`--bundle-image` in the same change, or the render fails. Two occurrences naming
+the same repository are refused rather than resolved.
+
 Step 3 also **waits**, which the core's does not need to. `release-image.yml`
 pushes the core and then calls the deploy, in that order, in one workflow;
 `release-bundle-image.yml` is a separate trigger on the same push and takes

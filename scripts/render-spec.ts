@@ -38,13 +38,18 @@
  * branch build and every ordinary staging deploy ship a tag that names one
  * commit without editing the config's 28 `image:` lines.
  *
+ * It is REPEATABLE — once per image repository — because a config can name more
+ * than one first-party image, and `--require-immutable-images` below holds the
+ * deploy to pinning all of them in the same render. Each occurrence is matched
+ * on its own and each must match something, so a second one cannot mask a first
+ * that has gone stale.
+ *
  * `--require-immutable-images` refuses to emit a spec in which ANY component
- * ships a mutable tag. It is opt-in rather than the default because the two
- * deploys that render through this script do not have the same options: staging
- * resolves a `sha-` tag for both images and can demand it, while prod renders
- * this repo's tooling against tadasant-internal's config, whose supplementary
- * `image:` lines it would have to change first. Without the flag the same list
- * is printed as a warning, so a deploy that cannot yet fail on it still says so.
+ * ships a mutable tag. Both deploys pass it — staging and prod each resolve a
+ * `sha-` tag per image and demand it. It stays opt-in rather than the default
+ * for every other caller: a local render or a config under construction has no
+ * commit tag to name. Without the flag the same list is printed as a warning,
+ * so a render that cannot fail on it still says so.
  *
  * The SIZE of the spec is gated too, and that gate is always on. An App
  * Platform spec past some size is refused with a 400 that names neither the
@@ -113,7 +118,11 @@ const { values } = parseArgs({
   options: {
     config: { type: "string" },
     image: { type: "string" },
-    "bundle-image": { type: "string" },
+    // REPEATABLE, one occurrence per image repository. A single non-empty
+    // occurrence parses and applies the way a single-valued option would: prod
+    // runs this script straight out of `main`, so its one `--bundle-image` is a
+    // contract. An EMPTY one is refused below rather than read as absent.
+    "bundle-image": { type: "string", multiple: true },
     app: { type: "string" },
     region: { type: "string" },
     domain: { type: "string", multiple: true },
@@ -152,6 +161,23 @@ if (!Number.isInteger(maxSpecBytes) || maxSpecBytes <= 0) {
       `not "${values["max-spec-bytes"]}".`,
   );
   process.exit(1);
+}
+
+// PRESENCE, not truthiness, for the same reason --max-spec-bytes gets it above.
+// `--bundle-image ""` is a workflow input that resolved empty — a resolve step
+// whose output was never set, most often. Reading it as "no override passed"
+// would deploy the config's tag in silence without the gate, and with it would
+// fail one layer down naming that tag rather than the empty argument. Name the
+// argument.
+for (const ref of values["bundle-image"] ?? []) {
+  if (ref === "") {
+    console.error(
+      `::error::--bundle-image was passed an empty value. That is an image ` +
+        `reference that resolved to nothing, not an absent flag — check the ` +
+        `step that produced it. Drop the flag to deploy the tag the config names.`,
+    );
+    process.exit(1);
+  }
 }
 
 // Refuse a mutable core tag at the deploy boundary, BEFORE any of the work
@@ -894,8 +920,9 @@ const spec = renderAppSpec({
   region: values.region ?? "nyc",
   image: coreImage,
   // --bundle-image swaps the supplementary components onto a branch-scoped
-  // bundle tag at render time, so a branch deploy needs no config edit.
-  supplementaryImage: values["bundle-image"],
+  // bundle tag at render time, so a branch deploy needs no config edit. Passed
+  // once per image repository the config names.
+  supplementaryImages: values["bundle-image"],
   env: envs,
   secrets: scopedSecrets,
   serverSecrets,
@@ -955,8 +982,10 @@ if (mutable.length > 0) {
     console.error(
       `::error::${mutable.length} component(s) would ship a mutable tag: ` +
         `${detail}.\n${why}\n` +
-        `Pass --bundle-image with a :sha-<commit> tag (published per commit by ` +
-        `release-bundle-image.yml), or drop --require-immutable-images.`,
+        `Pass --bundle-image with a :sha-<commit> tag — once per repository ` +
+        `named above, each published per commit by the workflow that builds it ` +
+        `(release-bundle-image.yml for strad-bundle) — or drop ` +
+        `--require-immutable-images.`,
     );
     process.exit(1);
   }

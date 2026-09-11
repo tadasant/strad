@@ -29,6 +29,12 @@ import {
 } from "../auth/session.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import {
+  metadataBaseUrl,
+  protectedResourceMetadata,
+  PROTECTED_RESOURCE_ROUTES,
+  safeOrigin,
+} from "../auth/protected-resource.ts";
+import {
   burnFromUrl,
   BYPASS_COOKIE,
   googlePrincipal,
@@ -280,6 +286,54 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.mode === "core") {
+    // --- discovery: what this endpoint is, and what it accepts -------------
+    //
+    // RFC 9728 protected-resource metadata for `/mcp`. UNAUTHENTICATED, and it
+    // has to be: it is what a client reads BEFORE it holds a credential, and it
+    // is the document `/mcp`'s `401` points at. It discloses the public URL of
+    // an endpoint the caller just asked about and the name of the gateway — two
+    // things already in the request — and no secret, no slug and no roster.
+    //
+    // CORE ONLY, because core is the door on the open internet. A bundle's
+    // `/mcp` is a private-network hop authenticated with the shared internal
+    // token; no MCP client discovers it, and claiming otherwise would publish a
+    // resource identifier nothing can reach.
+    //
+    // Two paths, one document — see `src/auth/protected-resource.ts` for the
+    // path-insertion rule and why the root path is served beside it.
+    //
+    // `no-store`, the same answer the presence route gives, because a
+    // deployment that declares no `gateway.publicUrl` derives the resource
+    // identifier from the `Host` AND the forwarded scheme of the request in
+    // hand. A cache that keyed on the URL alone could hand an `http://`
+    // identifier to an `https://` client, and a compliant client compares
+    // origins and refuses on the mismatch. The document is four short members;
+    // there is nothing to save by caching it.
+    const declared = opts.config.gateway.publicUrl;
+    for (const route of PROTECTED_RESOURCE_ROUTES) {
+      app.get(route, (req, res) => {
+        res.set("Cache-Control", "no-store");
+        const origin = metadataBaseUrl(req, declared);
+        if (origin === null) {
+          res.status(404).json({ error: "no_resource_identifier" });
+          return;
+        }
+        res.json(protectedResourceMetadata(origin, opts.config.gateway.name));
+      });
+    }
+    // A declared `publicUrl` the guard refuses — a path, userinfo, a quote —
+    // makes the route a `404` and the `401` a two-parameter header, which is
+    // exactly what a deployment that declared NOTHING looks like from outside.
+    // So it is said here, once, at boot, the way `resolveConsoleAuth` says its
+    // half-configured cases: the value is the operator's own and no secret.
+    if (declared !== undefined && safeOrigin(declared) === null) {
+      console.warn(
+        `[strad] gateway.publicUrl is not a bare http(s) origin (${declared}), ` +
+          "so /mcp serves no protected-resource metadata and its 401 carries " +
+          "no resource_metadata. Declare scheme, host and port only.",
+      );
+    }
+
     // The machine's read of the human console's secret roster.
     //
     // CORE ONLY, alongside the console it mirrors: the derivation reads core's

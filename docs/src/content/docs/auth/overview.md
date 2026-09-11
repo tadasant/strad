@@ -78,7 +78,9 @@ npm run token:mint -- --label "my agent" --roles admin --env staging
   "telling a caller why tells an attacker which half they got right."
 - An unknown `pubid` still hashes and compares against a dummy all-zero hash, so
   there's no timing oracle distinguishing "no such token" from "wrong secret."
-- `401`s carry `WWW-Authenticate: Bearer realm="strad", error="invalid_token"`.
+- `401`s carry
+  `WWW-Authenticate: Bearer realm="strad", error="invalid_token", resource_metadata="…"`.
+  The last parameter is the discovery pointer; see below.
 
 <aside class="starlight-aside starlight-aside--caution">
 
@@ -88,6 +90,99 @@ redeploying. A DB-backed store and a console mint/revoke UI are planned — see
 [Known limitations](/limitations/).
 
 </aside>
+
+### Discovery: what `/mcp` says it accepts
+
+A client that holds no token gets a `401`, and a `401` on its own is ambiguous —
+it looks the same whether a gateway takes static tokens by design or has an OAuth
+flow that is merely misconfigured. strad answers the question directly, with
+[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata.
+
+**The document** describes the `/mcp` endpoint and is served, unauthenticated,
+from two paths:
+
+- `/.well-known/oauth-protected-resource/mcp` — the canonical one. RFC 9728 §3.1
+  forms the metadata URL by inserting the well-known string _between_ the host and
+  the resource's path, so the resource `https://strad.tadasant.com/mcp` is
+  described at
+  `https://strad.tadasant.com/.well-known/oauth-protected-resource/mcp`.
+- `/.well-known/oauth-protected-resource` — the same document at the bare path,
+  which is the MCP SDK's fallback when the path-aware probe `404`s, and the path a
+  human reaches for first.
+
+```json
+{
+  "resource": "https://strad.tadasant.com/mcp",
+  "resource_name": "strad",
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://docs.strad.tadasant.com/auth/overview/"
+}
+```
+
+`resource` is the declared `gateway.publicUrl` plus `/mcp`, falling back to the
+origin the request arrived on when a deployment declares no `publicUrl`.
+`bearer_methods_supported` is `["header"]` and nothing else: strad reads the
+credential from `Authorization` and never from a `?access_token=` query parameter
+or a form body.
+
+**The origin has to be one strad is willing to repeat back**: a bare `http(s)`
+scheme, host and port, whether it came from `publicUrl` or from the request's
+`Host`. Anything else — a path, userinfo, a query, a fragment, or a character a
+URI cannot contain, such as the `"` that would end the header's quoted parameter
+early — is refused, and a refusal is the same answer as no origin at all: the
+route answers `404 {"error":"no_resource_identifier"}` and the `401` carries only
+`realm` and `error`. A declared `publicUrl` that is refused is also said at boot,
+because from outside it looks exactly like a deployment that declared nothing.
+strad mounts `/mcp` and this document at the root of its origin, which is why a
+`publicUrl` with a path is refused rather than described: the RFC 9728 pointer
+for it would name a path nothing serves.
+
+The document is served with `Cache-Control: no-store` and without CORS headers.
+The first because, on a deployment with no `publicUrl`, the identifier is derived
+from the `Host` and forwarded scheme of the request in hand, and a cached
+`http://` identifier handed to an `https://` client fails the origin comparison a
+compliant client makes. The second because strad's browser surface is
+same-origin; a browser-hosted MCP client on another origin cannot read this
+document or the `401`'s header, and nothing here claims otherwise.
+
+**The pointer.** A `401` from `/mcp` names that URL in its `WWW-Authenticate`,
+so discovery works from the error rather than from a guess at a well-known path:
+
+```
+WWW-Authenticate: Bearer realm="strad", error="invalid_token",
+  resource_metadata="https://strad.tadasant.com/.well-known/oauth-protected-resource/mcp"
+```
+
+`realm` and `error` are unchanged and still come first — a client that reads only
+those two reads exactly what it always did.
+
+Both are **core only**. A bundle component's `/mcp` is a private-network hop
+authenticated with the shared `STRAD_INTERNAL_TOKEN`; no MCP client discovers it,
+so it serves no well-known path and its `401` carries no pointer.
+
+### `authorization_servers` is absent, and that is the answer
+
+The document names **no authorization server**, and it is the one RFC 9728 member
+whose absence is a decision rather than an omission.
+
+**`/mcp` accepts static system tokens and nothing else.** It does not accept an
+OAuth-issued access token, a console session cookie, or the dev bypass. Google
+Workspace OAuth in strad is the _human console door_ — `/console` and `/ui`,
+resolved in `src/ui/console-auth.ts`, which never consults the `/mcp` token store.
+The two doors do not meet, by design.
+
+So naming an issuer here would be a worse answer than the `404` it replaces: a
+client would run a whole consent flow and be `401`ed with a valid access token at
+the end of it. A document that describes the resource and stops is the true one.
+A client reading it learns three things that _are_ true — this is a protected
+resource, it takes a bearer token in the header, and here is where the credential
+comes from — and learns them from a `200`.
+
+Binding an authorization server to `/mcp`, and mapping an OAuth identity onto the
+role model, is a product decision that has not been made. It is tracked in
+[issue #53](https://github.com/tadasant/strad/issues/53), and until it is,
+`/.well-known/oauth-authorization-server` stays a `404` — there is no server to
+describe. See also [Known limitations](/limitations/).
 
 ## `/console` — Google Workspace OAuth (humans)
 

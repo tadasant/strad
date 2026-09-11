@@ -104,24 +104,34 @@ export interface RenderOptions {
    */
   unseededRefs?: ReadonlySet<string>;
   /**
-   * Override the image a supplementary component runs, without editing the
+   * Override the image supplementary components run, without editing the
    * config's 25 `image:` lines. This is what makes a BRANCH deployable:
    * the branch build pushes `ghcr.io/tadasant/strad-bundle:branch-<slug>`, and
    * the deploy renders the branch's own config against that tag.
    *
-   * The override is REPOSITORY-SCOPED, not blanket: it replaces only those
-   * supplementary images whose registry+repository match the override's own, so
-   * a config mounting some OTHER supplementary image keeps it — and that other
-   * image stays on whatever tag the config names, since a branch build produces
-   * one bundle image, not one per repository.
+   * Each override is REPOSITORY-SCOPED, not blanket: it replaces only those
+   * supplementary images whose registry+repository match its own, so a config
+   * mounting some OTHER supplementary image keeps whatever tag the config names
+   * unless an override in this list names that repository too.
    *
-   * Two ways to get this wrong both throw rather than deploy something that
+   * A LIST, because a config can name more than one first-party image — prod
+   * mounts both `strad-bundle` and `strad-bundle-internal` — and a deploy held
+   * to `--require-immutable-images` has to pin every one of them in the same
+   * render. The alternative is a sha pinned by hand in the config, whose failure
+   * mode is the silent one: a fresh image publishes, the hand-written sha does
+   * not move, and the deploy stays green while running the previous code.
+   *
+   * Four ways to get this wrong all throw rather than deploy something that
    * merely looks right, because the failure this feature exists to prevent is a
-   * green branch deploy that silently ran `strad-bundle:latest`:
-   *   - a ref that matches no supplementary server (wrong repository), and
+   * green deploy that silently ran the wrong image:
+   *   - a ref that matches no supplementary server (wrong repository). Checked
+   *     PER OVERRIDE: a sibling that did match does not excuse it, or a second
+   *     override would be a way to mask the first one going stale.
    *   - a ref whose tag is `latest`, explicitly or by omission.
+   *   - an empty ref, which is an image that resolved to nothing upstream.
+   *   - two refs naming the same repository, which is ambiguous at best.
    */
-  supplementaryImage?: string;
+  supplementaryImages?: readonly string[];
   /**
    * The boot env a component cannot fetch for itself, by name -> value.
    *
@@ -921,19 +931,49 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
   const { config } = opts;
   const unseeded = opts.unseededRefs ?? EMPTY_REFS;
 
-  const override = opts.supplementaryImage
-    ? parseImage(opts.supplementaryImage)
-    : undefined;
+  const overrides = (opts.supplementaryImages ?? []).map((ref) => ({
+    ref,
+    image: parseImage(ref),
+    /** Did this override, on its own, repoint at least one component? */
+    applied: false,
+  }));
   // `parseImage` defaults a tag-less ref to `latest`, so an override of
   // "ghcr.io/tadasant/strad-bundle" would match, apply, and deploy `:latest`
-  // while reading as a branch override. Refuse the whole shape.
-  if (override && override.tag === "latest") {
-    throw new Error(
-      `supplementaryImage "${opts.supplementaryImage}" resolves to the tag "latest". ` +
-        `Pass an explicit branch-scoped tag — overriding to :latest is what this flag exists to avoid.`,
-    );
+  // while reading as a branch override. Refuse the whole shape. An EMPTY ref
+  // gets its own sentence first, since "resolves to latest" would send the
+  // reader looking for a tag when the whole reference is missing.
+  for (const { ref, image } of overrides) {
+    if (ref === "") {
+      throw new Error(
+        `supplementaryImages holds an empty entry. That is an image reference ` +
+          `that resolved to nothing upstream, not an absent override.`,
+      );
+    }
+    if (image.tag === "latest") {
+      throw new Error(
+        `supplementaryImages entry "${ref}" resolves to the tag "latest". ` +
+          `Pass an explicit branch-scoped tag — overriding to :latest is what this flag exists to avoid.`,
+      );
+    }
   }
-  let overrideApplied = false;
+  // TWO OVERRIDES, ONE REPOSITORY. Matching is repository-scoped, so the list
+  // is a map from repository to tag and a repeated key is not a refinement. With
+  // two different tags, one never reaches the spec and which one depends on
+  // iteration order, the kind of answer nobody checks; with the same tag twice,
+  // the caller has lost track of what it is passing. Refuse either instead of
+  // picking.
+  const byRepository = new Map<string, string>();
+  for (const { ref, image } of overrides) {
+    const key = `${image.registry_type}/${image.registry ?? ""}/${image.repository}`;
+    const first = byRepository.get(key);
+    if (first !== undefined) {
+      throw new Error(
+        `supplementaryImages entries "${first}" and "${ref}" name the same repository. ` +
+          `An override is repository-scoped — pass one override per repository.`,
+      );
+    }
+    byRepository.set(key, ref);
+  }
 
   // Which bundles actually need a container? A supplementary bundle resolves to
   // one image plus the union of its servers' env maps.
@@ -1462,7 +1502,7 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
       // ONE, and not configurable. Console login tokens and their sessions are
       // records in this process's memory (src/auth/console-tokens.ts); a second
       // replica fails them closed — a mint on one is unknown to the other — but
-      // it does fail them. HACKS.md #92 has the shared-store upgrade.
+      // it does fail them. HACKS.md #93 has the shared-store upgrade.
       instance_count: 1,
       // The ONE public component. http_port is what mints the public route.
       http_port: PORT,
@@ -1572,9 +1612,12 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     let componentImage = supplementary
       ? parseImage(supplementary.image)
       : opts.image;
-    if (supplementary && override && sameRepository(componentImage, override)) {
-      componentImage = override;
-      overrideApplied = true;
+    const match = supplementary
+      ? overrides.find((o) => sameRepository(componentImage, o.image))
+      : undefined;
+    if (match) {
+      componentImage = match.image;
+      match.applied = true;
     }
 
     const instanceCount = declared?.instanceCount ?? 1;
@@ -1661,10 +1704,27 @@ export function renderAppSpec(opts: RenderOptions): AppSpec {
     });
   }
 
-  if (override && !overrideApplied) {
+  // PER OVERRIDE, and this is the whole point of the list being a list. A
+  // deploy that pins two repositories must not be able to go green because one
+  // of them matched. An override that matches nothing means the caller and the
+  // config disagree about what is deployed — a repository renamed in one and
+  // not the other, or a config whose component for it has gone — and a
+  // matched sibling says nothing about which of the two is right.
+  const unmatched = overrides.filter((o) => !o.applied);
+  if (unmatched.length > 0) {
+    const refs = unmatched.map((o) => `"${o.ref}"`).join(", ");
+    const sibling =
+      unmatched.length < overrides.length
+        ? ` Each override has to match on its own; the ${
+            overrides.length - unmatched.length === 1
+              ? "one that did match does"
+              : "ones that did match do"
+          } not excuse ${unmatched.length === 1 ? "this one" : "these"}.`
+        : "";
     throw new Error(
-      `supplementaryImage "${opts.supplementaryImage}" matched no supplementary server in the config. ` +
-        `Check the registry and repository — only the tag is meant to differ.`,
+      `supplementaryImages ${refs} matched no supplementary server in the config. ` +
+        `Check the registry and repository — only the tag is meant to differ.` +
+        sibling,
     );
   }
 
