@@ -1,6 +1,6 @@
 ---
 title: Auth architecture
-description: strad's two doors — Google Workspace OAuth for humans and static system tokens for agents — and why ?servers= is a selection hint, never an authorization boundary.
+description: strad's two doors — Google Workspace OAuth for humans, and static system tokens or strad's own OAuth 2.1 authorization server for agents — and why ?servers= is a selection hint, never an authorization boundary.
 sidebar:
   order: 1
 ---
@@ -9,12 +9,18 @@ strad runs on the **open internet**. There is no VPN, tailnet, or IP allowlist i
 front of it — so auth is the only gate, and it is strict. There are two doors, and
 they never cross:
 
-- **`/mcp`** — machines. Static system tokens only.
+- **`/mcp`** — machines and interactive MCP clients. Either a **static system
+  token**, minted out of band and long-lived, or an **access token from strad's
+  own OAuth 2.1 authorization server**, which authenticates the human behind it
+  with Google.
 - **`/console`** — humans. Google Workspace OAuth.
 
 Which door accepts which credential is enforced **in code**, not config. The MCP
-authenticator accepts nothing but a static token — not a console session, not the
-dev bypass, and emphatically not "no header means dev mode."
+authenticator accepts exactly those two — not a console session, not the dev
+bypass, and emphatically not "no header means dev mode." The prefix on the
+presented credential decides which, and it decides exclusively: an `strad_oat_…`
+token is never offered to the static store, and a `strad_<env>_…` token never
+reaches the OAuth verifier.
 
 ## Every door reads `Authorization` the same way
 
@@ -49,7 +55,9 @@ header carrying the right credential — and the host's own suite asks its mount
 
 ## `/mcp` — static system tokens (agents)
 
-Every `/mcp` request must present a static token in `Authorization: Bearer …`.
+A static token is what a headless agent holds. It is the load-bearing credential
+for every machine client, it is unchanged by the OAuth flow described below, and
+`/mcp` accepts either.
 
 **Token format:** `strad_<env>_<pubid>_<secret>` — for example
 `strad_staging_7f3a91c2_i8Kx…`. The `secret` is 32 random bytes, base64url. Only
@@ -159,29 +167,299 @@ Both are **core only**. A bundle component's `/mcp` is a private-network hop
 authenticated with the shared `STRAD_INTERNAL_TOKEN`; no MCP client discovers it,
 so it serves no well-known path and its `401` carries no pointer.
 
-### `authorization_servers` is absent, and that is the answer
+### `authorization_servers` names strad itself, when strad is running one
 
-The document names **no authorization server**, and it is the one RFC 9728 member
-whose absence is a decision rather than an omission.
+`authorization_servers` is the one RFC 9728 member whose presence is a decision
+rather than a formality, and the decision is made per deployment.
 
-**`/mcp` accepts static system tokens and nothing else.** It does not accept an
-OAuth-issued access token, a console session cookie, or the dev bypass. Google
-Workspace OAuth in strad is the _human console door_ — `/console` and `/ui`,
-resolved in `src/ui/console-auth.ts`, which never consults the `/mcp` token store.
-The two doors do not meet, by design.
+**When `auth.mcpOAuth` is configured and usable**, strad _is_ the authorization
+server for `/mcp`. The issuer is the same origin, and the document says so:
 
-So naming an issuer here would be a worse answer than the `404` it replaces: a
-client would run a whole consent flow and be `401`ed with a valid access token at
-the end of it. A document that describes the resource and stops is the true one.
-A client reading it learns three things that _are_ true — this is a protected
-resource, it takes a bearer token in the header, and here is where the credential
-comes from — and learns them from a `200`.
+```json
+{
+  "resource": "https://strad.tadasant.com/mcp",
+  "resource_name": "strad",
+  "authorization_servers": ["https://strad.tadasant.com"],
+  "scopes_supported": ["mcp"],
+  "bearer_methods_supported": ["header"],
+  "resource_documentation": "https://docs.strad.tadasant.com/auth/overview/"
+}
+```
 
-Binding an authorization server to `/mcp`, and mapping an OAuth identity onto the
-role model, is a product decision that has not been made. It is tracked in
-[issue #53](https://github.com/tadasant/strad/issues/53), and until it is,
-`/.well-known/oauth-authorization-server` stays a `404` — there is no server to
-describe. See also [Known limitations](/limitations/).
+**When it is not** — the flag is off, or the Google OAuth client is not seeded,
+or there is no signing key — the member is absent and every `/oauth/*` route is a
+`404`. That is not tidiness. Advertising an issuer whose `/authorize` does not
+answer, or whose tokens `/mcp` would refuse, is worse than the `404` it replaces:
+a client would run a whole consent flow and be `401`ed holding a valid access
+token. One resolution (`resolveMcpOAuth`) decides what this document says, which
+routes exist, and which credentials `/mcp` accepts, so the three cannot disagree.
+
+## `/mcp` — OAuth 2.1 (interactive clients)
+
+An MCP client that takes a URL and nothing else — claude.ai's custom-connector
+dialog is the one this was built for — cannot be handed a static token. There is
+no field to paste it into. So strad runs its **own OAuth 2.1 authorization
+server** in front of `/mcp`, and delegates the question of _who the human is_ to
+Google.
+
+Paste `https://strad.tadasant.com/mcp?servers=granola` into the connector dialog,
+sign in with a `tadasant.com` Google account, approve, and the connector is
+connected. Nothing is copied or pasted.
+
+### The endpoints
+
+| Endpoint                                      | What it is                                                      |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| `/.well-known/oauth-authorization-server`     | [RFC 8414](https://www.rfc-editor.org/rfc/rfc8414) metadata     |
+| `/.well-known/oauth-authorization-server/mcp` | the same document at the path-suffixed URL the MCP SDK probes   |
+| `POST /oauth/register`                        | [RFC 7591](https://www.rfc-editor.org/rfc/rfc7591) registration |
+| `GET /oauth/authorize`                        | authorization code + PKCE; the Google sign-in starts here       |
+| `GET /oauth/callback/google`                  | Google comes back; the domain is enforced here                  |
+| `POST /oauth/approve`                         | the consent screen's decision                                   |
+| `POST /oauth/token`                           | `authorization_code` and `refresh_token`                        |
+| `POST /oauth/revoke`                          | [RFC 7009](https://www.rfc-editor.org/rfc/rfc7009) revocation   |
+
+The metadata advertises `code` as the only response type, `authorization_code`
+and `refresh_token` as the grants, `S256` as the only PKCE method, and `none` as
+the only token-endpoint auth method. It sets
+`authorization_response_iss_parameter_supported`, and every authorization
+response carries `iss` ([RFC 9207](https://www.rfc-editor.org/rfc/rfc9207)), so a
+client talking to more than one server cannot be tricked into exchanging a code
+at the wrong one.
+
+**Scope is ignored rather than refused.** The one scope strad issues is `mcp`,
+and a client that asks for something else gets a token anyway, with
+`scope: "mcp"` in the response — the substitution RFC 6749 §3.3 asks to be
+declared. Scope grants nothing here: what a principal may reach is decided
+entirely by `roles` and the two-way entitlement, server-side, on every request.
+So an `invalid_scope` would only ever be a connector that failed to set up over
+a word that was never going to matter.
+
+The metadata documents and the `register` / `token` / `revoke` endpoints answer
+with `Access-Control-Allow-Origin: *` and a preflight, because a browser-resident
+client calls them cross-origin. None of them reads a cookie, and
+`Access-Control-Allow-Credentials` is deliberately never set. `/oauth/authorize`
+and `/oauth/approve` get no CORS at all: they are top-level navigations carrying
+the transaction cookie.
+
+### Registration is open, and that is safe here
+
+Registration takes no initial access token, no allowlist, and no human step. It
+has to: there is nowhere for a human to pre-register claude.ai, and an allowlist
+that admitted it would have to be edited by hand for the next client.
+
+**Registering grants nothing.** A `client_id` is a name plus a set of redirect
+URIs. To get a token, the holder still has to send a real human through Google,
+that human still has to be a member of the configured Workspace, and that human
+still has to approve the client _by name_ on strad's own consent screen.
+
+What _is_ checked is the shape of the redirect URIs, because that is where an
+authorization code is delivered: `https:` only, or `http:` on `localhost` /
+`127.0.0.1` / `[::1]` (the [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252)
+§7.3 rule for a native client); no fragment; no userinfo; at most eight, each at
+most 512 characters.
+
+There is **no client table**. The `client_id` _is_ the registration: a signed,
+sealed record carrying the name and the redirect URIs. Any replica can validate
+a registration any other replica issued, and a tampered `client_id` is not a
+client — which is what stops someone adding a redirect URI to steal a code. It
+also means the registration travels in every `/oauth/authorize` URL, which is
+why the redirect URIs are capped in total as well as individually.
+
+One thing open registration composes into, stated rather than worked around:
+because an authorization error must be delivered to the registered
+`redirect_uri`, **strad's domain is an open redirector to anyone who can POST**.
+Registering `https://evil.example/x` and handing somebody an `/oauth/authorize`
+link on strad's hostname `302`s them off it — with no cookie, no consent and no
+Google hop, so nothing about it yields a token. The value is phishing rather than
+access, and it is inherent to open dynamic registration. See
+[Known limitations](/limitations/).
+
+### The flow, and what each step refuses
+
+1. **`GET /oauth/authorize`.** The `client_id` must be one strad issued, and the
+   `redirect_uri` must be an **exact string match** against that client's
+   registration. Neither of those failures is redirected: bouncing an error to an
+   unverified URI is the open redirect the exact match exists to prevent, so both
+   render a page instead. Past that point, every error is a proper OAuth error
+   response back to the verified URI.
+
+   **PKCE is mandatory and `S256` only.** A missing `code_challenge` is refused,
+   `plain` is refused by name, and an absent `code_challenge_method` is _not_
+   assumed to be `plain`.
+
+2. **Google.** strad sends the browser to Google with `access_type=offline` and
+   `prompt=consent`. Those two are what make this a _grant_ rather than a
+   sign-in: they are why Google hands back a refresh token, which is the handle
+   everything below depends on. `hd=tadasant.com` is also sent — as a hint to the
+   account chooser, and not as the enforcement.
+
+3. **`GET /oauth/callback/google`.** The ID token is verified (RS256, JWKS,
+   issuer, audience — the same verifier the console login uses, because one of it
+   is the point), and then the **Workspace test**: the `hd` claim must equal the
+   configured domain, _and_ the email must end in it. A non-member gets a
+   readable page saying the gateway is restricted to that domain and naming the
+   account they signed in with — **not** a redirect carrying
+   `error=access_denied`, which a client would render as "connection failed" and
+   which would leave the human guessing.
+
+4. **The consent screen.** Registration is open, so any client can arrive with a
+   name and a destination it chose for itself. Google's consent screen cannot
+   help — it asks whether the human trusts _strad_. This screen names the client,
+   the account, the endpoint and the roles the grant will carry, and is where the
+   human approves or denies.
+
+5. **`POST /oauth/token`.** The code is single-use, expires in sixty seconds, is
+   bound to the client it was issued to, and is only redeemable with the PKCE
+   verifier that matches its challenge.
+
+### Access tokens expire hourly; refresh tokens never expire
+
+**Access tokens live one hour** (`auth.mcpOAuth.accessTokenTtlSeconds`, floor 5
+minutes, ceiling a day). One hour is the conventional default and what an MCP
+client expects to refresh against. It is also the revocation window, and that is
+the reason for the floor: an access token is verified with no lookup, so it
+cannot be revoked before it expires.
+
+**Refresh tokens never expire.** They carry no `exp` at all — not a long one, not
+a sliding one.
+
+That is only safe because of what is inside them. A strad refresh token embeds
+the **Google refresh token** for the grant, and `POST /oauth/token` with
+`grant_type=refresh_token` spends it: strad calls Google, gets a **fresh ID
+token**, and re-runs the Workspace test on _that_. Two things follow.
+
+- **The domain is re-enforced on every refresh**, against Google rather than
+  against a claim strad sealed an hour ago. An account that has left the
+  Workspace, been suspended or been deleted fails here. Re-pointing the
+  deployment at another Workspace ends every live grant too — at the next
+  refresh after the deploy that changed it, since a strad config change is a
+  deploy.
+- **Revocation is durable and individual, and does not need a database.**
+  Revoking strad from the account's own Google security page, from the Workspace
+  admin console, or through `POST /oauth/revoke` — which calls Google — kills the
+  grant permanently. It survives every restart and every redeploy, because the
+  state lives at Google and not in strad.
+
+Two consequences, stated rather than worked around:
+
+- **Google revokes per user and per OAuth client, not per token.** Revoking one
+  connector signs that account out of every strad OAuth connector it holds. On a
+  single-Workspace deployment that is the expected reading of "revoke my access".
+- **An access token already issued stays valid until it expires**, up to an hour
+  after a revocation. That is the ordinary bearer-token trade, and it is what the
+  one-hour lifetime is for.
+
+An access token's audience comes from the **grant being spent** — carried in the
+code, and then in the refresh token — rather than from a resource recomputed at
+token time. So the value a client sent as `resource=` at `/oauth/authorize` is
+the value its token is checked against at `/mcp`.
+
+**Refresh tokens are not rotated.** Rotation's value is detecting the replay of a
+stolen token, and detecting it requires a server-side record of the token just
+spent. strad has nowhere to keep one — so minting a new opaque string while the
+old one stayed valid would be the _appearance_ of rotation without the property.
+The same token comes back.
+
+The blunt instrument behind all of this is **`STRAD_OAUTH_KEY`**. Rotating it
+invalidates every access token, every refresh token and every dynamic client
+registration at once, and leaves console sessions signed in. Absent, the key is
+derived from `CONSOLE_SESSION_SECRET`, else `GOOGLE_CLIENT_SECRET` — so the flow
+works on any deployment that already has a console OAuth client, with no second
+secret to seed.
+
+### Audience binding, and the `?servers=` trap
+
+Tokens are bound to a resource
+([RFC 8707](https://www.rfc-editor.org/rfc/rfc8707)). The canonical resource
+identifier is `https://strad.tadasant.com/mcp` — the origin plus the literal
+path, **with the query stripped**.
+
+The URL a human pastes is `…/mcp?servers=granola`, so clients send resource
+indicators both ways. A resource indicator is normalised — query and fragment
+dropped, a trailing slash dropped — before it is compared, and the audience check
+at `/mcp` compares the token's `aud` against the canonical identifier and never
+against the URL the request arrived on.
+
+This is not an edge case, it is the acceptance test: `?servers=` is a
+[selection hint and never an authorization boundary](#servers-is-a-selection-hint-not-an-auth-boundary),
+so one token has to work at every query string that endpoint answers on. A token
+minted for `…/mcp` is valid at `…/mcp?servers=granola`, at `…/mcp?servers=a,b`,
+and at `…/mcp` bare.
+
+A token whose `aud` names a _different_ gateway is refused. So is a token
+presented when strad cannot determine its own origin — the audience check is
+never skipped on the one request where it would matter most.
+
+### No datastore, and what that costs
+
+strad has no database, so nothing above is written down anywhere. Client
+registrations, authorization codes, access tokens and refresh tokens are all
+**self-contained values** sealed with a key only the process holds — HMAC where
+the contents are public (a registration), AES-256-GCM where they are not (an
+authorization code and a refresh token both carry a Google refresh token, and a
+code travels through a browser's address bar). Six derived keys, one per kind of
+value, so a refresh token presented as an access token is unreadable garbage
+rather than a type confusion.
+
+The one exception is **single-use codes**, which are a set of sixty-second
+entries in memory. It is per process, and strad core runs one instance; on a
+deployment scaled wider, a code replayed against another replica inside its
+sixty-second window would not be caught there. What catches it is PKCE, which is
+mandatory here — whoever replays an intercepted code does not hold the verifier.
+See [Known limitations](/limitations/).
+
+### Authorization is unchanged
+
+An OAuth identity maps onto the **existing role model**. `auth.mcpOAuth.roles`
+names the roles a verified member of the domain holds, and from there
+`?servers=<slug>` behaves exactly as it does for a static token: the two-way
+agreement between a role's `servers` and a server's `entitlements`, the same
+`424` for a slug the principal cannot have.
+
+Roles are read from **config at verification time**, never from the token — the
+same rule the console session follows, and for the same reason: tightening the
+config has to take effect on tokens already issued, not only on the ones minted
+after it. Be precise about _when_, though: a strad config change is a **deploy**
+(the document is baked into the app spec), so "already issued" means it lands
+when the process restarts rather than within the hour. The same goes for the
+hosted domain, which is re-checked on every access token and every refresh
+against the config this process booted with.
+
+`auth.mcpOAuth.roles` is deliberately **not** defaulted from `auth.google.roles`.
+That grant is the console's, and inheriting it would mean flipping a flag
+silently widened what `/mcp` hands out. The default is `[]`, which is
+fail-closed — the flow completes, the token verifies, and every `?servers=` gets
+a `424` — and boot warns when it is empty.
+
+### Configuring it
+
+```yaml
+auth:
+  mcpOAuth:
+    enabled: true
+    # Optional: falls back to auth.google.hostedDomain.
+    hostedDomain: tadasant.com
+    roles: [admin]
+    accessTokenTtlSeconds: 3600
+```
+
+Enabling the flag is not enough on its own, exactly as it is not for
+`auth.google`. All of these must also hold, or the server does not run and says
+why at boot:
+
+- `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are both set.
+- There is key material — `STRAD_OAUTH_KEY`, else `CONSOLE_SESSION_SECRET`, else
+  `GOOGLE_CLIENT_SECRET`, and at least 24 characters of it.
+- A hosted domain is declared. A config that enables the flow and declares none
+  is a **hard error** at `npm run config:check`: a flow with no domain to enforce
+  admits the first Google account that arrives at it.
+
+The Google OAuth client must list `<publicUrl>/oauth/callback/google` as an
+authorized redirect URI. It is the **same OAuth client** the console login uses —
+one client, one consent screen, one secret to seed — and the two flows differ
+only in what they ask Google for: the console asks who this is, and this one asks
+for an offline grant it can re-verify and revoke.
 
 ## `/console` — Google Workspace OAuth (humans)
 

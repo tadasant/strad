@@ -371,7 +371,18 @@ declines), not **physics** (a process that lacks the tool). See HACKS.md #22.
 
 ## One MCP server object, two doors
 
-`/mcp` owns authentication, `?servers=` and the 424. The protocol half — `tools/list`,
+`/mcp` owns authentication, `?servers=` and the 424. **Authentication there is
+two credentials and exactly two**: a static `strad_<env>_<pubid>_<secret>` token,
+and — on a deployment that configures `auth.mcpOAuth` — an access token from
+strad's own OAuth 2.1 authorization server, which authenticates the human behind
+it with Google. The prefix on the presented credential decides which, and it
+decides exclusively, so a deployment running no authorization server takes the
+code path it always did. Everything downstream is identical: both resolve to a
+`Principal` whose `roles` come from the server side, and `?servers=` narrows the
+entitled set the same way for each. The authorization server itself is
+`src/auth/mcp-oauth/` behind `src/http/oauth.ts`, mounted on **core only** and
+only when the flow can complete end to end; the model is in
+[Auth](/auth/overview/#mcp--oauth-21-interactive-clients). The protocol half — `tools/list`,
 `tools/call`, resource proxying, and the capability check on the action — is
 `buildGatewayServer()` in `src/gateway/mcpServer.ts`, and it has two callers:
 

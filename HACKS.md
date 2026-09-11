@@ -4596,6 +4596,13 @@ tadasant/strad#32.
 
 ## 92. `/mcp` publishes protected-resource metadata that names no authorization server
 
+**✅ RESOLVED.** strad is now its own authorization server for `/mcp` (#94), so
+the document names one — the same origin — and
+`/.well-known/oauth-authorization-server` answers. The member is still absent,
+and every `/oauth/*` route is still a `404`, on a deployment where
+`auth.mcpOAuth` is off or unseeded; that half of the reasoning below stands
+unchanged.
+
 **What.** `/.well-known/oauth-protected-resource/mcp` — and the same document at
 the bare `/.well-known/oauth-protected-resource`, which is the MCP SDK's fallback
 path — serves RFC 9728 protected-resource metadata for `/mcp`, and a `401` from
@@ -4702,3 +4709,93 @@ expressible the day strad grows an SSE adapter. `type: "stdio"`,
 `supplementary-image` and `builtin` do not converge and should not be forced to:
 the honest resolution there is the one the gateway/multi-principal gap suggests,
 which is feedback to the SEP rather than code here.
+
+---
+
+## 94. strad's authorization server has no datastore, and four properties follow
+
+**What.** `/mcp` accepts access tokens from strad's own OAuth 2.1 authorization
+server (`src/auth/mcp-oauth/`, mounted by `src/http/oauth.ts`), which delegates
+identity to Google. strad has no database, so every value the flow hands out is a
+self-contained sealed blob rather than a row: a dynamic client registration is
+the `client_id`, and the authorization code, access token and refresh token are
+encrypted payloads under six HKDF-derived keys. Four consequences, none of them
+hidden:
+
+1. **An authorization code is single-use against a per-process set**, not a
+   table. It holds sixty seconds of entries and is bounded by the code's TTL
+   rather than by traffic. strad core runs one instance; scaled wider, a code
+   replayed against a different replica inside its sixty-second window would not
+   be caught by it.
+
+2. **Refresh tokens are not rotated.** Rotation detects the replay of a stolen
+   token, and detecting it needs a record of the token just spent. There is
+   nowhere to keep one, so a new opaque string while the old stayed valid would
+   be the appearance of rotation without the property.
+
+3. **Revocation happens at Google, per user and per OAuth client.** A strad
+   refresh token embeds the Google refresh token behind the grant, so
+   `POST /oauth/revoke` calls Google, and so does nothing else: there is no
+   strad-side denylist, because an in-memory one would come back to life on the
+   next deploy. Google revokes the whole grant for that account and that client,
+   so revoking one connector signs the account out of every strad OAuth connector
+   it holds.
+
+4. **An access token cannot be revoked before it expires.** It is verified with
+   no lookup. The one-hour default lifetime is therefore also the revocation
+   window, which is what the five-minute floor on
+   `auth.mcpOAuth.accessTokenTtlSeconds` is for.
+
+And a fifth thing that is absent rather than degraded: **there is no console page
+listing or revoking issued grants**, because there is no list — a stateless token
+leaves no record to render. What the console could honestly show is the door's
+configuration and a link to Google's own access page.
+
+Two more properties follow from open registration rather than from the missing
+datastore, and they belong beside the four above because they are the same kind
+of thing — stated, not worked around:
+
+5. **strad's domain is an open redirector to anyone who can POST.** Registration
+   takes no credential, and RFC 6749 §4.1.2.1 requires an authorization error to
+   be delivered to the client's registered `redirect_uri`. Compose them and a
+   stranger registers `redirect_uris: ["https://evil.example/x"]`, then sends
+   somebody `GET /oauth/authorize?client_id=…&redirect_uri=https://evil.example/x
+&response_type=bogus` — which `302`s off strad's domain with no cookie, no
+   consent and no Google hop. This is inherent to every authorization server with
+   open dynamic registration; the value it has is phishing (a link that begins
+   with the gateway's hostname), not access, since nothing about it yields a
+   token. The alternative is to render those errors as pages, which would break
+   the machine-readable error the spec exists to give a legitimate client.
+
+6. **One browser runs one authorization at a time.** The in-flight transaction is
+   a single cookie at a fixed name, so a second `/oauth/authorize` started in the
+   same browser overwrites the first, and the first tab comes back to "this
+   sign-in has expired". Ten-minute window, one human, and the fix is to start
+   that connection again.
+
+**Why.** The alternative to the first four is a database, and adding one to strad for
+this is a larger decision than this feature: the console session took the same
+stateless road for the same reasons (no datastore, more than one replica
+possible, a redeploy must not sign everyone out), and `STRAD_TOKENS` is the
+static door's version of the same debt (#6).
+
+The properties that actually matter are all recovered without one, and by leaning
+on Google rather than by pretending:
+
+- PKCE is mandatory and `S256`-only, which covers the replay window (1) — whoever
+  intercepts a code does not hold the verifier.
+- Every refresh re-verifies the identity against Google and re-runs the Workspace
+  test on a **fresh** ID token, so a non-expiring refresh token (Tadas's explicit
+  instruction) is bounded by a live check rather than by a claim strad sealed an
+  hour ago. That is also what makes revocation (3) durable: it survives every
+  restart, because the state is not strad's.
+
+**Undo.** A `GrantStore` interface with one Postgres implementation makes 1, 2
+and 4 go away together — spent codes become rows, refresh tokens rotate with the
+old one marked dead, and an access-token denylist becomes possible. 3 stays
+Google's shape unless strad mints its own grant identity, which it should not. 5
+is a console page over that store, and is the natural second half of this work;
+until there is a store there is nothing for it to read. 5 goes away only by
+closing registration, which would take the acceptance test with it; 6 by keying
+the transaction cookie per authorization, which is a small change nobody has
+needed yet.

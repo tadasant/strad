@@ -28,6 +28,13 @@ import {
   PROTECTED_RESOURCE_ROUTES,
   safeOrigin,
 } from "../auth/protected-resource.ts";
+import {
+  resolveMcpOAuth,
+  type McpGoogleProvider,
+  type McpOAuth,
+} from "../auth/mcp-oauth/index.ts";
+import { MCP_SCOPE } from "../auth/mcp-oauth/metadata.ts";
+import { mountMcpOAuth } from "./oauth.ts";
 import { BYPASS_COOKIE, googlePrincipal } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
@@ -85,7 +92,10 @@ export interface AppOptions {
   presence?: ConsoleUiOptions["presence"];
   /** Test seam: the store the four-state diagnosis reads. */
   diagnosticStore?: ConsoleUiOptions["diagnosticStore"];
-  /** Test seam: the clock the store re-read route's floor is measured on. */
+  /**
+   * Test seam: the clock the store re-read route's floor is measured on, and
+   * the one every TTL in the `/mcp` OAuth flow is measured on.
+   */
   now?: () => number;
   /** Test seam: substitute the GCS listing surface behind the console UI. */
   gcsList?: GcsLister;
@@ -107,6 +117,15 @@ export interface AppOptions {
    */
   googleProvider?: ConsoleOAuthProvider | null;
   /**
+   * Test seam: substitute the Google leg of the `/mcp` OAuth flow.
+   *
+   * Separate from `googleProvider` because they are different flows against
+   * different redirect URIs — the console asks Google "who is this", and this
+   * one asks for an offline GRANT it can re-verify and revoke. See
+   * `src/auth/mcp-oauth/google.ts`.
+   */
+  mcpOAuthGoogle?: McpGoogleProvider | null;
+  /**
    * The last tool-surface observation, for `/healthz`.
    *
    * A getter rather than a value, because the monitor re-probes on an interval
@@ -126,6 +145,27 @@ export interface ConsoleOAuthProvider {
 export function createApp(opts: AppOptions): Express {
   const env = opts.env ?? process.env;
   const app = express();
+
+  // Resolved ONCE, before anything that depends on it, for the same reason
+  // `resolveConsoleAuth` is: three surfaces have to agree on whether this
+  // deployment is an authorization server — the `/oauth/*` routes that serve
+  // the flow, the RFC 9728 document that points a client at it, and the `/mcp`
+  // door that accepts the tokens it issues. Two independent readings is how you
+  // get a `401` naming an issuer whose `/authorize` is a 404.
+  //
+  // CORE ONLY, like every other public surface here: a bundle's `/mcp` is a
+  // private-network hop on the shared internal token and no MCP client
+  // discovers it.
+  const mcpOAuth: McpOAuth | null =
+    opts.mode === "core"
+      ? resolveMcpOAuth({
+          config: opts.config,
+          env,
+          ...(opts.mcpOAuthGoogle !== undefined
+            ? { google: opts.mcpOAuthGoogle }
+            : {}),
+        })
+      : null;
 
   app.disable("x-powered-by");
   app.set("trust proxy", true);
@@ -245,6 +285,7 @@ export function createApp(opts: AppOptions): Express {
         tokenStore: opts.tokenStore,
         mode: opts.mode,
         env,
+        oauth: mcpOAuth,
       }),
       jsonFailure("mcp"),
     ),
@@ -283,7 +324,29 @@ export function createApp(opts: AppOptions): Express {
           res.status(404).json({ error: "no_resource_identifier" });
           return;
         }
-        res.json(protectedResourceMetadata(origin, opts.config.gateway.name));
+        res.json(
+          protectedResourceMetadata(
+            origin,
+            opts.config.gateway.name,
+            // The issuer is this same origin — strad serves the flow from the
+            // same root it serves `/mcp` from — and it is named only when the
+            // flow can actually complete. See `resolveMcpOAuth`.
+            mcpOAuth ? { issuer: origin, scopes: [MCP_SCOPE] } : null,
+          ),
+        );
+      });
+    }
+
+    // The authorization server itself: its metadata, dynamic registration, the
+    // authorization and token endpoints, and revocation. Mounted only when the
+    // flow is usable end to end, so a half-configured deployment serves a `404`
+    // at every one of those paths rather than a flow that dead-ends at Google.
+    if (mcpOAuth) {
+      mountMcpOAuth(app, {
+        config: opts.config,
+        oauth: mcpOAuth,
+        env,
+        ...(opts.now ? { now: opts.now } : {}),
       });
     }
     // A declared `publicUrl` the guard refuses — a path, userinfo, a quote —

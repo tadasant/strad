@@ -80,6 +80,7 @@ const CANDIDATES = [
   "OTEL_EXPORTER_OTLP_HEADERS",
   "SENTRY_DSN",
   "STRAD_INTERNAL_TOKEN",
+  "STRAD_OAUTH_KEY",
   "STRAD_TOKENS",
 ];
 
@@ -107,6 +108,7 @@ describe("resolveSeedScope", () => {
       "OTEL_EXPORTER_OTLP_HEADERS",
       "SENTRY_DSN",
       "STRAD_INTERNAL_TOKEN",
+      "STRAD_OAUTH_KEY",
     ]);
     expect(scope.scopedBy).toBe("--only");
   });

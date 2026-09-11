@@ -449,12 +449,24 @@ describe("no door parses or compares a credential by hand", () => {
         ([, text]) =>
           // An anchored regex, or a quoted `"bearer"` / `"Bearer "` to compare
           // or prefix-match against. `Bearer ${token}` in a template literal —
-          // a header strad SENDS — is neither.
-          /\/\^\s*bearer/i.test(text) || /["']bearer ?["']/i.test(text),
+          // a header strad SENDS — is neither, and neither is the one other
+          // place the word is a value rather than a pattern: `token_type:
+          // "Bearer"`, RFC 6749 §5.1's field on the token endpoint's response
+          // (src/http/oauth.ts). That is strad naming the scheme it just issued
+          // a credential for; nothing is matched against it. It is stripped by
+          // its whole `token_type:` key rather than exempted by file, so a
+          // second quoted `"Bearer"` in the same module is still caught.
+          /\/\^\s*bearer/i.test(text) ||
+          /["']bearer ?["']/i.test(withoutTokenType(text)),
       )
       .map(([path]) => path);
     expect(offenders).toEqual([]);
   });
+
+  /** RFC 6749 §5.1's `token_type` field, and only it. */
+  function withoutTokenType(text: string): string {
+    return text.replace(/token_type:\s*["']Bearer["']/g, "token_type: <>");
+  }
 
   it("calls timingSafeEqual nowhere but the owner, and the session MAC", () => {
     const calls = (text: string) =>
