@@ -89,6 +89,13 @@ servers:
     entitlements: [admin]
 ```
 
+A `remote-http` server can also be written as an `mcpServers:` entry — draft
+[SEP-2633](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2633)'s
+`mcp.json` — which desugars into exactly the entry above before the schema sees
+it. The YAML interface stays authoritative; the dialect covers the one kind the
+format was designed for and refuses the rest by name. See
+[the interface docs](https://strad.tadasant.com/servers/interface/#mcpservers--the-draft-sep-2633-input-dialect).
+
 See [`strad.config.example.yaml`](./strad.config.example.yaml) for the whole
 surface — roles, bundles, capability, and auth.
 

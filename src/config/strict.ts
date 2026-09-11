@@ -1,4 +1,4 @@
-import { parseYamlDocument } from "./load.ts";
+import { configDocument } from "./load.ts";
 import { StradConfig } from "./schema.ts";
 
 /**
@@ -40,6 +40,20 @@ import { StradConfig } from "./schema.ts";
  *     builtin's `options:`. Those are open by design; the schema keeps every key,
  *     so the diff finds nothing. A typo'd ENV VAR name is not detectable here and
  *     never could be. A typo'd CONFIG key is.
+ *
+ * ## The one thing the diff cannot see, and what stands in for it
+ *
+ * `mcpServers:` — the `mcp.json` dialect (`src/config/mcp-json.ts`) — is folded
+ * into `servers:` BEFORE the schema runs, so by the time there is a parse result
+ * to diff against, the key the operator wrote is gone and the entries they wrote
+ * have been rebuilt from a fixed set of fields. Diffing the RAW document would
+ * report `mcpServers` itself as unknown and would find a `servers:` list of a
+ * different length, which stops the index-wise walk dead.
+ *
+ * So this diffs the DESUGARED document — the one the schema actually parsed —
+ * and the dialect reports its own unknown keys, against its own key paths, from
+ * the one place that still has the entries as written. Same guarantee, same
+ * output shape, two producers.
  */
 
 export interface UnknownKey {
@@ -134,9 +148,16 @@ export function unknownConfigKeys(
   raw: string,
   parsed: StradConfig,
 ): UnknownKey[] {
-  const doc: unknown = parseYamlDocument(raw);
+  const dialect = configDocument(raw);
   const out: UnknownKey[] = [];
-  walk(doc, parsed, "", out);
+  for (const u of dialect.unknownKeys) {
+    out.push({
+      path: u.path,
+      key: u.key,
+      suggestion: nearest(u.key, [...u.known]),
+    });
+  }
+  walk(dialect.doc, parsed, "", out);
   return out;
 }
 

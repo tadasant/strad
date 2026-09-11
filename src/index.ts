@@ -47,7 +47,13 @@ async function main(): Promise<void> {
   const identity = { mode, component: bundleName ?? "core" };
   errorReporter = await startErrorReporter({ env, identity });
 
-  const config = await loadConfig(configPathFromEnv(env));
+  // The `mcp.json` dialect reports what it attached, and telemetry is not up
+  // yet — so it is collected here and emitted below, beside the other event
+  // that has to wait for the exporter. See src/config/mcp-json.ts.
+  let unentitledFromMcpJson: string[] = [];
+  const config = await loadConfig(configPathFromEnv(env), env, (dialect) => {
+    unentitledFromMcpJson = dialect.notices.map((n) => n.slug);
+  });
 
   // The runtime secret provider, built from what the config declares. With
   // `gateway.secrets.provider: env` (the default) this is a wrapper around
@@ -116,6 +122,18 @@ async function main(): Promise<void> {
       evt: "strad.secrets_hydrated",
       provider: secretProvider.name,
       keys: hydrated,
+    });
+  }
+
+  // A server the `mcp.json` dialect attached with no entitlements: configured,
+  // routed, and reachable by nobody. `mcp.json` has no notion of who a server
+  // is for, so `[]` is the only fail-closed answer — and a fail-closed answer
+  // that nothing says out loud is indistinguishable from a broken one. The
+  // slugs come from the config, which is ours.
+  if (unentitledFromMcpJson.length > 0) {
+    event({
+      evt: "strad.mcp_json_unentitled",
+      slugs: unentitledFromMcpJson,
     });
   }
 
