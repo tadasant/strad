@@ -159,17 +159,18 @@ describe("every emitted event has a written-down export verdict", () => {
     }
   });
 
-  it("keeps the caller's own tool name off the refusal record", () => {
-    // `mcp.tool_denied` is the one exported event whose PAYLOAD carries a
-    // client-written string: `tool` is everything after the `__` in the name a
-    // caller sent, and a refusal happens precisely because no such tool is
-    // there to constrain it. The slug beside it is not that — by the line that
-    // logs it, it has survived `selected.includes()` and `registry.get()`.
+  it("keeps the refusal record down to the one field that is ours", () => {
+    // `mcp.tool_denied`'s payload carries two strings this repo did not author,
+    // and both are one word away from shipping. `tool` is everything after the
+    // `__` in the name a caller sent, and a refusal happens precisely because
+    // no such tool is there to constrain it. `principal` is a token `pubid`
+    // through router.ts — but `buildGatewayServer` is shared, and through
+    // ui/playground.ts the same field is a signed-in human's Google `sub`.
     //
-    // Stated by name rather than left to the deny-by-default rule, because the
-    // field is already in the payload: adding it here is one word, and the
-    // result reaches an ingestor with no error anywhere.
-    expect(EXPORTABLE["mcp.tool_denied"]).toEqual(["principal", "slug"]);
+    // Stated by name rather than left to the deny-by-default rule, because
+    // deny-by-default only protects a field nobody names. These two are already
+    // in the payload, so widening is a one-word edit that errors nowhere.
+    expect(EXPORTABLE["mcp.tool_denied"]).toEqual(["slug"]);
   });
 
   it("keeps telemetry.started's allowlist entry EFFECTIVE", () => {
@@ -179,13 +180,19 @@ describe("every emitted event has a written-down export verdict", () => {
     // means something only while that seam DEFAULTS to `event()` — restore the
     // bare console.log and the verdict silently becomes the opposite one.
     //
-    // The other two lines out of that seam are on NOT_EXPORTED and stay
-    // correct either way: they fire when no exporter is running.
+    // A text scan, and it buys less than the scan above: it cannot see `event`
+    // rebound to something else, and it is why the behaviour is pinned
+    // separately in test/telemetry.redaction.test.ts. What it does catch is the
+    // edit somebody actually makes — reverting the default while the allowlist
+    // entry stays, which no other test in the suite would notice.
+    //
+    // The other two lines out of that seam are on NOT_EXPORTED and stay correct
+    // either way: they fire when no exporter is running.
     const src = readFileSync(join("src", "telemetry", "index.ts"), "utf8");
     expect(
-      /const log = opts\.log \?\? event;/.test(src),
+      /opts\.log\s*\?\?\s*event\b/.test(src),
       "startTelemetry's log seam no longer defaults to event(), so its " +
-        "EXPORTABLE entry for telemetry.started now ships nothing",
+        "EXPORTABLE entry for telemetry.started ships nothing",
     ).toBe(true);
   });
 });

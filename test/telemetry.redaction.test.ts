@@ -106,6 +106,12 @@ servers:
     entitlements: [admin]
     tools:
       allow: [echo]
+  - slug: delta
+    kind: builtin
+    module: "./servers/echo.js"
+    entitlements: [admin]
+    tools:
+      allow: [echo]
 `);
 
 const adminToken = mintToken({ env: "test", label: "admin", roles: ["admin"] });
@@ -301,6 +307,14 @@ beforeAll(async () => {
   // refusing, the assertions below would pass by never having been exercised.
   await expect(
     denied.callTool({ name: `gamma__${CANARY_TOOL}`, arguments: {} }),
+  ).rejects.toThrow(/capability policy withholds it/);
+  // A SECOND slug refused inside the same 60s window, with NO throttle reset
+  // between them. `mcp.tool_denied` is throttled per bucket, and the bucket is
+  // `payload.slug` — so this is what fails if the payload field is spelled
+  // `server` again: both refusals would land in one global bucket and only
+  // gamma's would export.
+  await expect(
+    denied.callTool({ name: `delta__${CANARY_TOOL}`, arguments: {} }),
   ).rejects.toThrow(/capability policy withholds it/);
   await denied.close();
 
@@ -526,21 +540,35 @@ describe("telemetry exports the signals we actually need", () => {
     expect(metricSurfaces).toContain("playground");
   });
 
-  it("delivers a policy refusal as a slug, a principal and a count", () => {
-    // The pair is the design. The record says WHICH slug refused and to whom;
-    // the counter says HOW OFTEN, which is the question the missing `tool`
-    // would otherwise have been asked. Before them a refusal reached neither
-    // channel — the throw sits ahead of the `strad.mcp.tool_calls` block, so it
-    // incremented no counter either.
-    const record = logExporter
+  it("delivers a policy refusal as a slug and a count, and nothing else", () => {
+    // The pair is the design. The record says WHICH slug refused; the counter
+    // says HOW OFTEN, which is the question the missing `tool` would otherwise
+    // have been asked. The throw sits ahead of the `strad.mcp.tool_calls`
+    // block, so the counter is the only thing that can answer it.
+    const records = logExporter
       .getFinishedLogRecords()
-      .find((r) => r.body === "mcp.tool_denied");
+      .filter((r) => r.body === "mcp.tool_denied");
+    const record = records.find((r) => r.attributes["slug"] === "gamma");
     expect(record, "no mcp.tool_denied record was exported").toBeDefined();
-    expect(record!.attributes["slug"]).toBe("gamma");
-    expect(record!.attributes["principal"]).toBe(adminToken.record.pubid);
-    // Named as well as covered by the canary above, so this fails on the CHANGE
-    // rather than only on a name that happens to be distinctive.
+    // `strad.evt` and `slug`. Named rather than left to the canary above, so
+    // this fails on the CHANGE and not only on a string that happens to be
+    // distinctive — and the exact-match is what catches a field added back.
+    expect(Object.keys(record!.attributes).sort()).toEqual([
+      "slug",
+      "strad.evt",
+    ]);
+    // `tool` is the caller's own bytes. `principal` is a token `pubid` through
+    // router.ts and a signed-in human's Google `sub` through the playground,
+    // which builds this same server — so neither ships.
     expect(record!.attributes).not.toHaveProperty("tool");
+    expect(record!.attributes).not.toHaveProperty("principal");
+
+    // The throttle buckets on `payload.slug`, so a second slug refused in the
+    // same window gets its own record rather than being swallowed by gamma's.
+    expect(
+      records.map((r) => r.attributes["slug"]).sort(),
+      "the per-slug throttle bucket collapsed",
+    ).toEqual(["delta", "gamma"]);
 
     const denials = findMetric("strad.mcp.tool_denials");
     expect(denials, "no strad.mcp.tool_denials series").toBeDefined();
@@ -558,8 +586,9 @@ describe("telemetry exports the signals we actually need", () => {
   it("exports the boot line that says this component's exporter came up", () => {
     // `telemetry.started` is the record that tells "the container never
     // started" apart from "the container started, telemetry was fine, and boot
-    // died mounting a server". It exports its NAME and nothing else: every one
-    // of its fields is already a resource attribute of the record carrying it.
+    // died mounting a server", for the strad image. It exports its NAME and
+    // nothing else: every one of its fields is already a resource attribute of
+    // the record carrying it.
     //
     // The gateway under test does not run startTelemetry (the harness wires the
     // providers directly), so this drives events.ts itself rather than a boot.

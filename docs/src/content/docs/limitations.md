@@ -1228,7 +1228,7 @@ text, and the whole point is to keep it out of an external ingestor. Thirty-two
 event types are on the allowlist and seven are deliberately off it, each with its
 reason written beside it in `NOT_EXPORTED`.
 
-Four consequences worth knowing before you go looking for something and do not
+Five consequences worth knowing before you go looking for something and do not
 find it:
 
 - **`mcp.auth_failed` is not exported.** It fires before authentication
@@ -1242,18 +1242,20 @@ find it:
 - **An upstream's error message is never in the ingestor.** `error` is on no
   allowlist; the classification ships instead. Finding out _what_ an upstream
   said means reading the container console.
-- **A refusal names no tool in the ingestor.** `mcp.tool_denied` exports its
-  slug and its principal and `strad.mcp.tool_denials` counts it per slug, but the
-  tool name the caller asked for is free text a client writes, so it stays on the
-  stream. "How often is this slug refusing calls" is a query; "which tool did
-  they want" means reading the container console.
+- **A refusal is a slug and a count, and no more.** `mcp.tool_denied` exports
+  its slug and `strad.mcp.tool_denials` counts it per slug. The tool name the
+  caller asked for is free text a client writes, and `principal` is a token
+  `pubid` through `/mcp` but a signed-in human's Google `sub` through the console
+  playground — so both stay on the stream. "How often is this slug refusing
+  calls" is a query; "which tool, and who" means reading the container console.
 - **The lines that say the exporter is off are on the console only.**
   `telemetry.disabled`, `telemetry.start_failed`, `errors.started` and
   `errors.start_failed` each fire at a moment when the exporter that would carry
   them is not running, so they are blind by construction rather than by
-  redaction. `telemetry.started` does export — its name and nothing else — which
-  is what separates "the container never started" from "it started, telemetry was
-  fine, and boot died mounting a server".
+  redaction. `telemetry.started` does export — its name and nothing else, and
+  from the strad image only — which is what separates "the container never
+  started" from "it started, telemetry was fine, and boot died mounting a
+  server".
 
 The alternative was the status quo, which cost a week of a production `secrets`
 slug serving nothing while writing `mcp.list_tools_failed` on every request. See

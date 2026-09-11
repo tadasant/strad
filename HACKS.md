@@ -1546,7 +1546,7 @@ off it, each with its reason beside it in `NOT_EXPORTED`; everything else strad
 writes — and every `console.log` in a vendored server — reaches the container
 console and stops there.
 
-**Why it matters.** Four consequences an operator will meet:
+**Why it matters.** Five consequences an operator will meet:
 
 - **`mcp.auth_failed` never reaches the ingestor.** It is emitted before
   authentication succeeds, so anyone who can POST `/mcp` could fill the batch
@@ -1560,12 +1560,13 @@ console and stops there.
 - **An upstream's error message is never in the ingestor.** `error` is on no
   allowlist; an event carrying one exports `errorKind()` instead. Diagnosing
   _what_ an upstream said still means reading the container console.
-- **A tool the capability policy withholds names no tool in the ingestor.**
-  `mcp.tool_denied` exports its slug and its principal, and `strad.mcp.tool_denials`
-  counts the refusal per slug — but the `tool` the caller asked for is free text
-  a client writes, so it stays on the stream. "How often is this slug refusing
-  calls" is a query; "which tool did they want" is a read of the container
-  console.
+- **A tool the capability policy withholds is a slug and a count, and no more.**
+  `mcp.tool_denied` exports its slug, and `strad.mcp.tool_denials` counts the
+  refusal per slug. The `tool` the caller asked for is free text a client writes;
+  `principal` is a token `pubid` through `/mcp` but a signed-in human's Google
+  `sub` through the console playground, which builds the same server. Both stay
+  on the stream. "How often is this slug refusing calls" is a query; "which tool,
+  and who" is a read of the container console.
 - **The lines that would tell you the exporter is off are on the console only.**
   `telemetry.disabled`, `telemetry.start_failed`, `errors.started` and
   `errors.start_failed` all fire at a moment when the exporter that would carry
@@ -1589,9 +1590,9 @@ is not.
 demonstrated, one at a time, each with an answer to "where does this value come
 from at every call site" — and move the entry out of `NOT_EXPORTED` in the same
 edit. `mcp.tool_denied` and `telemetry.started` are what that looks like done:
-each landed with its own trace, and the first landed with the counter that
-answers the field it could not export. Do not widen it to a denylist: the point is that a field nobody considered
-cannot ship. `test/telemetry.event-export-decisions.test.ts` holds the two tables
+each carries its own per-field trace, and the first is paired with the counter
+that answers the fields it cannot export. Do not widen it to a denylist: the
+point is that a field nobody considered cannot ship. `test/telemetry.event-export-decisions.test.ts` holds the two tables
 against the call sites, so an event with no verdict fails the build rather than
 quietly reaching nobody.
 

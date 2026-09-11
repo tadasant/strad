@@ -207,10 +207,13 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
         "strad.mode": mode,
         "strad.surface": surface,
       });
-      // `slug`, not `server`: the allowlist exports this record, and every other
-      // exported record names a server under `slug`. `tool` stays in the payload
-      // and stays OFF the allowlist — the stream carries the name, the ingestor
-      // gets the slug. See src/telemetry/events.ts.
+      // `slug`, not `server`: the allowlist exports this record, every other
+      // exported record names a server under `slug`, and the throttle keys on
+      // that spelling. `tool` and `principal` stay in the payload and stay OFF
+      // the allowlist — `tool` is the caller's own bytes, and `principal` is a
+      // token `pubid` through router.ts but a signed-in human's Google `sub`
+      // through ui/playground.ts, which builds this same server. The stream
+      // carries both; the ingestor gets the slug. See src/telemetry/events.ts.
       log({
         evt: "mcp.tool_denied",
         principal: principalId,
