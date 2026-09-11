@@ -220,7 +220,9 @@ ${
   </div>
   <p class="copy-note">Not any server's secrets — strad's own. Without
     <code>STRAD_TOKENS</code> every <code>/mcp</code> request is rejected and no amount of
-    per-server <code>READY</code> above means anything.</p>
+    per-server <code>READY</code> above means anything. That one is a roster rather than a
+    value: <a href="/tokens">the tokens console</a> shows which credentials are live, mints
+    one, and revokes one.</p>
   <div class="listing">
 ${opts.boot.map((o) => bootRow(o)).join("\n")}
   </div>

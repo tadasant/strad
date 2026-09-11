@@ -31,8 +31,14 @@ import { renderSignIn } from "./render.ts";
  *      enterable, and it goes away once Google sign-in is verified in prod.
  *
  * /mcp is untouched by any of this. That endpoint accepts static system tokens
- * and nothing else (src/auth/index.ts). There is no code path from either
- * console credential to /mcp — the invariant HACKS.md #2 states for /console.
+ * and nothing else (src/auth/index.ts); neither console credential is ever read
+ * there — the invariant HACKS.md #2 states for /console.
+ *
+ * What a console session CAN do is mint one, on a deployment that configures
+ * `auth.staticTokens.store: parameter-store` (src/ui/tokens.ts). That is a
+ * console-gated write to the roster, not a second way to authenticate — but it
+ * does mean "no path from here to /mcp" is about authentication rather than
+ * about reach. HACKS.md #2 says so in full.
  *
  * One convenience for the bypass: a browser is navigating between pages, so once
  * the bootstrap token is presented as `?token=`, it is moved into an HttpOnly
@@ -186,8 +192,8 @@ function setSessionCookie(
     //
     // Widening it does mean the cookie rides along to /mcp. That is inert:
     // /mcp authenticates from the Authorization header via a static token store
-    // and never reads cookies — there is no code path from this bypass to /mcp
-    // (HACKS.md #2). It stays HttpOnly, SameSite=Lax, and Secure in production.
+    // and never reads cookies (HACKS.md #2). It stays HttpOnly, SameSite=Lax,
+    // and Secure in production.
     path: "/",
     maxAge: 12 * 60 * 60 * 1000,
   });

@@ -12,6 +12,7 @@ import {
   buildSecretProviders,
   hydrateBootEnv,
 } from "./secrets/provider/index.ts";
+import { errorSummary } from "./util/error-text.ts";
 import {
   event,
   startErrorReporter,
@@ -174,15 +175,35 @@ async function main(): Promise<void> {
         : undefined,
   });
 
-  const tokenStore = tokenStoreFromConfig(config, env);
-  const tokenCount = (await tokenStore.list()).length;
+  // `secretProviders`, so a `parameter-store` token store reads the records
+  // through the same client, the same credential and the same reading of the
+  // store every other gateway-level `${NAME}` resolves through.
+  const tokenStore = tokenStoreFromConfig(config, env, secretProviders);
+  // Counted, never fatal. Under the store backing this is also the first read of
+  // the records, so a store that cannot be read says so in the boot log rather
+  // than on the first agent's request — but it still does not stop the boot: a
+  // gateway that comes up and serves 401s is diagnosable, and one that refuses
+  // to come up takes the console down with it, and the console is where the
+  // records are fixed.
+  const tokenCount = await tokenStore
+    .list()
+    .then((records) => records.filter((r) => !r.revokedAt).length)
+    .catch((err: unknown) => {
+      console.error(
+        `[strad] the system-token store could not be read at boot: ${errorSummary(err)}. ` +
+          "/mcp will reject every request until it can be.",
+      );
+      return 0;
+    });
 
   if (mode === "core" && tokenCount === 0) {
     // Not fatal — an operator may be mid-rollout — but /mcp is now a wall with
     // no door, and that is worth being noisy about.
     console.warn(
-      "[strad] no system tokens configured (STRAD_TOKENS is empty). " +
-        "/mcp will reject every request. Mint one with: npm run token:mint",
+      "[strad] no live system tokens. /mcp will reject every request. " +
+        (config.auth.staticTokens.store === "parameter-store"
+          ? "Mint one in the console at /tokens."
+          : "Mint one with: npm run token:mint"),
     );
   }
 

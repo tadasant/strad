@@ -71,6 +71,20 @@ async function tokenMint(argv: string[]) {
   console.error("");
   console.error("  Append this record to STRAD_TOKENS (a JSON array):");
   console.error("");
+  // Said here because this command is where somebody lands when they need a
+  // token, and on a store-backed deployment it is the harder of the two ways to
+  // get one: this prints a record a human then has to file, and the console does
+  // the filing. The env-var deployment has no console option, so the pointer is
+  // conditional on what the config actually says.
+  if (config?.auth.staticTokens.store === "parameter-store") {
+    console.error(
+      "  (This gateway stores its records in the parameter store — the console",
+    );
+    console.error(
+      "   at /tokens mints and files one in a single step, with no redeploy.)",
+    );
+    console.error("");
+  }
 
   console.log(JSON.stringify(record, null, 2));
 }

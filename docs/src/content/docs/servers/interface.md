@@ -888,19 +888,33 @@ The credential agents present to `/mcp`.
 auth:
   staticTokens:
     enabled: true # default
-    store: env # default, and the only value
+    store: env # default | parameter-store
 ```
 
 `enabled: false` builds an empty token store rather than turning the check off:
 `/mcp` still demands a token, and no token can satisfy one. Fail closed.
 
-`store` is a reserved field, and no code reads it. `env` — a JSON array of token
-records in `STRAD_TOKENS` — is the only implementation, and the gateway builds it
-from `enabled` alone. The field is declared so that a database-backed token store
-lands as a second enum value instead of as a new key in the config contract, and
-it is a single-value enum so a config cannot name a store strad does not have.
-That datastore is the subject of [known limitation #6](/limitations/#6-token-records-live-in-an-env-var-not-a-database).
-The token model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents).
+`store` says where the records live. Both values read the **same name** and the
+**same JSON array**, so moving between them is a config change with no data to
+move:
+
+| Value                   | The records are…                                                | Mint / revoke                               |
+| ----------------------- | --------------------------------------------------------------- | ------------------------------------------- |
+| `env` (default)         | the `STRAD_TOKENS` environment variable, read **once at boot**   | edit the deployment's secret, redeploy      |
+| `parameter-store`       | `/strad/{env}/gateway/static/STRAD_TOKENS`, read **per request** | the console at `/tokens` — live, no deploy  |
+
+`parameter-store` requires `gateway.secrets.provider: gcp-parameter-store`, and
+the schema refuses the combination without it: the records would be a parameter
+with no parameter store to hold them, and the console would offer forms backed by
+nothing. A deployment whose parameter does not exist yet has it created — as a
+**secret** parameter — at the first mint, seeded from whatever the gateway is
+currently serving, so a flip does not drop the fleet's existing credentials.
+
+What remains under `parameter-store` is [known limitation
+#6](/limitations/#6-token-records-live-in-an-env-var-not-a-database). The token
+model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents), and the
+console page in [Managing
+tokens](/auth/overview/#managing-tokens-the-tokens-console).
 
 ## `auth.mcpOAuth`
 

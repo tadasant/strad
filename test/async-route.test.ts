@@ -273,6 +273,12 @@ describe("strad.route_failed, exported", () => {
  * (src/gateway/router.ts), so a store whose backing read throws lands exactly on
  * the unguarded surface the issue is about. Nothing else in the request has to be
  * unusual for it.
+ *
+ * It is also the shape a store-backed deployment has in an outage
+ * (`auth.staticTokens.store: parameter-store`), and the answer is deliberately
+ * this 500 rather than a 401: nothing was decided about the caller's credential,
+ * and a 401 would send every agent holding one into a re-authentication flow
+ * over a read that timed out. See `TokenStoreUnavailable` in src/auth/index.ts.
  */
 describe("/mcp answers 500 when strad itself throws", () => {
   const CONFIG = parseConfig(`
@@ -395,7 +401,11 @@ servers:
       const logged = lines.join("\n");
       expect(logged).toContain("strad.route_failed");
       expect(logged).toContain('"route":"mcp"');
-      expect(logged).toContain('"error":"Error"');
+      // `TokenStoreUnavailable`, not `Error`: the store's own exception is
+      // caught and DROPPED at `verifyToken` (its message quotes payloads) and a
+      // detail-free one is raised in its place, which is what reaches the guard.
+      // So the class name is strad's own word rather than the backend's.
+      expect(logged).toContain('"error":"TokenStoreUnavailable"');
       expect(logged).not.toContain(CANARY);
     } finally {
       errs.mockRestore();

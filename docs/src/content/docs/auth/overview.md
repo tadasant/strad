@@ -83,18 +83,80 @@ npm run token:mint -- --label "my agent" --roles admin --env staging
 - **Every** failure returns the same `401`. The internal `reason`
   (`malformed` / `unknown` / `revoked` / `mismatch` / `wrong_env`) is logs-only —
   "telling a caller why tells an attacker which half they got right."
+- One failure is **not** a `401`: `unavailable`, meaning the record store could
+  not be read at all. Nothing was decided about the credential, so nothing is
+  claimed about it — the request fails with the route guard's
+  `500 {"error":"internal_error"}` and the fact ships as
+  `strad.token_store_unavailable`. Answering `401` would tell every agent holding
+  a perfectly good token to throw it away and re-authenticate, over a read that
+  timed out. It is still **fail-closed**: an unreadable store is not an empty
+  store and is certainly not an open one, and nothing is admitted from either.
 - An unknown `pubid` still hashes and compares against a dummy all-zero hash, so
   there's no timing oracle distinguishing "no such token" from "wrong secret."
 - `401`s carry
   `WWW-Authenticate: Bearer realm="strad", error="invalid_token", resource_metadata="…"`.
   The last parameter is the discovery pointer; see below.
 
+### Where the records live
+
+Two backings, chosen by `auth.staticTokens.store`. They read the **same name**
+and the **same JSON array**, so moving between them is a config change with no
+data to move — and a rollback to an older image keeps working.
+
+| `auth.staticTokens.store` | The records are…                                                 | Mint / revoke                              |
+| ------------------------- | ---------------------------------------------------------------- | ------------------------------------------ |
+| `env` (default)           | the `STRAD_TOKENS` environment variable, read **once at boot**   | edit the deployment's secret, redeploy     |
+| `parameter-store`         | `/strad/{env}/gateway/static/STRAD_TOKENS`, read **per request** | the console at `/tokens` — live, no deploy |
+
+`parameter-store` requires `gateway.secrets.provider: gcp-parameter-store`; the
+config schema refuses the combination without it, because there would be nothing
+to read the records from.
+
+**The store layer is read on its own, without the environment behind it.** Every
+other gateway `${NAME}` resolves through the store _chained in front of_
+`process.env`, so a name that has not been moved to the store yet still resolves
+— that is what makes the migration off deploy-time baking reversible. `/mcp`'s
+roster is the one name where that would be wrong, because boot hydration puts a
+copy of it in `process.env`: a parameter later destroyed, or one that renders to
+nothing, would fall through to a roster frozen at the last restart and start
+admitting every token that was live then, revocations included. So the token
+store reads the store layer alone, where a miss is a miss and a miss admits
+nobody.
+
+The parameter is a **secret** parameter, and that is not decoration: a non-secret
+parameter's value is readable by the `secrets` MCP server's viewer credential,
+and while a record carries no secret it does carry every token's label, roles and
+id — which is the gateway's own access-control list.
+
+### Managing tokens: the `/tokens` console
+
+`/tokens` is behind the same SSO gate as the rest of the console.
+
+- **Mint** — a label and one or more roles, ticked from the closed set the
+  config's `roles:` declares. The plaintext is rendered into that response and
+  nowhere else: never a URL, never an error, never telemetry. Reloading loses it.
+- **Revoke** — soft, and final. `revokedAt` is set, the record stays so the
+  roster can still say the credential existed, and the write drops this process's
+  reading of the store, so it takes effect on the next request rather than within
+  `gateway.secrets.ttlSeconds`. (That last part assumes one core instance, which
+  is what strad deploys — see [Known limitations](/limitations/).) There is
+  deliberately no un-revoke; mint a new token.
+- **Forget** — drops a record that is already revoked, so the roster does not
+  grow forever. Refused for an active one: that would be a revocation with
+  nothing left to say the credential ever existed.
+
+Under `store: env` the page still renders the roster, read-only, and says why it
+cannot write.
+
 <aside class="starlight-aside starlight-aside--caution">
 
-Token records currently live in the `STRAD_TOKENS` env var (a JSON array of
-SHA-256 hashes), not a database. Mint/revoke means editing the secret and
-redeploying. A DB-backed store and a console mint/revoke UI are planned — see
-[Known limitations](/limitations/).
+**There is no `/mcp` equivalent of this page, deliberately.** A tool that minted
+`/mcp` credentials would let any token that reached it mint a stronger and
+durable one, so the roles on a compromised token would stop bounding the
+compromise. A tool that revoked them could lock every agent out of the gateway.
+Even the read is the gateway's access-control list handed to whoever holds one
+token. All three are human actions behind Google SSO — the same exception the
+[secret write surface](/operate/secrets/) takes.
 
 </aside>
 
@@ -393,7 +455,11 @@ never skipped on the one request where it would matter most.
 
 ### No datastore, and what that costs
 
-strad has no database, so nothing above is written down anywhere. Client
+strad has no database, so none of the OAuth state above is written down
+anywhere. (The one thing `/mcp` auth does persist is the static-token roster,
+and it is a parameter rather than a database — see
+[Where the records live](#where-the-records-live). Nothing in this section
+shares that path.) Client
 registrations, authorization codes, access tokens and refresh tokens are all
 **self-contained values** sealed with a key only the process holds — HMAC where
 the contents are public (a registration), AES-256-GCM where they are not (an
