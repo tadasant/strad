@@ -31,6 +31,7 @@ import { EnvSecretProvider } from "../src/secrets/provider/index.ts";
 import {
   disableEventExport,
   enableEventExport,
+  event,
   EXPORTABLE,
   resetEventThrottle,
   resetInstruments,
@@ -73,6 +74,12 @@ const CANARY_TOKEN = "strad_test_CANARY-token-must-never-be-exported-4f21";
 // The console's credential. A different door, and the same rule: the playground
 // runs tool calls too, so its surface goes under the same canary.
 const CANARY_CONSOLE_TOKEN = "console-CANARY-bootstrap-must-never-export-8b2d";
+// The TOOL NAME on a call the capability policy withholds. `mcp.tool_denied` is
+// exported, so the name a caller invents is the field on that record with a
+// client's bytes in it — and `?servers=` is the only other place they reach
+// strad's own vocabulary. Shaped like a plausible tool name, because that is
+// what would make an export of it look harmless in review.
+const CANARY_TOOL = "delete_everything-CANARY-tool-name-must-not-export-3e9a";
 
 const CONFIG = parseConfig(`
 version: 1
@@ -93,6 +100,18 @@ servers:
     kind: builtin
     module: "./servers/echo.js"
     entitlements: [admin]
+  - slug: gamma
+    kind: builtin
+    module: "./servers/echo.js"
+    entitlements: [admin]
+    tools:
+      allow: [echo]
+  - slug: delta
+    kind: builtin
+    module: "./servers/echo.js"
+    entitlements: [admin]
+    tools:
+      allow: [echo]
 `);
 
 const adminToken = mintToken({ env: "test", label: "admin", roles: ["admin"] });
@@ -267,6 +286,38 @@ beforeAll(async () => {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
   });
 
+  // 5. A tools/call the capability policy WITHHOLDS, asking for a tool name
+  //    that does not exist and carries the canary.
+  //
+  //    `gamma` allows `echo` and nothing else, so this is refused before the
+  //    adapter is reached. The refusal's record IS exported — `slug` and
+  //    `principal` are strad's own — and the name below is the field on it a
+  //    client writes, which is why the canary is planted here as well as in the
+  //    tool arguments and the `?servers=` string.
+  resetEventThrottle();
+  const denied = new Client({ name: "test", version: "1" });
+  await denied.connect(
+    new StreamableHTTPClientTransport(new URL(`${baseUrl}/mcp`), {
+      requestInit: {
+        headers: { authorization: `Bearer ${adminToken.plaintext}` },
+      },
+    }),
+  );
+  // Sanity, for the same reason as the calls above: if the policy stopped
+  // refusing, the assertions below would pass by never having been exercised.
+  await expect(
+    denied.callTool({ name: `gamma__${CANARY_TOOL}`, arguments: {} }),
+  ).rejects.toThrow(/capability policy withholds it/);
+  // A SECOND slug refused inside the same 60s window, with NO throttle reset
+  // between them. `mcp.tool_denied` is throttled per bucket, and the bucket is
+  // `payload.slug` — so this is what fails if the payload field is spelled
+  // `server` again: both refusals would land in one global bucket and only
+  // gamma's would export.
+  await expect(
+    denied.callTool({ name: `delta__${CANARY_TOOL}`, arguments: {} }),
+  ).rejects.toThrow(/capability policy withholds it/);
+  await denied.close();
+
   await tracerProvider.forceFlush();
   await metricReader.forceFlush();
 });
@@ -331,6 +382,16 @@ describe("telemetry never exports secrets", () => {
     // playground is the surface that reads it.
     expect(payload).not.toContain(CANARY_CONSOLE_TOKEN);
     expect(payload).not.toContain("Bearer ");
+  });
+
+  it("exports no TOOL NAME from a call the capability policy refused", () => {
+    // `mcp.tool_denied` ships, and the record's `tool` is everything the caller
+    // wrote after the `__` — validated against nothing, because the whole point
+    // of the refusal is that no such tool exists here. If it ever reaches the
+    // allowlist, a client can write any string it likes into the ingestor by
+    // calling a tool that is not there. Both channels, one assertion: the blob
+    // below is every span, every metric data point and every log record.
+    expect(exportedPayload()).not.toContain(CANARY_TOOL);
   });
 
   it("records no exception events (they carry upstream messages and stacks)", () => {
@@ -477,6 +538,73 @@ describe("telemetry exports the signals we actually need", () => {
     );
     expect(metricSurfaces).toContain("mcp");
     expect(metricSurfaces).toContain("playground");
+  });
+
+  it("delivers a policy refusal as a slug and a count, and nothing else", () => {
+    // The pair is the design. The record says WHICH slug refused; the counter
+    // says HOW OFTEN, which is the question the missing `tool` would otherwise
+    // have been asked. The throw sits ahead of the `strad.mcp.tool_calls`
+    // block, so the counter is the only thing that can answer it.
+    const records = logExporter
+      .getFinishedLogRecords()
+      .filter((r) => r.body === "mcp.tool_denied");
+    const record = records.find((r) => r.attributes["slug"] === "gamma");
+    expect(record, "no mcp.tool_denied record was exported").toBeDefined();
+    // `strad.evt` and `slug`. Named rather than left to the canary above, so
+    // this fails on the CHANGE and not only on a string that happens to be
+    // distinctive — and the exact-match is what catches a field added back.
+    expect(Object.keys(record!.attributes).sort()).toEqual([
+      "slug",
+      "strad.evt",
+    ]);
+    // `tool` is the caller's own bytes. `principal` is a token `pubid` through
+    // router.ts and a signed-in human's Google `sub` through the playground,
+    // which builds this same server — so neither ships.
+    expect(record!.attributes).not.toHaveProperty("tool");
+    expect(record!.attributes).not.toHaveProperty("principal");
+
+    // The throttle buckets on `payload.slug`, so a second slug refused in the
+    // same window gets its own record rather than being swallowed by gamma's.
+    expect(
+      records.map((r) => r.attributes["slug"]).sort(),
+      "the per-slug throttle bucket collapsed",
+    ).toEqual(["delta", "gamma"]);
+
+    const denials = findMetric("strad.mcp.tool_denials");
+    expect(denials, "no strad.mcp.tool_denials series").toBeDefined();
+    const point = denials!.dataPoints.find(
+      (d) => d.attributes["mcp.server"] === "gamma",
+    );
+    expect(point?.value).toBe(1);
+    expect(point!.attributes["strad.surface"]).toBe("mcp");
+    // An unbounded `mcp.tool` attribute here is a cardinality bomb any token
+    // holder could set off by calling names that do not exist, which is the
+    // second reason the tool name is not on this pair.
+    expect(point!.attributes).not.toHaveProperty("mcp.tool");
+  });
+
+  it("exports the boot line that says this component's exporter came up", () => {
+    // `telemetry.started` is the record that tells "the container never
+    // started" apart from "the container started, telemetry was fine, and boot
+    // died mounting a server", for the strad image. It exports its NAME and
+    // nothing else: every one of its fields is already a resource attribute of
+    // the record carrying it.
+    //
+    // The gateway under test does not run startTelemetry (the harness wires the
+    // providers directly), so this drives events.ts itself rather than a boot.
+    event({
+      evt: "telemetry.started",
+      service: "strad-core",
+      component: "core",
+      environment: "test",
+      endpoint: "https://otel.example.com",
+      browser: false,
+    });
+    const started = logExporter
+      .getFinishedLogRecords()
+      .find((r) => r.body === "telemetry.started");
+    expect(started, "telemetry.started did not export").toBeDefined();
+    expect(Object.keys(started!.attributes)).toEqual(["strad.evt"]);
   });
 
   it("keeps the playground's own log line out of the ingestor", () => {
