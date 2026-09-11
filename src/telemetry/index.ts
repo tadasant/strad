@@ -6,7 +6,7 @@ import { BatchLogRecordProcessor } from "@opentelemetry/sdk-logs";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { installBrowserTelemetry } from "./browser.ts";
-import { disableEventExport, enableEventExport } from "./events.ts";
+import { disableEventExport, enableEventExport, event } from "./events.ts";
 import { resetInstruments } from "./instruments.ts";
 import {
   buildResource,
@@ -140,7 +140,17 @@ export function startTelemetry(
   opts: StartTelemetryOptions = {},
 ): TelemetryHandle {
   const env = opts.env ?? process.env;
-  const log = opts.log ?? ((e) => console.log(JSON.stringify(e)));
+  // `event`, not a bare console.log, for one line out of the three: the
+  // allowlist carries `telemetry.started`, and an entry for a call site that
+  // does not go through `event()` ships nothing at all. The other two are on the
+  // other table and stay there — `telemetry.disabled` and
+  // `telemetry.start_failed` fire when no exporter is running, so `event()`
+  // finds no logger and writes them to the console. The stream differs for one
+  // of them: `telemetry.start_failed` lands on stderr, under event()'s rule
+  // that a `_failed` name goes to stderr whatever emitted it.
+  //
+  // Still injectable, because a test wants the payload rather than the stream.
+  const log = opts.log ?? event;
   const identity = identityFromEnv(env, opts.identity);
   const name = serviceName(env, identity);
 

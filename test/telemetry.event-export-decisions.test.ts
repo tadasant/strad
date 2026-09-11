@@ -40,8 +40,9 @@ import { EXPORTABLE, NOT_EXPORTED } from "../src/telemetry/events.ts";
  *     there. An `event()` call added inside the pipeline module is unseen.
  *
  * And the tables are held against event NAMES: this says nothing about whether
- * an `EXPORTABLE` entry is EFFECTIVE, which is a distinction the five
- * `telemetry.*` / `errors.*` verdicts turn on.
+ * an `EXPORTABLE` entry is EFFECTIVE, which is a distinction the four
+ * `telemetry.*` / `errors.*` verdicts turn on. The last case below pins the one
+ * place that distinction is load-bearing today.
  */
 
 const SRC = "src";
@@ -156,5 +157,42 @@ describe("every emitted event has a written-down export verdict", () => {
     ]) {
       expect(EXPORTABLE[evt], `${evt} must still be exported`).toBeDefined();
     }
+  });
+
+  it("keeps the refusal record down to the one field that is ours", () => {
+    // `mcp.tool_denied`'s payload carries two strings this repo did not author,
+    // and both are one word away from shipping. `tool` is everything after the
+    // `__` in the name a caller sent, and a refusal happens precisely because
+    // no such tool is there to constrain it. `principal` is a token `pubid`
+    // through router.ts — but `buildGatewayServer` is shared, and through
+    // ui/playground.ts the same field is a signed-in human's Google `sub`.
+    //
+    // Stated by name rather than left to the deny-by-default rule, because
+    // deny-by-default only protects a field nobody names. These two are already
+    // in the payload, so widening is a one-word edit that errors nowhere.
+    expect(EXPORTABLE["mcp.tool_denied"]).toEqual(["slug"]);
+  });
+
+  it("keeps telemetry.started's allowlist entry EFFECTIVE", () => {
+    // The distinction this file's header ends on: a table held against event
+    // NAMES cannot see whether an entry ships a byte. `telemetry.started` is
+    // emitted through startTelemetry's injectable `log` seam, so its entry
+    // means something only while that seam DEFAULTS to `event()` — restore the
+    // bare console.log and the verdict silently becomes the opposite one.
+    //
+    // A text scan, and it buys less than the scan above: it cannot see `event`
+    // rebound to something else, and it is why the behaviour is pinned
+    // separately in test/telemetry.redaction.test.ts. What it does catch is the
+    // edit somebody actually makes — reverting the default while the allowlist
+    // entry stays, which no other test in the suite would notice.
+    //
+    // The other two lines out of that seam are on NOT_EXPORTED and stay correct
+    // either way: they fire when no exporter is running.
+    const src = readFileSync(join("src", "telemetry", "index.ts"), "utf8");
+    expect(
+      /opts\.log\s*\?\?\s*event\b/.test(src),
+      "startTelemetry's log seam no longer defaults to event(), so its " +
+        "EXPORTABLE entry for telemetry.started ships nothing",
+    ).toBe(true);
   });
 });

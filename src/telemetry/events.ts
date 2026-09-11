@@ -187,6 +187,39 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     ],
     /** Entries of the config's own `tools.allow`, not the upstream's names. */
     "mcp.policy_unmatched_tools": ["slug", "tools"],
+    /**
+     * A `tools/call` the capability policy withheld. ONE FIELD, and the two the
+     * payload also carries are the interesting part.
+     *
+     * `slug` is `parsed.slug`, which by the line that emits this
+     * (gateway/mcpServer.ts) has survived `selected.includes()` and
+     * `registry.get()` — so it is one of the CONFIG's own slugs by the time it
+     * is logged, not the raw string that came off the wire.
+     *
+     * `tool` is `parsed.tool` — everything the caller wrote after the `__` in
+     * `request.params.name`, free text validated against nothing. A client could
+     * write any string it liked into the ingestor by calling a tool that does
+     * not exist. It stays on the stream, where an operator diagnosing "which
+     * tool did they want" can read it.
+     *
+     * `principal` is off the list for a reason that is NOT the hostile-client
+     * half of the rule, and it is the one a per-field trace has to reach the
+     * call site to see. `buildGatewayServer` serves two doors: from router.ts
+     * this field is the token record's `pubid`, read out of the store, which is
+     * what `mcp.unavailable` exports. From ui/playground.ts it is
+     * `consolePrincipal(res).id` — a Google OIDC `sub` for the signed-in human
+     * (auth/session.ts). The capability check is in the shared half, so the
+     * same event carries both, and a person's account identifier is not a value
+     * this repo wrote down. One entry cannot say "ours here, theirs there", so
+     * the field does not ship.
+     *
+     * What is lost with `tool` is answered by `strad.mcp.tool_denials`, which
+     * counts refusals per slug — the same move `strad.mcp.auth_failures` makes
+     * for `mcp.auth_failed`, and the reason the counter and this entry belong in
+     * one edit: a policy refusal that reaches no counter and no record is dark
+     * in both channels.
+     */
+    "mcp.tool_denied": ["slug"],
     /** Secrets plumbing, where a silent failure has the same shape as this one. */
     "strad.secrets_hydrated": ["provider", "keys"],
     /**
@@ -319,6 +352,43 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "console.token_exchanged": ["jti"],
     "console.token_exchange_failed": ["jti", "state"],
     "console.token_revoked": ["jti", "state"],
+    /**
+     * THE EVENT NAME AND NOTHING ELSE — and the empty list is the whole verdict.
+     *
+     * It says the strad image's exporter came up, which nothing else in the
+     * ingestor says on its own. Core's next exported record is
+     * `strad.listening`, and between the two sits `Registry.build` — every
+     * stdio process spawned, every remote upstream connected. A boot that dies
+     * in there leaves a running exporter and no record at all, so "the
+     * container never started" and "the container started, telemetry was fine,
+     * and boot died mounting a server" are the same silence. With this on the
+     * list they are not: one of them has a `telemetry.started` and nothing
+     * after it.
+     *
+     * It reaches the ingestor from the strad image ALONE, and the entry claims
+     * nothing wider. The bundle and every supplementary image boot through
+     * `telemetry/bundle/instrument.mjs`, which configures a trace exporter and a
+     * metric reader and NO log record processor, so those containers ship no log
+     * records at all and their copy of this line is a `console.log`.
+     *
+     * Its five fields are all strad's own — `service`, `component` and
+     * `environment` are read off the env by `identityFromEnv`, `endpoint` is
+     * `OTEL_EXPORTER_OTLP_ENDPOINT` with its userinfo and query stripped, and
+     * `browser` is a flag this repo passes — and not one of them is exported,
+     * because not one of them adds anything to the record that would carry it.
+     * `service`, `component` and `environment` are already resource attributes
+     * of every exported record (`service.name`, `strad.component`,
+     * `deployment.environment`; see resource.ts), so exporting them again is a
+     * second spelling of the same field. A record that ARRIVED has proved its
+     * own endpoint. And `browser` belongs to the Chromium observables it
+     * installs, which report themselves. The same reasoning that keeps `reason`
+     * off `strad.mount_state`: they say nothing a query needs.
+     *
+     * `telemetry.disabled` and `telemetry.start_failed` come out of the same
+     * `log` seam and are on the other table, for a reason no allowlist entry
+     * could fix — see there.
+     */
+    "telemetry.started": [],
   });
 
 /**
@@ -337,16 +407,21 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
  * being that a hostile client and a broken upstream can BOTH only ever make the
  * value one of a set this repo wrote down.
  *
- * Five of these never reach `event()` at all: `startTelemetry` and
- * `startErrorReporter` write through their own injectable `log` seam, because
- * they run around the lifecycle of the very exporter an export would need. It
- * is worth saying where those lines are, since an operator hunting a silent
- * deployment goes looking for them: stdout, and nowhere else.
+ * Four of these are the BOOT LINES, and none of them is here for a redaction
+ * reason — their fields would all pass the field test. Each fires around the
+ * lifecycle of the very exporter that would have to carry it: one because none
+ * is configured, one because it failed to start, and the two `errors.*` because
+ * `startErrorReporter` runs ahead of `startTelemetry`. It is worth saying where
+ * those lines are, since an operator hunting a silent deployment goes looking
+ * for them: the container console, and nowhere else.
  *
  * Both tables are held against event NAMES. Neither says an entry is
  * EFFECTIVE — an `EXPORTABLE` entry for a call site that does not go through
- * `event()` would ship nothing at all, and the five above are what that looks
- * like.
+ * `event()`, or that runs before a logger is wired, would ship nothing at all,
+ * and the four above are what that looks like. `startErrorReporter` writes
+ * through its own `log` seam for exactly that reason; `startTelemetry`'s seam
+ * defaults to `event()`, which is what makes `telemetry.started`'s allowlist
+ * entry mean something.
  */
 export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
   "console.token_login_refused":
@@ -371,36 +446,38 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "unconfigured string never reaches this line — but the volume is the " +
     "objection. The mcp.request span carries requested and selected as " +
     "attributes, and strad.mcp.requests counts the outcomes.",
-  "mcp.tool_denied":
-    "`tool` is denamespaced from the tool name the CALLER sent, so a client " +
-    "could write any string it liked into the ingestor by calling a tool that " +
-    "does not exist. `server` is not that — by this line the slug has already " +
-    "been matched against the selection, which comes from the config — so an " +
-    "exportable SHAPE, the slug and a count, is available and is not written " +
-    "yet. It is work rather than a table move: the refusal throws ahead of the " +
-    "strad.mcp.tool_calls block, so it reaches no counter either.",
   "ui.playground.tool_call":
-    "The tool name is typed by a human into a text field in the console, so it " +
-    "is not a word from a set this repo wrote down. strad.mcp.tool_calls with " +
-    "strad.surface=playground counts the call in a channel with no queue to " +
-    "starve.",
+    "Two of its three fields are ours — `server` is the slug the console route " +
+    "resolved out of the config, `principal` is the console session's id — and " +
+    "`tool` is not: a human types it into a text field, so it is not a word " +
+    "from a set this repo wrote down. That leaves a slug-only shape, which is " +
+    "the reason this one stays put rather than following mcp.tool_denied up: " +
+    "strad.mcp.tool_calls already carries this call with strad.surface=" +
+    "playground and mcp.server, in a channel with no queue to starve, so an " +
+    "export minus `tool` would be a second spelling of a metric that is " +
+    "already there. The name is the only thing it would add, and the name is " +
+    "the field that cannot go.",
   "telemetry.disabled":
-    "Emitted through startTelemetry's own `log` seam rather than event(), on " +
-    "the path where no OTLP endpoint is configured — there is no exporter to " +
-    "carry it, which is precisely what it says.",
-  "telemetry.started":
-    "Same seam, and the same reason from the other side: it announces the " +
-    "exporter that would have to carry it, which the arrival of any other " +
-    "record already proves. It is a boot-time fact for whoever is reading the " +
-    "container console.",
+    "It fires on the path where OTEL_EXPORTER_OTLP_ENDPOINT is unset, so there " +
+    "is no exporter to carry it — which is precisely what it says. It goes " +
+    "through event() like its two siblings, and event() finds no logger wired: " +
+    "the verdict is structural rather than a property of the call site, and no " +
+    "allowlist entry could change it.",
   "telemetry.start_failed":
-    "The exporter did not come up, so the only channel that could carry this " +
-    "is the one that is missing. Impossible by construction, and worth writing " +
-    "down: when telemetry goes quiet, this line is on stdout and nowhere else.",
+    "The exporter did not come up, so on the path that matters the channel " +
+    "that would carry this is the one that is missing. ONE path is not that: a " +
+    "throw from startRuntimeMetrics or the browser hooks lands in the same " +
+    "catch with a logger already wired, and what that record would add over " +
+    "its own name is `error` — which is on no list, because a store client's " +
+    "exception can quote a rendered value. Worth writing down either way: when " +
+    "telemetry goes quiet, this line is on stderr and nowhere else.",
   "errors.started":
-    "Emitted through startErrorReporter's `log` seam, which runs BEFORE " +
-    "startTelemetry — the log exporter does not exist yet, so an event() would " +
-    "reach the same stream by a longer route.",
+    "Its fields are safe — component, environment, release and the DSN's HOST, " +
+    "all boot-time facts from config — and they are unreachable. It is emitted " +
+    "through startErrorReporter's own `log` seam, and startErrorReporter runs " +
+    "BEFORE startTelemetry (src/index.ts), so no log exporter exists yet: " +
+    "routed through event() it would find no logger and export nothing. An " +
+    "entry on the other table would be a verdict that ships no byte.",
   "errors.start_failed":
     "The same blind spot as telemetry.start_failed, one layer over: exception " +
     "reporting failed to start, and the record saying so can only go to stdout.",
@@ -463,6 +540,15 @@ const THROTTLED = new Set([
   "mcp.server_unconfigured",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
+  // A refusal is entirely client-driven: a caller that keeps calling a withheld
+  // tool produces one per request, for as long as it keeps asking. It buckets on
+  // the slug, which is the whole of what the record carries — and is why the
+  // payload names that field `slug` rather than `server`: the key below reads
+  // `payload.slug`, so the other spelling would bucket every slug's refusals
+  // into one global 60s window and hide all but the first. The count is not
+  // throttled; `strad.mcp.tool_denials` is the continuous half of this pair,
+  // and the record is the narration.
+  "mcp.tool_denied",
   // Client-driven through the request path, though the minter's backoff
   // already holds it to one attempt per window per slug.
   "strad.upstream_token_refresh_failed",

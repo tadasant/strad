@@ -168,6 +168,8 @@ serving fetchpet".
 `strad.mcp.unavailable` (424 fail-closed, by server), `strad.mcp.unlistable` (a
 `tools/list` that failed for a server the client named, by server),
 `strad.mcp.tool_calls` and `strad.mcp.tool_call.duration` (by server + tool),
+`strad.mcp.tool_denials` (**tools/call refusals by the capability policy, by
+server and by nothing else** — see below),
 `strad.mcp.upstream.duration` (**per-server latency — this is what shows you
 which server is starving the others**), `strad.mcp.upstream.errors`,
 `strad.mcp.upstream.timeouts`, `strad.mcp.tool_surface` (**is a slug serving
@@ -328,6 +330,7 @@ the process, and for each one the exact fields that may go with it.
 | `strad.mount_report`                                                                   | a bundle's mount report went unreadable or came back — `outcome` is `ok` / `unreachable` / `unrecognised` / `unwired`                                                                                          |
 | `mcp.unavailable`                                                                      | 424 fail-closed: a slug asked for and not entitled                                                                                                                                                             |
 | `mcp.policy_unmatched_tools`                                                           | a `tools:` typo silently narrowing a toolset                                                                                                                                                                   |
+| `mcp.tool_denied`                                                                      | a `tools/call` the capability policy withheld — the config slug, and neither the tool name the caller asked for nor the principal                                                                              |
 | `strad.readiness_failed` / `_store_diagnostics_failed` / `strad.console_render_failed` | the event name only — that surface is failing                                                                                                                                                                  |
 | `strad.route_failed`                                                                   | a route handler rejected and nothing under it caught — the route word, plus `error.kind`                                                                                                                       |
 | `strad.listening` / `strad.secrets_hydrated`                                           | what this build mounted, and which keys resolved                                                                                                                                                               |
@@ -337,6 +340,7 @@ the process, and for each one the exact fields that may go with it.
 | `strad.upstream_token_refreshed` / `_refresh_failed`                                   | a `remote-http` server with `oauthRefresh:` minting an upstream access token: the slug, whether the refresh token rotated, and on failure one of four reason words                                             |
 | `console.token_minted` / `_exchanged` / `_revoked` / `_exchange_failed`                | a console login token's life, by its public `jti`. `_exchange_failed` is a refusal of a token whose secret verified — replayed after use, revoked, expired, or put in a URL — and it is the tripwire, at ERROR |
 | `strad.connector_begin` / `_connected` / `_refused`                                    | a human consenting, in the console, for one slug                                                                                                                                                               |
+| `telemetry.started`                                                                    | the event name only — the strad image's exporter came up. Its own fields are already resource attributes of the record carrying it                                                                             |
 
 Three rules make it safe, and they are worth stating because the boundary is the
 reason this exists at all rather than a `pino` transport:
@@ -369,15 +373,15 @@ length, no prefix, no digest — exists anywhere in the flow to be exported. See
 The **424's requested-server list** is filtered to slugs that actually exist in
 the config, with the rest reduced to a count — `?servers=` is validated against
 nothing, so it is one of the two places a client's own bytes reach strad's
-vocabulary; the other is the tool name on a `tools/call`, which the table below
-returns to. The same filtering applies to the `mcp.server` attribute on
+vocabulary; the other is the tool name on a `tools/call`, which
+[a policy refusal](#a-policy-refusal-the-count-and-the-slug-together) returns to. The same filtering applies to the `mcp.server` attribute on
 `strad.mcp.unavailable`, where an unfiltered value would let any token holder
 mint metric series at will.
 
 Every exportable event a client can drive — `mcp.list_tools_failed`,
 `mcp.list_resources_failed`, `mcp.local_machine_offline`,
 `mcp.server_unconfigured`, `mcp.policy_unmatched_tools`, `mcp.unavailable`,
-`strad.route_failed` and `console.token_exchange_failed` — is throttled to one exported record per bucket per minute,
+`mcp.tool_denied`, `strad.route_failed` and `console.token_exchange_failed` — is throttled to one exported record per bucket per minute,
 for the same queue-starvation reason. The bucket is the slug, except for
 `strad.route_failed`, which carries none and buckets on the route instead, so a
 flood on one route cannot hide another route's first record, and
@@ -392,24 +396,78 @@ throttled, and `strad.mcp.tool_surface` carries the same fact continuously. Faul
 An empty slot in a deny-by-default allowlist reads the same whether it is a
 verdict or nobody looking, and those are not the same fact. So `EXPORTABLE` has a
 counterpart in the same file: **`NOT_EXPORTED`**, keyed the same way, whose values
-are the reason. Ten events are on it.
+are the reason. Eight events are on it.
 
-| Event                                                                 | Why it stays on the stream                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `console.token_login_refused`                                         | the unauthenticated half of the console token exchange — a garbled or unknown token, or none. `reason` is a closed set, but anyone who can reach the route produces one record per request: `mcp.auth_failed`'s argument, on the console door. A refusal of a token whose secret verified is `console.token_exchange_failed`, and that one ships                                          |
-| `mcp.auth_failed`                                                     | its fields are safe, but it fires before authentication succeeds, so anyone who can POST `/mcp` could fill the batch queue and evict the signals that matter. `strad.mcp.auth_failures` counts the same thing by the same `reason`, in a channel with no queue to starve                                                                                                                  |
-| `mcp.request`                                                         | it fires on every authenticated request, which is `mcp.auth_failed`'s queue-starvation argument one token further in. Its fields would pass the field test — by that line `resolveSelection` has matched every requested slug against the entitled set — but the volume is the objection. The `mcp.request` span carries requested and selected; `strad.mcp.requests` counts the outcomes |
-| `mcp.tool_denied`                                                     | `tool` is denamespaced from the name the caller sent, so a client could write any string into the ingestor by calling a tool that does not exist. `server` is not that — by that line the slug has been matched against the selection — so an exportable shape — a slug and a count — is possible and unwritten                                                                           |
-| `ui.playground.tool_call`                                             | the tool is a string a human typed into a console text field, not a word from a set this repo wrote down. `strad.mcp.tool_calls` with `strad.surface=playground` counts the call, in a channel with no queue to starve                                                                                                                                                                    |
-| `telemetry.disabled` / `telemetry.started` / `telemetry.start_failed` | boot lines from `startTelemetry`'s own `log` seam, not `event()` — they run around the lifecycle of the exporter an export would need                                                                                                                                                                                                                                                     |
-| `errors.started` / `errors.start_failed`                              | the same, one layer over: `startErrorReporter` runs before `startTelemetry`, so there is no log exporter yet to reach                                                                                                                                                                                                                                                                     |
+| Event                                           | Why it stays on the stream                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `console.token_login_refused`                   | the unauthenticated half of the console token exchange — a garbled or unknown token, or none. `reason` is a closed set, but anyone who can reach the route produces one record per request: `mcp.auth_failed`'s argument, on the console door. A refusal of a token whose secret verified is `console.token_exchange_failed`, and that one ships                                          |
+| `mcp.auth_failed`                               | its fields are safe, but it fires before authentication succeeds, so anyone who can POST `/mcp` could fill the batch queue and evict the signals that matter. `strad.mcp.auth_failures` counts the same thing by the same `reason`, in a channel with no queue to starve                                                                                                                  |
+| `mcp.request`                                   | it fires on every authenticated request, which is `mcp.auth_failed`'s queue-starvation argument one token further in. Its fields would pass the field test — by that line `resolveSelection` has matched every requested slug against the entitled set — but the volume is the objection. The `mcp.request` span carries requested and selected; `strad.mcp.requests` counts the outcomes |
+| `ui.playground.tool_call`                       | two of its three fields are ours, and `tool` is a string a human typed into a console text field. That leaves a slug-only shape — which `strad.mcp.tool_calls` with `strad.surface=playground` and `mcp.server` already carries, so an export minus `tool` would add nothing but a second spelling                                                                                        |
+| `telemetry.disabled` / `telemetry.start_failed` | they fire around the lifecycle of the exporter that would carry them — one because none is configured, one because it failed to start — so `event()` finds no logger. One path is the exception: a throw from the runtime metrics or the browser hooks reaches `telemetry.start_failed` with a logger wired, and what it would add over its own name is `error`, which is on no list      |
+| `errors.started` / `errors.start_failed`        | the same, one layer over: `startErrorReporter` runs before `startTelemetry`, so there is no log exporter yet to reach. `errors.started`'s fields are all safe and all unreachable                                                                                                                                                                                                         |
 
-Those last five are a blind spot by construction, and that is the reason to
-write them down rather than the reason not to: when telemetry goes quiet, the
-line saying why is on the container's stdout and nowhere else. `mcp.tool_denied`
-is the one with real work behind it — a policy refusal reaches no counter either,
-because the throw sits ahead of the `strad.mcp.tool_calls` block, so an operator's
-view of a withheld tool is dark in both channels.
+Those last four are the boot lines, and none of them is here for a redaction
+reason — their fields would all pass the field test. Writing them down is the
+point rather than an apology: when telemetry goes quiet, the line saying why is
+on the container console and nowhere else.
+
+### A policy refusal: the count and the slug, together
+
+A `tools/call` the capability policy withholds throws **ahead of** the
+`strad.mcp.tool_calls` block, so a refusal reaches that counter on no path at
+all. It is answered by a pair instead, and the pair is the design:
+
+- **`strad.mcp.tool_denials`**, a counter attributed by `mcp.server`,
+  `strad.mode` and `strad.surface` — and by nothing else. It is deliberately not
+  an `outcome` on `strad.mcp.tool_calls`, whose attributes include `mcp.tool`: a
+  refusal happens precisely because no such tool exists, so the name on it is an
+  unbounded series any token holder could mint.
+- **the `mcp.tool_denied` record**, carrying `slug` and nothing else. By the
+  line that logs it the slug has survived `selected.includes()` and
+  `registry.get()`, so it is one of the config's own slugs rather than the raw
+  string off the wire.
+
+Two fields stay in the payload and off the allowlist. `tool` is the caller's own
+bytes. `principal` is subtler, and is why the trace has to reach the call site:
+through `router.ts` it is the token record's `pubid`, read out of the store — but
+`buildGatewayServer` serves both doors, and through the
+[playground](/auth/overview/#the-console-playground) the same field is the Google
+`sub` of the signed-in human. One allowlist entry cannot say "ours here, theirs
+there", so it does not ship.
+
+The stream carries all three for whoever is diagnosing which tool a caller
+wanted; the ingestor gets the slug and the count. This is the same answer
+`strad.mcp.auth_failures` gives for `mcp.auth_failed`: when the field cannot
+ship, the count does.
+
+### The boot line that says the exporter came up
+
+`telemetry.started` exports its **name and nothing else**, and the empty field
+list is the verdict rather than a shortcut. Core's next exported record is
+`strad.listening`, and between the two sits `Registry.build` — every stdio
+process spawned, every remote upstream connected. A boot that dies in there
+leaves a running exporter and no record at all, so "the container never started"
+and "the container started, telemetry was fine, and boot died mounting a server"
+look identical from the ingestor. With this on the list they do not: one of them
+has a `telemetry.started` and nothing after it.
+
+**It ships from the strad image alone**, and the entry claims nothing wider. The
+bundle and every supplementary image boot through
+`telemetry/bundle/instrument.mjs`, which configures a trace exporter and a metric
+reader and no log record processor — so those containers ship no log records at
+all, and their copy of this line is a `console.log`.
+
+None of its five fields is exported. `service`, `component` and `environment` are
+already resource attributes of every exported record (`service.name`,
+`strad.component`, `deployment.environment`), so exporting them again is a second
+spelling of the same field; a record that arrived has proved its own `endpoint`;
+and `browser` belongs to the Chromium observables it installs, which report
+themselves. `startTelemetry`'s `log` seam defaults to `event()` so that the entry
+means something; the seam is still injectable, because a test wants the payload
+rather than the stream. One consequence worth knowing: `telemetry.start_failed`
+lands on **stderr**, under `event()`'s rule that a `_failed` name goes to stderr
+whatever emitted it.
 
 Every `evt:` literal under `src/` appears in exactly one of the two tables.
 `test/telemetry.event-export-decisions.test.ts` reads the call sites as text and
