@@ -158,7 +158,7 @@ describe("every caller of the shared supplementary release", () => {
       `${c.file} does not watch ${SHARED}. The build it runs lives there now, ` +
         `so a change to the shared body cuts no image from this caller and its ` +
         `first execution is whatever unrelated commit next touches ` +
-        `\`${c.with.context}\`. That is exactly the "release path has no ` +
+        `\`${builtTree(c)}\`. That is exactly the "release path has no ` +
         `pre-merge execution" problem, reintroduced by sharing the body.`,
     ).toContain(SHARED);
   });
@@ -242,7 +242,7 @@ describe("every caller of the shared supplementary release", () => {
     expect(
       c.branches,
       `${c.file} does not restrict its \`push:\` trigger to main, so a ` +
-        `feature branch touching \`${c.with.context}\` publishes over the ` +
+        `feature branch touching \`${builtTree(c)}\` publishes over the ` +
         `tag a deployment pulls.`,
     ).toEqual(["main"]);
   });
@@ -302,12 +302,13 @@ describe("the shared supplementary release body", () => {
   });
 
   it("scopes the buildx cache only when a caller asks it to", () => {
-    // Every caller here leaves `cache-scope` empty, and that branch is the one
-    // a real release has executed — `--cache-from type=gha --cache-to
-    // type=gha,mode=max`, which is what these images built with before the body
-    // was shared. The NON-empty branch has no caller yet and is what
-    // release-bundle-image.yml needs, so the expression is asserted rather than
-    // left for its first execution to be a release.
+    // Both branches have a caller, and neither is asserted by having run. The
+    // four one-tree images leave `cache-scope` empty and take `--cache-from
+    // type=gha --cache-to type=gha,mode=max`; release-bundle-image.yml passes
+    // `bundle` and takes `,scope=bundle`, because one build of fourteen trees
+    // and a Chromium evicts the other four out of a shared scope. The release
+    // path has no pre-merge execution (#134), so the expression is pinned here
+    // rather than read for the first time by a real release.
     //
     // `format()` can never return the empty string, so the falsy-middle trap in
     // GitHub's `a && b || c` does not apply: the middle term is `,scope=<x>`.

@@ -613,9 +613,10 @@ below for the move that publishes one.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — seventeen entries: the
-fourteen trees the Dockerfile bakes, the bundle host, the workflow itself, and
-the shared release body it delegates to — so **most** commits cut no bundle image
+`release-bundle-image.yml` has a `paths:` filter — one entry per thing that
+changes the image: the fourteen trees the Dockerfile bakes, the bundle host, the
+workflow itself, and the shared release body it delegates to — so **most**
+commits cut no bundle image
 and stepping past them is the normal case, not an exception. `--kind bundle` reads
 that filter out of the workflow rather than keeping a second copy of the list. A
 commit that **did** touch a baked tree and has no image is still a hard stop, for
@@ -932,8 +933,11 @@ rather than a matter of passing the right input:
 
 - **No `:latest` is ever moved.** The tag list is derived from the ref and
   asserted not to be `latest` before a push happens. The release tags live only in
-  `release-image.yml` and in the shared body `release-bundle-image.yml` calls,
-  both of which refuse to run off `main`.
+  `release-image.yml`, which refuses to run off `main`, and in the shared body
+  `release-bundle-image.yml` calls — which refuses off-`main` for that caller
+  because that caller asks it to, with `refuse-off-main: true`. The other four
+  callers of that body do not ask, and their `:latest` is not a tag any live
+  deployment tracks.
 - **Prod is never notified.** `deploy-staging.yml` contains no
   `repository_dispatch` step at all, so a branch build cannot fire one.
 - **The release path cannot trigger a build.** `build` is declared only on
