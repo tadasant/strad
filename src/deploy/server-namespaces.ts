@@ -1,4 +1,4 @@
-import { isUnhosted } from "../config/schema.ts";
+import { isUnhosted, unhostedRefFields } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { ParameterMeta } from "../secrets/parameters/types.ts";
 import { staticNamespace } from "../secrets/parameters/namespace.ts";
@@ -160,7 +160,8 @@ export function envRefsBySlug(config: StradConfig): Map<string, Set<string>> {
  *
  * The other half of the same question `envRefsBySlug` asks, for the refs strad
  * resolves IN ITS OWN PROCESS rather than baking into a container: a `url:`, a
- * `headers:` map, a builtin's `options:`. Those go through
+ * `headers:` map, a remote-http's `oauthRefresh:`, a builtin's `options:`. Those
+ * go through
  * `ServerSecretProviders.forServer()` (src/secrets/provider), which reads the
  * server's own namespace before the shared one — so a name seeded here is read,
  * and a deploy gate that demanded it from the gateway namespace would refuse a
@@ -187,8 +188,7 @@ export function runtimeRefsBySlug(
       for (const name of refsIn(raw)) refs.add(name);
     };
     if (isUnhosted(server)) {
-      add(server.url);
-      for (const value of Object.values(server.headers)) add(value);
+      for (const value of unhostedRefFields(server)) add(value);
     } else if (server.kind === "builtin") {
       for (const value of Object.values(server.options)) {
         if (typeof value === "string") add(value);

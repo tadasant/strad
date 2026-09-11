@@ -4515,3 +4515,50 @@ shipped.
 for `$0.00` items, traverse it, and widen the description to match what the new
 traversal really covers. Until then, a caller that wants every freebie reads the
 prices on its own `search_for_grocery` results too.
+
+---
+
+## 91. A rotated refresh token with nowhere to land dies at the next restart
+
+**What.** A `remote-http` server with `oauthRefresh:` mints its upstream access
+tokens from a refresh token `${NAME}`, and a provider that rotates refresh tokens
+on use hands back a new one on every exchange and kills the one just spent. Core
+writes the new one to the parameter store — the server's own namespace, or the
+gateway's when that is where the name is — through the same `rotate()` the
+bundle write-back route uses (`createParameterWriteBack`, `src/http/params.ts`).
+Where the name resolves from the ENVIRONMENT instead — `gateway.secrets.provider:
+env`, or a name that only `envFallback` supplies under the store provider — there
+is nothing strad can write. The rotation is held in memory, every rotation is
+refused on stderr and as `strad.param_write_failed`, and everything keeps working
+until the process restarts and reads the seeded value again, which the provider
+invalidated hours ago. Then every call on that slug fails with `invalid_grant`
+until a human authorizes again and re-seeds.
+
+Two narrower windows sit beside it. The write-back REVEALS the parameter before
+it writes and refuses when the stored value is not one this minter's lineage
+produced — a human re-seeding another account between the exchange and the write
+would otherwise be overwritten by the old account's rotation, and the slug would
+serve the old account again in silence. A read-then-write is not a
+compare-and-set, so a re-seed landing between those two calls is still
+overwritten. And a rolling deploy runs two cores for the minutes the old one
+stays healthy: two minters, one refresh token. A provider that rotates on use
+refuses whichever spends it second, which re-reads the store within
+`ttlSeconds`; a provider that revokes the token family on reuse leaves the slug
+dead until a human authorizes again. Same window `paramsWritable:` has (#62).
+
+**Why.** The two environment paths are, by design, paths strad cannot write:
+`process.env` is fixed at spawn, and the whole point of the env provider is a
+deployment with no cloud credential attached. Failing the refresh instead — so a
+rotation with no home is loud immediately — would turn a working slug into a
+broken one on the first exchange, for a deployment where the operator may have
+chosen a provider that does not rotate. The write-back also stops at a parameter
+it could not check: on anything but a definite 404 for the server's own path it
+does not fall through to the gateway's, because writing a layer the reader never
+reaches is a token nothing spends, which is worse than a held one.
+
+**Undo.** Seed the refresh token as a parameter in the store, under
+`/strad/{env}/mcp/{slug}/static/` or `/strad/{env}/gateway/static/`, and run
+under `gcp-parameter-store`. Nothing about the minter changes; the write-back
+finds a parameter and lands. The other half — strad running the authorization
+itself so the first token never passes through a human's clipboard — is
+tadasant/strad#32.

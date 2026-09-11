@@ -202,6 +202,15 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.param_written": ["slug", "variable"],
     "strad.param_write_failed": ["slug", "variable"],
     /**
+     * A `remote-http` server with `oauthRefresh:` minted an upstream access
+     * token, or failed to. `slug` is the config's; `rotated` is whether the
+     * token endpoint issued a new refresh token with it; `reason` is one of the
+     * four `RefreshFailure` words strad wrote (gateway/adapters/oauth-refresh.ts).
+     * Never a token, and never the endpoint's own error text.
+     */
+    "strad.upstream_token_refreshed": ["slug", "rotated"],
+    "strad.upstream_token_refresh_failed": ["slug", "reason"],
+    /**
      * A component asked core to drop its reading of the parameter store — the
      * `secrets` MCP server's `refresh_gateway` tool, or its write tools after a
      * write. `refreshed` is false when the floor held the request off: the
@@ -421,6 +430,9 @@ const THROTTLED = new Set([
   "mcp.server_unconfigured",
   "mcp.policy_unmatched_tools",
   "mcp.unavailable",
+  // Client-driven through the request path, though the minter's backoff
+  // already holds it to one attempt per window per slug.
+  "strad.upstream_token_refresh_failed",
   // A handler that rejects is a bug rather than a routine refusal, so this one
   // is expected to be silent — but the surface it guards is /mcp, whose input a
   // caller controls, and "a bug a client can drive on demand" is exactly the

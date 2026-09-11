@@ -334,6 +334,7 @@ the process, and for each one the exact fields that may go with it.
 | `strad.shutdown`                                                                       | a clean SIGTERM. Its **absence** is an OOM kill                                                                                                                             |
 | `strad.param_written` / `_write_failed` / `_refused`                                   | a server persisting a credential that rotated under it                                                                                                                      |
 | `strad.param_read`                                                                     | a server reading one of its own parameters live — a `paramsWritable:` boot read, or a `paramsRefresh:` poll. The deploy record a runtime rotation would otherwise not leave |
+| `strad.upstream_token_refreshed` / `_refresh_failed`                                   | a `remote-http` server with `oauthRefresh:` minting an upstream access token: the slug, whether the refresh token rotated, and on failure one of four reason words          |
 | `strad.connector_begin` / `_connected` / `_refused`                                    | a human consenting, in the console, for one slug                                                                                                                            |
 
 Three rules make it safe, and they are worth stating because the boundary is the
