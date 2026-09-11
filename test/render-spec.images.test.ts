@@ -21,9 +21,9 @@ import { describe, expect, it } from "vitest";
  *     bundle repository, which is what makes the spec change and the platform
  *     pull.
  *   - `--require-immutable-images` refuses to emit a spec that still ships a
- *     tag which moves. Without the flag the same finding is a warning, because
- *     prod renders through this script from tadasant-internal against a config
- *     this repo cannot edit — see HACKS.md #32.
+ *     tag which moves. Both deploys pass it. Without the flag the same finding
+ *     is a warning, for a render that has no commit tag to name — see
+ *     HACKS.md #32.
  */
 
 const CONFIG = `
@@ -69,10 +69,10 @@ interface Rendered {
  * failed. A helper that could not see a successful run's stderr would make the
  * warning assertion below untestable — which is the assertion prod depends on.
  */
-function render(args: string[]): Rendered {
+function render(args: string[], config: string = CONFIG): Rendered {
   const dir = mkdtempSync(join(tmpdir(), "strad-images-"));
   const cfg = join(dir, "cfg.yaml");
-  writeFileSync(cfg, CONFIG);
+  writeFileSync(cfg, config);
   const out = spawnSync(
     process.execPath,
     [
@@ -145,10 +145,10 @@ describe("render-spec, the bundle's tag", () => {
   });
 
   it("WARNS, and still renders, without the flag", () => {
-    // prod renders this script against tadasant-internal's config, whose
-    // supplementary `image:` lines this repo cannot change. Failing there would
-    // break a deploy over a tag it has no way to fix; saying nothing is how this
-    // lasted a week. So: warn, name every component, and emit the spec.
+    // A render with no commit tag to name — local, or a config under
+    // construction — cannot fix the tag it is warned about, and failing it would
+    // gate nothing. Saying nothing is how this lasted a week. So: warn, name
+    // every component, and emit the spec. The deploys pass the gate.
     const out = render([]);
     expect(out.status).toBe(0);
     expect(out.stderr).toMatch(
@@ -160,5 +160,143 @@ describe("render-spec, the bundle's tag", () => {
   it("says nothing about images when every component names a build", () => {
     const out = render(["--bundle-image", BUNDLE]);
     expect(out.stderr).not.toMatch(/mutable tag/);
+  });
+});
+
+/**
+ * The fixture the flag was made repeatable for: ONE config, TWO first-party
+ * image repositories. Prod became this the day the `craigslist` slug landed on
+ * `ghcr.io/tadasant/strad-bundle-internal`, and `--require-immutable-images`
+ * refuses a spec in which ANY component ships a moving tag — so with a
+ * single-valued override the only way through was a sha written into the
+ * production config by hand, which nothing moves when a new image publishes.
+ * These two tests are the before and the after of exactly that.
+ */
+const TWO_REPOSITORIES = `
+version: 1
+gateway:
+  name: strad
+  env: prod
+  publicUrl: https://strad.tadasant.com
+auth:
+  staticTokens: { enabled: true, store: env }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+  - name: bundle-internal
+servers:
+  - slug: secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /secrets
+    entitlements: [admin]
+  - slug: craigslist
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle-internal:latest
+    bundle: bundle-internal
+    path: /craigslist
+    entitlements: [admin]
+`;
+
+const INTERNAL = `ghcr.io/tadasant/strad-bundle-internal:sha-${"c".repeat(40)}`;
+
+describe("render-spec, a config naming two first-party images", () => {
+  it("BEFORE: one --bundle-image cannot satisfy --require-immutable-images", () => {
+    const out = render(
+      ["--bundle-image", BUNDLE, "--require-immutable-images"],
+      TWO_REPOSITORIES,
+    );
+    expect(out.status).toBe(1);
+    // One component left, and it is named — the second repository, still on the
+    // tag the config gave it because nothing could rewrite it at render time.
+    expect(out.stderr).toMatch(/1 component\(s\) would ship a mutable tag/);
+    expect(out.stderr).toMatch(
+      /bundle-internal -> tadasant\/strad-bundle-internal:latest/,
+    );
+  });
+
+  it("AFTER: two --bundle-image occurrences pin both, in one render", () => {
+    const out = render(
+      [
+        "--bundle-image",
+        BUNDLE,
+        "--bundle-image",
+        INTERNAL,
+        "--require-immutable-images",
+      ],
+      TWO_REPOSITORIES,
+    );
+    expect(out.status).toBe(0);
+    expect(out.stderr).not.toMatch(/mutable tag/);
+    expect(tagsOf(out.stdout)).toEqual({
+      core: `sha-${"a".repeat(40)}`,
+      bundle: `sha-${"b".repeat(40)}`,
+      "bundle-internal": `sha-${"c".repeat(40)}`,
+    });
+  });
+
+  it("refuses a second override that matches nothing, though the first did", () => {
+    const out = render(
+      [
+        "--bundle-image",
+        BUNDLE,
+        "--bundle-image",
+        `ghcr.io/tadasant/strad-bundle-intrenal:sha-${"c".repeat(40)}`,
+      ],
+      TWO_REPOSITORIES,
+    );
+    expect(out.status).not.toBe(0);
+    expect(out.stderr).toMatch(/matched no supplementary server/);
+    expect(out.stderr).toMatch(/strad-bundle-intrenal/);
+  });
+});
+
+describe("--bundle-image, the single-occurrence contract prod deploys on", () => {
+  /**
+   * .github/workflows/strad-deploy-prod.yml, in tadasant-internal, checks out
+   * THIS repo at `main` and runs THIS script — so a change to how one
+   * occurrence parses reaches production on merge, not on a release. Two things
+   * that workflow depends on, pinned here.
+   */
+  it("still parses and applies a lone occurrence exactly as before", () => {
+    const out = render([
+      "--bundle-image",
+      BUNDLE,
+      "--require-immutable-images",
+    ]);
+    expect(out.status).toBe(0);
+    expect(tagsOf(out.stdout)).toEqual({
+      core: `sha-${"a".repeat(40)}`,
+      bundle: `sha-${"b".repeat(40)}`,
+      "bundle-zimmer-secrets": `sha-${"b".repeat(40)}`,
+    });
+  });
+
+  it("still prints `usage: render-spec`, the string the deploy probes for", () => {
+    // The prod workflow decides whether the checked-out tooling is capable by
+    // running `render-spec.ts --require-immutable-images </dev/null` and
+    // matching the literal `usage: render-spec`. Change that string and the
+    // deploy hard-fails with "the tooling is too old", which it is not.
+    const out = spawnSync(
+      process.execPath,
+      [
+        "--experimental-transform-types",
+        "scripts/render-spec.ts",
+        "--require-immutable-images",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    expect(out.stderr).toContain("usage: render-spec");
+  });
+
+  it("names the empty argument when a resolve step hands it one", () => {
+    // `--bundle-image ""` is a step whose output never got set. Read as "no
+    // flag passed", it would fail a layer down naming the config's tag instead,
+    // or — without the gate — deploy that tag in silence.
+    const out = render(["--bundle-image", ""]);
+    expect(out.status).toBe(1);
+    expect(out.stderr).toMatch(/--bundle-image was passed an empty value/);
   });
 });

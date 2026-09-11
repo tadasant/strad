@@ -485,22 +485,41 @@ meant to move together, and pinning one alone can produce a spec that routes pat
 the running bundle does not serve.
 :::
 
-### 32. Prod's supplementary components still deploy a mutable tag
+### 32. Prod's second first-party image is pinned by hand
 
 Staging is covered: `deploy-staging.yml` resolves `sha-<commit>` for the bundle
 exactly as it does for the core, passes it on every deploy, and passes
 `--require-immutable-images`, under which `render-spec` refuses to emit a spec
 where any component ships a tag that moves.
 
-Prod is not. `strad-deploy-prod.yml` lives in `tadasant-internal`, renders through
-this same script, and passes no `--bundle-image` — so its supplementary components
-still ship `:latest` and remain exposed to exactly what follows. It gets a warning
-naming every affected component on every deploy rather than a failure: failing a
-deploy over a tag it has no way to change would break prod without fixing
-anything. The change there is to resolve a bundle tag the same way and pass both
-flags. It needs no credential and no IAM change.
+Prod's `ghcr.io/tadasant/strad-bundle` is covered the same way.
+`strad-deploy-prod.yml`, in `tadasant-internal`, resolves a bundle tag, passes it
+as `--bundle-image`, and passes `--require-immutable-images` as a hard gate.
 
-**Undo:** make that change in `tadasant-internal`.
+The gap is the **second** image. Prod also mounts
+`ghcr.io/tadasant/strad-bundle-internal`, behind the `craigslist` slug, and
+`--require-immutable-images` refuses a moving tag on any component — so that
+repository has to be pinned too. It is pinned by hand: a literal `:sha-…` written
+into `strad.prod.yaml`.
+
+That pin fails silently. Nothing moves it when a new `strad-bundle-internal`
+publishes and nothing reads it back, so the deploy stays green while App Platform
+pulls the digest somebody typed in weeks ago and prod runs the previous code.
+
+`--bundle-image` is repeatable — once per image repository, each occurrence
+matched on its own and each required to match something — which is what makes the
+pin removable. Doing it is two changes in `tadasant-internal`: resolve a
+`strad-bundle-internal` tag and pass a second `--bundle-image`, then put
+`:latest` back in the config where the sha is. It needs no credential and no IAM
+change.
+
+Once that lands, the per-override rule couples the two: disabling `craigslist`,
+the only slug on `strad-bundle-internal`, fails every prod render until the same
+change drops that `--bundle-image`. That is intended — the alternative is a
+deploy that believes it pinned an image nothing runs.
+
+**Undo:** make those two changes in `tadasant-internal`
+([#1952](https://github.com/tadasant/tadasant-internal/issues/1952)).
 
 What the mutable tag did on staging, kept as the record:
 
