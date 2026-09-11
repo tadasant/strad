@@ -44,6 +44,15 @@ export interface Seen {
   /** The principal that bearer belongs to, when it is one the server issued. */
   principal: string | null;
   status: 200 | 401;
+  /**
+   * `POST` for a JSON-RPC message strad sent. A `GET` is the SDK's
+   * server-to-client notification stream, which it opens WITHOUT awaiting it
+   * after each handshake, so it can land on the wire after the call that
+   * caused the handshake returned.
+   */
+  http: string;
+  /** The JSON-RPC method of a POST (`initialize`, `tools/call`, …). */
+  rpc: string | null;
 }
 
 export interface TokenRequest {
@@ -218,6 +227,12 @@ export async function startFakeOAuth(
         bearer,
         principal: issued?.principal ?? null,
         status: live ? 200 : 401,
+        http: req.method,
+        rpc:
+          typeof (req.body as { method?: unknown } | undefined)?.method ===
+          "string"
+            ? (req.body as { method: string }).method
+            : null,
       });
       if (!live) {
         res.status(401).json({ error: "invalid_token" });

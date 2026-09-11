@@ -19,7 +19,11 @@ import {
   sharedSecretProviders,
   type SecretProvider,
 } from "../src/secrets/provider/index.ts";
-import { startFakeOAuth, type FakeOAuth } from "./helpers/fake-oauth.ts";
+import {
+  startFakeOAuth,
+  type FakeOAuth,
+  type Seen,
+} from "./helpers/fake-oauth.ts";
 
 /**
  * `remote-http` + `oauthRefresh:`, against a fake OAuth token endpoint and a fake
@@ -119,6 +123,13 @@ async function registryOf(
   return registry;
 }
 
+/**
+ * The messages strad SENT: every JSON-RPC POST. The notification stream's GET
+ * is left out of any claim about "after X": the SDK opens it without awaiting
+ * it, so a connection built before X can put its GET on the wire after X.
+ */
+const sent = (seen: Seen[]): Seen[] => seen.filter((s) => s.http === "POST");
+
 async function whoami(registry: Registry, slug: string): Promise<string> {
   const res = await registry.get(slug)!.callTool("whoami", {});
   const block = res.content[0] as { type: string; text: string };
@@ -212,7 +223,7 @@ describe("end to end through /mcp: mint, expire, refresh", () => {
     expect(oauth.tokenRequests).toHaveLength(2);
     const second = oauth.issued()[1]!;
     expect(second).not.toBe(first);
-    const after = oauth.seen.slice(before);
+    const after = sent(oauth.seen.slice(before));
     expect(after.length).toBeGreaterThan(0);
     // Refreshed BEFORE use: the expired token never reached the upstream.
     expect(after.every((s) => s.bearer === second && s.status === 200)).toBe(
@@ -410,7 +421,7 @@ describe("a failed refresh is this server's failure alone", () => {
     oauth.failNext(1, { status: 503 });
     expect(await whoami(registry, "granola")).toBe("alice");
     expect(oauth.tokenRequests).toHaveLength(2);
-    expect(oauth.seen.at(-1)?.bearer).toBe(first);
+    expect(sent(oauth.seen).at(-1)?.bearer).toBe(first);
 
     // Inside the backoff, the endpoint is not asked again.
     expect(await whoami(registry, "granola")).toBe("alice");
@@ -419,7 +430,7 @@ describe("a failed refresh is this server's failure alone", () => {
     advance(UNAVAILABLE_BACKOFF_MS + 1_000);
     expect(await whoami(registry, "granola")).toBe("alice");
     expect(oauth.tokenRequests).toHaveLength(3);
-    expect(oauth.seen.at(-1)?.bearer).toBe(oauth.issued()[1]);
+    expect(sent(oauth.seen).at(-1)?.bearer).toBe(oauth.issued()[1]);
   });
 
   it("an unavailable token endpoint with no usable token fails as unavailable, not refused", async () => {
@@ -501,7 +512,7 @@ describe("principal isolation", () => {
     const mark = oauth.seen.length;
     expect(await whoami(registry, "granola")).toBe("carol");
     expect(await whoami(registry, "granola")).toBe("carol");
-    expect(oauth.seen.slice(mark).map((s) => s.principal)).not.toContain(
+    expect(sent(oauth.seen.slice(mark)).map((s) => s.principal)).not.toContain(
       "alice",
     );
     expect(oauth.tokenRequests.map((r) => r.refreshToken)).toEqual([
@@ -599,7 +610,7 @@ describe("principal isolation", () => {
     releaseX();
     expect(await x).toBe("carol");
     expect(await who()).toBe("carol");
-    expect(oauth.seen.slice(mark).map((s) => s.principal)).not.toContain(
+    expect(sent(oauth.seen.slice(mark)).map((s) => s.principal)).not.toContain(
       "alice",
     );
   });
