@@ -176,9 +176,8 @@ describe("a store-backed supplementary component gets its boot env baked", () =>
   it("holds the SAME boot keys as it would under the env provider", () => {
     // The invariant, stated directly: the provider decides where a value is
     // READ FROM, never which keys a container ends up holding. Asked over EVERY
-    // boot key, not just the bundle's two — narrowing the question to those two
-    // is what let the env path hand the core's five to every third-party image
-    // while this test stayed green.
+    // boot key, not just the bundle's two: a question narrowed to those two
+    // cannot see a core-only key arriving by the env path's broadcast.
     const keys = (spec: ReturnType<typeof render>) =>
       envsOf(spec, "bundle")
         .map((e) => e.key)
@@ -258,12 +257,13 @@ servers:
 
 describe("an env-backed supplementary component gets the bundle's boot keys and no more", () => {
   it("carries no core-only boot key", () => {
-    // THE BUG (#214). Under the `env` provider every boot key is a SECRET in the
-    // broadcast, and the broadcast's exclusions named two of them. The token
-    // store, the console's bypass token, its OAuth client and its session
-    // cookie key all rode it into every third-party image — which makes the
-    // per-slug entitlement split decorative for anything that can read its own
-    // environment.
+    // #214. Under the `env` provider every boot key is a SECRET in the
+    // broadcast, so this is the line that keeps the console's cookie key (or
+    // the OAuth client secret it is derived from when unset) out of every
+    // third-party image — either one mints a console session, and the console
+    // reveals and writes secrets. The bypass token and the token store's ids
+    // and roles are here for the same reason: a third-party image has no use
+    // for them.
     const keys = envsOf(envBacked(), "bundle").map((e) => e.key);
     for (const key of CORE_ONLY_BOOT_ENV_KEYS) {
       expect(keys, key).not.toContain(key);
@@ -286,13 +286,14 @@ describe("an env-backed supplementary component gets the bundle's boot keys and 
     }
   });
 
-  it("partitions the boot keys: core-only and bundle, nothing in both", () => {
-    const coreOnly = new Set(CORE_ONLY_BOOT_ENV_KEYS);
-    expect(BUNDLE_BOOT_ENV_KEYS.filter((k) => coreOnly.has(k))).toEqual([]);
-    expect(
-      [...CORE_ONLY_BOOT_ENV_KEYS, ...BUNDLE_BOOT_ENV_KEYS].sort(),
-    ).toEqual([...CORE_BOOT_ENV_KEYS].sort());
-    // The six the issue was about, named, so a reviewer sees them here.
+  it("names every core-only credential, and no bundle key outside the core set", () => {
+    // The one property the derivation does not give for free: a bundle key the
+    // core does not also read would be handed to third-party images while
+    // appearing on no core-side list at all.
+    for (const key of BUNDLE_BOOT_ENV_KEYS) {
+      expect(CORE_BOOT_ENV_KEYS as readonly string[], key).toContain(key);
+    }
+    // The six #214 was about, named, so a reviewer sees them here.
     expect(CORE_ONLY_BOOT_ENV_KEYS).toEqual(
       expect.arrayContaining([
         "STRAD_TOKENS",
@@ -306,10 +307,10 @@ describe("an env-backed supplementary component gets the bundle's boot keys and 
   });
 
   it("still delivers one of those names to a server that declares it in env:", () => {
-    // The broadcast was an IMPLICIT channel. A server that genuinely needs a
-    // value under one of these names says so in its own `env:`, which lands on
-    // its component alone — so closing the broadcast costs no server anything
-    // it asked for.
+    // The broadcast is an IMPLICIT channel, and these names are kept out of it.
+    // A server that genuinely needs a value under one of them says so in its
+    // own `env:`, which lands on its component alone, exactly once — so the
+    // exclusion costs no server anything it asked for.
     const config = parseConfig(`
 version: 1
 gateway:

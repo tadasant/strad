@@ -911,8 +911,8 @@ a value is read from. It never decides which names a container ends up holding.
 | `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS` — `BUNDLE_BOOT_ENV_KEYS`                                               | yes    | yes: baked from the store under `gcp-parameter-store`, carried by the broadcast under `env` |
 | `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | yes    | **never**                                                                                   |
 
-Under `env`, `render-spec` puts every boot key in the app-level env as a SECRET,
-and app-level SECRETs are broadcast to every supplementary component. The
+Under `env`, `render-spec` puts every boot key it has a value for in the app-level
+env as a SECRET, and app-level SECRETs are broadcast to every supplementary component. The
 broadcast drops the second row. Its exclusions, `STRAD_IMAGE_ONLY_SECRET_KEYS` in
 `src/deploy/appspec.ts`, are the store credential plus `CORE_ONLY_BOOT_ENV_KEYS`,
 and that set is **derived**: `CORE_BOOT_ENV_KEYS` minus `BUNDLE_BOOT_ENV_KEYS`,
@@ -924,11 +924,15 @@ coupling is intended: both paths answer one question, and they answer it from on
 array.
 
 The second row is the `/mcp` token store, the console's bypass token, its OAuth
-client and its session-cookie key, plus the exception reporter's DSN. A
-third-party image holding the token store could present any token in it, which
-would make the per-slug entitlement split decorative. A server that genuinely
-needs a value under one of these names declares it in its own `env:`, which lands
-on its component alone.
+client and its session-cookie key, plus the exception reporter's DSN. The sharp
+ones are the console's. `CONSOLE_SESSION_SECRET` signs the session cookie, and
+when it is unset the key is derived from `GOOGLE_CLIENT_SECRET`, so a container
+holding either one can mint a console session, and the console is the door that
+reveals and writes secrets. `ADMIN_BOOTSTRAP_TOKEN` opens the same door wherever
+the dev bypass is on. The token store holds hashes, not tokens, but it still hands
+over every token's id and roles, and a third-party image has no use for them. A
+server that genuinely needs a value under one of these names declares it in its
+own `env:`, which lands on its component alone.
 
 ### Why the bundle boot env is baked rather than hydrated
 

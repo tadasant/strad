@@ -588,9 +588,9 @@ const TELEMETRY_ENV_KEYS = new Set([
  *     secrets/provider/hydrate.ts rather than listed again. Under the `env`
  *     provider the renderer bakes every boot key into `opts.env`, so without
  *     this the token store, the console's bypass token, its OAuth client and
- *     its cookie-signing key would reach every third-party container, while the
- *     store path kept them off. Deriving it is what makes the two paths give one
- *     answer: a new core boot key is excluded here by default, and letting one
+ *     its cookie-signing key would reach every third-party container, which the
+ *     store path never hands them. Deriving it is what makes the two paths give
+ *     one answer: a new core boot key is excluded here by default, and letting one
  *     through takes an edit to `BUNDLE_BOOT_ENV_KEYS`, whose comment asks for the
  *     review that deserves.
  *   - The store credential, the one name that is not a boot key at all.
@@ -611,9 +611,8 @@ const TELEMETRY_ENV_KEYS = new Set([
  */
 const STRAD_IMAGE_ONLY_SECRET_KEYS: ReadonlySet<string> = new Set([
   "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON",
-  // Includes the GlitchTip DSN, which is why it is not listed here: a DSN is a
-  // write credential for strad's own issue tracker, and CORE_ONLY_BOOT_ENV_KEYS
-  // carries the reasoning for keeping it off a third-party container.
+  // Includes SENTRY_DSN; the comment on CORE_ONLY_BOOT_ENV_KEYS carries the
+  // reasoning for keeping it off a third-party container.
   ...CORE_ONLY_BOOT_ENV_KEYS,
 ]);
 
@@ -696,8 +695,8 @@ export function bootEnvGaps(spec: AppSpec, held: readonly string[]): string[] {
     // Holding the STORE CREDENTIAL is the ability to hydrate: it reaches the
     // strad image and stops there, and the strad image is what runs
     // hydrateBootEnv. Named explicitly rather than asking whether the component
-    // holds ANY image-only key — that set has other members now (the GlitchTip
-    // DSN), and none of them says anything about reaching the store.
+    // holds ANY image-only key — that set has other members (every core-only
+    // boot key), and none of them says anything about reaching the store.
     if (keys.has("STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON")) continue;
     for (const key of wanted) {
       if (keys.has(key)) continue;
