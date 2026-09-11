@@ -10,15 +10,15 @@ import { bearerToken, constantTimeEquals } from "../secrets/presence.ts";
  * (`authenticateInternal`), and the internal-token routes under `/_strad/`.
  * One of each because every copy is another place to get the scheme or a
  * length guard wrong, and the copy written from memory is the one that does.
- * `test/auth-header.doors.test.ts` walks every door with the same three
- * headers, and fails on a source file that parses or compares by hand.
+ * `test/auth-header.doors.test.ts` walks every door in this image with the same
+ * five headers, and fails on a source file that parses or compares by hand.
  *
- * Both are IMPLEMENTED in `src/secrets/presence.ts`, not here, because that is
- * the one module the bundle host tree also compiles — it is vendored across the
- * npm-tree boundary and has no imports, so the host's mounts and its presence
- * route run these same bytes. This module is the core binding: the parse as it
- * is, and the comparator with `node:crypto`'s `timingSafeEqual` in place of the
- * vendored module's JS fallback.
+ * Both are IMPLEMENTED in `src/secrets/presence.ts`, not here. That module is
+ * vendored into the bundle host tree and carries `authorizePresence`, the
+ * internal-token gate, which cannot import a sibling across the vendoring — so
+ * the host's mounts and its presence route run these same bytes. This module is
+ * the core binding: the parse as it is, and the comparator with `node:crypto`'s
+ * `timingSafeEqual` in place of the vendored module's JS fallback.
  */
 
 export { bearerToken };

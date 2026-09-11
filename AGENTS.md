@@ -82,8 +82,7 @@ does not use it.
     `bearerToken` and `constantTimeEquals`, the one `Authorization` parse and
     the one comparator every door in BOTH trees authenticates with; core binds
     them in `src/auth/credential.ts`. A drifted copy is the host's mounts
-    answering a header differently from core's doors, which is the thing
-    `test/auth-header.doors.test.ts` exists to rule out.
+    answering a header differently from core's doors.
   - `npm run wire:sync` (`--only wire`) re-vendors
     `src/secrets/parameters/wire.ts` — the id fold, the value encoding, the
     envelope shape — into `servers/secrets`. Both halves address the SAME GCP

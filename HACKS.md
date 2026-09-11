@@ -1335,10 +1335,10 @@ same reason at one remove: the copy the fleet runs is the host image's, so a
 second handler is one of the two dropping `cache-control: no-store` and the
 console rendering a cached "absent" for a credential that is present. Each tree
 keeps only the three-line express adapter, and injects its own `node:crypto`
-`timingSafeEqual` so the module stays import-free. Being the one module both
-trees compile, it also holds `bearerToken` and `constantTimeEquals` — the single
-`Authorization` parse and comparator every door authenticates with, in either
-image.
+`timingSafeEqual` so the module stays import-free. It also holds `bearerToken`
+and `constantTimeEquals` — the single `Authorization` parse and comparator every
+door authenticates with, in either image — because `authorizePresence` gates on
+them and a vendored file cannot import a sibling.
 
 **IT NEEDS AN IMAGE AND A PIN BUMP TO BECOME VISIBLE.** The core half degrades
 gracefully — a component that answers 404 is reported `unsupported`, "rebuild and

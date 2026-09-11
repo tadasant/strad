@@ -46,13 +46,14 @@
  *
  * ## It is also where every door reads and compares a credential
  *
- * Being the one module both trees compile makes it the only place a rule can
- * live once for both of them. So `bearerToken` — how an `Authorization` header
- * yields a credential — and `constantTimeEquals` — how two credentials are
- * compared — are here, and every door of the gateway goes through them: the
- * public `/mcp`, the console's header path, the internal token on a bundle's
- * `/mcp` and on the `/_strad/*` routes, in either image. Core reaches them
- * through `src/auth/credential.ts`, which binds the comparator to
+ * `authorizePresence` — the internal-token gate on the presence route, on the
+ * host's mounts and on core's `/_strad/params` — lives here, and a vendored file
+ * cannot import a sibling: the same bytes would have to say `./x.ts` in core and
+ * `./x.js` in the host. So the parse and the comparator it uses are here too,
+ * rather than injected, and every other door of the gateway goes through the
+ * same two: `bearerToken` — how an `Authorization` header yields a credential —
+ * and `constantTimeEquals` — how two credentials are compared. Core reaches
+ * them through `src/auth/credential.ts`, which binds the comparator to
  * `node:crypto`; the host tree imports them from its vendored copy.
  */
 
@@ -356,8 +357,12 @@ export function parsePresenceRequest(body: unknown): PresenceRequest {
 export function authorizePresence(
   header: string | undefined,
   expected: string | undefined,
-  /** Injected so the comparison can be constant-time where the caller has one. */
-  equals: (a: string, b: string) => boolean = constantTimeEquals,
+  /**
+   * `constantTimeEquals`, bound to the caller's `node:crypto`. REQUIRED for the
+   * same reason `PresenceRouteInput.timingSafeEqual` is: a default is what a
+   * caller gets by saying nothing, and the one it would get is the JS loop.
+   */
+  equals: (a: string, b: string) => boolean,
 ): { ok: true } | { ok: false; status: number; error: string } {
   if (!expected) {
     return {

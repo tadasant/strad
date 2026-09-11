@@ -31,11 +31,13 @@ import {
  * image's mounts and presence route run the same vendored parse, and assert it
  * in `servers/bundle/host/test/`.
  *
- * Every door is asked the same three questions with its own right credential:
- * with no scheme, with `Bearer`, and with the scheme in another case. The first
- * must be refused on every one of them. An optional scheme is what `replace`
- * gives you by accident, and a door that accepts a bare token while the door
- * beside it refuses one is an auth model nobody chose.
+ * Every door is asked the same five questions: its own right credential with
+ * no scheme, with `Bearer`, with the scheme in another case, and under `Basic`,
+ * and a wrong credential under `Bearer`. The scheme-less one must be refused
+ * on every door. An optional scheme is what `replace` gives you by accident,
+ * and a door that accepts a bare token while the door beside it refuses one is
+ * an auth model nobody chose. The wrong credential is the question the parse
+ * cannot answer, so it is the one that proves the COMPARE runs.
  */
 
 describe("bearerToken", () => {
@@ -365,16 +367,26 @@ describe.each(DOORS)("$door", ({ credential, ask, admitted }) => {
     const res = await ask(`Basic ${credential}`);
     expect(res.status).toBe(401);
   });
+
+  it("refuses a wrong credential under the right scheme", async () => {
+    // One byte longer: the shape a length guard written wrong lets through.
+    const res = await ask(`Bearer ${credential}x`);
+    expect(res.status).toBe(401);
+  });
 });
 
 // --- and no door grows its own ------------------------------------------------
 
 /**
  * The door tests above cover the doors that exist. A new one written from
- * memory reaches for `header.replace(/^Bearer\s+/i, "")` or a local
- * `timingSafeEqual` wrapper, and neither would be caught by a test of a route it
- * did not know about. So the source is read too, in both trees that serve a
- * door.
+ * memory reaches for `header.replace(/^Bearer\s+/i, "")`, a `"Bearer "`
+ * prefix check, or a local `timingSafeEqual` wrapper, and none of those would
+ * be caught by a test of a route it did not know about. So the source is read
+ * too, in both trees that serve a door.
+ *
+ * What this cannot see is a door that compares with `===`; a scan for that
+ * would flag every string comparison in the gateway. The door table above is
+ * the check for that, one door at a time.
  */
 describe("no door parses or compares a credential by hand", () => {
   const ROOTS = ["src", "servers/bundle/host/src"];
@@ -386,11 +398,12 @@ describe("no door parses or compares a credential by hand", () => {
   ]);
 
   /**
-   * The only other `timingSafeEqual` call: the console session's MAC check,
-   * which compares two decoded byte strings rather than a presented credential
-   * string, and is length-guarded on the line above it.
+   * The names a request's `Authorization` header may be handed to. Every one
+   * reads it with `bearerToken`; a file that reads the header and names none
+   * of them is reading it some other way.
    */
-  const BYTE_COMPARES = new Set(["src/auth/session.ts"]);
+  const GATES =
+    /\b(?:bearerToken|authenticateMcp|authorizePresence|presenceResponse|requireInternalToken|internalAuthRefusal)\b/;
 
   const sources = ROOTS.flatMap((root) =>
     readdirSync(root, { recursive: true })
@@ -401,6 +414,7 @@ describe("no door parses or compares a credential by hand", () => {
         return [path, readFileSync(path, "utf8")] as const;
       }),
   );
+  const others = sources.filter(([path]) => !OWNERS.has(path));
 
   it("reads the trees it claims to", () => {
     expect(sources.length).toBeGreaterThan(50);
@@ -412,19 +426,48 @@ describe("no door parses or compares a credential by hand", () => {
     }
   });
 
-  it("anchors a Bearer pattern nowhere but the owner", () => {
-    const offenders = sources
-      .filter(([path]) => !OWNERS.has(path))
-      .filter(([, text]) => /\/\^\s*bearer/i.test(text))
+  it("hands every Authorization header it reads to a gate", () => {
+    const readers = others.filter(([, text]) =>
+      /headers\.authorization\b|\.get\(\s*["']authorization["']\s*\)/i.test(
+        text,
+      ),
+    );
+    // Sanity: the scan finds the doors it is about.
+    expect(readers.map(([path]) => path)).toContain("src/gateway/router.ts");
+    expect(readers.map(([path]) => path)).toContain(
+      "servers/bundle/host/src/internal-auth.ts",
+    );
+    const offenders = readers
+      .filter(([, text]) => !GATES.test(text))
       .map(([path]) => path);
     expect(offenders).toEqual([]);
   });
 
-  it("calls timingSafeEqual nowhere but the owner", () => {
-    const offenders = sources
-      .filter(([path]) => !OWNERS.has(path) && !BYTE_COMPARES.has(path))
-      .filter(([, text]) => /\btimingSafeEqual\s*\(/.test(text))
+  it("matches the Bearer scheme nowhere but the owner", () => {
+    const offenders = others
+      .filter(
+        ([, text]) =>
+          // An anchored regex, or a quoted `"bearer"` / `"Bearer "` to compare
+          // or prefix-match against. `Bearer ${token}` in a template literal —
+          // a header strad SENDS — is neither.
+          /\/\^\s*bearer/i.test(text) || /["']bearer ?["']/i.test(text),
+      )
       .map(([path]) => path);
     expect(offenders).toEqual([]);
+  });
+
+  it("calls timingSafeEqual nowhere but the owner, and the session MAC", () => {
+    const calls = (text: string) =>
+      [...text.matchAll(/\btimingSafeEqual\s*\(/g)].length;
+    const counts = Object.fromEntries(
+      others
+        .map(([path, text]) => [path, calls(text)] as const)
+        .filter(([, n]) => n > 0),
+    );
+    // `Sealer.unseal` compares two decoded MACs — bytes, not a presented
+    // credential string — and is length-guarded on the line above. It is the
+    // one call outside the owner, and pinned to one so a second in the same
+    // file is not waved through with it.
+    expect(counts).toEqual({ "src/auth/session.ts": 1 });
   });
 });

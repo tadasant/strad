@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { secretEquals } from "../src/auth/credential.ts";
 import {
   authorizePresence,
   buildPresenceReport,
@@ -155,7 +156,11 @@ describe("authorizePresence", () => {
     // "On the private network" is a reachability property, not an authorization
     // one. A component that cannot tell core from anything else in the VPC must
     // refuse rather than serve.
-    const denied = authorizePresence("Bearer anything", undefined);
+    const denied = authorizePresence(
+      "Bearer anything",
+      undefined,
+      secretEquals,
+    );
     expect(denied).toEqual({
       ok: false,
       status: 503,
@@ -165,7 +170,7 @@ describe("authorizePresence", () => {
 
   it("rejects a wrong or absent token with an opaque 401", () => {
     for (const header of [undefined, "", "Bearer nope", "Basic secret"]) {
-      const denied = authorizePresence(header, "secret");
+      const denied = authorizePresence(header, "secret", secretEquals);
       expect(denied.ok).toBe(false);
       if (denied.ok) throw new Error("unreachable");
       expect(denied.status).toBe(401);
@@ -176,12 +181,16 @@ describe("authorizePresence", () => {
   });
 
   it("accepts the shared internal token under the Bearer scheme, in any case", () => {
-    expect(authorizePresence("Bearer secret", "secret")).toEqual({ ok: true });
-    expect(authorizePresence("bEaReR secret", "secret")).toEqual({ ok: true });
+    expect(authorizePresence("Bearer secret", "secret", secretEquals)).toEqual({
+      ok: true,
+    });
+    expect(authorizePresence("bEaReR secret", "secret", secretEquals)).toEqual({
+      ok: true,
+    });
   });
 
   it("refuses the right token with no scheme", () => {
-    expect(authorizePresence("secret", "secret")).toEqual({
+    expect(authorizePresence("secret", "secret", secretEquals)).toEqual({
       ok: false,
       status: 401,
       error: "invalid internal token",

@@ -78,8 +78,8 @@ export const VENDORED = [
     // a credential that is present.
     //
     // And the one `Authorization` parse and constant-time comparator every door
-    // uses, in both trees — this is the only module both of them compile, so it
-    // is the only place that rule can be written once. A drift is the host's
+    // uses, in both trees: `authorizePresence` gates on them, and a vendored file
+    // cannot import a sibling, so they live beside it. A drift is the host's
     // mounts accepting a header core's doors refuse.
     id: "presence",
     source: "src/secrets/presence.ts",

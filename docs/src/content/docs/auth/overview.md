@@ -22,25 +22,30 @@ Different doors take different credentials, but every one that reads an
 `Authorization` header reads it by one rule: `/mcp` and `/api/secrets/readiness`
 (a static token), the console's `/ui` gate and `/console` (the bootstrap token,
 when it comes as a header rather than `?token=`), and the shared
-`STRAD_INTERNAL_TOKEN` on a bundle's `/mcp`, on `/_strad/presence`, and on core's
-`/_strad/params` and `/_strad/store/refresh`.
+`STRAD_INTERNAL_TOKEN` wherever a component asks for it — a strad-image bundle's
+`/mcp`, every `strad-bundle` mount (`/<slug>` and `/<slug>/upload/:token`),
+`/_strad/presence` on either image, and core's `/_strad/params` and
+`/_strad/store/refresh`.
 
 - **The scheme is required.** `Authorization: Bearer <credential>`, with the scheme
   in any case (`bearer`, `BEARER` — scheme names are case-insensitive) and a space
-  before the credential.
+  before the credential. A tab there is refused.
 - **A header that is only the credential is refused.** `Authorization: <token>`
   gets the door's ordinary `401`, and so does another scheme or a `Bearer` with
   nothing after it. A hand-rolled `curl` against a component needs the scheme too:
   `curl -H "Authorization: Bearer $STRAD_INTERNAL_TOKEN" …`.
-- **One comparator.** The credential is compared in constant time over its utf-8
-  bytes, and a length mismatch is a plain no rather than a throw.
+- **One comparator.** Every compare is constant-time over utf-8 bytes, and a
+  length mismatch is a plain no rather than a throw. What it compares differs by
+  door: the bootstrap and internal tokens directly, and a static token by the
+  SHA-256 of its secret against the stored hash.
 
 The parse (`bearerToken`) and the comparator are written once, in
-`src/secrets/presence.ts`, because that is the module vendored byte-identical into
-the bundle host image: the host's MCP mounts and its presence route read and
-compare the internal token with the same code core does. Core reaches them through
-`src/auth/credential.ts`. `test/auth-header.doors.test.ts` asks every door the
-same questions, including a scheme-less header carrying the right credential.
+`src/secrets/presence.ts`. That module is vendored byte-identical into the bundle
+host image and carries the internal-token gate, so the host's mounts and its
+presence route read and compare the token with the same code core does. Core
+reaches them through `src/auth/credential.ts`. `test/auth-header.doors.test.ts`
+asks every door in the strad image the same questions — including a scheme-less
+header carrying the right credential — and the host's own suite asks its mounts.
 
 ## `/mcp` — static system tokens (agents)
 
