@@ -410,6 +410,45 @@ callback rather than as a synchronous throw at the host, and is retried once the
 credential arrives. Four of its twenty cases fail against the code above (the
 fifth, the shared attempt, already held).
 
+## 10. The freebie tool says which two pages it checked
+
+**Upstream.** `search_for_freebie_groceries` is described as *"Search for free
+items ($0.00) on Good Eggs"*, and when it finds nothing it answers:
+
+> No free items or deals currently available.
+
+**Here.** The sweep is unchanged — `searchFreebieGroceries()` still reads
+`a.js-product-link` tiles priced `$0.00` off the homepage and `/fresh-picks`, and
+nothing else. What changed is what the tool claims about it:
+
+- The **description** names the two pages, says it does not search the catalog,
+  says an empty result means "none on those two pages" and not "none available",
+  and tells the caller to treat any `$0.00` item in a `search_for_grocery` result
+  as a freebie too.
+- The **empty result** says the same, in the result itself: *"No $0.00 items on
+  the Good Eggs homepage and /fresh-picks, the only two pages this tool checks"*,
+  then *"This does NOT mean no free items are available"*.
+- A **non-empty result** names the pages it came from and says other `$0.00`
+  items may be listed elsewhere. It says "$0.00 items", not "deals/freebies" —
+  the sweep matches a `$0.00` price and nothing else, so it never returned a deal.
+- An **error** says whether free items exist is UNKNOWN, not none — the rule
+  `get_cart` and `get_favorites` already follow.
+
+**Why.** During the 2026-08-23 weekly shop the tool answered *"No free items or
+deals currently available."* while two `$0.00` "TRY ME!" Reelie chip samples were
+live and orderable. An ordinary `search_for_grocery("kosher salt")` surfaced them
+by chance ([strad#191](https://github.com/tadasant/strad/issues/191)). The
+grocery-shopping agent calls this tool as a required early step and reads a
+negative answer as "no freebies this week", so the upstream sentence cost the
+user free items. The sweep measured two pages. The answer claimed the whole store.
+
+The other remedy — a `$0.00` price filter over the catalog or search index — is
+not built. It is a new traversal, and Good Eggs' search UI may not expose a price
+filter at all. `HACKS.md` #90 records the gap.
+
+`shared/test/freebie-scope.test.ts` pins the description and all three results
+through the tool surface, over a stubbed client.
+
 ## Deltas that predate this fork
 
 These were already in the tree when it was still a vendor copy, and are listed so

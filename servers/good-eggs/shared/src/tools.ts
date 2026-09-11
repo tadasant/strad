@@ -88,12 +88,25 @@ create duplicates.
 
 **Tip:** This tool checks if you're already on the product page to minimize navigation.`;
 
-const SEARCH_FREEBIE_GROCERIES_DESCRIPTION = `Search for free items ($0.00) on Good Eggs.
+// The sweep checks exactly these two pages (`searchFreebieGroceries` in
+// server.ts). Every sentence this tool says about its coverage names them, so no
+// result can be read as a statement about the whole catalog.
+const FREEBIE_PAGES = 'the Good Eggs homepage and /fresh-picks';
 
-Checks the homepage and /fresh-picks page for items priced at $0.00.
-These are typically promotional freebies offered by Good Eggs.
+const SEARCH_FREEBIE_GROCERIES_DESCRIPTION = `Look for items priced at $0.00 on two pages: ${FREEBIE_PAGES}.
 
-Returns a list of free items with their URLs for adding to cart.`;
+It does NOT search the catalog. $0.00 promo samples (e.g. "TRY ME!" samples) can
+be listed outside those two pages, and may only show up in ordinary
+search_for_grocery results. So an empty result means "no $0.00 items on
+those two pages", not "no free items available". Treat any $0.00 item in a
+search_for_grocery result as a freebie too.
+
+Returns each $0.00 item found, with its URL for add_to_cart:
+1. **Organic Fuji Apple Sample**
+   Brand: Sunrise Orchards
+   Price: $0.00
+   Discount: FREE
+   URL: https://www.goodeggs.com/sunrise-orchards/organic-fuji-apple-sample/<id>`;
 
 const GET_PAST_ORDER_DATES_DESCRIPTION = `Get a list of past order dates from Good Eggs.
 
@@ -484,11 +497,19 @@ export function createRegisterTools(
           const results = await goodEggsClient.searchFreebieGroceries();
 
           if (results.length === 0) {
+            // The sentence this replaces — "No free items or deals currently
+            // available." — was read as "no freebies this week" while two $0.00
+            // samples were live elsewhere on the site (strad#191). The sweep
+            // measured two pages, so that is all the answer may claim.
             return {
               content: [
                 {
                   type: 'text',
-                  text: 'No free items or deals currently available.',
+                  text:
+                    `No $0.00 items on ${FREEBIE_PAGES}, the only two pages this tool checks.\n\n` +
+                    `This does NOT mean no free items are available. $0.00 promo samples can be ` +
+                    `listed elsewhere and may only show up in search_for_grocery results — treat ` +
+                    `any $0.00 item there as a freebie too.`,
                 },
               ],
             };
@@ -505,7 +526,10 @@ export function createRegisterTools(
             content: [
               {
                 type: 'text',
-                text: `Found ${results.length} deals/freebies:\n\n${formattedResults}`,
+                text:
+                  `Found ${results.length} $0.00 item${results.length === 1 ? '' : 's'} on ${FREEBIE_PAGES}:\n\n` +
+                  `${formattedResults}\n\n` +
+                  `Only those two pages were checked; other $0.00 items may be listed elsewhere.`,
               },
             ],
           };
@@ -514,7 +538,9 @@ export function createRegisterTools(
             content: [
               {
                 type: 'text',
-                text: `Error searching for freebies: ${error instanceof Error ? error.message : String(error)}`,
+                text:
+                  `Error searching for freebies: ${error instanceof Error ? error.message : String(error)}\n\n` +
+                  `Whether any free items are available is UNKNOWN. Do not read this as there being none.`,
               },
             ],
             isError: true,

@@ -278,6 +278,18 @@ The tool did carry the canonical path as `?param=`, which bought the human nothi
 
 See `HACKS.md` #89 and [Secrets](/operate/secrets/).
 
+---
+
+### 90. The good-eggs freebie tool checks two pages, not the store
+
+`search_for_freebie_groceries` looks for `$0.00` items on the Good Eggs homepage and `/fresh-picks`, and nowhere else. On the 2026-08-23 shop, two "TRY ME!" samples were live and orderable while this tool found nothing, and only a keyword search for something unrelated turned them up. Where Good Eggs had them listed was never established — most likely off those two pages, but a scrape that missed them on-page would look the same. Either way the tool can miss freebies, and nothing short of a catalog-wide sweep would stop that.
+
+That sweep is not built — Good Eggs' search may not expose a price filter at all, so it would be a new traversal. What changed is the claim. The description and every result name the two pages. An empty result says it does not mean no free items are available, and tells the caller to count any `$0.00` item in a `search_for_grocery` result as a freebie too. The upstream answer, _"No free items or deals currently available."_, is gone, because an agent took it at its word.
+
+**How you would know.** The tool's own answer says it. Every result names the two pages it checked, and an empty one says in its second sentence that it is not a statement about the store.
+
+See `HACKS.md` #90 and `servers/good-eggs/FORK.md` #10.
+
 ## Auth and identity
 
 ### 2. The console dev bypass stands in for Google OAuth
