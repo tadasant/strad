@@ -887,27 +887,56 @@ it is whether a door exists at all, not how close an attempt came to opening it.
 Nothing about the token itself — length, prefix, how close an attempt was — is
 disclosed, and `/mcp` keeps its opaque `401`.
 
-## Connector authorization: a third Google OAuth flow, and not the login one
+## Connector authorization: a third OAuth flow, and not the login one
 
 `/console/oauth/callback` signs a **human into strad**. A connector's callback,
-`/ui/oauth/callback`, obtains a **credential for a server** — and although both
-say "Google OAuth", they agree on almost nothing:
+`/ui/oauth/callback`, obtains a **credential for a server** — and they agree on
+almost nothing:
 
-|                 | Console login                         | Connector authorization                           |
-| --------------- | ------------------------------------- | ------------------------------------------------- |
-| OAuth client    | the deployment's (`GOOGLE_CLIENT_ID`) | the **slug's own**, from its parameter namespace  |
-| Scopes          | `openid email profile`                | `openid email` + the slug's capability scopes     |
-| Identity check  | the Workspace `hd` claim              | the pinned `account`, an exact email              |
-| Grant type      | online                                | offline (`access_type=offline`, `prompt=consent`) |
-| What comes back | a session cookie                      | a refresh token, written to the parameter store   |
-| Callback path   | `/console/oauth/callback`             | `/ui/oauth/callback`                              |
-| Signing key     | `INFO_TX` (derived)                   | `INFO_CONNECTOR` (derived, domain-separated)      |
+|                 | Console login                         | Connector authorization                                     |
+| --------------- | ------------------------------------- | ----------------------------------------------------------- |
+| Provider        | Google, always                        | `google`, or `generic` against endpoints the config names   |
+| OAuth client    | the deployment's (`GOOGLE_CLIENT_ID`) | the **slug's own**, from its parameter namespace            |
+| Scopes          | `openid email profile`                | the slug's capability scopes, plus `openid email` on Google |
+| Identity check  | the Workspace `hd` claim              | the pinned `account` on Google; **none** on `generic`       |
+| Grant type      | online                                | offline, however that provider spells it                    |
+| What comes back | a session cookie                      | a durable credential, written to the slug's `oauth` kind    |
+| Callback path   | `/console/oauth/callback`             | `/ui/oauth/callback`                                        |
+| Signing key     | `INFO_TX` (derived)                   | `INFO_CONNECTOR` (derived, domain-separated)                |
 
 Overloading one callback with both would mean one redirect URI, one client and one
-consent posture serving two jobs that share none of them. The **one** thing they do
-share is the ID-token verifier — RS256, Google's JWKS, issuer and audience — because
-a second implementation of the only proof of identity in either flow is a second
-place to get it wrong.
+consent posture serving two jobs that share none of them. The **one** thing a
+Google connector shares with the login flow is the ID-token verifier — RS256,
+Google's JWKS, issuer and audience — because a second implementation of the only
+proof of identity in either flow is a second place to get it wrong.
+
+**One callback path serves every provider.** Which server is being connected, and
+under which provider and terms, is read from the sealed transaction cookie and
+never from the request.
+
+### `provider: generic` proves no identity, and says so
+
+A Google connector checks the verified `email` claim against the `account:` the
+slug is pinned to and refuses a mismatch with nothing written. Plain OAuth 2.0 has
+no equivalent — nothing in RFC 6749 says whose account a token belongs to — so a
+`generic` connector stores whatever account the human was signed in as at the
+provider. The console states that above the button rather than implying a check it
+cannot make, the stored note claims no account, and the page renders the account
+as `not checked`.
+
+That is a real reduction in what strad can promise about a `generic` credential,
+and it is the reason `google` stays a first-class variant rather than a
+configuration of the generic one. What a generic flow still checks: that the
+durable credential the config named actually came back, and — when the provider
+names its scopes at all — that every configured scope was granted.
+
+The grant is bound as tightly as the flow allows. PKCE (S256) is unconditional,
+the redirect URI is derived from `gateway.publicUrl` and never from a request, and
+the authorization parameters strad composes — `client_id`, `redirect_uri`,
+`response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method` —
+cannot be overridden by config. The endpoints, `clientAuth` and `credential` are
+sealed into the transaction alongside the provider, so a config edited while a
+consent is in flight cannot redirect where a live authorization code is sent.
 
 Both halves of a connector flow are behind the same SSO gate as every other console
 surface, and the in-flight transaction is bound to the console session that began

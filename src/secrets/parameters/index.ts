@@ -34,6 +34,7 @@ export {
   serverKindNamespace,
   serverNamespaces,
   layerNamespaces,
+  isUsableValue,
   staticNamespace,
   oauthNamespace,
   oauthParameterPath,

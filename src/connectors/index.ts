@@ -294,10 +294,21 @@ export function presenceFrom(
   // Highest-precedence kind first, and `set` only on a name not already held:
   // the first namespace that holds a variable is the one that wins, which is the
   // same rule `layerNamespaces` applies to values.
+  //
+  // A PREFIX MATCH, NOT AN EXACT ONE, and the difference is load-bearing.
+  // `resolve()` lists everything under a namespace and keys the result on the
+  // path's LAST segment (gcp.ts `variableOf`), so `{slug}/static/extra/TOKEN`
+  // really is injected — as `TOKEN`. Requiring `{namespace}{variable}` here would
+  // report a connector INCOMPLETE over a client id that is demonstrably present
+  // and working, and refuse the Connect button with it. `groupByServer` and the
+  // console's own `SLUG_KIND` both honour depth for exactly this reason.
+  //
+  // `pathOf` still records the path as FOUND, so `readOwnVariable` reveals the
+  // copy that was actually matched rather than one recomposed from a kind.
   const held = new Map<string, ParameterMeta>();
   for (const namespace of namespaces) {
     for (const meta of metas) {
-      if (meta.path !== `${namespace}${meta.variable}`) continue;
+      if (!meta.path.startsWith(namespace)) continue;
       if (!meta.hasValue) continue;
       if (!held.has(meta.variable)) held.set(meta.variable, meta);
     }

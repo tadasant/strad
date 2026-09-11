@@ -72,6 +72,23 @@ export interface ConnectorTxPayload {
    */
   provider: string;
   /**
+   * The TERMS A GENERIC PROVIDER'S FLOW TURNS ON, joined into one opaque string,
+   * or `""` for a provider whose endpoints strad knows itself.
+   *
+   * `authorizeUrl` and `tokenUrl` decide where the authorization code and the
+   * client secret are SENT; `credential` decides what gets stored, and
+   * `clientAuth` how the secret travels. Every one of them is shown to the human
+   * — the button is labelled from the authorize URL's host — and every one of
+   * them is config a deploy can change while a consent is in flight. Sealing
+   * only `provider` would have left the most consequential half of a generic
+   * connector's terms unbound: a `tokenUrl` re-pointed mid-flow would POST a
+   * live code and this slug's client secret to an endpoint nobody agreed to.
+   *
+   * One string rather than four fields because the callback only ever COMPARES
+   * it. See {@link genericTerms}.
+   */
+  terms: string;
+  /**
    * The account the slug is pinned to, or `""` for a provider that proves none.
    *
    * The empty string is a term of the grant and not a missing value: it records
@@ -101,6 +118,30 @@ export interface ConnectorTxPayload {
  */
 export function consoleSessionId(principal: Principal): string {
   return `${principal.kind}:${principal.id}`;
+}
+
+/**
+ * The generic terms a transaction binds, as one comparable string.
+ *
+ * Built from the config on the way OUT and rebuilt from the config on the way
+ * BACK, so the comparison is against what the human was shown rather than
+ * against whatever the config says now. Google's flow has no configurable
+ * endpoints, so it binds `""` and the check is a no-op for it.
+ */
+export function genericTerms(oauth: {
+  provider: string;
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  clientAuth?: string;
+  credential?: string;
+}): string {
+  if (oauth.provider !== "generic") return "";
+  return [
+    oauth.authorizeUrl,
+    oauth.tokenUrl,
+    oauth.clientAuth,
+    oauth.credential,
+  ].join("\u0000");
 }
 
 export function issueConnectorTx(

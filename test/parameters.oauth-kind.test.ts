@@ -204,6 +204,39 @@ describe("a server's ${NAME} resolves from the oauth kind", () => {
     );
   });
 
+  it("does not let an UNUSABLE oauth value shadow a working static one", async () => {
+    // THE SAME RULE `layerNamespaces` KEEPS, THROUGH THE OTHER READ PATH. The
+    // provider chain asks one namespace at a time, so an unusable hit there is a
+    // definitive answer unless it is explicitly treated as a miss — and then
+    // `ChainSecretProvider` stops and never consults the layer beneath.
+    //
+    // The empty payload is the shape modelled here. The other unusable shape, an
+    // un-dereferenced `__REF__`, cannot be reached by revoking a grant in the
+    // double: that is a `:render` refusal, which `resolve()` raises as a hard
+    // error, and a THROW deliberately does not fall through to a lower layer (an
+    // unreachable store must not silently demote a server to a shared value).
+    const gcp = createFakeGcp();
+    await gcp.store.create({
+      path: parameterPath(ENV, SLUG, TOKEN),
+      secret: true,
+      value: "the-credential-that-works",
+    });
+    await gcp.store.create({
+      path: oauthParameterPath(ENV, SLUG, TOKEN),
+      secret: false,
+      value: "",
+    });
+
+    const providers = buildSecretProviders({
+      config: CONFIG,
+      env: {},
+      resolver: gcp.store,
+    });
+    expect(await providers.forServer(SLUG).get(TOKEN)).toBe(
+      "the-credential-that-works",
+    );
+  });
+
   it("prefers either of the slug's own kinds over the gateway namespace", async () => {
     const gcp = createFakeGcp();
     await gcp.store.create({

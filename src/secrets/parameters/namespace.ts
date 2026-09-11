@@ -93,6 +93,25 @@ export function serverNamespaces(env: string, slug: string): string[] {
 }
 
 /**
+ * Is this resolved value something a caller can actually USE as a credential?
+ *
+ * `resolve()` does not promise one. A `:render` that could not dereference hands
+ * the `__REF__` pointer back rather than failing — deliberately, so `checkStore`
+ * can report "present but unrenderable" — and an empty payload resolves to `""`.
+ * Neither is a credential, and both are indistinguishable from one to any caller
+ * that only checks for `undefined`.
+ *
+ * It is exported because the rule has to hold in TWO places that read a layered
+ * namespace by different routes: `layerNamespaces` below, and the runtime
+ * provider chain (src/secrets/provider/store.ts), which asks one namespace at a
+ * time and would otherwise treat an unusable hit as a definitive one and never
+ * consult the layer beneath it.
+ */
+export function isUsableValue(value: string): boolean {
+  return value !== "" && !isSecretRef(value);
+}
+
+/**
  * Collapse several namespace readings into one, EARLIER WINS.
  *
  * The wrinkle is that "has a value" and "has a USABLE value" are different
@@ -111,13 +130,14 @@ export function serverNamespaces(env: string, slug: string): string[] {
 export function layerNamespaces(
   readings: readonly Readonly<Record<string, string>>[],
 ): Record<string, string> {
-  const usable = (value: string): boolean =>
-    value !== "" && !isSecretRef(value);
   const out: Record<string, string> = {};
   for (const reading of readings) {
     for (const [name, value] of Object.entries(reading)) {
       const held = out[name];
-      if (held === undefined || (!usable(held) && usable(value))) {
+      if (
+        held === undefined ||
+        (!isUsableValue(held) && isUsableValue(value))
+      ) {
         out[name] = value;
       }
     }

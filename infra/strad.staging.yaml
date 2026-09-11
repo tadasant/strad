@@ -233,7 +233,7 @@ servers:
     # THE ROTATION OBSERVATORY, and the only one this deployment has.
     #
     # `params: true` on a BUILTIN resolves /strad/staging/mcp/echo/static/* and
-    # merges it over `options:` on EVERY TOOL CALL, through the same TTL cache
+    # .../oauth/* and merges them over `options:` on EVERY TOOL CALL, through the same TTL cache
     # (gateway.secrets.ttlSeconds) the runtime secret provider uses — see
     # gateway/registry.ts `optionsFor`. So setting `greeting` in the store and
     # calling `whoami` is a direct, external read of what a running gateway

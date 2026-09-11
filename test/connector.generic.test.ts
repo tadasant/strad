@@ -523,6 +523,91 @@ describe("what a generic consent is still checked for", () => {
   });
 });
 
+describe("the sealed transaction binds the terms the human was shown", () => {
+  it("REFUSES a callback whose tokenUrl was re-pointed mid-flow", async () => {
+    // THE SCENARIO THIS EXISTS FOR: a config edited (and deployed) while a human
+    // is at the consent screen. Without the endpoints sealed, the callback would
+    // POST a live authorization code AND this slug's client secret to an
+    // endpoint nobody agreed to — the button said "Connect Linear", derived from
+    // the authorize URL the human was shown.
+    const { cookie, state } = await begin(SLUG);
+
+    const moved = createApp({
+      config: parseConfig(
+        CONFIG_YAML.replace(TOKEN_URL, "https://attacker.example/token"),
+      ),
+      registry: await Registry.build({
+        config: CONFIG,
+        secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
+        mode: "core",
+        env,
+      }),
+      tokenStore: tokenStoreFromConfig(CONFIG, env),
+      mode: "core",
+      env,
+      secrets: SECRETS,
+      parametersStore: () => fake.store,
+      connectorFetch,
+    });
+    const other = moved.listen(0);
+    await new Promise((r) => other.once("listening", r));
+    const port = (other.address() as { port: number }).port;
+
+    const res = await fetch(
+      `http://127.0.0.1:${port}/ui/oauth/callback?state=${encodeURIComponent(state)}&code=${AUTH_CODE}`,
+      { headers: { ...auth, cookie }, redirect: "manual" },
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain("changed mid-flow");
+    // The decisive assertion: the code was never exchanged anywhere.
+    expect(tokenRequests).toHaveLength(0);
+    expect(await listed(OAUTH_NS)).toEqual([]);
+    other.close();
+  });
+
+  it("REFUSES a callback whose credential field changed mid-flow", async () => {
+    // A human consented believing a durable credential was being stored; a
+    // mid-flow flip to `access_token` would store an hour-long one under the
+    // same name — worked all afternoon, dead by morning.
+    const { cookie, state } = await begin(SLUG);
+
+    const flipped = createApp({
+      config: parseConfig(
+        CONFIG_YAML.replace(
+          "      scopes: [read]\n",
+          "      scopes: [read]\n      credential: access_token\n",
+        ),
+      ),
+      registry: await Registry.build({
+        config: CONFIG,
+        secrets: sharedSecretProviders(new EnvSecretProvider(SECRETS)),
+        mode: "core",
+        env,
+      }),
+      tokenStore: tokenStoreFromConfig(CONFIG, env),
+      mode: "core",
+      env,
+      secrets: SECRETS,
+      parametersStore: () => fake.store,
+      connectorFetch,
+    });
+    const other = flipped.listen(0);
+    await new Promise((r) => other.once("listening", r));
+    const port = (other.address() as { port: number }).port;
+
+    const res = await fetch(
+      `http://127.0.0.1:${port}/ui/oauth/callback?state=${encodeURIComponent(state)}&code=${AUTH_CODE}`,
+      { headers: { ...auth, cookie }, redirect: "manual" },
+    );
+
+    expect(res.status).toBe(409);
+    expect(tokenRequests).toHaveLength(0);
+    expect(await listed(OAUTH_NS)).toEqual([]);
+    other.close();
+  });
+});
+
 describe("nothing secret is exposed by the generic flow", () => {
   it("keeps the token, the code and the client secret off every surface", async () => {
     const { cookie, state, res: began } = await begin(SLUG);

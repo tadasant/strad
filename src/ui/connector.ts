@@ -11,6 +11,7 @@ import { event } from "../telemetry/index.ts";
 import {
   clearConnectorTx,
   consoleSessionId,
+  genericTerms,
   issueConnectorTx,
   readConnectorTx,
   type ConnectorTxPayload,
@@ -39,7 +40,10 @@ import {
 } from "../connectors/index.ts";
 import { CONNECTOR_CALLBACK_PATH } from "../connectors/index.ts";
 import { errorSummary } from "../util/error-text.ts";
-import type { ParameterStore } from "../secrets/parameters/index.ts";
+import {
+  staticNamespace,
+  type ParameterStore,
+} from "../secrets/parameters/index.ts";
 
 /**
  * **Connect** / **Reconnect**, on a server slug's console page.
@@ -247,6 +251,7 @@ async function handleConnect(
       slug: entry.server.slug,
       env: opts.config.gateway.env,
       provider: entry.oauth.provider,
+      terms: genericTerms(entry.oauth),
       // A provider that proves no account seals the empty string, and the drift
       // check below compares it to the same empty string. The transaction records
       // the terms the human was SHOWN, and "no account was pinned" is one of them.
@@ -361,14 +366,21 @@ async function handleCallback(
   // something else, the honest move is to refuse rather than to install a grant
   // against terms nobody agreed to.
   //
-  // `provider` is in the comparison and in the sealed payload, which means a
-  // transaction sealed by an image that predates the field reads as drifted and
-  // is refused. That is the safe direction, and it costs at most the consents in
-  // flight during one deploy — each recoverable by clicking Connect again.
+  // `provider` and `terms` are in the comparison and in the sealed payload,
+  // which means a transaction sealed by an image that predates either field
+  // reads as drifted and is refused. That is the safe direction, and it costs at
+  // most the consents in flight during one deploy — each recoverable by clicking
+  // Connect again.
+  //
+  // `terms` carries a generic provider's endpoints, `clientAuth` and
+  // `credential`: the fields that decide where a live authorization code and
+  // this slug's client secret are SENT, and what ends up stored under the name
+  // the human authorized.
   const terms = connectorTerms(entry.oauth);
   const scopes = terms.scopes;
   const drifted =
     entry.oauth.provider !== tx.provider ||
+    genericTerms(entry.oauth) !== (tx.terms ?? "") ||
     (terms.account ?? "") !== tx.account ||
     entry.oauth.refreshTokenVariable !== tx.variable ||
     scopes.length !== tx.scopes.length ||
@@ -616,9 +628,16 @@ export async function renderConnectorPage(
       statusBlock = notice(
         "warn",
         "The OAuth application is not seeded for this server",
+        // THE STATIC NAMESPACE, not `path`'s. `path` is the credential's WRITE
+        // target and moved to the `oauth` kind; the client id and secret are
+        // what a human types, and `oauth/` is the kind strad writes. Deriving
+        // this directory from `path` sent an operator to seed a value into the
+        // consent flow's own namespace — which the create form does not even
+        // suggest a prefix for, and which muddies the provenance the kind exists
+        // to state.
         `${state.missing.join(" and ")} ${
           state.missing.length === 1 ? "is" : "are"
-        } missing from ${path.slice(0, path.lastIndexOf("/") + 1)}. Seed ` +
+        } missing from ${staticNamespace(opts.config.gateway.env, slug)}. Seed ` +
           `${state.missing.length === 1 ? "it" : "them"} there — a value under ` +
           `the gateway namespace, or under another slug, does not count: this ` +
           `connector reads only its own server's namespace.`,
@@ -796,9 +815,10 @@ function refusalMessage(code: string, terms: ConnectorTerms): string {
         `Refused: ${terms.label} completed the consent but its token response ` +
         `did not carry the field this server's oauth.credential: names as the ` +
         `durable one, so there is nothing long-lived to store. Nothing was ` +
-        `written. strad's logs name the field; the usual fix is an extra ` +
-        `authorization parameter under oauth.authorizeParams: asking for ` +
-        `offline access.`
+        `written. The usual fix is an extra authorization parameter under ` +
+        `oauth.authorizeParams: asking for offline access — or this provider's ` +
+        `durable credential is the other field, and oauth.credential: should ` +
+        `name it.`
       );
     case "identity_unverified":
     case "no_identity":

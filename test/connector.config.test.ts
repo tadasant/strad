@@ -443,6 +443,21 @@ describe("oauth: provider generic", () => {
     expect(unknown.map((u) => u.key)).toContain("clientAuthMethod");
   });
 
+  it("REFUSES a connector variable that is also paramsWritable or paramsRefresh", () => {
+    // Those two address `static/` and nothing else, while a connector's
+    // credential is written to `oauth/` and outranks it. Allowing both would let
+    // a container re-read a stale hand-typed copy over the credential a human
+    // just consented to, and write a rotation back where the `oauth/` copy
+    // permanently shadows it — silently, in both directions.
+    for (const field of ["paramsWritable", "paramsRefresh"]) {
+      const raw = BASE(
+        GENERIC,
+        `    params: true\n    ${field}: [LINEAR_OAUTH_TOKEN]\n`,
+      );
+      expect(() => parseConfig(raw)).toThrow(new RegExp(field));
+    }
+  });
+
   it("adds no identity scopes, because it can prove no identity", () => {
     const config = parseConfig(BASE(GENERIC));
     const oauth = connectorFor(config, "google-sheets-tadas412-ro")!.oauth;

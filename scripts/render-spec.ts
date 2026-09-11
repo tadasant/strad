@@ -570,24 +570,20 @@ let seededKinds = new Map<string, Set<ServerParamKind>>();
  * `resolve()` renders every parameter in a namespace, and a per-project read
  * quota is what took a production deploy down once already.
  */
+function seededNamespacesFor(slug: string): string[] {
+  return seededNamespaces(config.gateway.env, slug, seededKinds.get(slug));
+}
+
 async function resolveSeededNamespaces(
   slug: string,
 ): Promise<Record<string, string>> {
-  const namespaces = seededNamespaces(
-    config.gateway.env,
-    slug,
-    seededKinds.get(slug),
-  );
+  const namespaces = seededNamespacesFor(slug);
   return layerNamespaces(await Promise.all(namespaces.map(resolveNamespace)));
 }
 
 /** The namespaces a log line should NAME for one slug. Never empty. */
 function describeSeeded(slug: string): string {
-  const namespaces = seededNamespaces(
-    config.gateway.env,
-    slug,
-    seededKinds.get(slug),
-  );
+  const namespaces = seededNamespacesFor(slug);
   return namespaces.length > 0
     ? namespaces.join(" + ")
     : staticNamespace(config.gateway.env, slug);
@@ -631,21 +627,29 @@ if (store) {
   // survives a refusal; this is what stops provoking one, and it holds whether
   // the config carries fourteen servers or forty.
   const NAMESPACE_FANOUT = 3;
-  const bags: ReturnType<typeof substitutionBag>[] = [];
-  for (let i = 0; i < candidates.length; i += NAMESPACE_FANOUT) {
-    bags.push(
-      ...(await Promise.all(
-        candidates.slice(i, i + NAMESPACE_FANOUT).map(async ([slug, refs]) =>
-          substitutionBag(
-            // BOTH KINDS, layered, and only the ones the listing found. A slug
-            // with nothing under `oauth/` costs the one read it always cost.
-            await resolveSeededNamespaces(slug),
-            refs,
-          ),
-        ),
-      )),
+  // BATCHED ON NAMESPACES, NOT SLUGS. A slug is now worth up to TWO `resolve()`
+  // calls (one per seeded kind), and `renderFrom` fans out ten wide inside each
+  // — so batching three SLUGS would put sixty renders in flight where the
+  // number that provoked a 429 was thirty. The bound has to count the thing that
+  // costs, which is a namespace.
+  const pending = new Map<string, Promise<Record<string, string>>>();
+  const wantedNamespaces = [
+    ...new Set(candidates.flatMap(([slug]) => seededNamespacesFor(slug))),
+  ];
+  for (let i = 0; i < wantedNamespaces.length; i += NAMESPACE_FANOUT) {
+    await Promise.all(
+      wantedNamespaces.slice(i, i + NAMESPACE_FANOUT).map(async (namespace) => {
+        pending.set(namespace, resolveNamespace(namespace));
+        await pending.get(namespace);
+      }),
     );
   }
+  // Every namespace is resolved and memoised by now, so this adds no round trips.
+  const bags = await Promise.all(
+    candidates.map(async ([slug, refs]) =>
+      substitutionBag(await resolveSeededNamespaces(slug), refs),
+    ),
+  );
 
   for (const [i, [slug]] of candidates.entries()) {
     const namespace = describeSeeded(slug);

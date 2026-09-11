@@ -1711,6 +1711,39 @@ export const StradConfig = z
         }
       }
 
+      // A CONNECTOR VARIABLE MAY NOT ALSO BE A `paramsWritable:` OR
+      // `paramsRefresh:` ENTRY.
+      //
+      // Those two name variables in this slug's `static/` namespace and nowhere
+      // else (src/http/params.ts composes `parameterPath`), while a connector's
+      // credential lives under `oauth/` and outranks `static/` for the same
+      // name. Allowing both would make the container re-read a stale hand-typed
+      // copy over the credential a human just consented to, and write a rotation
+      // back to a path the `oauth/` copy permanently shadows — silently, in both
+      // directions. Refusing the combination is what keeps the two mechanisms
+      // from addressing one name through different kinds.
+      if (s.kind === "supplementary-image") {
+        const owned = new Set(
+          named.map(({ variable }) => variable.toLowerCase()),
+        );
+        for (const field of ["paramsWritable", "paramsRefresh"] as const) {
+          for (const variable of s[field]) {
+            if (!owned.has(variable.toLowerCase())) continue;
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                `server "${s.slug}" lists "${variable}" under ${field}: and ` +
+                `names it on its oauth: connector. ${field} addresses ` +
+                `/strad/{env}/mcp/${s.slug}/static/, and a connector's ` +
+                `credential is written to the oauth/ kind, which outranks it — ` +
+                `so the two would address one name through different kinds and ` +
+                `disagree without failing. Drop it from ${field}:.`,
+              path: ["servers"],
+            });
+          }
+        }
+      }
+
       const claimed = new Map<string, string>();
       for (const { field, variable } of named) {
         const fold = variable.toLowerCase();
