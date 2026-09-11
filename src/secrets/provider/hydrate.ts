@@ -114,17 +114,42 @@ export const REQUIRED_BOOT_ENV_KEYS = [
  * is not given them — the same reasoning that keeps `consoleEnv:` off it. Least
  * privilege is cheap here; it is one array.
  *
- * It has a second reader: `deploy/appspec.ts` bakes exactly these names onto a
- * `supplementary-image` component, which cannot hydrate them. Same list, because
- * it is the same question — what a bundle needs and nothing more — answered for
- * a container that has to be handed it rather than fetching it. Adding a name
- * here therefore widens what a third-party image is given; that is the review
- * this array deserves.
+ * It has a second reader: `deploy/appspec.ts` hands exactly these names to a
+ * `supplementary-image` component, which cannot hydrate them — baked from the
+ * store under the store provider, let through the broadcast under `env`. Same
+ * list, because it is the same question — what a bundle needs and nothing more
+ * — answered for a container that has to be handed it rather than fetching it.
+ * Adding a name here therefore widens what a third-party image is given, under
+ * EITHER provider; that is the review this array deserves.
  */
 export const BUNDLE_BOOT_ENV_KEYS = [
   "STRAD_INTERNAL_TOKEN",
   "OTEL_EXPORTER_OTLP_HEADERS",
 ] as const;
+
+/**
+ * The boot keys that stop at strad's own process: every `CORE_BOOT_ENV_KEYS`
+ * name a bundle does not read.
+ *
+ * Derived rather than listed, because it is the array above answered from the
+ * other side, and a second hand-written answer is how the two came to disagree:
+ * the store path kept these off a third-party container while the `env` path
+ * broadcast five of them — the token store, the console's bypass token, OAuth
+ * client and cookie-signing key — to every one. `deploy/appspec.ts` keeps this
+ * set off every `supplementary-image` component under both providers. So a name
+ * added to `CORE_BOOT_ENV_KEYS` is core-only by default, and the one edit that
+ * puts it inside a third-party image is adding it to `BUNDLE_BOOT_ENV_KEYS`.
+ *
+ * `SENTRY_DSN` is the member most likely to be mistaken for telemetry that
+ * should travel with the OTLP header. It should not: only strad's own process
+ * reports exceptions (telemetry/errors.ts), a supplementary image runs someone
+ * else's code, and a DSN is a write credential for the ingestor — a third-party
+ * container holding one could write into strad's issue tracker.
+ */
+export const CORE_ONLY_BOOT_ENV_KEYS: readonly string[] =
+  CORE_BOOT_ENV_KEYS.filter(
+    (k) => !(BUNDLE_BOOT_ENV_KEYS as readonly string[]).includes(k),
+  );
 
 export function bootEnvNames(mode: "core" | "bundle"): readonly string[] {
   return mode === "bundle" ? BUNDLE_BOOT_ENV_KEYS : CORE_BOOT_ENV_KEYS;

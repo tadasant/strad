@@ -12,7 +12,10 @@ import {
   PARAM_REFRESH_ENV,
   PARAM_REFRESH_SECONDS_ENV,
 } from "../secrets/param-route.ts";
-import { BUNDLE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
+import {
+  BUNDLE_BOOT_ENV_KEYS,
+  CORE_ONLY_BOOT_ENV_KEYS,
+} from "../secrets/provider/hydrate.ts";
 import { CORE_URL_ENV } from "../secrets/param-route.ts";
 
 /**
@@ -578,6 +581,20 @@ const TELEMETRY_ENV_KEYS = new Set([
  * is right for a credential the servers themselves need and wrong for one that
  * only strad's own process uses.
  *
+ * Two kinds of name, and only one is written out here:
+ *
+ *   - The boot keys strad reads for itself and a bundle does not —
+ *     `CORE_ONLY_BOOT_ENV_KEYS`, DERIVED from the two boot-key arrays in
+ *     secrets/provider/hydrate.ts rather than listed again. Under the `env`
+ *     provider the renderer bakes every boot key into `opts.env`, so without
+ *     this the token store, the console's bypass token, its OAuth client and
+ *     its cookie-signing key would reach every third-party container, while the
+ *     store path kept them off. Deriving it is what makes the two paths give one
+ *     answer: a new core boot key is excluded here by default, and letting one
+ *     through takes an edit to `BUNDLE_BOOT_ENV_KEYS`, whose comment asks for the
+ *     review that deserves.
+ *   - The store credential, the one name that is not a boot key at all.
+ *
  * The store credential is the sharp case. It can read every value in the gateway
  * namespace — the token store, the OAuth client secret, every third-party bearer
  * token — so broadcasting it would put a key to all of them inside `good-eggs`,
@@ -592,14 +609,12 @@ const TELEMETRY_ENV_KEYS = new Set([
  * builtin. `test/appspec.secrets.test.ts` asserts it lands on neither more nor
  * fewer components than that.
  */
-const STRAD_IMAGE_ONLY_SECRET_KEYS = new Set([
+const STRAD_IMAGE_ONLY_SECRET_KEYS: ReadonlySet<string> = new Set([
   "STRAD_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON",
-  // The GlitchTip DSN. Only strad's own process reports exceptions (see
-  // src/telemetry/errors.ts); a supplementary image runs someone else's code
-  // and has nothing to do with it. A DSN is a write credential for the
-  // ingestor, and broadcasting one to every third-party container would hand
-  // each of them the ability to write into strad's issue tracker.
-  "SENTRY_DSN",
+  // Includes the GlitchTip DSN, which is why it is not listed here: a DSN is a
+  // write credential for strad's own issue tracker, and CORE_ONLY_BOOT_ENV_KEYS
+  // carries the reasoning for keeping it off a third-party container.
+  ...CORE_ONLY_BOOT_ENV_KEYS,
 ]);
 
 /**

@@ -17,6 +17,11 @@ import {
   parameterPath,
 } from "../src/secrets/parameters/namespace.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
+import {
+  BUNDLE_BOOT_ENV_KEYS,
+  CORE_BOOT_ENV_KEYS,
+  CORE_ONLY_BOOT_ENV_KEYS,
+} from "../src/secrets/provider/hydrate.ts";
 import { serveFake } from "./helpers/serve-fake.ts";
 
 /**
@@ -668,6 +673,80 @@ describe("render-spec, env-backed (the default)", () => {
     );
     expect(secretKeys).toContain("GRANOLA_TOKEN");
     expect(secretKeys).toContain("STRAD_TOKENS");
+  });
+
+  /**
+   * The same boot keys on a third-party container, whichever provider baked them.
+   *
+   * Under `env` this script puts every boot key in the app-level env as a
+   * SECRET, and the app-level SECRETs are broadcast to supplementary components.
+   * The store path hands such a component `BUNDLE_BOOT_ENV_KEYS` and nothing
+   * else; this is the env path held to the same line, through the real script,
+   * with every boot key present in the deploy environment.
+   */
+  it("keeps the core-only boot keys off a supplementary component", () => {
+    const dir = mkdtempSync(join(tmpdir(), "strad-secrets-env-boot-"));
+    const cfg = join(dir, "cfg.yaml");
+    writeFileSync(
+      cfg,
+      CONFIG_YAML(
+        `  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    entitlements: [admin]
+    env:
+      SLACK_BOT_TOKEN: "\${SLACK_BOT_TOKEN}"
+`,
+        "  - name: bundle\n",
+      ).replace("  secrets:\n    provider: gcp-parameter-store\n", ""),
+    );
+    const bootEnv = Object.fromEntries(
+      CORE_BOOT_ENV_KEYS.map((key) => [key, `env-${key}`]),
+    );
+    const out = execFileSync(
+      process.execPath,
+      [
+        "--experimental-transform-types",
+        "scripts/render-spec.ts",
+        "--config",
+        cfg,
+        "--image",
+        "ghcr.io/tadasant/strad:0.1.0",
+        "--app",
+        "strad-test",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH ?? "",
+          ...bootEnv,
+          GRANOLA_TOKEN: "gran",
+          SLACK_BOT_TOKEN: "xoxb",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    const spec = JSON.parse(out) as RenderedSpec;
+    const keysOf = (name: string) =>
+      spec.services.find((s) => s.name === name)!.envs.map((e) => e.key);
+    const boot = (keys: string[]) =>
+      keys
+        .filter((k) => (CORE_BOOT_ENV_KEYS as readonly string[]).includes(k))
+        .sort();
+
+    expect(boot(keysOf("bundle"))).toEqual([...BUNDLE_BOOT_ENV_KEYS].sort());
+    expect(boot(keysOf("core"))).toEqual([...CORE_BOOT_ENV_KEYS].sort());
+    // The component's own credential and an ordinary broadcast ref still land.
+    expect(keysOf("bundle")).toContain("SLACK_BOT_TOKEN");
+    expect(keysOf("bundle")).toContain("GRANOLA_TOKEN");
+    // No value of a core-only key anywhere on the bundle, under any name.
+    const bundleValues = JSON.stringify(
+      spec.services.find((s) => s.name === "bundle")!.envs,
+    );
+    for (const key of CORE_ONLY_BOOT_ENV_KEYS) {
+      expect(bundleValues, key).not.toContain(`env-${key}`);
+    }
   });
 });
 
