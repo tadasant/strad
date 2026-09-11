@@ -2259,7 +2259,10 @@ index. On a gateway with one secrets page there is no strip.
 
 The list is the index's list. It asks `serverLooksSecrets`, the same predicate
 behind the index's `Manage →` links, so the two cannot disagree about which pages
-exist. It describes each sibling the way that page resolves itself. It is
+exist. It describes each sibling the way that page resolves itself. The one slug
+it leaves out is one that also declares [`oauth:`](/operate/connectors/): the
+console answers a connector before it looks at env, so that slug's `/ui/<slug>` is
+a consent page, not a secrets page. It is
 navigation, not authorization: the `/ui` gate never reads `entitlements:`, so a
 console-only slug with `entitlements: []` has a page and is listed. It shows
 declared config only — slug, project, namespaces — and never a parameter, a value,

@@ -249,9 +249,12 @@ export interface SecretsPageSummary {
 /**
  * Every secrets page on this gateway, in config order.
  *
- * The pair that has to agree grows by one. `declaredEnv` keeps the index's
- * `Manage →` link from being narrower than the page; this keeps a page's list of
- * its SIBLINGS from disagreeing with either. Both halves are reused rather than
+ * Three things have to agree: the index's `Manage →` link, the page it points
+ * at, and this list. `declaredEnv` keeps the link from being narrower than the
+ * page; this keeps a page's list of its SIBLINGS from disagreeing with either.
+ * (The console's one declaration that outranks detection — a connector's
+ * `oauth:` — is applied where the page is, in `src/ui/index.ts`, because the
+ * connector module sits downstream of this one.) Both halves are reused rather than
  * restated: WHICH servers comes from `serverLooksSecrets`, the predicate the
  * index asks per card, and WHAT each one fronts comes from `resolveServerView`,
  * the resolution the sibling page itself renders. A second detection path here

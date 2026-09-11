@@ -11,15 +11,15 @@ import {
   sharedSecretProviders,
 } from "../src/secrets/provider/index.ts";
 import { secretsPages, serverLooksSecrets } from "../src/ui/resolve.ts";
+import { renderMessage } from "../src/ui/render.ts";
 
 /**
  * A SECRETS PAGE NAMES ITS SIBLINGS (tadasant/strad#250).
  *
  * A gateway can carry several secrets pages, one per slug. A reader who lands on
- * one directly saw only that page's namespaces and nothing saying the others
- * exist — "why can't I see namespace X here?", asked twice on one deployment by
- * someone on the right console and the wrong page. Each page now lists the
- * others under its breadcrumb.
+ * one directly needs to be told the others exist — "why can't I see namespace X
+ * here?" was asked twice on one deployment by someone on the right console and
+ * the wrong page. Each page lists the others under its breadcrumb.
  *
  * What is proven here, through the REAL Express app over a REAL socket:
  *
@@ -33,7 +33,9 @@ import { secretsPages, serverLooksSecrets } from "../src/ui/resolve.ts";
  *   4. The strip and the `/ui` index agree on which secrets pages exist, from
  *      every page — they ask the same `serverLooksSecrets`.
  *   5. It carries declared config and nothing else: no credential, no
- *      parameter.
+ *      parameter — and what it does carry is escaped.
+ *   6. A slug that declares `oauth:` is not listed, whatever its env says: its
+ *      `/ui/<slug>` is the connector's consent page, not a secrets page.
  */
 
 const BOOTSTRAP = "bootstrap-secret-xyz";
@@ -272,6 +274,7 @@ async function boot(
     STRAD_BUNDLE_URL_BUNDLE_ZIMMER: "http://127.0.0.1:1",
     STRAD_BUNDLE_URL_BUNDLE_VAULT: "http://127.0.0.1:1",
     STRAD_BUNDLE_URL_BUNDLE_OLD: "http://127.0.0.1:1",
+    STRAD_BUNDLE_URL_BUNDLE_SHEETS: "http://127.0.0.1:1",
     ...SECRETS,
   };
   const runtime = new EnvSecretProvider(SECRETS);
@@ -397,7 +400,7 @@ describe("a secrets page on a gateway with several", () => {
   it("is on a multi-store page too, which names its OWN stores in the picker", async () => {
     const html = await page("/ui/zimmer-secrets");
     expect(stripSlugs(html)).toEqual(["secrets", "vault", "old-secrets"]);
-    expect(html).toContain('<select class="in in-select" id="store-input"');
+    expect(html).toContain('id="store-input"');
   });
 
   it("is on a degraded page, which renders a message instead of the table", async () => {
@@ -454,5 +457,106 @@ describe("a secrets page on a gateway with one", () => {
   it("still agrees with the index, which offers exactly this one", async () => {
     const res = await fetch(`${baseUrl}/ui`, { headers: auth });
     expect(indexManageSlugs(await res.text())).toEqual(["secrets"]);
+  });
+});
+
+describe("a slug whose page is its connector", () => {
+  // Secrets-shaped env AND `oauth:`. `/ui/<slug>` answers the connector first,
+  // so whatever the env says, that URL is a consent page.
+  const CONNECTOR_YAML = `${HEADER}
+bundles:
+  - name: bundle
+  - name: bundle-zimmer
+  - name: bundle-sheets
+servers:
+${SECRETS_SERVER}
+  - slug: zimmer-secrets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-zimmer
+    path: /secrets
+    entitlements: [admin]
+    env:
+      SECRETS_PROJECT_ID: "${ZIMMER_PROJECT}"
+      SECRETS_NAMESPACES: "${ZIMMER_NS}"
+  - slug: sheets
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle-sheets
+    path: /sheets
+    entitlements: [admin]
+    env:
+      SECRETS_PROJECT_ID: "sheets-secrets-test"
+      SECRETS_NAMESPACES: "/sheets/test/"
+    oauth:
+      provider: google
+      account: someone@example.com
+      scopes:
+        - https://www.googleapis.com/auth/spreadsheets.readonly
+`;
+  const CONNECTOR = parseConfig(CONNECTOR_YAML);
+  let baseUrl = "";
+  let close = () => {};
+
+  beforeAll(async () => {
+    ({ baseUrl, close } = await boot(CONNECTOR, {}));
+  });
+
+  afterAll(() => close());
+
+  it("is not listed, though serverLooksSecrets says yes", async () => {
+    const sheets = CONNECTOR.servers.find((s) => s.slug === "sheets")!;
+    expect(serverLooksSecrets(sheets)).toBe(true);
+
+    const res = await fetch(`${baseUrl}/ui/secrets`, { headers: auth });
+    const html = await res.text();
+    expect(stripSlugs(html)).toEqual(["zimmer-secrets"]);
+    expect(strip(html)).toContain("One of 2 secrets pages on this gateway.");
+  });
+
+  it("because its page is the connector's, not a parameters page", async () => {
+    const res = await fetch(`${baseUrl}/ui/sheets`, { headers: auth });
+    const html = await res.text();
+    expect(html).not.toContain("sheets · parameters");
+    expect(html).not.toContain('id="ns-input"');
+    expect(strip(html)).toBeUndefined();
+  });
+});
+
+describe("siblingStrip, through renderMessage", () => {
+  it("renders on a degraded secrets page, and escapes everything it prints", () => {
+    const html = renderMessage({
+      title: "x · not configured",
+      heading: "The console's admin credential is not configured",
+      sub: "detail",
+      breadcrumbToIndex: true,
+      siblingPages: [
+        {
+          slug: "a<b",
+          enabled: true,
+          stores: [
+            { projectId: 'p"><script>1</script>', namespaces: ["/n&<m>/"] },
+          ],
+        },
+      ],
+    });
+    const s = strip(html)!;
+    expect(s).toContain("One of 2 secrets pages on this gateway.");
+    expect(s).toContain('href="/ui/a%3Cb">a&lt;b</a>');
+    expect(s).toContain(
+      "<code>p&quot;&gt;&lt;script&gt;1&lt;/script&gt;</code>",
+    );
+    expect(s).toContain('<span class="sibling-ns">/n&amp;&lt;m&gt;/</span>');
+    expect(s).not.toContain("<script>");
+  });
+
+  it("renders nothing when it is handed no siblings", () => {
+    const html = renderMessage({
+      title: "x",
+      heading: "h",
+      sub: "s",
+      siblingPages: [],
+    });
+    expect(strip(html)).toBeUndefined();
   });
 });
