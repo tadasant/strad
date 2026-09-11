@@ -138,7 +138,7 @@ const GCS_ENV = {
  * and a confusing 403 — and because the fallback, once written, is the thing
  * someone later "fixes" by handing the viewer more permissions.
  */
-const SECRETS_ENV = {
+export const SECRETS_ENV = {
   projectId: "SECRETS_PROJECT_ID",
   location: "SECRETS_LOCATION",
   namespaces: "SECRETS_NAMESPACES",

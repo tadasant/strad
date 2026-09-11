@@ -4,6 +4,7 @@ import type {
   ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Request, Response } from "express";
+import type { RuntimeConfig } from "../../config/runtime.ts";
 import type { ServerKind } from "../../config/schema.ts";
 import type { ClientCapabilities } from "../clientCapabilities.ts";
 import type { LocalHost } from "../troubleshoot.ts";
@@ -100,6 +101,23 @@ export interface CallToolResult {
  */
 export interface BuiltinModule {
   tools: Tool[];
+  /**
+   * The tools this builtin actually offers, when that depends on what the
+   * PROCESS can do rather than on what the module implements.
+   *
+   * Optional, and `tools` is the answer when it is absent — which is every
+   * builtin that has a fixed surface. The one that does not is the connector
+   * editor (src/servers/connectors.ts): its write tools exist only where this
+   * gateway holds a credential that can persist a roster change, and a tool
+   * that is listed and then refuses every call is worse than one that is not
+   * listed. That is the same shape the `secrets` server derives from its IAM
+   * probe, and for the same reason.
+   *
+   * It is handed a NARROWED context — no `options` — because a tool list is
+   * metadata and must not be able to fail on a secret-store outage. See the
+   * note on BuiltinServerAdapter's `options` thunk.
+   */
+  visibleTools?(ctx: Omit<BuiltinContext, "options">): Tool[];
   call(
     name: string,
     args: Record<string, unknown>,
@@ -122,6 +140,19 @@ export interface BuiltinContext {
     bundle: string;
     hostname: string;
   };
+  /**
+   * The process's mutable server roster, when it has one.
+   *
+   * A thunk and nullable, both deliberately. Nullable because
+   * `gateway.configStore:` is off by default and a builtin that needs it must
+   * say so rather than assume. A THUNK because the roster holder is built after
+   * the registry it is handed to — it owns the rebuild, and the rebuild is what
+   * produces the registry — so there is nothing to capture at build time.
+   *
+   * The import is type-only, which is what keeps a gateway module from pulling
+   * the config layer's dependency tree in at runtime.
+   */
+  runtime?: () => RuntimeConfig | null;
   /**
    * The MCP client's advertised capabilities, read from the `initialize` request
    * (see clientCapabilities.ts). A builtin can use this to opt into MCP-App

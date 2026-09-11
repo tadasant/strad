@@ -1,5 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import type { ConsoleSessions } from "../auth/session.ts";
+import type { RuntimeConfig } from "../config/runtime.ts";
+import { mountServersUi } from "./servers.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
@@ -171,6 +173,15 @@ export interface ConsoleUiOptions {
   googleReady?: boolean;
   /** Test seam: the transport a connector's token exchange uses. See ConnectorUiOptions. */
   connectorFetch?: typeof fetch;
+  /**
+   * The runtime roster holder, when this deployment has one.
+   *
+   * A getter, because the app this mounts into is rebuilt on every roster
+   * change and the holder is what rebuilds it — see AppOptions.runtimeConfig.
+   * Absent or returning null means `gateway.configStore:` is off and the
+   * connector editor is not mounted.
+   */
+  runtimeConfig?: () => RuntimeConfig | null;
 }
 
 export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
@@ -254,6 +265,18 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     secretProvider: opts.secretProvider,
     parametersStore: opts.parametersStore,
   });
+
+  // Create / edit / remove a server entry, when this deployment keeps its
+  // roster in a store. Mounted at its own top-level prefix rather than under
+  // `/ui/:server` — see src/ui/servers.ts for why that wildcard makes `/ui/...`
+  // the wrong home for it. Not mounted at all when `runtimeConfig` is absent,
+  // which is the default.
+  if (opts.runtimeConfig) {
+    mountServersUi(app, gate, {
+      runtimeConfig: opts.runtimeConfig,
+      env: opts.env,
+    });
+  }
 
   // The secret roster used to live here, as its own destination. It does not any
   // more — it is on `/ui`, on the entry it describes. The redirect stays because

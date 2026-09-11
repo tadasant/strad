@@ -1,3 +1,4 @@
+import type { RuntimeConfig } from "../config/runtime.ts";
 import { soleRefName, type StradConfig } from "../config/schema.ts";
 import {
   resolveMapAsync,
@@ -87,6 +88,14 @@ export interface RegistryOptions {
     value: string,
     ours: (current: string) => boolean,
   ) => Promise<void>;
+  /**
+   * The process's mutable server roster, for the builtin that edits it.
+   *
+   * A thunk, because the holder owns the rebuild that produces this registry —
+   * there is nothing to capture at the moment `build()` runs. Absent wherever
+   * `gateway.configStore:` is off, which is the default.
+   */
+  runtime?: () => RuntimeConfig | null;
 }
 
 export class Registry {
@@ -200,6 +209,7 @@ export class Registry {
             await loadBuiltin(server.module),
             optionsFor(server),
             component,
+            opts.runtime,
           ),
         );
         slugs.push(server.slug);
@@ -333,6 +343,7 @@ export class Registry {
                 await loadBuiltin(server.module),
                 optionsFor(server),
                 component,
+                opts.runtime,
               ),
             );
           } else {

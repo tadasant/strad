@@ -637,6 +637,36 @@ so the name is missing and the deploy fails. The gateway's own boot keys
 (`STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN`, …) can never be covered this way: no
 server references them, and the process reads them for itself.
 
+## One parameter in this store is not a credential
+
+A deployment with `gateway.configStore.enabled: true` keeps its **runtime server
+overlay** — the entries a human added or changed through the console — in the
+same store, as one non-secret parameter:
+
+```
+/strad/{env}/gateway/config/SERVERS
+```
+
+The namespace is deliberate. `config/` is not `static/`, and only `static/` is
+read for `${NAME}` resolution, so the overlay can never resolve as a variable
+some server happens to reference. Nothing else is kept under `config/`.
+
+It is a **non-secret** parameter: its value is a config document — slugs, urls,
+role names, `${NAME}` references — and holds no credential. Anything
+credential-shaped inside it is a reference to something under `static/`, resolved
+per request like every other one.
+
+The two credentials are the ones already on the deployment. Reads go through the
+**resolver** key the container already carries. Writes go through the **admin**
+key, on core only, via `consoleEnv:` — the same `SECRETS_ADMIN_SERVICE_ACCOUNT_KEY_JSON`
+the console's secrets pages use. A gateway holding the resolver key and not the
+admin key serves the roster read-only and says which credential is missing.
+Nothing new is granted: the admin identity could already write any parameter in
+this store.
+
+The document is capped at 64 KiB, the same bound the write-back route below
+applies. Full model: [Runtime config](/operate/runtime-config/).
+
 ## Fail-loud, without reading a value
 
 Baking every `${NAME}` into the spec has one genuinely good property: a reference

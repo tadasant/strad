@@ -35,9 +35,27 @@ export async function loadConfig(
   env: NodeJS.ProcessEnv = process.env,
   onDialect?: (dialect: DesugarResult) => void,
 ): Promise<StradConfig> {
+  return (await loadConfigDocument(path, env, onDialect)).config;
+}
+
+/**
+ * The checked-in config, and the DOCUMENT it was parsed from.
+ *
+ * The document is what the runtime overlay merges into (src/config/overlay.ts):
+ * a merge at the parsed level would bake one image version's defaults into a
+ * stored entry, and this is the only place that still holds the pre-schema
+ * shape. Everything else about the load is unchanged — `loadConfig` is this
+ * function with the extra fields dropped, so the boot path it has always had is
+ * the boot path it still has.
+ */
+export async function loadConfigDocument(
+  path: string,
+  env: NodeJS.ProcessEnv = process.env,
+  onDialect?: (dialect: DesugarResult) => void,
+): Promise<LoadedConfig> {
   const inline = env.STRAD_CONFIG_YAML;
   if (inline && inline.trim() !== "") {
-    return parseAndNotify(inline, "STRAD_CONFIG_YAML", onDialect);
+    return documentFrom(inline, "STRAD_CONFIG_YAML", onDialect);
   }
 
   let raw: string;
@@ -54,18 +72,37 @@ export async function loadConfig(
     throw err;
   }
 
-  return parseAndNotify(raw, path, onDialect);
+  return documentFrom(raw, path, onDialect);
 }
 
-/** Parse, and hand the caller what the dialect did — once, and only if it ran. */
-function parseAndNotify(
+export interface LoadedConfig {
+  /** The validated config, exactly what `loadConfig` has always returned. */
+  config: StradConfig;
+  /**
+   * The document the schema parsed: YAML in, `mcpServers:` already folded away.
+   *
+   * The DESUGARED one rather than the raw one, and that is the whole of how
+   * these two features compose. Merging the overlay into the RAW document would
+   * put the overlay on one side of the dialect and the file's own `mcpServers:`
+   * entries on the other — two server lists, one of which the merge cannot see,
+   * and a slug collision nothing would detect. Desugaring first means an entry
+   * written in either dialect is an ordinary `servers:` entry by the time the
+   * overlay looks at it.
+   */
+  document: unknown;
+  /** Where it came from, for an error message. */
+  source: string;
+}
+
+/** Parse, hand the caller what the dialect did, and keep the document. */
+function documentFrom(
   raw: string,
-  path: string,
+  source: string,
   onDialect?: (dialect: DesugarResult) => void,
-): StradConfig {
-  const result = parseConfigWithDialect(raw, path);
+): LoadedConfig {
+  const result = parseConfigWithDialect(raw, source);
   if (onDialect && result.dialect.used) onDialect(result.dialect);
-  return result.config;
+  return { config: result.config, document: result.dialect.doc, source };
 }
 
 /**
