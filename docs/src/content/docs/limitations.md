@@ -375,6 +375,33 @@ shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. The `store`
 enum grows its second value there. See
 [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
+### 92. `/mcp` can be discovered, but not signed in to
+
+`/mcp` publishes [RFC 9728 protected-resource
+metadata](/auth/overview/#discovery-what-mcp-says-it-accepts) at
+`/.well-known/oauth-protected-resource/mcp`, and its `401` points at it in
+`WWW-Authenticate: … resource_metadata="…"`. The document deliberately names **no
+`authorization_servers`**, and `/.well-known/oauth-authorization-server` is still
+a `404`.
+
+So a compliant MCP client can discover strad and read what it accepts — and then
+has no OAuth flow to run. (A browser-hosted client on another origin cannot read
+either: neither half sends CORS headers, and strad's browser surface is
+same-origin by design.) The credential is still a static
+`strad_<env>_<pubid>_<secret>` token handed over out of band, which for an
+interactive human client means a copied, long-lived, standing secret rather than a
+per-user revocable one.
+
+That is a decision, not a bug: Google Workspace OAuth in strad is the console door
+only, and naming it here would send a client through a consent flow to be `401`ed
+with a valid access token at the end of it. What is missing is the decision, not
+the plumbing.
+
+**Undo:** choose an authorization server for `/mcp`, add `authorization_servers`
+to the document, accept its access tokens alongside static ones, and map an OAuth
+identity onto `roles`. Tracked in
+[issue #53](https://github.com/tadasant/strad/issues/53).
+
 ### 64. A Google Sheets credential is minted by a human, and expires in 7 days in testing mode
 
 [Google Sheets](/servers/google-sheets/) is the one bundled server that
