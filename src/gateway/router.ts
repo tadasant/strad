@@ -4,6 +4,11 @@ import type { Request, Response } from "express";
 import { clientCapabilitiesFromInitialize } from "./clientCapabilities.ts";
 import { bearerToken, secretEquals } from "../auth/credential.ts";
 import {
+  metadataBaseUrl,
+  resourceMetadataUrl,
+  wwwAuthenticate,
+} from "../auth/protected-resource.ts";
+import {
   authenticateMcp,
   Unauthenticated,
   type Principal,
@@ -78,6 +83,22 @@ export function createMcpHandler(opts: McpHandlerOptions) {
 
   // Compiled once: the policy is a property of the config, not of the request.
   const policies = compileToolPolicies(opts.config);
+
+  /**
+   * The `resource_metadata` URL for this request's `401`, or null.
+   *
+   * Per request rather than per handler because the base URL can be the origin
+   * the request arrived on — see `metadataBaseUrl` in
+   * `src/auth/protected-resource.ts` for why that is the fallback and not the
+   * primary. Null in bundle mode, and null when a deployment declares no
+   * `gateway.publicUrl` and the request carried no `Host`: there is no document
+   * at a URL we cannot name.
+   */
+  function metadataUrl(req: Request): string | null {
+    if (opts.mode !== "core") return null;
+    const base = metadataBaseUrl(req, opts.config.gateway.publicUrl);
+    return base === null ? null : resourceMetadataUrl(base);
+  }
 
   return async function handleMcp(req: Request, res: Response): Promise<void> {
     // --- telemetry: one SERVER span per /mcp request ------------------------
@@ -185,12 +206,21 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         span.setAttribute("auth.failure_reason", err.reason);
         // WWW-Authenticate points a spec-compliant client at where to get a
         // token, without leaking whether the one it sent was close.
+        //
+        // `resource_metadata` (RFC 9728 §5.1) is the half that makes that
+        // pointer followable rather than aspirational: it names the URL of the
+        // protected-resource document, which says what `/mcp` accepts. The
+        // document itself is `src/auth/protected-resource.ts`, and the URL is
+        // built by the same function the route is mounted from, so the two
+        // cannot drift apart.
+        //
+        // CORE ONLY. A bundle's `/mcp` is reached over strad's private network
+        // with the shared `STRAD_INTERNAL_TOKEN` and serves no well-known path,
+        // so a pointer from there would be a `404` waiting to happen. Its `401`
+        // is the two parameters it always carried.
         res
           .status(401)
-          .set(
-            "WWW-Authenticate",
-            'Bearer realm="strad", error="invalid_token"',
-          )
+          .set("WWW-Authenticate", wwwAuthenticate(metadataUrl(req)))
           .json({ error: "invalid_token" });
         return;
       }

@@ -22,6 +22,11 @@ import {
   type OauthTxPayload,
 } from "../auth/session.ts";
 import type { TokenStore } from "../auth/tokens.ts";
+import {
+  metadataBaseUrl,
+  protectedResourceMetadata,
+  PROTECTED_RESOURCE_ROUTES,
+} from "../auth/protected-resource.ts";
 import { BYPASS_COOKIE, googlePrincipal } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { createMcpHandler } from "../gateway/router.ts";
@@ -245,6 +250,34 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.mode === "core") {
+    // --- discovery: what this endpoint is, and what it accepts -------------
+    //
+    // RFC 9728 protected-resource metadata for `/mcp`. UNAUTHENTICATED, and it
+    // has to be: it is what a client reads BEFORE it holds a credential, and it
+    // is the document `/mcp`'s `401` points at. It discloses the public URL of
+    // an endpoint the caller just asked about and the name of the gateway — two
+    // things already in the request — and no secret, no slug and no roster.
+    //
+    // CORE ONLY, because core is the door on the open internet. A bundle's
+    // `/mcp` is a private-network hop authenticated with the shared internal
+    // token; no MCP client discovers it, and claiming otherwise would publish a
+    // resource identifier nothing can reach.
+    //
+    // Two paths, one document — see `src/auth/protected-resource.ts` for the
+    // path-insertion rule and why the root path is served beside it.
+    for (const route of PROTECTED_RESOURCE_ROUTES) {
+      app.get(route, (req, res) => {
+        const base = metadataBaseUrl(req, opts.config.gateway.publicUrl);
+        if (base === null) {
+          res.status(404).json({ error: "no_resource_identifier" });
+          return;
+        }
+        res
+          .type("application/json")
+          .json(protectedResourceMetadata(base, opts.config.gateway.name));
+      });
+    }
+
     // The machine's read of the human console's secret roster.
     //
     // CORE ONLY, alongside the console it mirrors: the derivation reads core's

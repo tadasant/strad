@@ -147,7 +147,11 @@ spec: the server list decides how many containers exist and how they're wired.
   corporate address).
 - **Machines → `/mcp`.** Static system tokens: `strad_<env>_<pubid>_<secret>`.
   Only the SHA-256 is stored; the plaintext is shown once at mint. Constant-time
-  compare, soft revocation.
+  compare, soft revocation. `/mcp` says so out loud: it publishes [RFC
+  9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata at
+  `/.well-known/oauth-protected-resource/mcp` and every `401` points at it. The
+  document names no authorization server, because there is none to name. See
+  [discovery](https://docs.strad.tadasant.com/auth/overview/#discovery-what-mcp-says-it-accepts).
 
 The two doors share no credential, which is why the console's **playground**
 (`/playground/<slug>` — list a server's tools and call them by hand, no model
