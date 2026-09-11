@@ -1,6 +1,9 @@
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
-import type { StradConfig } from "../config/schema.ts";
+import {
+  CONSOLE_SESSION_DEFAULTS,
+  type StradConfig,
+} from "../config/schema.ts";
 import { secretEquals } from "./credential.ts";
 import type { Principal } from "./index.ts";
 
@@ -20,9 +23,14 @@ import type { Principal } from "./index.ts";
  *
  * WHAT WE GIVE UP. A stateless session cannot be revoked one-at-a-time: a cookie
  * is valid until it expires. Three things bound that:
- *   - a short absolute lifetime (12h), with no sliding renewal — the clock
- *     starts at sign-in and never moves, so a stolen cookie dies on a schedule
- *     an attacker cannot extend;
+ *   - two clocks from `auth.google.session`. A SLIDING window: a cookie past
+ *     half of it is re-issued by the console gate, so an active human stays
+ *     signed in and an idle cookie dies. And an ABSOLUTE cap, counted from the
+ *     Google sign-in (`authAt`), which renewal copies forward and never moves.
+ *     Renewal is what lets a stolen cookie that keeps being used keep itself
+ *     alive; the cap is what stops that being forever, which is why it is
+ *     checked on every read and has no off switch. Both are read from the
+ *     CURRENT config, so changing either applies to sessions already issued;
  *   - `hd` is re-checked against the CURRENT config on every request, and roles
  *     are read from the CURRENT config rather than from the cookie, so tightening
  *     `auth.google` takes effect immediately for sessions already issued;
@@ -54,8 +62,6 @@ export const SESSION_COOKIE = "strad_console_session";
 /** The in-flight OAuth transaction: PKCE verifier + state + return path. */
 export const OAUTH_TX_COOKIE = "strad_oauth_tx";
 
-/** Absolute session lifetime. Re-authenticating is a redirect, not a password. */
-export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 /** How long a human has to get through Google's consent screen and back. */
 export const OAUTH_TX_TTL_MS = 10 * 60 * 1000;
 
@@ -67,9 +73,37 @@ export interface ConsoleSessionPayload {
   /** The verified hosted domain, re-checked against config on every read. */
   hd: string;
   name?: string;
-  /** Issued-at and absolute expiry, epoch ms. */
+  /** When THIS cookie was sealed, epoch ms. Renewal moves it. */
   iat: number;
+  /**
+   * When the human signed in with Google, epoch ms: the instant the absolute cap
+   * counts from. Renewal copies it forward unchanged.
+   *
+   * Absent on a cookie sealed before renewal existed. Such a cookie was never
+   * renewed, so its `iat` IS its sign-in, and `signedInAt()` reads it that way —
+   * a legacy cookie is capped from `iat`, never uncapped.
+   */
+  authAt?: number;
+  /**
+   * The expiry this cookie was minted with, epoch ms: `iat` plus the sliding
+   * window, never later than `authAt` plus the absolute cap. The current config
+   * can end it sooner; see `sessionDeadline()`.
+   */
   exp: number;
+}
+
+/** The session's two clocks, in ms. See `auth.google.session`. */
+export interface SessionWindows {
+  slidingMs: number;
+  absoluteMs: number;
+}
+
+export function sessionWindows(cfg: StradConfig): SessionWindows {
+  const s = cfg.auth.google?.session ?? CONSOLE_SESSION_DEFAULTS;
+  return {
+    slidingMs: s.slidingTtlSeconds * 1000,
+    absoluteMs: s.absoluteTtlSeconds * 1000,
+  };
 }
 
 export interface OauthTxPayload {
@@ -217,6 +251,7 @@ export function sessionKeyProblem(
 export function principalFromSession(
   payload: ConsoleSessionPayload,
   cfg: StradConfig,
+  now: number = Date.now(),
 ): Principal | null {
   const google = cfg.auth.google;
   if (!google?.enabled) return null;
@@ -227,6 +262,10 @@ export function principalFromSession(
   // The check that mattered at sign-in still has to hold. Re-pointing the
   // deployment at another Workspace must not leave the old one signed in.
   if (payload.hd !== google.hostedDomain) return null;
+  // The sealer checked `exp`, which is only the lifetime the cookie was minted
+  // with. The cap and the window are the ones THIS config sets.
+  const deadline = sessionDeadline(payload, sessionWindows(cfg));
+  if (deadline === null || deadline <= now) return null;
 
   return {
     kind: "google",
@@ -236,22 +275,124 @@ export function principalFromSession(
   };
 }
 
+/**
+ * When the human behind this session signed in, or null when the payload cannot
+ * say. A session that cannot say when it began is refused, never left uncapped.
+ */
+function signedInAt(payload: ConsoleSessionPayload): number | null {
+  if (!Number.isFinite(payload.iat)) return null;
+  // Absent, and only absent, is a legacy cookie. A `null` or a string is a
+  // payload strad never sealed, and reading it as legacy would hand it a cap.
+  const at = payload.authAt === undefined ? payload.iat : payload.authAt;
+  if (typeof at !== "number" || !Number.isFinite(at)) return null;
+  // Renewal only ever moves `iat` forward from the sign-in.
+  if (at > payload.iat) return null;
+  return at;
+}
+
+/**
+ * The instant this session stops being accepted under the given clocks, or null
+ * when the payload cannot say. The earliest of three:
+ *   - the cookie's own `exp`, which is what it was minted with;
+ *   - `iat` plus the sliding window, so shortening it applies to cookies already
+ *     issued rather than to the next sign-in;
+ *   - the sign-in plus the absolute cap: the one no renewal moves.
+ */
+export function sessionDeadline(
+  payload: ConsoleSessionPayload,
+  windows: SessionWindows,
+): number | null {
+  const at = signedInAt(payload);
+  if (at === null) return null;
+  return Math.min(
+    payload.exp,
+    payload.iat + windows.slidingMs,
+    at + windows.absoluteMs,
+  );
+}
+
 export function issueSessionCookie(
   res: Response,
   sealer: Sealer,
   identity: { sub: string; email: string; hd: string; name?: string },
+  windows: SessionWindows,
   env: NodeJS.ProcessEnv,
   now: number = Date.now(),
 ): void {
-  const payload: ConsoleSessionPayload = {
-    v: 1,
-    sub: identity.sub,
-    email: identity.email,
-    hd: identity.hd,
-    ...(identity.name ? { name: identity.name } : {}),
-    iat: now,
-    exp: now + SESSION_TTL_MS,
-  };
+  setSessionCookie(
+    res,
+    sealer,
+    {
+      v: 1,
+      sub: identity.sub,
+      email: identity.email,
+      hd: identity.hd,
+      ...(identity.name ? { name: identity.name } : {}),
+      iat: now,
+      authAt: now,
+      exp: now + Math.min(windows.slidingMs, windows.absoluteMs),
+    },
+    env,
+    now,
+  );
+}
+
+/**
+ * Re-issue a live session once less than half its sliding window is left, so an
+ * active human is never signed out on a fixed clock. One `Set-Cookie` on an
+ * ordinary response, and no server-side state: any replica can renew a cookie
+ * any other replica sealed.
+ *
+ * The identity and `authAt` are copied forward. Only `iat` and `exp` move, and
+ * `exp` never past the absolute cap — so near the cap this does nothing, rather
+ * than re-sending a cookie that cannot live any longer on every request.
+ *
+ * Returns whether it renewed. The caller has already accepted the payload
+ * through `principalFromSession`; a payload that is not live is refused here
+ * too, so the order of the two calls cannot turn a dead session into a live one.
+ */
+export function renewSessionIfDue(
+  res: Response,
+  sealer: Sealer,
+  payload: ConsoleSessionPayload,
+  windows: SessionWindows,
+  env: NodeJS.ProcessEnv,
+  now: number = Date.now(),
+): boolean {
+  const at = signedInAt(payload);
+  const deadline = sessionDeadline(payload, windows);
+  if (at === null || deadline === null || deadline <= now) return false;
+  if (deadline - now >= windows.slidingMs / 2) return false;
+
+  const exp = Math.min(now + windows.slidingMs, at + windows.absoluteMs);
+  if (exp <= deadline) return false;
+
+  setSessionCookie(
+    res,
+    sealer,
+    {
+      v: 1,
+      sub: payload.sub,
+      email: payload.email,
+      hd: payload.hd,
+      ...(payload.name ? { name: payload.name } : {}),
+      iat: now,
+      authAt: at,
+      exp,
+    },
+    env,
+    now,
+  );
+  return true;
+}
+
+function setSessionCookie(
+  res: Response,
+  sealer: Sealer,
+  payload: ConsoleSessionPayload,
+  env: NodeJS.ProcessEnv,
+  now: number,
+): void {
   res.cookie(SESSION_COOKIE, sealer.seal(payload), {
     ...cookieFlags(env),
     // Scoped to "/" because the gate covers the landing page as well as /ui.
@@ -259,7 +400,8 @@ export function issueSessionCookie(
     // Authorization header against the static token store and never reads a
     // cookie (HACKS.md #2).
     path: "/",
-    maxAge: SESSION_TTL_MS,
+    // The browser forgets it when strad would stop accepting it.
+    maxAge: payload.exp - now,
   });
 }
 

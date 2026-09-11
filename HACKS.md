@@ -4894,8 +4894,6 @@ retain, expire or clean up.
 
 ---
 
----
-
 ## 96. The runtime roster can add a slug, not a credential
 
 **What.** `gateway.configStore.enabled` lets a human add, edit, disable and
@@ -4957,3 +4955,31 @@ behind an already-listed name" to "a name the spec never listed", which needs th
 bundle host to discover mounts from the store instead of from `process.env`.
 tadasant/strad#343 carries it. For the second: a stored document with an
 `etag`-style precondition, or a single writer elected per deployment.
+
+---
+
+## 97. A console session cannot be revoked one at a time, and one in use renews to its cap
+
+**What.** The Google console session is a signed cookie with no server-side
+record (`src/auth/session.ts`). It slides: past half its window
+(`auth.google.session.slidingTtlSeconds`, 48 hours by default) the console gate
+re-issues it, and an absolute cap counted from the Google sign-in
+(`absoluteTtlSeconds`, 7 days by default) refuses it however recently it was
+renewed. Nothing can end ONE session early. The only revocation is rotating
+`CONSOLE_SESSION_SECRET` (or `GOOGLE_CLIENT_SECRET`, when that is the key), which
+signs everyone out.
+
+**Why.** strad has no datastore, and the console may run more than one replica,
+so a session table would have the failure #11 fixed for the OAuth transaction: a
+session minted on one replica unknown to another, and every restart a sign-out.
+A fixed 12-hour life would bound a stolen cookie at 12 hours, at the price of a
+sign-in every day. Renewal (#46) trades that for the cap: a stolen cookie the
+thief keeps using renews itself just as the owner's does, and stays live until 7
+days after the owner signed in.
+The cap can be lowered in config and never raised past 30 days, and a cookie that
+cannot say when its sign-in was is refused rather than uncapped.
+
+**Undo.** A durable server-side session store, shared with #43's single-use login
+tokens rather than built twice: each renewal checks a revocation list, and the
+console lists and ends individual sessions. That is the issue's option C, deferred
+until per-session revocation is a requirement on its own.

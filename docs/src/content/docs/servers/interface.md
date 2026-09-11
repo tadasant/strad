@@ -1000,6 +1000,36 @@ model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents), and the
 console page in [Managing
 tokens](/auth/overview/#managing-tokens-the-tokens-console).
 
+## `auth.google.session`
+
+How long a Google sign-in keeps the console open. Both fields are optional.
+
+```yaml
+auth:
+  google:
+    enabled: true
+    hostedDomain: tadasant.com
+    roles: [admin]
+    session:
+      slidingTtlSeconds: 172800 # default, 48h: each cookie's lifetime, renewed past half
+      absoluteTtlSeconds: 604800 # default, 7d: from the Google sign-in, which renewal never moves
+```
+
+`slidingTtlSeconds` is how long one session cookie lives. Once more than half of
+it has run, the next request through the console gate re-issues the cookie with a
+fresh one, so an active human is not signed out. `absoluteTtlSeconds` is the cap:
+counted from the sign-in itself, and past it the session is refused however
+recently it was renewed.
+
+Both are read on every request, not baked into the cookie, so changing either
+applies to sessions already issued: lowering one ends sessions sooner, and
+raising the cap extends every live session, a stolen one included. Setting them equal gives a fixed session that
+never slides. The parse refuses a value under 60 seconds (a small number of
+hours written as seconds) or over 30 days (milliseconds written as seconds, or a cap raised until
+it stops being one), and an `absoluteTtlSeconds` below `slidingTtlSeconds`. What
+the numbers trade, and why the defaults are these, is in
+[Auth](/auth/overview/#the-console-session).
+
 ## `auth.mcpOAuth`
 
 strad's own OAuth 2.1 authorization server, in front of `/mcp`. It is what lets
@@ -1048,6 +1078,7 @@ verified with no lookup and cannot be revoked before it expires. That is what th
 five-minute floor is for. Refresh tokens carry no expiry at all and are revoked
 at Google. The whole model is in
 [Auth](/auth/overview/#mcp--oauth-21-interactive-clients).
+
 
 ## `mcpServers:` — the draft SEP-2633 input dialect
 
@@ -1237,6 +1268,7 @@ Same split as the YAML interface: an unrecognised key in an `mcpServers` entry i
 path you wrote it under (`mcpServers.x.timeout`). Boot stays lenient on purpose —
 an image that refused to start on a key it had not heard of would turn a rollback
 into an outage, and this dialect's upstream is a draft, so new keys are expected.
+
 
 ## Where the config comes from
 

@@ -1489,8 +1489,10 @@ fails CI on the PR rather than the deploy after it.
   With `gateway.publicUrl` unset, that URL falls back to the origin the request
   arrived on — the same fallback `/` takes, and the reason to set `publicUrl` on
   any deployment where the `Host` header is not the gateway's own name.
-  A Google login mints a signed 12-hour session cookie; the dev bypass's cookie is
-  still the bootstrap token itself, which is a shim (see
+  A Google login mints a signed session cookie that renews while it is used and
+  dies at an absolute cap counted from sign-in (seven days by default, see
+  [the console session](/auth/overview/#the-console-session)); the dev bypass's
+  cookie is still the bootstrap token itself, which is a shim (see
   [Known limitations](/limitations/)).
 - **`/playground/:server`**, core-only and behind the same gate, is a human MCP
   client for one server: it lists the tools that server serves _you_ and calls
