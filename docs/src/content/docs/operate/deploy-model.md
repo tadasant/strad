@@ -52,11 +52,20 @@ flowchart LR
   humans and for `docker pull`; no deploy uses it. `render-spec` refuses a core
   image on a mutable tag outright, and `deploy-staging.yml` resolves
   `sha-<commit>` for the core **and** the bundle. Under
-  `--require-immutable-images` — which the staging deploy passes —
-  `render-spec` refuses to emit a spec in which any component at all ships a tag
-  that moves; without it, the same finding is a warning naming every component,
-  because prod renders this script against a config in another repository whose
-  `image:` lines it cannot change. See [which image a deploy
+  `--require-immutable-images` — which both the staging and the prod deploy
+  pass — `render-spec` refuses to emit a spec in which any component at all ships
+  a tag that moves; without it, the same finding is a warning naming every
+  component, for a render that has no commit tag to name. `--bundle-image` is
+  **repeatable**, once per
+  image repository, because a config can name more than one first-party image and
+  the gate holds the deploy to pinning all of them in the same render. Each
+  occurrence is matched on its own, and each must match something: a second
+  override cannot make a first one's failure quiet, which is the point — an
+  override that stopped matching would otherwise leave its component on the tag
+  the config names under a deploy that believed it had pinned it. So disabling
+  the last slug on a repository means dropping its `--bundle-image` in the same
+  change. Two overrides naming one repository are refused rather than resolved.
+  See [which image a deploy
   ships](/operate/operations/#which-image-a-deploy-ships).
 - **A deploy ships a compute plan DigitalOcean sells.** `render-spec` refuses a
   config whose `bundles[].instanceSizeSlug` names no App Platform plan, in the

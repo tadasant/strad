@@ -1082,14 +1082,14 @@ servers:
     entitlements: [admin]
 `;
 
-const render = (supplementaryImage?: string) =>
+const render = (...supplementaryImages: string[]) =>
   renderAppSpec({
     config: parseConfig(CONFIG),
     appName: "strad-staging",
     region: "nyc",
     image: CORE,
     env: [],
-    supplementaryImage,
+    supplementaryImages,
   });
 
 describe("the rendered staging spec", () => {

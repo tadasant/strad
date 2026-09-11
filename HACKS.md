@@ -1110,7 +1110,7 @@ project IAM admin, which no strad process holds.
 **Undo.** Apply the deny policy and this entry closes. Nothing in the code changes
 either way — this is an IAM-shaped limitation, not a mechanism in strad.
 
-## 32. The bundle component still deploys a mutable tag — RESOLVED on staging, LIVE on prod
+## 32. The bundle component still deploys a mutable tag — RESOLVED on staging, one repository LIVE on prod
 
 **✅ RESOLVED on staging.** `deploy-staging.yml` resolves `sha-<commit>` for the bundle
 exactly as it does for the core (`scripts/resolve-image-tag.ts --kind bundle`),
@@ -1120,15 +1120,37 @@ which any component ships a tag that moves. `bundle_version` pins the bundle hal
 for a rollback, which also resolves hack #25. The entry below is kept because it
 is the record of what the mutable tag actually did.
 
-**One half is NOT resolved, and it is prod.** `strad-deploy-prod.yml` in
-tadasant-internal renders through this same script and passes no
-`--bundle-image`, so its supplementary components still ship `:latest` and are
-still exposed to exactly this. It gets a `::warning::` naming every affected
-component on every deploy rather than a failure, because failing a deploy over a
-tag it has no way to change would break prod without fixing anything. The prod
-change is two lines in that workflow — resolve a bundle tag the same way, pass
-`--bundle-image` and `--require-immutable-images` — and it belongs to whoever
-owns that repository.
+**✅ RESOLVED on prod, for `ghcr.io/tadasant/strad-bundle`.**
+`strad-deploy-prod.yml` in tadasant-internal resolves a bundle tag the same way,
+passes it as `--bundle-image`, and passes `--require-immutable-images` as a hard
+gate.
+
+**What is NOT resolved is the SECOND first-party image.** Prod's config mounts
+`ghcr.io/tadasant/strad-bundle-internal` as well, behind the `craigslist` slug.
+`--require-immutable-images` refuses a moving tag on **any** component, so that
+second repository has to be pinned too — and it is pinned BY HAND, as a literal
+`:sha-…` written into `strad.prod.yaml` in tadasant-internal.
+
+A hand-written sha does not move when a new image publishes, and nothing reads it
+back: the deploy renders green, App Platform pulls the digest the operator typed
+weeks ago, and prod runs the previous code with no symptom at all. That is a
+worse failure than the `:latest` this entry is about, because `:latest` at least
+drifts toward the truth.
+
+`--bundle-image` is **repeatable**, once per image repository, which is the
+upstream half of removing that pin — each occurrence is matched on its own and
+each must match something, so a second override cannot mask a first that has gone
+stale. The downstream half is two changes in tadasant-internal, and until they
+land the hand-pin is live: resolve a `strad-bundle-internal` tag and pass a second
+`--bundle-image` in `strad-deploy-prod.yml`, then put
+`ghcr.io/tadasant/strad-bundle-internal:latest` back in the config where the sha
+is. See [tadasant/tadasant-internal#1952](https://github.com/tadasant/tadasant-internal/issues/1952).
+
+Once it lands, the per-override rule couples the two: disabling `craigslist` —
+the only slug on `strad-bundle-internal` — fails every prod render with "matched
+no supplementary server" until the same change drops that `--bundle-image`. That
+is intended; the alternative is a deploy that believes it pinned an image nothing
+runs.
 
 **What (as it stood).** The core image is now pinned to an immutable tag on every deploy —
 `sha-<commit>`, an explicit `version`, or a branch build — and `render-spec`
