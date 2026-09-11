@@ -1,4 +1,4 @@
-import { isUnhosted } from "../config/schema.ts";
+import { isUnhosted, unhostedRefFields } from "../config/schema.ts";
 import type { ServerConfig, StradConfig } from "../config/schema.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
@@ -137,9 +137,10 @@ export interface SecretRequirement {
 /**
  * Every secret one server requires, in declaration order, before deduplication.
  *
- * A remote-http server's refs are walked out of `url` and `headers` rather than
- * the whole object, so a `${...}`-looking string in a `description` cannot invent
- * a requirement. Same reasoning for a builtin: only `options` can carry one.
+ * An unhosted server's refs are walked out of `unhostedRefFields` — `url`,
+ * `headers` and a remote-http's `oauthRefresh:` — rather than the whole object,
+ * so a `${...}`-looking string in a `description` cannot invent a requirement.
+ * Same reasoning for a builtin: only `options` can carry one.
  */
 function requirementsOf(
   server: ServerConfig,
@@ -152,8 +153,7 @@ function requirementsOf(
   // Both unhosted kinds carry the same two ref-bearing fields, and strad
   // resolves them in its own process because there is no container to inject.
   if (isUnhosted(server)) {
-    push(server.url, "gateway");
-    for (const value of Object.values(server.headers)) push(value, "gateway");
+    for (const value of unhostedRefFields(server)) push(value, "gateway");
     return out;
   }
 

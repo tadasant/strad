@@ -2645,6 +2645,20 @@ See `HACKS.md` #88 and [BILL Spend & Expense](/servers/bill-spend/).
 
 ---
 
+### 91. A rotated refresh token with nowhere to land dies at the next restart
+
+A `remote-http` server with [`oauthRefresh:`](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad) mints its upstream access tokens from a refresh token `${NAME}`. A provider that rotates refresh tokens on use hands back a new one on every exchange and kills the one just spent, and core writes the new one to the parameter store — the server's own namespace, or the gateway's when that is where the name lives. Where the name resolves from the environment instead (`gateway.secrets.provider: env`, or a name that only `envFallback` supplies), there is nothing strad can write. The rotation is held in memory, one stderr line says so, and the slug keeps working until the process restarts and reads the seeded value again — which the provider killed. From then on every call on that slug fails with `invalid_grant` until a human authorizes again and re-seeds.
+
+The write-back also stops at a parameter it could not check: on anything but a definite 404 for the server's own path it does not fall through to the gateway's, because a token written to a layer the reader never reaches is a token nothing spends.
+
+**How you would know.** `strad.param_write_failed` fires for the slug at the first rotation, and the stderr line names the `${NAME}`. After the restart, the slug reads `degraded` on `/healthz` and its calls say the refresh token was refused.
+
+**Undo:** seed the refresh token in the store under the server's namespace or the gateway's, under `gcp-parameter-store`. A console authorize flow that would seed it without a human clipboard is [tadasant/strad#32](https://github.com/tadasant/strad/issues/32).
+
+See `HACKS.md` #91.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

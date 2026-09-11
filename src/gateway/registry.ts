@@ -1,4 +1,4 @@
-import type { StradConfig } from "../config/schema.ts";
+import { soleRefName, type StradConfig } from "../config/schema.ts";
 import {
   resolveMapAsync,
   resolveOptionsAsync,
@@ -13,6 +13,12 @@ import { NamespaceView } from "../secrets/provider/view.ts";
 import { waiversBySlug } from "../deploy/unseeded.ts";
 import { BuiltinServerAdapter, loadBuiltin } from "./adapters/builtin.ts";
 import { HttpServerAdapter } from "./adapters/http.ts";
+import {
+  AccessTokenMinter,
+  bearerIn,
+  resolveRefreshGrant,
+  withBearer,
+} from "./adapters/oauth-refresh.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
 import { resolvingFor } from "./unconfigured.ts";
 
@@ -65,6 +71,16 @@ export interface RegistryOptions {
    * src/secrets/parameters and resolverFromEnv().
    */
   resolver?: ParameterResolver | null;
+  /**
+   * Persist a credential that rotated inside THIS process, where the store
+   * will hand it back: `(slug, variable, value)`.
+   *
+   * What a `remote-http` server with `oauthRefresh:` calls when its token
+   * endpoint issues a new refresh token. Core only, and absent wherever there
+   * is no store to write — the minter then holds the rotation in memory and
+   * says so. See `createParameterWriteBack` in src/http/params.ts.
+   */
+  writeBack?: (slug: string, variable: string, value: string) => Promise<void>;
 }
 
 export class Registry {
@@ -186,22 +202,48 @@ export class Registry {
         // kinds, resolving per call is the point rather than an inherited detail.
         case "remote-http":
         case "local-tunnel": {
+          // A minted bearer: ONE minter per slug, reachable from this slug's
+          // endpoint thunk and nothing else. There is no cache shared between
+          // servers to key wrongly — see gateway/adapters/oauth-refresh.ts.
+          const oauth =
+            server.kind === "remote-http" ? server.oauthRefresh : undefined;
+          const refreshVariable = oauth
+            ? soleRefName(oauth.refreshToken)
+            : null;
+          const writeBack = opts.writeBack;
+          const minter =
+            oauth && refreshVariable
+              ? new AccessTokenMinter({
+                  slug: server.slug,
+                  variable: refreshVariable,
+                  persist: writeBack
+                    ? (value) => writeBack(server.slug, refreshVariable, value)
+                    : undefined,
+                })
+              : null;
           adapters.set(
             server.slug,
             new HttpServerAdapter({
               slug: server.slug,
               kind: server.kind,
               endpoint: async () =>
-                resolving(server.slug, async () => ({
-                  url: await resolveRefsAsync(
-                    server.url,
-                    secrets.forServer(server.slug),
-                  ),
-                  headers: await resolveMapAsync(
-                    server.headers,
-                    secrets.forServer(server.slug),
-                  ),
-                })),
+                resolving(server.slug, async () => {
+                  const provider = secrets.forServer(server.slug);
+                  const [url, headers] = await Promise.all([
+                    resolveRefsAsync(server.url, provider),
+                    resolveMapAsync(server.headers, provider),
+                  ]);
+                  if (!oauth || !minter) return { url, headers };
+                  const grant = await resolveRefreshGrant(oauth, provider);
+                  const token = await minter.accessToken(grant);
+                  return { url, headers: withBearer(headers, token) };
+                }),
+              onUnauthorized: minter
+                ? (rejected) => {
+                    const token = bearerIn(rejected.headers);
+                    if (token) minter.reject(token);
+                  }
+                : undefined,
               timeoutMs: server.timeoutMs,
               // The one behavioural difference a local-tunnel carries: an absent
               // machine must be a fast, legible failure rather than a hang...

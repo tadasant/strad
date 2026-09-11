@@ -4515,3 +4515,38 @@ shipped.
 for `$0.00` items, traverse it, and widen the description to match what the new
 traversal really covers. Until then, a caller that wants every freebie reads the
 prices on its own `search_for_grocery` results too.
+
+---
+
+## 91. A rotated refresh token with nowhere to land dies at the next restart
+
+**What.** A `remote-http` server with `oauthRefresh:` mints its upstream access
+tokens from a refresh token `${NAME}`, and a provider that rotates refresh tokens
+on use hands back a new one on every exchange and kills the one just spent. Core
+writes the new one to the parameter store — the server's own namespace, or the
+gateway's when that is where the name is — through the same `rotate()` the
+bundle write-back route uses (`createParameterWriteBack`, `src/http/params.ts`).
+Where the name resolves from the ENVIRONMENT instead — `gateway.secrets.provider:
+env`, or a name that only `envFallback` supplies under the store provider — there
+is nothing strad can write. The rotation is held in memory, one stderr line says
+so at the first rotation, and everything keeps working until the process
+restarts and reads the seeded value again, which the provider invalidated hours
+ago. Then every call on that slug fails with `invalid_grant` until a human
+authorizes again and re-seeds.
+
+**Why.** The two environment paths are, by design, paths strad cannot write:
+`process.env` is fixed at spawn, and the whole point of the env provider is a
+deployment with no cloud credential attached. Failing the refresh instead — so a
+rotation with no home is loud immediately — would turn a working slug into a
+broken one on the first exchange, for a deployment where the operator may have
+chosen a provider that does not rotate. The write-back also stops at a parameter
+it could not check: on anything but a definite 404 for the server's own path it
+does not fall through to the gateway's, because writing a layer the reader never
+reaches is a token nothing spends, which is worse than a held one.
+
+**Undo.** Seed the refresh token as a parameter in the store, under
+`/strad/{env}/mcp/{slug}/static/` or `/strad/{env}/gateway/static/`, and run
+under `gcp-parameter-store`. Nothing about the minter changes; the write-back
+finds a parameter and lands. The other half — strad running the authorization
+itself so the first token never passes through a human's clipboard — is
+tadasant/strad#32.

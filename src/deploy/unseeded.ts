@@ -1,4 +1,8 @@
-import { isUnhosted, type StradConfig } from "../config/schema.ts";
+import {
+  isUnhosted,
+  unhostedRefFields,
+  type StradConfig,
+} from "../config/schema.ts";
 import { CORE_BOOT_ENV_KEYS } from "../secrets/provider/hydrate.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 
@@ -97,8 +101,7 @@ export function referencesBySlug(
       for (const name of refsIn(raw)) refs.add(name);
     };
     if (isUnhosted(server)) {
-      add(server.url);
-      for (const value of Object.values(server.headers)) add(value);
+      for (const value of unhostedRefFields(server)) add(value);
     } else if (server.kind === "builtin") {
       for (const value of Object.values(server.options)) {
         if (typeof value === "string") add(value);

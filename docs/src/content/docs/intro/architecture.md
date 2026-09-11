@@ -199,6 +199,26 @@ would be pointless churn. Retirement is also scoped to the exact connection that
 failed, so a slow failure cannot evict a fresh one another caller has since
 installed.
 
+### A minted bearer is an endpoint that changes
+
+The adapter resolves its endpoint — URL plus headers — on every operation, and
+rebuilds the connection when the digest of that endpoint changes; that is how a
+rotated `${SECRET}` reaches a running gateway. A `remote-http` server with
+[`oauthRefresh:`](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad)
+rides the same seam: its endpoint thunk asks an `AccessTokenMinter`
+(`src/gateway/adapters/oauth-refresh.ts`) for the current access token and puts
+it in the `Authorization` header, so a refresh is just an endpoint that changed.
+One minter per slug, built by the registry and reachable from that slug's thunk
+alone — there is no cache shared between servers to key wrongly — and everything
+a minter holds is tied to the refresh token the store handed it, so a re-seed to
+another account drops the old one's token before the next request.
+
+The adapter adds one thing for it: a `401` from the upstream is reported back to
+the minter with the endpoint that was refused, the connection carrying it is
+retired, and the operation is tried once more against whatever the thunk
+resolves next. A `401` is the upstream refusing the request before running it,
+so the retry cannot run a tool twice.
+
 Resource proxying asks the handshake rather than the error text: if an upstream
 never advertised the `resources` capability — which is every tools-only server,
 i.e. most of them — `listResources()` answers `[]` without a round trip. A server

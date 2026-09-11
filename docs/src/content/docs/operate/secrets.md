@@ -815,12 +815,12 @@ before the flip, and the deploy is the first thing that looks.
 `scripts/check-store.ts` counts **everything the deployment reads from the
 store**:
 
-| Counted                                                       | Why                                                      |
-| ------------------------------------------------------------- | -------------------------------------------------------- |
-| every `${NAME}` in a remote-http url/header or builtin option | resolved on the request path                             |
-| **every** core boot key, optional-at-boot included            | hydrated at startup; optional there is not optional here |
-| every `supplementary-image` `env:` name                       | read from the store at render time                       |
-| _not_ a `consoleEnv:` name                                    | deploy-environment only — see below                      |
+| Counted                                                                       | Why                                                      |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------- |
+| every `${NAME}` in a remote-http url/header/`oauthRefresh:` or builtin option | resolved on the request path                             |
+| **every** core boot key, optional-at-boot included                            | hydrated at startup; optional there is not optional here |
+| every `supplementary-image` `env:` name                                       | read from the store at render time                       |
+| _not_ a `consoleEnv:` name                                                    | deploy-environment only — see below                      |
 
 ```bash
 # The gate. Run it immediately before the flip; a missing name is exit 1.
@@ -887,15 +887,16 @@ secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-
 into is decided by _who reads it_, and that is a property of the name rather than
 of the store:
 
-| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                            |
-| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**). |
-| A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                         |
-| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                                                                                                                            |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                           |
-| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                             |
-| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                |
+| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                                 |
+| A `remote-http` server's `oauthRefresh:` refresh token                                                                                           | within `ttlSeconds`      | Resolved on the request path like any other `${NAME}`; a value strad has never held starts a new token lineage, and the old account's access token is dropped before the next request. A token the provider **rotated** is written back by core — see [`oauthRefresh:`](#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server). |
+| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**).      |
+| A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                              |
+| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                                                                                                                                 |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                                |
+| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                                  |
+| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                     |
 
 `ttlSeconds` is the answer for **request-path references and nothing else** —
 plus one thing that is not a rotation at all: it is also how old the console's
@@ -1256,6 +1257,46 @@ union is bounded by something stronger than the write half: every name on it is,
 by construction, a value already baked onto a component that holds the same
 token. Per-component tokens remain the fix, and are recorded as
 [limitation #63](/limitations/#63-one-internal-token-means-any-container-can-reach-any-writable-parameter).
+
+## `oauthRefresh:` — a rotating refresh token on a `remote-http` server
+
+A `remote-http` server with
+[`oauthRefresh:`](/servers/interface/#oauthrefresh--a-bearer-that-expires-minted-by-strad)
+is proxied by **core**, and core mints its upstream access tokens from the
+refresh token `${NAME}` the block names. Some providers rotate that refresh
+token on every use, which is the same trap `paramsWritable:` exists for — except
+there is no bundle to call a route: the process that just spent the token is the
+one holding the store-admin credential. So the write is the route with the HTTP
+taken out (`createParameterWriteBack` in `src/http/params.ts`): the same
+`storeForPath`, the same `rotate()`, the same invalidation of the process's
+reading, the same `strad.param_written` / `strad.param_write_failed` events.
+
+**It writes where the reader reads.** A server's `${NAME}` resolves from
+`/strad/{env}/mcp/{slug}/static/` first and `/strad/{env}/gateway/static/`
+second, so the write follows the same order and stops at the first parameter
+that exists: the server's own, or — only on a definite 404 there — the
+gateway's. A parameter that could not be checked stops the walk, because writing
+the second layer while the first may still hold the value would persist a token
+nothing reads. The rotated value is held in memory for the life of the process
+either way; what the write buys is the next restart.
+
+**Seed the parameter first, in one of those two places.** A refresh token that
+resolves from the environment — `envFallback` under the store provider, or
+`gateway.secrets.provider: env` — cannot be written back. strad says so once on
+stderr, holds the rotation in memory, and a restart reads the seeded value, which
+the provider has already killed. That is
+[limitation #91](/limitations/#91-a-rotated-refresh-token-with-nowhere-to-land-dies-at-the-next-restart).
+
+**One writer.** Two enabled servers minting from one `${NAME}` are refused by the
+config schema, so a name in the gateway namespace is still one server's refresh
+token. Core runs as one instance (`instance_count: 1`, `src/deploy/appspec.ts`),
+which is what keeps the plain write correct — the same single-writer property
+`paramsWritable:` gets from the render check.
+
+**The first token is seeded by a human.** strad does not run the authorization;
+the refresh token comes from an out-of-band consent and lands in `/ui/secrets`
+like any other secret parameter. A `mayBeUnseeded:` entry for the name lets the
+slug deploy ahead of it.
 
 ## Migrating
 
