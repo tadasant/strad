@@ -90,6 +90,18 @@ interface GatewayInstruments {
 
   toolCalls: Counter;
   toolCallDuration: Histogram;
+  /**
+   * tools/call refusals by the capability policy, by server.
+   *
+   * Deliberately NOT an outcome on `toolCalls`: that counter is attributed by
+   * `mcp.tool` as well as `mcp.server`, and the tool name on a refusal is
+   * whatever the caller wrote after the `__` — an unbounded series any token
+   * holder could mint, and a client-authored string in an ingestor. So the
+   * refusal gets its own counter, carrying the config's own slug and nothing
+   * else. Same answer `authFailures` gives for `mcp.auth_failed`: when the
+   * field cannot ship, the count does.
+   */
+  toolDenials: Counter;
 
   /** One per hop to an upstream MCP server. */
   upstreamDuration: Histogram;
@@ -146,6 +158,10 @@ export function instruments(): GatewayInstruments {
     toolCallDuration: meter.createHistogram("strad.mcp.tool_call.duration", {
       description: "Wall time of a tools/call, by server and tool",
       unit: "s",
+    }),
+    toolDenials: meter.createCounter("strad.mcp.tool_denials", {
+      description:
+        "tools/call invocations the capability policy withheld, by server. Carries no tool name: the name a client asked for is the client's own string.",
     }),
     upstreamDuration: meter.createHistogram("strad.mcp.upstream.duration", {
       description:

@@ -40,8 +40,9 @@ import { EXPORTABLE, NOT_EXPORTED } from "../src/telemetry/events.ts";
  *     there. An `event()` call added inside the pipeline module is unseen.
  *
  * And the tables are held against event NAMES: this says nothing about whether
- * an `EXPORTABLE` entry is EFFECTIVE, which is a distinction the five
- * `telemetry.*` / `errors.*` verdicts turn on.
+ * an `EXPORTABLE` entry is EFFECTIVE, which is a distinction the four
+ * `telemetry.*` / `errors.*` verdicts turn on. The last case below pins the one
+ * place that distinction is load-bearing today.
  */
 
 const SRC = "src";
@@ -156,5 +157,35 @@ describe("every emitted event has a written-down export verdict", () => {
     ]) {
       expect(EXPORTABLE[evt], `${evt} must still be exported`).toBeDefined();
     }
+  });
+
+  it("keeps the caller's own tool name off the refusal record", () => {
+    // `mcp.tool_denied` is the one exported event whose PAYLOAD carries a
+    // client-written string: `tool` is everything after the `__` in the name a
+    // caller sent, and a refusal happens precisely because no such tool is
+    // there to constrain it. The slug beside it is not that — by the line that
+    // logs it, it has survived `selected.includes()` and `registry.get()`.
+    //
+    // Stated by name rather than left to the deny-by-default rule, because the
+    // field is already in the payload: adding it here is one word, and the
+    // result reaches an ingestor with no error anywhere.
+    expect(EXPORTABLE["mcp.tool_denied"]).toEqual(["principal", "slug"]);
+  });
+
+  it("keeps telemetry.started's allowlist entry EFFECTIVE", () => {
+    // The distinction this file's header ends on: a table held against event
+    // NAMES cannot see whether an entry ships a byte. `telemetry.started` is
+    // emitted through startTelemetry's injectable `log` seam, so its entry
+    // means something only while that seam DEFAULTS to `event()` — restore the
+    // bare console.log and the verdict silently becomes the opposite one.
+    //
+    // The other two lines out of that seam are on NOT_EXPORTED and stay
+    // correct either way: they fire when no exporter is running.
+    const src = readFileSync(join("src", "telemetry", "index.ts"), "utf8");
+    expect(
+      /const log = opts\.log \?\? event;/.test(src),
+      "startTelemetry's log seam no longer defaults to event(), so its " +
+        "EXPORTABLE entry for telemetry.started now ships nothing",
+    ).toBe(true);
   });
 });

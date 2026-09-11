@@ -1541,12 +1541,12 @@ a flip.
 
 **What.** strad ships its own structured events as OTLP logs, against the
 per-event field allowlist in `src/telemetry/events.ts`. It does not ship the
-stdout stream. Twenty-five event types are on the list and nine are deliberately
+stdout stream. Thirty-two event types are on the list and seven are deliberately
 off it, each with its reason beside it in `NOT_EXPORTED`; everything else strad
 writes — and every `console.log` in a vendored server — reaches the container
 console and stops there.
 
-**Why it matters.** Five consequences an operator will meet:
+**Why it matters.** Four consequences an operator will meet:
 
 - **`mcp.auth_failed` never reaches the ingestor.** It is emitted before
   authentication succeeds, so anyone who can POST `/mcp` could fill the batch
@@ -1560,18 +1560,22 @@ console and stops there.
 - **An upstream's error message is never in the ingestor.** `error` is on no
   allowlist; an event carrying one exports `errorKind()` instead. Diagnosing
   _what_ an upstream said still means reading the container console.
-- **A tool the capability policy withholds is dark in both channels.**
-  `mcp.tool_denied` carries a `tool` denamespaced from the name the caller sent,
-  which is free text a client writes, so it is not exportable as it stands — and
-  the refusal throws ahead of the `strad.mcp.tool_calls` block, so it increments
-  no counter either. "How often is this slug refusing calls" is answerable only
-  from the container console.
-- **The lines that would tell you the exporter is off are on stdout only.**
-  `telemetry.started`, `telemetry.disabled`, `telemetry.start_failed`,
-  `errors.started` and `errors.start_failed` do not go through `event()` at all:
-  they are written by the two start-up paths' own `log` seam, around the
-  lifecycle of the exporter an export would need. When telemetry goes quiet, the
-  reason is in the container console and nowhere else.
+- **A tool the capability policy withholds names no tool in the ingestor.**
+  `mcp.tool_denied` exports its slug and its principal, and `strad.mcp.tool_denials`
+  counts the refusal per slug — but the `tool` the caller asked for is free text
+  a client writes, so it stays on the stream. "How often is this slug refusing
+  calls" is a query; "which tool did they want" is a read of the container
+  console.
+- **The lines that would tell you the exporter is off are on the console only.**
+  `telemetry.disabled`, `telemetry.start_failed`, `errors.started` and
+  `errors.start_failed` all fire at a moment when the exporter that would carry
+  them is not running — two because it failed to start, one because none is
+  configured, and `errors.started` because `startErrorReporter` runs ahead of
+  `startTelemetry`. Blind by construction rather than by redaction: their fields
+  would all pass the field test. `telemetry.started` is the one of the five that
+  does export, as its name and nothing else, so a boot that dies between the SDK
+  starting and `strad.listening` is no longer the same silence as a container
+  that never started.
 
 **Why it ships anyway.** The alternative was the status quo, and the status quo
 cost a week: the `secrets` slug served zero tools on prod and staging, wrote
@@ -1584,7 +1588,9 @@ is not.
 **Undo.** Add events and fields to `EXPORTABLE` as the need for them is
 demonstrated, one at a time, each with an answer to "where does this value come
 from at every call site" — and move the entry out of `NOT_EXPORTED` in the same
-edit. Do not widen it to a denylist: the point is that a field nobody considered
+edit. `mcp.tool_denied` and `telemetry.started` are what that looks like done:
+each landed with its own trace, and the first landed with the counter that
+answers the field it could not export. Do not widen it to a denylist: the point is that a field nobody considered
 cannot ship. `test/telemetry.event-export-decisions.test.ts` holds the two tables
 against the call sites, so an event with no verdict fails the build rather than
 quietly reaching nobody.

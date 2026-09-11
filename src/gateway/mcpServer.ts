@@ -188,10 +188,33 @@ export function buildGatewayServer(opts: GatewayServerOptions): Server {
       !isTroubleshoot &&
       !toolAllowed(policies.get(parsed.slug), parsed.tool)
     ) {
+      // A REFUSAL IS AN EVENT AND A COUNT, AND THE COUNT IS THE PART THAT
+      // SURVIVES THE ALLOWLIST.
+      //
+      // `parsed.tool` is the caller's own bytes — whatever followed the `__` —
+      // so it may not reach a metric attribute (an unbounded series any token
+      // holder can mint) nor an exported log record. `parsed.slug` is not that:
+      // by this line it has survived `selected.includes()` and `registry.get()`
+      // above, so it is one of the config's own slugs. The counter is attributed
+      // by the slug alone, which is what makes "how often is this slug refusing
+      // calls" answerable without the name. It is deliberately not an `outcome`
+      // on `toolCalls`, whose attributes include `mcp.tool`.
+      //
+      // It comes BEFORE the throw for the reason this counter exists at all: the
+      // `strad.mcp.tool_calls` block below is past the refusal and never runs.
+      inst.toolDenials.add(1, {
+        "mcp.server": parsed.slug,
+        "strad.mode": mode,
+        "strad.surface": surface,
+      });
+      // `slug`, not `server`: the allowlist exports this record, and every other
+      // exported record names a server under `slug`. `tool` stays in the payload
+      // and stays OFF the allowlist — the stream carries the name, the ingestor
+      // gets the slug. See src/telemetry/events.ts.
       log({
         evt: "mcp.tool_denied",
         principal: principalId,
-        server: parsed.slug,
+        slug: parsed.slug,
         tool: parsed.tool,
       });
       throw new McpError(
