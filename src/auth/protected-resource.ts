@@ -122,6 +122,50 @@ export function protectedResourceMetadata(
 }
 
 /**
+ * Every character RFC 3986 allows in a URI, and nothing else.
+ *
+ * The two that matter are `"` and `\`. This base is interpolated into a
+ * `quoted-string` on the `401`'s `WWW-Authenticate` (RFC 9110 §5.6.4), so a
+ * quote inside it ends the parameter early and leaves a client parsing
+ * something strad did not mean to say. Both of the places a base comes from can
+ * carry one: `Host` is whatever the caller sent, and `z.string().url()` in
+ * `src/config/schema.ts` accepts `https://a"b.example` — WHATWG `new URL()`
+ * parses it too, so neither the schema nor a parse is the check.
+ *
+ * Node refuses a CR or LF in a header value, so this is not the response-
+ * splitting guard; it is the one that keeps the document and the header from
+ * repeating back a string that is not a URL.
+ */
+const URI_CHARACTERS = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
+
+/** The candidate, if it is an http(s) URL we are willing to repeat back. */
+function safeBaseUrl(candidate: string): string | null {
+  if (!URI_CHARACTERS.test(candidate)) return null;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return null;
+  }
+  // `${req.protocol}://${host}` with `trust proxy` on means the scheme is
+  // `X-Forwarded-Proto`, i.e. also the caller's. `javascript://host` parses.
+  return url.protocol === "http:" || url.protocol === "https:"
+    ? candidate
+    : null;
+}
+
+/**
+ * The origin the request arrived on. `trust proxy` is on, so behind App
+ * Platform this is the public hostname rather than the container's own
+ * host:port — the same fallback the landing page and the playground take
+ * (`src/ui/landing.ts`, `src/ui/playground.ts`).
+ */
+function requestOrigin(req: Request): string | null {
+  const host = req.get("host");
+  return host ? `${req.protocol}://${host}` : null;
+}
+
+/**
  * The base URL to describe: the declared one, else the one the request arrived
  * on, else nothing.
  *
@@ -133,24 +177,20 @@ export function protectedResourceMetadata(
  * `gateway.publicUrl` first, for the same reason the console's OAuth redirect
  * URI is derived from it and never from a header — it is the operator's
  * declaration of what this deployment IS, and it does not move when someone
- * sends a `Host` they made up. The request origin is the fallback rather than
- * the primary, which is the pattern the landing page and the playground already
- * take (`src/ui/landing.ts`, `src/ui/playground.ts`); `trust proxy` is on, so
- * behind App Platform it is the public hostname rather than the container's
- * own host:port.
+ * sends a `Host` they made up.
  *
- * Null when there is neither — no `publicUrl` and no `Host`. The `resource`
- * member is REQUIRED and there would be nothing to put in it, so the route
- * answers `404` and the `401` omits the parameter, rather than either of them
- * inventing an origin.
+ * Null when there is neither, and null when what there is does not survive
+ * `safeBaseUrl`. The `resource` member is REQUIRED and there would be nothing
+ * to put in it, so the route answers `404` and the `401` omits the parameter,
+ * rather than either of them inventing an origin or quoting a string that is
+ * not a URL.
  */
 export function metadataBaseUrl(
   req: Request,
   publicUrl: string | undefined,
 ): string | null {
-  if (publicUrl) return publicUrl;
-  const host = req.get("host");
-  return host ? `${req.protocol}://${host}` : null;
+  const candidate = publicUrl ?? requestOrigin(req);
+  return candidate === null ? null : safeBaseUrl(candidate);
 }
 
 /**

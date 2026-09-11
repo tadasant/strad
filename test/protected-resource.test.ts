@@ -5,7 +5,8 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Request } from "express";
-import type { Server } from "node:http";
+import { request, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import {
@@ -232,6 +233,62 @@ describe("the 401 on /mcp", () => {
   });
 });
 
+describe("a caller-supplied Host cannot dictate the pointer", () => {
+  // The whole chain, over a raw socket, because `fetch` forbids setting `Host`
+  // — and the caller's `Host` is the one input to the document and the header
+  // that strad does not author. A quote in it would end the `quoted-string`
+  // early and let the caller name a second `resource_metadata`.
+  const HOSTILE = 'evil.example", resource_metadata="https://attacker.example';
+
+  let core: Running;
+  beforeAll(async () => {
+    core = await start(CONFIG, "core");
+  });
+  afterAll(() => core?.server.close());
+
+  function requestWithHost(
+    path: string,
+    method: string,
+  ): Promise<{ status: number; wwwAuth?: string; body: string }> {
+    const { port } = core.server.address() as AddressInfo;
+    return new Promise((resolve, reject) => {
+      const req = request(
+        { host: "127.0.0.1", port, path, method, headers: { host: HOSTILE } },
+        (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (c: string) => (body += c));
+          res.on("end", () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              wwwAuth: res.headers["www-authenticate"],
+              body,
+            }),
+          );
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  it("is refused rather than echoed into the 401's header", async () => {
+    const res = await requestWithHost("/mcp", "POST");
+    expect(res.status).toBe(401);
+    expect(res.wwwAuth).toBe('Bearer realm="strad", error="invalid_token"');
+    expect(res.wwwAuth).not.toContain("attacker.example");
+  });
+
+  it("is refused rather than named as the resource", async () => {
+    const res = await requestWithHost(
+      "/.well-known/oauth-protected-resource/mcp",
+      "GET",
+    );
+    expect(res.status).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({ error: "no_resource_identifier" });
+  });
+});
+
 describe("the static bearer path is unchanged", () => {
   let core: Running;
 
@@ -296,6 +353,36 @@ describe("the URL builders", () => {
     expect(protectedResourceMetadata(`${PUBLIC_URL}/`, "strad").resource).toBe(
       `${PUBLIC_URL}/mcp`,
     );
+  });
+
+  // A declared `publicUrl` is schema-validated and still reaches here unclean:
+  // `z.string().url()` accepts a quote, and so does `new URL()`.
+  it.each([
+    ['https://a"b.example'],
+    ["https://a\\b.example"],
+    ["javascript://evil.example"],
+    ["file:///etc/passwd"],
+    ["not a url"],
+  ])("refuses %j as a declared publicUrl", (bad) => {
+    expect(metadataBaseUrl(fakeRequest("ok.example"), bad)).toBeNull();
+  });
+
+  // The `Host` is whatever the caller sent. A quote in it would end the
+  // `quoted-string` on the `401`'s header early and let the caller dictate a
+  // second auth-param — so the base is refused and the parameter is omitted.
+  it("refuses a Host that would break out of the quoted parameter", () => {
+    const host = 'evil.example", resource_metadata="https://attacker.example';
+    expect(metadataBaseUrl(fakeRequest(host), undefined)).toBeNull();
+  });
+
+  // `trust proxy` is on, so `req.protocol` is `X-Forwarded-Proto` — also the
+  // caller's. `javascript://host` parses; it is not a base strad repeats back.
+  it("refuses a forwarded scheme that is not http(s)", () => {
+    const req = {
+      protocol: "javascript",
+      get: () => "ok.example",
+    } as unknown as Request;
+    expect(metadataBaseUrl(req, undefined)).toBeNull();
   });
 
   it("fall back to the request origin, and to nothing", () => {

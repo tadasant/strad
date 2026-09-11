@@ -267,6 +267,11 @@ export function createApp(opts: AppOptions): Express {
     // path-insertion rule and why the root path is served beside it.
     for (const route of PROTECTED_RESOURCE_ROUTES) {
       app.get(route, (req, res) => {
+        // A deployment that declares no `gateway.publicUrl` answers from the
+        // `Host` it was asked on, so the document varies by it. Says so, rather
+        // than letting an intermediary serve one deployment's resource
+        // identifier for another's hostname.
+        res.vary("Host");
         const base = metadataBaseUrl(req, opts.config.gateway.publicUrl);
         if (base === null) {
           res.status(404).json({ error: "no_resource_identifier" });
