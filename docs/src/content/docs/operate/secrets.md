@@ -901,6 +901,39 @@ server and no `paramsRefresh:` entry has no name that rotates live, however the
 TTL is set. That is a real deployment shape, not a hypothetical: check your own
 config before promising anyone a rotation that lands without a deploy.
 
+### Which boot keys a third-party container holds
+
+The same two, whichever provider the deployment uses. The provider decides where
+a value is read from. It never decides which names a container ends up holding.
+
+| Boot key                                                                                                                    | `core` | a `supplementary-image` component                                                           |
+| --------------------------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS` — `BUNDLE_BOOT_ENV_KEYS`                                               | yes    | yes: baked from the store under `gcp-parameter-store`, carried by the broadcast under `env` |
+| `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | yes    | **never**                                                                                   |
+
+Under `env`, `render-spec` puts every boot key it has a value for in the app-level
+env as a SECRET, and app-level SECRETs are broadcast to every supplementary component. The
+broadcast drops the second row. Its exclusions, `STRAD_IMAGE_ONLY_SECRET_KEYS` in
+`src/deploy/appspec.ts`, are the store credential plus `CORE_ONLY_BOOT_ENV_KEYS`,
+and that set is **derived**: `CORE_BOOT_ENV_KEYS` minus `BUNDLE_BOOT_ENV_KEYS`,
+both in `src/secrets/provider/hydrate.ts`. A boot key added to
+`CORE_BOOT_ENV_KEYS` therefore stays off third-party containers by default. The
+one way to put a boot key inside one is to add it to `BUNDLE_BOOT_ENV_KEYS`, which
+widens the store path's bake and the `env` path's broadcast in the same edit. That
+coupling is intended: both paths answer one question, and they answer it from one
+array.
+
+The second row is the `/mcp` token store, the console's bypass token, its OAuth
+client and its session-cookie key, plus the exception reporter's DSN. The sharp
+ones are the console's. `CONSOLE_SESSION_SECRET` signs the session cookie, and
+when it is unset the key is derived from `GOOGLE_CLIENT_SECRET`, so a container
+holding either one can mint a console session, and the console is the door that
+reveals and writes secrets. `ADMIN_BOOTSTRAP_TOKEN` opens the same door wherever
+the dev bypass is on. The token store holds hashes, not tokens, but it still hands
+over every token's id and roles, and a third-party image has no use for them. A
+server that genuinely needs a value under one of these names declares it in its
+own `env:`, which lands on its component alone.
+
 ### Why the bundle boot env is baked rather than hydrated
 
 Hydration runs in strad's own process — the core, and a bundle component running
@@ -909,7 +942,8 @@ It does not run strad, it deliberately holds no store credential (that key
 reaches the strad image and stops there), and handing it one would not help,
 because nothing inside it knows how to ask.
 
-`SENTRY_DSN` is deliberately **not** one of those names. Only strad's own process
+`SENTRY_DSN` is deliberately **not** one of those names, though it looks like
+telemetry that should travel with the OTLP header. Only strad's own process
 reports exceptions, so a third-party container has no use for one — and a DSN is a
 write credential for the issue tracker, which is not a thing to broadcast to every
 supplementary image. It reaches the core and any strad-image bundle and stops

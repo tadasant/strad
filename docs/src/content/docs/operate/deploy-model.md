@@ -166,7 +166,9 @@ that, since nothing inside it knows how to ask.
 So `render-spec` reads that component's two boot keys — `STRAD_INTERNAL_TOKEN`
 and `OTEL_EXPORTER_OTLP_HEADERS` — **from the store** and bakes them onto it,
 exactly as it already does for that component's `env:`. One place to manage them;
-a redeploy to change them.
+a redeploy to change them. Those two are `BUNDLE_BOOT_ENV_KEYS`, and they are all
+of strad's boot keys such a component gets under `provider: env` too. Everything
+else in `CORE_BOOT_ENV_KEYS` stays off it on both paths.
 
 Both of those keys fail silently when absent — a bundle with no OTLP header
 exports into rejection about a minute after a green deploy, with `/healthz` still
@@ -436,6 +438,10 @@ every SECRET in the deploy environment is rendered onto every supplementary
 component bar the strad-image-only ones, so a new component does cost a further
 copy of the credential set. On that provider the spec grows per component, not
 just per config edit — which is the case the paragraph above does not describe.
+The strad-image-only set is the store credential plus every boot key a bundle
+does not read, so of strad's own boot keys a supplementary component gets the
+same two under either provider:
+[which boot keys a third-party container holds](/operate/secrets/#which-boot-keys-a-third-party-container-holds).
 
 ## A connector's credentials are injected, not referenced
 

@@ -373,15 +373,21 @@ describe("what per-slug names deliberately do NOT touch", () => {
       region: "nyc",
       image: IMAGE,
       env: [
+        { key: "GRANOLA_TOKEN", value: "g", scope: "RUN_TIME", type: "SECRET" },
         { key: "STRAD_TOKENS", value: "t", scope: "RUN_TIME", type: "SECRET" },
       ],
       secrets: SHARED,
     });
     for (const component of ["core", "bundle"]) {
       const env = envOf(spec, component);
-      expect(env.STRAD_TOKENS).toBe("t");
+      expect(env.GRANOLA_TOKEN).toBe("g");
+      expect(env.TELEGRAM_RO__GRANOLA_TOKEN).toBeUndefined();
       expect(env.TELEGRAM_RO__STRAD_TOKENS).toBeUndefined();
     }
+    // The token store is core's own boot key, so it stops there rather than
+    // riding the broadcast into a third-party image (CORE_ONLY_BOOT_ENV_KEYS).
+    expect(envOf(spec, "core").STRAD_TOKENS).toBe("t");
+    expect(envOf(spec, "bundle").STRAD_TOKENS).toBeUndefined();
   });
 });
 

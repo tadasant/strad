@@ -6,7 +6,11 @@ import {
   renderAppSpec,
   type EnvVar,
 } from "../src/deploy/appspec.ts";
-import { BUNDLE_BOOT_ENV_KEYS } from "../src/secrets/provider/hydrate.ts";
+import {
+  BUNDLE_BOOT_ENV_KEYS,
+  CORE_BOOT_ENV_KEYS,
+  CORE_ONLY_BOOT_ENV_KEYS,
+} from "../src/secrets/provider/hydrate.ts";
 import { RESOLVER_ENV } from "../src/secrets/parameters/resolver.ts";
 
 /**
@@ -88,7 +92,19 @@ const STORE_ENV: EnvVar[] = [
   },
 ];
 
-/** What it puts there under the `env` provider: the boot keys, broadcast. */
+/**
+ * What it puts there under the `env` provider: EVERY boot key, as a SECRET —
+ * the core's own included, since core reads them from its environment. Built
+ * from `CORE_BOOT_ENV_KEYS` itself, so a name added there is in this fixture
+ * the moment it exists.
+ */
+const bakedValue = (key: string) =>
+  key === "STRAD_INTERNAL_TOKEN"
+    ? INTERNAL
+    : key === "OTEL_EXPORTER_OTLP_HEADERS"
+      ? HEADERS
+      : `baked-${key}`;
+
 const BAKED_ENV: EnvVar[] = [
   {
     key: "STRAD_CONFIG_YAML",
@@ -96,18 +112,12 @@ const BAKED_ENV: EnvVar[] = [
     scope: "RUN_TIME",
     type: "GENERAL",
   },
-  {
-    key: "STRAD_INTERNAL_TOKEN",
-    value: INTERNAL,
+  ...CORE_BOOT_ENV_KEYS.map((key): EnvVar => ({
+    key,
+    value: bakedValue(key),
     scope: "RUN_TIME",
     type: "SECRET",
-  },
-  {
-    key: "OTEL_EXPORTER_OTLP_HEADERS",
-    value: HEADERS,
-    scope: "RUN_TIME",
-    type: "SECRET",
-  },
+  })),
   {
     key: "OTEL_EXPORTER_OTLP_ENDPOINT",
     value: "https://otlp.example.com",
@@ -165,11 +175,13 @@ describe("a store-backed supplementary component gets its boot env baked", () =>
 
   it("holds the SAME boot keys as it would under the env provider", () => {
     // The invariant, stated directly: the provider decides where a value is
-    // READ FROM, never which keys a container ends up holding.
+    // READ FROM, never which keys a container ends up holding. Asked over EVERY
+    // boot key, not just the bundle's two: a question narrowed to those two
+    // cannot see a core-only key arriving by the env path's broadcast.
     const keys = (spec: ReturnType<typeof render>) =>
       envsOf(spec, "bundle")
         .map((e) => e.key)
-        .filter((k) => (BUNDLE_BOOT_ENV_KEYS as readonly string[]).includes(k))
+        .filter((k) => (CORE_BOOT_ENV_KEYS as readonly string[]).includes(k))
         .sort();
     expect(keys(storeBacked())).toEqual(keys(envBacked()));
     expect(keys(storeBacked())).toEqual([
@@ -243,6 +255,98 @@ servers:
   });
 });
 
+describe("an env-backed supplementary component gets the bundle's boot keys and no more", () => {
+  it("carries no core-only boot key", () => {
+    // #214. Under the `env` provider every boot key is a SECRET in the
+    // broadcast, so this is the line that keeps the console's cookie key (or
+    // the OAuth client secret it is derived from when unset) out of every
+    // third-party image — either one mints a console session, and the console
+    // reveals and writes secrets. The bypass token and the token store's ids
+    // and roles are here for the same reason: a third-party image has no use
+    // for them.
+    const keys = envsOf(envBacked(), "bundle").map((e) => e.key);
+    for (const key of CORE_ONLY_BOOT_ENV_KEYS) {
+      expect(keys, key).not.toContain(key);
+    }
+  });
+
+  it("lets a boot key through exactly when BUNDLE_BOOT_ENV_KEYS names it", () => {
+    // The guarantee, over every boot key there is: a name added to
+    // CORE_BOOT_ENV_KEYS lands in this fixture automatically and is kept off a
+    // third-party container unless the bundle array says otherwise. Nothing
+    // else — no second list — decides it.
+    const bundle = new Set(envsOf(envBacked(), "bundle").map((e) => e.key));
+    const core = new Set(envsOf(envBacked(), "core").map((e) => e.key));
+    for (const key of CORE_BOOT_ENV_KEYS) {
+      expect(bundle.has(key), key).toBe(
+        (BUNDLE_BOOT_ENV_KEYS as readonly string[]).includes(key),
+      );
+      // ...and the core, which reads every one of them, still gets them all.
+      expect(core.has(key), key).toBe(true);
+    }
+  });
+
+  it("names every core-only credential, and no bundle key outside the core set", () => {
+    // The one property the derivation does not give for free: a bundle key the
+    // core does not also read would be handed to third-party images while
+    // appearing on no core-side list at all.
+    for (const key of BUNDLE_BOOT_ENV_KEYS) {
+      expect(CORE_BOOT_ENV_KEYS as readonly string[], key).toContain(key);
+    }
+    // The six #214 was about, named, so a reviewer sees them here.
+    expect(CORE_ONLY_BOOT_ENV_KEYS).toEqual(
+      expect.arrayContaining([
+        "STRAD_TOKENS",
+        "ADMIN_BOOTSTRAP_TOKEN",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "CONSOLE_SESSION_SECRET",
+        "SENTRY_DSN",
+      ]),
+    );
+  });
+
+  it("still delivers one of those names to a server that declares it in env:", () => {
+    // The broadcast is an IMPLICIT channel, and these names are kept out of it.
+    // A server that genuinely needs a value under one of them says so in its
+    // own `env:`, which lands on its component alone, exactly once — so the
+    // exclusion costs no server anything it asked for.
+    const config = parseConfig(`
+version: 1
+gateway:
+  name: strad
+  env: staging
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: slack
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:0.1.0
+    bundle: bundle
+    entitlements: [admin]
+    env:
+      GOOGLE_CLIENT_ID: "\${SLACK_BOT_TOKEN}"
+`);
+    const spec = renderAppSpec({
+      config,
+      appName: "strad-staging",
+      region: "nyc",
+      image: parseImage("ghcr.io/tadasant/strad:0.1.7"),
+      env: BAKED_ENV,
+      secrets: { SLACK_BOT_TOKEN: "declared-value" },
+    });
+    const hits = envsOf(spec, "bundle").filter(
+      (e) => e.key === "GOOGLE_CLIENT_ID",
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.value).toBe("declared-value");
+  });
+});
+
 describe("a component that CAN hydrate is not given a baked twin", () => {
   it("leaves the core holding exactly one credential", () => {
     // The whole point of the store provider: the spec carries the key that
@@ -272,7 +376,7 @@ describe("bootEnvGaps — the rendered-spec check", () => {
     expect(bootEnvGaps(storeBacked(), held)).toEqual([]);
   });
 
-  it("passes an env-backed spec, where everything is broadcast", () => {
+  it("passes an env-backed spec, where the bundle's boot keys are broadcast", () => {
     expect(bootEnvGaps(envBacked(), held)).toEqual([]);
   });
 

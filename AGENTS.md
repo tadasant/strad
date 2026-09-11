@@ -365,7 +365,10 @@ opening any PR.
     read role; `parameterAccessor` is the deref, despite the names.
     A credential that only strad's own process needs must be scoped to the strad
     image (`STRAD_IMAGE_ONLY_SECRET_KEYS` in `src/deploy/appspec.ts`): a plain
-    SECRET in the app spec is BROADCAST to every supplementary container.
+    SECRET in the app spec is BROADCAST to every supplementary container. A boot
+    key needs no entry there. Adding it to `CORE_BOOT_ENV_KEYS` keeps it off
+    third-party containers, because the set is derived. Adding it to
+    `BUNDLE_BOOT_ENV_KEYS` is what hands it to them, under either provider.
 - Telemetry never records tool arguments or results. See `src/telemetry/redact.ts`;
   `test/telemetry.redaction.test.ts` is the canary that enforces it — over spans,
   metrics AND exported log records.
