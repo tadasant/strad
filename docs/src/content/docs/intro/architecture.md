@@ -142,7 +142,11 @@ route, but it still requires the shared `STRAD_INTERNAL_TOKEN`, compared in
 constant time — anything else in the VPC could otherwise reach it. That holds for
 both images: the strad image checks it in `authenticateInternal`, and the
 `strad-bundle` host checks it in front of every mount, through the same comparator
-its presence route uses. Neither serves anything when the token is unset — the
+its presence route uses. Both images read the header with the same parse and
+compare it with the same comparator, vendored from `src/secrets/presence.ts`, so a
+header one image refuses the other refuses too — see
+[Every door reads `Authorization` the same way](/auth/overview/#every-door-reads-authorization-the-same-way).
+Neither serves anything when the token is unset — the
 strad image calls that 401 like any other refusal, the `strad-bundle` host calls
 it 503, the same distinction its presence route already drew — and both leave
 `/healthz` open, because App Platform's prober holds no credential. See

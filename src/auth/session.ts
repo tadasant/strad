@@ -1,6 +1,7 @@
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
+import { secretEquals } from "./credential.ts";
 import type { Principal } from "./index.ts";
 
 /**
@@ -311,12 +312,13 @@ function cookieFlags(env: NodeJS.ProcessEnv) {
  * Constant-time compare of two `state` values, tolerant of different lengths.
  * The sealed cookie already proves the transaction is ours; this proves the
  * callback is the SAME transaction that this browser began.
+ *
+ * `secretEquals` is the compare; the one thing added here is that two EMPTY
+ * states do not match. A callback with no `state` and a transaction that sealed
+ * none are two absences, not a proof that they belong together.
  */
 export function stateMatches(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, "utf8");
-  const bufB = Buffer.from(b, "utf8");
-  if (bufA.length !== bufB.length || bufA.length === 0) return false;
-  return timingSafeEqual(bufA, bufB);
+  return a !== "" && secretEquals(a, b);
 }
 
 /**

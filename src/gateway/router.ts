@@ -2,9 +2,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { Request, Response } from "express";
 import { clientCapabilitiesFromInitialize } from "./clientCapabilities.ts";
+import { bearerToken, secretEquals } from "../auth/credential.ts";
 import {
   authenticateMcp,
-  secretEquals,
   Unauthenticated,
   type Principal,
 } from "../auth/index.ts";
@@ -376,7 +376,7 @@ function authenticateInternal(
     );
   }
 
-  const presented = header?.replace(/^Bearer\s+/i, "").trim();
+  const presented = bearerToken(header);
   if (!presented || !secretEquals(presented, expected)) {
     throw new Unauthenticated(
       "invalid internal token",

@@ -1,9 +1,9 @@
-import { timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler, Response } from "express";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute, jsonFailure } from "./async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ServerSecretProviders } from "../secrets/provider/index.ts";
+import { secretEquals } from "../auth/credential.ts";
 import { authorizePresence } from "../secrets/presence.ts";
 import {
   parseParamWriteRequest,
@@ -106,14 +106,6 @@ export interface ParamsHandlerOptions {
   diagnosticStore?: Parameters<typeof forgetDeploymentDiagnosis>[0]["store"];
   /** Injected in tests so the re-read floor is not measured on the wall clock. */
   now?: () => number;
-}
-
-/** Node's constant-time compare, wrapped so a length mismatch cannot throw. */
-function constantTimeEquals(a: string, b: string): boolean {
-  const left = Buffer.from(a, "utf8");
-  const right = Buffer.from(b, "utf8");
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
 }
 
 /**
@@ -289,7 +281,7 @@ function target(
   const auth = authorizePresence(
     req.get("authorization"),
     opts.env.STRAD_INTERNAL_TOKEN,
-    constantTimeEquals,
+    secretEquals,
   );
   if (!auth.ok) {
     res.status(auth.status).json({ error: auth.error });
@@ -491,7 +483,7 @@ export function createStoreRefreshHandler(
     const auth = authorizePresence(
       req.get("authorization"),
       opts.env.STRAD_INTERNAL_TOKEN,
-      constantTimeEquals,
+      secretEquals,
     );
     if (!auth.ok) {
       res.status(auth.status).json({ error: auth.error });

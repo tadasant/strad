@@ -1,4 +1,5 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { secretEquals } from "./credential.ts";
 import type { StradConfig } from "../config/schema.ts";
 import type { Principal } from "./index.ts";
 
@@ -465,8 +466,12 @@ function sha256(s: string): string {
   return createHash("sha256").update(s, "utf8").digest("hex");
 }
 
+/**
+ * Compare a presented secret's digest with a stored one, in constant time and
+ * through the one comparator every door uses (src/auth/credential.ts). An
+ * absent record compares against a digest nothing hashes to, so an unknown jti
+ * costs the same work a known one does.
+ */
 function hashesEqual(a: string, b: string | undefined): boolean {
-  const expected = b ?? DUMMY_HASH;
-  if (a.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(expected, "utf8"));
+  return secretEquals(a, b ?? DUMMY_HASH);
 }

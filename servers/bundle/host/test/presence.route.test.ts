@@ -77,9 +77,15 @@ describe("the presence route's authorization", () => {
     }
   });
 
-  it("accepts the token without the Bearer prefix, and with odd spacing", () => {
-    expect(ask({ authorization: TOKEN }).status).toBe(200);
+  it("accepts any casing of the scheme, and odd spacing after it", () => {
     expect(ask({ authorization: `bearer  ${TOKEN}  ` }).status).toBe(200);
+    expect(ask({ authorization: `BEARER ${TOKEN}` }).status).toBe(200);
+  });
+
+  it("401s the right token with no scheme — the rule every door reads by", () => {
+    const answer = ask({ authorization: TOKEN });
+    expect(answer.status).toBe(401);
+    expect(answer.body).toEqual({ error: "invalid internal token" });
   });
 
   it("authorizes BEFORE parsing, so a refusal teaches nothing about the body", () => {
