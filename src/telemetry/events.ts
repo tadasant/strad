@@ -253,6 +253,29 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * replace it.
      */
     "strad.route_failed": ["route", "error.kind"],
+    /**
+     * The console login token (src/auth/console-tokens.ts): minted by a
+     * standing credential, exchanged once for a console session, revoked.
+     *
+     * `jti` is the token's PUBLIC half — 16 hex characters strad generated, the
+     * lookup key and never the secret. Every one of these events is emitted
+     * only for a jti strad itself minted and holds: a mint, an exchange that
+     * succeeded, a revoke that found its record, and a refusal of a token whose
+     * SECRET verified. A caller cannot put a string of its choosing here.
+     * `minted_by` is `Principal["kind"]`, a closed set. `state` is a word from
+     * the store's own refusal vocabulary (`token_consumed`, `token_revoked`,
+     * `token_expired`, `burned_in_query`) or, on a revoke, its status.
+     *
+     * `console.token_exchange_failed` is the tripwire, and it ships at ERROR
+     * for that reason: a real token presented after somebody else consumed it,
+     * or after it was revoked, is either a broken automation or a stolen token.
+     * It is throttled per jti — a thief replaying one token cannot flood the
+     * queue, and there are at most `MAX_RECORDS` jtis to key on.
+     */
+    "console.token_minted": ["jti", "minted_by"],
+    "console.token_exchanged": ["jti"],
+    "console.token_exchange_failed": ["jti", "state"],
+    "console.token_revoked": ["jti", "state"],
   });
 
 /**
@@ -283,6 +306,13 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
  * like.
  */
 export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
+  "console.token_login_refused":
+    "The unauthenticated half of the console token exchange: a garbled, " +
+    "unknown or wrong-secret token, or none at all. Its one field, `reason`, " +
+    "is a closed set, but anyone who can reach the route produces one record " +
+    "per request — mcp.auth_failed's queue-starvation argument, on the console " +
+    "door. A refusal of a token whose secret DID verify is a different event, " +
+    "console.token_exchange_failed, and that one ships.",
   "mcp.auth_failed":
     "Its attributes are safe — `reason` is a closed set — but it is emitted " +
     "BEFORE authentication succeeds, so anyone who can reach /mcp produces one " +
@@ -397,6 +427,9 @@ const THROTTLED = new Set([
   // key below), so a flood on one route does not hide the first record from
   // another. stdout is not throttled.
   "strad.route_failed",
+  // Only a caller holding a real token's secret can drive it, but a thief can
+  // replay one token as fast as the socket allows. Keyed per jti (below).
+  "console.token_exchange_failed",
 ]);
 const THROTTLE_MS = 60_000;
 const lastExported = new Map<string, number>();
@@ -435,10 +468,10 @@ export function event(payload: Record<string, unknown>): void {
   if (!allowed) return;
 
   if (THROTTLED.has(evt)) {
-    // `route` beside `slug` because the newest member of this set carries no
-    // slug: without it, one failing route's 60s bucket would swallow every
-    // other route's first record.
-    const key = `${evt}:${String(payload.slug ?? payload.route ?? "")}`;
+    // `route` beside `slug` because `strad.route_failed` carries no slug:
+    // without it, one failing route's 60s bucket would swallow every other
+    // route's first record. `jti` for the same reason, one event over.
+    const key = `${evt}:${String(payload.slug ?? payload.route ?? payload.jti ?? "")}`;
     const now = Date.now();
     const last = lastExported.get(key);
     if (last !== undefined && now - last < THROTTLE_MS) return;

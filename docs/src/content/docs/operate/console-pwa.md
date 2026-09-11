@@ -124,7 +124,7 @@ the bare path. Renaming the cache is the remedy.
 
 ## Signing in, and signing out
 
-Sign-out is unchanged: `GET /console/logout` drops both console cookies. The
+Sign-out is unchanged: `GET /console/logout` drops every console cookie. The
 service worker is left registered, which is harmless — it holds no authenticated
 response, so there is nothing for a purge to remove. The next visit to `/ui` hits
 the network, finds no session, and gets the sign-in wall like any other browser.

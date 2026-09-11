@@ -1,4 +1,9 @@
 import type { NextFunction, Request, Response } from "express";
+import {
+  TOKEN_SESSION_COOKIE,
+  type ConsoleTokenStore,
+  type LiveTokenSession,
+} from "../auth/console-tokens.ts";
 import { authenticateConsoleBypass, consoleDenial } from "../auth/dev.ts";
 import type { Principal } from "../auth/index.ts";
 import {
@@ -19,19 +24,24 @@ import { renderSignIn } from "./render.ts";
  * a human surface on the open internet, exactly like /console, and must never be
  * a softer door than it.
  *
- * Two credentials resolve to a Principal here, and the middleware only ever
+ * Three credentials resolve to a Principal here, and the middleware only ever
  * trusts the Principal, never the credential:
  *
  *   1. A Google session — a signed, expiring cookie minted by
  *      /console/oauth/callback from a verified Workspace identity
  *      (src/auth/session.ts). This is the real door.
- *   2. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
+ *   2. A token session — the cookie POST /console/token-login sets when a
+ *      single-use login token is exchanged (src/auth/console-tokens.ts). The
+ *      automated actor's door: 30 minutes, the minter's roles, never in prod.
+ *      It lives here rather than beside the bypass because it has to outlive
+ *      the bypass (tadasant/strad#6).
+ *   3. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
  *      (src/auth/dev.ts). It is what keeps staging and an unprovisioned prod
  *      enterable, and it goes away once Google sign-in is verified in prod.
  *
  * /mcp is untouched by any of this. That endpoint accepts static system tokens
- * and nothing else (src/auth/index.ts). There is no code path from either
- * console credential to /mcp — the invariant HACKS.md #2 states for /console.
+ * and nothing else (src/auth/index.ts). There is no code path from any console
+ * credential to /mcp — the invariant HACKS.md #2 states for /console.
  *
  * One convenience for the bypass: a browser is navigating between pages, so once
  * the bootstrap token is presented as `?token=`, it is moved into an HttpOnly
@@ -58,12 +68,19 @@ export interface ConsoleAuthDeps {
    * into a redirect that dead-ends at Google.
    */
   googleReady?: boolean;
+  /**
+   * The console login token store, when token login is live on this
+   * deployment. Null means no token session can exist here — in production it
+   * always is (src/auth/console-tokens.ts).
+   */
+  consoleTokens?: ConsoleTokenStore | null;
 }
 
 export function requireConsoleUi(deps: ConsoleAuthDeps) {
   const { config, env } = deps;
   const sessions = deps.sessions ?? null;
   const googleReady = deps.googleReady ?? false;
+  const consoleTokens = deps.consoleTokens ?? null;
 
   return function gate(req: Request, res: Response, next: NextFunction): void {
     const fromQuery =
@@ -91,6 +108,7 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
     // A Google session, first: it is the real credential.
     const principal =
       googlePrincipal(cookies, sessions, config) ??
+      tokenSession(cookies, consoleTokens)?.principal ??
       bypassPrincipal(cookies, fromHeader, config, env);
 
     if (principal) {
@@ -147,6 +165,39 @@ export function googlePrincipal(
   );
   if (!payload) return null;
   return principalFromSession(payload, config);
+}
+
+/** The first token session cookie that is live, or null. */
+export function tokenSession(
+  cookieHeader: string | undefined,
+  consoleTokens: ConsoleTokenStore | null,
+): LiveTokenSession | null {
+  if (!consoleTokens) return null;
+  for (const value of readCookies(cookieHeader, TOKEN_SESSION_COOKIE)) {
+    const live = consoleTokens.session(value);
+    if (live) return live;
+  }
+  return null;
+}
+
+/**
+ * A STANDING console credential: a Google session, or the dev bypass as a
+ * cookie or a bearer header. What may mint and revoke a console login token.
+ *
+ * Deliberately narrower than the gate. A token session is not here, so a
+ * session cannot mint its own successor and outlive its 30 minutes one hop at a
+ * time. `?token=` is not here either: a credential in a URL lands in access logs,
+ * and these are POST routes a script calls, not pages a browser navigates to.
+ */
+export function standingPrincipal(
+  cookieHeader: string | undefined,
+  authorization: string | undefined,
+  deps: Pick<ConsoleAuthDeps, "config" | "env" | "sessions">,
+): Principal | null {
+  return (
+    googlePrincipal(cookieHeader, deps.sessions ?? null, deps.config) ??
+    bypassPrincipal(cookieHeader, bearer(authorization), deps.config, deps.env)
+  );
 }
 
 /**

@@ -62,6 +62,9 @@ you something to point a client at:
   a 401. The bypass takes three aligned locks (see
   [Auth architecture](/auth/overview/)): this flag, `ALLOW_DEV_AUTH=true`, and
   `ADMIN_BOOTSTRAP_TOKEN`. The two dev boot paths set the other two.
+- `auth.consoleTokenLogin.enabled: true`, so an agent driving the console can be
+  handed a single-use login token instead of the bootstrap token. See
+  [Signing in as an automated actor](#signing-in-as-an-automated-actor).
 - the `echo` builtin, in-process, needing no credential and no network — so
   `tools/list` returns a real tool instead of an empty array.
 
@@ -75,6 +78,24 @@ it is deployed nowhere.
 moves the token into an `HttpOnly` cookie and redirects to the console.
 `/console?token=…` authenticates the same way but answers JSON — it is the
 session endpoint, not the screen.
+
+### Signing in as an automated actor
+
+An agent driving the console with Playwright should not hold the bootstrap token.
+Mint it a single-use login token instead, and let it exchange that for a
+30-minute session:
+
+```bash
+curl -s -X POST "http://localhost:$PORT/console/tokens" \
+  -H "Authorization: Bearer $ADMIN_BOOTSTRAP_TOKEN"
+# → {"token":"<jti>.<secret>", …}   hand the agent the token, nothing else
+```
+
+The agent posts `{"token": "…"}` to `/console/token-login` from its browser
+context (`context.request.post(…)` in Playwright), which sets the
+`strad_console_token` cookie, then navigates to `/ui`. The token works once, and
+only within ten minutes of the mint. See
+[Auth architecture](/auth/overview/#console-login-tokens-the-automated-actors-door).
 
 ### Calling `/mcp`
 

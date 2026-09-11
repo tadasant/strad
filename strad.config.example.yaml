@@ -95,6 +95,14 @@ auth:
     enabled: true
     roles: [admin]
 
+  # A standing console credential (the bootstrap token above, or a Google
+  # session) mints a single-use login token; an automated actor exchanges it for
+  # a 30-minute console session and never holds the standing one. The routes
+  # never exist where gateway.env is `prod`, whatever this says. See
+  # docs/.../auth/overview.md.
+  consoleTokenLogin:
+    enabled: true
+
 # A role names the servers it may reach. `*` means every configured server.
 # Both directions must agree: the role must name the server, AND the server must
 # list the role under `entitlements`. Neither side can grant access alone — see

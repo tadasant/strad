@@ -10,7 +10,12 @@ import { EnvTokenStore, verifyToken, type TokenStore } from "./tokens.ts";
  * anything the caller can set.
  */
 export interface Principal {
-  kind: "system-token" | "google" | "console-bypass";
+  /**
+   * `console-token` is a session opened by exchanging a single-use console
+   * login token (src/auth/console-tokens.ts). Its roles were fixed by whoever
+   * minted the token, and it can never mint one itself.
+   */
+  kind: "system-token" | "google" | "console-bypass" | "console-token";
   /** Loggable identifier. Never a secret. */
   id: string;
   label: string;

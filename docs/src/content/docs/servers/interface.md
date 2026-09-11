@@ -819,6 +819,27 @@ it is a single-value enum so a config cannot name a store strad does not have.
 That datastore is the subject of [known limitation #6](/limitations/#6-token-records-live-in-an-env-var-not-a-database).
 The token model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
+## `auth.consoleTokenLogin`
+
+Lets a standing console credential mint a single-use login token that an
+automated actor exchanges for a 30-minute console session.
+
+```yaml
+auth:
+  consoleTokenLogin:
+    enabled: false # default
+```
+
+Two locks: this flag, and a `gateway.env` that is not `prod` (or `production`).
+With either one shut, `POST /console/tokens`, `POST /console/token-login` and
+`POST /console/tokens/:jti/revoke` are not mounted at all, and no token session
+can open the console. Nothing in the config reopens it in production.
+
+It has no `roles:` of its own. A token carries its minter's roles, or a subset the
+mint asks for, so turning this on grants nobody anything a standing credential
+did not already hold. It opens the console and never `/mcp`. See
+[Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
+
 ## Where the config comes from
 
 Config is loaded from two sources, in priority order (`src/config/load.ts`):

@@ -1,4 +1,5 @@
 import express, { type Express, type Request, type Response } from "express";
+import type { ConsoleTokenStore } from "../auth/console-tokens.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { asyncRoute } from "../http/async-route.ts";
@@ -167,6 +168,8 @@ export interface ConsoleUiOptions {
   sessions?: ConsoleSessions | null;
   /** Whether Google sign-in can complete end to end. See resolveConsoleAuth(). */
   googleReady?: boolean;
+  /** The console login token store, where token login is live. See resolveConsoleTokens(). */
+  consoleTokens?: ConsoleTokenStore | null;
   /** Test seam: the transport a connector's token exchange uses. See ConnectorUiOptions. */
   connectorFetch?: typeof fetch;
 }
@@ -177,6 +180,7 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     env: opts.env,
     sessions: opts.sessions,
     googleReady: opts.googleReady,
+    consoleTokens: opts.consoleTokens,
   });
   const gcsList = opts.gcsList ?? createGcsLister();
 

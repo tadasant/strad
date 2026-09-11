@@ -20,6 +20,15 @@ curl -s "http://localhost:8080/console?token=change-me"
 
 # e. The console UI renders (302 → cookie → the Servers page).
 curl -sL -c /tmp/strad-ck "http://localhost:8080/ui?token=change-me" | grep -o '<title>[^<]*</title>'
+
+# f. A single-use login token opens the console without the bootstrap token.
+TOKEN=$(curl -s -X POST http://localhost:8080/console/tokens \
+  -H "Authorization: Bearer change-me" | node -pe 'JSON.parse(require("fs").readFileSync(0)).token')
+curl -s -c /tmp/strad-tk -X POST http://localhost:8080/console/token-login \
+  -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\"}"
+curl -s -b /tmp/strad-tk http://localhost:8080/ui | grep -o '<title>[^<]*</title>'
+curl -s -X POST http://localhost:8080/console/token-login \
+  -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\"}"
 ```
 
 Expected results:
@@ -28,6 +37,9 @@ Expected results:
   `"slug":"echo","state":"ok","tools":2`.
 - (d) `"via":"dev-bypass"` and `"roles":["admin"]`.
 - (e) `<title>Servers · strad</title>`.
+- (f) `"ok":true` from the exchange, `<title>Servers · strad</title>` with its
+  cookie, and `{"error":"token_consumed",…}` from the second exchange — the token
+  works once.
 
 `/mcp` is deliberately NOT callable here: it needs a minted system token, and the
 console bypass cannot stand in for one. To exercise it, mint one and re-boot:

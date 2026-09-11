@@ -40,6 +40,9 @@ Reach for this directory when you want the heavier thing it actually buys:
 # Open the console (dev bypass, admin).
 .agent-containers/ac.sh open spike
 
+# An agent that drives the console should get a single-use login token, not the
+# bootstrap token: POST /console/tokens with it as a Bearer header. VERIFY.md 1f.
+
 # Attach the Claude Code tmux window (if `claude` is installed).
 .agent-containers/ac.sh attach spike
 

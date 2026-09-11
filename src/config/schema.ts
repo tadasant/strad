@@ -834,7 +834,9 @@ const BundleConfig = z.object({
  *   /mcp      — machines. Static system tokens ONLY. Never unauthenticated,
  *               never dev-bypassable. This is enforced in code, not config.
  *   /console  — humans. Google OAuth (Workspace `hd` claim), with a dev bypass
- *               that itself still requires ADMIN_BOOTSTRAP_TOKEN.
+ *               that itself still requires ADMIN_BOOTSTRAP_TOKEN, and — outside
+ *               prod — a single-use login token either one can mint for an
+ *               automated actor.
  */
 const AuthConfig = z.object({
   google: z
@@ -887,6 +889,26 @@ const AuthConfig = z.object({
       roles: z.array(Role).default([]),
     })
     .default({ enabled: false, roles: [] }),
+
+  /**
+   * Console token login: a standing console credential mints a short-lived,
+   * single-use token, and an automated actor exchanges it for a 30-minute
+   * console session (src/auth/console-tokens.ts).
+   *
+   * Two locks: this flag, and a `gateway.env` that is not `prod`. In production
+   * the three routes are never mounted, whatever this says — there is no
+   * acknowledgement that turns them on there.
+   *
+   * No `roles:` of its own, on purpose. A token's roles are its minter's (or a
+   * subset the minter asks for), so enabling this grants nobody anything that a
+   * standing credential did not already hold. It opens the console and nothing
+   * else; it CANNOT authenticate /mcp.
+   */
+  consoleTokenLogin: z
+    .object({
+      enabled: z.boolean().default(false),
+    })
+    .default({ enabled: false }),
 });
 
 // ---------------------------------------------------------------------------

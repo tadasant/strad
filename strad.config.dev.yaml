@@ -32,6 +32,13 @@ auth:
     enabled: true
     roles: [admin]
 
+  # Single-use console login tokens, so an agent driving the local console with
+  # Playwright can be handed a token that dies in minutes rather than the
+  # bootstrap token: POST /console/tokens with `Authorization: Bearer
+  # $ADMIN_BOOTSTRAP_TOKEN`, then POST the token to /console/token-login.
+  consoleTokenLogin:
+    enabled: true
+
 roles:
   admin:
     servers: ["*"]
