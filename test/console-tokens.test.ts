@@ -348,6 +348,37 @@ describe("a token session can look at the console and cannot act through it", ()
     expect(res.status).not.toBe(401);
   });
 
+  it("lets a standing credential outrank a token session in the same request", async () => {
+    // A browser that used the bypass and then exchanged a token holds both;
+    // it must not be demoted to the look-only one.
+    const cookie = await signedIn();
+    const res = await fetch(`${base}/ui/echo/reveal`, {
+      method: "POST",
+      headers: {
+        ...BEARER,
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "variable=NOPE",
+      redirect: "manual",
+    });
+    expect(res.status).not.toBe(403);
+    const status = await fetch(`${base}/console`, {
+      headers: { ...BEARER, cookie },
+    });
+    expect(((await status.json()) as { via: string }).via).toBe("dev-bypass");
+  });
+
+  it("lets a standing credential call a playground tool", async () => {
+    const res = await fetch(`${base}/playground/echo/tools/call`, {
+      method: "POST",
+      headers: { ...BEARER, "content-type": "application/json" },
+      body: JSON.stringify({ tool: "echo", arguments: { text: "x" } }),
+    });
+    expect(res.status).not.toBe(403);
+    expect(res.status).not.toBe(401);
+  });
+
   it("does not refuse a standing credential on the same routes", async () => {
     for (const path of ACTING) {
       const res = await fetch(`${base}${path}`, {
@@ -653,6 +684,31 @@ describe("a token in the query string", () => {
     expect((await exchange(token)).status).toBe(409);
   });
 
+  it.each([
+    [
+      "an object-form parameter",
+      (t: string) => `/console/token-login?token[a]=${t}`,
+    ],
+    [
+      "a parameter of another name",
+      (t: string) => `/console/token-login?t=${t}`,
+    ],
+    ["a path segment", (t: string) => `/console/token-login/${t}`],
+    [
+      "the revoke route's query",
+      (t: string) => `/console/tokens/${t.slice(0, 16)}/revoke?token=${t}`,
+    ],
+    ["/mcp", (t: string) => `/mcp?token=${t}`],
+    ["a login URL", (t: string) => `/console/login?token=${t}`],
+    ["a percent-encoded dot", (t: string) => `/ui?x=${t.replace(".", "%2E")}`],
+  ])("burns it in %s, wherever the URL points", async (_label, url) => {
+    const { token } = await mintOk();
+    await fetch(`${base}${url(token)}`, { method: "POST", redirect: "manual" });
+    expect(await (await exchange(token)).json()).toMatchObject({
+      error: "token_revoked",
+    });
+  });
+
   it("does not claim to burn a token that was already consumed", async () => {
     const { token } = await mintOk();
     expect((await exchange(token)).status).toBe(200);
@@ -898,6 +954,8 @@ describe("the tripwire is an event, and only for a real token", () => {
       await exchange(token);
       await exchange(token);
       await exchange("garbage");
+      const burnt = await mintOk();
+      await fetch(`${base}/ui?token=${burnt.token}`, { redirect: "manual" });
     } finally {
       err.mockRestore();
       out.mockRestore();
@@ -911,8 +969,9 @@ describe("the tripwire is an event, and only for a real token", () => {
     const tripped = events.filter(
       (e) => e.evt === "console.token_exchange_failed",
     );
-    expect(tripped).toHaveLength(1);
+    expect(tripped).toHaveLength(2);
     expect(tripped[0]).toMatchObject({ state: "token_consumed" });
+    expect(tripped[1]).toMatchObject({ state: "burned_in_query" });
     expect(
       events.find((e) => e.evt === "console.token_login_refused"),
     ).toMatchObject({ reason: "invalid_token" });

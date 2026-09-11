@@ -32,10 +32,12 @@ auth:
     enabled: true
     roles: [admin]
 
-  # Single-use console login tokens, so an agent driving the local console with
-  # Playwright can be handed a token that dies in minutes rather than the
+  # Single-use console login tokens, so an agent looking at the local console
+  # with Playwright can be handed a token that dies in minutes rather than the
   # bootstrap token: POST /console/tokens with `Authorization: Bearer
-  # $ADMIN_BOOTSTRAP_TOKEN`, then POST the token to /console/token-login.
+  # $ADMIN_BOOTSTRAP_TOKEN`, then POST the token to /console/token-login. The
+  # session is view-only: it cannot reveal, write or delete a stored value, or
+  # call a tool. Live only where gateway.env is dev, local, test or staging.
   consoleTokenLogin:
     enabled: true
 

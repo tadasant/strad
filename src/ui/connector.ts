@@ -112,6 +112,10 @@ export function mountConnector(
   app.get(
     CONNECTOR_CALLBACK_PATH,
     gate,
+    // It writes the store. A token session could never have begun the flow —
+    // `connect` refuses it and the transaction is bound to the principal — so
+    // this is the second lock, not the first. See refuseTokenSession.
+    refuseTokenSession,
     asyncRoute((req, res) => handleCallback(req, res, opts), renderUnexpected),
   );
 

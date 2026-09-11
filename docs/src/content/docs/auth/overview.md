@@ -423,8 +423,12 @@ lands on.
 mint or revoke may be authenticated by one, so each takes an `application/json`
 body (`415 json_required` otherwise). A cross-origin page can POST a form with a
 human's cookies attached, but it cannot send JSON without a CORS preflight, and
-strad answers none. That is what stops a sibling subdomain from minting with a
-human's session or planting its own session in a human's browser. A mint body
+strad answers none. That is what stops a cross-origin page — a sibling
+subdomain included — from minting with a human's session, or making strad set a
+token session in a human's browser. (A sibling subdomain can still toss a cookie
+of its own at the parent domain. The gate ranks a token session last, below both
+standing credentials, so such a cookie can never shadow a human's real sign-in.)
+A mint body
 with a field other than `roles` is a `400`, because the alternative is a
 misspelled narrowing that quietly mints the minter's full roles.
 
@@ -436,10 +440,15 @@ loop, so two exchanges racing in on two sockets are ordered and exactly one of
 them sees `active`. `test/console-tokens.test.ts` races 25 of them over
 pre-opened sockets. That makes a failed exchange mean something. An actor whose
 fresh, unused token comes back `token_consumed` has learned that somebody else
-spent it. The right response is to revoke it — the actor posts the same token to
-`/console/tokens/<jti>/revoke`, which needs no standing credential and ends the
-session the other party got — raise the alarm, and mint once more. Retrying the
-same token is never right.
+spent it. The right response is to revoke it — the actor posts the same token,
+as a JSON body, to `/console/tokens/<jti>/revoke`, which needs no standing
+credential and ends the session the other party got — raise the alarm, and mint
+once more. Retrying the same token is never right. The price of revoking by
+possession is that anyone who later reads a spent token out of a job log can end
+the session it opened; that is a denial of service, never an entry, and it is
+why the token belongs nowhere that outlives the run. Any standing credential can
+revoke any token, whoever minted it — the console's roles are not an ACL (see
+[what the gate checks](#what-the-gate-checks-and-what-it-does-not)).
 
 | The refusal      | Status | When                                                                                        |
 | ---------------- | ------ | ------------------------------------------------------------------------------------------- |
@@ -454,12 +463,15 @@ A caller only learns a token's state if it holds the secret. A wrong secret
 against a real jti is `invalid_token`, and it does not spend the token: knowing
 the public half is not enough to burn it.
 
-**A token in any URL is burned.** A URL lands in access logs and `Referer`, so a
-login token seen as `?token=` on the exchange route, on `/ui`, on `/` or on
-`/console` is revoked on the spot — every copy, if the parameter repeats — and it
-opens nothing. On the exchange route that happens before the body is parsed, so a
-malformed body cannot leave it live. `/ui?token=` is the bypass's sign-in, which
-makes it the likeliest place for one to be pasted by mistake.
+**A token in any URL is burned.** A URL lands in access logs and `Referer`, so
+core scans the URL of every request it receives — raw and percent-decoded, path
+and query, whatever the route and whatever the parameter is called — for
+anything shaped like a login token, and revokes each one whose secret verifies.
+That runs before any route and before the body parser, so neither a 404 nor a
+malformed body can leave one live, and a token in a URL opens nothing. The
+exchange route also refuses such a request outright, with `token_in_query`.
+`/ui?token=` is the bypass's sign-in, which makes it the likeliest place for one
+to be pasted by mistake.
 
 **The session** the exchange opens is thirty minutes, absolute, never renewed.
 Its cookie, `strad_console_token`, is HttpOnly, `SameSite=Lax`, `Secure` under

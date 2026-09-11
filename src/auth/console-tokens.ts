@@ -438,6 +438,17 @@ export class ConsoleTokenStore {
   }
 }
 
+/**
+ * Every substring of `text` shaped like a login token, `<16 hex>.<43 base64url>`.
+ * Shape only — nothing here says a match is a token this process minted; the
+ * store's `burn()` decides that by verifying the secret.
+ */
+export function tokensIn(text: string): string[] {
+  return [...text.matchAll(/[0-9a-f]{16}\.[A-Za-z0-9_-]{43}/g)].map(
+    (m) => m[0],
+  );
+}
+
 function split(
   value: string | undefined,
 ): { id: string; secret: string } | null {

@@ -16,7 +16,7 @@ import type { Principal } from "../auth/index.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { event } from "../telemetry/index.ts";
-import { burnFromUrl, standingPrincipal } from "../ui/console-auth.ts";
+import { standingPrincipal } from "../ui/console-auth.ts";
 
 /**
  * The three console login token routes. See src/auth/console-tokens.ts for what
@@ -56,18 +56,21 @@ export interface ConsoleTokenRouteDeps {
  * parser (src/http/app.ts).
  *
  * NEVER a query string. A URL is written to access logs and sent onward in
- * `Referer`, so a token that has been in one is burned — revoked, if it is real
- * and still active — whatever the method, whatever the body, and before a
- * malformed body can make the parser answer first and leave it live.
+ * `Referer`, so a token that has been in one was already burned on arrival —
+ * see burnFromUrl, which runs first on every request and leaves its count on
+ * `res.locals.urlTokens`. This route additionally REFUSES, whatever the method
+ * and whatever the body, so an actor that put its token in the URL is told so
+ * rather than handed a confusing `token_revoked` on its next try.
  */
-export function tokenLoginUrlGuard(store: ConsoleTokenStore): RequestHandler {
+export function tokenLoginUrlGuard(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (req.query.token === undefined) {
+    const { burned, seen } = (res.locals.urlTokens as
+      { burned: number; seen: number } | undefined) ?? { burned: 0, seen: 0 };
+    if (req.query.token === undefined && seen === 0) {
       next();
       return;
     }
     noStore(res);
-    const { burned, seen } = burnFromUrl(store, req.query.token);
     if (seen === 0) refused("token_in_query");
     res.status(400).json({
       error: "token_in_query",
@@ -240,7 +243,9 @@ export function mountConsoleTokens(
    * actor holds the token and nothing standing, so when its exchange comes back
    * `token_consumed` it posts the same token here: the record stays consumed,
    * and the session somebody else opened with it ends. Anyone who could do this
-   * could also have spent the token, so it grants nothing new.
+   * could also have spent the token while it was live; once it is spent, the
+   * one thing a later holder of it can still do here is end the session it
+   * opened — a denial of service, never an entry.
    */
   app.post("/console/tokens/:jti/revoke", (req, res) => {
     noStore(res);
@@ -299,8 +304,9 @@ const REFUSAL_TEXT: Record<string, string> = {
   invalid_token: "Not a console login token this deployment holds.",
   token_consumed:
     "This token has already been exchanged. If you minted it and did not use " +
-    "it, somebody else did: revoke it — POST it to /console/tokens/<jti>/revoke, " +
-    "which also ends their session — and mint a fresh one.",
+    'it, somebody else did: revoke it — POST {"token": "<jti>.<secret>"} ' +
+    "as a JSON body to /console/tokens/<jti>/revoke, never in the URL, which " +
+    "also ends their session — and mint a fresh one.",
   token_revoked: "This token was revoked.",
   token_expired: "This token expired before it was exchanged. Mint another.",
 };

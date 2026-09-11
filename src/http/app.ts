@@ -176,13 +176,18 @@ export function createApp(opts: AppOptions): Express {
       ),
     ),
   );
-  // Resolved here, ahead of the body parser, for one reason: a login token in
-  // the exchange route's URL is burned BEFORE a malformed body can make the
-  // parser answer first and leave it live. See src/http/console-tokens.ts.
+  // Resolved here, ahead of the body parser, for one reason: a login token
+  // anywhere in ANY URL core receives is burned before a route — or a
+  // malformed body the parser refuses — can answer first and leave it live.
+  // See burnFromUrl (src/ui/console-auth.ts) and src/http/console-tokens.ts.
   const consoleTokens =
     opts.mode === "core" ? resolveConsoleTokens(opts) : null;
   if (consoleTokens) {
-    app.use(TOKEN_LOGIN_PATH, tokenLoginUrlGuard(consoleTokens));
+    app.use((req, res, next) => {
+      res.locals.urlTokens = burnFromUrl(consoleTokens, req.originalUrl);
+      next();
+    });
+    app.use(TOKEN_LOGIN_PATH, tokenLoginUrlGuard());
   }
   app.use(express.json({ limit: "4mb" }));
 
@@ -528,10 +533,6 @@ function mountConsole(
   }
 
   app.get("/console", (req, res) => {
-    // A login token is never a `?token=` credential, and one in this URL is now
-    // in an access log. See burnFromUrl.
-    burnFromUrl(consoleTokens, req.query.token);
-
     const bypass = authenticateConsoleBypass(
       consoleToken(req.query.token, req.headers.authorization),
       cfg,

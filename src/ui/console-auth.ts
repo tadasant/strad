@@ -1,6 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import {
   TOKEN_SESSION_COOKIE,
+  tokensIn,
   type ConsoleTokenStore,
   type LiveTokenSession,
 } from "../auth/console-tokens.ts";
@@ -31,14 +32,16 @@ import { renderSignIn } from "./render.ts";
  *   1. A Google session — a signed, expiring cookie minted by
  *      /console/oauth/callback from a verified Workspace identity
  *      (src/auth/session.ts). This is the real door.
- *   2. A token session — the cookie POST /console/token-login sets when a
- *      single-use login token is exchanged (src/auth/console-tokens.ts). The
- *      automated actor's door: 30 minutes, the minter's roles, never in prod.
- *      It lives here rather than beside the bypass because it has to outlive
- *      the bypass (tadasant/strad#6).
- *   3. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
+ *   2. The console dev bypass — ADMIN_BOOTSTRAP_TOKEN, itself triple-guarded
  *      (src/auth/dev.ts). It is what keeps staging and an unprovisioned prod
  *      enterable, and it goes away once Google sign-in is verified in prod.
+ *   3. A token session — the cookie POST /console/token-login sets when a
+ *      single-use login token is exchanged (src/auth/console-tokens.ts). The
+ *      automated actor's door: 30 minutes, the minter's roles, look-only, never
+ *      in prod. Last, because the two above are standing credentials and a
+ *      request carrying one must not be demoted to it. It lives here rather
+ *      than beside the bypass because it has to outlive the bypass
+ *      (tadasant/strad#6).
  *
  * /mcp is untouched by any of this. That endpoint accepts static system tokens
  * and nothing else (src/auth/index.ts). There is no code path from any console
@@ -105,16 +108,16 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
         return;
       }
     }
-    // A console LOGIN token in the URL is never a credential here — and it is
-    // now in an access log, so it is burned. `?token=` is the bypass's sign-in,
-    // which makes this the most likely place for one to be pasted by mistake.
-    burnFromUrl(consoleTokens, req.query.token);
-
-    // A Google session, first: it is the real credential.
+    // A Google session, first: it is the real credential. Then the bypass,
+    // because a STANDING credential outranks a token session — a browser
+    // holding both must not be demoted to the look-only one, and a token cookie
+    // tossed in by a sibling subdomain must not shadow a human's real session.
+    // (A login token in `?token=` never gets this far as a credential: it was
+    // burned on arrival, see burnFromUrl.)
     const principal =
       googlePrincipal(cookies, sessions, config) ??
-      tokenSession(cookies, consoleTokens)?.principal ??
-      bypassPrincipal(cookies, fromHeader, config, env);
+      bypassPrincipal(cookies, fromHeader, config, env) ??
+      tokenSession(cookies, consoleTokens)?.principal;
 
     if (principal) {
       res.locals.principal = principal;
@@ -186,26 +189,36 @@ export function tokenSession(
 }
 
 /**
- * Burn every console login token in a URL's `token` parameter — one value, or
- * several (`?token=a&token=b` arrives as an array). A token that has been in a
- * URL has been in an access log, so it must not be exchangeable afterwards.
+ * Burn every console login token anywhere in a URL: `?token=`, a parameter of
+ * another name or shape (`?t=`, `?token[a]=`), a path segment. A token that has
+ * been in a URL has been in an access log and a `Referer`, so it must not be
+ * exchangeable afterwards. The URL is scanned raw and percent-decoded, so an
+ * encoding cannot hide one.
+ *
+ * Run on EVERY request core receives, ahead of the body parser
+ * (src/http/app.ts), so it does not depend on which route the URL names or
+ * whether that route answers.
  *
  * A verified token is reported as a tripwire whether or not this call was what
- * burned it: somebody holding the real secret put it in a URL. Anything that
- * does not verify is ignored — it is not a login token, or not one this
- * process holds, and the caller's own refusal covers it.
+ * burned it: somebody holding the real secret put it in a URL. A match that does
+ * not verify is ignored — it is not a login token, or not one this process
+ * holds — and costs one hash, because a regex found its shape first.
  */
 export function burnFromUrl(
   consoleTokens: ConsoleTokenStore | null,
-  raw: unknown,
+  url: string,
 ): { burned: number; seen: number } {
-  if (!consoleTokens || raw === undefined) return { burned: 0, seen: 0 };
-  const values = (Array.isArray(raw) ? raw : [raw]).filter(
-    (v): v is string => typeof v === "string",
-  );
+  if (!consoleTokens) return { burned: 0, seen: 0 };
+  let decoded = url;
+  try {
+    decoded = decodeURIComponent(url);
+  } catch {
+    // A stray `%` is the caller's; the raw scan below still runs.
+  }
+  const candidates = new Set([...tokensIn(url), ...tokensIn(decoded)]);
   let burned = 0;
   let seen = 0;
-  for (const value of values) {
+  for (const value of candidates) {
     const result = consoleTokens.burn(value);
     if (!result) continue;
     seen++;
