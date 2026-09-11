@@ -161,19 +161,45 @@ workflow calls this out explicitly.
 
 ## 6. Static token records live in an env var, not a database
 
-**What.** System tokens are stored as a JSON array in `STRAD_TOKENS` (only the
-SHA-256 of each secret; plaintext shown once at mint). `EnvTokenStore` reads it.
+**✅ RESOLVED** for a store-backed deployment. `auth.staticTokens.store:
+parameter-store` reads the records from
+`/strad/{env}/gateway/static/STRAD_TOKENS` **on the request path**
+(`ParameterTokenStore`, `src/auth/tokens.ts`) and writes them from the SSO-gated
+console at `/tokens` (`src/ui/tokens.ts`, `src/auth/token-admin.ts`). Mint and
+revoke land on a running gateway — no restart, no deploy. The datastore is
+Parameter Manager rather than a database: the records are a few hundred bytes,
+the store is already there and already credentialed, and invariant 2 puts
+config-adjacent state in it. `env` is still the default and still works exactly
+as below.
 
-**Why.** No datastore is provisioned, and env-var storage is enough to prove the
-auth model. Minting/revoking means editing the secret and redeploying.
+**What remains.** `STRAD_TOKENS` has not "gone away" — it is the same NAME under
+both backings, which is deliberate: it is what makes the migration a config flip
+with no data move, and what keeps a rollback to an older image working. Two
+narrower residuals, both stated on the limitations page:
 
-`auth.staticTokens.store` reserves the config seat: a single-value enum (`env`)
-that no code reads, since `tokenStoreFromConfig` branches on `enabled` alone.
+1. **No compare-and-swap.** Parameter Manager has none, so every write is a
+   read-modify-write whose read is a direct `reveal()` immediately before the
+   write. Two humans minting inside that window lose one of the two mints. Same
+   as hack #91.
+2. **Staleness during a store outage.** `StoreSecretProvider` serves its last
+   known good reading when a re-read fails, so a revocation made while the store
+   is unreachable lands when the store answers again. Nothing is ADMITTED from a
+   stale reading — an unknown token is unknown — and it is strictly less stale
+   than the boot-scoped env var, whose bound was "until the next deploy".
 
-**Undo.** Implement a `TokenStore` backed by a real database (the interface in
-`src/auth/tokens.ts` is already the right shape — records mirror a table row) and
-build a `/console` UI for mint/revoke. Then `STRAD_TOKENS` goes away and `store`
-grows its second value.
+**What.** Under `auth.staticTokens.store: env` (the default) system tokens are
+stored as a JSON array in `STRAD_TOKENS` (only the SHA-256 of each secret;
+plaintext shown once at mint). `EnvTokenStore` reads it, once, at boot.
+
+**Why.** It keeps strad deployable with no vendor attached — the same argument as
+hack #8 for secrets generally. Its cost is explicit: minting or revoking means
+editing the secret and redeploying, and `/tokens` renders read-only and says so.
+
+**Undo.** `auth.staticTokens.store: parameter-store`, on a deployment that
+already sets `gateway.secrets.provider: gcp-parameter-store`. The schema refuses
+the combination without it (there would be nothing to read the records from). A
+deployment whose parameter does not exist yet has it created, secret, at the
+first mint, seeded from whatever the gateway is currently serving.
 
 ---
 

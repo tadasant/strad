@@ -89,6 +89,10 @@ It prints the token once and a JSON record to put in `STRAD_TOKENS`. Both halves
 are needed: the record so strad recognises the token, the token so you can send
 it.
 
+On a deployment with `auth.staticTokens.store: parameter-store`, the console at
+`/tokens` does both steps in one — it mints and files the record, with no
+redeploy. Locally there is no parameter store, so this command is the way.
+
 ## The containerized workspace
 
 `.agent-containers/` holds a Docker Compose dev environment: one workspace

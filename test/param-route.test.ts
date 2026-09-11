@@ -13,7 +13,8 @@ import {
   paramRoutePath,
   PARAM_PROTOCOL,
 } from "../src/secrets/param-route.ts";
-import { storeForPath, writableTarget } from "../src/http/params.ts";
+import { writableTarget } from "../src/http/params.ts";
+import { storeForPath } from "../src/ui/store-client.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import { readStoreDiagnosticsCached } from "../src/secrets/store-diagnostics.ts";
 import { parameterPath } from "../src/secrets/parameters/namespace.ts";

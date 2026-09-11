@@ -246,6 +246,26 @@ digests, not token plaintext — is still the gateway's auth table, so it is
 `secret: true` too. The rule is about the blast radius of the value being read, not
 about whether reading it is immediately catastrophic.
 
+### `STRAD_TOKENS` is a parameter you can also manage from `/tokens`
+
+`/strad/{env}/gateway/static/STRAD_TOKENS` is an ordinary secret parameter and
+appears in the parameters console like any other. With
+`auth.staticTokens.store: parameter-store` it is also the **live** token store:
+the gateway reads it through the runtime provider on every `/mcp` request, and
+the console at `/tokens` mints and revokes into it. That page is the one to use —
+it writes well-formed records, shows the plaintext once, and drops this process's
+reading of the store so a revoke takes effect on the next request rather than
+within `ttlSeconds`.
+
+Rotating it through the **parameters** page instead is still just a rotate, and
+it still works; you are writing the whole JSON array by hand, and a payload that
+is not an array of `{pubid, hash, roles}` fails every `/mcp` request closed until
+it is fixed. There is nothing to re-encode either way: the array's `"`, `[` and
+`{` are exactly why it is stored base64url, which is the next section.
+
+With `auth.staticTokens.store: env` this parameter is read once, at boot, by
+hydration — and `/tokens` says so and offers no forms.
+
 ### What a secret value looks like in the store
 
 A secret parameter's bytes are stored **base64url-encoded** in Secret Manager, and
@@ -887,16 +907,16 @@ secret](/operate/secrets-iam/#why-a-parameter-must-be-granted-access-to-its-own-
 into is decided by _who reads it_, and that is a property of the name rather than
 of the store:
 
-| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                                 |
-| A `remote-http` server's `oauthRefresh:` refresh token                                                                                           | within `ttlSeconds`      | Resolved on the request path like any other `${NAME}`; a value strad has never held starts a new token lineage, and the old account's access token is dropped before the next request. A token the provider **rotated** is written back by core — see [`oauthRefresh:`](#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server). |
-| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**).      |
-| A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                              |
-| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope.                                                                                                                                                                                                                                                                 |
-| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                                |
-| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                                  |
-| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                     |
+| The name                                                                                                                                         | Rotating it takes effect | Because                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A `${NAME}` in a `remote-http` server's `url`/`headers`, or a `builtin`'s `options`                                                              | within `ttlSeconds`      | Resolved on the **request path** by the runtime provider.                                                                                                                                                                                                                                                                                           |
+| A `remote-http` server's `oauthRefresh:` refresh token                                                                                           | within `ttlSeconds`      | Resolved on the request path like any other `${NAME}`; a value strad has never held starts a new token lineage, and the old account's access token is dropped before the next request. A token the provider **rotated** is written back by core — see [`oauthRefresh:`](#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server).           |
+| A `params: true` **supplementary image's** managed parameters                                                                                    | on the next **deploy**   | Resolved at render time onto that server's own component. Unless the name is on that server's [`paramsRefresh:`](#paramsrefresh--a-rotation-that-lands-without-a-deploy) list (**within `paramRefreshSeconds`**, no deploy) or its [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) list (re-read at **boot**).                |
+| A `params: true` **builtin's** managed parameters                                                                                                | within `ttlSeconds`      | Resolved by **core itself**, per tool call: `optionsFor` merges the namespace over the resolved `options:` through the same TTL cache the runtime provider uses. No deploy is in the loop, which is what makes staging's `echo` a live rotation observatory.                                                                                        |
+| The core boot keys — `STRAD_TOKENS`, `ADMIN_BOOTSTRAP_TOKEN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CONSOLE_SESSION_SECRET`, `SENTRY_DSN` | on the next **restart**  | Hydrated from the store once, at boot, by code with no provider in scope. **`STRAD_TOKENS` is the exception under `auth.staticTokens.store: parameter-store`**: the token store reads it through the runtime provider on the request path instead, so it rotates within `ttlSeconds` — and at once when the change is made in `/tokens`. See below. |
+| `STRAD_INTERNAL_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`                                                                                             | on the next **deploy**   | Hydrated on core, **baked** on every supplementary component — see below. A restart moves only one side, and for the internal token both sides must agree.                                                                                                                                                                                          |
+| A supplementary image's `env:`                                                                                                                   | on the next **deploy**   | Environment variables on a container strad does not run.                                                                                                                                                                                                                                                                                            |
+| A `consoleEnv:` name                                                                                                                             | on the next **deploy**   | Never in the store at all: it is the console's store-_admin_ credential, baked from the deploy environment onto core.                                                                                                                                                                                                                               |
 
 `ttlSeconds` is the answer for **request-path references and nothing else** —
 plus one thing that is not a rotation at all: it is also how old the console's
@@ -2016,7 +2036,9 @@ A panel below the grid lists `STRAD_TOKENS`, `STRAD_INTERNAL_TOKEN` and the
 console OAuth client. They belong here because the loop this page serves starts
 with "point a client at a strad URL with the shared API token": without
 `STRAD_TOKENS` every `/mcp` request is rejected and no amount of per-server
-`READY` means anything. Only
+`READY` means anything. That one is a roster rather than a value, so the panel
+links to [`/tokens`](/auth/overview/#managing-tokens-the-tokens-console), which
+says which credentials are live and mints or revokes one. Only
 those first two are required; the rest render as `not set · optional`, because a
 deployment with no console genuinely has no `GOOGLE_CLIENT_SECRET` and flagging
 that red would train people to ignore the panel.

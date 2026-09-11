@@ -11,7 +11,6 @@ import {
 import { createGcsLister, GcsError, type GcsLister } from "./gcs-client.ts";
 import {
   cachedProbe,
-  createGcpParameterStore,
   NO_CAPABILITIES,
   normalisePathPrefix,
   ParameterStoreError,
@@ -41,6 +40,8 @@ import {
 import { resolverConfigured } from "./param-routing.ts";
 import { revealPosture } from "./reveal.ts";
 import { renderIndex } from "./index-page.ts";
+import { storeFor } from "./store-client.ts";
+import { mountTokensConsole } from "./tokens.ts";
 import { SERVER_ROUTE, serverConsolePath, UI_PREFIX } from "./paths.ts";
 import {
   connectorFlash,
@@ -240,6 +241,18 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     sessions: opts.sessions,
     parametersStore: opts.parametersStore,
     connectorFetch: opts.connectorFetch,
+  });
+
+  // `/tokens` — mint and revoke the credentials /mcp accepts. Same gate, same
+  // process, and top-level rather than under `/ui/:server` because it is not
+  // about a server: the records belong to the deployment. See src/ui/tokens.ts
+  // for why it has no /mcp counterpart.
+  mountTokensConsole(app, gate, {
+    config: opts.config,
+    secrets: opts.secrets,
+    env: opts.env,
+    secretProvider: opts.secretProvider,
+    parametersStore: opts.parametersStore,
   });
 
   // The secret roster used to live here, as its own destination. It does not any
@@ -1039,49 +1052,6 @@ async function capabilitiesFor(
     probeCache.set(key, prober);
   }
   return prober();
-}
-
-/**
- * The parameter store, MEMOISED per (server, project, service account).
- *
- * It must not be rebuilt per request. The client caches its OAuth access token
- * for an hour (minting one costs an RSA signature and a round trip to Google),
- * and a fresh instance per call throws that cache away. It is keyed because the
- * credential differs per STORE — one page fronts several, each addressing its
- * own GCP project as its own identity — and the key is what stops one store's
- * client answering for another's.
- *
- * What the key does NOT see is a rotated PRIVATE KEY under an unchanged
- * `client_email`, which is the normal shape of a service-account key rotation:
- * this process keeps signing with the old one until core restarts. That is
- * pre-existing and bounded by a redeploy; it is written down here rather than
- * implied away, because the number of keys under it grows with the number of
- * stores on a page.
- */
-const storeCache = new Map<string, ParameterStore>();
-
-export function storeFor(
-  view: Extract<ServerView, { kind: "secrets" }>,
-  selected: SecretsStore,
-  opts: Pick<ConsoleUiOptions, "parametersStore">,
-): ParameterStore | null {
-  if (opts.parametersStore) return opts.parametersStore(view, selected);
-  if (!selected.account) return null;
-
-  const key = `${view.server.slug} ${selected.projectId} ${selected.account.client_email}`;
-  const cached = storeCache.get(key);
-  if (cached) return cached;
-
-  const store = createGcpParameterStore({
-    projectId: selected.projectId,
-    location: selected.location,
-    account: selected.account,
-    pmApiBase: view.pmApiBase,
-    smApiBase: view.smApiBase,
-    tokenUrl: view.tokenUrl,
-  });
-  storeCache.set(key, store);
-  return store;
 }
 
 /**

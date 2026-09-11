@@ -142,6 +142,13 @@ function consoleCards(consoleMounted: boolean): string[] {
       show: consoleMounted,
     },
     {
+      href: "/tokens",
+      title: "Tokens",
+      desc: "The credentials /mcp accepts: mint one, see which are live, revoke one that should not be. The plaintext is shown once; only its hash is ever stored.",
+      cta: "Manage →",
+      show: consoleMounted,
+    },
+    {
       href: "/console",
       title: "Sign in",
       desc: "The console session endpoint. Google SSO when configured, bootstrap token otherwise.",
@@ -217,7 +224,7 @@ function serverTile(server: ServerConfig, mcpUrl: string): string {
  * broken. With JS, one click copies. Two sources because the endpoint panel
  * shows its URL in an input and a tile keeps it in `data-url`.
  */
-const COPY_SCRIPT = `<script>
+export const COPY_SCRIPT = `<script>
 document.addEventListener("click", function (e) {
   var btn = e.target.closest("[data-copy]");
   if (!btn) return;

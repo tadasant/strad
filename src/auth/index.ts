@@ -1,7 +1,14 @@
 import type { StradConfig } from "../config/schema.ts";
+import type { ServerSecretProviders } from "../secrets/provider/index.ts";
+import { event } from "../telemetry/index.ts";
 import { bearerToken } from "./credential.ts";
 import { ACCESS_TOKEN_PREFIX } from "./mcp-oauth/grants.ts";
-import { EnvTokenStore, verifyToken, type TokenStore } from "./tokens.ts";
+import {
+  EnvTokenStore,
+  ParameterTokenStore,
+  verifyToken,
+  type TokenStore,
+} from "./tokens.ts";
 
 /**
  * Who is making this request, and what are they entitled to?
@@ -16,6 +23,31 @@ export interface Principal {
   id: string;
   label: string;
   roles: string[];
+}
+
+/**
+ * The token store could not be read, so no credential was judged at all.
+ *
+ * NOT an `Unauthenticated`, and the distinction is the point. A `401` tells the
+ * caller its credential is bad, and a spec-compliant MCP client answers that by
+ * discarding the token and walking into the re-authentication flow that
+ * `/.well-known/oauth-protected-resource` points it at. Doing that to every
+ * agent in a fleet because a parameter read timed out is a worse outage than the
+ * blip that caused it. Nothing here was decided about the token, so nothing is
+ * claimed about it: this propagates to the route guard
+ * (`src/http/async-route.ts`), which answers `500 {"error":"internal_error"}` —
+ * strad could not answer, come back.
+ *
+ * It carries NO detail. The store client's own message quotes resources and
+ * payloads, and this error is constructed on a path whose every value is logged.
+ * The fact ships as `strad.token_store_unavailable`; the reason is on stderr at
+ * the throw site.
+ */
+export class TokenStoreUnavailable extends Error {
+  constructor() {
+    super("the system-token store could not be read");
+    this.name = "TokenStoreUnavailable";
+  }
 }
 
 export class Unauthenticated extends Error {
@@ -92,6 +124,27 @@ export async function authenticateMcp(
 
   const verdict = await verifyToken(raw, store, expectedEnv);
   if (!verdict.ok) {
+    if (verdict.reason === "unavailable") {
+      // NOT an `Unauthenticated`. The store could not be read, so EVERY request
+      // is failing rather than this one, and nothing was decided about the
+      // credential in hand — see `TokenStoreUnavailable` for why answering `401`
+      // would be the expensive mistake. It ships as an event because "every
+      // agent is locked out" and "one agent has a bad token" are the same thing
+      // from outside and opposite investigations from inside, and because a
+      // gateway rejecting every agent it has is exactly what an operator needs
+      // to learn from the ingestor rather than from a stream nothing scrapes.
+      //
+      // No fields: everything that could say more is either the caller's bytes
+      // or the store client's own text.
+      event({ evt: "strad.token_store_unavailable" });
+      console.error(
+        "[strad] the system-token store could not be read, so /mcp is " +
+          "failing every request. This is fail-closed and deliberate: a store " +
+          "that cannot be read is not an empty store and must not be treated " +
+          "as an open one.",
+      );
+      throw new TokenStoreUnavailable();
+    }
     // The caller always gets the same 401; `reason` is for our logs.
     throw new Unauthenticated("invalid token", verdict.reason);
   }
@@ -104,14 +157,45 @@ export async function authenticateMcp(
   };
 }
 
+/**
+ * The token store this deployment declares.
+ *
+ * `auth.staticTokens.store` decides, and the two values differ in exactly one
+ * property: WHEN the records are read. `env` reads `process.env` once, at
+ * construction, so a mint or a revoke is a redeploy. `parameter-store` reads
+ * through the runtime provider on the request path, so a mint or a revoke made
+ * in the console at `/tokens` takes effect on the next request.
+ *
+ * Both read the same name and the same payload shape, which is what makes the
+ * flip a config change with no data move. See `src/auth/tokens.ts`.
+ *
+ * `providers` is optional so the many call sites that build a store from a
+ * config and an environment alone need not change. Its ABSENCE under
+ * `parameter-store` is not a silent downgrade to the env var, though: without a
+ * provider there is nothing to read the parameter with, and a store that quietly
+ * fell back would serve the baked records to a deployment that believes it is
+ * serving revocations. It fails closed, with the reason on stderr.
+ */
 export function tokenStoreFromConfig(
   cfg: StradConfig,
   env: NodeJS.ProcessEnv = process.env,
+  providers?: ServerSecretProviders,
 ): TokenStore {
   if (!cfg.auth.staticTokens.enabled) {
     // An empty store, not a disabled check. /mcp still requires a token; it
     // just can never satisfy one. Fail closed.
     return new EnvTokenStore(undefined);
+  }
+  if (cfg.auth.staticTokens.store === "parameter-store") {
+    if (!providers) {
+      console.error(
+        '[strad] auth.staticTokens.store is "parameter-store" but no secret ' +
+          "provider was supplied, so there is nothing to read the records " +
+          "with. /mcp will reject every request.",
+      );
+      return new EnvTokenStore(undefined);
+    }
+    return new ParameterTokenStore(providers.shared);
   }
   return new EnvTokenStore(env.STRAD_TOKENS);
 }

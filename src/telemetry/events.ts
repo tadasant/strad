@@ -289,6 +289,28 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
     "strad.param_written": ["slug", "variable"],
     "strad.param_write_failed": ["slug", "variable"],
     /**
+     * The `/mcp` system-token roster changed, or could not be read.
+     *
+     * `pubid` is the non-secret half of a token by construction (`mintToken` in
+     * src/auth/tokens.ts makes it from `randomBytes`, and it is the only part of
+     * a token that is ever written down). It is never the label and never the
+     * roles: a label is typed by a human into a console field, and roles are
+     * offered from a closed set but arrive on a form, so neither is a value this
+     * repo wrote down. What an operator needs from the ingestor is that a
+     * credential was minted or revoked and which one — a record they can then
+     * look up on the console page, where the label is.
+     *
+     * `strad.token_store_unavailable` carries NOTHING, and that is the point: it
+     * fires when /mcp is rejecting every request because the records could not be
+     * read, and everything that could say more is either the caller's bytes or
+     * the store client's own text. The fact is the signal.
+     */
+    "strad.token_minted": ["pubid"],
+    "strad.token_revoked": ["pubid"],
+    "strad.token_forgotten": ["pubid"],
+    "strad.token_write_failed": [],
+    "strad.token_store_unavailable": [],
+    /**
      * A `remote-http` server with `oauthRefresh:` minted an upstream access
      * token, or failed to. `slug` is the config's; `rotated` is whether the
      * token endpoint issued a new refresh token with it; `reason` is one of the
