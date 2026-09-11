@@ -519,6 +519,10 @@ jobs:
           probe http://127.0.0.1:8080/gmail "" 401
           echo "wrong token:"
           probe http://127.0.0.1:8080/gmail "Bearer not-the-token" 401
+          # The right token with no scheme: every door reads the header by one
+          # rule (`bearerToken`), and this is the built image's half of it.
+          echo "right token, no Bearer scheme:"
+          probe http://127.0.0.1:8080/gmail "$STRAD_INTERNAL_TOKEN" 401
           echo "right token:"
           probe http://127.0.0.1:8080/gmail "Bearer $STRAD_INTERNAL_TOKEN" 200
           echo "healthz stays open:"

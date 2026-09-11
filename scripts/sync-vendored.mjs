@@ -76,6 +76,11 @@ export const VENDORED = [
     // whose suite CI reaches last. A second handler is one of them dropping
     // `cache-control: no-store` and the console rendering a cached "absent" for
     // a credential that is present.
+    //
+    // And the one `Authorization` parse and constant-time comparator every door
+    // uses, in both trees: `authorizePresence` gates on them, and a vendored file
+    // cannot import a sibling, so they live beside it. A drift is the host's
+    // mounts accepting a header core's doors refuse.
     id: "presence",
     source: "src/secrets/presence.ts",
     label: "the presence vocabulary and its route",

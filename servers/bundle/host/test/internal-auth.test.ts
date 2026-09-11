@@ -34,8 +34,8 @@ describe("the decision", () => {
     ).toBeUndefined();
   });
 
-  it("admits the bare token, and any casing of the scheme", () => {
-    for (const header of [TOKEN, `bearer ${TOKEN}`, `BEARER   ${TOKEN}`]) {
+  it("admits any casing of the scheme", () => {
+    for (const header of [`bearer ${TOKEN}`, `BEARER   ${TOKEN}`]) {
       expect(
         internalAuthRefusal(
           header,
@@ -43,6 +43,23 @@ describe("the decision", () => {
           timingSafeEqual,
         ),
       ).toBeUndefined();
+    }
+  });
+
+  // One rule for every door, in both images: the scheme is required. A header
+  // that is only the right token is still refused, because the public `/mcp`
+  // and the console refuse it, and a door that accepts it is the one nobody
+  // decided on.
+  it("refuses the right token with no scheme, or under another scheme", () => {
+    for (const header of [TOKEN, ` ${TOKEN}`, `Basic ${TOKEN}`, `Bearer`]) {
+      expect(
+        internalAuthRefusal(
+          header,
+          { STRAD_INTERNAL_TOKEN: TOKEN } as NodeJS.ProcessEnv,
+          timingSafeEqual,
+        ),
+        header,
+      ).toEqual({ status: 401, error: "invalid internal token" });
     }
   });
 

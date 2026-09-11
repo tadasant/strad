@@ -1,5 +1,6 @@
 import type { StradConfig } from "../config/schema.ts";
-import { secretEquals, type Principal } from "./index.ts";
+import { secretEquals } from "./credential.ts";
+import type { Principal } from "./index.ts";
 
 /**
  * The console dev bypass.

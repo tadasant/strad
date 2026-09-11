@@ -217,8 +217,8 @@ of which, `servers`, is a fourteen-leg matrix over the server trees:
   Then a **third**, to assert the mounts' internal-token gate in the direction
   that matters. Both containers above are started with a throwaway
   `STRAD_INTERNAL_TOKEN`, and the job checks that a mount answers `401` to a
-  request presenting none and to one presenting the wrong token, `200` to the
-  right one, and that `/healthz` still answers `200` with no token at all — App
+  request presenting none, to one presenting the wrong token, and to the right
+  token with no `Bearer` scheme, `200` to the right one, and that `/healthz` still answers `200` with no token at all — App
   Platform's prober holds none. The third container is started **without** the
   token, and every mount must answer `503` and serve nothing. The failure
   direction here is _open_: a green smoke proves only the served half, and a gate

@@ -970,7 +970,9 @@ store or a live bundle — staging was down when this landed. A green unit suite
 not the same as having run it, and this repo has shipped a bug of exactly that
 shape before.
 
-**Undo:** delete `src/secrets/presence.ts`, `src/secrets/store-diagnostics.ts`,
+**Undo:** move `bearerToken` and `constantTimeEquals` out first — every door
+authenticates with them — then delete `src/secrets/presence.ts`,
+`src/secrets/store-diagnostics.ts`,
 `src/gateway/bundle-presence.ts`, `src/http/presence.ts`, the vendored copy and
 its route in the bundle host, the `STRAD_PARAM_KEYS` env var in `appspec.ts`, and
 `resolveDetailed` in `gcp.ts`. The console reverts to the shrug.
