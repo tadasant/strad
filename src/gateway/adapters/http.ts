@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { Request, Response } from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -842,6 +844,79 @@ export class HttpServerAdapter implements ServerAdapter {
       res.send(buffer);
     } finally {
       clearTimeout(timeout);
+    }
+  }
+
+  /**
+   * Stream a non-MCP GET from this upstream to the caller.
+   *
+   * WHY THIS IS NOT `postRaw` WITH A VERB PARAMETER. `postRaw` ends in
+   * `await upstream.arrayBuffer()` and a single `res.send`, which is fine for an
+   * upload the store already bounds at 100MB. A download is not bounded — a
+   * Slack attachment may be hundreds of megabytes — so the body is piped and the
+   * gateway's memory stays flat regardless of size.
+   *
+   * AND WHY THE TIMEOUT IS DIFFERENT. `postRaw` aborts the whole operation after
+   * `timeoutMs`. Applied here that would be a SIZE limit wearing a clock's
+   * clothes: at the 120s default, any artifact needing more than 120s of
+   * transfer would fail partway through no matter how healthy the connection.
+   * The timer below is reset on every chunk, so it bounds SILENCE — an upstream
+   * that has stopped producing — and lets a large, healthy download run as long
+   * as it keeps moving.
+   */
+  async getRaw(path: string, req: Request, res: Response): Promise<void> {
+    const endpoint = await this.opts.endpoint();
+    const url = new URL(endpoint.url);
+    url.pathname = joinPath(url.pathname, path);
+    url.search = "";
+
+    const headers = new Headers(endpoint.headers);
+    const controller = new AbortController();
+    let idle: NodeJS.Timeout | undefined;
+    const touch = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => controller.abort(), this.opts.timeoutMs);
+    };
+    touch();
+
+    try {
+      const upstream = await this.hop("get_raw", () =>
+        fetch(url, { method: "GET", headers, signal: controller.signal }),
+      );
+      if (upstream.status === 401) this.opts.onUnauthorized?.(endpoint);
+
+      res.status(upstream.status);
+      upstream.headers.forEach((value, key) => {
+        // Both are properties of THIS hop's connection, not of the artifact, and
+        // re-emitting either would describe a framing the caller is not getting.
+        const name = key.toLowerCase();
+        if (name === "transfer-encoding" || name === "connection") return;
+        res.setHeader(key, value);
+      });
+
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+
+      // A Transform rather than a `data` listener: attaching one would put the
+      // stream in flowing mode and discard backpressure, which is the whole
+      // reason this path streams at all.
+      const heartbeat = new Transform({
+        transform(chunk, _enc, cb) {
+          touch();
+          cb(null, chunk);
+        },
+      });
+
+      await pipeline(Readable.fromWeb(upstream.body), heartbeat, res);
+    } catch (err) {
+      // Stop pulling from the upstream if the caller went away or the pipe broke;
+      // without this the fetch would run to completion into nothing.
+      controller.abort();
+      throw err;
+    } finally {
+      if (idle) clearTimeout(idle);
     }
   }
 

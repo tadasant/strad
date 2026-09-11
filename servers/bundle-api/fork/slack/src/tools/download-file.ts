@@ -1,9 +1,17 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { z } from 'zod';
-import { writeFile, mkdir } from 'fs/promises';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { mintDownloadToken } from '../download-link.js';
 import type { ClientFactory } from '../server.js';
+
+/** What this tool needs to mint a link. Built once in `createMCPServer`. */
+export interface DownloadLinkConfig {
+  /** The GATEWAY's slug for this mount, e.g. `slack-zimmer`. */
+  publicSlug: string;
+  /** Origin of the public gateway, no trailing slash. */
+  publicBaseUrl: string;
+  key: Buffer;
+  ttlSeconds: number;
+}
 
 const PARAM_DESCRIPTIONS = {
   file_id:
@@ -15,22 +23,35 @@ export const DownloadFileSchema = z.object({
   file_id: z.string().min(1).describe(PARAM_DESCRIPTIONS.file_id),
 });
 
-const TOOL_DESCRIPTION = `Download a file from Slack to a local temporary path.
+const TOOL_DESCRIPTION = `Get a temporary download URL for a file attached to a Slack message.
 
-Slack files require authentication to access, so this tool handles the download using the bot token. It saves the file to a temporary directory and returns the local file path.
+Slack files require authentication to access, so this tool mints a short-lived signed URL
+that serves the bytes without any credential of yours. Fetch it from your own shell — no
+header, no token, no API key.
 
-**Returns:**
-- Local file path (file:// URI) where the downloaded file was saved
-- File metadata: name, type, size
+**Returns** JSON with the file's \`name\`, \`mime_type\` and \`size_bytes\`, plus:
+- \`download_url\` — fetch this to get the bytes
+- \`expires_at\` — when the URL stops working
+- \`curl\` — a ready-made command; run it as-is
+
+**The URL is single-use and expires in minutes.** Fetch it promptly. If it expires, has
+already been used, or the download dies partway, just call this tool again — a fresh URL
+costs nothing.
 
 **Use cases:**
-- Download images shared in Slack to view them
-- Download documents, PDFs, or other files shared in channels
-- Access any file attachment from a Slack message
+- Read a document, PDF or archive somebody attached to a message
+- Pull down an image to look at it
+- Retrieve any file attachment, at any size — the bytes stream, so a large archive works
+  the same way a small screenshot does
 
-**Note:** File IDs (e.g., "F1234567890") are shown in message outputs from slack_get_channel and slack_get_thread.`;
+**Note:** File IDs (e.g., "F1234567890") are shown in message outputs from slack_get_channel
+and slack_get_thread.`;
 
-export function downloadFileTool(server: Server, clientFactory: ClientFactory) {
+export function downloadFileTool(
+  server: Server,
+  clientFactory: ClientFactory,
+  ctx?: { downloadLink?: DownloadLinkConfig }
+) {
   return {
     name: 'slack_download_file',
     description: TOOL_DESCRIPTION,
@@ -47,13 +68,32 @@ export function downloadFileTool(server: Server, clientFactory: ClientFactory) {
     handler: async (args: unknown) => {
       try {
         const parsed = DownloadFileSchema.parse(args);
+        const link = ctx?.downloadLink;
+
+        // No link config means nothing is in front of this process to serve the
+        // URL. Say so, rather than minting one that would 404 — a dead URL is
+        // the failure this whole tool was rewritten to stop producing.
+        if (!link) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'This deployment cannot serve Slack file downloads: no public download route ' +
+                  'is configured for this mount.',
+              },
+            ],
+            isError: true,
+          };
+        }
+
         const client = clientFactory();
 
-        // Get file metadata
+        // Fetched BEFORE minting so a bad file id fails here, with Slack's own
+        // reason, rather than turning into a signed URL that 404s later.
         const fileInfo = await client.getFileInfo(parsed.file_id);
 
-        const downloadUrl = fileInfo.url_private_download || fileInfo.url_private;
-        if (!downloadUrl) {
+        if (!fileInfo.url_private_download && !fileInfo.url_private) {
           return {
             content: [
               {
@@ -65,33 +105,33 @@ export function downloadFileTool(server: Server, clientFactory: ClientFactory) {
           };
         }
 
-        // Download the file
-        const fileBuffer = await client.downloadFile(downloadUrl);
+        const { token, expiresAt } = mintDownloadToken({
+          key: link.key,
+          fileId: parsed.file_id,
+          ttlSeconds: link.ttlSeconds,
+        });
 
-        // Write to temp directory
-        const slackTmpDir = join(tmpdir(), 'slack-files');
-        await mkdir(slackTmpDir, { recursive: true });
-
-        const fileName = fileInfo.name || fileInfo.title || parsed.file_id;
-        const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const localPath = join(slackTmpDir, `${parsed.file_id}-${safeName}`);
-
-        await writeFile(localPath, fileBuffer);
-
-        const sizeParts = [];
-        if (fileInfo.mimetype) sizeParts.push(fileInfo.mimetype);
-        if (fileInfo.size) sizeParts.push(formatFileSize(fileInfo.size));
-
-        let output = `File downloaded successfully.\n`;
-        output += `Name: ${fileName}\n`;
-        if (sizeParts.length > 0) output += `Type: ${sizeParts.join(', ')}\n`;
-        output += `Path: file://${localPath}\n`;
+        const url = `${link.publicBaseUrl}/mcp-download/${encodeURIComponent(link.publicSlug)}/${token}`;
+        const name = fileInfo.name || fileInfo.title || parsed.file_id;
+        const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
 
         return {
           content: [
             {
               type: 'text',
-              text: output,
+              text: JSON.stringify(
+                {
+                  name,
+                  mime_type: fileInfo.mimetype,
+                  size_bytes: fileInfo.size,
+                  download_url: url,
+                  expires_at: expiresAt,
+                  single_use: true,
+                  curl: `curl -fSL -o '${safeName}' '${url}'`,
+                },
+                null,
+                2
+              ),
             },
           ],
         };
@@ -100,7 +140,7 @@ export function downloadFileTool(server: Server, clientFactory: ClientFactory) {
           content: [
             {
               type: 'text',
-              text: `Error downloading file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              text: `Error preparing file download: ${error instanceof Error ? error.message : 'Unknown error'}`,
             },
           ],
           isError: true,
@@ -108,10 +148,4 @@ export function downloadFileTool(server: Server, clientFactory: ClientFactory) {
       }
     },
   };
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

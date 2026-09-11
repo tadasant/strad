@@ -1,5 +1,6 @@
 import type { ISlackClient } from '../server.js';
 import type { OpenDmResult } from './lib/open-dm.js';
+import type { SlackFileStream } from './lib/download-file.js';
 import { compareMatches } from './lib/find-users.js';
 import type {
   Channel,
@@ -219,8 +220,18 @@ export function createIntegrationMockSlackClient(
       };
     },
 
-    async downloadFile(): Promise<Buffer> {
-      return Buffer.from('mock-file-content');
+    async openFile(): Promise<SlackFileStream> {
+      const bytes = Buffer.from('mock-file-content');
+      return {
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(bytes));
+            controller.close();
+          },
+        }),
+        contentType: 'text/plain',
+        contentLength: bytes.length,
+      };
     },
 
     async uploadSnippet(

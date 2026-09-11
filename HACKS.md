@@ -4850,3 +4850,43 @@ until there is a store there is nothing for it to read. 5 goes away only by
 closing registration, which would take the acceptance test with it; 6 by keying
 the transaction cookie per authorization, which is a small change nobody has
 needed yet.
+
+## 95. A Slack download link is single-use against a per-process set
+
+**What.** `slack_download_file` returns a short-lived signed URL rather than
+bytes or a path (`servers/bundle-api/fork/slack/src/download-link.ts`). The token
+is an HMAC over the file id, an expiry and a random nonce, and the link is
+single-use: the nonce is marked spent in a `Map` held by the mount's process.
+
+**Why it is in memory.** There is nowhere else. A bundle component has no
+database and no shared cache, and the artifact store's upload leases next door
+make the same trade for the same reason. Writing one would mean giving every
+supplementary container a datastore to hold a fact that is worthless fifteen
+minutes later.
+
+**What follows.**
+
+1. **A restart forgets which nonces were spent**, so a link could be replayed
+   across one — but only inside its own expiry, which is the outer bound on the
+   whole mechanism anyway. A deploy is the realistic way to get there, and it
+   invalidates every outstanding link by a different route: the signing key is
+   derived from `STRAD_INTERNAL_TOKEN`, so rotating that token voids them all.
+
+2. **Single-use is per replica.** `bundle-slack-zimmer` runs one instance. Scaled
+   wider, a link replayed against a different replica inside its window would not
+   be caught — the same shape as the authorization-code set in #94.
+
+3. **The set is bounded at ten thousand live nonces**, oldest dropped first.
+   Eviction can only ever shorten a nonce's protection to less than its own
+   expiry; it cannot extend one, and the signature's `exp` is checked
+   independently.
+
+**The token is in the URL path**, so it reaches App Platform's edge access log.
+That is what the fifteen-minute expiry and the single use are for, and it is why
+neither is configurable upward beyond an hour. The FILENAME is deliberately kept
+out of the URL and served in `Content-Disposition` instead, so the one part of
+this that is durable in a log names nothing about the file.
+
+**Not a hack, and worth saying:** no bytes are stored anywhere. The mount streams
+from Slack on the GET, so there is no temporary file and no bucket object to
+retain, expire or clean up.

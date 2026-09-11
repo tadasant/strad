@@ -12,8 +12,9 @@ v0.0.7. At that commit the vendored copy was byte-identical to upstream.
 
 ## Why it is forked
 
-Two reasons, in the order they arrived: the message format upstream describes
-wrongly, and the conversation type upstream cannot address at all.
+Three reasons, in the order they arrived: the message format upstream describes
+wrongly, the conversation type upstream cannot address at all, and the file
+download upstream reports as a success the caller cannot use.
 
 ### 1. mrkdwn is not Markdown
 
@@ -220,6 +221,55 @@ it resolves an EXISTING conversation with `conversations.list` rather than
 calling `conversations.open`, which would create one. A read-only tier that
 leaves a new row in someone's sidebar is not read-only. The `slack-readonly`
 slug's allow-list in `infra/strad.staging.yaml` names all three.
+
+### 3. A downloaded file lands where the caller is not
+
+Upstream's `slack_download_file` writes the attachment into `tmpdir()` and
+returns `Path: file://<localPath>`. That is correct for a server running as a
+subprocess of its caller, which is what upstream assumes. Served through a
+gateway it is not: the mount runs in its own container, so the path names nothing
+the caller can open.
+
+The failure is the same shape as the mrkdwn one — **it reports success**. A
+Zimmer session asked to read a 39MB zip of tax documents attached to a Slack
+message called the tool, got `File downloaded successfully` and a path, could not
+read the path, and abandoned the documents for weaker evidence. Nothing errored
+and nothing retried.
+
+Slack offers no URL to hand over instead. `url_private` and
+`url_private_download` both require `Authorization: Bearer <bot token>`, so
+passing one through would mean passing the workspace credential. The only
+unauthenticated form, `permalink_public`, is minted by `files.sharedPublicURL` —
+a **user-token** method a bot token cannot call, which makes the file public to
+anyone holding the link until `files.revokePublicURL` is called. Wrong on both
+counts, and the second is worse than the bug.
+
+So the fork mints its own: a short-lived, single-use signed URL, served by a
+route this tree also implements.
+
+#### The download delta
+
+| File | Change |
+| --- | --- |
+| `src/download-link.ts` | **New.** Mint and verify the signed token, and the spent-nonce ledger that makes a link single-use. |
+| `src/tools/download-file.ts` | Returns `download_url` + `expires_at` + a `curl` line. Writes nothing to disk. |
+| `src/slack-client/lib/download-file.ts` | `downloadFile` → `openFile`: returns the live response so the bytes stream. Redirects are refused rather than followed, because undici drops the Authorization header cross-origin. |
+| `src/server.ts` | `handleDownload` — verify, re-check with `files.info`, open the stream. Plus the `download:` option it is configured by. |
+| `src/tools.ts` | Threads a third `ctx` argument to tool factories, so the twelve tools that need none keep their signatures. |
+
+`test/download-link.test.ts` and `test/download-file.test.ts` pin it: the tool
+returns a URL and never a path, a link works once, a failed GET gives the link
+back, and a link minted for one slug does not verify at another.
+
+#### Nothing is stored
+
+The GET streams from Slack straight through to the caller. There is no temporary
+file and no bucket object, so there is nothing to retain, expire or clean up —
+which is the property that mattered for the documents that prompted it.
+
+The other half of this lives outside the tree: the bundle host serves
+`GET /<mount>/download/:token`, and the gateway proxies it at
+`/mcp-download/<slug>/<token>`. See strad's `servers/slack-attachments` page.
 
 ## Re-vendoring
 

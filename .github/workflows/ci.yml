@@ -157,10 +157,17 @@ jobs:
   #               only thing defending the delta: a fork has no upstream to argue with it
   #               and no sync script to notice its loss, so a careless re-vendor
   #               silently reverts the fix.
-  #                 fork/slack — `~text~` is strikethrough, so a message using `~`
-  #                   for "approximately" posts successfully with paragraphs struck
-  #                   out. The tests fail if the descriptions go or the server
-  #                   starts rewriting a caller's text.
+  #                 fork/slack — two deltas, and both fail as a SUCCESS rather than
+  #                   an error, which is why only a test catches a re-vendor
+  #                   dropping them. `~text~` is strikethrough, so a message using
+  #                   `~` for "approximately" posts successfully with paragraphs
+  #                   struck out; the tests fail if the descriptions go or the
+  #                   server starts rewriting a caller's text. And
+  #                   `slack_download_file` returns a signed URL rather than the
+  #                   `file://` path upstream writes into its own container — a
+  #                   path the caller cannot open, reported as a completed
+  #                   download. Those tests pin the URL, the single use, and the
+  #                   per-slug signing key.
   #                 fork/google-flights — three fixes that each returned a confident
   #                   wrong answer: cabin class and passenger counts encoded at
   #                   protobuf field numbers Google skips as unknown, the two

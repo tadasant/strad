@@ -57,6 +57,8 @@ import express, { type Request, type Response } from "express";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 import { getSharedBrowser, closeSharedBrowser, browserIsUp, browserLaunchCount } from "./browser.js";
@@ -101,7 +103,24 @@ interface Created {
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
   }>;
+  handleDownload?: (token: string) => Promise<DownloadOutcome>;
 }
+
+/**
+ * What a mount answers when a signed download link is presented.
+ *
+ * The body is a live stream, never a Buffer: the route below pipes it, so an
+ * attachment of any size costs this process a fixed amount of memory.
+ */
+type DownloadOutcome =
+  | {
+      ok: true;
+      filename: string;
+      contentType: string;
+      contentLength?: number;
+      body: ReadableStream<Uint8Array>;
+    }
+  | { ok: false; status: number; error: string };
 
 interface Mount {
   /** URL path segment. Matches the `path:` of the strad servers that select it. */
@@ -136,6 +155,13 @@ interface Mount {
     content: Array<{ type: "text"; text: string }>;
     isError?: boolean;
   }>;
+  /**
+   * Optional non-MCP download endpoint exposed beside this mount — the mirror
+   * of `upload`, and the other half of the same idea: bytes that are too big,
+   * or too binary, to travel inside a tool result cross the boundary over plain
+   * HTTP instead. The mount decides whether the presented token is good.
+   */
+  download?: (token: string) => Promise<DownloadOutcome>;
 }
 
 async function buildMounts(): Promise<Mount[]> {
@@ -164,6 +190,7 @@ async function buildMounts(): Promise<Mount[]> {
     serverName: "slack-workspace-mcp-server",
     capabilities: { tools: {} },
     register: (s) => api.slack.registerHandlers(s),
+    download: api.slack.handleDownload,
   });
 
   mounts.push({
@@ -352,6 +379,62 @@ interface ApiTree {
 
 type Factory = (opts: Record<string, unknown>) => Created;
 
+/**
+ * The env var naming the GATEWAY slug this image's `/slack` mount is served as.
+ *
+ * WHY IT CANNOT BE DERIVED. Every other per-mount URL in this host is built from
+ * `mount.slug`, which works because those mounts' slug and `path:` are the same
+ * word. Slack is the exception in the fleet: prod serves `slack`, `slack-readonly`
+ * and `slack-zimmer` — three slugs, two workspaces, two containers — all at
+ * `path: /slack`. This process knows it is serving `/slack` and cannot know which
+ * of the three the gateway is routing to it, so the deployment has to say.
+ *
+ * UNSET FALLS BACK TO `slack`, which is right for the shared bundle and wrong
+ * for `bundle-slack-zimmer`: links there would be addressed to the OTHER
+ * container. That misrouting is a broken download either way, but it is a clean
+ * one — `deriveKey` also folds in a fingerprint of this mount's bot token, so
+ * the receiving container refuses the signature with a 403 instead of accepting
+ * it and then failing obscurely against a file id its workspace never had.
+ */
+const SLACK_PUBLIC_SLUG_VAR = "SLACK_PUBLIC_SLUG";
+
+function slackDownloadConfig():
+  | {
+      publicSlug: string;
+      publicBaseUrl: string;
+      internalToken: string;
+      workspaceToken: string;
+    }
+  | undefined {
+  const publicBaseUrl = process.env.STRAD_PUBLIC_URL;
+  const internalToken = process.env.STRAD_INTERNAL_TOKEN;
+  const workspaceToken = process.env.SLACK_BOT_TOKEN;
+
+  // The first two are rendered onto every bundle component by
+  // `src/deploy/appspec.ts`, so their absence means this image is running
+  // outside a strad deployment. The third is the mount's own credential, and
+  // without it there is nothing to download from either. In all three cases the
+  // tool says downloads are unavailable rather than minting a dead URL.
+  const missing = !publicBaseUrl
+    ? "STRAD_PUBLIC_URL"
+    : !internalToken
+      ? "STRAD_INTERNAL_TOKEN"
+      : !workspaceToken
+        ? "SLACK_BOT_TOKEN"
+        : undefined;
+  if (missing || !publicBaseUrl || !internalToken || !workspaceToken) {
+    logWarn(
+      `slack: ${missing} is not set; ` +
+        `slack_download_file will report that attachments cannot be served`,
+    );
+    return undefined;
+  }
+
+  const publicSlug = process.env[SLACK_PUBLIC_SLUG_VAR] || "slack";
+  log(`slack: download links will be minted for gateway slug "${publicSlug}"`);
+  return { publicSlug, publicBaseUrl, internalToken, workspaceToken };
+}
+
 async function loadApiTree(): Promise<ApiTree> {
   const mod = async (slug: string): Promise<{ createMCPServer: Factory }> =>
     loadFromTree("bundle-api", `upstream/${slug}/build/index.js`);
@@ -402,7 +485,7 @@ async function loadApiTree(): Promise<ApiTree> {
     );
 
   return {
-    slack: slack.createMCPServer({ version: VERSION }),
+    slack: slack.createMCPServer({ version: VERSION, download: slackDownloadConfig() }),
     serpapi: serpapi.createMCPServer({
       version: VERSION,
       apiKey: process.env.SERPAPI_API_KEY,
@@ -1489,6 +1572,55 @@ async function main(): Promise<void> {
           });
       },
     );
+  }
+
+  // The download half, mirroring the upload routes above. Registered in the same
+  // place and for the same reason: it carries BYTES rather than JSON, so it must
+  // be in front of any body parser.
+  //
+  // NO `express.raw` HERE — a GET has no body to read, and the RESPONSE is what
+  // streams. `pipeline` is what makes that true end to end: it propagates
+  // backpressure from the socket back to Slack, and destroys the source if the
+  // caller hangs up, so a 500MB attachment nobody finishes downloading does not
+  // go on being fetched into a process that has stopped reading it.
+  for (const mount of mounts) {
+    if (!mount.download) continue;
+    app.get(`/${mount.slug}/download/:token`, internalOnly, (req, res) => {
+      void mount
+        .download!(req.params.token)
+        .then(async (outcome) => {
+          if (!outcome.ok) {
+            res.status(outcome.status).type("application/json").send({ error: outcome.error });
+            return;
+          }
+
+          res.status(200);
+          res.setHeader("content-type", outcome.contentType);
+          if (outcome.contentLength !== undefined) {
+            res.setHeader("content-length", String(outcome.contentLength));
+          }
+          // The filename lives HERE and nowhere else — never in the URL, which
+          // would put it in every access log between here and the caller. See
+          // the header comment in the fork's `src/download-link.ts`.
+          res.setHeader(
+            "content-disposition",
+            `attachment; filename*=UTF-8''${encodeURIComponent(outcome.filename)}`,
+          );
+          // Signed, single-use and short-lived: there is nothing here a cache
+          // could usefully hold, and a cached copy would outlive the link.
+          res.setHeader("cache-control", "no-store");
+
+          await pipeline(Readable.fromWeb(outcome.body), res);
+        })
+        .catch((err: unknown) => {
+          logError(mount.slug, err);
+          // Headers are already out once the body has begun, so the only honest
+          // signal left is to destroy the connection — a truncated response that
+          // ended in a clean 200 would look like a complete file.
+          if (res.headersSent) res.destroy();
+          else res.status(502).json(jsonRpcError(err));
+        });
+    });
   }
 
   // Gmail attachments, GCS uploads and document bodies are big; the 100kb default
