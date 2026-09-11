@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Request } from "express";
 import { request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import {
   metadataBaseUrl,
@@ -128,12 +128,23 @@ describe("the metadata document", () => {
   });
 
   it("is served from the bare well-known path too, identically", async () => {
-    const [inserted, root] = await Promise.all(
-      PROTECTED_RESOURCE_ROUTES.map(async (route) =>
-        (await fetch(`${core.baseUrl}${route}`)).json(),
-      ),
+    const res = await fetch(
+      `${core.baseUrl}/.well-known/oauth-protected-resource`,
     );
-    expect(root).toEqual(inserted);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      resource: `${core.baseUrl}/mcp`,
+      resource_name: "strad",
+      bearer_methods_supported: ["header"],
+      resource_documentation: "https://docs.strad.tadasant.com/auth/overview/",
+    });
+  });
+
+  it("is not cached: the identifier is derived from the request in hand", async () => {
+    for (const route of PROTECTED_RESOURCE_ROUTES) {
+      const res = await fetch(`${core.baseUrl}${route}`);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+    }
   });
 
   it("names NO authorization server", async () => {
@@ -146,7 +157,7 @@ describe("the metadata document", () => {
     expect(doc).not.toHaveProperty("authorization_servers");
   });
 
-  it("prefers gateway.publicUrl over the Host it was asked on", async () => {
+  it("prefers gateway.publicUrl over the Host it was asked on, in both halves", async () => {
     const declared = await start(CONFIG_WITH_PUBLIC_URL, "core");
     try {
       const doc = (await (
@@ -155,8 +166,53 @@ describe("the metadata document", () => {
         )
       ).json()) as { resource: string };
       expect(doc.resource).toBe(`${PUBLIC_URL}/mcp`);
+      // And the 401 points at the declared origin too — not at the loopback
+      // the request actually arrived on. The two halves agreeing on the
+      // declared origin is the whole point of deriving both from one place.
+      const res = await fetch(`${declared.baseUrl}/mcp`, { method: "POST" });
+      expect(res.headers.get("www-authenticate")).toBe(
+        `Bearer realm="strad", error="invalid_token", ` +
+          `resource_metadata="${PUBLIC_URL}/.well-known/oauth-protected-resource/mcp"`,
+      );
     } finally {
       declared.server.close();
+    }
+  });
+
+  it("says so at boot when the declared publicUrl is refused", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const prefixed = await start(
+        parseConfig(
+          YAML.replace(
+            "gateway: { name: strad, env: test }",
+            "gateway: { name: strad, env: test, publicUrl: https://strad.example.com/base }",
+          ),
+        ),
+        "core",
+      );
+      try {
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "gateway.publicUrl is not a bare http(s) origin",
+          ),
+        );
+        // And the answers from outside are the ones a deployment that declared
+        // nothing would give — a 404 and a two-parameter 401 — rather than a
+        // document naming a path strad does not serve.
+        const doc = await fetch(
+          `${prefixed.baseUrl}/.well-known/oauth-protected-resource/mcp`,
+        );
+        expect(doc.status).toBe(404);
+        const res = await fetch(`${prefixed.baseUrl}/mcp`, { method: "POST" });
+        expect(res.headers.get("www-authenticate")).toBe(
+          'Bearer realm="strad", error="invalid_token"',
+        );
+      } finally {
+        prefixed.server.close();
+      }
+    } finally {
+      warn.mockRestore();
     }
   });
 
@@ -239,6 +295,12 @@ describe("a caller-supplied Host cannot dictate the pointer", () => {
   // that strad does not author. A quote in it would end the `quoted-string`
   // early and let the caller name a second `resource_metadata`.
   const HOSTILE = 'evil.example", resource_metadata="https://attacker.example';
+  // Cleaner-looking, and still the caller dictating what strad publishes: the
+  // first reads as `legit.example` and resolves to the other host; the second
+  // would put a fragment in a resource identifier, which RFC 8707 forbids and
+  // which truncates the pointer at the `#` when a client parses it.
+  const USERINFO = "legit.example@attacker.example";
+  const FRAGMENT = "ok.example#frag";
 
   let core: Running;
   beforeAll(async () => {
@@ -249,11 +311,12 @@ describe("a caller-supplied Host cannot dictate the pointer", () => {
   function requestWithHost(
     path: string,
     method: string,
+    host: string = HOSTILE,
   ): Promise<{ status: number; wwwAuth?: string; body: string }> {
     const { port } = core.server.address() as AddressInfo;
     return new Promise((resolve, reject) => {
       const req = request(
-        { host: "127.0.0.1", port, path, method, headers: { host: HOSTILE } },
+        { host: "127.0.0.1", port, path, method, headers: { host } },
         (res) => {
           let body = "";
           res.setEncoding("utf8");
@@ -287,6 +350,21 @@ describe("a caller-supplied Host cannot dictate the pointer", () => {
     expect(res.status).toBe(404);
     expect(JSON.parse(res.body)).toEqual({ error: "no_resource_identifier" });
   });
+
+  it.each([[USERINFO], [FRAGMENT]])(
+    "refuses a Host of %j on both halves",
+    async (host) => {
+      const doc = await requestWithHost(
+        "/.well-known/oauth-protected-resource/mcp",
+        "GET",
+        host,
+      );
+      expect(doc.status).toBe(404);
+      const res = await requestWithHost("/mcp", "POST", host);
+      expect(res.status).toBe(401);
+      expect(res.wwwAuth).toBe('Bearer realm="strad", error="invalid_token"');
+    },
+  );
 });
 
 describe("the static bearer path is unchanged", () => {
@@ -346,25 +424,64 @@ describe("the URL builders", () => {
     );
   });
 
-  it("tolerate a trailing slash on the declared public URL", () => {
-    expect(resourceMetadataUrl(`${PUBLIC_URL}/`)).toBe(
-      resourceMetadataUrl(PUBLIC_URL),
-    );
-    expect(protectedResourceMetadata(`${PUBLIC_URL}/`, "strad").resource).toBe(
-      `${PUBLIC_URL}/mcp`,
+  it("build the pointer from the route the document is mounted on", () => {
+    // The claim in the module header: one spelling of the path, not two that
+    // merely agree.
+    expect(resourceMetadataUrl(PUBLIC_URL)).toBe(
+      `${PUBLIC_URL}${PROTECTED_RESOURCE_ROUTES[0]}`,
     );
   });
 
+  it("normalise a declared public URL to its origin", () => {
+    const req = fakeRequest("box:8080");
+    expect(metadataBaseUrl(req, `${PUBLIC_URL}/`)).toBe(PUBLIC_URL);
+    expect(metadataBaseUrl(req, "https://strad.example.com:443")).toBe(
+      PUBLIC_URL,
+    );
+    expect(
+      protectedResourceMetadata(
+        metadataBaseUrl(req, `${PUBLIC_URL}/`)!,
+        "strad",
+      ).resource,
+    ).toBe(`${PUBLIC_URL}/mcp`);
+  });
+
   // A declared `publicUrl` is schema-validated and still reaches here unclean:
-  // `z.string().url()` accepts a quote, and so does `new URL()`.
+  // `z.string().url()` accepts a quote, and so does `new URL()`. And a shape
+  // that is a perfectly good URL is still not a bare origin.
   it.each([
     ['https://a"b.example'],
     ["https://a\\b.example"],
+    // WHATWG percent-decodes the host: this one serialises WITH a quote.
+    ["https://a.example%22x"],
     ["javascript://evil.example"],
     ["file:///etc/passwd"],
     ["not a url"],
+    ["https://strad.example.com/base"],
+    ["https://user:pw@strad.example.com"],
+    ["https://strad.example.com/?x=1"],
+    ["https://strad.example.com/#frag"],
   ])("refuses %j as a declared publicUrl", (bad) => {
     expect(metadataBaseUrl(fakeRequest("ok.example"), bad)).toBeNull();
+  });
+
+  it.each([
+    ["a.example%22x"],
+    ["legit.example@attacker.example"],
+    ["ok.example/evil"],
+    ["ok.example?x=1"],
+    ["ok.example#frag"],
+  ])("refuses a Host of %j", (host) => {
+    expect(metadataBaseUrl(fakeRequest(host), undefined)).toBeNull();
+  });
+
+  it("accepts a Host with a port, and an IPv6 one", () => {
+    expect(metadataBaseUrl(fakeRequest("box:8080"), undefined)).toBe(
+      "http://box:8080",
+    );
+    expect(metadataBaseUrl(fakeRequest("[::1]:8080"), undefined)).toBe(
+      "http://[::1]:8080",
+    );
   });
 
   // The `Host` is whatever the caller sent. A quote in it would end the

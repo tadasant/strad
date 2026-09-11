@@ -34,8 +34,9 @@
  *
  * The `resource_metadata` parameter on `/mcp`'s `401` (see
  * `src/gateway/router.ts`) must point at the URL this document is served from,
- * or the pointer is decoration. Both come from `resourceMetadataUrl()` so there
- * is one string and not two that merely agree.
+ * or the pointer is decoration. `resourceMetadataUrl()` is the route string
+ * `PROTECTED_RESOURCE_ROUTES[0]` appended to the origin — the header is built
+ * from the path the route is mounted on, not from a second spelling of it.
  */
 
 import type { Request } from "express";
@@ -88,13 +89,15 @@ export interface ProtectedResourceMetadata {
  */
 const RESOURCE_DOCUMENTATION = "https://docs.strad.tadasant.com/auth/overview/";
 
-function trimSlash(base: string): string {
-  return base.replace(/\/$/, "");
-}
-
-/** The resource identifier: the `/mcp` endpoint, absolute. */
-export function resourceIdentifier(base: string): string {
-  return `${trimSlash(base)}${MCP_PATH}`;
+/**
+ * The resource identifier: the `/mcp` endpoint, absolute.
+ *
+ * `origin` is a bare http(s) origin — what `metadataBaseUrl` returns and
+ * nothing else — because strad mounts `/mcp` at the root of whatever origin it
+ * is on, and this is the one place the deployment says so to a client.
+ */
+export function resourceIdentifier(origin: string): string {
+  return `${origin}${MCP_PATH}`;
 }
 
 /**
@@ -102,19 +105,21 @@ export function resourceIdentifier(base: string): string {
  *
  * This is what goes in `resource_metadata` on the `401`. A client handed this
  * URL fetches it directly and does no fallback probing at all, so it is the
- * canonical form rather than the convenience one.
+ * canonical form rather than the convenience one. It is the mounted route
+ * appended to the origin, so the pointer and the route cannot spell the path
+ * differently.
  */
-export function resourceMetadataUrl(base: string): string {
-  return `${trimSlash(base)}${WELL_KNOWN}${MCP_PATH}`;
+export function resourceMetadataUrl(origin: string): string {
+  return `${origin}${PROTECTED_RESOURCE_ROUTES[0]}`;
 }
 
-/** The document, for a deployment whose public base URL is `base`. */
+/** The document, for a deployment whose public origin is `origin`. */
 export function protectedResourceMetadata(
-  base: string,
+  origin: string,
   name: string,
 ): ProtectedResourceMetadata {
   return {
-    resource: resourceIdentifier(base),
+    resource: resourceIdentifier(origin),
     resource_name: name,
     bearer_methods_supported: ["header"],
     resource_documentation: RESOURCE_DOCUMENTATION,
@@ -124,11 +129,11 @@ export function protectedResourceMetadata(
 /**
  * Every character RFC 3986 allows in a URI, and nothing else.
  *
- * The two that matter are `"` and `\`. This base is interpolated into a
+ * The two that matter are `"` and `\`. The origin is interpolated into a
  * `quoted-string` on the `401`'s `WWW-Authenticate` (RFC 9110 §5.6.4), so a
  * quote inside it ends the parameter early and leaves a client parsing
- * something strad did not mean to say. Both of the places a base comes from can
- * carry one: `Host` is whatever the caller sent, and `z.string().url()` in
+ * something strad did not mean to say. Both of the places an origin comes from
+ * can carry one: `Host` is whatever the caller sent, and `z.string().url()` in
  * `src/config/schema.ts` accepts `https://a"b.example` — WHATWG `new URL()`
  * parses it too, so neither the schema nor a parse is the check.
  *
@@ -138,8 +143,31 @@ export function protectedResourceMetadata(
  */
 const URI_CHARACTERS = /^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
 
-/** The candidate, if it is an http(s) URL we are willing to repeat back. */
-function safeBaseUrl(candidate: string): string | null {
+/**
+ * The candidate, if it is a BARE http(s) origin we are willing to repeat back —
+ * scheme, host, port, and nothing else. Null otherwise.
+ *
+ * Bare, because everything past the authority is a thing the caller's `Host`
+ * could dictate and strad would then publish under its own name: userinfo
+ * (`legit.example@attacker.example` reads as the first host and resolves to
+ * the second), a path (`ok.example/evil` puts `/evil/mcp` in `resource`), a
+ * query, a fragment (a resource identifier may not carry one — RFC 8707 §2 —
+ * and a `resource_metadata` URL with one truncates at the `#` when a client
+ * parses it). A declared `gateway.publicUrl` with a path is refused on the same
+ * rule, and for a reason of its own: strad mounts `/mcp` and this document at
+ * the ROOT of its origin, so a prefixed identifier would point at a path
+ * nothing serves.
+ *
+ * The scheme is checked because `${req.protocol}://${host}` with `trust proxy`
+ * on means the scheme is `X-Forwarded-Proto` — also the caller's — and
+ * `javascript://host` parses.
+ *
+ * The character check runs on the SERIALISED origin as well as the candidate.
+ * WHATWG percent-decodes the host, so `a.example%22x` passes the first check
+ * and serialises with a literal quote; returning `url.origin` without the
+ * second check would reopen the breakout the first one closes.
+ */
+export function safeOrigin(candidate: string): string | null {
   if (!URI_CHARACTERS.test(candidate)) return null;
   let url: URL;
   try {
@@ -147,11 +175,11 @@ function safeBaseUrl(candidate: string): string | null {
   } catch {
     return null;
   }
-  // `${req.protocol}://${host}` with `trust proxy` on means the scheme is
-  // `X-Forwarded-Proto`, i.e. also the caller's. `javascript://host` parses.
-  return url.protocol === "http:" || url.protocol === "https:"
-    ? candidate
-    : null;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  if (url.pathname !== "/") return null;
+  if (!URI_CHARACTERS.test(url.origin)) return null;
+  return url.origin;
 }
 
 /**
@@ -180,17 +208,19 @@ function requestOrigin(req: Request): string | null {
  * sends a `Host` they made up.
  *
  * Null when there is neither, and null when what there is does not survive
- * `safeBaseUrl`. The `resource` member is REQUIRED and there would be nothing
+ * `safeOrigin`. The `resource` member is REQUIRED and there would be nothing
  * to put in it, so the route answers `404` and the `401` omits the parameter,
  * rather than either of them inventing an origin or quoting a string that is
- * not a URL.
+ * not one. A declared `publicUrl` that is refused is also said at boot, once,
+ * by `src/http/app.ts` — the two answers are otherwise indistinguishable from
+ * a deployment that declared nothing.
  */
 export function metadataBaseUrl(
   req: Request,
   publicUrl: string | undefined,
 ): string | null {
   const candidate = publicUrl ?? requestOrigin(req);
-  return candidate === null ? null : safeBaseUrl(candidate);
+  return candidate === null ? null : safeOrigin(candidate);
 }
 
 /**

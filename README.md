@@ -149,7 +149,7 @@ spec: the server list decides how many containers exist and how they're wired.
   Only the SHA-256 is stored; the plaintext is shown once at mint. Constant-time
   compare, soft revocation. `/mcp` says so out loud: it publishes [RFC
   9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata at
-  `/.well-known/oauth-protected-resource/mcp` and every `401` points at it. The
+  `/.well-known/oauth-protected-resource/mcp` and its `401` points at it. The
   document names no authorization server, because there is none to name. See
   [discovery](https://docs.strad.tadasant.com/auth/overview/#discovery-what-mcp-says-it-accepts).
 

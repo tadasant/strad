@@ -87,12 +87,12 @@ export function createMcpHandler(opts: McpHandlerOptions) {
   /**
    * The `resource_metadata` URL for this request's `401`, or null.
    *
-   * Per request rather than per handler because the base URL can be the origin
-   * the request arrived on — see `metadataBaseUrl` in
+   * Per request rather than per handler because the origin can be the one the
+   * request arrived on — see `metadataBaseUrl` in
    * `src/auth/protected-resource.ts` for why that is the fallback and not the
-   * primary. Null in bundle mode, and null when a deployment declares no
-   * `gateway.publicUrl` and the request carried no `Host`: there is no document
-   * at a URL we cannot name.
+   * primary. Null in bundle mode, and null whenever that function has no origin
+   * to give: no `gateway.publicUrl` and no `Host`, or one of them that is not a
+   * bare http(s) origin. There is no document at a URL we will not name.
    */
   function metadataUrl(req: Request): string | null {
     if (opts.mode !== "core") return null;
@@ -211,8 +211,8 @@ export function createMcpHandler(opts: McpHandlerOptions) {
         // pointer followable rather than aspirational: it names the URL of the
         // protected-resource document, which says what `/mcp` accepts. The
         // document itself is `src/auth/protected-resource.ts`, and the URL is
-        // built by the same function the route is mounted from, so the two
-        // cannot drift apart.
+        // the route string it is mounted on appended to the origin, so the
+        // pointer and the route cannot spell the path differently.
         //
         // CORE ONLY. A bundle's `/mcp` is reached over strad's private network
         // with the shared `STRAD_INTERNAL_TOKEN` and serves no well-known path,

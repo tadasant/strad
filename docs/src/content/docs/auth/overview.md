@@ -124,9 +124,28 @@ origin the request arrived on when a deployment declares no `publicUrl`.
 credential from `Authorization` and never from a `?access_token=` query parameter
 or a form body.
 
-**The pointer.** Every `401` from `/mcp` names that URL in its
-`WWW-Authenticate`, so discovery works from the error rather than from a guess at
-a well-known path:
+**The origin has to be one strad is willing to repeat back**: a bare `http(s)`
+scheme, host and port, whether it came from `publicUrl` or from the request's
+`Host`. Anything else — a path, userinfo, a query, a fragment, or a character a
+URI cannot contain, such as the `"` that would end the header's quoted parameter
+early — is refused, and a refusal is the same answer as no origin at all: the
+route answers `404 {"error":"no_resource_identifier"}` and the `401` carries only
+`realm` and `error`. A declared `publicUrl` that is refused is also said at boot,
+because from outside it looks exactly like a deployment that declared nothing.
+strad mounts `/mcp` and this document at the root of its origin, which is why a
+`publicUrl` with a path is refused rather than described: the RFC 9728 pointer
+for it would name a path nothing serves.
+
+The document is served with `Cache-Control: no-store` and without CORS headers.
+The first because, on a deployment with no `publicUrl`, the identifier is derived
+from the `Host` and forwarded scheme of the request in hand, and a cached
+`http://` identifier handed to an `https://` client fails the origin comparison a
+compliant client makes. The second because strad's browser surface is
+same-origin; a browser-hosted MCP client on another origin cannot read this
+document or the `401`'s header, and nothing here claims otherwise.
+
+**The pointer.** A `401` from `/mcp` names that URL in its `WWW-Authenticate`,
+so discovery works from the error rather than from a guess at a well-known path:
 
 ```
 WWW-Authenticate: Bearer realm="strad", error="invalid_token",

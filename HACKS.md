@@ -4598,8 +4598,8 @@ tadasant/strad#32.
 
 **What.** `/.well-known/oauth-protected-resource/mcp` — and the same document at
 the bare `/.well-known/oauth-protected-resource`, which is the MCP SDK's fallback
-path — serves RFC 9728 protected-resource metadata for `/mcp`, and every `401`
-from `/mcp` names that URL in `resource_metadata` on its `WWW-Authenticate`. The
+path — serves RFC 9728 protected-resource metadata for `/mcp`, and a `401` from
+`/mcp` names that URL in `resource_metadata` on its `WWW-Authenticate`. The
 document carries `resource`, `resource_name`, `bearer_methods_supported:
 ["header"]` and `resource_documentation`, and it OMITS `authorization_servers`.
 `/.well-known/oauth-authorization-server` is still a `404`.
@@ -4627,6 +4627,17 @@ Core only. A bundle's `/mcp` is a private-network hop authenticated with the
 shared `STRAD_INTERNAL_TOKEN`, no MCP client discovers it, and a pointer from
 there would name a path it does not serve — so it serves no well-known route and
 its `401` carries the two parameters it always did.
+
+The origin in both halves — `gateway.publicUrl`, else the request's `Host` — is
+refused unless it is a bare http(s) origin (`safeOrigin` in
+`src/auth/protected-resource.ts`): no path, userinfo, query or fragment, and no
+character a URI cannot carry, because the origin is interpolated into a
+`quoted-string` on the `401` and `z.string().url()` accepts a `"`. A refusal is
+the same answer as no origin: the route is a `404`, the `401` has two parameters,
+and a refused `publicUrl` is warned about at boot. No CORS headers on either half,
+deliberately — strad's browser surface is same-origin — and `Cache-Control:
+no-store` on the document, because on a deployment with no `publicUrl` it is
+derived from the request in hand.
 
 **Undo.** Decide on an authorization server for `/mcp`, add
 `authorization_servers` to the document in `src/auth/protected-resource.ts`, and

@@ -379,13 +379,15 @@ enum grows its second value there. See
 
 `/mcp` publishes [RFC 9728 protected-resource
 metadata](/auth/overview/#discovery-what-mcp-says-it-accepts) at
-`/.well-known/oauth-protected-resource/mcp`, and every `401` points at it in
+`/.well-known/oauth-protected-resource/mcp`, and its `401` points at it in
 `WWW-Authenticate: … resource_metadata="…"`. The document deliberately names **no
 `authorization_servers`**, and `/.well-known/oauth-authorization-server` is still
 a `404`.
 
 So a compliant MCP client can discover strad and read what it accepts — and then
-has no OAuth flow to run. The credential is still a static
+has no OAuth flow to run. (A browser-hosted client on another origin cannot read
+either: neither half sends CORS headers, and strad's browser surface is
+same-origin by design.) The credential is still a static
 `strad_<env>_<pubid>_<secret>` token handed over out of band, which for an
 interactive human client means a copied, long-lived, standing secret rather than a
 per-user revocable one.

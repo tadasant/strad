@@ -26,6 +26,7 @@ import {
   metadataBaseUrl,
   protectedResourceMetadata,
   PROTECTED_RESOURCE_ROUTES,
+  safeOrigin,
 } from "../auth/protected-resource.ts";
 import { BYPASS_COOKIE, googlePrincipal } from "../ui/console-auth.ts";
 import type { StradConfig } from "../config/schema.ts";
@@ -265,22 +266,37 @@ export function createApp(opts: AppOptions): Express {
     //
     // Two paths, one document — see `src/auth/protected-resource.ts` for the
     // path-insertion rule and why the root path is served beside it.
+    //
+    // `no-store`, the same answer the presence route gives, because a
+    // deployment that declares no `gateway.publicUrl` derives the resource
+    // identifier from the `Host` AND the forwarded scheme of the request in
+    // hand. A cache that keyed on the URL alone could hand an `http://`
+    // identifier to an `https://` client, and a compliant client compares
+    // origins and refuses on the mismatch. The document is four short members;
+    // there is nothing to save by caching it.
+    const declared = opts.config.gateway.publicUrl;
     for (const route of PROTECTED_RESOURCE_ROUTES) {
       app.get(route, (req, res) => {
-        // A deployment that declares no `gateway.publicUrl` answers from the
-        // `Host` it was asked on, so the document varies by it. Says so, rather
-        // than letting an intermediary serve one deployment's resource
-        // identifier for another's hostname.
-        res.vary("Host");
-        const base = metadataBaseUrl(req, opts.config.gateway.publicUrl);
-        if (base === null) {
+        res.set("Cache-Control", "no-store");
+        const origin = metadataBaseUrl(req, declared);
+        if (origin === null) {
           res.status(404).json({ error: "no_resource_identifier" });
           return;
         }
-        res
-          .type("application/json")
-          .json(protectedResourceMetadata(base, opts.config.gateway.name));
+        res.json(protectedResourceMetadata(origin, opts.config.gateway.name));
       });
+    }
+    // A declared `publicUrl` the guard refuses — a path, userinfo, a quote —
+    // makes the route a `404` and the `401` a two-parameter header, which is
+    // exactly what a deployment that declared NOTHING looks like from outside.
+    // So it is said here, once, at boot, the way `resolveConsoleAuth` says its
+    // half-configured cases: the value is the operator's own and no secret.
+    if (declared !== undefined && safeOrigin(declared) === null) {
+      console.warn(
+        `[strad] gateway.publicUrl is not a bare http(s) origin (${declared}), ` +
+          "so /mcp serves no protected-resource metadata and its 401 carries " +
+          "no resource_metadata. Declare scheme, host and port only.",
+      );
     }
 
     // The machine's read of the human console's secret roster.
