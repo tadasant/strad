@@ -80,7 +80,12 @@ export interface RegistryOptions {
    * is no store to write — the minter then holds the rotation in memory and
    * says so. See `createParameterWriteBack` in src/http/params.ts.
    */
-  writeBack?: (slug: string, variable: string, value: string) => Promise<void>;
+  writeBack?: (
+    slug: string,
+    variable: string,
+    value: string,
+    ours: (current: string) => boolean,
+  ) => Promise<void>;
 }
 
 export class Registry {
@@ -217,7 +222,8 @@ export class Registry {
                   slug: server.slug,
                   variable: refreshVariable,
                   persist: writeBack
-                    ? (value) => writeBack(server.slug, refreshVariable, value)
+                    ? (value, ours) =>
+                        writeBack(server.slug, refreshVariable, value, ours)
                     : undefined,
                 })
               : null;
@@ -229,10 +235,11 @@ export class Registry {
               endpoint: async () =>
                 resolving(server.slug, async () => {
                   const provider = secrets.forServer(server.slug);
-                  const [url, headers] = await Promise.all([
-                    resolveRefsAsync(server.url, provider),
-                    resolveMapAsync(server.headers, provider),
-                  ]);
+                  const url = await resolveRefsAsync(server.url, provider);
+                  const headers = await resolveMapAsync(
+                    server.headers,
+                    provider,
+                  );
                   if (!oauth || !minter) return { url, headers };
                   const grant = await resolveRefreshGrant(oauth, provider);
                   const token = await minter.accessToken(grant);

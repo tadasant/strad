@@ -12,7 +12,8 @@ import {
 } from "../src/gateway/adapters/oauth-refresh.ts";
 import { HttpServerAdapter } from "../src/gateway/adapters/http.ts";
 import { probeToolSurfaces } from "../src/gateway/reachability.ts";
-import { Registry } from "../src/gateway/registry.ts";
+import { Registry, type RegistryOptions } from "../src/gateway/registry.ts";
+import { createParameterWriteBack } from "../src/http/params.ts";
 import { createApp } from "../src/http/app.ts";
 import {
   sharedSecretProviders,
@@ -105,7 +106,7 @@ servers:${servers}
 async function registryOf(
   servers: string,
   provider: SecretProvider,
-  writeBack?: (slug: string, variable: string, value: string) => Promise<void>,
+  writeBack?: RegistryOptions["writeBack"],
 ): Promise<Registry> {
   const registry = await Registry.build({
     config: configOf(servers),
@@ -234,6 +235,30 @@ describe("refresh on a 401, and no stampede", () => {
     // No `expires_in`: strad keeps it until the upstream says no.
     advance(REJECTION_FLOOR_MS + 1_000);
     oauth.revoke(first!);
+
+    expect(await whoami(registry, "granola")).toBe("alice");
+    expect(oauth.tokenRequests).toHaveLength(2);
+    expect(oauth.seen.filter((s) => s.status === 401)).toEqual([
+      expect.objectContaining({ bearer: first }),
+    ]);
+  });
+
+  it("a 401 on the HANDSHAKE — a held token refused by a fresh connection — is reported, re-minted, and retried", async () => {
+    const oauth = await fake({ expiresIn: null });
+    oauth.grant("rt-alice", "alice");
+    const registry = await registryOf(
+      oauthServer("granola", oauth.mcpUrl("alice"), oauth.tokenUrl, "RT"),
+      memoryProvider({ RT: "rt-alice" }),
+    );
+    expect(await whoami(registry, "granola")).toBe("alice");
+    const [first] = oauth.issued();
+    advance(REJECTION_FLOOR_MS + 1_000);
+    oauth.revoke(first!);
+    // The cached connection goes away (a dropped socket), so the next call
+    // must handshake — and the handshake is what carries the dead token.
+    (
+      registry.get("granola") as unknown as { retireCurrent(): void }
+    ).retireCurrent();
 
     expect(await whoami(registry, "granola")).toBe("alice");
     expect(oauth.tokenRequests).toHaveLength(2);
@@ -586,7 +611,11 @@ describe("refresh-token rotation", () => {
     oauth.grant("rt-seed", "alice");
     const provider = memoryProvider({ RT: "rt-seed" });
     const writes: { slug: string; variable: string; value: string }[] = [];
-    const writeBack = async (slug: string, variable: string, value: string) => {
+    const writeBack: RegistryOptions["writeBack"] = async (
+      slug,
+      variable,
+      value,
+    ) => {
       writes.push({ slug, variable, value });
       provider.values[variable] = value;
     };
@@ -628,7 +657,7 @@ describe("refresh-token rotation", () => {
     expect(oauth.tokenRequests.at(-1)?.refreshToken).toBe(writes[1]!.value);
   });
 
-  it("with nowhere to write, the rotation is held in memory, said once, and a restart reads a dead token", async () => {
+  it("with nowhere to write (the env provider), each rotation is refused aloud, held in memory, and a restart reads a dead token", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const oauth = await fake({ expiresIn: 600, rotate: true });
     oauth.grant("rt-seed", "alice");
@@ -639,18 +668,25 @@ describe("refresh-token rotation", () => {
       oauth.tokenUrl,
       "RT",
     );
-    const registry = await registryOf(servers, provider);
+    // The write-back core really wires, over a config whose provider is `env`.
+    const writeBack = createParameterWriteBack({
+      config: configOf(servers),
+      env: {},
+      secrets: {},
+    });
+    const registry = await registryOf(servers, provider, writeBack);
 
     expect(await whoami(registry, "granola")).toBe("alice");
     advance(601_000);
     // In-process the lineage survives: the second exchange spends the rotation.
     expect(await whoami(registry, "granola")).toBe("alice");
     expect(oauth.tokenRequests[1]!.refreshToken).not.toBe("rt-seed");
-
-    const inMemory = warn.mock.calls
-      .map((c) => String(c[0]))
-      .filter((line) => line.includes("held in memory only"));
-    expect(inMemory).toHaveLength(1);
+    await vi.waitFor(() => {
+      const refused = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((line) => line.includes("gateway.secrets.provider is env"));
+      expect(refused).toHaveLength(2);
+    });
 
     // After a restart strad reads the seed again, which the provider killed.
     const restarted = await registryOf(servers, provider);
@@ -684,6 +720,18 @@ describe("static headers are unchanged", () => {
     expect(new Set(oauth.seen.map((s) => s.bearer))).toEqual(
       new Set([access_token]),
     );
+
+    // And a 401 on it is the ordinary upstream failure it always was: no
+    // minter, no retry, one refusal on the wire.
+    oauth.revoke(access_token);
+    const mark = oauth.seen.length;
+    await expect(whoami(registry, "bob")).rejects.toThrow(
+      /upstream MCP server/,
+    );
+    expect(oauth.seen.slice(mark).filter((s) => s.status === 401)).toHaveLength(
+      1,
+    );
+    expect(oauth.tokenRequests).toHaveLength(1);
   });
 });
 
@@ -696,7 +744,6 @@ describe("no token leaves the process", () => {
     for (const method of ["log", "info", "warn", "error"] as const) {
       vi.spyOn(console, method).mockImplementation(capture);
     }
-    const write = process.stdout.write.bind(process.stdout);
     vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
       lines.push(String(chunk));
       return true;
@@ -705,9 +752,6 @@ describe("no token leaves the process", () => {
       lines.push(String(chunk));
       return true;
     }) as typeof process.stderr.write);
-    cleanup.push(async () => {
-      void write;
-    });
 
     const oauth = await fake({ expiresIn: 600, rotate: true });
     oauth.grant("rt-canary-seed", "alice");
@@ -735,6 +779,10 @@ describe("no token leaves the process", () => {
       status: 400,
       body: { error: "invalid_grant", error_description: "rt-canary-seed" },
     });
+    await attempt("granola");
+    // An outage, once the refusal's backoff has passed.
+    advance(61_000);
+    oauth.failNext(1, { status: 503, body: { detail: "rt-canary-seed" } });
     await attempt("granola");
     await probeToolSurfaces({ registry });
 

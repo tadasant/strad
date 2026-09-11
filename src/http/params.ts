@@ -544,11 +544,28 @@ export function createStoreRefreshHandler(
  * Writing the gateway path is safe because the schema refuses two
  * `oauthRefresh:` servers minting from one `${NAME}`: a shared name there is
  * one server's refresh token, not a credential another server also reads.
+ *
+ * ## The read before the write
+ *
+ * The parameter is REVEALED first, and the write goes ahead only if the value
+ * held is one the minter's lineage produced (`ours`). Between the exchange
+ * that rotated the token and this write, a human can re-seed the slug with
+ * another account's token in `/ui/secrets`; a blind `rotate()` after that
+ * would put the old account's rotation on top of the new seed, and the slug
+ * would serve the old account again with nothing failing. The read shrinks
+ * that window from a store round-trip to the gap between two calls; there is
+ * no compare-and-set on the store to close it entirely, and `HACKS.md` #91
+ * says so.
  */
 export function createParameterWriteBack(
   opts: Omit<ParamsHandlerOptions, "now">,
-): (slug: string, variable: string, value: string) => Promise<void> {
-  return async (slug, variable, value) => {
+): (
+  slug: string,
+  variable: string,
+  value: string,
+  ours: (current: string) => boolean,
+) => Promise<void> {
+  return async (slug, variable, value, ours) => {
     const refuse = (reason: string): void => {
       console.warn(
         `[strad] could not persist the rotated \${${variable}} for "${slug}": ` +
@@ -576,10 +593,25 @@ export function createParameterWriteBack(
         refuse(resolved.reason);
         return;
       }
+      let current: string;
+      try {
+        current = await resolved.store.reveal(path);
+      } catch (err) {
+        if (err instanceof ParameterStoreError && err.status === 404) continue;
+        refuse(errorSummary(err));
+        return;
+      }
+      if (!ours(current)) {
+        refuse(
+          "the stored value is not one this process minted — it was re-seeded " +
+            "since the exchange, so the rotation is left unwritten and the " +
+            "seeded value stands",
+        );
+        return;
+      }
       try {
         await resolved.store.rotate(path, value);
       } catch (err) {
-        if (err instanceof ParameterStoreError && err.status === 404) continue;
         refuse(errorSummary(err));
         return;
       }

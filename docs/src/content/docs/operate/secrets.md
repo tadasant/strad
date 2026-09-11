@@ -1280,18 +1280,35 @@ the second layer while the first may still hold the value would persist a token
 nothing reads. The rotated value is held in memory for the life of the process
 either way; what the write buys is the next restart.
 
+**It reads before it writes.** Between the exchange that rotated the token and
+the write, a human can re-seed the slug with another account's token in
+`/ui/secrets`. A blind write after that would put the old account's rotation on
+top of the new seed, and the slug would serve the old account again with nothing
+failing — the credential-shaped silence this whole design is built against. So
+the write-back reveals the parameter first and writes only if the value held is
+one this minter's lineage produced (the seed, or a rotation it was handed);
+otherwise it refuses, `strad.param_write_failed` fires, and the seed stands.
+That shrinks the window to the gap between two store calls; there is no
+compare-and-set on the store to close it.
+
 **Seed the parameter first, in one of those two places.** A refresh token that
 resolves from the environment — `envFallback` under the store provider, or
-`gateway.secrets.provider: env` — cannot be written back. strad says so once on
-stderr, holds the rotation in memory, and a restart reads the seeded value, which
-the provider has already killed. That is
+`gateway.secrets.provider: env` — cannot be written back. Every rotation is
+refused on stderr and as `strad.param_write_failed`, the rotation is held in
+memory, and a restart reads the seeded value, which the provider has already
+killed. That is
 [limitation #91](/limitations/#91-a-rotated-refresh-token-with-nowhere-to-land-dies-at-the-next-restart).
 
-**One writer.** Two enabled servers minting from one `${NAME}` are refused by the
-config schema, so a name in the gateway namespace is still one server's refresh
-token. Core runs as one instance (`instance_count: 1`, `src/deploy/appspec.ts`),
-which is what keeps the plain write correct — the same single-writer property
-`paramsWritable:` gets from the render check.
+**One writer, mostly.** Two enabled servers minting from one `${NAME}` are
+refused by the config schema, so a name in the gateway namespace is still one
+server's refresh token, and core runs as one instance (`instance_count: 1`,
+`src/deploy/appspec.ts`). What that does not cover is a rolling deploy: App
+Platform keeps the old core serving until the new one is healthy, and for that
+window two processes hold a minter for the slug. With a provider that rotates on
+use, whichever spends the token second is refused and re-reads the store within
+`ttlSeconds`; with a provider that revokes the whole token family on reuse, the
+slug is dead until a human authorizes again. Same window `paramsWritable:` has,
+recorded in the same limitation.
 
 **The first token is seeded by a human.** strad does not run the authorization;
 the refresh token comes from an out-of-band consent and lands in `/ui/secrets`

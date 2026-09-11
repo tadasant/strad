@@ -214,6 +214,24 @@ describe("what a refresh accepts", () => {
     expect((err as TokenRefreshError).telemetryKind).toBe("upstream_error");
   });
 
+  it("a 2xx carrying an OAuth error code is a refusal, and names the code", async () => {
+    const { m } = minter([{ json: { error: "invalid_grant" } }]);
+    const err = (await m.accessToken(GRANT).catch((e: unknown) => e)) as Error;
+    expect((err as TokenRefreshError).failure).toBe("refused");
+    expect(err.message).toContain("invalid_grant");
+  });
+
+  it.each([0, -5, "0"])(
+    "expires_in %s is malformed, not a token that never expires",
+    async (expires) => {
+      const { m } = minter([
+        { json: { access_token: "at", expires_in: expires } },
+      ]);
+      const err = await m.accessToken(GRANT).catch((e: unknown) => e);
+      expect((err as TokenRefreshError).failure).toBe("malformed");
+    },
+  );
+
   it.each([429, 500, 503])("HTTP %i is unavailable", async (status) => {
     const { m } = minter([{ status }]);
     const err = await m.accessToken(GRANT).catch((e: unknown) => e);
@@ -291,7 +309,59 @@ describe("rotation write-back", () => {
     );
     expect(await m.accessToken(GRANT)).toBe("a");
     await m.settled();
-    expect(persist).toHaveBeenCalledWith("rt-1");
+    expect(persist).toHaveBeenCalledWith("rt-1", expect.any(Function));
+  });
+
+  it("a persister that throws synchronously fails its own write and not every later one", async () => {
+    const written: string[] = [];
+    let first = true;
+    const persist = vi.fn((value: string) => {
+      if (first) {
+        first = false;
+        throw new Error("sync throw");
+      }
+      written.push(value);
+      return Promise.resolve();
+    });
+    const { m, advance } = minter(
+      [
+        { json: { access_token: "a", expires_in: 600, refresh_token: "rt-1" } },
+        { json: { access_token: "b", expires_in: 600, refresh_token: "rt-2" } },
+      ],
+      { persist },
+    );
+    await m.accessToken(GRANT);
+    await m.settled();
+    advance(600_000);
+    await m.accessToken(GRANT);
+    await m.settled();
+    expect(written).toEqual(["rt-2"]);
+  });
+
+  it("`ours` recognises the seed and every rotation this lineage held, and nothing else", async () => {
+    const seen: Array<(current: string) => boolean> = [];
+    const persist = vi.fn(async (_v: string, ours: (c: string) => boolean) => {
+      seen.push(ours);
+    });
+    const { m, advance } = minter(
+      [
+        { json: { access_token: "a", expires_in: 600, refresh_token: "rt-1" } },
+        { json: { access_token: "b", expires_in: 600, refresh_token: "rt-2" } },
+      ],
+      { persist },
+    );
+    await m.accessToken(GRANT);
+    advance(600_000);
+    await m.accessToken({ ...GRANT, refreshToken: "rt-1" });
+    await m.settled();
+    const ours = seen[1]!;
+    expect(ours("rt-seed")).toBe(true);
+    expect(ours("rt-1")).toBe(true);
+    expect(ours("rt-2")).toBe(true);
+    expect(ours("rt-carol")).toBe(false);
+    // A re-seed starts a new lineage; the old one's answer is now "no".
+    await m.accessToken({ ...GRANT, refreshToken: "rt-carol" }).catch(() => {});
+    expect(ours("rt-1")).toBe(false);
   });
 
   it("the store handing back an OLDER rotation of this lineage is not a re-seed", async () => {

@@ -107,7 +107,7 @@ describe("createParameterWriteBack", () => {
       value: "rt-g",
     });
 
-    await h.writeBack("granola", VARIABLE, "rt-1");
+    await h.writeBack("granola", VARIABLE, "rt-1", () => true);
 
     expect(await h.fake.store.reveal(SERVER_PATH)).toBe("rt-1");
     // The layer that would be shadowed anyway is left alone.
@@ -124,7 +124,7 @@ describe("createParameterWriteBack", () => {
       value: "rt-0",
     });
 
-    await h.writeBack("granola", VARIABLE, "rt-1");
+    await h.writeBack("granola", VARIABLE, "rt-1", () => true);
 
     expect(await h.fake.store.reveal(GATEWAY_PATH)).toBe("rt-1");
     expect(h.invalidations()).toBe(1);
@@ -151,7 +151,7 @@ describe("createParameterWriteBack", () => {
       value: "rt-g",
     });
 
-    await h.writeBack("granola", VARIABLE, "rt-1-never-shown");
+    await h.writeBack("granola", VARIABLE, "rt-1-never-shown", () => true);
 
     // A value nothing reads, in a name another layer shadows, would be worse
     // than no write at all.
@@ -162,9 +162,31 @@ describe("createParameterWriteBack", () => {
     expect(h.warnings()[0]).not.toContain("rt-1-never-shown");
   });
 
+  it("leaves a value this process did not mint alone: a human re-seeded between the exchange and the write", async () => {
+    const h = harness();
+    await h.fake.store.create({
+      path: SERVER_PATH,
+      secret: true,
+      value: "rt-carol-seeded-by-a-human",
+    });
+    const asked: string[] = [];
+    await h.writeBack("granola", VARIABLE, "rt-alice-rotation", (current) => {
+      asked.push(current);
+      return false;
+    });
+    expect(asked).toEqual(["rt-carol-seeded-by-a-human"]);
+    expect(await h.fake.store.reveal(SERVER_PATH)).toBe(
+      "rt-carol-seeded-by-a-human",
+    );
+    expect(h.invalidations()).toBe(0);
+    expect(h.warnings()).toEqual([expect.stringContaining("re-seeded")]);
+    expect(h.warnings()[0]).not.toContain("rt-alice-rotation");
+    expect(h.warnings()[0]).not.toContain("rt-carol");
+  });
+
   it("says so, and writes nothing, when neither namespace holds the token", async () => {
     const h = harness();
-    await h.writeBack("granola", VARIABLE, "rt-1-never-shown");
+    await h.writeBack("granola", VARIABLE, "rt-1-never-shown", () => true);
     expect(h.invalidations()).toBe(0);
     expect(h.warnings()).toEqual([
       expect.stringContaining("resolves from the environment"),
@@ -175,7 +197,7 @@ describe("createParameterWriteBack", () => {
 
   it("says so under the env provider, where there is no store at all", async () => {
     const h = harness("env");
-    await h.writeBack("granola", VARIABLE, "rt-1-never-shown");
+    await h.writeBack("granola", VARIABLE, "rt-1-never-shown", () => true);
     expect(h.warnings()).toEqual([
       expect.stringContaining("gateway.secrets.provider is env"),
     ]);

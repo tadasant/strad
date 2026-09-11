@@ -258,10 +258,22 @@ export interface MinterOptions {
   /**
    * Persist a ROTATED refresh token where the store will hand it back. Called
    * once per rotation, serialised, and skipped for a value a later rotation or a
-   * re-seed has already superseded. Absent: the rotation lives in memory only,
-   * which is said once, on stderr, at the first rotation.
+   * re-seed has already superseded.
+   *
+   * `ours` answers whether a value the store holds RIGHT NOW belongs to this
+   * lineage — the seed, or a rotation this minter has held. The writer asks it
+   * before overwriting: a human re-seeding another account between the
+   * exchange and the write would otherwise be overwritten by the old account's
+   * rotation, and the slug would silently serve the old account again. The
+   * generation check inside the queue only covers a write that has not STARTED.
+   *
+   * Absent, the rotation lives in memory only. The registry always supplies one
+   * on core; a minter without it is a test's.
    */
-  persist?: (refreshToken: string) => Promise<void>;
+  persist?: (
+    refreshToken: string,
+    ours: (current: string) => boolean,
+  ) => Promise<void>;
   now?: () => number;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -283,7 +295,6 @@ export class AccessTokenMinter {
   /** Bumped whenever the lineage changes. What a stale exchange is judged by. */
   private generation = 0;
   private writes: Promise<void> = Promise.resolve();
-  private warnedInMemory = false;
 
   constructor(private readonly opts: MinterOptions) {
     this.now = opts.now ?? (() => Date.now());
@@ -318,8 +329,15 @@ export class AccessTokenMinter {
       // refresh token this minter no longer holds. Ask again, for the lineage
       // that is current now. Bounded, because a store flapping between two
       // values faster than an exchange completes is a fault, not a condition.
-      if (err instanceof SupersededExchange && depth < 3 && this.grant) {
-        return this.accessToken(this.grant, depth + 1);
+      if (err instanceof SupersededExchange) {
+        if (depth < 3 && this.grant) {
+          return this.accessToken(this.grant, depth + 1);
+        }
+        throw new TokenRefreshError(
+          this.opts.slug,
+          this.opts.variable,
+          "unavailable",
+        );
       }
       if (usable && generation === this.generation && this.minted === held) {
         return usable;
@@ -451,23 +469,19 @@ export class AccessTokenMinter {
     this.grant = { ...this.grant!, refreshToken };
     this.own = [...this.own, digest([refreshToken])].slice(-OWN_LINEAGE_LIMIT);
     const persist = this.opts.persist;
-    if (!persist) {
-      if (!this.warnedInMemory) {
-        this.warnedInMemory = true;
-        console.warn(
-          `[strad] server "${this.opts.slug}": the token endpoint rotated the ` +
-            `refresh token in \${${this.opts.variable}}, and this deployment ` +
-            `has no store strad can write it back to. The new one is held in ` +
-            `memory only: after a restart strad reads the seeded one again, ` +
-            `which the provider has invalidated.`,
-        );
-      }
-      return;
-    }
+    if (!persist) return;
+    // Answered against the lineage as it is when the WRITE runs, not when it
+    // was queued: a later rotation is still ours.
+    const ours = (current: string): boolean =>
+      generation === this.generation && this.own.includes(digest([current]));
     this.writes = this.writes.then(async () => {
       if (generation !== this.generation) return;
       if (this.grant?.refreshToken !== refreshToken) return;
-      await persist(refreshToken).catch(() => {});
+      // `Promise.resolve().then` so a persister that throws synchronously
+      // rejects THIS step rather than poisoning the queue for every later one.
+      await Promise.resolve()
+        .then(() => persist(refreshToken, ours))
+        .catch(() => {});
     });
   }
 }
@@ -589,6 +603,13 @@ async function exchange(
     });
   }
 
+  // A 2xx that carries an RFC 6749 error is a refusal wearing the wrong status
+  // — some endpoints answer that way — and naming the code beats "malformed".
+  const code = record?.error;
+  if (typeof code === "string" && OAUTH_ERROR_CODES.has(code)) {
+    throw fail("refused", { status, oauthError: code });
+  }
+
   const accessToken = record?.access_token;
   const tokenType = record?.token_type;
   if (
@@ -607,13 +628,19 @@ async function exchange(
       : typeof rawExpiry === "string" && /^\d+$/.test(rawExpiry)
         ? Number(rawExpiry)
         : undefined;
+  // A lifetime of zero or less is a token already dead on arrival. Folding it
+  // into "no expiry" would serve it until a 401, and the rejection floor would
+  // then hold every call on the slug for thirty seconds per mint.
+  if (
+    expiresIn !== undefined &&
+    !(Number.isFinite(expiresIn) && expiresIn > 0)
+  ) {
+    throw fail("malformed", { status });
+  }
   const refreshToken = record?.refresh_token;
   return {
     accessToken,
-    expiresIn:
-      expiresIn !== undefined && Number.isFinite(expiresIn) && expiresIn > 0
-        ? expiresIn
-        : undefined,
+    expiresIn,
     refreshToken:
       typeof refreshToken === "string" && refreshToken !== ""
         ? refreshToken

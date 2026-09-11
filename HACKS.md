@@ -4528,11 +4528,23 @@ gateway's when that is where the name is — through the same `rotate()` the
 bundle write-back route uses (`createParameterWriteBack`, `src/http/params.ts`).
 Where the name resolves from the ENVIRONMENT instead — `gateway.secrets.provider:
 env`, or a name that only `envFallback` supplies under the store provider — there
-is nothing strad can write. The rotation is held in memory, one stderr line says
-so at the first rotation, and everything keeps working until the process
-restarts and reads the seeded value again, which the provider invalidated hours
-ago. Then every call on that slug fails with `invalid_grant` until a human
-authorizes again and re-seeds.
+is nothing strad can write. The rotation is held in memory, every rotation is
+refused on stderr and as `strad.param_write_failed`, and everything keeps working
+until the process restarts and reads the seeded value again, which the provider
+invalidated hours ago. Then every call on that slug fails with `invalid_grant`
+until a human authorizes again and re-seeds.
+
+Two narrower windows sit beside it. The write-back REVEALS the parameter before
+it writes and refuses when the stored value is not one this minter's lineage
+produced — a human re-seeding another account between the exchange and the write
+would otherwise be overwritten by the old account's rotation, and the slug would
+serve the old account again in silence. A read-then-write is not a
+compare-and-set, so a re-seed landing between those two calls is still
+overwritten. And a rolling deploy runs two cores for the minutes the old one
+stays healthy: two minters, one refresh token. A provider that rotates on use
+refuses whichever spends it second, which re-reads the store within
+`ttlSeconds`; a provider that revokes the token family on reuse leaves the slug
+dead until a human authorizes again. Same window `paramsWritable:` has (#62).
 
 **Why.** The two environment paths are, by design, paths strad cannot write:
 `process.env` is fixed at spawn, and the whole point of the env provider is a
