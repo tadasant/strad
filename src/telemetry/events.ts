@@ -269,8 +269,11 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * `console.token_exchange_failed` is the tripwire, and it ships at ERROR
      * for that reason: a real token presented after somebody else consumed it,
      * or after it was revoked, is either a broken automation or a stolen token.
-     * It is throttled per jti — a thief replaying one token cannot flood the
-     * queue, and there are at most `MAX_RECORDS` jtis to key on.
+     * It is throttled per jti and state — a thief replaying one token cannot
+     * flood the queue, and a `burned_in_query` does not hide the
+     * `token_consumed` that follows it. The buckets are bounded by how many
+     * tokens ever tripped it in this process's life, each minted by a standing
+     * credential.
      */
     "console.token_minted": ["jti", "minted_by"],
     "console.token_exchanged": ["jti"],
@@ -428,7 +431,7 @@ const THROTTLED = new Set([
   // another. stdout is not throttled.
   "strad.route_failed",
   // Only a caller holding a real token's secret can drive it, but a thief can
-  // replay one token as fast as the socket allows. Keyed per jti (below).
+  // replay one token as fast as the socket allows. Keyed per jti and state.
   "console.token_exchange_failed",
 ]);
 const THROTTLE_MS = 60_000;
@@ -470,8 +473,15 @@ export function event(payload: Record<string, unknown>): void {
   if (THROTTLED.has(evt)) {
     // `route` beside `slug` because `strad.route_failed` carries no slug:
     // without it, one failing route's 60s bucket would swallow every other
-    // route's first record. `jti` for the same reason, one event over.
-    const key = `${evt}:${String(payload.slug ?? payload.route ?? payload.jti ?? "")}`;
+    // route's first record. `jti` and `state` for the same reason, one event
+    // over.
+    const bucket =
+      payload.slug ??
+      payload.route ??
+      (payload.jti !== undefined
+        ? `${String(payload.jti)}:${String(payload.state)}`
+        : "");
+    const key = `${evt}:${String(bucket)}`;
     const now = Date.now();
     const last = lastExported.get(key);
     if (last !== undefined && now - last < THROTTLE_MS) return;

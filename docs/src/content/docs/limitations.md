@@ -353,6 +353,12 @@ An automated actor has to treat a failed exchange as "mint again once, then
 stop", never "retry the same token", and a deploy in the middle of a run looks
 exactly like that.
 
+A token session can view the console and cannot act through it: no reveal, no
+store write, no connector, no playground tool call. That is what keeps a leaked
+session from reading or planting a durable credential. It also means an automated
+actor cannot drive the console's write forms. Doing that would take a mint-time
+capability, which is not built.
+
 Minting takes a standing console credential: the bootstrap token (through the
 bypass, [#2](#2-the-console-dev-bypass-stands-in-for-google-oauth)) or a Google
 session. When the bypass goes, a Google session is the only minter left, so a

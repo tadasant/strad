@@ -1,7 +1,15 @@
 import http, { type Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   ConsoleTokenStore,
   consoleTokenLoginStatus,
@@ -251,15 +259,109 @@ describe("mint → exchange → cookie → console", () => {
     expect(Date.parse(expiresAt) - clock).toBe(TOKEN_SESSION_TTL_MS);
   });
 
-  it("also exchanges from a form body", async () => {
+  it("refuses a form body, so a cross-site form cannot plant a session", async () => {
     const { token } = await mintOk();
-    const res = await fetch(`${base}/console/token-login`, {
+    const bodies: [string, string][] = [
+      [
+        "application/x-www-form-urlencoded",
+        new URLSearchParams({ token }).toString(),
+      ],
+      ["text/plain", JSON.stringify({ token })],
+    ];
+    for (const [type, body] of bodies) {
+      const res = await fetch(`${base}/console/token-login`, {
+        method: "POST",
+        headers: { "content-type": type },
+        body,
+      });
+      expect(res.status, type).toBe(415);
+      expect(res.headers.getSetCookie()).toEqual([]);
+    }
+    // Neither of those spent it.
+    expect((await exchange(token)).status).toBe(200);
+  });
+
+  it("accepts a stale token cookie beside a live one", async () => {
+    const stale = await signedIn();
+    const live = await signedIn();
+    const [name, value] = stale.split("=") as [string, string];
+    const [sid] = value.split(".");
+    const forged = `${name}=${sid}.${"D".repeat(43)}`;
+    expect((await ui(`${forged}; ${live}`)).status).toBe(200);
+  });
+});
+
+// --- look, don't touch -----------------------------------------------------
+
+describe("a token session can look at the console and cannot act through it", () => {
+  const ACTING = [
+    "/ui/echo/create",
+    "/ui/echo/rotate",
+    "/ui/echo/note",
+    "/ui/echo/reveal",
+    "/ui/echo/delete",
+    "/ui/echo/connect",
+  ];
+
+  it.each(ACTING)("refuses POST %s with 403", async (path) => {
+    const cookie = await signedIn();
+    const res = await fetch(`${base}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token }).toString(),
+      headers: {
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "variable=ADMIN_BOOTSTRAP_TOKEN&value=x",
+      redirect: "manual",
     });
-    expect(res.status).toBe(200);
-    expect(sessionSetCookie(res)).toBeDefined();
+    expect(res.status).toBe(403);
+    expect(await res.text()).toMatch(/can view the console but not act/);
+  });
+
+  it("refuses a playground tool call, and still lists tools", async () => {
+    const cookie = await signedIn();
+    const headers = { cookie, "content-type": "application/json" };
+    const call = await fetch(`${base}/playground/echo/tools/call`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ tool: "echo", arguments: { text: "x" } }),
+    });
+    expect(call.status).toBe(403);
+    expect(await call.json()).toMatchObject({ ok: false });
+
+    const list = await fetch(`${base}/playground/echo/tools/list`, {
+      method: "POST",
+      headers,
+      body: "{}",
+    });
+    expect(list.status).toBe(200);
+  });
+
+  it("lets it re-read the store, which reads nothing back", async () => {
+    const cookie = await signedIn();
+    const res = await fetch(`${base}/ui/echo/refresh`, {
+      method: "POST",
+      headers: { cookie },
+      redirect: "manual",
+    });
+    expect(res.status).not.toBe(403);
+    expect(res.status).not.toBe(401);
+  });
+
+  it("does not refuse a standing credential on the same routes", async () => {
+    for (const path of ACTING) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: {
+          ...BEARER,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: "variable=NOPE&value=x",
+        redirect: "manual",
+      });
+      expect(res.status, path).not.toBe(403);
+      expect(res.status, path).not.toBe(401);
+    }
   });
 });
 
@@ -383,6 +485,53 @@ describe("revoke", () => {
     const cookie = await signedIn();
     expect((await revoke(jti, { cookie })).status).toBe(401);
   });
+
+  it("takes the token itself, so the actor that sees the tripwire can act on it", async () => {
+    const { token, jti } = await mintOk();
+    // Somebody else spends it first.
+    const thief = cookieOf(await exchange(token));
+    const tripped = await exchange(token);
+    expect(tripped.status).toBe(409);
+
+    // The actor holds only the token, and revokes with it.
+    const res = await fetch(`${base}/console/tokens/${jti}/revoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      jti,
+      status: "consumed",
+      sessionEnded: true,
+    });
+    expect((await ui(thief)).status).toBe(401);
+  });
+
+  it("will not revoke by possession of a different token, or a wrong secret", async () => {
+    const a = await mintOk();
+    const b = await mintOk();
+    for (const token of [b.token, `${a.jti}.${"E".repeat(43)}`]) {
+      const res = await fetch(`${base}/console/tokens/${a.jti}/revoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      expect(res.status).toBe(401);
+    }
+    expect((await exchange(a.token)).status).toBe(200);
+  });
+
+  it("takes a Google session, as JSON only", async () => {
+    const { jti } = await mintOk();
+    const cookie = googleCookie();
+    expect((await revoke(jti, { cookie })).status).toBe(415);
+    const res = await revoke(jti, {
+      cookie,
+      "content-type": "application/json",
+    });
+    expect(res.status).toBe(200);
+  });
 });
 
 // --- expiry ----------------------------------------------------------------
@@ -458,7 +607,7 @@ describe("unknown and garbled tokens", () => {
 // --- the query string ------------------------------------------------------
 
 describe("a token in the query string", () => {
-  it("is refused, sets no cookie, and burns the token", async () => {
+  it("is refused before the body is read, sets no cookie, and burns the token", async () => {
     const { token } = await mintOk();
     const res = await fetch(
       `${base}/console/token-login?token=${encodeURIComponent(token)}`,
@@ -478,18 +627,61 @@ describe("a token in the query string", () => {
     expect(await after.json()).toMatchObject({ error: "token_revoked" });
   });
 
-  it("does not open /ui or /console as `?token=` either", async () => {
+  it.each([
+    ["a GET", "GET", undefined],
+    ["a malformed JSON body", "POST", "{not json"],
+  ])("burns it on %s too", async (_label, method, body) => {
     const { token } = await mintOk();
-    const page = await ui(undefined, `/ui?token=${encodeURIComponent(token)}`);
-    expect(page.status).toBe(401);
-    expect(page.headers.getSetCookie()).toEqual([]);
-    const json = await fetch(
-      `${base}/console?token=${encodeURIComponent(token)}`,
+    const res = await fetch(
+      `${base}/console/token-login?token=${encodeURIComponent(token)}`,
+      { method, headers: { "content-type": "application/json" }, body },
     );
-    expect(json.status).toBe(401);
-    // Neither of those spent it.
-    expect((await exchange(token)).status).toBe(200);
+    expect(res.status).toBe(400);
+    expect((await exchange(token)).status).toBe(409);
   });
+
+  it("burns every copy of a repeated parameter", async () => {
+    const { token } = await mintOk();
+    const q = encodeURIComponent(token);
+    const res = await fetch(
+      `${base}/console/token-login?token=${q}&token=${q}`,
+      {
+        method: "POST",
+      },
+    );
+    expect(res.status).toBe(400);
+    expect((await exchange(token)).status).toBe(409);
+  });
+
+  it("does not claim to burn a token that was already consumed", async () => {
+    const { token } = await mintOk();
+    expect((await exchange(token)).status).toBe(200);
+    const res = await fetch(
+      `${base}/console/token-login?token=${encodeURIComponent(token)}`,
+      { method: "POST" },
+    );
+    expect(((await res.json()) as { message: string }).message).toMatch(
+      /already been exchanged or revoked/,
+    );
+    // Still consumed — the tripwire keeps saying so.
+    expect(await (await exchange(token)).json()).toMatchObject({
+      error: "token_consumed",
+    });
+  });
+
+  it.each(["/ui", "/console", "/"])(
+    "does not open %s as `?token=`, and burns the token there too",
+    async (path) => {
+      const { token } = await mintOk();
+      const res = await ui(
+        undefined,
+        `${path}?token=${encodeURIComponent(token)}`,
+      );
+      expect(res.status).toBe(401);
+      expect(res.headers.getSetCookie()).toEqual([]);
+      expect((await exchange(token)).status).toBe(409);
+    },
+  );
 });
 
 // --- authority ------------------------------------------------------------
@@ -514,23 +706,46 @@ describe("authority rides in the record", () => {
   });
 
   it("gives a Google minter's token the Google roles, and no more", async () => {
-    const sealer = consoleSessionsFromEnv(ENV)?.session;
-    if (!sealer) throw new Error("no session key");
-    const payload: ConsoleSessionPayload = {
-      v: 1,
-      sub: "42",
-      email: "tadas@tadasant.com",
-      hd: "tadasant.com",
-      iat: clock,
-      exp: Date.now() + 60_000,
-    };
-    const google = { cookie: `${SESSION_COOKIE}=${sealer.seal(payload)}` };
+    const google = { cookie: googleCookie() };
 
-    const res = await mint(undefined, google);
+    const res = await mint({}, google);
     expect(res.status).toBe(201);
     const body = (await res.json()) as { roles: string[]; token: string };
     expect(body.roles).toEqual(["echo-only"]);
     expect((await mint({ roles: ["admin"] }, google)).status).toBe(403);
+  });
+
+  it("will not mint for a cookie without a JSON body, which a cross-origin page cannot send", async () => {
+    const res = await fetch(`${base}/console/tokens`, {
+      method: "POST",
+      headers: { cookie: googleCookie() },
+    });
+    expect(res.status).toBe(415);
+    const form = await fetch(`${base}/console/tokens`, {
+      method: "POST",
+      headers: {
+        cookie: googleCookie(),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "roles=echo-only",
+    });
+    expect(form.status).toBe(415);
+  });
+
+  it("refuses a misspelled or non-object body rather than minting the full roles", async () => {
+    const typo = await mint({ role: ["echo-only"] });
+    expect(typo.status).toBe(400);
+    expect(await typo.json()).toMatchObject({ error: "unknown_field" });
+    expect((await mint(["echo-only"])).status).toBe(400);
+    const form = await fetch(`${base}/console/tokens`, {
+      method: "POST",
+      headers: {
+        ...BEARER,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "roles=echo-only",
+    });
+    expect(form.status).toBe(415);
   });
 
   it("will not let a token session mint", async () => {
@@ -553,10 +768,24 @@ describe("authority rides in the record", () => {
     ).toBe(401);
   });
 
-  it("bounds how many records one process holds", () => {
-    const s = new ConsoleTokenStore();
-    for (let i = 0; i < MAX_RECORDS; i++) s.mint(principal(["admin"]), []);
-    expect(() => s.mint(principal(["admin"]), [])).toThrow(/already held/);
+  it("bounds how many records one process holds, with a 429", async () => {
+    let now = Date.now();
+    const tokens = new ConsoleTokenStore({ now: () => now });
+    const { srv, url } = await listen(STAGING, tokens);
+    try {
+      const post = () =>
+        fetch(`${url}/console/tokens`, { method: "POST", headers: BEARER });
+      for (let i = 0; i < MAX_RECORDS; i++)
+        expect((await post()).status).toBe(201);
+      const full = await post();
+      expect(full.status).toBe(429);
+      expect(await full.json()).toMatchObject({ error: "too_many_tokens" });
+      // Expired records are forgotten, and the room comes back.
+      now += TOKEN_TTL_MS + 1;
+      expect((await post()).status).toBe(201);
+    } finally {
+      srv.close();
+    }
   });
 });
 
@@ -587,6 +816,8 @@ describe("hard-off in production", () => {
   it.each([
     ["gateway.env: prod", "prod", true],
     ["gateway.env: production", "production", true],
+    ["an env name nobody allowlisted (prd)", "prd", true],
+    ["a padded staging", '" staging "', true],
     ["the flag off, on staging", "staging", false],
   ])("404s all three routes under %s", async (_label, env, enabled) => {
     const cfg = config(env, enabled);
@@ -637,7 +868,9 @@ describe("hard-off in production", () => {
       active: true,
       reason: "active",
     });
-    expect(consoleTokenLoginStatus(config(" PROD ", true)).active).toBe(false);
+    for (const env of ["dev", "local", "test", "staging"]) {
+      expect(consoleTokenLoginStatus(config(env, true)).active, env).toBe(true);
+    }
   });
 
   it("defaults off in a config that never mentions it", () => {
@@ -646,6 +879,45 @@ describe("hard-off in production", () => {
     );
     expect(cfg.auth.consoleTokenLogin.enabled).toBe(false);
     expect(consoleTokenLoginStatus(cfg).active).toBe(false);
+  });
+});
+
+// --- telemetry -------------------------------------------------------------
+
+describe("the tripwire is an event, and only for a real token", () => {
+  it("reports a replay of a verified token, and not a garbled one", async () => {
+    const lines: string[] = [];
+    const err = vi.spyOn(console, "error").mockImplementation((l) => {
+      lines.push(String(l));
+    });
+    const out = vi.spyOn(console, "log").mockImplementation((l) => {
+      lines.push(String(l));
+    });
+    try {
+      const { token } = await mintOk();
+      await exchange(token);
+      await exchange(token);
+      await exchange("garbage");
+    } finally {
+      err.mockRestore();
+      out.mockRestore();
+    }
+    const events = lines
+      .filter((l) => l.startsWith("{"))
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const names = events.map((e) => e.evt);
+    expect(names).toContain("console.token_minted");
+    expect(names).toContain("console.token_exchanged");
+    const tripped = events.filter(
+      (e) => e.evt === "console.token_exchange_failed",
+    );
+    expect(tripped).toHaveLength(1);
+    expect(tripped[0]).toMatchObject({ state: "token_consumed" });
+    expect(
+      events.find((e) => e.evt === "console.token_login_refused"),
+    ).toMatchObject({ reason: "invalid_token" });
+    // Nothing carries the secret half.
+    expect(lines.join("\n")).not.toMatch(/\.[A-Za-z0-9_-]{43}/);
   });
 });
 
@@ -728,6 +1000,21 @@ function raw(
     req.on("error", reject);
     req.end(body);
   });
+}
+
+/** A sealed Google session cookie for a verified tadasant.com identity. */
+function googleCookie(): string {
+  const sealer = consoleSessionsFromEnv(ENV)?.session;
+  if (!sealer) throw new Error("no session key");
+  const payload: ConsoleSessionPayload = {
+    v: 1,
+    sub: "42",
+    email: "tadas@tadasant.com",
+    hd: "tadasant.com",
+    iat: Date.now(),
+    exp: Date.now() + 60_000,
+  };
+  return `${SESSION_COOKIE}=${sealer.seal(payload)}`;
 }
 
 function principal(roles: string[]): Principal {

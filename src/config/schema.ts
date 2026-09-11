@@ -893,16 +893,17 @@ const AuthConfig = z.object({
   /**
    * Console token login: a standing console credential mints a short-lived,
    * single-use token, and an automated actor exchanges it for a 30-minute
-   * console session (src/auth/console-tokens.ts).
+   * console session that can view the console and not act through it
+   * (src/auth/console-tokens.ts).
    *
-   * Two locks: this flag, and a `gateway.env` that is not `prod`. In production
-   * the three routes are never mounted, whatever this says — there is no
-   * acknowledgement that turns them on there.
+   * Two locks: this flag, and a `gateway.env` in `TOKEN_LOGIN_ENVS` (`dev`,
+   * `local`, `test`, `staging`). In production the three routes are never
+   * mounted, whatever this says — there is no acknowledgement that turns them
+   * on there.
    *
    * No `roles:` of its own, on purpose. A token's roles are its minter's (or a
    * subset the minter asks for), so enabling this grants nobody anything that a
-   * standing credential did not already hold. It opens the console and nothing
-   * else; it CANNOT authenticate /mcp.
+   * standing credential did not already hold. It CANNOT authenticate /mcp.
    */
   consoleTokenLogin: z
     .object({

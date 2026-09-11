@@ -18,7 +18,12 @@ import type { Principal } from "./index.ts";
  *
  * The token itself grants nothing but one exchange. The exchange's CONSEQUENCE
  * is a session of its own — shorter than a Google session, never renewed, and
- * ended by revoking the token that made it.
+ * ended by revoking the token that made it. That session can LOOK at every
+ * console page and cannot make the console act: `refuseTokenSession` in
+ * src/ui/console-auth.ts keeps it off every route that reads a stored value,
+ * writes the store, or calls an upstream. Without that, thirty minutes of
+ * console is enough to reveal the bootstrap token or plant an `/mcp` token,
+ * and the credential that was meant to die in minutes would not.
  *
  * SINGLE-USE IS THE POINT. A failed exchange of a token this actor minted and
  * has not used is a tripwire: somebody else consumed it. A replayable token
@@ -31,10 +36,11 @@ import type { Principal } from "./index.ts";
  * JavaScript turn at a time, so two exchanges of one token racing in on two
  * sockets are serialised by the event loop and exactly one of them sees
  * `active`. That is the whole atomicity argument, and it is why this module
- * imports nothing asynchronous. Adding an `await` anywhere inside `exchange()`
- * makes the token replayable with nothing visibly broken —
- * `test/console-tokens.test.ts` races concurrent exchanges over real sockets to
- * catch exactly that.
+ * imports nothing asynchronous. An `await` inside `exchange()` that yields to
+ * I/O or a timer — a store behind a network hop is the realistic one — makes
+ * the token replayable with nothing visibly broken. `test/console-tokens.test.ts`
+ * races concurrent exchanges over pre-opened sockets to catch exactly that, and
+ * separately pins that `exchange()` returns no promise at all.
  *
  * WHERE THE STATE LIVES. In this process's memory. That is sound because the
  * console is ONE process: core is rendered with `instance_count: 1`
@@ -75,16 +81,26 @@ export const MAX_RECORDS = 256;
 export const TOKEN_SESSION_COOKIE = "strad_console_token";
 
 /**
- * `gateway.env` values that ARE production. The routes do not exist there.
+ * The `gateway.env` values token login may exist under. Everything else —
+ * `prod`, and any name nobody wrote down here — has no routes.
+ *
+ * An ALLOWLIST, so a production deployment that happens to be called `prd` or
+ * `live` fails closed rather than open. Exact match: ` staging ` is not
+ * `staging`.
  *
  * `gateway.env` rather than `NODE_ENV`, deliberately: staging runs
  * `NODE_ENV=production` (src/auth/dev.ts), and staging is the one environment
  * this exists for. `gateway.env` is also what binds every `/mcp` token
  * (`strad_<env>_…`, src/auth/tokens.ts), so a production deployment that claimed
- * to be anything else would reject its own agents' tokens — the claim cannot be
+ * to be `staging` would reject its own agents' tokens — the claim cannot be
  * wrong quietly.
  */
-const PRODUCTION_ENVS = new Set(["prod", "production"]);
+export const TOKEN_LOGIN_ENVS: ReadonlySet<string> = new Set([
+  "dev",
+  "local",
+  "test",
+  "staging",
+]);
 
 export interface ConsoleTokenLoginStatus {
   active: boolean;
@@ -94,7 +110,7 @@ export interface ConsoleTokenLoginStatus {
 /**
  * Whether the three routes exist on this deployment.
  *
- * Two locks: the config flag, and a `gateway.env` that is not production. The
+ * Two locks: the config flag, and a `gateway.env` in `TOKEN_LOGIN_ENVS`. The
  * flag defaults off, so a config that never mentions this has no routes. The
  * second lock is not configurable at all — there is no acknowledgement that
  * turns it on in prod, because the issue this closes (tadasant/strad#43) asks
@@ -109,10 +125,12 @@ export function consoleTokenLoginStatus(
   if (!cfg.auth.consoleTokenLogin.enabled) {
     return { active: false, reason: "auth.consoleTokenLogin.enabled is false" };
   }
-  if (PRODUCTION_ENVS.has(cfg.gateway.env.trim().toLowerCase())) {
+  if (!TOKEN_LOGIN_ENVS.has(cfg.gateway.env)) {
     return {
       active: false,
-      reason: `gateway.env is "${cfg.gateway.env}", and token login never exists in production`,
+      reason:
+        `gateway.env is "${cfg.gateway.env}", and token login exists only under ` +
+        [...TOKEN_LOGIN_ENVS].join(", "),
     };
   }
   return { active: true, reason: "active" };
@@ -297,18 +315,29 @@ export class ConsoleTokenStore {
   }
 
   /**
-   * Burn a token that arrived somewhere it must not: a query string, which
-   * lands in access logs and `Referer`. Revoked if it verifies and is still
-   * active; the answer says whether it did anything.
+   * Burn a token that arrived somewhere it must not: a URL, which lands in
+   * access logs and `Referer`. An `active` token that verifies is revoked.
+   * `burned` says whether this call did that — a token already consumed or
+   * revoked is returned untouched, so the caller can say which.
    */
-  burn(presented: string): ConsoleTokenRecord | null {
+  burn(
+    presented: string,
+  ): { record: ConsoleTokenRecord; burned: boolean } | null {
     const record = this.verify(presented);
     if (!record) return null;
-    if (record.status === "active") {
-      record.status = "revoked";
-      record.revokedAt = this.now();
-    }
-    return record;
+    if (record.status !== "active") return { record, burned: false };
+    record.status = "revoked";
+    record.revokedAt = this.now();
+    return { record, burned: true };
+  }
+
+  /**
+   * The jti of a presented token, if its secret verifies. Possession of the
+   * whole token is what lets the actor revoke it without a standing
+   * credential — see the revoke route.
+   */
+  possessed(presented: string): string | null {
+    return this.verify(presented)?.jti ?? null;
   }
 
   /**

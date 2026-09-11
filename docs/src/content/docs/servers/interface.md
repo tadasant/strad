@@ -830,14 +830,17 @@ auth:
     enabled: false # default
 ```
 
-Two locks: this flag, and a `gateway.env` that is not `prod` (or `production`).
-With either one shut, `POST /console/tokens`, `POST /console/token-login` and
-`POST /console/tokens/:jti/revoke` are not mounted at all, and no token session
-can open the console. Nothing in the config reopens it in production.
+Two locks: this flag, and a `gateway.env` that is exactly `dev`, `local`, `test`
+or `staging`. With either one shut, `POST /console/tokens`,
+`POST /console/token-login` and `POST /console/tokens/:jti/revoke` are not
+mounted at all, and no token session can open the console. Nothing in the config
+reopens it in production.
 
 It has no `roles:` of its own. A token carries its minter's roles, or a subset the
-mint asks for, so turning this on grants nobody anything a standing credential
-did not already hold. It opens the console and never `/mcp`. See
+mint asks for, and the session it opens can view the console but not reveal,
+write or delete a stored value, begin a connector, or call a tool. Turning this on
+grants nobody anything a standing credential did not already hold, and it never
+reaches `/mcp`. See
 [Auth](/auth/overview/#console-login-tokens-the-automated-actors-door).
 
 ## Where the config comes from

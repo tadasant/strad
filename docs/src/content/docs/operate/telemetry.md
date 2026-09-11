@@ -334,7 +334,8 @@ Every exportable event a client can drive — `mcp.list_tools_failed`,
 for the same queue-starvation reason. The bucket is the slug, except for
 `strad.route_failed`, which carries none and buckets on the route instead, so a
 flood on one route cannot hide another route's first record, and
-`console.token_exchange_failed`, which buckets on the token's `jti`. A repeated fault is
+`console.token_exchange_failed`, which buckets on the token's `jti` and the
+refusal's `state`. A repeated fault is
 therefore under-reported by up to a minute in the ingestor; the streams are never
 throttled, and `strad.mcp.tool_surface` carries the same fact continuously. Fault events export at `SeverityNumber.ERROR`, so
 `severity >= ERROR` finds them.

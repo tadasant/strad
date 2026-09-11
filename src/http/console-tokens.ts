@@ -1,4 +1,10 @@
-import express, { type Express, type Response } from "express";
+import type {
+  Express,
+  NextFunction,
+  Request,
+  RequestHandler,
+  Response,
+} from "express";
 import {
   StoreFull,
   TOKEN_SESSION_COOKIE,
@@ -6,26 +12,37 @@ import {
   type ConsoleTokenRecord,
   type ConsoleTokenStore,
 } from "../auth/console-tokens.ts";
+import type { Principal } from "../auth/index.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
 import { event } from "../telemetry/index.ts";
-import { standingPrincipal } from "../ui/console-auth.ts";
+import { burnFromUrl, standingPrincipal } from "../ui/console-auth.ts";
 
 /**
  * The three console login token routes. See src/auth/console-tokens.ts for what
  * the token is and why the compare-and-set is sound.
  *
- *   POST /console/tokens              mint    — a standing credential
- *   POST /console/token-login         exchange — the token, in the BODY
- *   POST /console/tokens/:jti/revoke  revoke  — a standing credential
+ *   POST /console/tokens              mint     — a standing credential
+ *   POST /console/token-login         exchange — the token, in a JSON BODY
+ *   POST /console/tokens/:jti/revoke  revoke   — a standing credential, or the
+ *                                                token itself
  *
  * Mounted only when `consoleTokenLoginStatus()` says so. On a deployment where
  * it does not — every production one — these paths are the same 404 as any
  * path strad never heard of, which says nothing about the feature existing.
  *
+ * JSON, and only JSON, wherever a cookie could be what authenticates the
+ * request or what the response sets. A cross-origin page can POST a form or
+ * `text/plain` with the browser's cookies attached, but it cannot send
+ * `application/json` without a CORS preflight, and strad answers none. That is
+ * what stops a sibling-subdomain page from minting with a human's session, or
+ * planting its own token session in a human's browser.
+ *
  * Every answer is `cache-control: no-store`: the mint's body is a credential,
  * and the exchange's Set-Cookie is one.
  */
+
+export const TOKEN_LOGIN_PATH = "/console/token-login";
 
 export interface ConsoleTokenRouteDeps {
   config: StradConfig;
@@ -34,14 +51,42 @@ export interface ConsoleTokenRouteDeps {
   store: ConsoleTokenStore;
 }
 
+/**
+ * The exchange path's URL check, for EVERY method, registered ahead of the body
+ * parser (src/http/app.ts).
+ *
+ * NEVER a query string. A URL is written to access logs and sent onward in
+ * `Referer`, so a token that has been in one is burned — revoked, if it is real
+ * and still active — whatever the method, whatever the body, and before a
+ * malformed body can make the parser answer first and leave it live.
+ */
+export function tokenLoginUrlGuard(store: ConsoleTokenStore): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (req.query.token === undefined) {
+      next();
+      return;
+    }
+    noStore(res);
+    const { burned, seen } = burnFromUrl(store, req.query.token);
+    if (seen === 0) refused("token_in_query");
+    res.status(400).json({
+      error: "token_in_query",
+      message:
+        "The token goes in the POST body, never the URL. " +
+        (burned > 0
+          ? "It has been in a URL, so it is now revoked; mint another."
+          : seen > 0
+            ? "It had already been exchanged or revoked."
+            : "Nothing was exchanged."),
+    });
+  };
+}
+
 export function mountConsoleTokens(
   app: Express,
   deps: ConsoleTokenRouteDeps,
 ): void {
   const { env, store } = deps;
-  // `curl -d token=…` as well as JSON. Scoped to the one route that reads a
-  // form, as the console's own form parser is scoped to /ui.
-  const form = express.urlencoded({ extended: false, limit: "4kb" });
 
   app.post("/console/tokens", (req, res) => {
     noStore(res);
@@ -60,10 +105,14 @@ export function mountConsoleTokens(
       });
       return;
     }
+    if (!jsonIfCookie(req, res)) return;
 
-    const requested = (req.body as { roles?: unknown } | undefined)?.roles;
+    const body = jsonObject(req, res, ["roles"]);
+    if (!body) return;
+
     let roles = minter.roles;
-    if (requested !== undefined) {
+    if (body.roles !== undefined) {
+      const requested = body.roles;
       if (
         !Array.isArray(requested) ||
         requested.length === 0 ||
@@ -118,25 +167,15 @@ export function mountConsoleTokens(
     });
   });
 
-  app.post("/console/token-login", form, (req, res) => {
+  app.post(TOKEN_LOGIN_PATH, (req, res) => {
     noStore(res);
-
-    // NEVER a query string. A URL is written to access logs and sent onward in
-    // `Referer`, so a token that has been in one is burned — revoked, if it is
-    // real and still active — whether or not a body came with it.
-    const inQuery = req.query.token;
-    if (inQuery !== undefined) {
-      const burned =
-        typeof inQuery === "string" ? store.burn(inQuery) : undefined;
-      if (burned) tripwire(burned, "burned_in_query");
-      else refused("token_in_query");
-      res.status(400).json({
-        error: "token_in_query",
-        message:
-          "The token goes in the POST body, never the URL. " +
-          (burned
-            ? "This one has been in a URL and is now revoked; mint another."
-            : "Nothing was exchanged."),
+    // JSON only: the response sets a session cookie, and a form a cross-site
+    // page submitted would set it in somebody else's browser.
+    if (!req.is("application/json")) {
+      refused("not_json");
+      res.status(415).json({
+        error: "json_required",
+        message: 'POST {"token": "<jti>.<secret>"} as application/json.',
       });
       return;
     }
@@ -146,7 +185,7 @@ export function mountConsoleTokens(
       refused("missing_token");
       res.status(400).json({
         error: "missing_token",
-        message: 'POST {"token": "<jti>.<secret>"} as JSON or a form field.',
+        message: 'POST {"token": "<jti>.<secret>"} as application/json.',
       });
       return;
     }
@@ -194,23 +233,41 @@ export function mountConsoleTokens(
     });
   });
 
+  /**
+   * Revoke, by a standing credential OR by possession of the token itself.
+   *
+   * Possession is what makes the tripwire something the actor can act on. The
+   * actor holds the token and nothing standing, so when its exchange comes back
+   * `token_consumed` it posts the same token here: the record stays consumed,
+   * and the session somebody else opened with it ends. Anyone who could do this
+   * could also have spent the token, so it grants nothing new.
+   */
   app.post("/console/tokens/:jti/revoke", (req, res) => {
     noStore(res);
-    const actor = standingPrincipal(
+    const jti = String(req.params.jti ?? "");
+    const actor: Principal | null = standingPrincipal(
       req.headers.cookie,
       req.headers.authorization,
       deps,
     );
-    if (!actor) {
+    const presented = req.is("application/json")
+      ? (req.body as { token?: unknown } | undefined)?.token
+      : undefined;
+    const byPossession =
+      typeof presented === "string" && store.possessed(presented) === jti;
+
+    if (!actor && !byPossession) {
       res.status(401).json({
         error: "standing_credential_required",
         message:
-          "Revoking a console login token takes a standing console credential.",
+          "Revoking a console login token takes a standing console credential, " +
+          'or the token itself as {"token": "<jti>.<secret>"}.',
       });
       return;
     }
+    if (!byPossession && !jsonIfCookie(req, res)) return;
 
-    const result = store.revoke(String(req.params.jti ?? ""));
+    const result = store.revoke(jti);
     if (!result.found) {
       // Honest rather than idempotent-looking: a 200 here would claim a
       // revocation that did not happen. The usual cause is a restart since the
@@ -242,10 +299,75 @@ const REFUSAL_TEXT: Record<string, string> = {
   invalid_token: "Not a console login token this deployment holds.",
   token_consumed:
     "This token has already been exchanged. If you minted it and did not use " +
-    "it, somebody else did: revoke it, and mint a fresh one.",
+    "it, somebody else did: revoke it — POST it to /console/tokens/<jti>/revoke, " +
+    "which also ends their session — and mint a fresh one.",
   token_revoked: "This token was revoked.",
   token_expired: "This token expired before it was exchanged. Mint another.",
 };
+
+/**
+ * A cookie-authenticated mint or revoke must be JSON. A bearer header is not a
+ * thing a browser attaches on its own, so it needs no such check; a cookie is,
+ * and this is what keeps a cross-origin page from spending it. Answers the 415
+ * itself and returns false when it refuses.
+ */
+function jsonIfCookie(req: Request, res: Response): boolean {
+  if (req.headers.authorization || req.is("application/json")) return true;
+  res.status(415).json({
+    error: "json_required",
+    message:
+      "Authenticated by a cookie, this route takes an application/json body " +
+      "— `{}` will do.",
+  });
+  return false;
+}
+
+/**
+ * The request body as a JSON object with only `allowed` keys, or null after
+ * answering the refusal. No body at all is `{}`. A misspelled key is a 400
+ * rather than a silent default, because the default here is the minter's FULL
+ * roles and a typo'd narrowing must not quietly become that.
+ */
+function jsonObject(
+  req: Request,
+  res: Response,
+  allowed: string[],
+): Record<string, unknown> | null {
+  // A body of another type is refused — a form would otherwise be read as `{}`.
+  // An empty one is no body at all: `fetch` sends `content-length: 0` on a bare
+  // POST, which `req.is()` counts as a body with no type.
+  if (hasBody(req) && !req.is("application/json")) {
+    res.status(415).json({
+      error: "json_required",
+      message: "This route takes an application/json body.",
+    });
+    return null;
+  }
+  const body: unknown = req.body ?? {};
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    res.status(400).json({
+      error: "invalid_body",
+      message: "The body is a JSON object.",
+    });
+    return null;
+  }
+  const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
+  if (unknown.length > 0) {
+    res.status(400).json({
+      error: "unknown_field",
+      message: `Unknown field(s): ${unknown.join(", ")}. This route reads: ${allowed.join(", ")}.`,
+    });
+    return null;
+  }
+  return body as Record<string, unknown>;
+}
+
+function hasBody(req: Request): boolean {
+  return (
+    req.headers["transfer-encoding"] !== undefined ||
+    Number(req.headers["content-length"] ?? "0") > 0
+  );
+}
 
 /**
  * A refusal of a token whose secret VERIFIED — so presented by somebody holding

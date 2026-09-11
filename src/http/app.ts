@@ -28,6 +28,7 @@ import {
 } from "../auth/session.ts";
 import type { TokenStore } from "../auth/tokens.ts";
 import {
+  burnFromUrl,
   BYPASS_COOKIE,
   googlePrincipal,
   tokenSession,
@@ -41,7 +42,11 @@ import { mountConsoleUi } from "../ui/index.ts";
 import type { GcsLister } from "../ui/gcs-client.ts";
 import type { ConsoleUiOptions } from "../ui/index.ts";
 import { asyncRoute, jsonFailure } from "./async-route.ts";
-import { mountConsoleTokens } from "./console-tokens.ts";
+import {
+  mountConsoleTokens,
+  TOKEN_LOGIN_PATH,
+  tokenLoginUrlGuard,
+} from "./console-tokens.ts";
 import { createReadinessHandler } from "./readiness.ts";
 import { createPresenceHandler } from "./presence.ts";
 import { PRESENCE_ROUTE } from "../secrets/presence.ts";
@@ -171,6 +176,14 @@ export function createApp(opts: AppOptions): Express {
       ),
     ),
   );
+  // Resolved here, ahead of the body parser, for one reason: a login token in
+  // the exchange route's URL is burned BEFORE a malformed body can make the
+  // parser answer first and leave it live. See src/http/console-tokens.ts.
+  const consoleTokens =
+    opts.mode === "core" ? resolveConsoleTokens(opts) : null;
+  if (consoleTokens) {
+    app.use(TOKEN_LOGIN_PATH, tokenLoginUrlGuard(consoleTokens));
+  }
   app.use(express.json({ limit: "4mb" }));
 
   // --- health -------------------------------------------------------------
@@ -299,7 +312,6 @@ export function createApp(opts: AppOptions): Express {
     // /ui verifies it. Two independent readings of "is Google usable?" is how
     // you get a gate that redirects into a flow that cannot complete.
     const auth = resolveConsoleAuth(opts, env);
-    const consoleTokens = resolveConsoleTokens(opts);
     mountConsole(app, opts, env, auth, consoleTokens);
     if (consoleTokens) {
       mountConsoleTokens(app, {
@@ -516,6 +528,10 @@ function mountConsole(
   }
 
   app.get("/console", (req, res) => {
+    // A login token is never a `?token=` credential, and one in this URL is now
+    // in an access log. See burnFromUrl.
+    burnFromUrl(consoleTokens, req.query.token);
+
     const bypass = authenticateConsoleBypass(
       consoleToken(req.query.token, req.headers.authorization),
       cfg,

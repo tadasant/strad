@@ -4,7 +4,11 @@ import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import type { ConsoleSessions } from "../auth/session.ts";
 import { sanitizeNext, stateMatches } from "../auth/session.ts";
-import { consolePrincipal, signedInLabel } from "./console-auth.ts";
+import {
+  consolePrincipal,
+  refuseTokenSession,
+  signedInLabel,
+} from "./console-auth.ts";
 import { esc, layout, renderMessage } from "./render.ts";
 import { SERVER_ROUTE, serverConsolePath } from "./paths.ts";
 import { event } from "../telemetry/index.ts";
@@ -118,6 +122,7 @@ export function mountConnector(
   app.post(
     `${SERVER_ROUTE}/connect`,
     gate,
+    refuseTokenSession,
     asyncRoute((req, res) => handleConnect(req, res, opts), renderUnexpected),
   );
 }

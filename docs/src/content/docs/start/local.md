@@ -94,7 +94,8 @@ curl -s -X POST "http://localhost:$PORT/console/tokens" \
 The agent posts `{"token": "…"}` to `/console/token-login` from its browser
 context (`context.request.post(…)` in Playwright), which sets the
 `strad_console_token` cookie, then navigates to `/ui`. The token works once, and
-only within ten minutes of the mint. See
+only within ten minutes of the mint, and the session it opens can view the
+console but not reveal, write or delete a stored value. See
 [Auth architecture](/auth/overview/#console-login-tokens-the-automated-actors-door).
 
 ### Calling `/mcp`

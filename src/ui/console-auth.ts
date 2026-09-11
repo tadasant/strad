@@ -1,4 +1,4 @@
-import type { NextFunction, Request, Response } from "express";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import {
   TOKEN_SESSION_COOKIE,
   type ConsoleTokenStore,
@@ -15,6 +15,7 @@ import {
   type ConsoleSessions,
 } from "../auth/session.ts";
 import type { StradConfig } from "../config/schema.ts";
+import { event } from "../telemetry/index.ts";
 import { renderSignIn } from "./render.ts";
 
 /**
@@ -104,6 +105,10 @@ export function requireConsoleUi(deps: ConsoleAuthDeps) {
         return;
       }
     }
+    // A console LOGIN token in the URL is never a credential here — and it is
+    // now in an access log, so it is burned. `?token=` is the bypass's sign-in,
+    // which makes this the most likely place for one to be pasted by mistake.
+    burnFromUrl(consoleTokens, req.query.token);
 
     // A Google session, first: it is the real credential.
     const principal =
@@ -179,6 +184,81 @@ export function tokenSession(
   }
   return null;
 }
+
+/**
+ * Burn every console login token in a URL's `token` parameter — one value, or
+ * several (`?token=a&token=b` arrives as an array). A token that has been in a
+ * URL has been in an access log, so it must not be exchangeable afterwards.
+ *
+ * A verified token is reported as a tripwire whether or not this call was what
+ * burned it: somebody holding the real secret put it in a URL. Anything that
+ * does not verify is ignored — it is not a login token, or not one this
+ * process holds, and the caller's own refusal covers it.
+ */
+export function burnFromUrl(
+  consoleTokens: ConsoleTokenStore | null,
+  raw: unknown,
+): { burned: number; seen: number } {
+  if (!consoleTokens || raw === undefined) return { burned: 0, seen: 0 };
+  const values = (Array.isArray(raw) ? raw : [raw]).filter(
+    (v): v is string => typeof v === "string",
+  );
+  let burned = 0;
+  let seen = 0;
+  for (const value of values) {
+    const result = consoleTokens.burn(value);
+    if (!result) continue;
+    seen++;
+    if (result.burned) burned++;
+    event({
+      evt: "console.token_exchange_failed",
+      jti: result.record.jti,
+      state: result.burned
+        ? "burned_in_query"
+        : `token_${result.record.status}`,
+    });
+  }
+  return { burned, seen };
+}
+
+/**
+ * The line a token session does not cross: it may LOOK at every console page,
+ * and it may not make the console act for it.
+ *
+ * Mounted after `gate` on every route that reads a stored value (`reveal`),
+ * writes the store (`create`, `rotate`, `note`, `delete`), begins a connector
+ * consent, or calls an upstream (the playground's `tools/call`). A 403, and the
+ * handler never runs.
+ *
+ * The reason is the token's whole premise. A login token is meant to be a
+ * credential whose leak is over in minutes, and each of those routes can turn
+ * minutes into forever: reveal reads ADMIN_BOOTSTRAP_TOKEN or a third party's
+ * key out of the store, and rotate writes a `STRAD_TOKENS` record whose secret
+ * the writer chose. Narrowing a token's roles would not help — the secret
+ * actions are behind the gate alone, and read no role. So the rule is on the
+ * principal's KIND, and it holds whatever roles the token carries.
+ *
+ * `refresh` is not on the list: it drops this process's cached store reading
+ * and reads nothing back, and the playground's `tools/list` returns tool
+ * metadata only. Both are looking.
+ */
+export const refuseTokenSession: RequestHandler = (req, res, next) => {
+  const p = res.locals.principal as Principal | undefined;
+  if (p?.kind !== "console-token") {
+    next();
+    return;
+  }
+  const message =
+    "A console login token's session can view the console but not act " +
+    "through it: it cannot reveal, write or delete a stored value, begin a " +
+    "connector, or call a tool. Sign in with a standing console credential " +
+    "for that.";
+  if (req.is("application/json")) {
+    res.status(403).json({ ok: false, error: message });
+    return;
+  }
+  res.status(403).type("text/plain").send(message);
+};
 
 /**
  * A STANDING console credential: a Google session, or the dev bypass as a

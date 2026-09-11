@@ -4471,7 +4471,7 @@ core process. Nothing persists them and nothing shares them. A restart — every
 deploy is one — ends every outstanding token and every token session.
 
 **Why.** Single-use and revocable both need server-side state: a stateless HMAC
-has nowhere to write "used" or "revoked". strad has no datastore (#6), and core
+has nowhere to write "used" or "revoked". strad has no datastore (hack #6), and core
 is exactly one process — `renderAppSpec` hard-codes its `instance_count: 1` — so
 the process's memory is a complete store for it. The compare-and-set is atomic
 because `exchange()` is synchronous and Node runs one turn at a time; a store
@@ -4491,13 +4491,17 @@ What is lost is availability, never safety: nothing here can issue a session
 that should not exist, or let a token be spent twice.
 
 **Scope.** The routes exist only where `auth.consoleTokenLogin.enabled` is true
-and `gateway.env` is not `prod` — staging and dev. Minting takes a standing
-console credential. Today that is `ADMIN_BOOTSTRAP_TOKEN` (the bypass, #2) or a
-Google session. When #6 deletes the bypass, a Google session is the only
-minter, so a CI job that mints for itself needs a standing credential that
-survives #6; choosing one is #6's decision, not this one.
+and `gateway.env` is exactly `dev`, `local`, `test` or `staging`. A token
+session can view the console and cannot act through it — no reveal, no store
+write, no connector, no playground tool call — so an automated actor cannot drive
+the console's write forms at all; that would need a mint-time capability, which
+is not built. Minting takes a standing console credential: `ADMIN_BOOTSTRAP_TOKEN`
+(through the bypass, hack #2) or a Google session. When tadasant/strad#6 deletes
+the bypass, a Google session is the only minter, so a CI job that mints for
+itself needs a standing credential that survives it; choosing one is that
+issue's decision, not this one.
 
-**Undo.** Move the records to the same shared store as #6's database-backed
-`TokenStore` (tadasant/strad#10), with the compare-and-set as a conditional write
+**Undo.** Move the records to the same shared store as hack #6's
+database-backed `TokenStore` (tadasant/strad#10), with the compare-and-set as a conditional write
 there (`UPDATE … SET status='consumed' WHERE jti=$1 AND status='active'`,
 checking the row count). Do it before core runs more than one replica, not after.

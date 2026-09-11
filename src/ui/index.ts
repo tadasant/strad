@@ -6,6 +6,7 @@ import { asyncRoute } from "../http/async-route.ts";
 import type { SecretBag } from "../secrets/index.ts";
 import {
   consolePrincipal,
+  refuseTokenSession,
   requireConsoleUi,
   signedInLabel,
 } from "./console-auth.ts";
@@ -278,6 +279,9 @@ export function mountConsoleUi(app: Express, opts: ConsoleUiOptions): void {
     app.post(
       `${SERVER_ROUTE}/${action}`,
       gate,
+      // Every action but `refresh` reads a stored value or writes the store,
+      // which a login token's session may not do. See refuseTokenSession.
+      ...(action === "refresh" ? [] : [refuseTokenSession]),
       form,
       asyncRoute(
         (req, res) => handleSecretAction(action, req, res, opts),

@@ -392,11 +392,11 @@ handing it the bootstrap token puts a standing console credential in a job log,
 a transcript or a browser profile, where it outlives the task. So the standing
 credential **mints** a single-use token and the actor **exchanges** it:
 
-| Route                              | Takes                                              | Answers                                                                                                |
-| ---------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `POST /console/tokens`             | a standing credential; optional `{"roles": [...]}` | `201` with `token` (`<jti>.<secret>`, shown once), `jti`, `roles`, `expiresAt`                         |
-| `POST /console/token-login`        | `{"token": "…"}` in the **body**, JSON or form     | `200` and the `strad_console_token` cookie, or a refusal and **no** cookie                             |
-| `POST /console/tokens/:jti/revoke` | a standing credential                              | `200` with the token's `status` and whether a live session was ended; `404` for a jti it does not hold |
+| Route                              | Takes                                                              | Answers                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `POST /console/tokens`             | a standing credential; optional JSON `{"roles": [...]}`            | `201` with `token` (`<jti>.<secret>`, shown once), `jti`, `roles`, `expiresAt`                         |
+| `POST /console/token-login`        | `{"token": "…"}` as an `application/json` **body**                 | `200` and the `strad_console_token` cookie, or a refusal and **no** cookie                             |
+| `POST /console/tokens/:jti/revoke` | a standing credential, **or** the token itself as `{"token": "…"}` | `200` with the token's `status` and whether a live session was ended; `404` for a jti it does not hold |
 
 ```sh
 # In the job that holds the standing credential:
@@ -419,6 +419,15 @@ cannot mint its own successor and outlive its thirty minutes one hop at a time.
 Nor is `?token=`: these are `POST` routes a script calls, not pages a browser
 lands on.
 
+**JSON only, wherever a cookie is involved.** The exchange sets a cookie, and a
+mint or revoke may be authenticated by one, so each takes an `application/json`
+body (`415 json_required` otherwise). A cross-origin page can POST a form with a
+human's cookies attached, but it cannot send JSON without a CORS preflight, and
+strad answers none. That is what stops a sibling subdomain from minting with a
+human's session or planting its own session in a human's browser. A mint body
+with a field other than `roles` is a `400`, because the alternative is a
+misspelled narrowing that quietly mints the minter's full roles.
+
 **Single use is the point.** The token is `<jti>.<secret>` — a 16-hex-character
 lookup key and 32 random bytes, of which only the SHA-256 is kept. The exchange
 is a compare-and-set from `active` to `consumed`, and it is atomic because it is
@@ -427,21 +436,30 @@ loop, so two exchanges racing in on two sockets are ordered and exactly one of
 them sees `active`. `test/console-tokens.test.ts` races 25 of them over
 pre-opened sockets. That makes a failed exchange mean something. An actor whose
 fresh, unused token comes back `token_consumed` has learned that somebody else
-spent it, and the right response is to revoke the jti — which also ends the
+spent it. The right response is to revoke it — the actor posts the same token to
+`/console/tokens/<jti>/revoke`, which needs no standing credential and ends the
 session the other party got — raise the alarm, and mint once more. Retrying the
 same token is never right.
 
-| The refusal      | Status | When                                                                   |
-| ---------------- | ------ | ---------------------------------------------------------------------- |
-| `invalid_token`  | `401`  | Garbled, unknown, or the secret half is wrong. Nothing is disclosed.   |
-| `token_expired`  | `401`  | Real, but not exchanged within ten minutes of the mint.                |
-| `token_consumed` | `409`  | Real, and already exchanged. The tripwire.                             |
-| `token_revoked`  | `409`  | Real, and revoked — including by having been put in a URL.             |
-| `token_in_query` | `400`  | The token arrived as `?token=`. It is revoked, whatever the body said. |
+| The refusal      | Status | When                                                                                        |
+| ---------------- | ------ | ------------------------------------------------------------------------------------------- |
+| `invalid_token`  | `401`  | Garbled, unknown, or the secret half is wrong. Nothing is disclosed.                        |
+| `token_expired`  | `401`  | Real, but not exchanged within ten minutes of the mint.                                     |
+| `token_consumed` | `409`  | Real, and already exchanged. The tripwire.                                                  |
+| `token_revoked`  | `409`  | Real, and revoked — including by having been put in a URL.                                  |
+| `token_in_query` | `400`  | The token arrived as `?token=`, with any method and any body. It is revoked if it was live. |
+| `json_required`  | `415`  | The body was not `application/json`.                                                        |
 
 A caller only learns a token's state if it holds the secret. A wrong secret
 against a real jti is `invalid_token`, and it does not spend the token: knowing
 the public half is not enough to burn it.
+
+**A token in any URL is burned.** A URL lands in access logs and `Referer`, so a
+login token seen as `?token=` on the exchange route, on `/ui`, on `/` or on
+`/console` is revoked on the spot — every copy, if the parameter repeats — and it
+opens nothing. On the exchange route that happens before the body is parsed, so a
+malformed body cannot leave it live. `/ui?token=` is the bypass's sign-in, which
+makes it the likeliest place for one to be pasted by mistake.
 
 **The session** the exchange opens is thirty minutes, absolute, never renewed.
 Its cookie, `strad_console_token`, is HttpOnly, `SameSite=Lax`, `Secure` under
@@ -451,6 +469,19 @@ minter's, fixed at mint — narrowed if the mint asked for a subset, and a reque
 for a role the minter does not hold is a `403`. Unlike the Google session, this
 one is a server-side record, so revoking the token or signing out ends it for
 every copy of the cookie.
+
+**It can look, and it cannot act.** A token session loads every console page —
+the roster, each server's parameters, the playground and its tool lists — and may
+re-read the store. It is refused with a `403` on everything that reads a stored
+value, writes the store, or makes an upstream act: `reveal`, `create`, `rotate`,
+`note` and `delete` under `/ui/:server`, a connector's `connect`, and the
+playground's `tools/call`. That is a rule on the principal's kind, not its roles,
+because the secret actions read no role and the token's whole premise is a
+credential whose leak is over in minutes. Thirty minutes of `reveal` would read
+the bootstrap token out of the store, and thirty minutes of `rotate` would plant a
+`STRAD_TOKENS` record whose secret the writer chose — either one outlives the
+session by as long as anyone likes. Driving the console's write forms therefore
+still takes a standing credential.
 
 **Where the records live, and why that is enough.** In core's memory. Core is one
 process — it is rendered with `instance_count: 1` — and every config change is a
@@ -462,24 +493,26 @@ session that should not exist. What a shared store would add is availability, an
 it is written down as [a known limitation](/limitations/).
 
 **It never exists in production.** The routes are mounted only when
-`auth.consoleTokenLogin.enabled` is true **and** `gateway.env` is not `prod`
-(or `production`). There is no acknowledgement that turns them on there. A
-production deployment answers all three paths with the same `404` as a path strad
-never heard of, and its gate never consults a token session. The test is
-`gateway.env`, not `NODE_ENV`: staging runs `NODE_ENV=production`, and staging is
-where this is for. `gateway.env` is also what binds every `/mcp` token
-(`strad_<env>_…`), so a production deployment claiming another name would reject
-its own agents — the claim cannot be wrong quietly. It does not depend on the
-dev bypass either, so it outlives it: after [#6](https://github.com/tadasant/strad/issues/6),
-a Google session is what mints.
+`auth.consoleTokenLogin.enabled` is true **and** `gateway.env` is one of `dev`,
+`local`, `test` or `staging` — an allowlist, matched exactly, so a production
+deployment called `prod`, `production` or anything nobody wrote down fails
+closed. There is no acknowledgement that turns them on there. Such a deployment
+answers all three paths with the same `404` as a path strad never heard of, and
+its gate never consults a token session. The test is `gateway.env`, not
+`NODE_ENV`: staging runs `NODE_ENV=production`, and staging is where this is for.
+`gateway.env` is also what binds every `/mcp` token (`strad_<env>_…`), so a
+production deployment claiming to be `staging` would reject its own agents — the
+claim cannot be wrong quietly. It does not depend on the dev bypass either, so it
+outlives it: after [#6](https://github.com/tadasant/strad/issues/6), a Google
+session is what mints.
 
 `/mcp` is untouched. It reads the `Authorization` header against the static token
 store and never a cookie; the login token and the session cookie are both a `401`
 there.
 
 Every mint, exchange and revoke is an event, and a refusal of a token whose secret
-verified is `console.token_exchange_failed` — exported at ERROR, throttled per
-jti — because it is a broken automation or a stolen token. See
+verified is `console.token_exchange_failed` — exported at ERROR, throttled per jti
+and state — because it is a broken automation or a stolen token. See
 [Telemetry](/operate/telemetry/).
 
 ### The two ways console auth says no

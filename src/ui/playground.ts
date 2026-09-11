@@ -15,7 +15,11 @@ import { compileToolPolicies } from "../gateway/toolPolicy.ts";
 import { denamespace } from "../gateway/adapters/types.ts";
 import { TROUBLESHOOT_TOOL } from "../gateway/troubleshoot.ts";
 import { event } from "../telemetry/index.ts";
-import { consolePrincipal, signedInLabel } from "./console-auth.ts";
+import {
+  consolePrincipal,
+  refuseTokenSession,
+  signedInLabel,
+} from "./console-auth.ts";
 import { esc, jsonForScript, layout, renderMessage } from "./render.ts";
 import { errorText } from "../util/error-text.ts";
 
@@ -214,6 +218,9 @@ export function mountPlayground(
   app.post(
     "/playground/:server/tools/call",
     gate,
+    // Listing is looking; a call makes an upstream act, which a login token's
+    // session may not do. See refuseTokenSession.
+    refuseTokenSession,
     requireJson,
     asyncRoute(async (req, res) => {
       const body = req.body as { tool?: unknown; arguments?: unknown };
