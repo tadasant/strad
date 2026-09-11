@@ -613,13 +613,13 @@ below for the move that publishes one.
 
 The walk-back rule is the one thing that differs from the core, and it is
 inverted. `release-image.yml` builds every commit except docs-only ones;
-`release-bundle-image.yml` has a `paths:` filter — sixteen entries: the fourteen
-trees the Dockerfile bakes, the bundle host, and the workflow itself — so **most**
-commits cut no bundle image and stepping past them is the normal case, not an
-exception. `--kind bundle` reads that filter out of
-the workflow rather than keeping a second copy of the list. A commit that **did**
-touch a baked tree and has no image is still a hard stop, for the same reason as
-the core.
+`release-bundle-image.yml` has a `paths:` filter — seventeen entries: the
+fourteen trees the Dockerfile bakes, the bundle host, the workflow itself, and
+the shared release body it delegates to — so **most** commits cut no bundle image
+and stepping past them is the normal case, not an exception. `--kind bundle` reads
+that filter out of the workflow rather than keeping a second copy of the list. A
+commit that **did** touch a baked tree and has no image is still a hard stop, for
+the same reason as the core.
 
 **Why.** On 2026-07-31, `POST /mcp?servers=secrets` returned `200 {"tools":[]}`
 on staging and prod, and had never returned anything else in any window the
@@ -932,8 +932,8 @@ rather than a matter of passing the right input:
 
 - **No `:latest` is ever moved.** The tag list is derived from the ref and
   asserted not to be `latest` before a push happens. The release tags live only in
-  `release-image.yml` / `release-bundle-image.yml`, which refuse to run off
-  `main`.
+  `release-image.yml` and in the shared body `release-bundle-image.yml` calls,
+  both of which refuse to run off `main`.
 - **Prod is never notified.** `deploy-staging.yml` contains no
   `repository_dispatch` step at all, so a branch build cannot fire one.
 - **The release path cannot trigger a build.** `build` is declared only on
@@ -1086,25 +1086,35 @@ gh workflow run secrets-sync.yml \
 Each container image strad publishes has its own release workflow, path-filtered
 so a change to one server doesn't rebuild the rest:
 
-| Workflow                        | Publishes                                        | Triggered by a change under                                                                                                                                                                                                                                                                                    |
-| ------------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `release-image.yml`             | `ghcr.io/tadasant/strad`                         | the repo root / `src/`                                                                                                                                                                                                                                                                                         |
-| `release-bundle-image.yml`      | `ghcr.io/tadasant/strad-bundle` — **the** bundle | `servers/bundle/`, `servers/bundle-api/`, `servers/onepassword/`, `servers/secrets/`, `servers/remote-filesystem/`, `servers/x-twitter/`, `servers/telegram/`, `servers/pulse-subregistry/`, `servers/strad-fetch/`, `servers/good-eggs/`, `servers/fetchpet/`, `servers/pointsyeah/`, `images/bundle-google/` |
-| `release-bundle-api-image.yml`  | `ghcr.io/tadasant/strad-bundle-api`              | `servers/bundle-api/`                                                                                                                                                                                                                                                                                          |
-| `release-goodeggs-image.yml`    | `ghcr.io/tadasant/strad-server-good-eggs`        | `servers/good-eggs/`                                                                                                                                                                                                                                                                                           |
-| `release-fetchpet-image.yml`    | `ghcr.io/tadasant/strad-server-fetchpet`         | `servers/fetchpet/`                                                                                                                                                                                                                                                                                            |
-| `release-pointsyeah-image.yml`  | `ghcr.io/tadasant/strad-server-pointsyeah`       | `servers/pointsyeah/`                                                                                                                                                                                                                                                                                          |
-| `release-onepassword-image.yml` | `ghcr.io/tadasant/strad-server-onepassword`      | `servers/onepassword/`                                                                                                                                                                                                                                                                                         |
-| `bundle-google-release.yml`     | `ghcr.io/tadasant/strad-server-bundle-google`    | `images/bundle-google/`                                                                                                                                                                                                                                                                                        |
+| Workflow                        | Publishes                                        | Triggered by a change under                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `release-image.yml`             | `ghcr.io/tadasant/strad`                         | the repo root / `src/`                                                                                                                                                                                                                                                                                                                                    |
+| `release-bundle-image.yml`      | `ghcr.io/tadasant/strad-bundle` — **the** bundle | `servers/bundle/`, `servers/bundle-api/`, `servers/onepassword/`, `servers/secrets/`, `servers/remote-filesystem/`, `servers/good-eggs/`, `servers/fetchpet/`, `servers/pointsyeah/`, `servers/x-twitter/`, `servers/pulse-subregistry/`, `servers/strad-fetch/`, `servers/grafana/`, `servers/telegram/`, `servers/bill-spend/`, `images/bundle-google/` |
+| `release-bundle-api-image.yml`  | `ghcr.io/tadasant/strad-bundle-api`              | `servers/bundle-api/`                                                                                                                                                                                                                                                                                                                                     |
+| `release-goodeggs-image.yml`    | `ghcr.io/tadasant/strad-server-good-eggs`        | `servers/good-eggs/`                                                                                                                                                                                                                                                                                                                                      |
+| `release-fetchpet-image.yml`    | `ghcr.io/tadasant/strad-server-fetchpet`         | `servers/fetchpet/`                                                                                                                                                                                                                                                                                                                                       |
+| `release-pointsyeah-image.yml`  | `ghcr.io/tadasant/strad-server-pointsyeah`       | `servers/pointsyeah/`                                                                                                                                                                                                                                                                                                                                     |
+| `release-onepassword-image.yml` | `ghcr.io/tadasant/strad-server-onepassword`      | `servers/onepassword/`                                                                                                                                                                                                                                                                                                                                    |
+| `bundle-google-release.yml`     | `ghcr.io/tadasant/strad-server-bundle-google`    | `images/bundle-google/`                                                                                                                                                                                                                                                                                                                                   |
 
-Four of those workflows hold no build of their own. `release-bundle-api-image.yml`,
-`release-goodeggs-image.yml`, `release-fetchpet-image.yml` and
-`release-pointsyeah-image.yml` are a `paths:` filter, a concurrency group, and a
-call to **`release-supplementary-image.yml`** — the reusable workflow that holds the
-shared body: checkout, isolate the docker config, log in to ghcr, create a
-job-scoped buildx builder, build and push `:latest` and `:sha-<commit>`. A caller
-passes `context:` and `image:`, plus `file:`, `cache-scope:` and `refuse-off-main:`
-when it needs them.
+Five of those workflows hold no build of their own. `release-bundle-image.yml`,
+`release-bundle-api-image.yml`, `release-goodeggs-image.yml`,
+`release-fetchpet-image.yml` and `release-pointsyeah-image.yml` are a `paths:`
+filter, a concurrency group, and a call to **`release-supplementary-image.yml`** —
+the reusable workflow that holds the shared body: checkout, isolate the docker
+config, log in to ghcr, create a job-scoped buildx builder, build and push
+`:latest` and `:sha-<commit>`. A caller passes `context:` and `image:`, plus
+`file:`, `cache-scope:` and `refuse-off-main:` when it needs them.
+
+The bundle is the caller that needs all three, and each of those three defaults
+to the value that is wrong for it: `refuse-off-main: true` because
+`strad-bundle:latest` is what live staging tracks, `cache-scope: bundle` because
+this build is large enough to evict every one-tree image out of the shared gha
+scope, and `file: servers/bundle/Dockerfile` because its `context:` is the repo
+root — fourteen trees, so the root is the only context that can `COPY` them all.
+Dropped, each of the three fails silently rather than loudly, which is why
+`test/workflow-release-callers.test.ts` asserts all three on that caller by
+name.
 
 One copy of that body rather than one per server is the point. Every cross-cutting
 fix to the release path — naming the buildx builder, retrying the ghcr push,
@@ -1123,8 +1133,9 @@ Two things about that shape are worth knowing:
 
 `release-image.yml` (the core image) is deliberately not a caller — it does
 considerably more than build and push. Neither is `release-onepassword-image.yml`,
-whose `op` verification is described below. `release-bundle-image.yml` is not one
-yet.
+whose `op` verification is described below: it builds, loads and asserts the
+pinned CLI inside the artifact before publishing, which is a body no other
+release has.
 
 Everything below `release-bundle-image.yml` in that table is a **per-server image
 that staging no longer deploys** — staging runs the one collapsed bundle. They are

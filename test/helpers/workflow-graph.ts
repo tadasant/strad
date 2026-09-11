@@ -5,10 +5,10 @@ import { parse } from "yaml";
  * The publish graph of `.github/workflows`: which workflows end in an image on
  * ghcr, and which job's steps actually do it.
  *
- * A release does not have to hold its own build. Four of them delegate to
+ * A release does not have to hold its own build. Five of them delegate to
  * `release-supplementary-image.yml`, and a job that only `uses:` another
  * workflow has no steps — so a per-file scan of this directory walks past those
- * four asserting nothing at all about them, which is not what
+ * five asserting nothing at all about them, which is not what
  * `test/workflow-docker-config.test.ts` and `test/workflow-buildx-builder.test.ts`
  * are for.
  *
@@ -161,7 +161,7 @@ function unitsFrom(
 
 /**
  * Every image build in this repo, once per triggerable workflow that reaches
- * it. A shared body called by four releases yields four units — which is right:
+ * it. A shared body called by five releases yields five units — which is right:
  * each of those releases is separately broken if the body is.
  */
 export function buildUnits(): BuildUnit[] {

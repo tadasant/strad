@@ -72,8 +72,10 @@ jobs:
     #                              absence blocks deploys.
     #
     # `head_branch` is deliberately NOT among them: release-bundle-image.yml
-    # already refuses every ref but `main` in its first step, so a push build
-    # that got far enough to be cancelled was on `main`.
+    # asks release-supplementary-image.yml for the off-main guard
+    # (`refuse-off-main: true`), which is that job's first step and reads the
+    # CALLER's `github.ref` — so a push build that got far enough to be
+    # cancelled was on `main`.
     #
     # `healIsComing` in src/deploy/imageTag.ts restates all three, because the
     # tag walk holds a deploy's wait open on the promise that this job fires —

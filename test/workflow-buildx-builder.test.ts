@@ -51,13 +51,16 @@ const BUILD_ACTIONS = [
  *
  * Both are weak floors doing one job: stopping the loops below from passing by
  * asserting over an empty list. A count of copies moves whenever releases share
- * a body — four of them share `release-supplementary-image.yml` and hold one
+ * a body — FIVE of them share `release-supplementary-image.yml` and hold one
  * builder between them — and it cannot tell that apart from three releases
- * losing theirs. The assertion that does not move is the last one in this
- * describe: every workflow asking for `packages: write` must REACH a build.
+ * losing theirs. Re-anchor it to what the tree holds when a release stops
+ * keeping its own copy; never lower it to pass. The assertion that does not
+ * move is the last one in this describe: every workflow asking for
+ * `packages: write` must REACH a build, and the bundle joining the shared body
+ * left it exactly where it was.
  */
-const MIN_SETUP_STEPS = 9;
-const MIN_BUILD_STEPS = 14;
+const MIN_SETUP_STEPS = 8;
+const MIN_BUILD_STEPS = 13;
 
 interface Step {
   "continue-on-error"?: boolean;

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { BUNDLE_RELEASE_WORKFLOW } from "../src/deploy/imageTag.ts";
 import {
   calledWorkflow,
   workflow,
@@ -16,7 +17,7 @@ import {
  * `release-supplementary-image.yml` holds the build. A caller is a `paths:`
  * filter, a concurrency group and a `uses:` — which tree cuts an image and which
  * package it lands in. Sharing the body is the right trade and it moves the
- * failure mode rather than removing it: four near-identical short files made
+ * failure mode rather than removing it: five near-identical short files made
  * from each other by substitution have one failure mode left, and it is a
  * substitution that was not made.
  *
@@ -40,6 +41,11 @@ import {
  * caller's `paths:` unless a caller names it, so its first execution would be on
  * whatever unrelated commit next touched one of these trees. That is the gap
  * #134 was filed about, and a shared body is exactly where it would reopen.
+ *
+ * The last describe in this file is the bundle caller on its own. It is the one
+ * of the five that is not near-identical to the others — repo-root context, a
+ * named Dockerfile, its own cache scope, the off-main guard switched on — and
+ * the one whose substitutions are unrecoverable rather than merely wrong.
  */
 
 const SHARED = ".github/workflows/release-supplementary-image.yml";
@@ -52,6 +58,25 @@ interface Caller {
   branches: string[] | undefined;
   group: string | undefined;
   with: Record<string, unknown>;
+}
+
+/**
+ * The tree a caller's image IS — the directory that identifies it.
+ *
+ * `context:` is that directory for a one-tree image, and is not for the bundle:
+ * its context is the REPO ROOT, because its Dockerfile `COPY`s from fourteen
+ * trees, so `${context}/**` would be `.//**` and name nothing. The Dockerfile's
+ * own directory is the answer in both shapes, and a caller that names no `file:`
+ * is building the context's own.
+ *
+ * Watching that one tree is the floor, not the whole rule, for a caller that
+ * builds from the root: the bundle's fourteen are compared against the
+ * Dockerfile's `COPY` stages by `test/bundle-release-paths.test.ts`, which is
+ * the guard that would notice a fifteenth tree added and not watched.
+ */
+function builtTree(c: Caller): string {
+  const file = c.with.file as string | undefined;
+  return file ? dirname(file) : (c.with.context as string);
 }
 
 function callers(): Caller[] {
@@ -90,7 +115,7 @@ describe("every caller of the shared supplementary release", () => {
       `nothing calls ${SHARED}, so every assertion below runs over an empty ` +
         `list. Either the callers were reverted or the path changed.`,
     ).not.toEqual([]);
-    expect(found.length).toBeGreaterThanOrEqual(4);
+    expect(found.length).toBeGreaterThanOrEqual(5);
   });
 
   it.each(found)("$file watches the tree it builds", (c) => {
@@ -102,12 +127,25 @@ describe("every caller of the shared supplementary release", () => {
       existsSync(context as string),
       `${c.file} builds \`${context}\`, which is not a directory in this repo.`,
     ).toBe(true);
+
+    const tree = builtTree(c);
     expect(
       c.paths,
-      `${c.file} builds \`${context}\` and does not watch it, so a change ` +
+      `${c.file} builds \`${tree}\` and does not watch it, so a change ` +
         `there merges and cuts no image — green, and still running the old ` +
         `code.`,
-    ).toContain(`${context}/**`);
+    ).toContain(`${tree}/**`);
+  });
+
+  it.each(found)("$file names a Dockerfile that is there", (c) => {
+    // Only a caller that names one: for the rest the context's own `Dockerfile`
+    // is the default, and a context with none fails loudly at the build.
+    const file = c.with.file as string | undefined;
+    if (file === undefined) return;
+    expect(
+      existsSync(file),
+      `${c.file} passes \`file: ${file}\`, which is not a file in this repo.`,
+    ).toBe(true);
   });
 
   it.each(found)("$file watches itself and the body it delegates to", (c) => {
@@ -185,10 +223,7 @@ describe("every caller of the shared supplementary release", () => {
     // and the other server's `:latest` is replaced by an image that is not it —
     // which App Platform then pulls, and nothing errors anywhere.
     //
-    // The tree is the Dockerfile's directory when a caller names one, because
-    // that is the caller whose `context:` is the repo root.
-    const file = c.with.file as string | undefined;
-    const tree = file ? dirname(file) : (c.with.context as string);
+    const tree = builtTree(c);
     const pkg = (c.with.image as string).split("/").pop()!;
 
     expect(
@@ -305,5 +340,75 @@ describe("the shared supplementary release body", () => {
     ).toMatchObject({
       inputs: { "refuse-off-main": { default: false } },
     });
+  });
+});
+
+/**
+ * The bundle caller, which is the one whose mistakes are not recoverable.
+ *
+ * Every assertion above holds over all five callers. These four hold over one,
+ * and they are here because the bundle is the image whose absence cannot heal
+ * itself: its release is `paths:`-filtered, so the commit that owes an image
+ * stays the newest commit owing one forever, and every staging deploy from then
+ * on hard-stops. The four supplementary images have no such property — the next
+ * push to their tree republishes.
+ *
+ * Three of the shared body's five inputs exist for this caller alone, and all
+ * three fail SILENTLY if they are dropped from it:
+ *
+ *   - `refuse-off-main:` defaults to FALSE. Dropped, a `workflow_dispatch` on a
+ *     branch publishes that branch's bundle to `:latest` — the tag live staging
+ *     tracks — and nothing errors. The guard is in the body; whether it applies
+ *     is written here.
+ *   - `cache-scope:` defaults to the SHARED gha scope. Dropped, this build —
+ *     fourteen trees and a Chromium — evicts every one-tree image out of it, and
+ *     the symptom is four unrelated releases that got slower.
+ *   - `file:` defaults to the context's own `Dockerfile`. Dropped, with a
+ *     repo-root context, the build reads `./Dockerfile` — the CORE image's — and
+ *     publishes it as `strad-bundle`. App Platform pulls it, every mount 404s,
+ *     and `tools/list` comes back empty.
+ *
+ * The release path has no pre-merge execution (#134), so its first run is a real
+ * release. That is what these are instead.
+ */
+describe("the bundle caller", () => {
+  const bundle = callers().find((c) => c.file === BUNDLE_RELEASE_WORKFLOW);
+
+  it("is a caller of the shared body at all", () => {
+    // Named from `src/deploy/imageTag.ts` rather than spelled here: that
+    // constant is what the deploy's tag walk reads the `paths:` filter out of,
+    // so the two cannot drift apart into a test that asserts over `undefined`.
+    expect(
+      bundle,
+      `${BUNDLE_RELEASE_WORKFLOW} does not call ${SHARED}, so every ` +
+        `assertion below is vacuous.`,
+    ).toBeDefined();
+  });
+
+  it("refuses to release from anything but main", () => {
+    expect(
+      bundle!.with["refuse-off-main"],
+      `${BUNDLE_RELEASE_WORKFLOW} does not ask for the off-main guard, which ` +
+        `is off by default — so a dispatch on a branch moves the \`:latest\` ` +
+        `tag live staging tracks.`,
+    ).toBe(true);
+  });
+
+  it("keeps a buildx cache scope of its own", () => {
+    expect(
+      bundle!.with["cache-scope"],
+      `${BUNDLE_RELEASE_WORKFLOW} shares the default gha cache scope with ` +
+        `every one-tree image, which this build is large enough to evict.`,
+    ).toBe("bundle");
+  });
+
+  it("builds the bundle's Dockerfile from the repo root", () => {
+    // Both halves, because each is wrong on its own: the root context without
+    // this Dockerfile is the core image published under the bundle's name, and
+    // this Dockerfile without the root context cannot COPY the thirteen trees
+    // that live outside `servers/bundle`.
+    expect(bundle!.with.context).toBe(".");
+    expect(bundle!.with.file).toBe("servers/bundle/Dockerfile");
+    expect(bundle!.with.image).toBe("ghcr.io/tadasant/strad-bundle");
   });
 });

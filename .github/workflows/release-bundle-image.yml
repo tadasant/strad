@@ -3,6 +3,20 @@ name: Release bundle image
 # Build THE strad bundle image — all twenty-two MCP servers in one container — and
 # push it to ghcr.
 #
+# The build itself is `release-supplementary-image.yml`, which every
+# supplementary image release shares. This file is the half that is genuinely
+# per-image: which commits cut one, which tree holds the Dockerfile, and which
+# package it lands in. Three of the five inputs below exist for this caller —
+# `file:`, `cache-scope:` and `refuse-off-main:` — and each DEFAULTS to the value
+# that is wrong for the bundle, silently. The release path has no pre-merge
+# execution, so `test/workflow-release-callers.test.ts` asserts all three on this
+# caller by name rather than letting the first run be a real release.
+#
+# `name:` above is load-bearing beyond this file: `reheal-bundle-image.yml`
+# selects its `workflow_run` trigger by workflow NAME, and `src/deploy/imageTag.ts`
+# holds a deploy's wait open on the promise that it fires. Renaming it disables
+# the self-heal silently. `test/image-tag.bundle.test.ts` pins the pair.
+#
 # It does not deploy. The next `deploy-staging.yml` run resolves the newest
 # `sha-<commit>` bundle an ancestor published, and — because this build is slower
 # than the core release that calls that deploy — waits for this one to land
@@ -35,6 +49,9 @@ on:
       # running. That is how a secret-value encoding fix would have reached
       # `main` while `/mcp` carried on writing unencoded values.
       # Cross-check against `COPY --from=build-*` in servers/bundle/Dockerfile.
+      # This list is READ by `src/deploy/imageTag.ts` — it is the answer to
+      # "which commits owe a bundle image", so an entry removed here walks a
+      # deploy back onto an older bundle rather than failing anything.
       - "servers/bundle/**"
       - "servers/bundle-api/**"
       - "servers/onepassword/**"
@@ -51,6 +68,10 @@ on:
       - "servers/bill-spend/**"
       - "images/bundle-google/**"
       - ".github/workflows/release-bundle-image.yml"
+      # A change to the shared body has to be exercised by a real release, or
+      # its first execution is on whatever unrelated commit next touches one of
+      # the trees above. See test/workflow-release-callers.test.ts.
+      - ".github/workflows/release-supplementary-image.yml"
   workflow_dispatch:
 
 concurrency:
@@ -63,50 +84,24 @@ permissions:
 
 jobs:
   build-and-push:
-    runs-on: self-hosted
-    steps:
-      - name: Refuse to release from anything but main
-        # This pushes `strad-bundle:latest`, which live staging tracks. A branch
-        # bundle belongs on a branch-scoped tag: dispatch deploy-staging.yml on
-        # the branch with `build: true`, which builds and deploys the bundle
-        # together — pushing a branch bundle to `:latest` on its own breaks the
-        # running staging, whose spec still routes the old paths.
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::release-bundle-image only runs on main (got ${GITHUB_REF}). Use deploy-staging.yml with build:true to test a branch."
-          exit 1
-
-      - uses: actions/checkout@v4
-
-      # This job's ghcr credential goes somewhere no concurrent job can rewrite
-      # or log out of. Before the login AND before buildx, which keeps its
-      # builder metadata in the same directory. HACKS.md #57.
-      - uses: ./.github/actions/docker-config
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Job-scoped: on this self-hosted box every job runs as the same user, so
-      # `docker buildx create --use` writes ONE `~/.docker/buildx/current` and a
-      # build with no `--builder` resolves whichever job created a builder most
-      # recently — then dies when that job removes it. HACKS.md #53.
-      - uses: docker/setup-buildx-action@v3
-        id: buildx
-        with:
-          use: false
-
-      - name: Build and push
-        uses: ./.github/actions/build-push
-        with:
-          builder: ${{ steps.buildx.outputs.name }}
-          context: .
-          file: servers/bundle/Dockerfile
-          tags: |
-            ghcr.io/tadasant/strad-bundle:latest
-            ghcr.io/tadasant/strad-bundle:sha-${{ github.sha }}
-          cache-from: type=gha,scope=bundle
-          cache-to: type=gha,mode=max,scope=bundle
+    # No `secrets: inherit`: the shared body needs only GITHUB_TOKEN, which a
+    # called workflow is handed automatically. Inheriting would put every
+    # credential this repo holds in reach of a build that wants none of them.
+    uses: ./.github/workflows/release-supplementary-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      # The repo root, because the Dockerfile COPYs from fourteen trees.
+      context: .
+      file: servers/bundle/Dockerfile
+      image: ghcr.io/tadasant/strad-bundle
+      # Its own gha cache scope. This build is large enough to evict every
+      # one-tree image out of the shared default scope.
+      cache-scope: bundle
+      # This pushes `strad-bundle:latest`, which live staging tracks. A branch
+      # bundle belongs on a branch-scoped tag: dispatch deploy-staging.yml on
+      # the branch with `build: true`, which builds and deploys the bundle
+      # together — pushing a branch bundle to `:latest` on its own breaks the
+      # running staging, whose spec still routes the old paths.
+      refuse-off-main: true

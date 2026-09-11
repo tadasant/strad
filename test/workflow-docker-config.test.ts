@@ -57,12 +57,14 @@ const MANIFEST = `${ACTION_DIR}/docker-config/action.yml`;
  *
  * A count of copies is a weak floor and this is the only job it does: stop the
  * loop below passing by asserting over an empty list. It moves whenever
- * releases share a body — four of them share `release-supplementary-image.yml`
+ * releases share a body — FIVE of them share `release-supplementary-image.yml`
  * and hold one login between them — and it cannot tell that apart from three
- * releases losing their credential. `MIN_PUBLISHING_WORKFLOWS` is the floor
- * that means something.
+ * releases losing their credential. Re-anchor it to what the tree holds when a
+ * release stops keeping its own copy; never lower it to pass.
+ * `MIN_PUBLISHING_WORKFLOWS` is the floor that means something, and it did not
+ * move when the bundle joined the shared body.
  */
-const MIN_LOGIN_JOBS = 6;
+const MIN_LOGIN_JOBS = 5;
 
 /**
  * How many workflows put an image on ghcr.
@@ -187,7 +189,7 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
    * iteration, nothing asserted — and the symptom is a 403 on the push, from a
    * workflow whose diff removed one `uses:` line.
    *
-   * A release does not have to hold its own login: four of them reach theirs
+   * A release does not have to hold its own login: five of them reach theirs
    * through `release-supplementary-image.yml`, one file away, where a reviewer
    * of the caller cannot see it at all. So the coverage is asserted from the
    * release, through the `uses:` edge, to the job whose steps actually build.
@@ -196,7 +198,9 @@ describe("no job logs in to ghcr in a file another job can rewrite", () => {
     const publishing = publishingWorkflows();
 
     // Guard the guard: an empty graph passes every assertion below. Nine before
-    // the four supplementary releases shared a body, nine after.
+    // the supplementary releases shared a body, nine after, and nine again once
+    // the bundle joined them — which is the point of counting releases rather
+    // than copies.
     expect(
       publishing.length,
       `found ${publishing.length} workflows that publish an image; the walk ` +
