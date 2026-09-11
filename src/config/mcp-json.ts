@@ -321,24 +321,33 @@ function desugarEntry(
   }
 
   // --- transport -----------------------------------------------------------
-  if (entry.type === "stdio") {
-    refuse(
-      `${at(name, "type")}: strad runs no local processes, so \`stdio\` has no ` +
-        `equivalent. A container image is \`kind: supplementary-image\` and an ` +
-        `in-process module is \`kind: builtin\`; neither is expressible in ` +
-        `mcp.json, so both stay in the YAML interface.`,
-    );
-  } else if (entry.type === "sse") {
-    refuse(
-      `${at(name, "type")}: strad proxies Streamable HTTP only. Use ` +
-        `type: "streamable-http".`,
-    );
-  } else if (entry.type !== "streamable-http") {
-    refuse(
-      `${at(name, "type")}: "${entry.type}" is not a SEP-2633 transport ` +
-        `("stdio", "sse" or "streamable-http"); strad accepts ` +
-        `"streamable-http".`,
-    );
+  //
+  // A transport strad cannot serve ends the entry here. Everything below is a
+  // rule about a `streamable-http` entry, and applying those to a `stdio` one
+  // would report "a remote entry requires a url" against a config that never
+  // claimed to be one — three consequences of a single mistake, dressed as
+  // three findings.
+  if (entry.type !== "streamable-http") {
+    if (entry.type === "stdio") {
+      refuse(
+        `${at(name, "type")}: strad runs no local processes, so \`stdio\` has no ` +
+          `equivalent. A container image is \`kind: supplementary-image\` and an ` +
+          `in-process module is \`kind: builtin\`; neither is expressible in ` +
+          `mcp.json, so both stay in the YAML interface.`,
+      );
+    } else if (entry.type === "sse") {
+      refuse(
+        `${at(name, "type")}: strad proxies Streamable HTTP only. Use ` +
+          `type: "streamable-http".`,
+      );
+    } else {
+      refuse(
+        `${at(name, "type")}: "${entry.type}" is not a SEP-2633 transport ` +
+          `("stdio", "sse" or "streamable-http"); strad accepts ` +
+          `"streamable-http".`,
+      );
+    }
+    return undefined;
   }
 
   for (const forbidden of ["command", "args", "env"] as const) {
