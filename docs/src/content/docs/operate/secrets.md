@@ -2176,7 +2176,7 @@ reason the console does not; `test/readiness.test.ts` is the canary.
 ## The console's parameters page
 
 `/ui/secrets` is the human half of the `secrets` server, and the only place a
-value can be written or a secret value read back. Three things about how it
+value can be written or a secret value read back. A few things about how it
 addresses the store are worth knowing before you use it.
 
 ### The namespace field is free text
@@ -2305,6 +2305,33 @@ path like `{slug}/static/extra/TOKEN` _is_ injected — as `TOKEN` — and colli
 with any sibling ending in the same name. The row says so rather than calling the
 path unrouted, because "nothing reads this" is the more dangerous thing to be
 wrong about.
+
+### It names the other secrets pages on this gateway
+
+A gateway can carry more than one secrets page — `/ui/secrets` and
+`/ui/zimmer-secrets` in the [layout below](#two-stores-one-gateway), one per slug.
+The `/ui` index lists all of them, but a page you reach directly (a bookmark, the
+link `open_secrets_manager` hands you) shows only its own namespaces. A namespace
+that is not there is usually on another page, and without a pointer "where is
+it?" looks like "it is gone".
+
+So when the gateway has more than one, each page lists the others under its
+breadcrumb: the slug, linking to `/ui/<slug>`, and each of that page's stores by
+project and namespaces. Where a sibling fronts several stores
+([`consoleStores:`](#one-console-page-many-stores)), each project links straight
+to its own store with `?project=`. A disabled sibling is marked, as it is on the
+index. On a gateway with one secrets page there is no strip.
+
+The list is the index's list. It asks `serverLooksSecrets`, the same predicate
+behind the index's `Manage →` links, so the two cannot disagree about which pages
+exist. It describes each sibling the way that page resolves itself. The one slug
+it leaves out is one that also declares [`oauth:`](/operate/connectors/): the
+console answers a connector before it looks at env, so that slug's `/ui/<slug>` is
+a consent page, not a secrets page. It is
+navigation, not authorization: the `/ui` gate never reads `entitlements:`, so a
+console-only slug with `entitlements: []` has a page and is listed. It shows
+declared config only — slug, project, namespaces — and never a parameter, a value,
+a status or a credential. `test/ui.secrets.sibling-pages.test.ts` pins all of it.
 
 ## Reveal, and why a flag is not a boundary
 

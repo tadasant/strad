@@ -34,6 +34,7 @@ import { mountPlayground } from "./playground.ts";
 import { renderLanding } from "./landing.ts";
 import {
   resolveServerView,
+  secretsPages,
   type SecretsStore,
   type ServerView,
 } from "./resolve.ts";
@@ -833,6 +834,13 @@ async function renderSecretsPage(
       href: `${serverConsolePath(slug)}?project=${encodeURIComponent(s.projectId)}`,
       label: s.label,
     }));
+  // Every page, degraded or not, names the other PAGES — see siblingStrip. A
+  // slug that declares `oauth:` is left out whatever its env says:
+  // handleServerView answers its connector first, so `/ui/<slug>` is a consent
+  // page, and listing it here would name a secrets page that does not exist.
+  const siblingPages = secretsPages(opts.config, opts.secrets).filter(
+    (p) => p.slug !== slug && !connectorFor(opts.config, p.slug),
+  );
 
   // No namespace is not "the whole project" — it is a misconfiguration. The MCP
   // half refuses to mount without one (servers/secrets/shared/src/config.ts) on
@@ -853,6 +861,7 @@ async function renderSecretsPage(
         tone: "warn",
         breadcrumbToIndex: true,
         otherStores,
+        siblingPages,
       }),
     );
     return;
@@ -875,6 +884,7 @@ async function renderSecretsPage(
         tone: "warn",
         breadcrumbToIndex: true,
         otherStores,
+        siblingPages,
       }),
     );
     return;
@@ -910,6 +920,7 @@ async function renderSecretsPage(
         resolver: resolverConfigured(opts.env),
         reveal,
         revealNonSecret,
+        siblingPages,
         signedInAs: extras.signedInAs,
         flash,
         revealed: extras.revealed,
