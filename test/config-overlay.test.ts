@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseYamlDocument } from "../src/config/load.ts";
+import { configDocument, parseYamlDocument } from "../src/config/load.ts";
 import {
   EMPTY_OVERLAY,
   SlugCollision,
@@ -663,5 +663,83 @@ describe("a hand-written overlay naming a slug in BOTH lists", () => {
     expect(slugsOf(merged)).toEqual(["beta", "gamma", "alpha"]);
     expect(rawEntry(merged, "alpha")).toMatchObject({ url: "https://a2/mcp" });
     expect(validateMerged(merged).ok).toBe(true);
+  });
+});
+
+describe("composing with the `mcp.json` input dialect", () => {
+  /**
+   * Two features that both transform the DOCUMENT, and the order between them
+   * is load-bearing. `loadConfigDocument` hands the overlay the DESUGARED
+   * document, so an entry written as `mcpServers:` is an ordinary `servers:`
+   * entry by the time the merge looks at it. Merging into the raw document
+   * instead would leave the overlay unable to see those entries at all — a
+   * collision nothing detects, and a roster with two sources of truth.
+   */
+  const DIALECT_YAML = `
+version: 1
+gateway:
+  name: strad
+  env: test
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+servers:
+  - slug: plain
+    kind: remote-http
+    url: https://plain.example.com/mcp
+    entitlements: [admin]
+mcpServers:
+  analytics:
+    title: Analytics
+    type: streamable-http
+    url: https://analytics.example.com/mcp
+    strad:
+      entitlements: [admin]
+`;
+
+  const desugared = configDocument(DIALECT_YAML).doc;
+
+  it("sees a dialect entry as an ordinary server", () => {
+    expect(slugsOf(desugared)).toEqual(["plain", "analytics"]);
+    expect(fileSlugs(desugared).has("analytics")).toBe(true);
+  });
+
+  it("lets the overlay OVERRIDE an entry the dialect contributed", () => {
+    const merged = mergeOverlay(
+      desugared,
+      overlay({
+        upserts: [
+          {
+            slug: "analytics",
+            kind: "remote-http",
+            url: "https://analytics-2.example.com/mcp",
+            entitlements: ["admin"],
+          },
+        ],
+      }),
+    );
+    // Replaced in place, not appended beside it — which is what proves the
+    // merge can actually see the desugared entry.
+    expect(slugsOf(merged)).toEqual(["plain", "analytics"]);
+    expect(rawEntry(merged, "analytics")).toMatchObject({
+      url: "https://analytics-2.example.com/mcp",
+    });
+    expect(validateMerged(merged).ok).toBe(true);
+  });
+
+  it("lets the overlay REMOVE an entry the dialect contributed", () => {
+    const merged = mergeOverlay(
+      desugared,
+      overlay({ removals: ["analytics"] }),
+    );
+    expect(slugsOf(merged)).toEqual(["plain"]);
+  });
+
+  it("refuses a collision with a dialect entry, like any other", () => {
+    const config = StradConfig.parse(desugared);
+    expect(() => assertNoCollision(config, "analytics", undefined)).toThrow(
+      SlugCollision,
+    );
   });
 });
