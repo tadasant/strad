@@ -170,8 +170,9 @@ serving fetchpet".
 `strad.mcp.tool_calls` and `strad.mcp.tool_call.duration` (by server + tool),
 `strad.mcp.upstream.duration` (**per-server latency — this is what shows you
 which server is starving the others**), `strad.mcp.upstream.errors`,
-`strad.mcp.upstream.timeouts`, and `strad.mcp.tool_surface` (**is a slug serving
-anything at all** — see below).
+`strad.mcp.upstream.timeouts`, `strad.mcp.tool_surface` (**is a slug serving
+anything at all** — see below), and `strad.mcp.mount_degraded` (**does the bundle
+say a slug's mount is unwell** — below that).
 
 Timeouts get their own counter deliberately. The MCP SDK's request timeout
 defaults to **60s and applies at every hop**, so a slow tool behind the gateway
@@ -219,6 +220,45 @@ the signal for that one.
 `strad.mcp.unlistable` is its request-side companion — a `tools/list` that failed
 for a server the client named. It needs its own counter because that failure
 answers with a JSON-RPC error inside an HTTP **200**, so it moves nothing else.
+
+### `strad.mcp.mount_degraded` — does the bundle say a mount is unwell?
+
+A gauge: **1** when the bundle hosting a `supplementary-image` slug's mount reports
+that mount degraded, **0** when it reports it serving. Same two attributes as
+`strad.mcp.tool_surface` — `mcp.server` and `mcp.upstream.kind`, both from the
+config — so the two join slug for slug. Recorded by core only, on every probe of
+the monitor, from one `GET /healthz` per bundle (`src/gateway/mount-health.ts`).
+
+It covers the tool surface's blind spot. A mount can list every tool and fail every
+call: fetchpet's login selector went stale and it listed four tools and answered
+`Login failed` to each of them for weeks, while `strad.mcp.tool_surface` read 4.
+Tool lists are static and a login is not, and only the bundle knows — its own
+`/healthz` says so, per mount. This is the reading of it:
+
+```promql
+max_over_time(strad_mcp_mount_degraded[15m]) == 1
+  and on (mcp_server) strad_mcp_tool_surface > 0
+```
+
+That is "lists its tools, and its bundle says its calls fail" — the case above.
+
+**One bit, and never the reason.** The bundle's `degraded` value is text core did
+not author: `login failed: ${error.message}`, where the message is a browser
+library's, quoting whatever page the login died on. core reads it for its
+truthiness and drops it at the parse, so no gauge, event, stream line, `/healthz`
+field or deploy annotation can carry it. A closed-set classification
+(`login_failed`, `credential_missing`) would say more, and is deliberately not
+here: the bundle sends prose rather than a class, so core would be picking the
+class by pattern-matching an upstream's error message; and a class would have to be
+an attribute, which under cumulative temporality re-exports forever at its last
+value, the same trap the `state` word is kept off `tool_surface` for. The reason is
+on the bundle's own `/healthz` and in its container log.
+
+A slug with no reading records nothing, so while a bundle's report cannot be read
+the series holds its last value. `strad.mount_report` (below) says when that starts
+and stops, and `strad.mcp.tool_surface` shows a bundle that is down. It is reported
+and never gated on — see
+[known limitations #40](/limitations/#40-the-tool-surface-monitor-asks-one-question-so-it-can-only-catch-one-kind-of-failure).
 
 ## What strad will never send
 
@@ -280,6 +320,8 @@ the process, and for each one the exact fields that may go with it.
 | `strad.tool_surface_unconfigured`                                                      | a slug waiting on a `mayBeUnseeded:` credential                                                                                                                             |
 | `mcp.server_unconfigured`                                                              | the same, on a listing that named the slug                                                                                                                                  |
 | `strad.tool_surface`                                                                   | the fleet summary, on change                                                                                                                                                |
+| `strad.mount_degraded` / `_recovered`                                                  | a bundle says a slug's mount is unwell, or serving again — the config's slug and bundle, never the bundle's reason                                                          |
+| `strad.mount_report`                                                                   | a bundle's mount report went unreadable or came back — `outcome` is `ok` / `unreachable` / `unrecognised` / `unwired`                                                       |
 | `mcp.unavailable`                                                                      | 424 fail-closed: a slug asked for and not entitled                                                                                                                          |
 | `mcp.policy_unmatched_tools`                                                           | a `tools:` typo silently narrowing a toolset                                                                                                                                |
 | `strad.readiness_failed` / `_store_diagnostics_failed` / `strad.console_render_failed` | the event name only — that surface is failing                                                                                                                               |

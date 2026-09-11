@@ -5,6 +5,13 @@ import {
   LocalMachineOfflineError,
 } from "./adapters/http.ts";
 import type { ServerAdapter } from "./adapters/types.ts";
+import {
+  probeMountHealth,
+  type BundleReportOutcome,
+  type MountHealthOptions,
+  type MountHealthReading,
+  type MountState,
+} from "./mount-health.ts";
 import type { Registry } from "./registry.ts";
 import { ServerUnconfiguredError } from "./unconfigured.ts";
 import { DeadlineError, withDeadline } from "../util/deadline.ts";
@@ -84,6 +91,13 @@ import { errorText } from "../util/error-text.ts";
  * filtered every tool away reads `ok` here. That case has its own signal —
  * `mcp.policy_unmatched_tools` on the listing path — and conflating the two
  * would make one number answer two questions.
+ *
+ * **It cannot see a mount that lists and then fails every call.** A stale login
+ * does exactly that, and only the bundle knows — so, in core, the monitor also
+ * reads each bundle's own report on the same interval (gateway/mount-health.ts)
+ * and carries it BESIDE the surface state, as `mount` and `mountDegraded`. Beside
+ * and never inside: `degraded` here is "serves no tools" and is what the deploy
+ * gate and the fast retry key on; a mount that says it is unwell is neither.
  */
 
 export type SurfaceState =
@@ -96,6 +110,12 @@ export interface ToolSurface {
   tools: number;
   /** Ours to fix, or a third party's. See the header. */
   kind: ServerAdapter["kind"] | "unmounted";
+  /**
+   * What the bundle hosting this slug's mount says about it, reduced to one of
+   * two words. Absent when there is no reading: not a `supplementary-image`,
+   * not core, or a bundle that could not be read this probe.
+   */
+  mount?: MountState;
 }
 
 export interface ToolSurfaceSnapshot {
@@ -127,6 +147,17 @@ export interface ToolSurfaceSnapshot {
    * public route has no reason to publish.
    */
   unconfigured: string[];
+  /**
+   * The slugs whose bundle reports their mount degraded — serving a tool list,
+   * and saying (a failed login, a missing credential) that calls will fail.
+   *
+   * Its own list, and NOT folded into `degraded`, for the reason `unconfigured`
+   * is not: the deploy gate asserts on the surface state, and "degraded" means a
+   * different thing per server (HACKS.md #40), so it is reported and never
+   * gated on. Slugs only — the bundle's reason is dropped where it is parsed.
+   * Absent when nothing reads the bundles: a bundle-mode process, or a test.
+   */
+  mountDegraded?: string[];
 }
 
 export interface ProbeOptions {
@@ -262,6 +293,30 @@ export async function probeToolSurfaces(opts: ProbeOptions): Promise<{
   };
 }
 
+/**
+ * The tool-surface snapshot, with each bundle's report on its mounts beside it.
+ *
+ * Beside, and nothing else moves: `state`, `degraded` and `unconfigured` are
+ * exactly what the probe found. A mount that says it is unwell while it lists
+ * its tools is `ok` there and `degraded` here, and both are true.
+ */
+export function withMountHealth(
+  snapshot: ToolSurfaceSnapshot,
+  reading: MountHealthReading,
+): ToolSurfaceSnapshot {
+  const surfaces = snapshot.surfaces.map((surface) => {
+    const mount = reading.mounts.get(surface.slug);
+    return mount ? { ...surface, mount } : surface;
+  });
+  return {
+    ...snapshot,
+    surfaces,
+    mountDegraded: surfaces
+      .filter((s) => s.mount === "degraded")
+      .map((s) => s.slug),
+  };
+}
+
 export interface MonitorOptions extends ProbeOptions {
   /** How often to re-probe when everything is serving. */
   intervalMs?: number;
@@ -285,6 +340,14 @@ export interface MonitorOptions extends ProbeOptions {
    * nothing had changed.
    */
   retryProbes?: number;
+  /**
+   * Which bundles to ask about their own mounts, alongside every probe.
+   *
+   * Core only: it is the process that routes `supplementary-image` slugs and
+   * holds the bundles' private URLs. Absent, nothing is asked and the snapshot
+   * carries no `mountDegraded`. See gateway/mount-health.ts.
+   */
+  mounts?: MountHealthOptions;
   log?: (event: Record<string, unknown>) => void;
   warn?: (event: Record<string, unknown>) => void;
 }
@@ -311,6 +374,9 @@ const DEFAULT_RETRY_PROBES = 12;
 export class ToolSurfaceMonitor {
   private current: ToolSurfaceSnapshot | null = null;
   private previous = new Map<string, SurfaceState>();
+  /** Last KNOWN mount state per slug — kept across a probe with no reading. */
+  private previousMount = new Map<string, MountState>();
+  private previousReport = new Map<string, BundleReportOutcome>();
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   /**
@@ -337,10 +403,19 @@ export class ToolSurfaceMonitor {
   }
 
   async refresh(): Promise<ToolSurfaceSnapshot> {
-    const { snapshot, failures, refused, unconfigured } =
-      await probeToolSurfaces(this.opts);
+    // Concurrently: the bundle reads are one private-network GET per bundle and
+    // must not add their deadline to the probe's. Neither call throws.
+    const [probe, reading] = await Promise.all([
+      probeToolSurfaces(this.opts),
+      this.opts.mounts ? probeMountHealth(this.opts.mounts) : null,
+    ]);
+    const { failures, refused, unconfigured } = probe;
+    const snapshot = reading
+      ? withMountHealth(probe.snapshot, reading)
+      : probe.snapshot;
     const first = this.current === null;
     this.current = snapshot;
+    if (reading) this.reportMounts(snapshot, reading);
 
     // METRICS as well as the log line, and they answer different questions. The
     // events below ship too (telemetry/events.ts), but they are discrete and
@@ -489,6 +564,75 @@ export class ToolSurfaceMonitor {
       : 0;
 
     return snapshot;
+  }
+
+  /**
+   * The bundles' own reports: a gauge on every reading, an event on change.
+   *
+   * Every value that leaves here is a slug or a bundle name from the CONFIG, or
+   * one of this repo's words. There is no bundle-authored reason in scope to
+   * leak — mount-health.ts dropped it at the parse — and that is the property
+   * `test/mount-health.test.ts` pins against the gauge, the exported records and
+   * the streams.
+   */
+  private reportMounts(
+    snapshot: ToolSurfaceSnapshot,
+    reading: MountHealthReading,
+  ): void {
+    const bundleOf = new Map(
+      (this.opts.mounts?.targets ?? []).map((t) => [t.slug, t.bundle]),
+    );
+    const inst = instruments();
+
+    for (const surface of snapshot.surfaces) {
+      const state = surface.mount;
+      if (state === undefined) continue;
+
+      // The fact is in the VALUE and the attributes are tool_surface's two, for
+      // the reason spelled out above that gauge: a varying attribute would be
+      // re-exported at its last value for the life of the process. A slug with
+      // no reading this probe records nothing, so the series holds its last
+      // value while a bundle cannot be read — `strad.mount_report` says when.
+      inst.mountDegraded.record(state === "degraded" ? 1 : 0, {
+        "mcp.server": surface.slug,
+        "mcp.upstream.kind": surface.kind,
+      });
+
+      // Transitions against the last KNOWN state, so a bundle that could not be
+      // read for a probe does not turn its degraded mounts into a recovery.
+      const was = this.previousMount.get(surface.slug);
+      this.previousMount.set(surface.slug, state);
+      if (was === state) continue;
+      const bundle = bundleOf.get(surface.slug);
+
+      if (state === "degraded") {
+        this.warn({
+          evt: "strad.mount_degraded",
+          slug: surface.slug,
+          bundle,
+          // OURS, and constant. The bundle's own reason is not in scope here.
+          reason:
+            "the bundle hosting this slug's mount reports it degraded: it lists " +
+            "its tools, and says its calls will fail — a failed login, or a " +
+            "credential that is missing or was rejected. The bundle's own " +
+            "/healthz and log say which; that text is the bundle's, and core " +
+            "does not carry it.",
+        });
+      } else if (was !== undefined) {
+        this.log({ evt: "strad.mount_recovered", slug: surface.slug, bundle });
+      }
+    }
+
+    for (const [bundle, outcome] of reading.bundles) {
+      const was = this.previousReport.get(bundle);
+      this.previousReport.set(bundle, outcome);
+      if (was === outcome) continue;
+      // A bundle read cleanly from the first probe needs no line; the moment
+      // its report becomes unreadable, and the moment it comes back, do —
+      // because in between, the gauge above is holding a stale value.
+      if (was === undefined && outcome === "ok") continue;
+      this.log({ evt: "strad.mount_report", bundle, outcome });
+    }
   }
 
   /**

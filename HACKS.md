@@ -1708,26 +1708,46 @@ listing, which is the half that matters.
 can be perfect and every `tools/call` can fail: fetchpet's login selector went
 stale when Fetch redesigned its form, and the mount spent weeks in both staging
 and prod listing four tools and returning `Login failed` for every call
-(strad#28). Tool lists are static; a login is not. The bundle's `/healthz` does
-report a per-mount `degraded` string for exactly this, and nothing reads it —
-not core's probe, not the staging deploy's assertions, not a metric. Every deploy
-in that window passed, and the only symptom was a `WARN` line on stdout, a stream
-that reaches nobody (#37).
+(strad#28). Tool lists are static; a login is not. Every deploy in that window
+passed, and the only symptom was a `WARN` line on stdout, a stream that reaches
+nobody (#37). The same shape recurred in prod on 2026-08-28: `good-eggs` listed
+its tools while every authenticated call returned `Login failed:
+page.waitForURL: Timeout 30000ms exceeded` (strad#195).
 
-The same shape recurred in prod on 2026-08-28: `good-eggs` listed its tools while
-every authenticated call returned `Login failed: page.waitForURL: Timeout 30000ms
-exceeded` (strad#195). The login is fixed; the blind spot that let it run unseen
-is not.
+That second blind spot is REPORTED and not GATED. The bundle's `/healthz` carries
+a per-mount `degraded` string for exactly this case, and core reads it on the
+probe interval (`src/gateway/mount-health.ts`, strad#92): a
+`strad.mcp.mount_degraded` gauge at 1 per slug, `strad.mount_degraded` /
+`strad.mount_recovered` on change, `mountDegraded` on core's `/healthz`, and a
+`::warning::` from the staging deploy. What crosses is one BIT per slug. The
+bundle's reason — `login failed: ${error.message}`, upstream text — is dropped
+where it is parsed, so the WHY is still only on the bundle's own `/healthz` and in
+its container log. Three edges of that:
+
+- **Nothing fails on it.** The staging deploy annotates and exits 0. A bit cannot
+  say whether a mount is a failed login the next call retries, a credential
+  nobody has set, or a refresh token to re-set through a tool, and only some of
+  those are a deploy's fault.
+- **The gauge holds its last value while a bundle cannot be read.** A slug with
+  no reading records nothing, and under cumulative temporality the last recorded
+  value keeps exporting. `strad.mount_report` says when a bundle's report became
+  unreadable and when it came back, and `strad.mcp.tool_surface` carries a bundle
+  that is down.
+- **The deploy's read is one moment.** The step waits for one core probe that
+  started after it did, which is after most boot-time logins have failed or
+  succeeded; a login that fails later is on the gauge and not in the run.
 
 **Undo.** Two halves. Give the probe a mixed-method shape — a concurrent
 `tools/list` + `resources/list` per slug, classifying a slug that answers one but
 not both as `degraded`; the cost is a second round trip per slug per interval
 against upstreams that are already CPU-starved (hack #24), which is why it is
-written down here rather than done. And export the bundle's per-mount `degraded`
-as a gauge alongside `strad.mcp.tool_surface`, asserted by the staging deploy the
-way reachability is — the harder half of that is that "degraded" means something
-different per server (a bad refresh token, a missing credential, a failed login
-the next call retries), and a signal a deploy can fail on has to say which.
+written down here rather than done. And make the bundle's report GATEABLE: have
+the bundle host author a closed-set class where it SETS `degraded`, per mount
+(`login_failed`, `credential_missing`, `token_invalid`), carry it beside the
+reason on its `/healthz`, and let the staging deploy fail on the classes that are
+this deploy's fault. Classifying the reason in core instead would decide the
+class by pattern-matching an upstream's error message. The export half of this is
+done; the class is what is left.
 
 ## 41. The service worker's cache version is bumped by hand, and nothing checks it
 

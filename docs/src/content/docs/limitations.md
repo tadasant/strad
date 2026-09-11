@@ -105,25 +105,46 @@ It has also been narrower than a second, plainer failure: a slug can list its to
 perfectly and fail every _call_. Fetch redesigned its login form to floating labels,
 the `fetchpet` mount's email selector went stale, and it spent weeks in both
 environments listing four tools and returning `Login failed` for every one. Tool
-lists are static; a login is not. The bundle's `/healthz` does report a per-mount
-`degraded` string for exactly this, and nothing reads it — not the monitor, not the
-staging deploy's assertions, not a metric. Every deploy in that window passed, and
-the only symptom was a `WARN` line on stdout, a stream that
-[reaches nobody](/operate/telemetry/#logs--strads-own-events-and-only-those).
+lists are static; a login is not. Every deploy in that window passed, and the only
+symptom was a `WARN` line on stdout, a stream that
+[reaches nobody](/operate/telemetry/#logs--strads-own-events-and-only-those). It
+happened again, in prod, on 2026-08-28: `good-eggs` listed its tools while every
+authenticated call returned `Login failed: page.waitForURL: Timeout 30000ms
+exceeded`.
 
-It happened again, in prod, on 2026-08-28: `good-eggs` listed its tools while
-every authenticated call returned `Login failed: page.waitForURL: Timeout 30000ms
-exceeded`. The login was fixed; the blind spot that let it run unseen was not.
+That second blind spot is **reported, not gated**. The bundle's `/healthz` carries a
+per-mount `degraded` string for exactly this, and core reads it on the monitor's
+interval: a
+[`strad.mcp.mount_degraded`](/operate/telemetry/#stradmcpmount_degraded--does-the-bundle-say-a-mount-is-unwell)
+gauge per slug, `strad.mount_degraded` / `_recovered` events, `mountDegraded` on
+core's [`/healthz`](/operate/operations/#health-and-console-surface), and a warning
+from the staging deploy. What crosses is one bit per slug — the bundle's reason is
+upstream text (`login failed: …` quoting whatever page the login died on) and is
+dropped where core parses it. So:
+
+- **Nothing fails on it.** A bit cannot say whether a mount is a failed login the
+  next call retries, a credential nobody has set, or a refresh token to re-set
+  through a tool, and only some of those are a deploy's fault. The staging deploy
+  annotates and passes.
+- **The why is still on the bundle.** Its own `/healthz` and its container log name
+  the reason; nothing core exports does.
+- **The gauge holds its last value while a bundle cannot be read.** Under cumulative
+  temporality a series with no new reading keeps exporting the old one.
+  `strad.mount_report` says when a bundle's report went unreadable and when it came
+  back, and `strad.mcp.tool_surface` shows a bundle that is down.
+- **The deploy's read is one moment.** It waits for one probe that started after
+  the step did, which is after most boot-time logins resolve; a login that fails
+  later reaches the gauge, not that run.
 
 **Undo:** two halves. Give the probe a mixed-method shape — a concurrent
 `tools/list` + `resources/list` per slug, with "answers one but not both"
 classified as `degraded`; the cost is a second round trip per slug per interval
-against containers that already share one CPU (#24). And export the bundle's
-per-mount `degraded` as a gauge alongside `strad.mcp.tool_surface`, asserted by the
-staging deploy the way the monitor is. The hard half of that second one: "degraded"
-means something different per server — a bad refresh token, a missing credential, a
-failed login the next call retries — and a signal a deploy can fail on has to say
-which.
+against containers that already share one CPU (#24). And make the bundle's report
+something a deploy can fail on: the bundle host authors a closed-set class where it
+sets `degraded` (`login_failed`, `credential_missing`, `token_invalid`), and the
+staging deploy fails on the classes that are its own fault. Classifying the reason
+string in core instead would let an upstream's error message pick the class. The
+export is done; the class is what is left.
 
 ### 46. The pre-deploy allow-list check knows by hand which mounts it cannot enumerate
 
