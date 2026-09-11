@@ -661,8 +661,14 @@ function namesBearerScheme(tokenType: string): boolean {
   return !/\s/.test(tokenType) && bearerToken(`${tokenType} t`) !== null;
 }
 
-/** `application/x-www-form-urlencoded`, for one Basic credential half. */
-function formEncode(value: string): string {
+/**
+ * `application/x-www-form-urlencoded`, for one Basic credential half.
+ *
+ * Exported because the console's consent flow (src/connectors/oauth-flow.ts)
+ * builds the same header for the same reason. Two spellings of one encoding is
+ * how one of them ends up wrong on the secrets that carry a `+`.
+ */
+export function formEncode(value: string): string {
   return new URLSearchParams({ v: value }).toString().slice(2);
 }
 

@@ -2807,7 +2807,7 @@ The write-back also stops at a parameter it could not check: on anything but a d
 
 **How you would know.** `strad.param_write_failed` fires for the slug on every rotation it could not persist, and the stderr line names the `${NAME}` and the reason. After the restart, the slug reads `degraded` on `/healthz` and its calls say the refresh token was refused.
 
-**Undo:** seed the refresh token in the store under the server's namespace or the gateway's, under `gcp-parameter-store`. A console authorize flow that would seed it without a human clipboard is [tadasant/strad#32](https://github.com/tadasant/strad/issues/32).
+**Undo:** seed the refresh token in the store under the server's namespace or the gateway's, under `gcp-parameter-store`. The console authorize flow that seeds a credential without a human clipboard ([tadasant/strad#32](https://github.com/tadasant/strad/issues/32)) now exists as `oauth: { provider: generic }`, but only for a `supplementary-image` slug — a connector's variables are delivered by injection onto a container, and a `remote-http` server has none — so a `remote-http` upstream's first refresh token is still seeded by hand.
 
 See `HACKS.md` #91.
 

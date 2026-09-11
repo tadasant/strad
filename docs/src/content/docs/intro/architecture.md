@@ -500,8 +500,9 @@ path (`src/secrets/parameters`):
 /strad/{env}/mcp/{server-slug}/{kind}/{VARIABLE_NAME}
 ```
 
-`kind` is `static` today; an `oauth` kind is a future ticket ([issue
-#32](https://github.com/tadasant/strad/issues/32)). A parameter is **either**
+`kind` names where the value came from — `static` for a value a human typed,
+`oauth` for one strad's consent callback minted — and both resolve identically,
+`oauth` first. A parameter is **either**
 non-secret (a value safe to read back) **or** secret (write-and-inject-only). GCP
 is the first backend behind the interface; a second store implements the same
 `ParameterStore` and nothing else changes.
@@ -559,7 +560,8 @@ flowchart LR
   [Secrets](/operate/secrets/).
 
 A baked server opts into resolution with `params: true`. Everything under
-`/strad/{env}/mcp/{slug}/static/*` is resolved and injected as that server's
+`/strad/{env}/mcp/{slug}/static/*` and `/strad/{env}/mcp/{slug}/oauth/*` are
+resolved and injected as that server's
 environment — for a `core` builtin in-process on every call, for a
 `supplementary-image` at deploy time onto its bundle. `remote-filesystem-tmp-public` is the worked example: it
 authenticates to GCS with a non-secret `REMOTE_FILESYSTEM_TMP_PUBLIC_GCS_CLIENT_EMAIL` and a
@@ -570,7 +572,8 @@ store](/servers/artifact-store/).
 
 `params: true` is not the only reader of that namespace. A `supplementary-image`
 server's `env:` `${NAME}` references resolve from its own
-`/strad/{env}/mcp/{slug}/static/` **before** the shared
+`/strad/{env}/mcp/{slug}/oauth/` and `/strad/{env}/mcp/{slug}/static/` **before**
+the shared
 `/strad/{env}/gateway/static/`, with no flag, which is what lets two servers
 write the same `${NAME}` and be handed different values — see [two servers, one
 variable name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace). The two paths

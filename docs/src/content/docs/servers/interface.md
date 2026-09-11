@@ -78,9 +78,10 @@ Full behaviour, including how fast a seeded value takes effect, is in
 
 Some upstreams authenticate as a person rather than as a service account, and the
 artifact is an OAuth refresh token somebody has to mint in a browser. `oauth:` is
-what lets that happen inside strad — **Connect Google** on the slug's console
+what lets that happen inside strad — a **Connect** button on the slug's console
 page — instead of through an OAuth Playground round trip and a hand-seeded
-parameter.
+parameter. The credential lands under the slug's
+[`oauth` kind](/operate/secrets/#the-two-kinds-static-and-oauth).
 
 ```yaml
 - slug: google-sheets-tadas412-ro
@@ -98,16 +99,21 @@ parameter.
 
 | Field                  | Default                              | Meaning                                                                          |
 | ---------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `provider`             | _(required)_                         | `google`. A literal, not an open enum: a config cannot name a provider strad has no implementation for. |
+| `provider`             | _(required)_                         | `google` or `generic`. A discriminated union, not an open enum: it decides which other fields the block carries, and a config cannot name a provider strad has no implementation for. |
 | `account`              | _(required)_                         | The Google account this slug is pinned to. Checked against the verified `email` claim on the ID token, and a mismatch is refused with nothing written. |
 | `scopes`               | _(required)_                         | The exact capability scopes to request, at least one. strad adds `openid` and `email` itself, and the config gate refuses an identity scope written by hand. |
-| `clientIdVariable`     | `GOOGLE_SHEETS_OAUTH_CLIENT_ID`      | Names a variable in **this slug's own** `/strad/{env}/mcp/{slug}/static/` namespace. |
+| `clientIdVariable`     | `GOOGLE_SHEETS_OAUTH_CLIENT_ID`      | Names a variable in **this slug's own** namespace, read `oauth/` first then `static/`. Required, with no default, on `provider: generic`. |
 | `clientSecretVariable` | `GOOGLE_SHEETS_OAUTH_CLIENT_SECRET`  | Same.                                                                            |
-| `refreshTokenVariable` | `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`  | The one the console flow **writes**, on connect and on reconnect.                |
+| `refreshTokenVariable` | `GOOGLE_SHEETS_OAUTH_REFRESH_TOKEN`  | The one the console flow **writes**, on connect and on reconnect — always under the `oauth` kind. |
+
+`provider: generic` carries six more fields — `authorizeUrl` and `tokenUrl`
+(both required), `label`, `authorizeParams`, `clientAuth` and `credential` — and
+requires all three variable names. They are documented with their failure modes
+in [Connectors](/operate/connectors/#provider-generic--any-oauth-20-provider).
 
 The three are variable NAMES, never paths: core composes
-`/strad/{env}/mcp/{slug}/static/{VARIABLE}` from the slug and these strings and
-from nothing else. The read/write **tier** is derived from the scopes rather than
+`/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}` from the slug, a kind and these
+strings, and from nothing else. The read/write **tier** is derived from the scopes rather than
 declared — every capability scope ending in `.readonly` is read-only, anything
 else is read-write — because a label would be a second source of truth for
 something the scopes already say.
@@ -231,11 +237,16 @@ held in memory and a restart reads a token the provider has already killed. See
 [Secrets](/operate/secrets/#oauthrefresh--a-rotating-refresh-token-on-a-remote-http-server)
 for where it writes, and [Limitations](/limitations/) #91.
 
-**What it does not do.** strad does not run the authorization itself. The first
-refresh token comes from an out-of-band consent (for Granola, dynamic client
-registration and PKCE against its authorize endpoint), and a human seeds it in
-`/ui/secrets`. An in-console authorize flow for arbitrary providers is
-[tadasant/strad#32](https://github.com/tadasant/strad/issues/32).
+**What it does not do.** strad does not run the authorization for a `remote-http`
+server. The first refresh token comes from an out-of-band consent (for Granola,
+dynamic client registration and PKCE against its authorize endpoint), and a human
+seeds it in `/ui/secrets`.
+
+strad *does* run an in-console authorize flow for arbitrary providers — that is
+`oauth: { provider: generic }` — but only on a `supplementary-image` slug, because
+the renderer delivers a connector's variables by injecting them onto a container
+and a `remote-http` server has none. Wiring the two together, so a `remote-http`
+upstream could be authorized from the console and then refreshed, is still open.
 
 ### 2. `local-tunnel`
 
@@ -723,9 +734,16 @@ strad validates the whole config strictly at boot (a Zod `superRefine` in
   [fold to one parameter](/operate/secrets/) (a path lowercases before it hashes,
   so `TOKEN` and `token` are one stored value — connecting would overwrite one of
   the connector's own inputs).
-- An `oauth:` connector lists an identity scope (`openid`, `email`, `profile`)
-  under `scopes:`, or lists a scope twice. strad requests the identity scopes
-  itself; `scopes:` is for capability.
+- A **Google** `oauth:` connector lists an identity scope (`openid`, `email`,
+  `profile`) under `scopes:`, or any connector lists a scope twice. strad requests
+  the identity scopes itself for Google; `scopes:` is for capability. A `generic`
+  connector gets no identity scopes added, so `profile` there is an ordinary
+  capability scope and is allowed.
+- A **generic** `oauth:` connector whose `authorizeUrl` or `tokenUrl` is not https
+  (http is allowed only to a loopback host) — an authorization code and a client
+  secret travel over both — or whose `authorizeParams:` sets one of the
+  authorization parameters strad composes itself (`client_id`, `redirect_uri`,
+  `response_type`, `scope`, `state`, `code_challenge`, `code_challenge_method`).
 - **An `oauth:` connector on a kind nothing injects for** (anything but
   `supplementary-image`), or on a path other than `/<its own slug>`. The second
   is what makes the credential deliverable: a connector's variables are emitted

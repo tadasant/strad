@@ -203,7 +203,8 @@ catches it after the fact.
 ### Per-server `${NAME}` resolution
 
 A supplementary server's `env:` refs resolve from **two** namespaces:
-`/strad/{env}/mcp/{slug}/static/` first, `/strad/{env}/gateway/static/` as the
+`/strad/{env}/mcp/{slug}/oauth/` and `/strad/{env}/mcp/{slug}/static/` first,
+`/strad/{env}/gateway/static/` as the
 fallback. That is what lets two servers write the same `${NAME}` and mean
 different values — see [two servers, one variable
 name](/operate/secrets/#a-servers-secrets-live-in-that-servers-namespace) for the semantics, the
@@ -252,7 +253,8 @@ resolver credential resolves exactly as it did.
 ### Deploy-time parameter resolution
 
 A `supplementary-image` server with `params: true` gets its managed parameters —
-everything under `/strad/{env}/mcp/{slug}/static/*` in the [parameters
+everything under `/strad/{env}/mcp/{slug}/static/*` and
+`/strad/{env}/mcp/{slug}/oauth/*` in the [parameters
 system](/intro/architecture/#the-secrets-and-parameters-system) — resolved **here,
 at render time**, by the **resolver** credential (`STRAD_PARAMS_*`, read from the
 deploy environment). `render-spec` resolves that namespace for each such
@@ -457,7 +459,8 @@ same two under either provider:
 A server with an [`oauth:` connector](/operate/connectors/) has three variables
 the renderer puts on its bundle — the OAuth client id, the client secret, and the
 refresh token strad's console writes when a human consents. They arrive by
-INJECTION from `/strad/{env}/mcp/{slug}/static/`, not by resolving a `${NAME}`,
+INJECTION from `/strad/{env}/mcp/{slug}/oauth/` and `.../static/`, not by
+resolving a `${NAME}`,
 and the difference is a deploy-ordering property rather than a style:
 
 - `render-spec` exits 1 on the first `${NAME}` it cannot resolve, and it renders

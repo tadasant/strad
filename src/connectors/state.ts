@@ -26,7 +26,8 @@ import type { Principal } from "../auth/index.ts";
  *   - `env`       the deployment. A transaction sealed against staging cannot be
  *                 replayed at prod even if the key were shared, and the parameter
  *                 path is composed from it.
- *   - `account`   the expected email, `scopes` the exact grant, `variable` the
+ *   - `provider`  WHICH FLOW. `account` the expected email (empty for a provider
+ *                 that proves none), `scopes` the exact grant, `variable` the
  *                 target. Sealed so a config edited mid-flight cannot silently
  *                 change what a consent already in progress installs, and so the
  *                 callback's checks are against the terms the human was SHOWN.
@@ -40,7 +41,7 @@ import type { Principal } from "../auth/index.ts";
  * else — which spends the transaction for a BROWSER, and only for a browser:
  * strad keeps no server-side nonce, so a script that kept the cookie value could
  * present it again inside the TTL. What actually stops a replay landing anything
- * is Google's authorization code, which is single-use at Google. The clear is
+ * is the authorization code, which is single-use at the provider. The clear is
  * the belt: it keeps a stale tab from re-entering the flow and bounds how long
  * the verifier lives.
  */
@@ -59,6 +60,24 @@ export interface ConnectorTxPayload {
   verifier: string;
   slug: string;
   env: string;
+  /**
+   * `oauth.provider` — which flow this transaction was begun under.
+   *
+   * Sealed for the same reason `scopes` is: a config edited mid-flight must not
+   * silently change what a consent already in progress installs. It is also what
+   * makes a transaction sealed by an image that predates this field read as
+   * DRIFTED and be refused rather than completed under a provider nobody checked
+   * — the safe direction, costing at most the consents in flight during one
+   * deploy, each recoverable by clicking Connect again.
+   */
+  provider: string;
+  /**
+   * The account the slug is pinned to, or `""` for a provider that proves none.
+   *
+   * The empty string is a term of the grant and not a missing value: it records
+   * that the human was shown "strad cannot check which account this comes back
+   * from", and the callback compares it the same way it compares a real one.
+   */
   account: string;
   scopes: string[];
   variable: string;
@@ -98,7 +117,7 @@ export function issueConnectorTx(
   };
   res.cookie(CONNECTOR_TX_COOKIE, sealer.seal(payload), {
     httpOnly: true,
-    // Lax, not Strict: the browser arrives back from accounts.google.com as a
+    // Lax, not Strict: the browser arrives back from the provider as a
     // top-level GET navigation, and Strict withholds the cookie on exactly that
     // request. Lax sends it there and still withholds it from cross-site POSTs,
     // which is what protects the connect action itself.

@@ -85,9 +85,11 @@ import {
 import {
   gatewayNamespace,
   gatewayParameterPath,
+  layerNamespaces,
   resolverFromEnv,
   staticNamespace,
   RESOLVER_ENV,
+  type ServerParamKind,
 } from "../src/secrets/parameters/index.ts";
 import {
   bakedSecretNames,
@@ -100,6 +102,7 @@ import {
   envRefsBySlug,
   groupByServer,
   mcpNamespace,
+  seededNamespaces,
   substitutionBag,
   unreadParameters,
 } from "../src/deploy/server-namespaces.ts";
@@ -546,23 +549,69 @@ for (const source of [refsBySlug, connectorVarsBySlug(config)]) {
   }
 }
 const serverSecrets: Record<string, Record<string, string>> = {};
+
+/**
+ * slug -> the KINDS whose namespace actually holds something, from the one
+ * listing below.
+ *
+ * Hoisted out of that block because the `params: true` injection further down
+ * needs it too, and because an empty map is the right answer for a render with
+ * no store: `resolveSeededNamespaces` then resolves nothing, which is what a
+ * storeless render already did.
+ */
+let seededKinds = new Map<string, Set<ServerParamKind>>();
+
+/**
+ * Every namespace one slug is worth reading, LAYERED, `oauth/` ahead of
+ * `static/`.
+ *
+ * Filtered by the listing, so a slug with nothing under `oauth/` costs exactly
+ * the one `resolve()` it cost before the kind existed — which matters because
+ * `resolve()` renders every parameter in a namespace, and a per-project read
+ * quota is what took a production deploy down once already.
+ */
+async function resolveSeededNamespaces(
+  slug: string,
+): Promise<Record<string, string>> {
+  const namespaces = seededNamespaces(
+    config.gateway.env,
+    slug,
+    seededKinds.get(slug),
+  );
+  return layerNamespaces(await Promise.all(namespaces.map(resolveNamespace)));
+}
+
+/** The namespaces a log line should NAME for one slug. Never empty. */
+function describeSeeded(slug: string): string {
+  const namespaces = seededNamespaces(
+    config.gateway.env,
+    slug,
+    seededKinds.get(slug),
+  );
+  return namespaces.length > 0
+    ? namespaces.join(" + ")
+    : staticNamespace(config.gateway.env, slug);
+}
+
 if (store) {
   // ONE listing of /strad/{env}/mcp/ for the whole render. It is metadata — a
   // secret parameter's payload is a `__REF__` pointer — so this reads no value,
   // and it is what tells us which of the 28 servers is worth a `resolve()`.
-  const { seeded, unroutable } = groupByServer(
+  const { seeded, kinds, unroutable } = groupByServer(
     config.gateway.env,
     await store.list(mcpNamespace(config.gateway.env)),
   );
-  // A path under mcp/ that is not {slug}/static/{VAR} is read by nothing at all.
+  // A path under mcp/ that is not {slug}/{kind}/{VAR}, for a kind some resolver
+  // reads, is read by nothing at all.
   if (unroutable.length > 0) {
     console.error(
       `::warning::${unroutable.length} parameter(s) under ` +
         `${mcpNamespace(config.gateway.env)} are not ` +
-        `{slug}/static/{VARIABLE} paths, so no resolver reads them: ` +
+        `{slug}/{static|oauth}/{VARIABLE} paths, so no resolver reads them: ` +
         `${unroutable.join(", ")}.`,
     );
   }
+  seededKinds = kinds;
 
   // The slugs worth a value read: seeded, AND seeded with a name this server
   // actually references. Resolved concurrently — each `resolve()` renders a
@@ -586,20 +635,20 @@ if (store) {
   for (let i = 0; i < candidates.length; i += NAMESPACE_FANOUT) {
     bags.push(
       ...(await Promise.all(
-        candidates
-          .slice(i, i + NAMESPACE_FANOUT)
-          .map(async ([slug, refs]) =>
-            substitutionBag(
-              await resolveNamespace(staticNamespace(config.gateway.env, slug)),
-              refs,
-            ),
+        candidates.slice(i, i + NAMESPACE_FANOUT).map(async ([slug, refs]) =>
+          substitutionBag(
+            // BOTH KINDS, layered, and only the ones the listing found. A slug
+            // with nothing under `oauth/` costs the one read it always cost.
+            await resolveSeededNamespaces(slug),
+            refs,
           ),
+        ),
       )),
     );
   }
 
   for (const [i, [slug]] of candidates.entries()) {
-    const namespace = staticNamespace(config.gateway.env, slug);
+    const namespace = describeSeeded(slug);
     const { bag, unusable } = bags[i]!;
 
     // A parameter that EXISTS and yields no usable value — an un-dereferenced
@@ -715,7 +764,7 @@ if (namespaceValues) {
     if (shadowed.length === 0) continue;
     console.error(
       `::warning::server "${slug}" takes ${shadowed.join(", ")} from ` +
-        `${staticNamespace(config.gateway.env, slug)}, and ` +
+        `${describeSeeded(slug)}, and ` +
         `${gatewayNamespace(config.gateway.env)} holds ${shadowed.length === 1 ? "that name" : "those names"} ` +
         `too. The per-server value wins. Delete whichever copy is not the one ` +
         `you rotate.`,
@@ -877,9 +926,9 @@ for (const server of config.servers) {
     );
     continue;
   }
-  resolvedParams[server.slug] = await resolveNamespace(
-    staticNamespace(config.gateway.env, server.slug),
-  );
+  // Both kinds, layered — `params: true` takes a slug's namespace WHOLESALE, and
+  // since the `oauth` kind that is both of them.
+  resolvedParams[server.slug] = await resolveSeededNamespaces(server.slug);
 }
 
 // The dev-bypass switches. Not secrets — they are switches, and belong in the

@@ -230,7 +230,7 @@ managed in one place. [Which name is
 which](https://strad.tadasant.com/operate/secrets/#what-rotates-live-what-needs-a-restart-and-what-needs-a-redeploy).
 
 Every `${NAME}` written on a server entry is resolved from **that server's own**
-`/strad/{env}/mcp/{slug}/static/` namespace before the shared
+`/strad/{env}/mcp/{slug}/oauth/` and `/strad/{env}/mcp/{slug}/static/` namespaces before the shared
 `/strad/{env}/gateway/static/` one, so two servers can write the same `${NAME}`
 and be handed different values, and a credential belonging to one MCP server
 lives under that server rather than in the deployment-wide namespace. A

@@ -12,9 +12,12 @@ import {
  *
  *     /strad/{env}/mcp/{server-slug}/{kind}/{VARIABLE_NAME}
  *
- * `kind` is `static` for now (an `oauth` kind is a future ticket). A "namespace"
- * is a prefix of that path — the secrets server is scoped to one (e.g.
- * `/strad/staging/mcp/`) and refuses to operate outside it.
+ * `kind` names WHERE THE VALUE CAME FROM, and there are two of them. `static` is
+ * a value a human typed into the console. `oauth` is a value strad MINTED — the
+ * durable credential an authorization-code flow handed back, written by the
+ * console's own callback and by nothing else. A "namespace" is a prefix of that
+ * path — the secrets server is scoped to one (e.g. `/strad/staging/mcp/`) and
+ * refuses to operate outside it.
  *
  * This module composes and validates those paths, and codes the envelope stored
  * at one. How a path becomes a GCP resource id, and how a value is encoded into
@@ -24,9 +27,102 @@ import {
  * same underlying resources.
  */
 
+/**
+ * The kinds one server's own namespace is divided into, HIGHEST PRECEDENCE
+ * FIRST.
+ *
+ * The order is the resolution order, and it is the one thing about this list
+ * that is a decision rather than a fact. `oauth` wins because it is the kind a
+ * MACHINE writes: a human who typed a token into `static/` months ago and a
+ * console consent completed this morning disagree about the same variable, and
+ * the fresh grant is the one a call should carry. It also makes the migration
+ * safe in the only direction that matters — a deployment whose connector token
+ * still sits under `static/` keeps working, and the first reconnect moves it to
+ * `oauth/` and takes precedence from then on.
+ *
+ * Two kinds and not five: a kind is a WRITER, not a category. Adding one means
+ * something new in strad mints values, and every layered read below grows a
+ * round trip.
+ */
+export const SERVER_PARAM_KINDS = ["oauth", "static"] as const;
+
+export type ServerParamKind = (typeof SERVER_PARAM_KINDS)[number];
+
+/** Is this path segment one of the kinds a resolver reads? */
+export function isServerParamKind(kind: string): kind is ServerParamKind {
+  return (SERVER_PARAM_KINDS as readonly string[]).includes(kind);
+}
+
+/** Build one kind's namespace for a server slug, e.g. `/strad/staging/mcp/gcs/oauth/`. */
+export function serverKindNamespace(
+  env: string,
+  slug: string,
+  kind: ServerParamKind,
+): string {
+  return `/strad/${env}/mcp/${slug}/${kind}/`;
+}
+
 /** Build the static-kind namespace for a server slug, e.g. `/strad/staging/mcp/gcs/static/`. */
 export function staticNamespace(env: string, slug: string): string {
-  return `/strad/${env}/mcp/${slug}/static/`;
+  return serverKindNamespace(env, slug, "static");
+}
+
+/**
+ * Build the oauth-kind namespace for a server slug, e.g.
+ * `/strad/staging/mcp/gcs/oauth/`.
+ *
+ * Everything under it is written by the console's OAuth callback
+ * (src/ui/connector.ts) and by nothing else, and it is written as a SECRET
+ * parameter — the value in Secret Manager, a `__REF__` pointer in Parameter
+ * Manager — so the `secrets` MCP server lists it and can never read it.
+ */
+export function oauthNamespace(env: string, slug: string): string {
+  return serverKindNamespace(env, slug, "oauth");
+}
+
+/**
+ * Every namespace ONE server resolves from, in precedence order.
+ *
+ * Every layered read in strad — the runtime provider's per-server chain, the
+ * registry's `params: true` cache, render-spec's substitution bag — walks this
+ * list rather than naming `static` directly, so a kind added here is read by all
+ * of them or by none of them.
+ */
+export function serverNamespaces(env: string, slug: string): string[] {
+  return SERVER_PARAM_KINDS.map((kind) => serverKindNamespace(env, slug, kind));
+}
+
+/**
+ * Collapse several namespace readings into one, EARLIER WINS.
+ *
+ * The wrinkle is that "has a value" and "has a USABLE value" are different
+ * questions, and layering has to respect the second. `resolve()` does not
+ * promise a value: a `:render` that could not dereference hands the `__REF__`
+ * pointer back rather than failing, and an empty payload resolves to `""`. A
+ * higher layer holding one of those must NOT shadow a lower layer that holds a
+ * real credential — that would be the worst of both, a non-credential baked onto
+ * a container AND the working value suppressed.
+ *
+ * So an unusable value loses to any usable one below it, and is kept only when
+ * nothing below has anything better. Keeping it rather than dropping it is
+ * deliberate: `substitutionBag` reports an unusable value by name, and a name
+ * that vanished here would be reported as absent instead.
+ */
+export function layerNamespaces(
+  readings: readonly Readonly<Record<string, string>>[],
+): Record<string, string> {
+  const usable = (value: string): boolean =>
+    value !== "" && !isSecretRef(value);
+  const out: Record<string, string> = {};
+  for (const reading of readings) {
+    for (const [name, value] of Object.entries(reading)) {
+      const held = out[name];
+      if (held === undefined || (!usable(held) && usable(value))) {
+        out[name] = value;
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -57,6 +153,15 @@ export function parameterPath(
   variable: string,
 ): string {
   return `${staticNamespace(env, slug)}${variable}`;
+}
+
+/** Build a full parameter path for one variable under a server's oauth kind. */
+export function oauthParameterPath(
+  env: string,
+  slug: string,
+  variable: string,
+): string {
+  return `${oauthNamespace(env, slug)}${variable}`;
 }
 
 /**

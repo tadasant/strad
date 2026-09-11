@@ -246,7 +246,8 @@ only scope that reaches core and stops there.
 The alternative to hand-writing `${REF}` entries in `env:` is to opt the server
 into [parameter resolution](/intro/architecture/#the-secrets-and-parameters-system).
 Set `params: true`, and everything a human has stored under
-`/strad/{env}/mcp/{slug}/static/*` is resolved and injected as this server's
+`/strad/{env}/mcp/{slug}/static/*` and `/strad/{env}/mcp/{slug}/oauth/*` are
+resolved and injected as this server's
 environment:
 
 ```yaml

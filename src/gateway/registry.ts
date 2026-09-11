@@ -6,7 +6,8 @@ import {
   type ServerSecretProviders,
 } from "../secrets/provider/index.ts";
 import {
-  staticNamespace,
+  layerNamespaces,
+  serverNamespaces,
   type ParameterResolver,
 } from "../secrets/parameters/index.ts";
 import { NamespaceView } from "../secrets/provider/view.ts";
@@ -170,8 +171,16 @@ export class Registry {
           resolveOptionsAsync(server.options, secrets.forServer(server.slug)),
         );
         if (!server.params || !paramCache) return base;
-        const params = await paramCache.get(
-          staticNamespace(config.gateway.env, server.slug),
+        // `params: true` takes the slug's namespace WHOLESALE, which since the
+        // `oauth` kind means both of them. Layered rather than merged blindly:
+        // `oauth/` wins, and an unusable value there (an un-dereferenced
+        // `__REF__`, an empty payload) does not shadow a working `static/` one.
+        const params = layerNamespaces(
+          await Promise.all(
+            serverNamespaces(config.gateway.env, server.slug).map((namespace) =>
+              paramCache.get(namespace),
+            ),
+          ),
         );
         return { ...base, ...params };
       };

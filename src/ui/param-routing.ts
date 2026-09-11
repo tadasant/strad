@@ -1,6 +1,9 @@
 import { isUnhosted } from "../config/schema.ts";
 import type { StradConfig } from "../config/schema.ts";
-import { RESOLVER_ENV } from "../secrets/parameters/index.ts";
+import {
+  RESOLVER_ENV,
+  SERVER_PARAM_KINDS,
+} from "../secrets/parameters/index.ts";
 import { refsIn } from "../secrets/provider/resolve.ts";
 
 /**
@@ -17,7 +20,7 @@ import { refsIn } from "../secrets/provider/resolve.ts";
  *
  * The two destinations, and what reads each:
  *
- *   /strad/{env}/mcp/{slug}/static/{VAR}
+ *   /strad/{env}/mcp/{slug}/{static|oauth}/{VAR}
  *       Read TWO ways, and the difference matters to what this page says.
  *       `params: true` takes the namespace WHOLESALE — a supplementary image's
  *       at DEPLOY time via scripts/render-spec.ts, a builtin's at RUNTIME via
@@ -85,14 +88,20 @@ export interface ParamsConsumer {
 /**
  * Note the `(.+)` tail rather than one segment.
  *
- * `resolve()` lists everything under `{slug}/static/` and keys the result by the
+ * `resolve()` lists everything under `{slug}/{kind}/` and keys the result by the
  * path's LAST segment (src/secrets/parameters/gcp.ts), so
  * `{slug}/static/extra/TOKEN` IS injected — as `TOKEN`. Matching only a single
  * segment would report that path `unrouted`, and "nothing reads this" is the
  * more dangerous direction to be wrong in: a human parks a credential believing
  * it inert while it is being handed to a running server.
+ *
+ * The KIND alternation is built from `SERVER_PARAM_KINDS` rather than written
+ * out, so a kind added there is routed here rather than classified `unrouted` —
+ * which is the same dangerous direction, arriving from the other side.
  */
-const SLUG_STATIC = /^([a-z0-9][a-z0-9-]*)\/static\/(.+)$/;
+const SLUG_KIND = new RegExp(
+  `^([a-z0-9][a-z0-9-]*)\\/(${SERVER_PARAM_KINDS.join("|")})\\/(.+)$`,
+);
 
 /**
  * Does this process's environment carry the resolver credential?
@@ -151,6 +160,12 @@ export function prefixSuggestions(config: StradConfig): {
     .filter((s) => s.enabled && !isUnhosted(s))
     .map((s) => ({
       slug: s.slug,
+      // `static/` and not `oauth/`: this list is what the CREATE FORM offers, and
+      // `oauth/` is the kind strad writes. A human typing a value into that
+      // namespace is putting a hand-held credential where the console's consent
+      // callback expects to be the only writer, and the suggestion list should
+      // not propose it. Nothing refuses the path — resolution reads both kinds,
+      // and an operator who means it may type it.
       prefix: `${s.slug}/static/`,
       wired: wired.has(s.slug),
       ...(wired.has(s.slug) ? { via: wired.get(s.slug)! } : {}),
@@ -208,19 +223,22 @@ export function classifyPath(
   }
 
   const rest = path.slice(mcpRoot.length);
-  const match = SLUG_STATIC.exec(rest);
+  const match = SLUG_KIND.exec(rest);
   if (!match) {
     return {
       state: "unrouted",
       label: "unrouted",
       detail:
-        `Not a ${mcpRoot}{server}/static/… path. Parameter resolution reads exactly that ` +
-        "shape, so nothing will pick this up.",
+        `Not a ${mcpRoot}{server}/{${SERVER_PARAM_KINDS.join("|")}}/… path. Parameter ` +
+        "resolution reads exactly those shapes, so nothing will pick this up.",
     };
   }
 
   const slug = match[1] as string;
-  const tail = match[2] as string;
+  // match[2] is the KIND. It is matched so the path is recognised at all, and
+  // deliberately not branched on below: both kinds resolve the same way, which
+  // is the whole point of the second one.
+  const tail = match[3] as string;
   const server = config.servers.find((s) => s.slug === slug);
   if (!server || !server.enabled) {
     return {
@@ -258,7 +276,21 @@ export function classifyPath(
     server.kind === "supplementary-image" &&
     Object.values(server.env).some((raw) => refsIn(raw).includes(variable));
 
-  if (!server.params && !substituted) {
+  // A CONNECTOR VARIABLE IS READ WITHOUT BEING REFERENCED. `oauth:` names three
+  // variables that the app-spec renderer injects from this slug's own namespace
+  // with no `${NAME}` anywhere in the config (src/deploy/appspec.ts), so the
+  // `${NAME}` test above is blind to them. Reporting the credential a human just
+  // consented to as "stored, not delivered" is precisely the false claim this
+  // module exists to prevent, in the direction that wastes an afternoon.
+  const connectorVariable =
+    server.oauth !== undefined &&
+    [
+      server.oauth.clientIdVariable,
+      server.oauth.clientSecretVariable,
+      server.oauth.refreshTokenVariable,
+    ].includes(variable);
+
+  if (!server.params && !substituted && !connectorVariable) {
     return {
       state: "not-wired",
       slug,
@@ -275,7 +307,8 @@ export function classifyPath(
   }
 
   const when =
-    server.kind === "supplementary-image" && (server.params || substituted)
+    server.kind === "supplementary-image" &&
+    (server.params || substituted || connectorVariable)
       ? "deploy"
       : "runtime";
 
@@ -312,14 +345,20 @@ export function classifyPath(
     label: when === "deploy" ? "delivered · deploy" : "delivered · runtime",
     detail:
       (when === "deploy"
-        ? server.params
-          ? `Delivered: "${slug}" sets \`params: true\`, so render-spec resolves this path at ` +
-            "DEPLOY time and injects it onto that container. A new or rotated value reaches the " +
-            "server on the next deploy, not immediately."
-          : `Delivered: "${slug}" references \`\${${variable}}\` in its env:, and a server's own ` +
-            "namespace is resolved before the gateway's — so render-spec substitutes THIS value at " +
-            "DEPLOY time, ahead of any same-named value in " +
-            `${gatewayRoot}. A rotation reaches the server on the next deploy, not immediately.`
+        ? connectorVariable && !server.params && !substituted
+          ? `Delivered: "${slug}" declares an \`oauth:\` connector and this is one of the three ` +
+            `variables it owns, so render-spec injects it onto that container at DEPLOY time — ` +
+            `with no \`\${NAME}\` reference anywhere in the config, which is what breaks the ` +
+            `ordering cycle a connector would otherwise have. A value reaches the server on the ` +
+            `next deploy, not immediately.`
+          : server.params
+            ? `Delivered: "${slug}" sets \`params: true\`, so render-spec resolves this path at ` +
+              "DEPLOY time and injects it onto that container. A new or rotated value reaches the " +
+              "server on the next deploy, not immediately."
+            : `Delivered: "${slug}" references \`\${${variable}}\` in its env:, and a server's own ` +
+              "namespace is resolved before the gateway's — so render-spec substitutes THIS value at " +
+              "DEPLOY time, ahead of any same-named value in " +
+              `${gatewayRoot}. A rotation reaches the server on the next deploy, not immediately.`
         : `Delivered: "${slug}" sets \`params: true\` and runs a strad image, so this path is ` +
           `resolved at RUNTIME and refreshed within gateway.secrets.ttlSeconds (${config.gateway.secrets.ttlSeconds}s).`) +
       deep,

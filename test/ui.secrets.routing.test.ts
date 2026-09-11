@@ -207,11 +207,13 @@ describe("routing is computed from the config, not asserted", () => {
     expect(r.detail).toContain("${UNRELATED}");
   });
 
-  it("a path with no {slug}/static/ prefix routes to nothing", () => {
+  it("a path with no {slug}/{kind}/ prefix routes to nothing", () => {
     expect(classifyPath(CONFIG, `${MCP_NS}TOKEN`, true).state).toBe("unrouted");
-    expect(classifyPath(CONFIG, `${MCP_NS}wired/oauth/TOKEN`, true).state).toBe(
-      "unrouted",
-    );
+    // A kind no resolver reads. `oauth` and `static` are the two that are read;
+    // a third spelling is stored and picked up by nothing.
+    expect(
+      classifyPath(CONFIG, `${MCP_NS}wired/statik/TOKEN`, true).state,
+    ).toBe("unrouted");
   });
 
   it("names a slug that is not configured", () => {

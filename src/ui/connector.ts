@@ -16,39 +16,45 @@ import {
   type ConnectorTxPayload,
 } from "../connectors/state.ts";
 import {
-  buildAuthorizeUrl,
+  beginAuthorization,
+  completeAuthorization,
   connectorFor,
   connectorRedirectUri,
   connectorStore,
-  connectorTier,
+  connectorTerms,
+  connectorVariablePath,
   connectionNote,
   ConnectorError,
+  credentialKind,
   unexpectedScopes,
-  exchangeCode,
   readConnectorState,
   refreshTokenPath,
-  requestedScopes,
   storeRefreshToken,
   type ConnectorDeps,
   type ConnectorErrorCode,
+  type ConnectorPresence,
   type ConnectorServer,
   type ConnectorState,
+  type ConnectorTerms,
 } from "../connectors/index.ts";
 import { CONNECTOR_CALLBACK_PATH } from "../connectors/index.ts";
 import { errorSummary } from "../util/error-text.ts";
-import {
-  parameterPath,
-  type ParameterStore,
-} from "../secrets/parameters/index.ts";
+import type { ParameterStore } from "../secrets/parameters/index.ts";
 
 /**
- * **Connect Google** / **Reconnect Google**, on a server slug's console page.
+ * **Connect** / **Reconnect**, on a server slug's console page.
  *
  * The whole flow, in the order it happens:
  *
- *   POST /ui/<slug>/connect      seal a transaction, 302 to accounts.google.com
+ *   POST /ui/<slug>/connect      seal a transaction, 302 to the provider
  *   GET  /ui/oauth/callback      verify, exchange, check, write, 302 back
  *   GET  /ui/<slug>              render the panel, in one of five states
+ *
+ * ONE pair of routes for every provider. Which provider a slug uses is a
+ * property of its config (`oauth.provider`), dispatched in
+ * src/connectors/index.ts, and it changes nothing about the transaction, the
+ * cookie, the gate or the target path. A per-provider route would be a second
+ * place for the sealed-state checks below to be got wrong.
  *
  * ## What the browser is allowed to say
  *
@@ -73,8 +79,8 @@ import {
  *
  * It could be public — completing it needs a sealed transaction bound to an
  * authenticated session, so a stranger reaching the route learns nothing. Gating
- * it anyway is strictly stronger and costs nothing: the browser returns from
- * Google as a top-level GET, which carries the SameSite=Lax session cookie, so
+ * it anyway is strictly stronger and costs nothing: the browser returns from the
+ * provider as a top-level GET, which carries the SameSite=Lax session cookie, so
  * the human who started the flow is still signed in when they land.
  */
 
@@ -88,8 +94,8 @@ export interface ConnectorUiOptions extends ConnectorDeps {
    *
    * Its own seam rather than the console's `fetchImpl` (which is the bundle
    * presence probe's) because they stub different third parties, and a test that
-   * had to fake Google in order to fake a bundle would fake neither well. This is
-   * what lets the end-to-end test drive a fake Google token service through the
+   * had to fake a provider in order to fake a bundle would fake neither well.
+   * This is what lets the end-to-end test drive a fake token service through the
    * real Express app, real cookies, real sealed state and the real store.
    */
   connectorFetch?: typeof fetch;
@@ -162,7 +168,7 @@ async function handleConnect(
         tone: "error",
         message: !redirectUri
           ? "This deployment declares no gateway.publicUrl, so strad cannot " +
-            "build the exact redirect URI Google requires."
+            "build the exact redirect URI the provider requires."
           : "This deployment has no console session key, so strad cannot seal " +
             "an authorization transaction. Set CONSOLE_SESSION_SECRET.",
       },
@@ -171,8 +177,8 @@ async function handleConnect(
   }
 
   // The state must be REFUSED before it is sealed if the setup is incomplete —
-  // otherwise a human consents at Google and comes back to a flow that cannot
-  // exchange, having granted access for nothing.
+  // otherwise a human consents at the provider and comes back to a flow that
+  // cannot exchange, having granted access for nothing.
   const state = await readConnectorState(opts, entry);
   if (state.kind !== "ready" && state.kind !== "connected") {
     await renderConnectorPage(res, opts, entry, {
@@ -199,7 +205,8 @@ async function handleConnect(
     return;
   }
 
-  const scopes = requestedScopes(entry.oauth);
+  const terms = connectorTerms(entry.oauth);
+  const scopes = terms.scopes;
 
   // Guarded, so a store failure is this page saying so rather than the generic
   // 500 — and so the message describes the OPERATION. `renderUnexpected` is the
@@ -211,6 +218,7 @@ async function handleConnect(
       opts,
       resolved.store,
       entry,
+      state.presence,
       entry.oauth.clientIdVariable,
     );
   } catch {
@@ -228,12 +236,7 @@ async function handleConnect(
     return;
   }
 
-  const pending = buildAuthorizeUrl({
-    clientId,
-    redirectUri,
-    scopes,
-    loginHint: entry.oauth.account,
-  });
+  const pending = beginAuthorization(entry, { clientId, redirectUri });
 
   issueConnectorTx(
     res,
@@ -243,7 +246,11 @@ async function handleConnect(
       verifier: pending.verifier,
       slug: entry.server.slug,
       env: opts.config.gateway.env,
-      account: entry.oauth.account,
+      provider: entry.oauth.provider,
+      // A provider that proves no account seals the empty string, and the drift
+      // check below compares it to the same empty string. The transaction records
+      // the terms the human was SHOWN, and "no account was pinned" is one of them.
+      account: terms.account ?? "",
       scopes,
       variable: entry.oauth.refreshTokenVariable,
       sid: consoleSessionId(consolePrincipal(res)),
@@ -349,22 +356,29 @@ async function handleCallback(
     return;
   }
 
-  // The config may have been edited while the human was at Google. The terms the
-  // human was SHOWN are the ones sealed; if the config now says something else,
-  // the honest move is to refuse rather than to install a grant against terms
-  // nobody agreed to.
-  const scopes = requestedScopes(entry.oauth);
+  // The config may have been edited while the human was at the provider. The
+  // terms the human was SHOWN are the ones sealed; if the config now says
+  // something else, the honest move is to refuse rather than to install a grant
+  // against terms nobody agreed to.
+  //
+  // `provider` is in the comparison and in the sealed payload, which means a
+  // transaction sealed by an image that predates the field reads as drifted and
+  // is refused. That is the safe direction, and it costs at most the consents in
+  // flight during one deploy — each recoverable by clicking Connect again.
+  const terms = connectorTerms(entry.oauth);
+  const scopes = terms.scopes;
   const drifted =
-    entry.oauth.account !== tx.account ||
+    entry.oauth.provider !== tx.provider ||
+    (terms.account ?? "") !== tx.account ||
     entry.oauth.refreshTokenVariable !== tx.variable ||
     scopes.length !== tx.scopes.length ||
     scopes.some((s, i) => s !== tx.scopes[i]);
   if (drifted) {
     refuse(
       "This server's connector changed mid-flow",
-      "The account, scopes or target variable configured for this server are " +
-        "not the ones this authorization was begun under. Nothing was written. " +
-        "Start again from the server's page.",
+      "The provider, account, scopes or target variable configured for this " +
+        "server are not the ones this authorization was begun under. Nothing " +
+        "was written. Start again from the server's page.",
       409,
     );
     return;
@@ -378,7 +392,7 @@ async function handleCallback(
       redirectUri
         ? (resolved as { reason: string }).reason
         : "This deployment declares no gateway.publicUrl, so strad cannot " +
-            "present the exact redirect URI Google requires.",
+            "present the exact redirect URI the provider requires.",
       503,
     );
     return;
@@ -408,41 +422,44 @@ async function handleCallback(
   };
 
   try {
-    const grant = await exchangeCode(
+    const grant = await completeAuthorization(
+      entry,
       {
         clientId: await readOwnVariable(
           opts,
           store,
           entry,
+          state.presence,
           entry.oauth.clientIdVariable,
         ),
         clientSecret: await readOwnVariable(
           opts,
           store,
           entry,
+          state.presence,
           entry.oauth.clientSecretVariable,
         ),
         redirectUri,
         code: String(req.query.code ?? ""),
         verifier: tx.verifier,
-        expectedAccount: entry.oauth.account,
-        requiredScopes: entry.oauth.scopes,
       },
       opts.connectorFetch ?? fetch,
     );
 
-    // NOTHING REACHED THE STORE UNTIL HERE. Identity verified, account matched,
-    // every required scope granted, a refresh token in hand.
-    const widened = unexpectedScopes(
-      requestedScopes(entry.oauth),
-      grant.grantedScopes,
-    );
+    // NOTHING REACHED THE STORE UNTIL HERE. Whatever identity the provider can
+    // prove is verified, every required scope is granted, a durable credential is
+    // in hand.
+    const widened = unexpectedScopes(scopes, grant.grantedScopes);
+    // ROTATE ONLY WHAT IS ALREADY AT THE TARGET PATH. A slug whose credential
+    // still sits under `static/` reads as `connected` and yet has nothing under
+    // `oauth/`, and rotating a parameter that does not exist is a failure where
+    // a create was meant.
     await storeRefreshToken(
       store,
       refreshTokenPath(opts.config, entry),
-      state.kind === "connected",
-      grant.refreshToken,
-      connectionNote(grant.email, grant.grantedScopes, new Date()),
+      credentialKind(opts.config, entry, state.presence) === "oauth",
+      grant.token,
+      connectionNote(grant.identity, grant.grantedScopes, new Date()),
     );
 
     event({
@@ -452,8 +469,8 @@ async function handleCallback(
     });
     // A grant WIDER than the config asked for is stored — see
     // `unexpectedScopes` for why refusing it would cry wolf — but the page must
-    // not go on calling this slug read-only over a credential Google will honour
-    // writes for. `1` is a boolean; the page reads the scopes from the note.
+    // not go on calling this slug read-only over a credential the provider will
+    // honour writes for. `1` is a boolean; the page reads the scopes from the note.
     back(widened.length > 0 ? "?connected=wider" : "?connected=1");
   } catch (err) {
     // A CODE, NEVER A MESSAGE, and never the upstream's words. `code` is one of
@@ -479,13 +496,14 @@ async function handleCallback(
 }
 
 /**
- * Read ONE variable out of THIS slug's own namespace.
+ * Read ONE variable out of THIS slug's own namespaces.
  *
- * `reveal()` on the console's admin store, against a path composed from the
- * config's slug and the config's variable name. Not the runtime provider, which
- * layers the gateway namespace behind the slug's own — that fallback is right for
- * a `${NAME}` and wrong for a credential a connector claims to own. See the
- * header of src/connectors/index.ts.
+ * `reveal()` on the console's admin store, against the path PRESENCE FOUND —
+ * `oauth/` if the slug holds a copy there, `static/` otherwise, which is the
+ * same layering a resolver applies. Not the runtime provider, which layers the
+ * gateway namespace behind the slug's own; that fallback is right for a
+ * `${NAME}` and wrong for a credential a connector claims to own. See the header
+ * of src/connectors/index.ts.
  *
  * The caller has already established, via `readConnectorState`, that the
  * parameter exists; a store failure here surfaces as a refusal.
@@ -494,10 +512,11 @@ function readOwnVariable(
   opts: ConnectorUiOptions,
   store: ParameterStore,
   entry: ConnectorServer,
+  presence: ConnectorPresence,
   variable: string,
 ): Promise<string> {
   return store.reveal(
-    parameterPath(opts.config.gateway.env, entry.server.slug, variable),
+    connectorVariablePath(opts.config, entry, presence, variable),
   );
 }
 
@@ -516,10 +535,11 @@ export interface ConnectorPageExtras {
 /**
  * The console detail page for a server with a connector.
  *
- * It states the terms BEFORE the button: which Google account, which tier, and
- * the exact scopes. That is not decoration — it is the only place a human can
- * check what they are about to grant, because Google's own consent screen
- * describes the OAuth app rather than the slug.
+ * It states the terms BEFORE the button: which provider, which account (or that
+ * strad cannot check one), which tier, and the exact scopes. That is not
+ * decoration — it is the only place a human can check what they are about to
+ * grant, because a provider's own consent screen describes the OAuth app rather
+ * than the slug.
  */
 export async function renderConnectorPage(
   res: Response,
@@ -530,10 +550,19 @@ export async function renderConnectorPage(
   const state = extras.state ?? (await readConnectorState(opts, entry));
   const slug = entry.server.slug;
   const oauth = entry.oauth;
-  const tier = connectorTier(oauth.scopes);
-  const scopes = requestedScopes(oauth);
+  const terms = connectorTerms(oauth);
+  const tier = terms.tier;
+  const scopes = terms.scopes;
   const redirectUri = connectorRedirectUri(opts.config);
   const path = refreshTokenPath(opts.config, entry);
+  // WHERE THE CURRENT CREDENTIAL IS, which is not always where the next one goes.
+  // A slug connected before the `oauth` kind existed still reads from `static/`,
+  // and a page that showed only the write target would be describing a parameter
+  // the deployment is not using.
+  const heldAt =
+    state.kind === "ready" || state.kind === "connected"
+      ? state.presence.pathOf[oauth.refreshTokenVariable]
+      : undefined;
 
   const flash = extras.flash
     ? `<div class="flash flash-${extras.flash.tone}">${esc(extras.flash.message)}</div>`
@@ -541,7 +570,7 @@ export async function renderConnectorPage(
 
   const scopeRows = scopes
     .map((scope) => {
-      const identity = !oauth.scopes.includes(scope);
+      const identity = !terms.capabilityScopes.includes(scope);
       return `<li><code>${esc(scope)}</code>${
         identity
           ? ` <span class="chip chip-plain">identity</span>`
@@ -563,16 +592,16 @@ export async function renderConnectorPage(
       statusBlock = notice(
         "warn",
         "No public URL on this deployment",
-        "Google requires an exact, pre-registered redirect URI, and strad " +
-          "derives it from gateway.publicUrl. Set that, redeploy, and this " +
-          "connector becomes usable.",
+        `${terms.label} requires an exact, pre-registered redirect URI, and ` +
+          `strad derives it from gateway.publicUrl. Set that, redeploy, and this ` +
+          `connector becomes usable.`,
       );
       break;
     case "no_store":
       statusBlock = notice(
         "warn",
         "No parameter store to write to",
-        `${state.reason}. A connector stores its refresh token as a managed ` +
+        `${state.reason}. A connector stores its credential as a managed ` +
           `parameter, so this deployment cannot run one.`,
       );
       break;
@@ -600,10 +629,16 @@ export async function renderConnectorPage(
 ${notice(
   "info",
   "Not connected",
-  `strad holds this server's OAuth application but no refresh token, so every ` +
-    `tool call fails until a human consents. Connecting stores one.`,
+  `strad holds this server's OAuth application but no stored credential, so ` +
+    `every tool call fails until a human consents. Connecting stores one.`,
 )}
-${button("Connect Google", `You will be sent to Google, signed in as ${oauth.account}.`)}`;
+${button(
+  `Connect ${terms.label}`,
+  terms.account
+    ? `You will be sent to ${terms.label}, signed in as ${terms.account}.`
+    : `You will be sent to ${terms.label}. strad cannot check which account ` +
+        `consents, so make sure you are signed in as the right one first.`,
+)}`;
       break;
     case "connected":
       statusBlock = `
@@ -611,13 +646,18 @@ ${notice(
   "info",
   "A credential is stored",
   state.presence.note
-    ? `${state.presence.note}. strad cannot tell you whether Google still ` +
-        `accepts it — only a real call can, and a token from an app in "testing" ` +
-        `expires after seven days.`
-    : `A refresh token is present for this server. strad did not record how it ` +
-        `got there, and cannot tell you whether Google still accepts it.`,
+    ? `${state.presence.note}. strad cannot tell you whether ${terms.label} ` +
+        `still accepts it — only a real call can.` +
+        (oauth.provider === "google"
+          ? ` A Google token from an app in "testing" expires after seven days.`
+          : "")
+    : `A credential is present for this server. strad did not record how it ` +
+        `got there, and cannot tell you whether ${terms.label} still accepts it.`,
 )}
-${button("Reconnect Google", "Rotates the stored refresh token. The current one stays until the new one is accepted.")}`;
+${button(
+  `Reconnect ${terms.label}`,
+  "Rotates the stored credential. The current one stays until the new one is accepted.",
+)}`;
       break;
   }
 
@@ -626,7 +666,7 @@ ${button("Reconnect Google", "Rotates the stored refresh token. The current one 
 
 <section class="browse-head">
   <div class="scope"><span class="scope-l">provider</span><code>${esc(oauth.provider)}</code></div>
-  <div class="scope"><span class="scope-l">account</span><code>${esc(oauth.account)}</code></div>
+  <div class="scope"><span class="scope-l">account</span><code>${esc(terms.account ?? "not checked")}</code></div>
   <div class="scope"><span class="scope-l">tier</span><code>${esc(tier)}</code></div>
 </section>
 
@@ -647,19 +687,32 @@ ${scopeRows}
   <div class="field">
     <span class="field-l">Parameter</span>
     <code class="pathpart">${esc(path)}</code>
-    <span class="field-h">Written as a secret parameter: the value lives in Secret Manager and
-      the console is the only surface that can write it. No MCP tool can read it.</span>
-  </div>
+    <span class="field-h">The <code>oauth</code> kind: a value strad minted, which no person has
+      ever seen. Written as a secret parameter — the value lives in Secret Manager and the console
+      is the only surface that can write it. No MCP tool can read it.</span>
+  </div>${
+    heldAt && heldAt !== path
+      ? `
+  <div class="field">
+    <span class="field-l">Currently read from</span>
+    <code class="pathpart">${esc(heldAt)}</code>
+    <span class="field-h">This slug's credential predates the <code>oauth</code> kind and still
+      sits under <code>static/</code>. It keeps working — a server reads <code>oauth/</code> first
+      and falls back to <code>static/</code> — and the next Reconnect writes to the path above,
+      which takes precedence from then on.</span>
+  </div>`
+      : ""
+  }
   <div class="field">
     <span class="field-l">Redirect URI</span>
     <code class="pathpart">${redirectUri ? esc(redirectUri) : "—"}</code>
-    <span class="field-h">Register this exact string on the Google OAuth client. Each deployment
-      has its own, because it is derived from gateway.publicUrl.</span>
+    <span class="field-h">Register this exact string on the ${esc(terms.label)} OAuth client. Each
+      deployment has its own, because it is derived from gateway.publicUrl.</span>
   </div>
   <div class="field">
     <span class="field-l">When the server sees it</span>
     <span class="field-h">On its next deploy. A supplementary server's environment is baked at
-      render time, so a token stored now reaches the container when the app is next deployed —
+      render time, so a credential stored now reaches the container when the app is next deployed —
       not the moment this page says it was written.</span>
   </div>
 </section>`;
@@ -689,11 +742,13 @@ export function connectorFlash(
   query: Request["query"],
   entry: ConnectorServer,
 ): { tone: "ok" | "error"; message: string } | undefined {
+  const terms = connectorTerms(entry.oauth);
+  const forWhom = terms.account ? ` for ${terms.account}` : "";
   if (query.connected === "1") {
     return {
       tone: "ok",
       message:
-        `Connected. strad stored a refresh token for ${entry.oauth.account}. ` +
+        `Connected. strad stored a ${terms.label} credential${forWhom}. ` +
         `The server picks it up on its next deploy.`,
     };
   }
@@ -701,21 +756,21 @@ export function connectorFlash(
     return {
       tone: "error",
       message:
-        `Connected, and Google granted MORE than this server asked for. The ` +
-        `token is stored for ${entry.oauth.account}, and the stored note lists ` +
-        `exactly what was granted — read it before relying on the tier above. ` +
-        `strad's tool policy still withholds this slug's withheld tools, but ` +
-        `Google will honour the wider grant for anything that reaches it.`,
+        `Connected, and ${terms.label} granted MORE than this server asked for. ` +
+        `The credential is stored${forWhom}, and the stored note lists exactly ` +
+        `what was granted — read it before relying on the tier above. strad's ` +
+        `tool policy still withholds this slug's withheld tools, but ` +
+        `${terms.label} will honour the wider grant for anything that reaches it.`,
     };
   }
   const raw = typeof query.error === "string" ? query.error : "";
   if (!raw) return undefined;
-  return { tone: "error", message: refusalMessage(raw, entry) };
+  return { tone: "error", message: refusalMessage(raw, terms) };
 }
 
 /** Closed set in, strad's own sentence out. Nothing from the URL is rendered. */
-function refusalMessage(code: string, entry: ConnectorServer): string {
-  const account = entry.oauth.account;
+function refusalMessage(code: string, terms: ConnectorTerms): string {
+  const account = terms.account ?? "the configured account";
   switch (code) {
     case "account_mismatch":
       return (
@@ -736,6 +791,15 @@ function refusalMessage(code: string, entry: ConnectorServer): string {
         `strad's access for ${account} at myaccount.google.com and connecting ` +
         `again forces a fresh grant.`
       );
+    case "no_credential":
+      return (
+        `Refused: ${terms.label} completed the consent but its token response ` +
+        `did not carry the field this server's oauth.credential: names as the ` +
+        `durable one, so there is nothing long-lived to store. Nothing was ` +
+        `written. strad's logs name the field; the usual fix is an extra ` +
+        `authorization parameter under oauth.authorizeParams: asking for ` +
+        `offline access.`
+      );
     case "identity_unverified":
     case "no_identity":
       return (
@@ -744,17 +808,17 @@ function refusalMessage(code: string, entry: ConnectorServer): string {
       );
     case "exchange_timed_out":
       return (
-        `Refused: Google did not answer the authorization code exchange in ` +
-        `time, so strad stopped waiting. Nothing was written and the stored ` +
+        `Refused: ${terms.label} did not answer the authorization code exchange ` +
+        `in time, so strad stopped waiting. Nothing was written and the stored ` +
         `credential is unchanged. Connecting again mints a fresh code; if it ` +
-        `keeps timing out, check the Google Cloud status page before looking ` +
+        `keeps timing out, check that provider's status page before looking ` +
         `at this server's OAuth client.`
       );
     case "exchange_failed":
       return (
-        `Refused: Google would not exchange the authorization code. It may have ` +
-        `expired or been issued for a different OAuth client than the one this ` +
-        `server's namespace holds. Nothing was written.`
+        `Refused: ${terms.label} would not exchange the authorization code. It ` +
+        `may have expired or been issued for a different OAuth client than the ` +
+        `one this server's namespace holds. Nothing was written.`
       );
     case "store_failed":
       return (
