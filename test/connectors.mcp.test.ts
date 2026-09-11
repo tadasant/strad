@@ -76,6 +76,11 @@ const upstreamToken = mintToken({
 
 const env: NodeJS.ProcessEnv = {
   STRAD_TOKENS: JSON.stringify([mcpToken.record]),
+  // What `${NOTES_TOKEN}` in the added connector's headers resolves to. The
+  // ref, not a literal, because that is the pattern this surface pushes — and
+  // because `get_connector` redacts a literal, which is what makes copying one
+  // through impossible on purpose.
+  NOTES_TOKEN: upstreamToken.plaintext,
 };
 
 let upstream: Server;
@@ -209,6 +214,7 @@ describe("the connectors tool surface", () => {
       "connectors__get_connector",
       "connectors__list_connectors",
       "connectors__remove_connector",
+      "connectors__restore_connector",
       "connectors__save_connector",
       "connectors__set_connector_enabled",
     ]);
@@ -236,7 +242,7 @@ describe("the connectors tool surface", () => {
         kind: "remote-http",
         title: "Notes (personal account)",
         url: `${upstreamUrl}/mcp?servers=notes`,
-        headers: { Authorization: `Bearer ${upstreamToken.plaintext}` },
+        headers: { Authorization: "Bearer ${NOTES_TOKEN}" },
         entitlements: ["admin"],
       },
     });
@@ -270,6 +276,9 @@ describe("the connectors tool surface", () => {
     expect(entry.url).toBe(`${upstreamUrl}/mcp?servers=notes`);
     expect(body.source).toBe("store");
     expect(body.immutableFields).toEqual(["kind"]);
+    // The credential came back as the ref it is, so the copy below carries a
+    // working connector rather than a redaction.
+    expect(entry.headers).toEqual({ Authorization: "Bearer ${NOTES_TOKEN}" });
 
     // Copy-from, as an agent does it: same entry, different slug.
     const copy = await call(client, "save_connector", {
@@ -364,6 +373,129 @@ describe("the connectors tool surface", () => {
       expect(isError, tool).toBe(true);
       expect(String(body.error), tool).toContain("No connector called ghost");
     }
+    await client.close();
+  });
+});
+
+describe("the guards on the write tools", () => {
+  it("refuses a RENAME that would land on another entry", async () => {
+    const client = await connect(gatewayUrl, "connectors");
+    await call(client, "save_connector", {
+      entry: {
+        slug: "one",
+        kind: "remote-http",
+        url: "https://one/mcp",
+        entitlements: ["admin"],
+      },
+    });
+    await call(client, "save_connector", {
+      entry: {
+        slug: "two",
+        kind: "remote-http",
+        url: "https://two/mcp",
+        entitlements: ["admin"],
+      },
+    });
+
+    const { isError, body } = await call(client, "save_connector", {
+      previousSlug: "one",
+      entry: {
+        slug: "two",
+        kind: "remote-http",
+        url: "https://renamed/mcp",
+        entitlements: ["admin"],
+      },
+    });
+    expect(isError).toBe(true);
+    expect(String(body.error)).toContain("already exists");
+    // Neither entry moved.
+    expect(runtime.config().servers.map((s) => s.slug)).toEqual(
+      expect.arrayContaining(["one", "two"]),
+    );
+
+    await call(client, "remove_connector", { slug: "one" });
+    await call(client, "remove_connector", { slug: "two" });
+    await client.close();
+  });
+
+  it("refuses a non-boolean `enabled` rather than coercing it", async () => {
+    // `inputSchema` is documentation, not a runtime validator: `!== false`
+    // would have ENABLED a server on the string "false".
+    const client = await connect(gatewayUrl, "connectors");
+    const { isError, body } = await call(client, "set_connector_enabled", {
+      slug: "resident",
+      enabled: "false",
+    });
+    expect(isError).toBe(true);
+    expect(String(body.error)).toContain("must be a boolean");
+    expect(
+      runtime.config().servers.find((s) => s.slug === "resident")?.enabled,
+    ).toBe(true);
+    await client.close();
+  });
+
+  it("redacts a LITERAL credential out of get_connector, and keeps a ${NAME} ref", async () => {
+    const client = await connect(gatewayUrl, "connectors");
+    await call(client, "save_connector", {
+      entry: {
+        slug: "leaky",
+        kind: "remote-http",
+        url: "https://leaky/mcp",
+        entitlements: ["admin"],
+        headers: {
+          Authorization: "Bearer super-secret-literal",
+          "X-Key": "${LEAKY_KEY}",
+        },
+      },
+    });
+
+    const { body } = await call(client, "get_connector", { slug: "leaky" });
+    const headers = (body.entry as { headers: Record<string, string> }).headers;
+    expect(headers.Authorization).not.toContain("super-secret-literal");
+    expect(headers.Authorization).toContain("redacted");
+    // The ref survives, because naming the parameter is the point of the field.
+    expect(headers["X-Key"]).toBe("${LEAKY_KEY}");
+
+    // And a copy-and-save round trip is refused rather than writing the
+    // sentinel in as the value.
+    const back = await call(client, "save_connector", {
+      entry: { ...(body.entry as Record<string, unknown>), slug: "leaky-copy" },
+    });
+    expect(back.isError).toBe(true);
+    expect(String(back.body.error)).toContain("redact");
+
+    await call(client, "remove_connector", { slug: "leaky" });
+    await client.close();
+  });
+
+  it("reports removals and can restore one", async () => {
+    const client = await connect(gatewayUrl, "connectors");
+
+    // `resident` comes from the checked-in document, so removing it records a
+    // removal rather than dropping an upsert.
+    await call(client, "remove_connector", { slug: "resident" });
+    const after = await call(client, "list_connectors");
+    expect(after.body.removed).toEqual(["resident"]);
+    expect(
+      (after.body.connectors as { slug: string }[]).map((c) => c.slug),
+    ).not.toContain("resident");
+
+    const restored = await call(client, "restore_connector", {
+      slug: "resident",
+    });
+    expect(restored.isError).toBe(false);
+    expect(restored.body.removed).toEqual([]);
+    expect(runtime.config().servers.map((s) => s.slug)).toContain("resident");
+    await client.close();
+  });
+
+  it("refuses restoring something that was not removed", async () => {
+    const client = await connect(gatewayUrl, "connectors");
+    const { isError, body } = await call(client, "restore_connector", {
+      slug: "resident",
+    });
+    expect(isError).toBe(true);
+    expect(String(body.error)).toContain("not a removed connector");
     await client.close();
   });
 });

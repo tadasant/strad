@@ -343,6 +343,30 @@ export function withRemoval(
   };
 }
 
+/**
+ * The overlay with one removal lifted, and `revision` advanced.
+ *
+ * The inverse of `withRemoval` for a FILE slug: drop the standing instruction
+ * to subtract it, and the checked-in entry serves again. A slug that was not
+ * removed is left alone rather than erroring, so the operation is idempotent.
+ */
+export function withRestore(
+  overlay: ServerOverlay,
+  slug: string,
+  opts: { by?: string } = {},
+): ServerOverlay {
+  return {
+    version: 1,
+    revision: overlay.revision + 1,
+    updatedAt: new Date().toISOString(),
+    ...(opts.by === undefined ? {} : { updatedBy: opts.by }),
+    servers: {
+      upserts: overlay.servers.upserts,
+      removals: overlay.servers.removals.filter((s) => s !== slug),
+    },
+  };
+}
+
 /** The slugs the checked-in document declares, for the two functions above. */
 export function fileSlugs(baseDoc: unknown): Set<string> {
   const out = new Set<string>();
@@ -536,7 +560,36 @@ export function assertEditable(
   }
 }
 
-/** Every slug in a parsed config, for a duplicate check the form can pre-empt. */
+/** Every slug in a parsed config. */
 export function slugsIn(config: StradConfig): Set<string> {
   return new Set(config.servers.map((s: ServerConfig) => s.slug));
+}
+
+export class SlugCollision extends Error {}
+
+/**
+ * Refuse a write that would land on a slug belonging to a DIFFERENT entry.
+ *
+ * The merge is keyed by slug and replaces in place, so without this a typo in
+ * the slug field is not a validation error — it is a silent overwrite. The
+ * schema cannot catch it either: `mergeOverlay` dedupes before
+ * `validateMerged` runs, so the duplicate-slug rule never sees two of them.
+ * The result is a flash that says "saved" and a production server quietly
+ * detached from the config that defined it.
+ *
+ * `replacing` is the slug this write is deliberately targeting — the entry
+ * being edited, or, for the upsert-by-slug the MCP tool documents, the slug
+ * itself. Writing onto anything else is the accident.
+ */
+export function assertNoCollision(
+  config: StradConfig,
+  slug: string,
+  replacing: string | undefined,
+): void {
+  if (slug === replacing) return;
+  if (!slugsIn(config).has(slug)) return;
+  throw new SlugCollision(
+    `A server called ${slug} already exists on this gateway. Edit that entry ` +
+      `instead, or choose a different slug — saving this would replace it.`,
+  );
 }

@@ -20,13 +20,16 @@ import {
   ImmutableFieldChanged,
   NotRuntimeCreatable,
   RUNTIME_CREATABLE_KINDS,
+  SlugCollision,
+  assertNoCollision,
   rawEntry,
   withRemoval,
+  withRestore,
   withUpsert,
   type ServerOverlay,
 } from "../config/overlay.ts";
 import { ConfigStoreReadOnly, ConfigStoreTooLarge } from "../config/store.ts";
-import { errorText } from "../util/error-text.ts";
+import { errorSummary } from "../util/error-text.ts";
 
 /**
  * The console's connector editor: create, edit, disable and remove a server
@@ -99,7 +102,7 @@ export function mountServersUi(
     asyncRoute((req, res) => handleEdit(req, res, opts), renderUnexpected),
   );
 
-  for (const action of ["remove", "toggle"] as const) {
+  for (const action of ["remove", "toggle", "restore"] as const) {
     app.post(
       `${CONNECTORS_PREFIX}/:slug/${action}`,
       gate,
@@ -327,6 +330,24 @@ async function handleSave(
     typeof body.original === "string" ? body.original : undefined;
   const before = original ? rawEntry(runtime.document(), original) : undefined;
 
+  /**
+   * The entry whose UNRENDERED fields this save carries through.
+   *
+   * On an EDIT that is the entry being edited — changing a title must not drop
+   * a field the form has no input for. On a CREATE it is whatever the human
+   * copied from, minus its slug, because otherwise "start from an existing one"
+   * quietly means "start from the fields that happen to have inputs" and a
+   * copied connector loses, say, its `oauth:` block.
+   *
+   * It never feeds `assertAcceptable`: a create stays a create.
+   */
+  const copiedFrom =
+    typeof body.copiedFrom === "string" ? body.copiedFrom : undefined;
+  const carrySource =
+    before ??
+    (copiedFrom ? rawEntry(runtime.document(), copiedFrom) : undefined);
+  const carry = carrySource ? withoutSlug(carrySource) : undefined;
+
   const redraw = (flash: Flash, status = 400): void => {
     res
       .status(status)
@@ -336,10 +357,11 @@ async function handleSave(
           config: runtime.config(),
           // What they typed, not what was stored — a refusal that clears the
           // form is a refusal that costs the work.
-          entry: entryFromForm(body, before),
+          entry: entryFromForm(body, carry),
           ...(original ? { slug: original } : {}),
           kind,
           copyable: original ? [] : copyable(runtime, kind),
+          ...(copiedFrom ? { copiedFrom } : {}),
           revision: runtime.overlay().revision,
           source: original
             ? (runtime.sources().get(original) ?? "file")
@@ -368,8 +390,12 @@ async function handleSave(
 
   let entry: Record<string, unknown>;
   try {
-    entry = entryFromForm(body, before);
+    entry = entryFromForm(body, carry);
     requireSlug(entry);
+    // `original` is undefined on an Add, so an Add onto an existing slug is a
+    // collision rather than a replace. On an Edit it is the slug being edited,
+    // so only a RENAME onto somebody else trips this.
+    assertNoCollision(runtime.config(), String(entry.slug), original);
     // The SAME call the `connectors` MCP tools make (src/servers/connectors.ts).
     // Two copies of "may I add this" is two answers, and the one the human sees
     // and the one the agent sees would eventually differ.
@@ -381,6 +407,10 @@ async function handleSave(
       err instanceof BadInput
     ) {
       return redraw({ tone: "error", message: err.message });
+    }
+    // 409: what they asked for is well-formed, the roster it assumed is not.
+    if (err instanceof SlugCollision) {
+      return redraw({ tone: "error", message: err.message }, 409);
     }
     throw err;
   }
@@ -404,7 +434,7 @@ async function handleSave(
 }
 
 async function handleMutate(
-  action: "remove" | "toggle",
+  action: "remove" | "toggle" | "restore",
   req: Request,
   res: Response,
   opts: ServersUiOptions,
@@ -413,6 +443,30 @@ async function handleMutate(
   if (!runtime?.editable) return unavailable(res);
 
   const slug = String(req.params.slug);
+
+  // Restore is the one action whose subject is NOT in the served roster — it
+  // undoes a removal, so the entry it is about is the one the overlay is
+  // currently subtracting.
+  if (action === "restore") {
+    if (!runtime.overlay().servers.removals.includes(slug)) {
+      return notFound(res, slug);
+    }
+    try {
+      await runtime.apply(
+        withRestore(runtime.overlay(), slug, {
+          ...(signedInLabel(res) ? { by: signedInLabel(res) } : {}),
+        }),
+        consoleIdentity(res),
+      );
+    } catch (err) {
+      return roster(res, runtime, refusal(err), 400);
+    }
+    return roster(res, runtime, {
+      tone: "ok",
+      message: `${slug} restored. The checked-in config's entry is serving again.`,
+    });
+  }
+
   const entry = rawEntry(runtime.document(), slug);
   if (!entry) return notFound(res, slug);
 
@@ -463,13 +517,16 @@ function refusal(err: unknown): Flash {
   ) {
     return { tone: "error", message: err.message };
   }
-  // A store that would not answer, or a rebuild that failed. `errorText` rather
-  // than the raw error: the message here is strad's own or a transport's, and
-  // the store's own exceptions already summarise themselves.
+  // A store that would not answer, or a rebuild that failed. `errorSummary`
+  // rather than `errorText`: this path has just been through a parameter-store
+  // write, and src/util/error-text.ts is explicit that anything which could
+  // have touched a store read or a rendered payload takes the summarising one.
+  // A store client's exception can quote a rendered value, and the cost of
+  // getting this wrong is a credential in an HTML page.
   return {
     tone: "error",
     message: "The change could not be applied, so nothing was written.",
-    detail: [errorText(err)],
+    detail: [errorSummary(err)],
   };
 }
 

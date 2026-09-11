@@ -177,14 +177,38 @@ export class RuntimeConfig {
       const result = this.evaluate(overlay);
       if (!result.ok) throw new ConfigRejected(result.problems);
 
-      await this.rebuild(result.config);
-
       if (!this.store) {
         throw new ConfigRejected([
           "This gateway has no config store, so a roster change cannot be kept.",
         ]);
       }
-      await this.store.write(overlay);
+
+      await this.rebuild(result.config);
+
+      try {
+        await this.store.write(overlay);
+      } catch (err) {
+        // The gateway is already serving the new roster and the store does not
+        // have it. Leaving it there is the worst of the outcomes available: the
+        // process serves something no restart would reproduce, and the poll
+        // cannot correct it, because the store's revision never moved. Put the
+        // gateway back on what is still persisted, then report the failure.
+        //
+        // Same rollback discipline as the parameter store's own create/rotate
+        // (src/secrets/parameters/gcp.ts): a write that half-fails must be
+        // visible rather than plausible.
+        await this.rebuild(this.currentConfig).catch(() => {
+          // The rollback failed too, so the process is serving a roster that is
+          // not in the store and not what this holder reports. Nothing here can
+          // fix that; saying so is the most this path can do.
+          event({
+            evt: "strad.config_reload_failed",
+            reason: "rebuild_failed",
+            revision: overlay.revision,
+          });
+        });
+        throw err;
+      }
 
       this.currentConfig = result.config;
       this.currentOverlay = overlay;
@@ -306,7 +330,12 @@ export async function readOverlayAtBoot(
     return { overlay: EMPTY_OVERLAY, config: null };
   }
 
-  if (overlay.revision === 0 && overlay.servers.upserts.length === 0) {
+  // Both lists, not just upserts: an overlay that only REMOVES is still an
+  // overlay, and skipping it here would serve the checked-in roster whole.
+  if (
+    overlay.servers.upserts.length === 0 &&
+    overlay.servers.removals.length === 0
+  ) {
     return { overlay, config: null };
   }
 

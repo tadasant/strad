@@ -128,16 +128,39 @@ describe("RuntimeConfig.apply", () => {
     expect(runtime.config().servers.map((s) => s.slug)).toEqual(["alpha"]);
   });
 
-  it("keeps serving the old roster when the store write fails", async () => {
-    const runtime = runtimeWith({
-      backend: "x",
-      writable: true,
-      read: () => Promise.resolve(EMPTY_OVERLAY),
-      write: () => Promise.reject(new Error("store 503")),
-    });
+  it("ROLLS THE GATEWAY BACK when the store write fails", async () => {
+    // The subtle one. The rebuild lands before the write, so a write that fails
+    // leaves the process serving a roster nothing persisted — and the poll
+    // cannot correct it, because the store's revision never moved. The gateway
+    // has to be put back, not just the holder's bookkeeping.
+    const built: string[][] = [];
+    const runtime = runtimeWith(
+      {
+        backend: "x",
+        writable: true,
+        read: () => Promise.resolve(EMPTY_OVERLAY),
+        write: () => Promise.reject(new Error("store 503")),
+      },
+      (config) => {
+        built.push(config.servers.map((s) => s.slug));
+        return Promise.resolve();
+      },
+    );
 
     await expect(runtime.apply(plus(DELTA))).rejects.toThrow("store 503");
+
+    // Built forward, then built back to what is still in the store.
+    expect(built).toEqual([["alpha", "delta"], ["alpha"]]);
     expect(runtime.config().servers.map((s) => s.slug)).toEqual(["alpha"]);
+  });
+
+  it("does not rebuild at all when there is no store to write to", async () => {
+    const rebuild = vi.fn(() => Promise.resolve());
+    const runtime = runtimeWith(null, rebuild);
+    await expect(runtime.apply(plus(DELTA))).rejects.toBeInstanceOf(
+      ConfigRejected,
+    );
+    expect(rebuild).not.toHaveBeenCalled();
   });
 
   it("one failed apply does not poison the applies queued behind it", async () => {

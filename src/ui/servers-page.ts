@@ -78,6 +78,18 @@ const KIND_BLURB: Record<string, string> = {
     "Compiled into the strad image. Cannot be added from here: the module has to ship with a build.",
 };
 
+/**
+ * `KIND_BLURB[kind]` with no prototype members.
+ *
+ * `kind` arrives from the wire, and a plain index lookup resolves `toString`
+ * and friends out of `Object.prototype` — so a POST with `kind=toString`
+ * renders a native-function body as the page's subtitle. Escaped, so it is
+ * cosmetic rather than an injection; still not something to ship.
+ */
+function blurb(kind: string): string {
+  return Object.hasOwn(KIND_BLURB, kind) ? (KIND_BLURB[kind] ?? "") : "";
+}
+
 function kindChip(kind: string): string {
   return `<span class="chip chip-plain">${esc(kind)}</span>`;
 }
@@ -95,9 +107,7 @@ export function renderRoster(opts: RosterOptions): string {
   const rows = config.servers
     .map((server) => {
       const source = sources.get(server.slug);
-      const editable = opts.writable;
-      const removed = "";
-      const controls = editable
+      const controls = opts.writable
         ? `<div class="conn-acts">
              <a class="btn btn-ghost" href="${esc(connectorsPath(server.slug))}">Edit</a>
              <form method="post" action="${esc(connectorsPath(server.slug, "toggle"))}">
@@ -117,10 +127,54 @@ export function renderRoster(opts: RosterOptions): string {
         <td>${sourceChip(source)}</td>
         <td class="conn-title">${esc(server.title ?? server.description ?? "")}</td>
         <td class="conn-roles">${esc(server.entitlements.join(", ") || "—")}</td>
-        <td>${controls}${removed}</td>
+        <td>${controls}</td>
       </tr>`;
     })
     .join("\n");
+
+  /**
+   * The slugs the checked-in config declares and the overlay subtracts.
+   *
+   * Without this the roster iterates `config.servers`, which by definition no
+   * longer holds them — so a removed server is not shown as removed, it is
+   * shown as nothing at all, and the only clue that the file's entry is not
+   * serving is its absence. A standing instruction to subtract something should
+   * be visible to the person who has to reason about the file.
+   */
+  const removals = opts.overlay.servers.removals
+    .map(
+      (slug) => `<tr>
+        <td class="conn-slug">${esc(slug)}</td>
+        <td><span class="chip chip-off">removed</span></td>
+        <td>${sourceChip("file")}</td>
+        <td class="conn-title">Declared in the config file, removed here.</td>
+        <td class="conn-roles">—</td>
+        <td>${
+          opts.writable
+            ? `<form method="post" action="${esc(connectorsPath(slug, "restore"))}">
+                 <button class="btn btn-ghost" type="submit">Restore</button>
+               </form>`
+            : ""
+        }</td>
+      </tr>`,
+    )
+    .join("\n");
+
+  const removedSection =
+    opts.overlay.servers.removals.length > 0
+      ? `<section class="panel">
+           <h2 class="state-title">Removed</h2>
+           <p class="state-sub">These are declared in the checked-in config and
+           subtracted here. The removal stands until somebody deletes the entry
+           from the file or restores it.</p>
+           <table class="conn-table">
+             <thead><tr>
+               <th>Slug</th><th></th><th>Source</th><th></th><th></th><th></th>
+             </tr></thead>
+             <tbody>${removals}</tbody>
+           </table>
+         </section>`
+      : "";
 
   const addMenu = opts.writable
     ? `<section class="addbox">
@@ -131,7 +185,7 @@ export function renderRoster(opts: RosterOptions): string {
                `${connectorsPath("new")}?kind=${encodeURIComponent(kind)}`,
              )}">
                <div class="card-head"><span class="card-title">${esc(kind)}</span></div>
-               <p class="card-desc">${esc(KIND_BLURB[kind] ?? "")}</p>
+               <p class="card-desc">${esc(blurb(kind))}</p>
                <span class="card-cta">Add →</span>
              </a>`,
            ).join("\n")}
@@ -159,6 +213,7 @@ ${readOnlyBanner(opts.writable)}
     <tbody>${rows || `<tr><td colspan="6" class="empty">No servers.</td></tr>`}</tbody>
   </table>
 </section>
+${removedSection}
 ${addMenu}
 `;
 
@@ -210,6 +265,16 @@ function pairs(value: unknown): string {
     .join("\n");
 }
 
+/**
+ * One labelled form row.
+ *
+ * `control` and `hint` are PRE-ESCAPED HTML built by this module — the hints
+ * carry `<code>` spans on purpose — and `label` is escaped here. That split is
+ * the same one `layout`'s `help` makes in src/ui/render.ts, and it carries the
+ * same warning: never pass caller-supplied text as `control` or `hint`. Every
+ * value that came off the wire reaches this function through `input`, `area` or
+ * `checkbox`, each of which escapes it.
+ */
 function field(
   label: string,
   control: string,
@@ -530,7 +595,13 @@ ${field(
   { optional: true, id: "recoveryNotes" },
 )}
 `
-        : `
+        : opts.kind === "builtin"
+          ? `<p class="state-sub">A builtin's <code>module:</code>, <code>bundle:</code>
+             and <code>params:</code> are what the running image compiled in, so
+             they are not editable here at all — only the fields above, which the
+             gateway decides for itself on every request. Change the rest in the
+             checked-in config and deploy.</p>`
+          : `
 ${field(
   "Image",
   input("image", text(entry.image ?? ""), {
@@ -589,7 +660,7 @@ ${flashHtml(opts.flash)}
     creating ? `new ${opts.kind}` : (opts.slug ?? ""),
   )}</span></div>
   <h1 class="state-title">${esc(creating ? `Add a ${opts.kind} connector` : `Edit ${opts.slug ?? ""}`)}</h1>
-  <p class="state-sub">${esc(KIND_BLURB[opts.kind] ?? "")}</p>
+  <p class="state-sub">${esc(blurb(opts.kind))}</p>
   ${frozenNote}
   ${
     !creating && opts.source === "file"
@@ -605,6 +676,14 @@ ${copyForm}
     <input type="hidden" name="kind" value="${esc(opts.kind)}" />
     <input type="hidden" name="revision" value="${esc(String(opts.revision))}" />
     ${opts.slug === undefined ? "" : `<input type="hidden" name="original" value="${esc(opts.slug)}" />`}
+    ${
+      // Which entry this one was copied from, so the save carries through the
+      // fields this form does not render. Without it "copy from an existing
+      // one" silently means "copy the fields that happen to have inputs".
+      opts.copiedFrom === undefined
+        ? ""
+        : `<input type="hidden" name="copiedFrom" value="${esc(opts.copiedFrom)}" />`
+    }
     ${common}
     ${kindFields}
     ${policy}

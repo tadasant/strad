@@ -10,14 +10,18 @@ import {
   ImmutableFieldChanged,
   NotRuntimeCreatable,
   RUNTIME_CREATABLE_KINDS,
+  SlugCollision,
+  assertNoCollision,
   immutableFields,
   rawEntry,
   withRemoval,
+  withRestore,
   withUpsert,
 } from "../config/overlay.ts";
 import { ConfigStoreReadOnly, ConfigStoreTooLarge } from "../config/store.ts";
+import { soleRefName } from "../config/schema.ts";
 import { serverConsolePath } from "../ui/paths.ts";
-import { errorText } from "../util/error-text.ts";
+import { errorSummary } from "../util/error-text.ts";
 
 /**
  * The connector editor, as an MCP server.
@@ -117,7 +121,10 @@ const READ_TOOLS: Tool[] = [
       "the schema fills in around them. This is also how you COPY an existing " +
       "connector: take the returned `entry`, change `slug` and whatever else differs " +
       "(a credential ref, a narrower tools policy), and pass it to save_connector. " +
-      "`immutableFields` names the fields that only a deploy can move on this kind.",
+      "`immutableFields` names the fields that only a deploy can move on this kind. " +
+      "A credential-carrying field holding a LITERAL rather than a ${NAME} ref comes " +
+      "back redacted — save_connector refuses an entry that still carries the " +
+      "redaction, so replace it with a ref rather than copying it through.",
     inputSchema: {
       type: "object",
       properties: {
@@ -199,6 +206,22 @@ const WRITE_TOOLS: Tool[] = [
     },
   },
   {
+    name: "restore_connector",
+    description:
+      "Undo the removal of a connector the checked-in config declares, so the file's " +
+      "entry serves again. The slugs this applies to are in list_connectors' `removed`. " +
+      "It does not bring back a connector that was ADDED at runtime and then removed — " +
+      "there is no file entry behind that one; re-create it with save_connector.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "The connector's slug." },
+        ...REVISION_ARG,
+      },
+      required: ["slug"],
+    },
+  },
+  {
     name: "remove_connector",
     description:
       "Remove a connector from the roster. A connector that was ADDED at runtime is " +
@@ -220,6 +243,65 @@ function runtimeOf(ctx: Pick<BuiltinContext, "runtime">): RuntimeConfig | null {
   return ctx.runtime?.() ?? null;
 }
 
+const REDACTED = "<literal value, redacted — put it in the store as ${NAME}>";
+
+/** Does this value read anything out of the parameter store? */
+const REF = /\$\{[^}]+\}/;
+
+/**
+ * An entry with any literal credential-shaped value replaced.
+ *
+ * `headers:` is `z.record(z.string())`, so a literal bearer token in it is
+ * legal config — and `get_connector` is a READ tool, available on a gateway
+ * that cannot write at all. Handing the raw entry back would mean a deployment
+ * that mounted this surface so an agent could *browse* the roster also handed
+ * out every non-`${NAME}` header value in its config.
+ *
+ * The line is whether the value's secret lives in the STORE. A header that
+ * references one — `Bearer ${TOKEN}`, the commonest correct shape there is —
+ * is kept whole: the ref is what an agent needs to see, and `Bearer ` is not a
+ * credential. A value with no ref at all is a literal, and a literal in a
+ * header is the thing this exists to not hand out.
+ *
+ * `oauthRefresh`'s two credential fields are stricter, and get to be: the
+ * schema already requires each to be exactly one `${NAME}`, so anything else
+ * there cannot have come through a validated config.
+ *
+ * Redaction for the common case, not secret detection. A credential
+ * interpolated beside a ref, or typed into some field nobody thinks of as
+ * credential-carrying, is not something this can find — the guarantee lives one
+ * layer out, in the config never being the right place for a secret.
+ */
+function redacted(entry: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...entry };
+
+  if (isRecord(out.headers)) {
+    out.headers = Object.fromEntries(
+      Object.entries(out.headers).map(([k, v]) => [
+        k,
+        REF.test(String(v)) ? v : REDACTED,
+      ]),
+    );
+  }
+
+  if (isRecord(out.oauthRefresh)) {
+    const oauth = { ...out.oauthRefresh };
+    for (const field of ["clientSecret", "refreshToken"] as const) {
+      const value = oauth[field];
+      if (typeof value === "string" && !soleRefName(value)) {
+        oauth[field] = REDACTED;
+      }
+    }
+    out.oauthRefresh = oauth;
+  }
+
+  return out;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
 /** The roster as an agent sees it: facts, never a credential value. */
 function summarise(runtime: RuntimeConfig) {
   const sources = runtime.sources();
@@ -228,6 +310,11 @@ function summarise(runtime: RuntimeConfig) {
     updatedAt: runtime.overlay().updatedAt,
     updatedBy: runtime.overlay().updatedBy,
     writable: runtime.writable,
+    // Slugs the checked-in config declares and the overlay subtracts. Without
+    // this the list below simply does not contain them, and "removed" and
+    // "never existed" are the same answer — which is the wrong answer for the
+    // one a `restore_connector` can undo.
+    removed: runtime.overlay().servers.removals,
     connectors: runtime.config().servers.map((server) => ({
       slug: server.slug,
       kind: server.kind,
@@ -279,7 +366,7 @@ const mod: BuiltinModule = {
           ok: true,
           slug,
           source: runtime.sources().get(slug) ?? "file",
-          entry,
+          entry: redacted(entry),
           immutableFields: immutableFields(String(entry.kind ?? "")),
           revision: runtime.overlay().revision,
         });
@@ -291,6 +378,7 @@ const mod: BuiltinModule = {
       case "save_connector":
       case "set_connector_enabled":
       case "remove_connector":
+      case "restore_connector":
         return write(runtime, name, args);
 
       default:
@@ -330,7 +418,16 @@ async function write(
   let subject: string;
 
   try {
-    if (name === "remove_connector") {
+    if (name === "restore_connector") {
+      subject = String(args.slug ?? "");
+      if (!overlay.servers.removals.includes(subject)) {
+        return FAILURE(
+          `${subject} is not a removed connector. list_connectors reports the ` +
+            `removed ones under \`removed\`.`,
+        );
+      }
+      next = withRestore(overlay, subject, { by: "mcp" });
+    } else if (name === "remove_connector") {
       subject = String(args.slug ?? "");
       if (!rawEntry(runtime.document(), subject)) {
         return FAILURE(`No connector called ${subject}.`);
@@ -340,9 +437,15 @@ async function write(
       subject = String(args.slug ?? "");
       const before = rawEntry(runtime.document(), subject);
       if (!before) return FAILURE(`No connector called ${subject}.`);
+      // `=== true`, not `!== false`: `inputSchema` is documentation, not a
+      // runtime validator, so a caller sending the STRING "false" would
+      // otherwise enable the server it asked to disable.
+      if (typeof args.enabled !== "boolean") {
+        return FAILURE("`enabled` must be a boolean.");
+      }
       next = withUpsert(
         overlay,
-        { ...before, enabled: args.enabled !== false },
+        { ...before, enabled: args.enabled === true },
         { fileSlugs, by: "mcp" },
       );
     } else {
@@ -354,11 +457,28 @@ async function write(
       subject = String(candidate.slug ?? "");
       if (!subject) return FAILURE("`entry.slug` is required.");
 
+      // `get_connector` redacts a literal credential, so a copy-and-save round
+      // trip would otherwise write the sentinel string in as the value — a
+      // connector that fails at the upstream with a baffling token. Refuse it
+      // and say what to do instead.
+      if (JSON.stringify(candidate).includes(REDACTED)) {
+        return FAILURE(
+          `This entry still carries ${JSON.stringify(REDACTED)}, which is what ` +
+            `get_connector substitutes for a literal credential it will not ` +
+            `hand out. Replace it with a \${NAME} ref pointing at a parameter ` +
+            `in the store, or set the value through the secrets surface first.`,
+        );
+      }
+
       const previousSlug =
         typeof args.previousSlug === "string" ? args.previousSlug : undefined;
       // An edit is judged on what MOVED; a create on what it is. Which one this
       // is turns on whether the roster already holds the slug being written.
       const before = rawEntry(runtime.document(), previousSlug ?? subject);
+      // Replacing the slug you named is this tool's documented semantic, so
+      // `replacing` is that slug. What it refuses is a RENAME that lands on a
+      // third entry — the accident the console refuses on create too.
+      assertNoCollision(runtime.config(), subject, previousSlug ?? subject);
       runtime.assertAcceptable(candidate, before);
 
       next = withUpsert(overlay, candidate, {
@@ -370,7 +490,8 @@ async function write(
   } catch (err) {
     if (
       err instanceof NotRuntimeCreatable ||
-      err instanceof ImmutableFieldChanged
+      err instanceof ImmutableFieldChanged ||
+      err instanceof SlugCollision
     ) {
       return FAILURE(err.message);
     }
@@ -392,9 +513,12 @@ async function write(
     ) {
       return FAILURE(err.message);
     }
+    // `errorSummary`, not `errorText`: this path has just been through a
+    // parameter-store write, and a store client's exception can quote a
+    // rendered value. src/util/error-text.ts makes that call for us.
     return FAILURE(
       "The change could not be applied, so nothing was written: " +
-        errorText(err),
+        errorSummary(err),
     );
   }
 
@@ -449,6 +573,12 @@ function describeAuthorization(
 
   if (entry.kind === "remote-http" && entry.oauthRefresh) {
     const ref = entry.oauthRefresh.refreshToken;
+    // The `?? ref` fallback cannot fire today, and it matters that it cannot:
+    // `oauthRefresh.refreshToken` is superRefine'd to exactly one `${NAME}` in
+    // src/config/schema.ts, and this reads a config that has already been
+    // through the schema. If that rule is ever relaxed, this line starts
+    // echoing a literal refresh token into `credentialPath` — relax the rule
+    // and this needs a redaction, not a fallback.
     const variable = /^\$\{([^}]+)\}$/.exec(ref)?.[1] ?? ref;
     return TEXT({
       ok: true,

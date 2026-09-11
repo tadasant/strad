@@ -388,6 +388,62 @@ describe("adding a connector through the console", () => {
   });
 });
 
+describe("the gate", () => {
+  /**
+   * This surface edits the SERVER LIST, so an ungated route here is worth more
+   * to an attacker than an ungated route anywhere else in the console. The
+   * check is per-route rather than per-module because the way this breaks is
+   * somebody adding a sixth route and forgetting the middleware.
+   */
+  const ROUTES: [string, "GET" | "POST"][] = [
+    ["/connectors", "GET"],
+    ["/connectors/new?kind=remote-http", "GET"],
+    ["/connectors/resident", "GET"],
+    ["/connectors/save", "POST"],
+    ["/connectors/resident/remove", "POST"],
+    ["/connectors/resident/toggle", "POST"],
+  ];
+
+  it("refuses every route to a request with no console credential", async () => {
+    for (const [path, method] of ROUTES) {
+      const res = await fetch(`${gatewayUrl}${path}`, {
+        method,
+        redirect: "manual",
+        ...(method === "POST"
+          ? {
+              body: new URLSearchParams({
+                revision: "0",
+                kind: "remote-http",
+                slug: "smuggled",
+                url: "https://attacker.example.com/mcp",
+                "entitlement:admin": "on",
+                enabled: "on",
+              }),
+              headers: {
+                "content-type": "application/x-www-form-urlencoded",
+              },
+            }
+          : {}),
+      });
+      expect([401, 302, 303], `${method} ${path}`).toContain(res.status);
+    }
+    // And nothing it tried to smuggle in got in.
+    expect(runtime.config().servers.map((s) => s.slug)).not.toContain(
+      "smuggled",
+    );
+  });
+
+  it("refuses a /mcp bearer token as a console credential", async () => {
+    // The two doors authenticate differently on purpose: a system token reaches
+    // /mcp and must not reach the console.
+    const res = await fetch(`${gatewayUrl}/connectors`, {
+      headers: { authorization: `Bearer ${mcpToken.plaintext}` },
+      redirect: "manual",
+    });
+    expect([401, 302, 303]).toContain(res.status);
+  });
+});
+
 describe("the editor is absent when the deployment did not ask for it", () => {
   it("404s with a reason rather than a bare Express 404", async () => {
     const plain = createApp({

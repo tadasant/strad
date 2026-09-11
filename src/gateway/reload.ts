@@ -73,6 +73,9 @@ const DEFAULT_DRAIN_MS = 30_000;
 export class ReloadableGateway {
   private instance: GatewayInstance;
   private probing = false;
+  private closed = false;
+  /** Outstanding drain timers, so `close()` cancels rather than outlives them. */
+  private readonly drains = new Set<ReturnType<typeof setTimeout>>();
   private readonly drainMs: number;
   /**
    * Injected only by a test that wants to observe the drain. Otherwise the
@@ -141,6 +144,15 @@ export class ReloadableGateway {
    */
   async reload(config: StradConfig): Promise<void> {
     const next = await this.builder(config);
+
+    // SIGTERM can land while the builder was awaiting. Assigning now would
+    // install a registry nothing will ever close, so close it here instead and
+    // leave the shut-down gateway shut down.
+    if (this.closed) {
+      await next.registry.close().catch(() => undefined);
+      return;
+    }
+
     const previous = this.instance;
 
     // The swap. Everything after this line is cleanup of a gateway that is no
@@ -152,18 +164,27 @@ export class ReloadableGateway {
 
     this.draining.add(previous.registry);
     const later = this.setTimeoutImpl ?? globalThis.setTimeout;
-    later(() => {
+    const timer = later(() => {
+      this.drains.delete(timer);
       void previous.registry
         .close()
         .catch(() => undefined)
         .finally(() => this.draining.delete(previous.registry));
-    }, this.drainMs).unref?.();
+    }, this.drainMs);
+    this.drains.add(timer);
+    timer.unref?.();
   }
 
   /** Stop probing and close every registry, including ones still draining. */
   async close(): Promise<void> {
+    this.closed = true;
     this.probing = false;
     this.instance.toolSurfaces.stop();
+    // Cancel the drains rather than letting them fire against registries this
+    // call is about to close — a timer that survives `close()` calls
+    // `registry.close()` a second time on a process that is shutting down.
+    for (const timer of this.drains) clearTimeout(timer);
+    this.drains.clear();
     const pending = [...this.draining];
     this.draining.clear();
     await Promise.all(

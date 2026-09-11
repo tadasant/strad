@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { parseYamlDocument } from "../src/config/load.ts";
 import {
   EMPTY_OVERLAY,
+  SlugCollision,
+  assertNoCollision,
+  withRestore,
   ImmutableFieldChanged,
   MAX_OVERLAY_BYTES,
   NotRuntimeCreatable,
@@ -556,5 +559,109 @@ describe("SLUG_PATTERN", () => {
         bad,
       ).toBe(false);
     }
+  });
+});
+
+describe("assertNoCollision", () => {
+  /**
+   * The merge replaces by slug and dedupes BEFORE the schema runs, so the
+   * duplicate-slug rule never sees two of them — a typo in a slug field is a
+   * silent overwrite of a production entry rather than a validation error.
+   */
+  it("refuses a CREATE onto a slug that already exists", () => {
+    expect(() => assertNoCollision(BASE_CONFIG, "alpha", undefined)).toThrow(
+      SlugCollision,
+    );
+  });
+
+  it("allows a write that deliberately targets its own slug", () => {
+    expect(() =>
+      assertNoCollision(BASE_CONFIG, "alpha", "alpha"),
+    ).not.toThrow();
+  });
+
+  it("refuses a RENAME that lands on a third entry", () => {
+    expect(() => assertNoCollision(BASE_CONFIG, "beta", "alpha")).toThrow(
+      /already exists/,
+    );
+  });
+
+  it("allows a rename to a slug nothing holds", () => {
+    expect(() =>
+      assertNoCollision(BASE_CONFIG, "brand-new", "alpha"),
+    ).not.toThrow();
+  });
+
+  it("would otherwise silently replace — the behaviour this guards", () => {
+    // Without the guard this merge is accepted and `alpha` is gone, replaced by
+    // an entry pointing somewhere else entirely, with no duplicate reported.
+    const merged = mergeOverlay(
+      BASE_DOC,
+      overlay({
+        upserts: [
+          { slug: "alpha", kind: "remote-http", url: "https://attacker/mcp" },
+        ],
+      }),
+    );
+    expect(validateMerged(merged).ok).toBe(true);
+    expect(slugsOf(merged)).toEqual(["alpha", "beta", "gamma"]);
+    expect(rawEntry(merged, "alpha")).toMatchObject({
+      url: "https://attacker/mcp",
+    });
+  });
+});
+
+describe("withRestore", () => {
+  const files = fileSlugs(BASE_DOC);
+
+  it("lifts a removal so the checked-in entry serves again", () => {
+    const removed = withRemoval(EMPTY_OVERLAY, "alpha", { fileSlugs: files });
+    expect(slugsOf(mergeOverlay(BASE_DOC, removed))).toEqual(["beta", "gamma"]);
+
+    const back = withRestore(removed, "alpha");
+    expect(back.servers.removals).toEqual([]);
+    expect(slugsOf(mergeOverlay(BASE_DOC, back))).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+    expect(back.revision).toBe(removed.revision + 1);
+  });
+
+  it("is idempotent on a slug that was not removed", () => {
+    const next = withRestore(EMPTY_OVERLAY, "nothing");
+    expect(next.servers.removals).toEqual([]);
+  });
+
+  it("leaves upserts alone", () => {
+    const added = withUpsert(
+      EMPTY_OVERLAY,
+      { slug: "delta", kind: "remote-http", url: "https://d/mcp" },
+      { fileSlugs: files },
+    );
+    expect(withRestore(added, "alpha").servers.upserts).toHaveLength(1);
+  });
+});
+
+describe("a hand-written overlay naming a slug in BOTH lists", () => {
+  /**
+   * `withUpsert` and `withRemoval` keep the lists disjoint, so this is only
+   * reachable by editing the stored parameter by hand. It should still produce
+   * a defined roster rather than depending on which list the merge reads last.
+   */
+  it("upserts win, and the entry is appended rather than replaced in place", () => {
+    const merged = mergeOverlay(BASE_DOC, {
+      version: 1,
+      revision: 1,
+      servers: {
+        upserts: [
+          { slug: "alpha", kind: "remote-http", url: "https://a2/mcp" },
+        ],
+        removals: ["alpha"],
+      },
+    });
+    expect(slugsOf(merged)).toEqual(["beta", "gamma", "alpha"]);
+    expect(rawEntry(merged, "alpha")).toMatchObject({ url: "https://a2/mcp" });
+    expect(validateMerged(merged).ok).toBe(true);
   });
 });
