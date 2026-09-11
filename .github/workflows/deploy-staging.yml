@@ -872,6 +872,79 @@ jobs:
           done
           exit "$rc"
 
+      - name: Report which mounts their bundle calls degraded
+        # The smoke test above asks "does every slug SERVE tools". A mount can
+        # answer yes and fail every call: fetchpet's login went stale and it
+        # spent weeks listing four tools and returning `Login failed` to all of
+        # them (strad#28), through every deploy in that window. Only the bundle
+        # knows, and core asks it — `mountDegraded` on core's /healthz, the slugs
+        # whose bundle reports their mount degraded, and `mountUnread`, the ones
+        # no reading covered (src/gateway/mount-health.ts).
+        #
+        # REPORTS, NEVER GATES. "Degraded" means a different thing per server —
+        # a failed login the next call retries, a credential staging never had,
+        # a refresh token to re-set — and a deploy cannot fail on a signal that
+        # does not say which (HACKS.md #40). A degraded mount is a `::warning::`
+        # and exit 0. The step goes yellow only when it could not look at all,
+        # and `continue-on-error` keeps even that off the job's verdict.
+        #
+        # AFTER the telemetry step, on purpose: the logins run in the background
+        # once a bundle boots and take up to ~30s to fail, and core re-reads the
+        # bundles on its probe interval. So this waits for a core observation
+        # NEWER than the one its own first read saw, rather than trusting the one
+        # the smoke test passed on, which predates most logins.
+        #
+        # What it prints is slugs from core's config — core's /healthz carries
+        # nothing else from the bundle, and never the bundle's reason — so this
+        # run's log, which is kept, holds no upstream text either. The reason is
+        # in the bundle's own container log.
+        if: ${{ !inputs.seed_only && steps.pre.outputs.go == 'true' && steps.secrets.outputs.ready == 'true' }}
+        continue-on-error: true
+        env:
+          DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          DIGITALOCEAN_CONTEXT: default
+        run: |
+          set -uo pipefail
+          APP_ID=$(doctl apps list --format ID,Spec.Name --no-header | awk '$2=="strad-staging"{print $1}') || true
+          if [ -z "$APP_ID" ]; then
+            echo "::warning::no strad-staging app found, so no mount was checked."
+            exit 1
+          fi
+          HOST=$(doctl apps get "$APP_ID" --format DefaultIngress --no-header) || true
+          first=$(curl -fsS "$HOST/healthz" 2>/dev/null | jq -r '.toolSurfaces.observedAt // empty') || true
+          body=''
+          fresh=false
+          for _ in $(seq 1 15); do
+            sleep 10
+            b=$(curl -fsS "$HOST/healthz" 2>/dev/null) || continue
+            at=$(printf '%s' "$b" | jq -r '.toolSurfaces.observedAt // empty' 2>/dev/null) || continue
+            body=$b
+            if [ -n "$at" ] && [ "$at" != "$first" ]; then fresh=true; break; fi
+          done
+
+          if [ -z "$body" ]; then
+            echo "::warning::core's /healthz could not be read, so no mount was checked."
+            exit 1
+          fi
+          if ! printf '%s' "$body" | jq -e '.mountDegraded' >/dev/null 2>&1; then
+            echo "::warning::core's /healthz carries no mountDegraded, so no mount was checked: the core image may predate the bundle mount report."
+            exit 1
+          fi
+          [ "$fresh" = true ] || echo "no probe landed in 150s; reporting the last observation."
+
+          degraded=$(printf '%s' "$body" | jq -r '.mountDegraded | join(", ")' 2>/dev/null) || degraded=''
+          unread=$(printf '%s' "$body" | jq -r '(.mountUnread // []) | join(", ")' 2>/dev/null) || unread=''
+          if [ -n "$degraded" ]; then
+            echo "::warning::the bundle reports these mounts degraded — they list their tools and say their calls will fail: ${degraded}%0ANot failing the deploy on it. The reason is on the bundle's own /healthz and in its container log; strad.mcp.mount_degraded carries the same fact."
+          fi
+          # "Nothing degraded" is only a claim about the mounts that were READ.
+          if [ -n "$unread" ]; then
+            echo "::warning::core could not read the bundle's report for these mounts, so they were not checked: ${unread}"
+          fi
+          [ -z "$degraded" ] && [ -z "$unread" ] && echo "OK: every mount was read, and no bundle reports one degraded."
+          printf '%s' "$body" | jq -c '[.toolSurfaces.servers[] | select(.mount) | {slug, mount}]' || true
+          exit 0
+
       - name: Report what the secrets credentials can do
         # The secrets surfaces are PROBE-DERIVED: the MCP server lists
         # get_secret_value and the write tools only if its credential holds the
