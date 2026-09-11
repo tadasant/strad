@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { bearerToken } from "../../auth/credential.ts";
 import type { OAuthRefresh } from "../../config/schema.ts";
 import {
   resolveRefsAsync,
@@ -563,7 +564,8 @@ async function exchange(
   if (grant.clientSecret !== undefined && grant.clientAuth === "basic") {
     // RFC 6749 §2.3.1: each half form-encoded, then joined and base64'd.
     const user = `${formEncode(grant.clientId)}:${formEncode(grant.clientSecret)}`;
-    headers.authorization = `Basic ${Buffer.from(user, "utf8").toString("base64")}`;
+    headers["authorization"] =
+      `Basic ${Buffer.from(user, "utf8").toString("base64")}`;
   } else {
     body.set("client_id", grant.clientId);
     if (grant.clientSecret !== undefined) {
@@ -616,7 +618,7 @@ async function exchange(
     typeof accessToken !== "string" ||
     accessToken === "" ||
     (tokenType !== undefined &&
-      (typeof tokenType !== "string" || tokenType.toLowerCase() !== "bearer"))
+      (typeof tokenType !== "string" || !namesBearerScheme(tokenType)))
   ) {
     throw fail("malformed", { status });
   }
@@ -648,17 +650,31 @@ async function exchange(
   };
 }
 
+/**
+ * Whether a `token_type` names the scheme strad sends the token under.
+ *
+ * RFC 6750 makes it case-insensitive, and "the Bearer scheme" is defined once,
+ * by `bearerToken` — so this asks that function rather than spelling the word a
+ * second time. A value carrying a space is not a scheme name at all.
+ */
+function namesBearerScheme(tokenType: string): boolean {
+  return !/\s/.test(tokenType) && bearerToken(`${tokenType} t`) !== null;
+}
+
 /** `application/x-www-form-urlencoded`, for one Basic credential half. */
 function formEncode(value: string): string {
   return new URLSearchParams({ v: value }).toString().slice(2);
 }
 
-/** The bearer token in a header map, whatever the header's spelling. */
+/**
+ * The bearer token in a header map strad SENT, whatever the header's spelling.
+ *
+ * Read with the one `bearerToken` every door uses (src/auth/credential.ts),
+ * so what counts as a bearer is decided once for both directions.
+ */
 export function bearerIn(headers: Record<string, string>): string | null {
   for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() !== "authorization") continue;
-    const match = /^Bearer\s+(.+)$/i.exec(value);
-    return match ? match[1]! : null;
+    if (name.toLowerCase() === "authorization") return bearerToken(value);
   }
   return null;
 }
