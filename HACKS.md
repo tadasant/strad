@@ -47,6 +47,20 @@ in `docs/src/content/docs/auth/overview.md`.
 accepts a static system token — there is no code path from the bypass to it. On
 the open internet, `/mcp` is never left ungated.
 
+**What that scope stopped covering, since `/tokens`.** It is still true that no
+console credential _authenticates_ `/mcp` — that endpoint reads the
+`Authorization` header against the token store and nothing else. What is no
+longer true is "there is no code path from the bypass to it": a console session
+can **mint** a static token (`/tokens`, hack #6), and on a deployment whose
+console door is the bypass, that means the bootstrap token can produce an
+`admin` credential for `/mcp`. It is a fair characterisation of what a console
+admin already was — the same session could rotate the `STRAD_TOKENS` parameter
+itself from `/ui/secrets` and get there in two clicks instead of one — and it is
+bounded the same way: `/tokens` writes only where
+`auth.staticTokens.store: parameter-store` is set, which no config in this repo
+sets, and the bypass is what hack #2 exists to delete. Stated rather than left
+as a claim that has quietly stopped holding.
+
 **Why.** Google OAuth client credentials (`GOOGLE_CLIENT_ID` /
 `GOOGLE_CLIENT_SECRET`) are being provisioned by the human. The Google path is
 complete in code — the provider and its `hd` hosted-domain check
@@ -181,7 +195,15 @@ narrower residuals, both stated on the limitations page:
    read-modify-write whose read is a direct `reveal()` immediately before the
    write. Two humans minting inside that window lose one of the two mints. Same
    as hack #91.
-2. **Staleness during a store outage.** `StoreSecretProvider` serves its last
+2. **"Effective on the next request" assumes ONE core instance.** A write drops
+   the reading held by the process that made it, and core runs
+   `instance_count: 1` (`src/deploy/appspec.ts`). Nothing enforces that for this
+   feature's sake, and a second core instance would keep serving a revoked token
+   from its own snapshot for up to `gateway.secrets.ttlSeconds` — an hour by
+   default — with nothing saying so. The same shape `appspec.ts` already refuses
+   for a bundle hosting writable params, and the fix is the same: broadcast the
+   invalidation, or refuse the combination.
+3. **Staleness during a store outage.** `StoreSecretProvider` serves its last
    known good reading when a re-read fails, so a revocation made while the store
    is unreachable lands when the store answers again. Nothing is ADMITTED from a
    stale reading — an unknown token is unknown — and it is strictly less stale
@@ -640,8 +662,11 @@ on every request.
 
 **Crucial scope.** Identical to hack #2: this gate is `/console`-class only. It
 CANNOT authenticate `/mcp` — that endpoint takes a static system token and
-nothing else (`src/auth/index.ts`), and there is no code path from this cookie to
-it. `/ui` is HUMAN-facing HTML; it is not the agent endpoint.
+nothing else (`src/auth/index.ts`), and the cookie is never read there. `/ui` is
+HUMAN-facing HTML; it is not the agent endpoint. Since `/tokens` (hack #6) a
+console session can _mint_ such a token where the parameter-store backing is
+configured, which is the same reach a console admin already had through the
+secrets page; hack #2 carries the reasoning.
 
 **Why.** Google Workspace OAuth credentials are not provisioned yet (hack #2), so
 the bypass is still the only working door on a deployment without them. Reusing

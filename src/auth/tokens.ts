@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { secretEquals } from "./credential.ts";
+import { errorSummary } from "../util/error-text.ts";
 import type { SecretProvider } from "../secrets/provider/types.ts";
 
 /**
@@ -204,6 +205,24 @@ export class ParameterTokenStore implements TokenStore {
 }
 
 /**
+ * The stored payload is not a list of token records.
+ *
+ * Its own class so the throw site can print the MESSAGE — every one of them is a
+ * sentence this file wrote, naming the variable and an index and nothing else. A
+ * store client's exception cannot say that of itself, which is why the two are
+ * told apart rather than both reduced to a class name.
+ */
+export class UnreadableTokenRecords extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnreadableTokenRecords";
+  }
+}
+
+/** The alphabet a `pubid` may use. See the check in `parseTokenRecords`. */
+const PUBID = /^[A-Za-z0-9-]{1,64}$/;
+
+/**
  * Parse the stored payload into records, or THROW.
  *
  * Shared by both stores and by the console's write path, so "what is a valid
@@ -218,16 +237,30 @@ export function parseTokenRecords(json: string | undefined): TokenRecord[] {
   try {
     parsed = JSON.parse(json);
   } catch {
-    throw new Error(`${TOKENS_VARIABLE} is not valid JSON`);
+    throw new UnreadableTokenRecords(`${TOKENS_VARIABLE} is not valid JSON`);
   }
   if (!Array.isArray(parsed)) {
-    throw new Error(`${TOKENS_VARIABLE} must be a JSON array of token records`);
+    throw new UnreadableTokenRecords(
+      `${TOKENS_VARIABLE} must be a JSON array of token records`,
+    );
   }
   return parsed.map((r, i) => {
     const rec = r as Partial<TokenRecord>;
     if (!rec.pubid || !rec.hash || !Array.isArray(rec.roles)) {
-      throw new Error(
+      throw new UnreadableTokenRecords(
         `${TOKENS_VARIABLE}[${i}] must have pubid, hash and roles`,
+      );
+    }
+    // The SHAPE of the id, checked rather than trusted. A record `mintToken`
+    // wrote always passes; one written by hand may not, and the id is the field
+    // that travels furthest from this file — into an event, onto a console row,
+    // back in on a form. A record no token could name is refused rather than
+    // filed: `parseToken` cuts the presented token on its first three
+    // underscores, so an id containing one is unaddressable by construction.
+    if (!PUBID.test(rec.pubid)) {
+      throw new UnreadableTokenRecords(
+        `${TOKENS_VARIABLE}[${i}] has a pubid that is not 1-64 characters of ` +
+          `[A-Za-z0-9-], so no token could name it`,
       );
     }
     return {
@@ -263,6 +296,16 @@ export type TokenVerdict =
         | "mismatch"
         | "wrong_env"
         | "unavailable";
+      /**
+       * Present on `unavailable` alone: a short, strad-authored summary of WHY
+       * the store could not be read, for the caller's log line.
+       *
+       * Never the store client's own exception text and never a payload — it is
+       * either one of `parseTokenRecords`'s own sentences or `errorSummary`,
+       * which reduces anything else to a class name plus, for a store error, the
+       * method and resource it failed on.
+       */
+      detail?: string;
     };
 
 /**
@@ -272,15 +315,16 @@ export type TokenVerdict =
  * server-side logs only. Telling a caller *why* their token failed tells an
  * attacker which half of it they got right.
  *
- * `unavailable` is the one reason that is not about the token. A store that
- * cannot be read — unreachable, or holding a payload that is not a list of
- * records — is NOT an empty store and is certainly not an open one, so the
- * answer is the same 401 every other failure gets. It is a separate word purely
- * so the caller can say so in the logs: "every token is failing" and "this token
- * is failing" call for opposite responses, and they are otherwise identical from
- * outside. A throwing store must never reach the caller as an exception, because
- * the one thing worse than denying on an outage is a 500 that an operator reads
- * as a bug in the caller's client.
+ * `unavailable` is the one reason that is not about the token at all: the store
+ * could not be read, so nothing was decided. It is NOT an empty store and is
+ * certainly not an open one, and nothing is admitted either way — but it is also
+ * not a 401, because a 401 tells a caller holding a perfectly good token to
+ * discard it and re-authenticate. `authenticateMcp` (src/auth/index.ts) raises
+ * `TokenStoreUnavailable` for it, which the route guard answers as a 500; that
+ * class carries the reasoning.
+ *
+ * What this function guarantees is that the store's own exception never escapes
+ * it: the error is caught here, reduced to `detail`, and dropped.
  */
 export async function verifyToken(
   raw: string,
@@ -297,12 +341,20 @@ export async function verifyToken(
   let record: TokenRecord | undefined;
   try {
     record = await store.get(parsed.pubid);
-  } catch {
-    // The error itself is DROPPED here rather than chained. It comes from a
-    // store client whose messages quote resources and payloads, and this
-    // function's every return value is written to a log line. The caller emits
-    // the fact; `src/auth/index.ts` is where it becomes an event.
-    return { ok: false, reason: "unavailable" };
+  } catch (err) {
+    // The error itself is DROPPED here rather than chained. A store client's
+    // message can quote a resource and a payload, and this function's every
+    // return value is written to a log line — so what survives is a summary:
+    // one of this file's own sentences for a payload that would not parse, and
+    // `errorSummary` (a class name, plus method and resource for a store error)
+    // for anything else. The caller emits it; `src/auth/index.ts` is where it
+    // becomes an event and a line on stderr.
+    return {
+      ok: false,
+      reason: "unavailable",
+      detail:
+        err instanceof UnreadableTokenRecords ? err.message : errorSummary(err),
+    };
   }
 
   // Always hash and compare, even for an unknown pubid. Returning early on

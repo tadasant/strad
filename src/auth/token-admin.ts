@@ -64,6 +64,16 @@ export function tokensParameterPath(config: StradConfig): string {
 
 export interface TokenAdminOptions {
   config: StradConfig;
+  /**
+   * Who is doing this, for the stderr audit line.
+   *
+   * Deliberately NOT on the telemetry records: a console identity is a person,
+   * and `src/telemetry/redact.ts` keeps people out of the ingestor. stdout is
+   * never shipped (see AGENTS.md), so a line there is readable by an operator
+   * with the container's logs and by nothing else — which is the right audience
+   * for "who minted this credential".
+   */
+  actor?: string;
   /** The boot bag, for resolving the `secrets` server's `consoleEnv:` refs. */
   secrets: SecretBag;
   /**
@@ -87,6 +97,16 @@ export interface TokenAdminOptions {
  * sentence explaining why there is no form.
  */
 export function tokenWritability(opts: TokenAdminOptions): string | null {
+  // BEFORE the store question, because it outranks it. With static tokens
+  // disabled, `tokenStoreFromConfig` builds an empty store and no token can
+  // ever satisfy `/mcp` — so a mint here would write a well-formed record for a
+  // credential that cannot work, and report success. The page says this instead.
+  if (!opts.config.auth.staticTokens.enabled) {
+    return (
+      "auth.staticTokens.enabled is false, so /mcp accepts no static token at " +
+      "all and a minted one could never work. Nothing here would take effect."
+    );
+  }
   if (opts.config.auth.staticTokens.store !== "parameter-store") {
     return (
       `auth.staticTokens.store is "${opts.config.auth.staticTokens.store}", so the ` +
@@ -138,28 +158,25 @@ async function mutate<T>(
     current = parseTokenRecords(await store.reveal(path));
   } catch (err) {
     if (err instanceof ParameterStoreError && err.status === 404) {
-      // THE MIGRATION, and it is the reason this branch is not just a `[]`.
+      // NO PARAMETER YET, SO NO RECORDS YET — and deliberately not "seed from
+      // the environment".
       //
-      // A deployment moving off the baked env var has records the gateway is
-      // serving right now and a parameter that does not exist yet. Seeding the
-      // first write from what the gateway CURRENTLY reads — the provider chain,
-      // which is the store in front of the environment — means the first mint
-      // carries every existing token across instead of silently replacing the
-      // fleet's credentials with one new one.
+      // The tempting version of this branch reads the baked `STRAD_TOKENS` and
+      // carries it across, on the theory that a deployment mid-migration is
+      // serving it. It is not: the token store reads the store LAYER
+      // (`gatewayStore`), so a gateway with no parameter is admitting nobody,
+      // and there is nothing to carry. Worse, `hydrateBootEnv` copies the
+      // parameter into `process.env` at boot, so on a store-backed deployment
+      // that environment variable is a FROZEN roster — seeding from it would
+      // resurrect, in the store, every revocation made since the last restart.
+      //
+      // A store-backed deployment reaches this branch only if the parameter is
+      // absent, which its own deploy preflight already refuses
+      // (`REQUIRED_BOOT_ENV_KEYS` in src/secrets/provider/hydrate.ts). So this
+      // is the first mint on a gateway that was serving no tokens, and an empty
+      // list is the honest starting point.
       exists = false;
-      try {
-        current = parseTokenRecords(
-          (await opts.secretProvider?.shared.get(TOKENS_VARIABLE)) ?? undefined,
-        );
-      } catch (seedErr) {
-        return {
-          ok: false,
-          status: 502,
-          reason:
-            `there is no ${TOKENS_VARIABLE} parameter yet, and the records this ` +
-            `gateway is serving could not be read to seed one: ${errorSummary(seedErr)}`,
-        };
-      }
+      current = [];
     } else {
       return { ok: false, status: statusOf(err), reason: errorSummary(err) };
     }
@@ -197,17 +214,46 @@ async function mutate<T>(
   return { ok: true, ...applied.result };
 }
 
+/**
+ * The status the CONSOLE answers with when the STORE failed.
+ *
+ * Deliberately not the store's own status. A `401` or `403` from Google means
+ * the console's service account cannot do this; relayed verbatim it renders the
+ * tokens page under a status a browser and an operator both read as "you are
+ * not signed in", which is the one thing it does not mean. `502` and `503` are
+ * the two honest answers: this gateway could not reach the thing it needed, or
+ * there was nothing to reach. A refusal this module authored (a bad label, an
+ * unknown role) keeps its own 4xx and never comes through here.
+ */
 function statusOf(err: unknown): number {
-  const status = err instanceof ParameterStoreError ? err.status : 502;
-  return status >= 400 && status < 600 ? status : 502;
+  if (err instanceof ParameterStoreError && err.status === 404) return 404;
+  return 502;
 }
 
 /** Every record, as the STORE holds them. For the console's roster. */
 export async function readTokenRecords(
   opts: TokenAdminOptions,
 ): Promise<TokenRecord[]> {
-  const provider = opts.secretProvider?.shared;
-  if (!provider) return [];
+  // The SAME layer `/mcp` reads, so the roster is what the gateway is actually
+  // serving rather than a second opinion about it: `gatewayStore` under the
+  // store backing, and the plain environment provider under `env`, which is
+  // where those records genuinely are. Falling back to `shared` under the store
+  // backing would show a human the frozen boot-time roster behind the chain —
+  // the page would list a token `/mcp` has stopped accepting. See
+  // `tokenStoreFromConfig` in src/auth/index.ts.
+  const providers = opts.secretProvider;
+  const provider =
+    opts.config.auth.staticTokens.store === "parameter-store"
+      ? providers?.gatewayStore
+      : providers?.shared;
+  if (!provider) {
+    // NOT an empty roster. "There are no tokens" and "this page cannot see the
+    // tokens" are opposite things to tell a human standing in front of a
+    // gateway, and only one of them is true here.
+    throw new Error(
+      "this console has no secret provider, so the token roster cannot be read",
+    );
+  }
   return parseTokenRecords((await provider.get(TOKENS_VARIABLE)) ?? undefined);
 }
 
@@ -236,6 +282,29 @@ export async function mintTokenRecord(
     };
   }
 
+  // The set is closed, and it is closed HERE as well as in the form. The form's
+  // checkboxes are the affordance; this is the rule. A role that `roles:` does
+  // not define grants nothing (`entitledServers` reaches for it with
+  // `Object.hasOwn` and finds nothing), so the record would be a credential that
+  // authenticates and is then refused every slug with a 424 pointing at nothing
+  // — which is precisely the silent dud `offerableRoles` exists to prevent. Two
+  // ways to get here: a hand-crafted POST, and a page left open across a deploy
+  // that renamed a role.
+  const offered = new Set(offerableRoles(opts.config).map((r) => r.role));
+  const unknown = input.roles.filter((role) => !offered.has(role));
+  if (unknown.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      reason:
+        `This gateway declares no role named ${unknown.map((r) => `"${r}"`).join(", ")}. ` +
+        `A token holding one would authenticate and then be refused every ` +
+        `server it asked for. Declared roles: ` +
+        (offered.size ? [...offered].join(", ") : "(none)") +
+        ".",
+    };
+  }
+
   // Minted OUTSIDE the read-modify-write, so the plaintext exists exactly once
   // whatever the store does. A mint retried inside `apply` would produce a
   // different secret from the one this function is about to return.
@@ -249,7 +318,13 @@ export async function mintTokenRecord(
     records: [...current, minted.record],
     result: { minted },
   }));
-  if (out.ok) event({ evt: "strad.token_minted", pubid: minted.record.pubid });
+  if (out.ok) {
+    event({ evt: "strad.token_minted", pubid: minted.record.pubid });
+    audit(
+      opts,
+      `minted ${minted.record.pubid} ("${label}") [${input.roles.join(", ")}]`,
+    );
+  }
   return out;
 }
 
@@ -271,7 +346,10 @@ export async function revokeTokenRecord(
       result: { record },
     };
   });
-  if (out.ok) event({ evt: "strad.token_revoked", pubid });
+  if (out.ok) {
+    event({ evt: "strad.token_revoked", pubid });
+    audit(opts, `revoked ${pubid} ("${out.record.label}")`);
+  }
   return out;
 }
 
@@ -307,8 +385,23 @@ export async function forgetTokenRecord(
       result: { record: found },
     };
   });
-  if (out.ok) event({ evt: "strad.token_forgotten", pubid });
+  if (out.ok) {
+    event({ evt: "strad.token_forgotten", pubid });
+    audit(opts, `forgot ${pubid} ("${out.record.label}")`);
+  }
   return out;
+}
+
+/**
+ * The audit line: who changed the gateway's access-control list, and to what.
+ *
+ * stderr only. It carries a console identity and a human-typed label, neither of
+ * which may reach the ingestor — so it is a `console.error` rather than an
+ * `event()`, and the event beside it carries the id alone. An operator reading
+ * an incident has the container's logs; that is the audience.
+ */
+function audit(opts: TokenAdminOptions, what: string): void {
+  console.error(`[strad] tokens: ${opts.actor ?? "unknown"} ${what}`);
 }
 
 function notInStore(pubid: string): { status: number; reason: string } {

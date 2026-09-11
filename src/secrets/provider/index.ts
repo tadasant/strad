@@ -58,6 +58,22 @@ export interface ServerSecretProviders {
    */
   readonly shared: SecretProvider;
   /**
+   * The gateway namespace's STORE layer alone, WITHOUT the environment behind it.
+   * Absent under `gateway.secrets.provider: env`, where there is no store.
+   *
+   * `shared` above is the right seam for a `${NAME}`: the env fallback is what
+   * makes the migration off deploy-time baking reversible, and a name that has
+   * not moved yet must still resolve. It is the WRONG seam for anything whose
+   * absence from the store is itself the answer — and `STRAD_TOKENS` is exactly
+   * that. `hydrateBootEnv` puts a copy of the roster in `process.env` at boot,
+   * so on a store-backed core the chain's second layer is a FROZEN roster that
+   * never changes again; a parameter that is later destroyed, or that renders to
+   * nothing, would fall through to it and start admitting every token that was
+   * live at boot, revocations included. The token store therefore reads this
+   * layer, where a miss is a miss.
+   */
+  readonly gatewayStore?: SecretProvider;
+  /**
    * The provider one server's own `${NAME}` refs resolve against: that server's
    * `/strad/{env}/mcp/{slug}/static/` namespace FIRST, `shared` second.
    *
@@ -86,6 +102,10 @@ export function sharedSecretProviders(
 ): ServerSecretProviders {
   return {
     shared: provider,
+    // Deliberately absent. This lifts ONE provider with nothing behind it, so
+    // there is no chain to leak through — but there is also no store, and a
+    // caller that asked for the store layer must not be handed `process.env`
+    // wearing its name.
     forServer: () => provider,
     invalidate: (name?: string) => provider.invalidate(name),
   };
@@ -207,6 +227,7 @@ export function buildSecretProviders(
 
   return {
     shared,
+    gatewayStore: store,
     forServer,
     invalidate: (name?: string) => {
       shared.invalidate(name);

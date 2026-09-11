@@ -9,11 +9,20 @@ import {
   verifyToken,
   TOKENS_VARIABLE,
   type TokenRecord,
+  type TokenStore,
 } from "../src/auth/tokens.ts";
 import { tokenStoreFromConfig } from "../src/auth/index.ts";
 import { parseConfig } from "../src/config/load.ts";
-import { sharedSecretProviders } from "../src/secrets/provider/index.ts";
-import type { SecretProvider } from "../src/secrets/provider/index.ts";
+import {
+  buildSecretProviders,
+  hydrateBootEnv,
+  sharedSecretProviders,
+} from "../src/secrets/provider/index.ts";
+import type {
+  SecretProvider,
+  ServerSecretProviders,
+} from "../src/secrets/provider/index.ts";
+import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
 
 /**
  * `ParameterTokenStore` — the store-backed half of `/mcp` authentication.
@@ -79,7 +88,7 @@ describe("ParameterTokenStore", () => {
         throw new Error("parameter manager: 503 backend unavailable");
       }),
     );
-    expect(await verifyToken(MINTED.plaintext, store, "test")).toEqual({
+    expect(await verifyToken(MINTED.plaintext, store, "test")).toMatchObject({
       ok: false,
       reason: "unavailable",
     });
@@ -87,7 +96,7 @@ describe("ParameterTokenStore", () => {
 
   it("FAILS CLOSED when the stored payload is not JSON", async () => {
     const store = new ParameterTokenStore(providerOf(() => "{not json"));
-    expect(await verifyToken(MINTED.plaintext, store, "test")).toEqual({
+    expect(await verifyToken(MINTED.plaintext, store, "test")).toMatchObject({
       ok: false,
       reason: "unavailable",
     });
@@ -101,7 +110,7 @@ describe("ParameterTokenStore", () => {
       '"a string"',
     ]) {
       const store = new ParameterTokenStore(providerOf(() => payload));
-      expect(await verifyToken(MINTED.plaintext, store, "test")).toEqual({
+      expect(await verifyToken(MINTED.plaintext, store, "test")).toMatchObject({
         ok: false,
         reason: "unavailable",
       });
@@ -247,6 +256,15 @@ describe("record codec", () => {
   });
 });
 
+/**
+ * Providers shaped like a store-backed deployment's: a gateway STORE layer, with
+ * the environment chained behind it exactly as `buildSecretProviders` does.
+ */
+function storeProviders(payload: string): ServerSecretProviders {
+  const gatewayStore = providerOf(() => payload);
+  return { ...sharedSecretProviders(gatewayStore), gatewayStore };
+}
+
 describe("tokenStoreFromConfig", () => {
   const base = `
 version: 1
@@ -256,15 +274,54 @@ gateway:
 roles: { admin: { servers: ["*"] } }
 `;
 
+  it("REFUSES a payload whose pubid could never name a token", async () => {
+    // A hand-written record's `pubid` reaches an event, a console row and a form
+    // field. `parseToken` cuts on underscores, so an id holding one is
+    // unaddressable — and the whole payload is refused rather than half-filed.
+    for (const bad of ["a_b", "", "x".repeat(65), "a b", "a/b"]) {
+      const payload = JSON.stringify([
+        { pubid: bad, hash: "0".repeat(64), roles: ["admin"] },
+      ]);
+      expect(() => parseTokenRecords(payload)).toThrow();
+      const store = new ParameterTokenStore(providerOf(() => payload));
+      expect(await verifyToken(MINTED.plaintext, store, "test")).toMatchObject({
+        ok: false,
+        reason: "unavailable",
+        detail: expect.stringContaining("pubid"),
+      });
+    }
+  });
+
+  it("carries a strad-authored reason on `unavailable`, never the store's text", async () => {
+    // The detail reaches a log line, so what may be in it is the point: one of
+    // this file's own sentences, or a class name — never a payload.
+    const malformed = new ParameterTokenStore(providerOf(() => "{not json"));
+    expect(await verifyToken(MINTED.plaintext, malformed, "test")).toEqual({
+      ok: false,
+      reason: "unavailable",
+      detail: "STRAD_TOKENS is not valid JSON",
+    });
+
+    const CANARY = "sk-live-DO-NOT-LEAK";
+    const throwing = new ParameterTokenStore(
+      providerOf(() => {
+        throw new Error(`parameter manager said: ${CANARY}`);
+      }),
+    );
+    const verdict = await verifyToken(MINTED.plaintext, throwing, "test");
+    expect(verdict).toEqual({
+      ok: false,
+      reason: "unavailable",
+      detail: "Error",
+    });
+    expect(JSON.stringify(verdict)).not.toContain(CANARY);
+  });
+
   it('builds a ParameterTokenStore for store: "parameter-store"', async () => {
     const config = parseConfig(
       `${base}auth: { staticTokens: { enabled: true, store: parameter-store } }`,
     );
-    const store = tokenStoreFromConfig(
-      config,
-      {},
-      sharedSecretProviders(providerOf(() => PAYLOAD)),
-    );
+    const store = tokenStoreFromConfig(config, {}, storeProviders(PAYLOAD));
     expect(store).toBeInstanceOf(ParameterTokenStore);
     expect((await store.list()).map((r) => r.pubid)).toEqual([
       MINTED.record.pubid,
@@ -282,6 +339,25 @@ roles: { admin: { servers: ["*"] } }
     );
     expect(store).toBeInstanceOf(EnvTokenStore);
     expect((await store.list()).length).toBe(1);
+  });
+
+  it("FAILS CLOSED when the providers carry no store layer to read from", async () => {
+    // The shape the fix turns on: providers that HAVE a `shared` (the env
+    // provider, holding a roster) and no `gatewayStore`. Reading `shared` would
+    // admit; reading nothing denies.
+    const config = parseConfig(
+      `${base}auth: { staticTokens: { enabled: true, store: parameter-store } }`,
+    );
+    const store = tokenStoreFromConfig(
+      config,
+      { STRAD_TOKENS: PAYLOAD },
+      sharedSecretProviders(providerOf(() => PAYLOAD)),
+    );
+    expect(await store.list()).toEqual([]);
+    expect(await verifyToken(MINTED.plaintext, store, "test")).toEqual({
+      ok: false,
+      reason: "unknown",
+    });
   });
 
   it("FAILS CLOSED when the parameter store is asked for and no provider is supplied", async () => {
@@ -307,10 +383,109 @@ roles: { admin: { servers: ["*"] } }
       const built = tokenStoreFromConfig(
         config,
         { STRAD_TOKENS: PAYLOAD },
-        sharedSecretProviders(providerOf(() => PAYLOAD)),
+        storeProviders(PAYLOAD),
       );
       expect(await built.list()).toEqual([]);
     }
+  });
+});
+
+/**
+ * THE COMPOSITION, which is where the real bug was.
+ *
+ * Every test above injects a bare provider. The gateway does not: it builds
+ * `ServerSecretProviders` over a real store client and, by default, CHAINS
+ * `process.env` behind it — and then `hydrateBootEnv` puts a copy of the roster
+ * in that environment. So the layer the token store reads is the whole question,
+ * and a unit test with one provider cannot see it.
+ */
+describe("the token store, as src/index.ts composes it", () => {
+  const YAML = `
+version: 1
+gateway:
+  env: test
+  secrets:
+    provider: gcp-parameter-store
+    envFallback: true
+auth: { staticTokens: { enabled: true, store: parameter-store } }
+roles: { admin: { servers: ["*"] } }
+`;
+  const config = parseConfig(YAML);
+  const PATH = "/strad/test/gateway/static/STRAD_TOKENS";
+
+  async function boot(): Promise<{
+    fake: FakeGcp;
+    env: NodeJS.ProcessEnv;
+    store: TokenStore;
+    providers: ServerSecretProviders;
+  }> {
+    const fake = createFakeGcp();
+    await fake.store.create({
+      path: PATH,
+      secret: true,
+      value: PAYLOAD,
+      note: "records",
+    });
+    const env: NodeJS.ProcessEnv = {};
+    const providers = buildSecretProviders({
+      config,
+      env,
+      resolver: fake.store,
+    });
+    // Exactly what boot does, in the order boot does it.
+    await hydrateBootEnv(providers.shared, "core", env);
+    return {
+      fake,
+      env,
+      store: tokenStoreFromConfig(config, env, providers),
+      providers,
+    };
+  }
+
+  it("hydration really does put a copy of the roster in process.env", async () => {
+    // The premise of the next two tests. If this ever stops being true they
+    // become vacuous rather than failing, so it is asserted rather than assumed.
+    const { env } = await boot();
+    expect(env.STRAD_TOKENS).toBe(PAYLOAD);
+  });
+
+  it("verifies from the store", async () => {
+    const { store } = await boot();
+    expect((await verifyToken(MINTED.plaintext, store, "test")).ok).toBe(true);
+  });
+
+  it("REFUSES a token the store no longer holds, though the env fallback still does", async () => {
+    // The bug this test exists for: the parameter is destroyed (a console
+    // Delete, a `gcloud` tidy-up, a rollback) and the chained `process.env`
+    // still holds the roster boot hydrated into it. Reading through the chain
+    // would serve that frozen roster forever — every token live at boot,
+    // revocations included. Reading the STORE LAYER makes a miss a miss.
+    const { fake, env, store, providers } = await boot();
+    await fake.store.destroy(PATH);
+    providers.invalidate();
+
+    expect(env.STRAD_TOKENS).toBe(PAYLOAD); // the fallback is still there…
+    expect(await verifyToken(MINTED.plaintext, store, "test")).toEqual({
+      ok: false,
+      reason: "unknown", // …and nothing is admitted from it.
+    });
+  });
+
+  it("REFUSES a token revoked in the store, though the env fallback still says live", async () => {
+    // The same hazard one step subtler: the parameter is present and says
+    // revoked, the boot-time environment copy says live. The store wins.
+    const { fake, store, providers } = await boot();
+    await fake.store.rotate(
+      PATH,
+      serializeTokenRecords([
+        { ...MINTED.record, revokedAt: new Date().toISOString() },
+      ]),
+    );
+    providers.invalidate();
+    expect(await verifyToken(MINTED.plaintext, store, "test")).toEqual({
+      ok: false,
+      reason: "revoked",
+    });
   });
 });
 

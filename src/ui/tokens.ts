@@ -15,7 +15,11 @@ import {
   tokenWritability,
   type TokenAdminOptions,
 } from "../auth/token-admin.ts";
-import { TOKENS_VARIABLE, type TokenRecord } from "../auth/tokens.ts";
+import {
+  TOKENS_VARIABLE,
+  UnreadableTokenRecords,
+  type TokenRecord,
+} from "../auth/tokens.ts";
 import { errorSummary } from "../util/error-text.ts";
 import { signedInLabel } from "./console-auth.ts";
 import { esc, formatTime, layout } from "./render.ts";
@@ -185,20 +189,32 @@ async function renderTokens(
   } catch (err) {
     // The roster is the page; a store that cannot be read is the page's news,
     // not a 500. It is also exactly what /mcp is seeing right now, so the page
-    // says so in those words.
-    readError = errorSummary(err);
+    // says so in those words — and says WHICH, since `UnreadableTokenRecords`
+    // carries a sentence strad wrote (see src/auth/tokens.ts) while anything
+    // else is reduced to a class name plus, for a store error, its method and
+    // resource.
+    readError =
+      err instanceof UnreadableTokenRecords ? err.message : errorSummary(err);
   }
 
-  res.type("html").send(
-    renderTokensPage({
-      config: opts.config,
-      records,
-      readError,
-      blocked: tokenWritability(opts),
-      signedInAs: signedInLabel(res),
-      ...state,
-    }),
-  );
+  res
+    // `no-store` on every render, not only the mint. The mint response carries a
+    // plaintext, and the roster is the gateway's access-control list — neither
+    // belongs in a shared cache or a back-button snapshot. Browsers do not cache
+    // a POST response and the service worker caches only the shell
+    // (src/ui/pwa.ts), so this is belt and braces; it costs one header.
+    .set("Cache-Control", "no-store")
+    .type("html")
+    .send(
+      renderTokensPage({
+        config: opts.config,
+        records,
+        readError,
+        blocked: tokenWritability(opts),
+        signedInAs: signedInLabel(res),
+        ...state,
+      }),
+    );
 }
 
 export interface TokensPageOptions extends PageState {
@@ -239,7 +255,7 @@ export function renderTokensPage(opts: TokensPageOptions): string {
             : `<span class="row-nonote">no roles — entitled to nothing</span>`
         }</span>
         <span class="row-time" title="${esc(r.createdAt ?? "unknown")}">${r.createdAt ? esc(formatTime(r.createdAt)) : "—"}</span>
-        <span class="row-time" title="${esc(r.revokedAt ?? "")}">${revoked ? esc(formatTime(r.revokedAt as string)) : "—"}</span>
+        <span class="row-time"${revoked ? ` title="${esc(r.revokedAt as string)}"` : ""}>${revoked ? esc(formatTime(r.revokedAt as string)) : "—"}</span>
         <span class="row-actions">${rowActions(r, blocked)}</span>
       </div>`;
     })
@@ -336,7 +352,8 @@ ${flash}
 ${minted}
 ${listing}
 ${mintBox}
-${COPY_SCRIPT}`;
+${COPY_SCRIPT}
+${CONFIRM_SCRIPT}`;
 
   return layout({
     title: "system tokens",
@@ -360,6 +377,23 @@ function sortRecords(a: TokenRecord, b: TokenRecord): number {
   return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
 }
 
+/**
+ * The per-row confirmation, as DATA rather than as script.
+ *
+ * The obvious spelling — `onsubmit="return confirm('Revoke ${esc(label)}?')"` —
+ * is a stored-XSS hole, and `esc()` does not close it. A label is free text a
+ * human types; `esc` turns `\'` into `&#39;`, and inside a double-quoted
+ * attribute the HTML parser decodes that entity BEFORE the JavaScript is
+ * compiled, so `x\'); alert(1); //` closes the string and runs. The console can
+ * mint an admin `/mcp` token, so "script runs when an operator clicks Revoke"
+ * is as bad as it sounds.
+ *
+ * So the sentence travels in an attribute VALUE, where `esc` is sufficient and
+ * nothing is ever compiled, and one delegated listener reads it — the same shape
+ * `COPY_SCRIPT` uses. With JavaScript off there is no confirmation and the form
+ * submits, which is the pre-existing behaviour of every `onsubmit` guard in this
+ * console and is why the server re-checks everything it is told.
+ */
 function rowActions(record: TokenRecord, blocked: string | null): string {
   if (blocked) {
     return `<button class="btn btn-ghost" disabled title="${esc(blocked)}">Read only</button>`;
@@ -367,15 +401,25 @@ function rowActions(record: TokenRecord, blocked: string | null): string {
   const field = `<input type="hidden" name="pubid" value="${esc(record.pubid)}" />`;
   if (record.revokedAt) {
     return `<form method="post" action="/tokens/forget" class="inline"
-                  onsubmit="return confirm('Forget the record for ${esc(record.label)}? It is already revoked; this only removes it from the roster.')">
+                  data-confirm="${esc(`Forget the record for ${record.label}? It is already revoked; this only removes it from the roster.`)}">
       ${field}<button class="btn btn-ghost">Forget</button>
     </form>`;
   }
   return `<form method="post" action="/tokens/revoke" class="inline"
-                onsubmit="return confirm('Revoke ${esc(record.label)}? Whatever holds it stops working on its next request, and it cannot be un-revoked.')">
+                data-confirm="${esc(`Revoke ${record.label}? Whatever holds it stops working on its next request, and it cannot be un-revoked.`)}">
     ${field}<button class="btn btn-danger">Revoke</button>
   </form>`;
 }
+
+/** One delegated listener for every `data-confirm` form on the page. */
+const CONFIRM_SCRIPT = `<script>
+document.addEventListener("submit", function (e) {
+  var form = e.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  var message = form.getAttribute("data-confirm");
+  if (message && !window.confirm(message)) e.preventDefault();
+});
+</script>`;
 
 /** Where the records live, in the words the config used. */
 function storeLabel(config: StradConfig): string {

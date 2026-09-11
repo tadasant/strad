@@ -95,6 +95,32 @@ export type OAuthAccessVerifier = (
  * OAuth verifier. That keeps each door's failures in its own vocabulary, and
  * keeps a deployment with no authorization server answering exactly as it did.
  */
+/**
+ * When the store-outage line was last written. Module-level because the outage
+ * is a property of the PROCESS, not of a request: two concurrent requests are
+ * seeing one outage and should produce one line between them.
+ */
+let lastOutageReportAt = -Infinity;
+
+/** How often a continuing outage repeats itself, in ms. */
+const OUTAGE_REPORT_INTERVAL_MS = 60_000;
+
+function reportStoreOutage(
+  detail: string | undefined,
+  now: () => number = Date.now,
+): void {
+  const at = now();
+  if (at - lastOutageReportAt < OUTAGE_REPORT_INTERVAL_MS) return;
+  lastOutageReportAt = at;
+  event({ evt: "strad.token_store_unavailable" });
+  console.error(
+    "[strad] the system-token store could not be read, so /mcp is failing " +
+      "every request. This is fail-closed and deliberate: a store that cannot " +
+      "be read is not an empty store and must not be treated as an open one." +
+      (detail ? ` Reason: ${detail}` : ""),
+  );
+}
+
 export async function authenticateMcp(
   authorizationHeader: string | undefined,
   store: TokenStore,
@@ -135,14 +161,16 @@ export async function authenticateMcp(
       // to learn from the ingestor rather than from a stream nothing scrapes.
       //
       // No fields: everything that could say more is either the caller's bytes
-      // or the store client's own text.
-      event({ evt: "strad.token_store_unavailable" });
-      console.error(
-        "[strad] the system-token store could not be read, so /mcp is " +
-          "failing every request. This is fail-closed and deliberate: a store " +
-          "that cannot be read is not an empty store and must not be treated " +
-          "as an open one.",
-      );
+      // or the store client's own text. The REASON goes to stderr instead,
+      // where `verdict.detail` is safe to print — see `TokenVerdict`.
+      //
+      // THROTTLED, because this fires on a path that by definition is failing
+      // for every caller at once: unthrottled it is one exported record and one
+      // stderr paragraph per request, which floods the ingestor at exactly the
+      // moment an operator needs to read it. The same shape
+      // `gateway/reachability.ts` uses — say it when it starts, then say it
+      // again occasionally so a long outage does not go quiet.
+      reportStoreOutage(verdict.detail);
       throw new TokenStoreUnavailable();
     }
     // The caller always gets the same 401; `reason` is for our logs.
@@ -187,15 +215,25 @@ export function tokenStoreFromConfig(
     return new EnvTokenStore(undefined);
   }
   if (cfg.auth.staticTokens.store === "parameter-store") {
-    if (!providers) {
+    // `gatewayStore`, NOT `shared`. The shared provider is the store CHAINED in
+    // front of `process.env`, and that chain is the wrong seam for this one
+    // name: `hydrateBootEnv` puts a copy of the roster in `process.env` at boot,
+    // so a store miss on `STRAD_TOKENS` — a parameter destroyed, or one that
+    // renders to nothing — would fall through to a frozen boot-time roster and
+    // start admitting every token that was live then, revocations included.
+    // Reading the store layer alone makes a miss a miss. See
+    // `ServerSecretProviders` in src/secrets/provider/index.ts.
+    if (!providers?.gatewayStore) {
       console.error(
-        '[strad] auth.staticTokens.store is "parameter-store" but no secret ' +
-          "provider was supplied, so there is nothing to read the records " +
-          "with. /mcp will reject every request.",
+        '[strad] auth.staticTokens.store is "parameter-store" but this process ' +
+          "has no parameter-store layer to read the records from, so /mcp will " +
+          "reject every request. That combination is refused by the config " +
+          "schema, so reaching it means the store was built by a call site " +
+          "that did not supply one.",
       );
       return new EnvTokenStore(undefined);
     }
-    return new ParameterTokenStore(providers.shared);
+    return new ParameterTokenStore(providers.gatewayStore);
   }
   return new EnvTokenStore(env.STRAD_TOKENS);
 }

@@ -112,6 +112,17 @@ data to move — and a rollback to an older image keeps working.
 config schema refuses the combination without it, because there would be nothing
 to read the records from.
 
+**The store layer is read on its own, without the environment behind it.** Every
+other gateway `${NAME}` resolves through the store _chained in front of_
+`process.env`, so a name that has not been moved to the store yet still resolves
+— that is what makes the migration off deploy-time baking reversible. `/mcp`'s
+roster is the one name where that would be wrong, because boot hydration puts a
+copy of it in `process.env`: a parameter later destroyed, or one that renders to
+nothing, would fall through to a roster frozen at the last restart and start
+admitting every token that was live then, revocations included. So the token
+store reads the store layer alone, where a miss is a miss and a miss admits
+nobody.
+
 The parameter is a **secret** parameter, and that is not decoration: a non-secret
 parameter's value is readable by the `secrets` MCP server's viewer credential,
 and while a record carries no secret it does carry every token's label, roles and
@@ -127,8 +138,9 @@ id — which is the gateway's own access-control list.
 - **Revoke** — soft, and final. `revokedAt` is set, the record stays so the
   roster can still say the credential existed, and the write drops this process's
   reading of the store, so it takes effect on the next request rather than within
-  `gateway.secrets.ttlSeconds`. There is deliberately no un-revoke; mint a new
-  token.
+  `gateway.secrets.ttlSeconds`. (That last part assumes one core instance, which
+  is what strad deploys — see [Known limitations](/limitations/).) There is
+  deliberately no un-revoke; mint a new token.
 - **Forget** — drops a record that is already revoked, so the roster does not
   grow forever. Refused for an active one: that would be a revocation with
   nothing left to say the credential ever existed.

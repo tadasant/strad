@@ -411,43 +411,137 @@ describe("forget", () => {
   });
 });
 
-describe("the migration off STRAD_TOKENS", () => {
-  it("seeds the first write from the records the gateway is already serving", async () => {
-    // BEFORE: no parameter at all, and a baked `STRAD_TOKENS` the env fallback
-    // is serving. This is exactly a deployment that has just flipped the config
-    // flag and not yet moved its data.
+describe("a gateway whose parameter has not been seeded", () => {
+  it("admits nobody from the baked env var, and the first mint starts the roster", async () => {
+    // A deployment that set `store: parameter-store` without seeding the
+    // parameter. Its deploy preflight already refuses that (STRAD_TOKENS is a
+    // REQUIRED boot key), so this is the shape that should not reach production
+    // — and when it does, the answer is fail-closed rather than "fall back to
+    // whatever the last deploy baked".
+    //
+    // That matters beyond this one case: `process.env.STRAD_TOKENS` is not an
+    // older copy of the roster on a store-backed gateway, it is a copy boot
+    // hydration took FROM the store and then froze. Serving it would resurrect
+    // every revocation made since the last restart.
     server.close();
-    const existing = mintToken({
+    const baked = mintToken({
       env: "test",
       label: "baked into the deploy",
       roles: ["admin"],
     });
-    await boot(serializeTokenRecords([existing.record]));
+    await boot(serializeTokenRecords([baked.record]));
 
     expect(fake.parameters.size).toBe(0);
-    expect((await mcp(existing.plaintext)).status).toBe(200);
+    expect((await mcp(baked.plaintext)).status).toBe(401);
 
-    // The first mint CREATES the parameter, carrying the existing record across.
+    // The first mint CREATES the parameter, and starts it empty rather than
+    // from the environment.
     const minted = plaintextIn(
       await (
-        await post("/tokens/mint", { label: "new", roles: "admin" })
+        await post("/tokens/mint", { label: "first", roles: "admin" })
       ).text(),
     );
-
-    const records = await stored();
-    expect(records.map((r) => r.label)).toEqual([
-      "baked into the deploy",
-      "new",
-    ]);
-
-    // AFTER: both credentials work, and the store — not the env var — is what
-    // is answering, because a revoke made here now takes effect.
-    expect((await mcp(existing.plaintext)).status).toBe(200);
+    expect((await stored()).map((r) => r.label)).toEqual(["first"]);
     expect((await mcp(minted)).status).toBe(200);
+    expect((await mcp(baked.plaintext)).status).toBe(401);
+  });
+});
 
-    await post("/tokens/revoke", { pubid: existing.record.pubid });
-    expect((await mcp(existing.plaintext)).status).toBe(401);
-    expect((await mcp(minted)).status).toBe(200);
+describe("what the page does with hostile input", () => {
+  it("a label full of quotes cannot escape the confirmation into script", async () => {
+    // The obvious spelling of the confirm — `onsubmit="return confirm('…')"` —
+    // is a stored-XSS hole that `esc()` does NOT close: it turns `\'` into
+    // `&#39;`, and inside a double-quoted attribute the parser decodes that
+    // before the JS is compiled. So the sentence must travel as DATA. A console
+    // session can mint an admin /mcp token, so script running on a Revoke click
+    // is a full compromise of the gateway.
+    const HOSTILE = `x'); alert(document.domain); //`;
+    await post("/tokens/mint", { label: HOSTILE, roles: "admin" });
+
+    const html = await (
+      await fetch(`${baseUrl}/tokens`, { headers: auth })
+    ).text();
+
+    // The label renders — it is legitimate text, just nasty.
+    expect(html).toContain("alert(document.domain)");
+    // …and nowhere does it reach an event attribute or a <script> body.
+    expect(html).not.toMatch(/onsubmit=/);
+    // `\s` before `on`, or `data-confirm="` matches on its own "onfirm=".
+    expect(html).not.toMatch(/\son[a-z]+="[^"]*alert\(document\.domain\)/);
+    for (const script of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)) {
+      expect(script[1]).not.toContain("alert(document.domain)");
+    }
+    // It travels as an attribute VALUE, entity-encoded, which is where `esc` is
+    // sufficient because nothing there is ever compiled.
+    expect(html).toContain("data-confirm=");
+    expect(html).toContain("x&#39;); alert(document.domain); //");
+  });
+
+  it("refuses a role this gateway does not declare, and writes nothing", async () => {
+    // A hand-crafted POST, or a page left open across a deploy that renamed a
+    // role. The record would authenticate and then be refused every server with
+    // a 424 pointing at nothing — the silent dud the closed set exists to stop.
+    const res = await post("/tokens/mint", {
+      label: "typo",
+      roles: ["admin", "adnim"],
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("no role named");
+    expect(fake.parameters.size).toBe(0);
+  });
+});
+
+describe("staticTokens.enabled: false", () => {
+  it("offers no forms, because a minted token could never work", async () => {
+    // `tokenStoreFromConfig` builds an EMPTY store when static tokens are off,
+    // so /mcp admits nobody however many records exist. A mint here would write
+    // a well-formed record and report success for a credential that is dead on
+    // arrival.
+    server.close();
+    const off = parseConfig(
+      YAML.replace(
+        "staticTokens: { enabled: true, store: parameter-store }",
+        "staticTokens: { enabled: false, store: parameter-store }",
+      ),
+    );
+    fake = createFakeGcp();
+    const providers = buildSecretProviders({
+      config: off,
+      env,
+      resolver: fake.store,
+    });
+    const registry = await Registry.build({
+      config: off,
+      secrets: providers,
+      mode: "core",
+      env,
+    });
+    const app = createApp({
+      config: off,
+      registry,
+      tokenStore: tokenStoreFromConfig(off, env, providers),
+      mode: "core",
+      env,
+      secrets: SECRETS,
+      secretProvider: providers,
+      parametersStore: () => fake.store,
+    });
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, () => resolve());
+    });
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no port");
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+
+    const html = await (
+      await fetch(`${baseUrl}/tokens`, { headers: auth })
+    ).text();
+    expect(html).toContain("auth.staticTokens.enabled is false");
+    expect(html).not.toContain('action="/tokens/mint"');
+
+    const res = await post("/tokens/mint", { label: "dead", roles: "admin" });
+    expect(res.status).toBe(503);
+    expect(fake.parameters.size).toBe(0);
   });
 });
 

@@ -436,7 +436,11 @@ What remains under `parameter-store`:
    A lost mint is a token that does not work, which is loud; revoke and forget
    are keyed on a token id and applied to whatever the fresh read holds, so they
    cannot silently resurrect a record.
-2. **Revocation is stale for the length of a store outage.** The runtime provider
+2. **"Effective on the next request" assumes one core instance.** The write drops
+   the reading held by the process that made it, and core runs one instance. A
+   second one would keep serving a revoked token from its own snapshot for up to
+   `gateway.secrets.ttlSeconds` — an hour by default — with nothing saying so.
+3. **Revocation is stale for the length of a store outage.** The runtime provider
    serves its last known good reading when a re-read fails, because a store
    outage must not take `/mcp` down. So a revoke made while the store is
    unreachable takes effect when the store answers again. Nothing is _admitted_
@@ -444,7 +448,8 @@ What remains under `parameter-store`:
    refused, and a store that cannot be read at all fails the request closed.
 
 **Undo the residuals:** a backing with compare-and-swap, or a records document
-whose writes commute.
+whose writes commute; and, for the second, either broadcasting the invalidation
+between core instances or refusing more than one.
 
 ### 94. The authorization server in front of `/mcp` has no datastore
 
