@@ -5,9 +5,11 @@ import { clientCapabilitiesFromInitialize } from "./clientCapabilities.ts";
 import { bearerToken, secretEquals } from "../auth/credential.ts";
 import {
   metadataBaseUrl,
+  resourceIdentifier,
   resourceMetadataUrl,
   wwwAuthenticate,
 } from "../auth/protected-resource.ts";
+import { verifyAccessToken, type McpOAuth } from "../auth/mcp-oauth/index.ts";
 import {
   authenticateMcp,
   Unauthenticated,
@@ -72,6 +74,16 @@ export interface McpHandlerOptions {
   mode: Mode;
   env?: NodeJS.ProcessEnv;
   log?: (event: Record<string, unknown>) => void;
+  /**
+   * strad's own authorization server, when this deployment runs one.
+   *
+   * Null — the default — is a deployment whose `/mcp` takes static tokens and
+   * nothing else, which is every deployment that has not configured
+   * `auth.mcpOAuth`. It is the SAME object `src/http/oauth.ts` serves the flow
+   * from, so a token this endpoint accepts is one those routes issued, under
+   * the same key and the same hosted domain.
+   */
+  oauth?: McpOAuth | null;
 }
 
 export function createMcpHandler(opts: McpHandlerOptions) {
@@ -98,6 +110,32 @@ export function createMcpHandler(opts: McpHandlerOptions) {
     if (opts.mode !== "core") return null;
     const base = metadataBaseUrl(req, opts.config.gateway.publicUrl);
     return base === null ? null : resourceMetadataUrl(base);
+  }
+
+  /**
+   * The OAuth half of the door, bound to THIS request's resource identifier.
+   *
+   * The binding is the whole point. RFC 8707 says a token names the resource it
+   * is for, and the resource here is `https://host/mcp` — the origin plus the
+   * literal path, built by `resourceIdentifier`, which is also what the
+   * protected-resource document publishes and what `/oauth/authorize` mints
+   * against. It is NOT `req.originalUrl`: the URL a human pastes into a client
+   * carries `?servers=granola`, and `?servers=` is a selection hint rather than
+   * a resource (see `entitlements.ts`), so a token minted for the endpoint has
+   * to work at every query string that endpoint answers on.
+   *
+   * Undefined in bundle mode and on a deployment with no authorization server,
+   * which is what makes `strad_oat_…` a plain refusal there rather than a
+   * verification against keys nobody holds.
+   */
+  function oauthVerifier(
+    req: Request,
+  ): ((raw: string) => ReturnType<typeof verifyAccessToken>) | undefined {
+    const oauth = opts.oauth;
+    if (!oauth || opts.mode !== "core") return undefined;
+    const base = metadataBaseUrl(req, opts.config.gateway.publicUrl);
+    const resource = base === null ? null : resourceIdentifier(base);
+    return (raw: string) => verifyAccessToken(raw, oauth, resource);
   }
 
   return async function handleMcp(req: Request, res: Response): Promise<void> {
@@ -187,6 +225,7 @@ export function createMcpHandler(opts: McpHandlerOptions) {
               req.headers.authorization,
               opts.tokenStore,
               opts.config.gateway.env,
+              oauthVerifier(req),
             );
     } catch (err) {
       if (err instanceof Unauthenticated) {

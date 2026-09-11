@@ -232,6 +232,48 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * in both channels.
      */
     "mcp.tool_denied": ["slug"],
+    /**
+     * A token issued by strad's own authorization server (src/http/oauth.ts).
+     *
+     * Both fields are closed sets this repo wrote down. `grant` is the literal
+     * `"authorization_code"` or `"refresh_token"` from the two call sites, not
+     * the `grant_type` the caller sent — an unsupported one never reaches here.
+     * `client` is the six-byte id minted at registration
+     * (`src/auth/mcp-oauth/clients.ts`), which is ours and is not the client id
+     * the holder presents: that one carries the whole sealed registration.
+     *
+     * The HOLDER is absent, and deliberately. It would be a Google `sub` or an
+     * email address — a person's account identifier, which is the same field
+     * `mcp.tool_denied` declines to ship for the console half of its door. What
+     * an operator needs from this channel is that grants are being issued and
+     * refreshed at all; who holds them is a question for a console, not an
+     * ingestor.
+     */
+    "mcp_oauth.granted": ["grant", "client"],
+    /**
+     * A refusal on the far side of a completed Google sign-in: the Workspace
+     * domain check, a human pressing Deny, or a grant Google will no longer
+     * refresh.
+     *
+     * `reason` is one of four words this repo authors. It ships where
+     * `mcp_oauth.refused` does not because producing one costs a real sign-in
+     * at accounts.google.com — the queue-starvation argument that keeps every
+     * pre-authentication refusal off this list cannot reach a route you have to
+     * authenticate to Google to get to. And it is the record that matters: a
+     * `wrong_domain` run is either a person using the wrong account or a
+     * deployment pointed at the wrong Workspace, and neither is visible
+     * anywhere else.
+     */
+    "mcp_oauth.denied": ["reason"],
+    /**
+     * A refresh token revoked through `/oauth/revoke` (RFC 7009). `outcome` is
+     * `ok` or `failed` — whether GOOGLE accepted the revocation, which is where
+     * revocation actually happens on a gateway with no datastore. A `failed`
+     * here means a grant the holder believes is dead is still live until the
+     * call is retried, which is the one thing about this endpoint worth an
+     * alert.
+     */
+    "mcp_oauth.revoked": ["outcome"],
     /** Secrets plumbing, where a silent failure has the same shape as this one. */
     "strad.secrets_hydrated": ["provider", "keys"],
     /**
@@ -417,6 +459,17 @@ export const NOT_EXPORTED: Readonly<Record<string, string>> = Object.freeze({
     "the batch queue and evict mcp.list_tools_failed, which is the one signal " +
     "this file exists to deliver. strad.mcp.auth_failures already counts the " +
     "same thing, by the same `reason`, in a channel with no queue to starve.",
+  "mcp_oauth.refused":
+    "Every refusal on the /oauth/* routes that happens BEFORE a human has been " +
+    "identified: an unregistered client_id, a redirect_uri that is not one the " +
+    "client registered, a missing or `plain` PKCE challenge, an expired " +
+    "transaction. Its two fields are closed sets this repo wrote down, and the " +
+    "objection is the one that keeps mcp.auth_failed off the list: these are " +
+    "public, unauthenticated routes, so anyone who can reach the gateway can " +
+    "produce one exported record per request and evict the records this " +
+    "pipeline exists to deliver. The refusals that CANNOT be sprayed — the ones " +
+    "on the far side of a completed Google sign-in — are a separate event, " +
+    "mcp_oauth.denied, and that one ships.",
   "mcp.request":
     "It fires on EVERY authenticated request, which is the queue-starvation " +
     "argument that keeps mcp.auth_failed off the list, one token further in. " +

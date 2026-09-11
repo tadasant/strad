@@ -1,5 +1,6 @@
 import type { StradConfig } from "../config/schema.ts";
 import { bearerToken } from "./credential.ts";
+import { ACCESS_TOKEN_PREFIX } from "./mcp-oauth/grants.ts";
 import { EnvTokenStore, verifyToken, type TokenStore } from "./tokens.ts";
 
 /**
@@ -10,7 +11,7 @@ import { EnvTokenStore, verifyToken, type TokenStore } from "./tokens.ts";
  * anything the caller can set.
  */
 export interface Principal {
-  kind: "system-token" | "google" | "console-bypass";
+  kind: "system-token" | "google" | "console-bypass" | "mcp-oauth";
   /** Loggable identifier. Never a secret. */
   id: string;
   label: string;
@@ -28,16 +29,45 @@ export class Unauthenticated extends Error {
 }
 
 /**
+ * Verify an access token strad's own authorization server issued, already bound
+ * to this request's canonical resource.
+ *
+ * A closure rather than an object, because the audience a token is checked
+ * against is a property of the REQUEST — see `verifyAccessToken` in
+ * `src/auth/mcp-oauth/index.ts` for why it is the origin plus `/mcp` and never
+ * the URL the request arrived on. The router binds it per request; this module
+ * only asks the question.
+ */
+export type OAuthAccessVerifier = (
+  raw: string,
+) => { ok: true; principal: Principal } | { ok: false; reason: string };
+
+/**
  * Authenticate a request to /mcp.
  *
- * Static system tokens, and nothing else. Not the console session, not the dev
- * bypass, not "no header means dev mode". strad sits on the open internet with
- * no network perimeter in front of it, so this function is the entire gate.
+ * TWO credentials, and they are the only two. Not the console session, not the
+ * dev bypass, not "no header means dev mode" — strad sits on the open internet
+ * with no network perimeter in front of it, so this function is the entire gate.
+ *
+ *   1. A STATIC SYSTEM TOKEN, `strad_<env>_<pubid>_<secret>`. The credential a
+ *      headless agent holds, minted out of band and long-lived. It is the
+ *      load-bearing one for machine clients and nothing here changes it.
+ *
+ *   2. An OAUTH ACCESS TOKEN, `strad_oat_…`, issued by strad's own
+ *      authorization server to a human who signed in through Google
+ *      (`src/auth/mcp-oauth/`). Present only when `oauth` is supplied, which is
+ *      to say only when that server is configured AND running.
+ *
+ * The prefix decides which, and it decides EXCLUSIVELY: an `strad_oat_` token
+ * is never offered to the static store, and anything else never reaches the
+ * OAuth verifier. That keeps each door's failures in its own vocabulary, and
+ * keeps a deployment with no authorization server answering exactly as it did.
  */
 export async function authenticateMcp(
   authorizationHeader: string | undefined,
   store: TokenStore,
   expectedEnv: string,
+  oauth?: OAuthAccessVerifier,
 ): Promise<Principal> {
   const raw = bearerToken(authorizationHeader);
   if (!raw) {
@@ -45,6 +75,19 @@ export async function authenticateMcp(
       "missing bearer token",
       "no_authorization_header",
     );
+  }
+
+  if (raw.startsWith(ACCESS_TOKEN_PREFIX)) {
+    if (!oauth) {
+      // A token from an authorization server this deployment does not run. It
+      // cannot be a static token either — `parseToken` would read "oat" as the
+      // environment segment and miss — so answering here is the difference
+      // between one honest refusal and a confusing one about a `pubid`.
+      throw new Unauthenticated("invalid token", "oauth_not_configured");
+    }
+    const verdict = oauth(raw);
+    if (!verdict.ok) throw new Unauthenticated("invalid token", verdict.reason);
+    return verdict.principal;
   }
 
   const verdict = await verifyToken(raw, store, expectedEnv);

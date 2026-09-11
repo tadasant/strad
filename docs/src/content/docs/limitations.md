@@ -423,32 +423,45 @@ shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. The `store`
 enum grows its second value there. See
 [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
-### 92. `/mcp` can be discovered, but not signed in to
+### 94. The authorization server in front of `/mcp` has no datastore
 
-`/mcp` publishes [RFC 9728 protected-resource
-metadata](/auth/overview/#discovery-what-mcp-says-it-accepts) at
-`/.well-known/oauth-protected-resource/mcp`, and its `401` points at it in
-`WWW-Authenticate: … resource_metadata="…"`. The document deliberately names **no
-`authorization_servers`**, and `/.well-known/oauth-authorization-server` is still
-a `404`.
+`/mcp` accepts access tokens from [strad's own OAuth 2.1 authorization
+server](/auth/overview/#mcp--oauth-21-interactive-clients), which authenticates
+the human behind them with Google. strad has no database, so every value in that
+flow is a self-contained sealed blob rather than a row — a dynamic client
+registration _is_ the `client_id`, and codes and tokens are encrypted payloads
+under keys only the process holds. Four things follow, and none of them is
+hidden:
 
-So a compliant MCP client can discover strad and read what it accepts — and then
-has no OAuth flow to run. (A browser-hosted client on another origin cannot read
-either: neither half sends CORS headers, and strad's browser surface is
-same-origin by design.) The credential is still a static
-`strad_<env>_<pubid>_<secret>` token handed over out of band, which for an
-interactive human client means a copied, long-lived, standing secret rather than a
-per-user revocable one.
+- **An authorization code is single-use against a per-process set.** It holds
+  sixty seconds of entries. strad core runs one instance; scaled wider, a code
+  replayed against another replica inside that window would not be caught there.
+  PKCE is mandatory and `S256`-only, so whoever intercepted the code does not
+  hold the verifier — that is what actually stops the attack.
+- **Refresh tokens are not rotated.** Rotation detects the replay of a stolen
+  token, which needs a record of the token just spent. There is nowhere to keep
+  one, so minting a new string while the old one stayed valid would be the
+  appearance of rotation without the property.
+- **Revocation happens at Google, per user and per OAuth client.** A strad
+  refresh token embeds the Google refresh token behind it, and `POST
+/oauth/revoke` calls Google — there is no strad-side denylist, because an
+  in-memory one would come back to life on the next deploy. The upside is that
+  revocation is durable and survives every restart. The cost is the granularity:
+  revoking one connector signs that account out of every strad OAuth connector it
+  holds.
+- **An access token cannot be revoked before it expires**, because it is verified
+  with no lookup. The one-hour default is therefore also the revocation window,
+  which is what the five-minute floor on `accessTokenTtlSeconds` is for.
 
-That is a decision, not a bug: Google Workspace OAuth in strad is the console door
-only, and naming it here would send a client through a consent flow to be `401`ed
-with a valid access token at the end of it. What is missing is the decision, not
-the plumbing.
+And a fifth thing that is absent rather than degraded: **the console cannot list
+or revoke issued grants**, because a stateless token leaves no record to render.
+Revoking access today means Google's own security page, the Workspace admin
+console, or `POST /oauth/revoke`.
 
-**Undo:** choose an authorization server for `/mcp`, add `authorization_servers`
-to the document, accept its access tokens alongside static ones, and map an OAuth
-identity onto `roles`. Tracked in
-[issue #53](https://github.com/tadasant/strad/issues/53).
+**Undo:** a `GrantStore` interface with one Postgres implementation retires the
+first, second and fourth together, and gives the console page something to read.
+The third stays Google's shape unless strad mints its own grant identity, which
+it should not.
 
 ### 64. A Google Sheets credential is minted by a human, and expires in 7 days in testing mode
 

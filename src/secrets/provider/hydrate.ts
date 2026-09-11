@@ -81,6 +81,7 @@ export const CORE_BOOT_ENV_KEYS = [
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
   "CONSOLE_SESSION_SECRET",
+  "STRAD_OAUTH_KEY",
   "OTEL_EXPORTER_OTLP_HEADERS",
   "SENTRY_DSN",
 ] as const;
@@ -100,6 +101,11 @@ export const CORE_BOOT_ENV_KEYS = [
  * deploys that are correct. `CONSOLE_SESSION_SECRET` is optional twice over: the
  * session key falls back to deriving from `GOOGLE_CLIENT_SECRET`, which is
  * hydrated here, so a store-backed console signs people in without it.
+ * `STRAD_OAUTH_KEY` is optional on the same terms and for the same reason — the
+ * `/mcp` authorization server derives its keys from `CONSOLE_SESSION_SECRET`,
+ * else `GOOGLE_CLIENT_SECRET`, when it is absent (src/auth/mcp-oauth/keys.ts).
+ * Seed it when you want to invalidate every OAuth grant without signing every
+ * human out of the console.
  */
 export const REQUIRED_BOOT_ENV_KEYS = [
   "STRAD_TOKENS",

@@ -88,6 +88,33 @@ auth:
     # See HACKS.md #6.
     store: env
 
+  # strad's OWN OAuth 2.1 authorization server, in front of /mcp. This is what
+  # lets an interactive MCP client — claude.ai's custom-connector dialog — be
+  # handed a URL and connect through a Google sign-in, with no token pasted
+  # anywhere. It is ADDITIVE: staticTokens above keeps working unchanged, and
+  # /mcp accepts either credential.
+  #
+  # Enabling the flag is not enough. GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET must
+  # be set (the SAME OAuth client the console login uses, with
+  # <publicUrl>/oauth/callback/google added to its authorized redirect URIs),
+  # and there must be key material — STRAD_OAUTH_KEY, else
+  # CONSOLE_SESSION_SECRET, else GOOGLE_CLIENT_SECRET. A deployment missing a
+  # half says so at boot and serves no authorization-server metadata.
+  mcpOAuth:
+    enabled: true
+    # Optional: defaults to auth.google.hostedDomain above. Verified against the
+    # ID token's `hd` claim AND the email suffix, on every authorization and on
+    # every refresh. A config that enables the flow and declares neither is a
+    # hard error — a flow with no domain to enforce admits whoever arrives.
+    hostedDomain: tadasant.com
+    # NOT defaulted from auth.google.roles: that grant is the console's, and
+    # inheriting it would mean this flag silently widened what /mcp hands out.
+    # Empty is fail-closed — the flow completes and every ?servers= gets a 424.
+    roles: [admin]
+    # Access tokens expire on this cadence; refresh tokens never expire, and are
+    # revoked at Google. See docs/auth/overview.md.
+    accessTokenTtlSeconds: 3600
+
   # Temporary: lets a human into /console with ADMIN_BOOTSTRAP_TOKEN while
   # Google OAuth credentials are being provisioned. Requires ALLOW_DEV_AUTH=true.
   # It CANNOT authenticate /mcp. Delete once OAuth lands — see HACKS.md.

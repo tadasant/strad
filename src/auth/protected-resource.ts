@@ -14,21 +14,25 @@
  * credential to you", and nothing else. It mints no token, verifies none, and
  * is on no code path that decides whether a request is authenticated.
  *
- * ## `authorization_servers` is ABSENT, deliberately
+ * ## `authorization_servers` names one, or is absent
  *
- * RFC 9728 §2 makes it optional, and strad has no authorization server to name.
- * Google Workspace OAuth here is the HUMAN console door — `/console` and `/ui`,
- * resolved in `src/ui/console-auth.ts`, which never consults the `/mcp` token
- * store. Naming it here would advertise an issuer whose tokens `/mcp` refuses,
- * which is a worse lie than the `404` was: a client would run a whole consent
- * flow and be `401`ed with a valid access token at the end of it.
+ * RFC 9728 §2 makes the member optional, and whether strad can answer it is a
+ * property of the DEPLOYMENT rather than of this module. When
+ * `auth.mcpOAuth` is configured and usable, strad IS the authorization server
+ * for `/mcp` (`src/auth/mcp-oauth/`, mounted by `src/http/oauth.ts`), the
+ * issuer is this same origin, and naming it is what turns the `401` into a
+ * flow a client can actually walk.
  *
- * Binding an authorization server to `/mcp` is a product decision and is
- * tracked in issue #53. Until someone makes it, the honest document is one that
- * describes the resource and stops. A client reading it learns three true
- * things — this is a protected resource, it takes a bearer token in the header,
- * and here is where the credential comes from — and learns them from a
- * `200` rather than by guessing.
+ * When it is NOT — no `enabled`, no Google OAuth client, no signing key — the
+ * member stays absent, and that is not a formality. Advertising an issuer whose
+ * `/authorize` is a `404`, or whose tokens `/mcp` would refuse, is a worse lie
+ * than the `404` this document replaced: a client would run a whole consent
+ * flow and be `401`ed with a valid access token at the end of it. So the caller
+ * passes the issuer it has, or nothing, and this module repeats exactly that.
+ *
+ * The static `strad_<env>_<pubid>_<secret>` token keeps working either way, and
+ * `bearer_methods_supported` says so for both credentials at once: strad reads
+ * the header, and only the header.
  *
  * ## Where the two halves meet
  *
@@ -72,6 +76,14 @@ export interface ProtectedResourceMetadata {
   /** Human-readable name of the resource. `gateway.name` from the config. */
   resource_name: string;
   /**
+   * The issuers whose access tokens `/mcp` accepts. strad is its own, when it
+   * is running one at all — hence a one-element array or an absent member,
+   * never a list of somebody else's.
+   */
+  authorization_servers?: string[];
+  /** The scopes that issuer issues. Absent when there is no issuer. */
+  scopes_supported?: string[];
+  /**
    * `header` and only `header`. strad reads the credential from
    * `Authorization` and from nowhere else — never a `?access_token=` query
    * parameter, never a form body. Saying so is the one piece of protocol advice
@@ -113,14 +125,29 @@ export function resourceMetadataUrl(origin: string): string {
   return `${origin}${PROTECTED_RESOURCE_ROUTES[0]}`;
 }
 
-/** The document, for a deployment whose public origin is `origin`. */
+/**
+ * The document, for a deployment whose public origin is `origin`.
+ *
+ * `authorizationServer` is the issuer to advertise, or null when this
+ * deployment runs none — see the header. It is passed in rather than derived
+ * here so that ONE resolution of "is the OAuth flow usable" (`resolveMcpOAuth`)
+ * decides what this document says, what the well-known metadata route serves
+ * and which credentials `/mcp` accepts.
+ */
 export function protectedResourceMetadata(
   origin: string,
   name: string,
+  authorizationServer?: { issuer: string; scopes: string[] } | null,
 ): ProtectedResourceMetadata {
   return {
     resource: resourceIdentifier(origin),
     resource_name: name,
+    ...(authorizationServer
+      ? {
+          authorization_servers: [authorizationServer.issuer],
+          scopes_supported: authorizationServer.scopes,
+        }
+      : {}),
     bearer_methods_supported: ["header"],
     resource_documentation: RESOURCE_DOCUMENTATION,
   };
