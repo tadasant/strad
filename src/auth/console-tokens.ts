@@ -56,7 +56,7 @@ import type { Principal } from "./index.ts";
  *     than claiming a revocation it did not make.
  * Single-use survives all three, because a record lives in exactly one process
  * and is consumed there. What a shared store would buy is availability, not
- * safety — HACKS.md #90.
+ * safety — HACKS.md #91.
  *
  * AUTHORITY RIDES IN THE RECORD. The roles are the minting principal's, fixed
  * at mint (optionally narrowed, never widened), and the session carries them.

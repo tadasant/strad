@@ -4463,7 +4463,31 @@ test's `PAGE_READS` grows by one.
 
 ---
 
-## 90. Console login tokens live in core's memory
+## 90. The good-eggs freebie tool checks two pages, so it says so rather than claiming the store
+
+**What.** `search_for_freebie_groceries` sweeps `$0.00` tiles off the Good Eggs
+homepage and `/fresh-picks` and nowhere else. Its description and every result,
+errors included, name those two pages. An empty result says what this check
+found, says it does NOT mean no free items are available, and points the caller
+at `$0.00` items in `search_for_grocery` results. `servers/good-eggs/FORK.md` #10 has the before and after.
+
+**Why.** Its upstream answer to an empty sweep was _"No free items or deals
+currently available."_ On the 2026-08-23 shop that sentence stood while two `$0.00`
+"TRY ME!" samples were live and orderable. A keyword search for something else
+surfaced them (#191). The grocery agent reads a negative answer from this tool as
+"no freebies this week", so the gap between what the sweep measured and what the
+sentence claimed cost the user free items. The issue offered two fixes, a
+catalog-wide `$0.00` sweep or a narrower promise, and the narrower promise is what
+shipped.
+
+**Undo.** Build the sweep: find whether Good Eggs' search or catalog can be asked
+for `$0.00` items, traverse it, and widen the description to match what the new
+traversal really covers. Until then, a caller that wants every freebie reads the
+prices on its own `search_for_grocery` results too.
+
+---
+
+## 91. Console login tokens live in core's memory
 
 **What.** A console login token (`POST /console/tokens`, `src/auth/console-tokens.ts`)
 and the 30-minute session it is exchanged for are records in a `Map` inside the
