@@ -80,6 +80,52 @@ schema keeps every one. A misspelled env var name is still silent. (A role's own
 fields are ordinary schema keys and _are_ checked: `roles.admin.serverz` is
 caught.)
 
+### 93. The `mcp.json` dialect carries one of four kinds, and refuses the rest by name
+
+strad accepts draft
+[SEP-2633](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2633)'s
+`mcpServers:` map as an [input
+dialect](/servers/interface/#mcpservers--the-draft-sep-2633-input-dialect) for
+its server list, desugared into `servers:` before the schema sees the document.
+It covers `kind: remote-http` and nothing else.
+
+The draft is **open**, not merged. Its reference-implementation section is a
+`TODO`, so **there is no published JSON schema** — nothing in strad or in these
+docs names a `$schema` — and its `oauth` object is being renegotiated upstream
+([SEP-2742](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2742)).
+Binding more of it than the part with a direct analog would bet the config
+contract on a moving target, in the one file where a mistranslated field silently
+changes what a mount executes. So everything strad cannot honour is a **hard
+error** rather than a default: `type: "stdio"`, `type: "sse"`, `oauth`,
+`command` / `args` / `env` on a remote entry, pipe-chained interpolation
+(`${env:A | value:b}`), the `input` and `op` schemes and every other scheme, a
+bare `${NAME}`, and a `${...}` in `title` or `description`. A key that is not a
+legal strad slug is an error too, with the slug it would have been offered as a
+suggestion and never applied — `My_Server` and `my-server` are two legal SEP
+names that fold to one slug, and a slug names this server's variables on the box.
+
+The three kinds with no expression are not an oversight in the format.
+`mcp.json` is a **client** config: `supplementary-image` is deployment topology,
+`builtin` is an in-process import, `bundles:` is the container an image lands in.
+The deepest mismatch is `entitlements` / `roles` — `mcp.json` is a
+single-principal file, and strad's two-way agreement presumes the config's reader
+is not its only user.
+
+**The sharp edge**, and the one thing here that is not an error: an entry with no
+`strad: { entitlements: [...] }` attaches a server with `entitlements: []` —
+configured, routed, reachable by nobody. `[]` is the only fail-closed answer
+available, and a fail-closed answer nothing says out loud is indistinguishable on
+a gateway from a routing bug nobody has noticed. So
+[`check-config`](/operate/deploy-model/#checking-a-config-before-it-deploys)
+warns, naming the slug and both halves of the fix, and boot emits
+`strad.mcp_json_unentitled`. Neither fails anything: an `mcp.json` with no
+entitlements is a valid config, not a broken one.
+
+**Undo:** widen it when the SEP does. A published JSON schema and a settled
+`oauth` object are the two events that change the calculus; `type: "sse"` becomes
+expressible the day strad grows an SSE adapter. `stdio`, `supplementary-image`
+and `builtin` do not converge and should not be forced to.
+
 ### 40. The tool-surface monitor asks one question, so it can only catch one kind of failure
 
 The [tool-surface monitor](/intro/architecture/#adapters) probes every mounted slug

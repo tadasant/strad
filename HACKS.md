@@ -4643,3 +4643,60 @@ derived from the request in hand.
 `authorization_servers` to the document in `src/auth/protected-resource.ts`, and
 accept its access tokens alongside static ones in `src/auth/index.ts` with a
 mapping onto `roles`. tadasant/strad#53 carries the decision.
+
+---
+
+## 93. The `mcp.json` dialect carries one of four kinds, and refuses the rest by name
+
+**What.** strad accepts draft
+[SEP-2633](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2633)'s
+`mcpServers:` map as an input dialect for its server list
+(`src/config/mcp-json.ts`), desugared into `servers:` before the schema sees the
+document. It covers `kind: remote-http` and nothing else. Everything the format
+can say that strad cannot honour is a HARD ERROR rather than a default:
+`type: "stdio"`, `type: "sse"`, the `oauth` object, `command` / `args` / `env` on
+a remote entry, pipe-chained interpolation (`${env:A | value:b}`), the `input`
+and `op` schemes and every other scheme, a bare `${NAME}`, and a `${...}` in
+`title` or `description`. A `mcpServers` key that is not a legal strad slug is
+also a hard error, with the slug it would have been offered as a suggestion but
+never applied.
+
+And one thing that is NOT an error, which is the sharper edge: an entry with no
+`strad: { entitlements: [...] }` attaches a server with `entitlements: []` —
+configured, routed, and reachable by nobody. `npm run config:check` warns and
+boot emits `strad.mcp_json_unentitled`, and neither fails anything.
+
+**Why.** SEP-2633 is an OPEN DRAFT, not a merged standard. Its reference
+implementation section is a `TODO`, so there is no published JSON schema to
+validate against — nothing in strad names a `$schema` — and its `oauth` object is
+being renegotiated upstream (SEP-2742). Binding more of it than the part that has
+a direct analog would be betting the config contract on a moving target, in the
+one file where a mistranslated field silently changes what a mount executes. So
+the YAML interface stays authoritative, the dialect is additive, and a document
+that does not write `mcpServers:` takes exactly the code path it always did.
+
+The three kinds with no expression are not an oversight in the format: `mcp.json`
+is a CLIENT config. `supplementary-image` is deployment topology consumed by
+`src/deploy/appspec.ts`, `builtin` is an in-process import, and `bundles:` is the
+container an image lands in — none of which a client has. The deepest mismatch is
+`entitlements` / `roles`: `mcp.json` is a single-principal file, and strad's
+two-way agreement (`src/gateway/entitlements.ts`) presumes the config's reader is
+not its only user, which is the assumption `mcp.json` is written under. `[]` is
+the only fail-closed answer available, and a fail-closed answer nothing says out
+loud is indistinguishable on a gateway from a routing bug nobody has noticed —
+hence the warning and the event.
+
+`${env:NAME}` is REWRITTEN to `${NAME}` at desugar time rather than taught to the
+resolver, because four things read the reference form (the renderer, the
+request-time provider, the unseeded-waiver gate, the console roster) and a second
+form understood by only some of them is a credential baked under a name nothing
+reads. Pipe chains are the one SEP form that cannot survive that rewrite: strad
+resolves a reference once, and the renderer that bakes it in CI cannot see the
+fallback the request-time provider would take.
+
+**Undo.** Widen it when the SEP does — a published JSON schema and a settled
+`oauth` object are the two events that change the calculus. `type: "sse"` becomes
+expressible the day strad grows an SSE adapter. `type: "stdio"`,
+`supplementary-image` and `builtin` do not converge and should not be forced to:
+the honest resolution there is the one the gateway/multi-principal gap suggests,
+which is feedback to the SEP rather than code here.

@@ -17,7 +17,7 @@ Every server, regardless of kind, has these base fields (from
 | Field                  | Default      | Meaning                                                                               |
 | ---------------------- | ------------ | ------------------------------------------------------------------------------------- |
 | `slug`                 | _(required)_ | Identifier, `^[a-z0-9]+(-[a-z0-9]+)*$`, max 63. Goes in `?servers=`, prefixes every tool, and [names this server's variables on the container](/operate/secrets/#what-a-servers-variables-are-called-on-the-box) — which is why a dash may not double up, lead or trail. |
-| `kind`                 | _(required)_ | `remote-http` \| `supplementary-image` \| `builtin`.                                  |
+| `kind`                 | _(required)_ | `remote-http` \| `local-tunnel` \| `supplementary-image` \| `builtin`.                |
 | `entitlements`         | `[]`         | Roles allowed to reach this server. **Empty = nobody** (fail closed).                 |
 | `enabled`              | `true`       | Set `false` to configure without exposing.                                            |
 | `tools`                | —            | The capability policy: `{ allow?: [...], deny?: [...] }`. Omitted = every tool.       |
@@ -902,6 +902,192 @@ it is a single-value enum so a config cannot name a store strad does not have.
 That datastore is the subject of [known limitation #6](/limitations/#6-token-records-live-in-an-env-var-not-a-database).
 The token model is in [Auth](/auth/overview/#mcp--static-system-tokens-agents).
 
+## `mcpServers:` — the draft SEP-2633 input dialect
+
+strad accepts a second **input dialect** for the same server list: the
+`mcpServers` map from
+[draft SEP-2633](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2633),
+the proposed standard for the `mcp.json` file an MCP client writes to say which
+servers it connects to.
+
+It is a **dialect, not a replacement.** Entries under `mcpServers:` are
+**desugared into `servers:`** before the schema above sees the document, so
+nothing downstream of the parser knows the dialect exists: the
+`kind` union is unchanged, `servers:` remains the contract, and a config that
+does not write `mcpServers:` is parsed by exactly the code path it always was.
+
+<aside class="starlight-aside starlight-aside--caution">
+
+SEP-2633 is an **open draft**, not a merged standard. Its `oauth` object is being
+renegotiated upstream ([SEP-2742](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2742)),
+and its reference-implementation section is a `TODO` — **there is no published
+JSON schema for it**, which is why nothing in strad, and nothing on this page,
+names a `$schema` URL.
+
+</aside>
+
+### What it looks like
+
+```yaml
+version: 1
+gateway: { name: strad, env: staging }
+auth: { staticTokens: { enabled: true } }
+roles:
+  agent: { servers: ["*"] }
+
+mcpServers:
+  granola:
+    title: Granola
+    description: Meeting notes.
+    type: streamable-http
+    url: https://mcp.granola.ai/mcp
+    headers:
+      Authorization: "Bearer ${env:GRANOLA_TOKEN}"
+    strad:
+      entitlements: [agent]
+```
+
+That is exactly this, in the YAML interface:
+
+```yaml
+servers:
+  - slug: granola
+    kind: remote-http
+    title: Granola
+    description: Meeting notes.
+    url: https://mcp.granola.ai/mcp
+    headers:
+      Authorization: "Bearer ${GRANOLA_TOKEN}"
+    entitlements: [agent]
+```
+
+Not "equivalent to" — **identical**, field for field and default for default.
+`test/mcp-json.catalog-parity.test.ts` asserts it over every `remote-http` entry
+in the configs this repo ships.
+
+### The mapping, and where it stops
+
+| SEP-2633                             | strad                                          |
+| ------------------------------------ | ---------------------------------------------- |
+| the `mcpServers` key                 | `slug`                                         |
+| `type: "streamable-http"` + `url`    | `kind: remote-http` + `url`                    |
+| `headers`                            | `headers`                                      |
+| `title`, `description`               | `title`, `description`                         |
+| `${env:NAME}`                        | `${NAME}`                                      |
+| `${value:literal}`                   | the literal                                    |
+
+**One of the four kinds is expressible, and it is the one the format was
+designed for.** The rest is refused by name rather than guessed at:
+
+| Written                       | What happens                                                                                                     |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `type: "stdio"`               | refused — strad runs no local processes. A container image is `kind: supplementary-image`; a module is `kind: builtin`. |
+| `type: "sse"`                 | refused — strad proxies Streamable HTTP only.                                                                    |
+| `oauth: { ... }`              | refused — the draft is renegotiating it, and it describes a client driving a consent flow, which is the console's job here. Use `oauthRefresh:` or `oauth:` in the YAML interface. |
+| `command` / `args` / `env`    | refused — the SEP itself forbids them on a remote entry.                                                         |
+| `${env:A \| value:b}`         | refused — SEP-2633 takes the first non-empty value of a chain; strad resolves a reference **once**, and the renderer that bakes it at deploy time cannot see the fallback the request-time provider would take. |
+| `${input:name}`               | refused — the client is asked to collect the value from a human. strad's doors are `/mcp` and the console; a boot has nobody to ask. |
+| `${op://vault/item/field}`    | refused — strad's backends are the two named in `gateway.secrets.provider:`. 1Password is reachable *through* strad as a mounted server, which is a tool an agent calls, not a value the config layer resolves. |
+| bare `${NAME}`                | refused — that is the Claude Code dialect. SEP-2633 makes the scheme explicit, including for `env`. The error names the fix. |
+| `${...}` in `title` / `description` | refused — strad resolves references in `url` and `headers` only, so one here would ship as literal text.     |
+
+### `strad:` — the gateway fields the format has no slot for
+
+`mcp.json` is a **single-principal** file: it assumes the config's reader is the
+config's only user, and a gateway's whole job is that they are not. So
+`entitlements`, `roles`, the `tools:` policy, `timeoutMs` and `enabled` have
+nowhere to live in it. One optional key per entry carries them:
+
+```yaml
+mcpServers:
+  gmail-ro:
+    type: streamable-http
+    url: https://mcp.example.com/mcp
+    strad:
+      slug: gmail-ro          # only needed when the key is not a legal slug
+      entitlements: [agent]
+      enabled: true
+      timeoutMs: 120000
+      tools: { allow: [list_email_conversations] }
+      mayBeUnseeded: [GMAIL_TOKEN]
+```
+
+It is namespaced under one key so the rest of the entry stays a conforming
+`mcp.json` entry. `oauth:` and `oauthRefresh:` are deliberately **not** here — a
+server that authenticates as a person is configured in the YAML interface.
+
+### The cliff: an entry with no `strad:` reaches nobody
+
+An entry that omits `entitlements` gets `[]`, which is fail closed and correct —
+and it means the server is configured, routed, and **reachable by nobody**. That
+is what a `mcp.json` *means* on a gateway, so it is not defaulted away and it is
+not left silent:
+
+- `npm run config:check` prints a **warning** naming every such slug and the two
+  halves of the fix, on the run that introduced it;
+- boot emits `strad.mcp_json_unentitled` with the slugs
+  ([telemetry](/operate/telemetry/#logs--strads-own-events-and-only-those)).
+
+Neither fails anything. An `mcp.json` with no entitlements is a valid config, not
+a broken one — it is just one that does nothing yet.
+
+### Slugs: what happens to a name strad cannot express
+
+SEP-2633 server names match `^[a-zA-Z0-9_[\]-]+$`. strad slugs match
+`^[a-z0-9]+(-[a-z0-9]+)*$`, max 63 — **no uppercase, no `_`, no `[]`**. A key
+outside strad's charset is a **hard error**, and the error offers the slug it
+would have been:
+
+```
+mcpServers.My_Server: "My_Server" is a legal mcp.json server name and not a
+legal strad slug … Write it explicitly: strad: { slug: my-server }.
+```
+
+It is never transliterated automatically, because `My_Server` and `my-server` are
+two distinct, legal SEP names that fold to **one** slug — and a slug is not a
+label. It prefixes every tool name (`<slug>__<tool>`), selects the server in
+`?servers=`, and [names this server's variables on the
+container](/operate/secrets/#what-a-servers-variables-are-called-on-the-box).
+Silently folding two names into one identity is the same failure a doubled dash
+is refused to prevent.
+
+### Two ways in
+
+**Beside `servers:`.** A `mcpServers:` key in an ordinary strad config. The
+desugared entries are **appended** to `servers:`, so `roles:`, `auth:` and
+`bundles:` are in the same document and the cliff above is one line from closed.
+This is the form to reach for.
+
+**On its own.** A file that is *just* an `mcp.json` — `mcpServers` and no
+`version:` — is also a config strad loads. `version: 1` and an empty `auth:` are
+supplied, which are the only two root fields with no default. JSON is a subset of
+YAML, so it is the same parser and there is no second one. Adding `roles:` to
+such a file still works — only `version:` flips it out of this mode:
+
+```json
+{
+  "roles": { "agent": { "servers": ["deepwiki"] } },
+  "mcpServers": {
+    "deepwiki": {
+      "type": "streamable-http",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "strad": { "entitlements": ["agent"] }
+    }
+  }
+}
+```
+
+`npm run config:check -- --config ./mcp.json` validates one the way a deploy
+would.
+
+### Unknown keys
+
+Same split as the YAML interface: an unrecognised key in an `mcpServers` entry is
+**ignored at boot** and **reported by `npm run config:check`**, against the key
+path you wrote it under (`mcpServers.x.timeout`). Boot stays lenient on purpose —
+an image that refused to start on a key it had not heard of would turn a rollback
+into an outage, and this dialect's upstream is a draft, so new keys are expected.
+
 ## Where the config comes from
 
 Config is loaded from two sources, in priority order (`src/config/load.ts`):
@@ -911,6 +1097,11 @@ Config is loaded from two sources, in priority order (`src/config/load.ts`):
    runs.
 2. **`STRAD_CONFIG`** — a path to a file. This is how an image that **bakes its
    config in** works (e.g. `tadasant-internal`).
+
+Either source may be written in the YAML interface or in the [`mcp.json`
+dialect](#mcpservers--the-draft-sep-2633-input-dialect), or in both at once —
+JSON is a subset of YAML, so the one parser reads both and the dialect is a
+document transform rather than a second parse.
 
 `STRAD_CONFIG_YAML` is the config **document**, not the config **file**: a spec
 rendered by `render-spec` carries it re-emitted without its comments, because an

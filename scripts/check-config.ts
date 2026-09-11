@@ -46,11 +46,16 @@
  *      declares, the second is a console running as the wrong identity.
  *   6. UNSEEDED-SECRET WAIVERS. A `mayBeUnseeded:` naming something the server
  *      does not reference waives nothing. See src/deploy/unseeded.ts.
+ *
+ * And one finding that is a WARNING rather than a problem: a server the
+ * `mcp.json` dialect attached with no entitlements. See src/config/mcp-json.ts.
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { parseConfig } from "../src/config/load.ts";
-import type { StradConfig } from "../src/config/schema.ts";
+import {
+  parseConfigWithDialect,
+  type ParsedConfig,
+} from "../src/config/load.ts";
 import { formatUnknownKey, unknownConfigKeys } from "../src/config/strict.ts";
 import {
   collectSecretRefs,
@@ -127,15 +132,26 @@ function verdict(): never {
 //
 // A config that does not parse cannot be checked any further: there is nothing
 // to diff against and nothing to render. Report and stop.
-function parseOrReport(): StradConfig {
+function parseOrReport(): ParsedConfig {
   try {
-    return parseConfig(raw, values.config);
+    return parseConfigWithDialect(raw, values.config);
   } catch (err) {
     problem((err as Error).message);
     verdict();
   }
 }
-const config = parseOrReport();
+const { config, dialect } = parseOrReport();
+
+// --- 1b. the mcp.json dialect's own findings --------------------------------
+//
+// A warning and never a problem. `entitlements: []` is what a pasted mcp.json
+// MEANS — the format carries no notion of who a server is for — so a config
+// that says it is a valid config, not a broken one. What it is not is something
+// to discover from an empty tools/list a week later, so it is annotated on the
+// run that introduced it. See src/config/mcp-json.ts.
+for (const notice of dialect.notices) {
+  console.error(`::warning file=${values.config}::${notice.message}`);
+}
 
 // --- 2. unknown keys --------------------------------------------------------
 for (const unknown of unknownConfigKeys(raw, config)) {

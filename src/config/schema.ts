@@ -27,7 +27,7 @@ import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
  * them is what lets src/secrets/env-prefix.ts promise injectivity rather than hope
  * for it.
  */
-const SLUG = z
+export const SLUG = z
   .string()
   .max(63, "slug must be at most 63 characters")
   .regex(
@@ -49,7 +49,7 @@ const SecretRef = z.string();
 const HeaderMap = z.record(SecretRef).default({});
 
 /** Roles a principal can hold. A role grants access to a set of servers. */
-const Role = z
+export const Role = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,62}$/, "role must be lowercase alphanumeric");
 
@@ -77,7 +77,7 @@ const Role = z
  *
  * Enforced on tools/call, not just tools/list — see gateway/toolPolicy.ts.
  */
-const ToolPolicySchema = z
+export const ToolPolicySchema = z
   .object({
     allow: z.array(z.string().min(1)).min(1).optional(),
     deny: z.array(z.string().min(1)).min(1).optional(),

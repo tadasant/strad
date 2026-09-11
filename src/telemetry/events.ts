@@ -98,6 +98,18 @@ export const EXPORTABLE: Readonly<Record<string, readonly string[]>> =
      * listing, which for this event is always false.
      */
     "mcp.local_machine_offline": ["slug", "listed", "explicit", "state"],
+    /**
+     * Slugs the `mcp.json` dialect attached with no entitlements.
+     *
+     * `mcp.json` is a single-principal file and has no notion of who a server
+     * is for, so a pasted entry with no `strad: { entitlements: [...] }` gets
+     * `[]` — fail closed, and reachable by nobody. That is the right VALUE and
+     * a silent one, which on a gateway is indistinguishable from a routing bug
+     * nobody has noticed. It ships at Info, not as a fault: nothing is broken,
+     * a human has a line to write. The slugs are the config's own, and the
+     * config is ours. See src/config/mcp-json.ts.
+     */
+    "strad.mcp_json_unentitled": ["slugs"],
     /** A slug that is mounted and serving nothing. */
     "strad.tool_surface_degraded": ["slug", "state", "reason"],
     "strad.tool_surface_recovered": ["slug", "tool_count"],
