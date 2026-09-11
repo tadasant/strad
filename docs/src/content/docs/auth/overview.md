@@ -443,7 +443,11 @@ never skipped on the one request where it would matter most.
 
 ### No datastore, and what that costs
 
-strad has no database, so nothing above is written down anywhere. Client
+strad has no database, so none of the OAuth state above is written down
+anywhere. (The one thing `/mcp` auth does persist is the static-token roster,
+and it is a parameter rather than a database — see
+[Where the records live](#where-the-records-live). Nothing in this section
+shares that path.) Client
 registrations, authorization codes, access tokens and refresh tokens are all
 **self-contained values** sealed with a key only the process holds — HMAC where
 the contents are public (a registration), AES-256-GCM where they are not (an

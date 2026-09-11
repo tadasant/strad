@@ -1269,7 +1269,6 @@ export const StradConfig = z
       });
     }
 
-
     // Every referenced role must be defined, or entitlement checks silently
     // deny forever and the operator has no idea why.
     for (const s of cfg.servers) {
