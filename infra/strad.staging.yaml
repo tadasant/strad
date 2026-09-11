@@ -252,7 +252,7 @@ servers:
       # anyone can watch.
       #
       # Shadowing it here is inert: `STRAD_ENV` is read from `process.env`
-      # directly by everything that cares (secretSourceFromEnv, identityEnvs),
+      # directly by everything that cares (the telemetry resource identity),
       # never through the provider, so a store entry under this name reaches
       # exactly one place — the string below.
       greeting: "${STRAD_ENV}"
