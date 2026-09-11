@@ -132,13 +132,14 @@ export const BUNDLE_BOOT_ENV_KEYS = [
  * name a bundle does not read.
  *
  * Derived rather than listed, because it is the array above answered from the
- * other side, and a second hand-written answer is how the two came to disagree:
- * the store path kept these off a third-party container while the `env` path
- * broadcast five of them — the token store, the console's bypass token, OAuth
- * client and cookie-signing key — to every one. `deploy/appspec.ts` keeps this
- * set off every `supplementary-image` component under both providers. So a name
- * added to `CORE_BOOT_ENV_KEYS` is core-only by default, and the one edit that
- * puts it inside a third-party image is adding it to `BUNDLE_BOOT_ENV_KEYS`.
+ * other side, and a second hand-written answer can drift from the first without
+ * anything failing. Under the `env` provider every boot key is a SECRET in the
+ * broadcast, so this set is what keeps the token store, the console's bypass
+ * token, its OAuth client and its cookie-signing key out of every third-party
+ * container. `deploy/appspec.ts` keeps it off every `supplementary-image`
+ * component under both providers. So a name added to `CORE_BOOT_ENV_KEYS` is
+ * core-only by default, and the one edit that puts it inside a third-party
+ * image is adding it to `BUNDLE_BOOT_ENV_KEYS`.
  *
  * `SENTRY_DSN` is the member most likely to be mistaken for telemetry that
  * should travel with the OTLP header. It should not: only strad's own process
