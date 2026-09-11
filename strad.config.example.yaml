@@ -82,10 +82,15 @@ auth:
   # Mint with: npm run token:mint -- --label "my agent" --roles admin
   staticTokens:
     enabled: true
-    # Reserved: no code reads it. `env` (a JSON array in STRAD_TOKENS) is the
-    # only implementation, and the gateway builds it from `enabled` alone. It is
-    # here so a DB-backed store arrives as a new value, not a new key.
-    # See HACKS.md #6.
+    # Where the records live. Both values read the SAME name and the SAME JSON
+    # array, so the flip is a config change with no data to move.
+    #
+    #   env              STRAD_TOKENS, read once at boot. Mint and revoke are an
+    #                    edit to the deployment's secret and a redeploy.
+    #   parameter-store  the parameter at /strad/{env}/gateway/static/STRAD_TOKENS,
+    #                    read on the request path and written by the console at
+    #                    /tokens. Mint and revoke land on a running gateway.
+    #                    Requires gateway.secrets.provider: gcp-parameter-store.
     store: env
 
   # strad's OWN OAuth 2.1 authorization server, in front of /mcp. This is what

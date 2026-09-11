@@ -47,6 +47,20 @@ in `docs/src/content/docs/auth/overview.md`.
 accepts a static system token — there is no code path from the bypass to it. On
 the open internet, `/mcp` is never left ungated.
 
+**What that scope stopped covering, since `/tokens`.** It is still true that no
+console credential _authenticates_ `/mcp` — that endpoint reads the
+`Authorization` header against the token store and nothing else. What is no
+longer true is "there is no code path from the bypass to it": a console session
+can **mint** a static token (`/tokens`, hack #6), and on a deployment whose
+console door is the bypass, that means the bootstrap token can produce an
+`admin` credential for `/mcp`. It is a fair characterisation of what a console
+admin already was — the same session could rotate the `STRAD_TOKENS` parameter
+itself from `/ui/secrets` and get there in two clicks instead of one — and it is
+bounded the same way: `/tokens` writes only where
+`auth.staticTokens.store: parameter-store` is set, which no config in this repo
+sets, and the bypass is what hack #2 exists to delete. Stated rather than left
+as a claim that has quietly stopped holding.
+
 **Why.** Google OAuth client credentials (`GOOGLE_CLIENT_ID` /
 `GOOGLE_CLIENT_SECRET`) are being provisioned by the human. The Google path is
 complete in code — the provider and its `hd` hosted-domain check
@@ -161,19 +175,53 @@ workflow calls this out explicitly.
 
 ## 6. Static token records live in an env var, not a database
 
-**What.** System tokens are stored as a JSON array in `STRAD_TOKENS` (only the
-SHA-256 of each secret; plaintext shown once at mint). `EnvTokenStore` reads it.
+**✅ RESOLVED** for a store-backed deployment. `auth.staticTokens.store:
+parameter-store` reads the records from
+`/strad/{env}/gateway/static/STRAD_TOKENS` **on the request path**
+(`ParameterTokenStore`, `src/auth/tokens.ts`) and writes them from the SSO-gated
+console at `/tokens` (`src/ui/tokens.ts`, `src/auth/token-admin.ts`). Mint and
+revoke land on a running gateway — no restart, no deploy. The datastore is
+Parameter Manager rather than a database: the records are a few hundred bytes,
+the store is already there and already credentialed, and invariant 2 puts
+config-adjacent state in it. `env` is still the default and still works exactly
+as below.
 
-**Why.** No datastore is provisioned, and env-var storage is enough to prove the
-auth model. Minting/revoking means editing the secret and redeploying.
+**What remains.** `STRAD_TOKENS` has not "gone away" — it is the same NAME under
+both backings, which is deliberate: it is what makes the migration a config flip
+with no data move, and what keeps a rollback to an older image working. Two
+narrower residuals, both stated on the limitations page:
 
-`auth.staticTokens.store` reserves the config seat: a single-value enum (`env`)
-that no code reads, since `tokenStoreFromConfig` branches on `enabled` alone.
+1. **No compare-and-swap.** Parameter Manager has none, so every write is a
+   read-modify-write whose read is a direct `reveal()` immediately before the
+   write. Two humans minting inside that window lose one of the two mints. Same
+   as hack #91.
+2. **"Effective on the next request" assumes ONE core instance.** A write drops
+   the reading held by the process that made it, and core runs
+   `instance_count: 1` (`src/deploy/appspec.ts`). Nothing enforces that for this
+   feature's sake, and a second core instance would keep serving a revoked token
+   from its own snapshot for up to `gateway.secrets.ttlSeconds` — an hour by
+   default — with nothing saying so. The same shape `appspec.ts` already refuses
+   for a bundle hosting writable params, and the fix is the same: broadcast the
+   invalidation, or refuse the combination.
+3. **Staleness during a store outage.** `StoreSecretProvider` serves its last
+   known good reading when a re-read fails, so a revocation made while the store
+   is unreachable lands when the store answers again. Nothing is ADMITTED from a
+   stale reading — an unknown token is unknown — and it is strictly less stale
+   than the boot-scoped env var, whose bound was "until the next deploy".
 
-**Undo.** Implement a `TokenStore` backed by a real database (the interface in
-`src/auth/tokens.ts` is already the right shape — records mirror a table row) and
-build a `/console` UI for mint/revoke. Then `STRAD_TOKENS` goes away and `store`
-grows its second value.
+**What.** Under `auth.staticTokens.store: env` (the default) system tokens are
+stored as a JSON array in `STRAD_TOKENS` (only the SHA-256 of each secret;
+plaintext shown once at mint). `EnvTokenStore` reads it, once, at boot.
+
+**Why.** It keeps strad deployable with no vendor attached — the same argument as
+hack #8 for secrets generally. Its cost is explicit: minting or revoking means
+editing the secret and redeploying, and `/tokens` renders read-only and says so.
+
+**Undo.** `auth.staticTokens.store: parameter-store`, on a deployment that
+already sets `gateway.secrets.provider: gcp-parameter-store`. The schema refuses
+the combination without it (there would be nothing to read the records from). A
+deployment whose parameter does not exist yet has it created, secret, at the
+first mint, seeded from whatever the gateway is currently serving.
 
 ---
 
@@ -614,8 +662,11 @@ on every request.
 
 **Crucial scope.** Identical to hack #2: this gate is `/console`-class only. It
 CANNOT authenticate `/mcp` — that endpoint takes a static system token and
-nothing else (`src/auth/index.ts`), and there is no code path from this cookie to
-it. `/ui` is HUMAN-facing HTML; it is not the agent endpoint.
+nothing else (`src/auth/index.ts`), and the cookie is never read there. `/ui` is
+HUMAN-facing HTML; it is not the agent endpoint. Since `/tokens` (hack #6) a
+console session can _mint_ such a token where the parameter-store backing is
+configured, which is the same reach a console admin already had through the
+secrets page; hack #2 carries the reasoning.
 
 **Why.** Google Workspace OAuth credentials are not provisioned yet (hack #2), so
 the bypass is still the only working door on a deployment without them. Reusing

@@ -411,19 +411,47 @@ Same scope as #2: it is console-class only and cannot reach `/mcp`.
 
 ### 6. Token records live in an env var, not a database
 
-`STRAD_TOKENS` is a JSON array of token records (SHA-256 hashes only — the plaintext
-is shown once at mint and never stored). Minting or revoking a token means editing
-the secret and redeploying.
+**Resolved** for a store-backed deployment, with two narrower residuals.
 
-The config reserves the seat: `auth.staticTokens.store` is a single-value enum
-(`env`) that no code reads — the gateway builds the env-backed store from
-`auth.staticTokens.enabled` alone. See
-[The server-config interface](/servers/interface/#authstatictokens).
+`auth.staticTokens.store: parameter-store` files the records at
+`/strad/{env}/gateway/static/STRAD_TOKENS`, reads them on the request path and
+writes them from the SSO-gated console at `/tokens`. Minting and revoking land on
+a running gateway — no restart, no deploy. It is not a database: the records are
+a few hundred bytes that change a few times a month, Parameter Manager is already
+there and already credentialed, and a database would be a fourth App Platform
+component with a migration story. See
+[Managing tokens](/auth/overview/#managing-tokens-the-tokens-console).
 
-**Undo:** implement a DB-backed `TokenStore` — the interface is already the right
-shape — plus a `/console` mint/revoke UI, and drop `STRAD_TOKENS`. The `store`
-enum grows its second value there. See
-[Auth](/auth/overview/#mcp--static-system-tokens-agents).
+`auth.staticTokens.store: env` remains the default and behaves exactly as it
+always did: `STRAD_TOKENS` is a JSON array of token records (SHA-256 hashes only
+— the plaintext is shown once at mint and never stored), read once at boot, and
+minting or revoking means editing the secret and redeploying. `/tokens` still
+renders the roster there; it says why it cannot write rather than offering a form
+that would always fail.
+
+What remains under `parameter-store`:
+
+1. **No compare-and-swap.** Parameter Manager has none, so a write is a
+   read-modify-write whose read is a direct reveal immediately before the write.
+   Two humans minting inside that window lose one of the two mints — the same
+   limitation as [#91](#91-a-rotated-refresh-token-can-be-overwritten-by-a-re-seed).
+   A lost mint is a token that does not work, which is loud; revoke and forget
+   are keyed on a token id and applied to whatever the fresh read holds, so they
+   cannot silently resurrect a record.
+2. **"Effective on the next request" assumes one core instance.** The write drops
+   the reading held by the process that made it, and core runs one instance. A
+   second one would keep serving a revoked token from its own snapshot for up to
+   `gateway.secrets.ttlSeconds` — an hour by default — with nothing saying so.
+3. **Revocation is stale for the length of a store outage.** The runtime provider
+   serves its last known good reading when a re-read fails, because a store
+   outage must not take `/mcp` down. So a revoke made while the store is
+   unreachable takes effect when the store answers again. Nothing is _admitted_
+   from a stale reading: a token that was not in the last good reading is
+   refused, and a store that cannot be read at all fails the request closed.
+
+**Undo the residuals:** a backing with compare-and-swap, or a records document
+whose writes commute; and, for the second, either broadcasting the invalidation
+between core instances or refusing more than one.
 
 ### 94. The authorization server in front of `/mcp` has no datastore
 

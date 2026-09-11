@@ -15,11 +15,8 @@ import {
   gatewayParameterPath,
   parameterPath,
   ParameterStoreError,
-  type ParameterStore,
 } from "../secrets/parameters/index.ts";
-import { normaliseNamespace } from "../secrets/parameters/namespace.ts";
-import { resolveServerView, serverLooksSecrets } from "../ui/resolve.ts";
-import { storeFor } from "../ui/index.ts";
+import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
 import { errorSummary } from "../util/error-text.ts";
@@ -89,7 +86,7 @@ export interface ParamsHandlerOptions {
    * two ways to build the writer is how one of them ends up holding a different
    * credential from the one the security note describes.
    */
-  parametersStore?: Parameters<typeof storeFor>[2]["parametersStore"];
+  parametersStore?: StoreClientOptions["parametersStore"];
   /**
    * The runtime providers, so a write here is visible to THIS process at once.
    *
@@ -174,94 +171,6 @@ function targetIn(
     return { slug: server.slug, variable: allowed };
   }
   return null;
-}
-
-/**
- * The store that owns a given parameter path, and the admin credential for it.
- *
- * A deployment can front more than one parameter store, and since
- * `consoleStores:` it can do so two ways at once: several secrets SLUGS, and
- * several stores on ONE slug's console page. Both are the same question here —
- * a store is a (project, namespaces, credential) triple however it was declared
- * — so the candidate list is flattened across both dimensions and the NAMESPACE
- * decides, exactly as before. Picking "the first one" instead would write
- * strad's parameter with somebody else's admin key and 404 in a way nobody would
- * diagnose.
- *
- * The single-candidate fallback covers a deployment that declares no namespaces
- * at all: with exactly one store there is nothing to disambiguate, and refusing
- * would break a correct config to enforce a rule that only exists for the
- * ambiguous case.
- */
-export function storeForPath(
-  config: StradConfig,
-  secrets: SecretBag,
-  path: string,
-  opts: Pick<ParamsHandlerOptions, "parametersStore">,
-): { store: ParameterStore } | { store: null; reason: string } {
-  const candidates = config.servers
-    .filter((s) => s.enabled && serverLooksSecrets(s))
-    .map((s) => resolveServerView(config, s.slug, secrets))
-    .filter((v) => v.kind === "secrets")
-    .flatMap((v) => {
-      const view = v as Extract<typeof v, { kind: "secrets" }>;
-      return view.stores.map((store) => ({ view, store }));
-    });
-
-  if (candidates.length === 0) {
-    return {
-      store: null,
-      reason:
-        "this deployment declares no secrets/parameters server, so there is no " +
-        "store to write to",
-    };
-  }
-
-  const covering = candidates.filter((c) =>
-    c.store.namespaces.some((ns) => path.startsWith(normaliseNamespace(ns))),
-  );
-
-  // TWO COVERING STORES IS A REFUSAL, not a first-wins pick. Overlapping
-  // namespaces mean two projects both claim this path, and writing a credential
-  // into whichever one happened to be declared first is the shape of mistake
-  // nobody would ever diagnose — the write succeeds, and the value lands in a
-  // store the reader does not read.
-  if (covering.length > 1) {
-    return {
-      store: null,
-      reason:
-        `${covering.length} parameter stores (${covering
-          .map((c) => `${c.view.server.slug}/${c.store.projectId}`)
-          .sort()
-          .join(", ")}) declare a namespace that covers ${path}, so ` +
-        `which store owns it is ambiguous. Narrow one of them.`,
-    };
-  }
-
-  const chosen =
-    covering[0] ?? (candidates.length === 1 ? candidates[0] : undefined);
-
-  if (!chosen) {
-    return {
-      store: null,
-      reason:
-        `no secrets store's namespaces cover ${path}, and this ` +
-        `deployment has ${candidates.length} of them, so which store owns it ` +
-        `is ambiguous`,
-    };
-  }
-
-  const store = storeFor(chosen.view, chosen.store, opts);
-  if (!store) {
-    return {
-      store: null,
-      reason:
-        chosen.store.accountReason ??
-        `the "${chosen.view.server.slug}" server has no admin service account ` +
-          `for ${chosen.store.projectId}, so nothing on core can write a parameter`,
-    };
-  }
-  return { store };
 }
 
 /**

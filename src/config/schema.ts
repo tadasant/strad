@@ -968,17 +968,23 @@ const AuthConfig = z.object({
     .object({
       enabled: z.boolean().default(true),
       /**
-       * Where token records live. Reserved, and read by no code path:
-       * `tokenStoreFromConfig` (src/auth/index.ts) branches on `enabled` alone
-       * and always builds an `EnvTokenStore`, which reads a JSON array from
-       * STRAD_TOKENS.
+       * Where token records live.
        *
-       * It is declared so that a DB-backed `TokenStore` lands as a second enum
-       * value rather than as a new key in the config contract, and it is a
-       * single-value enum so no config can claim a store strad does not have.
-       * See HACKS.md #6 and issue #10.
+       *   `env`              a JSON array in the STRAD_TOKENS environment
+       *                      variable, read ONCE at boot. Minting or revoking is
+       *                      an edit to the secret and a redeploy.
+       *   `parameter-store`  the SAME JSON array, in the SAME variable, as a
+       *                      parameter at `/strad/{env}/gateway/static/STRAD_TOKENS`
+       *                      — read on the request path and written by the
+       *                      console at `/tokens`. Mint and revoke take effect on
+       *                      a running gateway.
+       *
+       * The migration is this flip and nothing else: one name, one payload
+       * shape, and a deployment whose parameter does not exist yet has it seeded
+       * from what the gateway is already serving at the first mint. See
+       * `src/auth/token-admin.ts` and `docs/operate/secrets.md`.
        */
-      store: z.enum(["env"]).default("env"),
+      store: z.enum(["env", "parameter-store"]).default("env"),
     })
     .default({ enabled: true, store: "env" }),
 
@@ -1258,6 +1264,32 @@ export const StradConfig = z
           path: ["auth", "mcpOAuth", "roles"],
         });
       }
+    }
+
+    // A TOKEN STORE STRAD CANNOT READ IS A GATEWAY WITH NO DOOR.
+    //
+    // `auth.staticTokens.store: parameter-store` files the records at
+    // `/strad/{env}/gateway/static/STRAD_TOKENS` and reads them through the
+    // runtime secret provider. Under `gateway.secrets.provider: env` that
+    // provider IS `process.env`, so the flip would change nothing about the
+    // read and everything about the write: the console would offer mint and
+    // revoke forms backed by a store that does not exist. Refused here rather
+    // than at the first click, because `npm run config:check` runs in CI and the
+    // first click does not.
+    if (
+      cfg.auth.staticTokens.store === "parameter-store" &&
+      cfg.gateway.secrets.provider !== "gcp-parameter-store"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'auth.staticTokens.store is "parameter-store" but ' +
+          `gateway.secrets.provider is "${cfg.gateway.secrets.provider}". The ` +
+          "records are a parameter, so there has to be a parameter store to " +
+          'read and write them in. Set the provider to "gcp-parameter-store", ' +
+          'or leave the token store as "env".',
+        path: ["auth", "staticTokens", "store"],
+      });
     }
 
     // Every referenced role must be defined, or entitlement checks silently

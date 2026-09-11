@@ -295,6 +295,11 @@ describe("mint → exchange → cookie → console", () => {
 
 describe("a token session can look at the console and cannot act through it", () => {
   const ACTING = [
+    // Minting an /mcp token is the widest of them: a standing credential for
+    // the agent door, handed out from a 30-minute look-only session.
+    "/tokens/mint",
+    "/tokens/revoke",
+    "/tokens/forget",
     "/ui/echo/create",
     "/ui/echo/rotate",
     "/ui/echo/note",

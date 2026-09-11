@@ -6,7 +6,7 @@ import {
   type ParameterMeta,
   type ParameterStore,
 } from "../secrets/parameters/index.ts";
-import { storeForPath } from "../http/params.ts";
+import { storeForPath } from "../ui/store-client.ts";
 import { IDENTITY_SCOPES } from "./google.ts";
 
 export {

@@ -6,8 +6,7 @@ import { Registry } from "../src/gateway/registry.ts";
 import { createApp } from "../src/http/app.ts";
 import { parseImage, renderAppSpec } from "../src/deploy/appspec.ts";
 import { resolveServerView } from "../src/ui/resolve.ts";
-import { storeForPath } from "../src/http/params.ts";
-import { storeFor } from "../src/ui/index.ts";
+import { storeFor, storeForPath } from "../src/ui/store-client.ts";
 import { createFakeGcp, type FakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   EnvSecretProvider,
