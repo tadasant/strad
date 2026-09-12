@@ -91,7 +91,7 @@ parameter, one version, one write.
 
 The stored document is capped at **64 KiB** (`MAX_OVERLAY_BYTES`), the same bound
 the [parameter write-back
-route](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+route](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 applies to a value arriving over the private network. One number in the
 deployment rather than two. A roster large enough to reach it is a roster that
 belongs in the checked-in document.

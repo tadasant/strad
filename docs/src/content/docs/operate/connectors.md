@@ -89,17 +89,19 @@ layering everything else applies.
 ### A credential that rotates on use: list it under `paramsWritable:` too
 
 Some providers' refresh tokens are single-use: every refresh returns a new one and
-kills the old one. X's are, and so are Reddit's and Dropbox's. The console mints the
+kills the old one. X's are. The console mints the
 first token, but the server spends it, so the server has to persist each successor
 or the next restart comes back holding a dead one.
 
-List the connector's variable under [`paramsWritable:`](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+List the connector's variable under [`paramsWritable:`](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 on the same server (it needs `params: true`). The write-back route sees that the
 name belongs to this server's connector and rotates `oauth/`, the path the consent
-wrote and the one every read prefers. So two things write `oauth/`: the consent
+wrote and the one every read prefers. If the store holds only a copy seeded by
+hand under `static/`, for example a token set up before the connector existed,
+the route rotates that copy until someone connects. So two things write `oauth/`: the consent
 callback, which creates the parameter and records who consented, and the
-write-back route, which rotates it. The route cannot create it, so a server that
-rotates before anyone has connected gets a 404 and degrades. It also leaves the
+write-back route, which rotates it. The route cannot create it, so a server that rotates when neither kind holds the
+name gets a 404 and degrades. It also leaves the
 parameter secret and the consent note alone. [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)
 follows the same rule for a re-read.
 

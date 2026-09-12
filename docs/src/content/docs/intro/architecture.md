@@ -55,7 +55,7 @@ in-VPC hop (~4ms) with no public-edge hairpin.
 
 Traffic runs core → bundle with one exception, and two things use it. A server
 that declares
-[`paramsWritable:`](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use)
+[`paramsWritable:`](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use)
 calls **back** to core to persist a credential that rotated under it; one that
 declares
 [`paramsRefresh:`](/operate/secrets/#paramsrefresh--a-rotation-that-lands-without-a-deploy)

@@ -12,7 +12,7 @@ import {
   createParamClient,
   paramRoutePath,
 } from "../src/secrets/param-route.ts";
-import { kindOf, readableTarget, writableTarget } from "../src/http/params.ts";
+import { kindsOf, readableTarget, writableTarget } from "../src/http/params.ts";
 import { createFakeGcp } from "../src/secrets/parameters/fake.ts";
 import {
   layerNamespaces,
@@ -23,19 +23,39 @@ import {
 import { ParameterStoreError } from "../src/secrets/parameters/index.ts";
 
 /**
- * #352: a credential the console CONSENTED to, that also ROTATES ON USE.
+ * A credential the console CONSENTED to, that also ROTATES ON USE (#352).
  *
  * The console's callback mints a connector's refresh token under `oauth/`, and
- * `oauth/` outranks `static/` in every layered read. The write-back route used to
- * address `static/` unconditionally, so a rotation landed where the `oauth/`
- * copy shadowed it and the credential died at the next restart. The route now
- * resolves the kind from the config — `oauth/` for a variable the server names
- * on its `oauth:` connector, `static/` for everything else.
+ * `oauth/` outranks `static/` in every layered read. For a variable a server
+ * names on its `oauth:` connector, the write-back route therefore considers both
+ * kinds, `oauth/` first, and reads or rotates the highest one the store holds;
+ * every other variable is addressed under `static/` alone.
  *
  * Over a real socket, through the client the bundle host runs, against the
  * in-memory Parameter Manager + Secret Manager double, so `rotate()`, the
- * base64url envelope and the `:render` path are the real ones.
+ * base64url envelope and the `:render` path are the real ones. Each `describe`
+ * uses its own slug, so no test depends on another's writes.
  */
+
+const connector = (prefix: string) => `    oauth:
+      provider: generic
+      label: ${prefix}
+      authorizeUrl: https://x.com/i/oauth2/authorize
+      tokenUrl: https://api.x.com/2/oauth2/token
+      scopes: [tweet.read, offline.access]
+      clientIdVariable: ${prefix}_OAUTH_CLIENT_ID
+      clientSecretVariable: ${prefix}_OAUTH_CLIENT_SECRET
+      refreshTokenVariable: ${prefix}_OAUTH_REFRESH_TOKEN
+`;
+
+const server = (slug: string, lists: string, oauth = "") => `  - slug: ${slug}
+    kind: supplementary-image
+    image: ghcr.io/tadasant/strad-bundle:latest
+    bundle: bundle
+    path: /${slug}
+    entitlements: [admin]
+    params: true
+${lists}${oauth}`;
 
 const YAML = `
 version: 1
@@ -46,41 +66,10 @@ bundles:
   - name: bundle
   - name: bundle-secrets
 servers:
-  - slug: x-twitter
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle:latest
-    bundle: bundle
-    path: /x-twitter
-    entitlements: [admin]
-    params: true
-    paramsWritable: [X_OAUTH_REFRESH_TOKEN, X_PLAIN_TOKEN]
-    paramsRefresh: [X_OAUTH_CLIENT_SECRET, X_PLAIN_REFRESHED]
-    oauth:
-      provider: generic
-      label: X
-      authorizeUrl: https://x.com/i/oauth2/authorize
-      tokenUrl: https://api.x.com/2/oauth2/token
-      scopes: [tweet.read, offline.access]
-      clientIdVariable: X_OAUTH_CLIENT_ID
-      clientSecretVariable: X_OAUTH_CLIENT_SECRET
-      refreshTokenVariable: X_OAUTH_REFRESH_TOKEN
-  - slug: unconsented
-    kind: supplementary-image
-    image: ghcr.io/tadasant/strad-bundle:latest
-    bundle: bundle
-    path: /unconsented
-    entitlements: [admin]
-    params: true
-    paramsWritable: [U_OAUTH_REFRESH_TOKEN]
-    oauth:
-      provider: generic
-      label: U
-      authorizeUrl: https://u.example/authorize
-      tokenUrl: https://u.example/token
-      scopes: [read]
-      clientIdVariable: U_OAUTH_CLIENT_ID
-      clientSecretVariable: U_OAUTH_CLIENT_SECRET
-      refreshTokenVariable: U_OAUTH_REFRESH_TOKEN
+${server("consented", "    paramsWritable: [C_OAUTH_REFRESH_TOKEN, C_PLAIN_TOKEN]\n", connector("C"))}
+${server("migrated", "    paramsWritable: [M_OAUTH_REFRESH_TOKEN]\n", connector("M"))}
+${server("unseeded", "    paramsWritable: [U_OAUTH_REFRESH_TOKEN]\n", connector("U"))}
+${server("refreshing", "    paramsRefresh: [R_OAUTH_CLIENT_SECRET, R_OAUTH_REFRESH_TOKEN, R_PLAIN]\n", connector("R"))}
   - slug: secrets
     kind: supplementary-image
     image: ghcr.io/tadasant/strad-bundle:latest
@@ -98,19 +87,10 @@ servers:
 
 const CONFIG = parseConfig(YAML);
 const TOKEN = "InternalTokenValueNeverShown";
-const SLUG = "x-twitter";
-const REFRESH = "X_OAUTH_REFRESH_TOKEN";
-const PLAIN = "X_PLAIN_TOKEN";
-
-const OAUTH_REFRESH = oauthParameterPath("test", SLUG, REFRESH);
-const STATIC_REFRESH = parameterPath("test", SLUG, REFRESH);
-const OAUTH_PLAIN = oauthParameterPath("test", SLUG, PLAIN);
-const STATIC_PLAIN = parameterPath("test", SLUG, PLAIN);
-
-/** What a console consent wrote, and what a human once typed by hand. */
-const CONSENTED = "refresh-token-the-console-consent-minted";
-const HAND_TYPED = "refresh-token-a-human-typed-months-ago";
 const CONSENT_NOTE = "consented via console; scopes: tweet.read offline.access";
+
+const oauth = (slug: string, v: string) => oauthParameterPath("test", slug, v);
+const stat = (slug: string, v: string) => parameterPath("test", slug, v);
 
 const fake = createFakeGcp();
 const runtimeEnv = new EnvSecretProvider({});
@@ -120,28 +100,57 @@ const runtimeProviders = sharedSecretProviders({
   invalidate: () => {},
 });
 
-let server: Server;
+let httpServer: Server;
 let baseUrl: string;
 
 beforeAll(async () => {
-  // The state #352 is about: the console consented (oauth/, secret, with its
-  // note), AND a stale hand-typed copy of the same name still sits in static/.
+  // consented: the console consented (oauth/, secret, with its note) AND a stale
+  // hand-typed copy of the same name still sits in static/. Plus an ordinary
+  // writable name no connector owns.
   await fake.store.create({
-    path: OAUTH_REFRESH,
+    path: oauth("consented", "C_OAUTH_REFRESH_TOKEN"),
     secret: true,
-    value: CONSENTED,
+    value: "consented-token",
     note: CONSENT_NOTE,
   });
   await fake.store.create({
-    path: STATIC_REFRESH,
+    path: stat("consented", "C_OAUTH_REFRESH_TOKEN"),
     secret: true,
-    value: HAND_TYPED,
+    value: "hand-typed-months-ago",
   });
-  // An ordinary writable name, on the same server, that no connector owns.
   await fake.store.create({
-    path: STATIC_PLAIN,
+    path: stat("consented", "C_PLAIN_TOKEN"),
     secret: true,
     value: "plain-seeded",
+  });
+  // migrated: a token seeded by hand under static/ before the connector was
+  // added. Nobody has connected, so oauth/ holds nothing.
+  await fake.store.create({
+    path: stat("migrated", "M_OAUTH_REFRESH_TOKEN"),
+    secret: true,
+    value: "seeded-by-oauth-setup",
+  });
+  // refreshing: the client secret lives where the console tells a human to seed
+  // it (static/ only); the refresh token has both copies; a plain name.
+  await fake.store.create({
+    path: stat("refreshing", "R_OAUTH_CLIENT_SECRET"),
+    secret: true,
+    value: "client-secret-in-static",
+  });
+  await fake.store.create({
+    path: oauth("refreshing", "R_OAUTH_REFRESH_TOKEN"),
+    secret: true,
+    value: "refresh-in-oauth",
+  });
+  await fake.store.create({
+    path: stat("refreshing", "R_OAUTH_REFRESH_TOKEN"),
+    secret: true,
+    value: "refresh-in-static",
+  });
+  await fake.store.create({
+    path: stat("refreshing", "R_PLAIN"),
+    secret: false,
+    value: "plain-ref",
   });
 
   const env: NodeJS.ProcessEnv = {
@@ -169,25 +178,25 @@ beforeAll(async () => {
         fake.store.resolveDetailed!(namespace),
     },
   });
-  server = app.listen(0);
-  await new Promise((r) => server.once("listening", r));
-  baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  httpServer = app.listen(0);
+  await new Promise((r) => httpServer.once("listening", r));
+  baseUrl = `http://127.0.0.1:${(httpServer.address() as { port: number }).port}`;
 });
 
 afterAll(async () => {
-  await new Promise((r) => server.close(r));
+  await new Promise((r) => httpServer.close(r));
 });
 
 /** The client the bundle host runs. */
-function client(slug = SLUG) {
+function client(slug: string) {
   return createParamClient({ slug, baseUrl, token: TOKEN });
 }
 
 /**
- * What a `params: true` render and the runtime provider read for this slug:
- * both kinds, layered, `oauth/` first.
+ * What a `params: true` render and the runtime provider read for a slug: both
+ * kinds, layered, `oauth/` first.
  */
-async function layered(slug = SLUG): Promise<Record<string, string>> {
+async function layered(slug: string): Promise<Record<string, string>> {
   return layerNamespaces(
     await Promise.all(
       serverNamespaces("test", slug).map((ns) => fake.store.resolve(ns)),
@@ -204,113 +213,130 @@ async function revealOr404(path: string): Promise<string | 404> {
   }
 }
 
-describe("a connector variable listed under paramsWritable:", () => {
-  it("boot-reads the consented oauth/ copy, not the shadowed static/ one", async () => {
-    // Precedence still prefers oauth/ when both kinds hold the name — in the
-    // layered read that bakes the container AND in the route's boot read, so
-    // the two agree.
-    expect((await layered())[REFRESH]).toBe(CONSENTED);
-    expect(await client().get(REFRESH)).toBe(CONSENTED);
+describe("a consented connector variable listed under paramsWritable:", () => {
+  const SLUG = "consented";
+  const VAR = "C_OAUTH_REFRESH_TOKEN";
+
+  it("boot-reads the oauth/ copy when both kinds hold the name", async () => {
+    // Precedence still prefers oauth/ — in the layered read that bakes the
+    // container AND in the route's boot read, so the two agree.
+    expect((await layered(SLUG))[VAR]).toBe("consented-token");
+    expect(await client(SLUG).get(VAR)).toBe("consented-token");
   });
 
   it("round-trips: a rotation lands under oauth/, and the next boot reads it back", async () => {
-    const rotated = "refresh-token-x-just-minted";
-    await client().put(REFRESH, rotated);
+    await client(SLUG).put(VAR, "rotated-once");
 
-    // Landed in oauth/ …
-    expect(await fake.store.reveal(OAUTH_REFRESH)).toBe(rotated);
-    // … and static/ was not touched.
-    expect(await fake.store.reveal(STATIC_REFRESH)).toBe(HAND_TYPED);
-    // The next container's boot read finds it …
-    expect(await client().get(REFRESH)).toBe(rotated);
-    // … and so does the layered read a redeploy would bake. This is the
-    // restart that used to come back holding a dead credential.
-    expect((await layered())[REFRESH]).toBe(rotated);
+    expect(await fake.store.reveal(oauth(SLUG, VAR))).toBe("rotated-once");
+    expect(await fake.store.reveal(stat(SLUG, VAR))).toBe(
+      "hand-typed-months-ago",
+    );
+    // The next container's boot read, and the layered read a redeploy bakes.
+    expect(await client(SLUG).get(VAR)).toBe("rotated-once");
+    expect((await layered(SLUG))[VAR]).toBe("rotated-once");
 
-    // A second rotation, off the first: single-use tokens chain.
-    const again = "refresh-token-x-minted-after-that";
-    await client().put(REFRESH, again);
-    expect(await client().get(REFRESH)).toBe(again);
-    expect((await layered())[REFRESH]).toBe(again);
+    // Single-use tokens chain: a second rotation off the first.
+    await client(SLUG).put(VAR, "rotated-twice");
+    expect(await client(SLUG).get(VAR)).toBe("rotated-twice");
+    expect((await layered(SLUG))[VAR]).toBe("rotated-twice");
   });
 
-  it("keeps the parameter secret and the consent note intact across a rotation", async () => {
-    await client().put(REFRESH, "refresh-token-rotated-again");
+  it("keeps the parameter secret, its note and its render grant across a rotation", async () => {
+    await client(SLUG).put(VAR, 'rotated "with" {awkward}\nbytes');
     const meta = (await fake.store.list(`/strad/test/mcp/${SLUG}/oauth/`)).find(
-      (m) => m.path === OAUTH_REFRESH,
+      (m) => m.path === oauth(SLUG, VAR),
     );
     expect(meta?.secret).toBe(true);
-    // The console's record of who consented to what survives a machine write.
     expect(meta?.note).toBe(CONSENT_NOTE);
+    // `:render` succeeding on a value that needs the base64url envelope is what
+    // proves the per-parameter secretAccessor grant survived the write.
+    const rendered = await fake.store.resolve(`/strad/test/mcp/${SLUG}/oauth/`);
+    expect(rendered[VAR]).toBe('rotated "with" {awkward}\nbytes');
+  });
+});
+
+describe("a connector added over a token seeded under static/", () => {
+  const SLUG = "migrated";
+  const VAR = "M_OAUTH_REFRESH_TOKEN";
+
+  it("keeps reading and rotating the static/ copy until someone connects", async () => {
+    expect(await client(SLUG).get(VAR)).toBe("seeded-by-oauth-setup");
+    await client(SLUG).put(VAR, "rotated-in-static");
+    expect(await fake.store.reveal(stat(SLUG, VAR))).toBe("rotated-in-static");
+    // No oauth/ copy was conjured, and the restart reads the rotation back.
+    expect(await revealOr404(oauth(SLUG, VAR))).toBe(404);
+    expect(await client(SLUG).get(VAR)).toBe("rotated-in-static");
+    expect((await layered(SLUG))[VAR]).toBe("rotated-in-static");
   });
 
-  it("cannot conjure a credential the console never minted", async () => {
-    // `rotate()` refuses a path that does not exist, so a rotation before the
-    // first consent fails LOUDLY and creates nothing under either kind.
-    await expect(
-      client("unconsented").put("U_OAUTH_REFRESH_TOKEN", "from-nowhere"),
-    ).rejects.toThrow(/HTTP 404/);
-    expect(
-      await revealOr404(
-        oauthParameterPath("test", "unconsented", "U_OAUTH_REFRESH_TOKEN"),
-      ),
-    ).toBe(404);
-    expect(
-      await revealOr404(
-        parameterPath("test", "unconsented", "U_OAUTH_REFRESH_TOKEN"),
-      ),
-    ).toBe(404);
+  it("moves to oauth/ from the first connect on", async () => {
+    // What the console's callback does on Connect.
+    await fake.store.create({
+      path: oauth(SLUG, VAR),
+      secret: true,
+      value: "freshly-consented",
+      note: CONSENT_NOTE,
+    });
+    expect(await client(SLUG).get(VAR)).toBe("freshly-consented");
+    await client(SLUG).put(VAR, "rotated-after-connect");
+    expect(await fake.store.reveal(oauth(SLUG, VAR))).toBe(
+      "rotated-after-connect",
+    );
+    expect(await fake.store.reveal(stat(SLUG, VAR))).toBe("rotated-in-static");
+    expect((await layered(SLUG))[VAR]).toBe("rotated-after-connect");
+  });
+});
+
+describe("a rotation nothing was seeded or consented for", () => {
+  it("fails loudly and creates nothing under either kind", async () => {
+    const VAR = "U_OAUTH_REFRESH_TOKEN";
+    await expect(client("unseeded").put(VAR, "from-nowhere")).rejects.toThrow(
+      /HTTP 404/,
+    );
+    expect(await revealOr404(oauth("unseeded", VAR))).toBe(404);
+    expect(await revealOr404(stat("unseeded", VAR))).toBe(404);
   });
 });
 
 describe("a non-connector variable listed under paramsWritable:", () => {
-  it("still addresses static/, exactly as before", async () => {
-    expect(writableTarget(CONFIG, SLUG, PLAIN)).toEqual({
+  it("addresses static/ and nothing else", async () => {
+    const SLUG = "consented";
+    const VAR = "C_PLAIN_TOKEN";
+    expect(writableTarget(CONFIG, SLUG, VAR)).toEqual({
       slug: SLUG,
-      variable: PLAIN,
-      kind: "static",
+      variable: VAR,
+      kinds: ["static"],
     });
-    await client().put(PLAIN, "plain-rotated");
-    expect(await fake.store.reveal(STATIC_PLAIN)).toBe("plain-rotated");
-    expect(await client().get(PLAIN)).toBe("plain-rotated");
-    // Nothing was created under oauth/ for it.
-    expect(await revealOr404(OAUTH_PLAIN)).toBe(404);
+    await client(SLUG).put(VAR, "plain-rotated");
+    expect(await fake.store.reveal(stat(SLUG, VAR))).toBe("plain-rotated");
+    expect(await client(SLUG).get(VAR)).toBe("plain-rotated");
+    expect(await revealOr404(oauth(SLUG, VAR))).toBe(404);
   });
 });
 
 describe("paramsRefresh: behaves the same way", () => {
-  it("re-reads a connector variable from oauth/ and a plain one from static/", async () => {
-    const secretOauth = oauthParameterPath(
-      "test",
-      SLUG,
-      "X_OAUTH_CLIENT_SECRET",
-    );
-    const secretStatic = parameterPath("test", SLUG, "X_OAUTH_CLIENT_SECRET");
-    await fake.store.create({
-      path: secretOauth,
-      secret: true,
-      value: "cs-oauth",
-    });
-    await fake.store.create({
-      path: secretStatic,
-      secret: true,
-      value: "cs-static",
-    });
-    const plain = parameterPath("test", SLUG, "X_PLAIN_REFRESHED");
-    await fake.store.create({ path: plain, secret: false, value: "plain-ref" });
+  const SLUG = "refreshing";
 
-    expect(readableTarget(CONFIG, SLUG, "X_OAUTH_CLIENT_SECRET")?.kind).toBe(
-      "oauth",
+  it("re-reads a connector variable through the same precedence", async () => {
+    expect(
+      readableTarget(CONFIG, SLUG, "R_OAUTH_REFRESH_TOKEN")?.kinds,
+    ).toEqual(["oauth", "static"]);
+    // Both copies held: oauth/ wins, as it does in the layered read.
+    expect(await client(SLUG).get("R_OAUTH_REFRESH_TOKEN")).toBe(
+      "refresh-in-oauth",
     );
-    expect(readableTarget(CONFIG, SLUG, "X_PLAIN_REFRESHED")?.kind).toBe(
-      "static",
+    expect((await layered(SLUG))["R_OAUTH_REFRESH_TOKEN"]).toBe(
+      "refresh-in-oauth",
     );
-    // The re-read agrees with the layered read that baked the container.
-    expect(await client().get("X_OAUTH_CLIENT_SECRET")).toBe("cs-oauth");
-    expect((await layered())["X_OAUTH_CLIENT_SECRET"]).toBe("cs-oauth");
-    expect(await client().get("X_PLAIN_REFRESHED")).toBe("plain-ref");
-    // And a refresh-only name is still not writable, whatever its kind.
-    expect(writableTarget(CONFIG, SLUG, "X_OAUTH_CLIENT_SECRET")).toBeNull();
+    // The client secret lives only where the console says to seed it, and a
+    // refresh still finds it.
+    expect(await client(SLUG).get("R_OAUTH_CLIENT_SECRET")).toBe(
+      "client-secret-in-static",
+    );
+    expect(await client(SLUG).get("R_PLAIN")).toBe("plain-ref");
+    expect(readableTarget(CONFIG, SLUG, "R_PLAIN")?.kinds).toEqual(["static"]);
+    // A refresh-only name is still not writable, whatever its kinds.
+    expect(writableTarget(CONFIG, SLUG, "R_OAUTH_REFRESH_TOKEN")).toBeNull();
   });
 });
 
@@ -321,65 +347,42 @@ describe("the request cannot select the kind", () => {
       headers: {
         authorization: `Bearer ${TOKEN}`,
         "content-type": "application/json",
-        "x-strad-kind": "static",
       },
       body: JSON.stringify(body),
     });
 
-  it("ignores a kind in the body, the query string and a header", async () => {
-    const before = await fake.store.reveal(STATIC_REFRESH);
+  it("ignores a kind in the body and the query string", async () => {
+    const SLUG = "consented";
+    const VAR = "C_OAUTH_REFRESH_TOKEN";
+    const staticBefore = await fake.store.reveal(stat(SLUG, VAR));
     const res = await post(
-      `${baseUrl}${paramRoutePath(SLUG, REFRESH)}?kind=static`,
-      { value: "trying-to-land-in-static", kind: "static" },
+      `${baseUrl}${paramRoutePath(SLUG, VAR)}?kind=static`,
+      { value: "asked-for-static", kind: "static" },
     );
     expect(res.status).toBe(200);
-    // It went where the CONFIG says, not where the request asked.
-    expect(await fake.store.reveal(OAUTH_REFRESH)).toBe(
-      "trying-to-land-in-static",
-    );
-    expect(await fake.store.reveal(STATIC_REFRESH)).toBe(before);
+    // It went where the store's precedence says, not where the request asked.
+    expect(await fake.store.reveal(oauth(SLUG, VAR))).toBe("asked-for-static");
+    expect(await fake.store.reveal(stat(SLUG, VAR))).toBe(staticBefore);
 
-    const plainBefore = await fake.store.reveal(STATIC_PLAIN);
     const res2 = await post(
-      `${baseUrl}${paramRoutePath(SLUG, PLAIN)}?kind=oauth`,
-      { value: "trying-to-land-in-oauth", kind: "oauth" },
+      `${baseUrl}${paramRoutePath(SLUG, "C_PLAIN_TOKEN")}?kind=oauth`,
+      { value: "asked-for-oauth", kind: "oauth" },
     );
     expect(res2.status).toBe(200);
-    expect(await revealOr404(OAUTH_PLAIN)).toBe(404);
-    expect(await fake.store.reveal(STATIC_PLAIN)).toBe(
-      "trying-to-land-in-oauth",
+    expect(await revealOr404(oauth(SLUG, "C_PLAIN_TOKEN"))).toBe(404);
+    expect(await fake.store.reveal(stat(SLUG, "C_PLAIN_TOKEN"))).toBe(
+      "asked-for-oauth",
     );
-    expect(plainBefore).not.toBe("trying-to-land-in-oauth");
   });
 
-  it("refuses a kind spelled into the variable segment", async () => {
-    for (const variable of [
-      `static/${REFRESH}`,
-      `oauth/${PLAIN}`,
-      `../static/${REFRESH}`,
-    ]) {
-      const res = await fetch(
-        `${baseUrl}/_strad/params/${SLUG}/${encodeURIComponent(variable)}`,
-        {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${TOKEN}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ value: "nope" }),
-        },
-      );
-      expect(res.status).toBe(403);
-    }
-  });
-
-  it("derives the kind from the config's connector, folding case like parameterId", () => {
-    const x = CONFIG.servers.find((s) => s.slug === SLUG)!;
-    expect(kindOf(x, REFRESH)).toBe("oauth");
-    expect(kindOf(x, "x_oauth_refresh_token")).toBe("oauth");
-    expect(kindOf(x, "X_OAUTH_CLIENT_ID")).toBe("oauth");
-    expect(kindOf(x, PLAIN)).toBe("static");
+  it("derives the candidate kinds from the config's connector, folding case", () => {
+    const c = CONFIG.servers.find((s) => s.slug === "consented")!;
+    expect(kindsOf(c, "C_OAUTH_REFRESH_TOKEN")).toEqual(["oauth", "static"]);
+    expect(kindsOf(c, "c_oauth_refresh_token")).toEqual(["oauth", "static"]);
+    expect(kindsOf(c, "C_OAUTH_CLIENT_ID")).toEqual(["oauth", "static"]);
+    expect(kindsOf(c, "C_PLAIN_TOKEN")).toEqual(["static"]);
+    // A server with no connector never considers oauth/.
     const secrets = CONFIG.servers.find((s) => s.slug === "secrets")!;
-    expect(kindOf(secrets, REFRESH)).toBe("static");
+    expect(kindsOf(secrets, "C_OAUTH_REFRESH_TOKEN")).toEqual(["static"]);
   });
 });

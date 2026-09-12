@@ -592,10 +592,10 @@ plus two that shape how this server gets its values:
 - **`paramsWritable`** (default `[]`) — the variables this server may **write
   back** to its own `/strad/{env}/mcp/{slug}/` namespace, and read fresh at boot
   rather than trusting the value the deploy baked. A name the same server also
-  declares on its `oauth:` connector is written under `oauth/`, where the console
-  consent minted it; every other name under `static/`. The config decides the
-  kind, never the request, so one variable can be both consented in the console
-  and rotated on use.
+  declares on its `oauth:` connector is written under `oauth/` when a console
+  consent has minted it there, and under `static/` otherwise; every other name
+  under `static/`. The request never picks the kind, so one variable can be both
+  consented in the console and rotated on use.
 
   For credentials that rotate **on use** — an OAuth refresh token that is
   single-use, a session token the upstream reissues — where holding the baked
@@ -618,7 +618,7 @@ plus two that shape how this server gets its values:
   ```
 
   See [a credential that rotates on
-  use](/operate/secrets/#paramswritable-a-credential-that-rotates-on-use) for the
+  use](/operate/secrets/#paramswritable--a-credential-that-rotates-on-use) for the
   transport, the failure modes and what the grant actually is.
 
 - **`paramsRefresh`** (default `[]`) — the variables this server **re-reads at

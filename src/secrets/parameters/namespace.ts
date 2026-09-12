@@ -82,8 +82,8 @@ export function staticNamespace(env: string, slug: string): string {
  * records who consented to what in the note. Nothing else creates one.
  *
  * The parameter write-back route (src/http/params.ts) `rotate()`s it, for a
- * provider whose refresh tokens are single-use — X's are, and Reddit's and
- * Dropbox's. That is the SAME credential continuing under the same variable:
+ * provider whose refresh tokens are single-use, as X's are. That is the SAME
+ * credential continuing under the same variable:
  * the provider handed the new value back in exchange for the old one, so the
  * lineage this kind names is unchanged, and the write goes through core's admin
  * credential either way. `rotate()` is also the narrower verb — it refuses a
@@ -91,9 +91,10 @@ export function staticNamespace(env: string, slug: string): string {
  * consent note alone — so a rotation cannot conjure a credential the console
  * never minted, and cannot erase the record of who consented.
  *
- * Which kind the write-back addresses is resolved from the CONFIG — a variable a
- * server names on its `oauth:` connector is addressed here, everything else
- * under `static/`. Never from the request; see `writableTarget`.
+ * Whether the write-back may address this kind at all is decided by the CONFIG
+ * — only a variable the server names on its `oauth:` connector is a candidate
+ * here — and among the candidates it takes the highest kind the store holds.
+ * Never by the request; see `kindsOf`.
  */
 export function oauthNamespace(env: string, slug: string): string {
   return serverKindNamespace(env, slug, "oauth");

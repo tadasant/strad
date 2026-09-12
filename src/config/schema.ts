@@ -793,12 +793,12 @@ const SupplementaryImageServer = ServerBase.extend({
    * is no spelling of one that escapes the namespace, because core composes the
    * path from the slug and the name and never from a URL.
    *
-   * WHICH KIND inside that namespace is resolved from this config too. A name
-   * this server also declares on its `oauth:` connector is written to `oauth/` —
-   * the kind the console's consent minted it under, and the kind that outranks
-   * `static/` on the way back out — so a connector credential that rotates on
-   * use is written where it will be read. Every other name is written to
-   * `static/`, exactly as before connectors existed. The request never says.
+   * WHICH KIND inside that namespace follows the same precedence as the read. A
+   * name this server also declares on its `oauth:` connector is written to
+   * `oauth/` when the store holds it there — the kind the console's consent
+   * minted it under, and the one that outranks `static/` on the way back out —
+   * and to `static/` when only a hand-seeded copy exists. Every other name is
+   * written to `static/`. The request never says.
    */
   paramsWritable: z.array(z.string().min(1)).default([]),
   /**
@@ -1517,12 +1517,13 @@ export const StradConfig = z
     // both come from src/config/env-name.ts — a zero-import module, so this file
     // pays nothing for importing it and the two gates cannot drift apart.
     //
-    // WHICH KIND a name is addressed through is resolved from this same config,
-    // not checked here: `kindOf` (src/http/params.ts) answers `oauth/` for a
-    // variable the server also declares on its `oauth:` connector and `static/`
-    // for every other name. A name may therefore appear on both — that is how a
-    // credential the console consented to can rotate on use and still survive a
-    // restart — and the two mechanisms address one parameter rather than two.
+    // WHICH KIND a name is addressed through is not checked here. `kindsOf`
+    // (src/http/params.ts) makes `oauth/` a candidate, ahead of `static/`, for a
+    // variable the server also declares on its `oauth:` connector, and `static/`
+    // the only candidate for every other name; the route takes the highest one
+    // the store holds. A name may therefore appear on both lists — that is how a
+    // credential the console consented to can rotate on use and survive a
+    // restart.
     //
     // `params: true` is REQUIRED for both, and not merely for tidiness. That
     // flag is what injects `/strad/{env}/mcp/{slug}/` — both kinds, layered —
@@ -1568,7 +1569,7 @@ export const StradConfig = z
                 `and underscores; not starting with a digit; at most 200 ` +
                 `characters). A ${field} entry is a VARIABLE, not a path — ` +
                 `it addresses /strad/{env}/mcp/${s.slug}/{kind}/{VARIABLE} and ` +
-                `nothing else, and the kind comes from this config too.`,
+                `nothing else.`,
               path: ["servers"],
             });
           }
@@ -1792,23 +1793,12 @@ export const StradConfig = z
         }
       }
 
-      // A CONNECTOR VARIABLE MAY ALSO BE A `paramsWritable:` OR `paramsRefresh:`
-      // ENTRY, and that combination is the point rather than a hole.
-      //
-      // It was refused, because those two lists addressed this slug's `static/`
-      // namespace unconditionally while a connector's credential is written to
-      // `oauth/`, which outranks it: the container re-read a stale hand-typed
-      // copy over the credential a human had just consented to, and wrote its
-      // rotation back to a path the `oauth/` copy permanently shadowed. Both
-      // directions, silently. The fix was to make the route KIND-AWARE rather
-      // than to keep the two mechanisms apart — `kindOf` in src/http/params.ts
-      // resolves the kind from this same condition, out of the config, so a
-      // connector's variable is read and written under `oauth/` at both ends.
-      //
-      // What that unblocks is a provider whose refresh tokens rotate ON USE — X,
-      // Reddit, Dropbox — which until now had to choose between a console
-      // consent it could not persist and a durable credential with no console
-      // flow.
+      // A connector variable may also be a `paramsWritable:` or `paramsRefresh:`
+      // entry. The route addresses such a name through `oauth/` when the store
+      // holds it there and `static/` otherwise (`kindsOf` in
+      // src/http/params.ts), which is the precedence every layered read
+      // applies — so the two mechanisms address one parameter, and a consented
+      // credential that rotates on use survives a restart.
 
       const claimed = new Map<string, string>();
       for (const { field, variable } of named) {

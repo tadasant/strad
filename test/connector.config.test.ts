@@ -444,10 +444,9 @@ describe("oauth: provider generic", () => {
   });
 
   it("ACCEPTS a connector variable that is also paramsWritable or paramsRefresh", () => {
-    // It used to be refused, because both lists addressed `static/` while the
-    // connector writes `oauth/`. The route resolves the kind from the config
-    // now (`kindOf` in src/http/params.ts), so the combination is how a
-    // consented credential that rotates on use survives a restart.
+    // The route addresses such a name through the highest kind the store holds
+    // (`kindsOf` in src/http/params.ts), so the combination is how a consented
+    // credential that rotates on use survives a restart.
     for (const field of ["paramsWritable", "paramsRefresh"]) {
       const raw = BASE(
         GENERIC,
