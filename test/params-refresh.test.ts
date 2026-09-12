@@ -400,11 +400,16 @@ describe("the two allowlists stay separate", () => {
     expect(readableTarget(CONFIG, "strad-fetch", KEY)).toEqual({
       slug: "strad-fetch",
       variable: KEY,
+      kind: "static",
     });
     // A writable name is readable too — that is the boot read.
     expect(
       readableTarget(CONFIG, "x-twitter", "X_OAUTH_REFRESH_TOKEN"),
-    ).toEqual({ slug: "x-twitter", variable: "X_OAUTH_REFRESH_TOKEN" });
+    ).toEqual({
+      slug: "x-twitter",
+      variable: "X_OAUTH_REFRESH_TOKEN",
+      kind: "static",
+    });
     // And neither list is a namespace: a sibling's name is not reachable.
     expect(readableTarget(CONFIG, "strad-fetch", "SLACK_BOT_TOKEN")).toBeNull();
   });

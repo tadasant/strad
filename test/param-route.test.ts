@@ -269,6 +269,7 @@ describe("a write the config did not allow", () => {
     expect(writableTarget(CONFIG, "x-twitter", VARIABLE)).toEqual({
       slug: "x-twitter",
       variable: VARIABLE,
+      kind: "static",
     });
   });
 

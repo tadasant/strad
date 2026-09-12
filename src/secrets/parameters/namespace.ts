@@ -14,10 +14,9 @@ import {
  *
  * `kind` names WHERE THE VALUE CAME FROM, and there are two of them. `static` is
  * a value a human typed into the console. `oauth` is a value strad MINTED — the
- * durable credential an authorization-code flow handed back, written by the
- * console's own callback and by nothing else. A "namespace" is a prefix of that
- * path — the secrets server is scoped to one (e.g. `/strad/staging/mcp/`) and
- * refuses to operate outside it.
+ * durable credential an authorization-code flow handed back. A "namespace" is a
+ * prefix of that path — the secrets server is scoped to one (e.g.
+ * `/strad/staging/mcp/`) and refuses to operate outside it.
  *
  * This module composes and validates those paths, and codes the envelope stored
  * at one. How a path becomes a GCP resource id, and how a value is encoded into
@@ -40,9 +39,10 @@ import {
  * still sits under `static/` keeps working, and the first reconnect moves it to
  * `oauth/` and takes precedence from then on.
  *
- * Two kinds and not five: a kind is a WRITER, not a category. Adding one means
- * something new in strad mints values, and every layered read below grows a
- * round trip.
+ * Two kinds and not five: a kind is a LINEAGE, not a category. Adding one means
+ * strad has a new way of coming by a value, and every layered read below grows a
+ * round trip. A second WRITER to an existing kind is not a new kind — see
+ * `oauthNamespace` for the two that write `oauth/`.
  */
 export const SERVER_PARAM_KINDS = ["oauth", "static"] as const;
 
@@ -71,10 +71,29 @@ export function staticNamespace(env: string, slug: string): string {
  * Build the oauth-kind namespace for a server slug, e.g.
  * `/strad/staging/mcp/gcs/oauth/`.
  *
- * Everything under it is written by the console's OAuth callback
- * (src/ui/connector.ts) and by nothing else, and it is written as a SECRET
- * parameter — the value in Secret Manager, a `__REF__` pointer in Parameter
- * Manager — so the `secrets` MCP server lists it and can never read it.
+ * Everything under it is written as a SECRET parameter — the value in Secret
+ * Manager, a `__REF__` pointer in Parameter Manager — so the `secrets` MCP
+ * server lists it and can never read it.
+ *
+ * TWO WRITERS, AND ONE CREDENTIAL.
+ *
+ * The console's OAuth callback (src/ui/connector.ts) MINTS the credential: it
+ * `create()`s the parameter, grants the `secretAccessor` a `:render` needs, and
+ * records who consented to what in the note. Nothing else creates one.
+ *
+ * The parameter write-back route (src/http/params.ts) `rotate()`s it, for a
+ * provider whose refresh tokens are single-use — X's are, and Reddit's and
+ * Dropbox's. That is the SAME credential continuing under the same variable:
+ * the provider handed the new value back in exchange for the old one, so the
+ * lineage this kind names is unchanged, and the write goes through core's admin
+ * credential either way. `rotate()` is also the narrower verb — it refuses a
+ * path that does not exist (404) and leaves the envelope, the secrecy and the
+ * consent note alone — so a rotation cannot conjure a credential the console
+ * never minted, and cannot erase the record of who consented.
+ *
+ * Which kind the write-back addresses is resolved from the CONFIG — a variable a
+ * server names on its `oauth:` connector is addressed here, everything else
+ * under `static/`. Never from the request; see `writableTarget`.
  */
 export function oauthNamespace(env: string, slug: string): string {
   return serverKindNamespace(env, slug, "oauth");
@@ -166,13 +185,34 @@ export function gatewayParameterPath(env: string, variable: string): string {
   return `${gatewayNamespace(env)}${variable}`;
 }
 
+/**
+ * Build a full parameter path for one variable under ONE named kind.
+ *
+ * The general form, and the one a caller that has resolved a kind should use.
+ * `parameterPath` and `oauthParameterPath` below are the two fixed-kind
+ * spellings of it — the same pair `staticNamespace` and `oauthNamespace` are of
+ * `serverKindNamespace`, and kept for the same reason: a call site that can only
+ * mean one kind says so in its own name rather than in an argument a reader has
+ * to follow. There is deliberately no DEFAULT kind here. A caller that forgot to
+ * pass one would silently get `static/`, which is exactly the shadowed write
+ * this signature exists to make impossible.
+ */
+export function serverParameterPath(
+  env: string,
+  slug: string,
+  kind: ServerParamKind,
+  variable: string,
+): string {
+  return `${serverKindNamespace(env, slug, kind)}${variable}`;
+}
+
 /** Build a full parameter path for one variable under a server's static kind. */
 export function parameterPath(
   env: string,
   slug: string,
   variable: string,
 ): string {
-  return `${staticNamespace(env, slug)}${variable}`;
+  return serverParameterPath(env, slug, "static", variable);
 }
 
 /** Build a full parameter path for one variable under a server's oauth kind. */
@@ -181,7 +221,7 @@ export function oauthParameterPath(
   slug: string,
   variable: string,
 ): string {
-  return `${oauthNamespace(env, slug)}${variable}`;
+  return serverParameterPath(env, slug, "oauth", variable);
 }
 
 /**

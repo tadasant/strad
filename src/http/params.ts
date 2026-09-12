@@ -14,8 +14,11 @@ import {
 import {
   gatewayParameterPath,
   parameterPath,
+  serverParameterPath,
   ParameterStoreError,
+  type ServerParamKind,
 } from "../secrets/parameters/index.ts";
+import { connectorVariables } from "../deploy/server-namespaces.ts";
 import { storeForPath, type StoreClientOptions } from "../ui/store-client.ts";
 import { forgetDeploymentDiagnosis } from "../ui/secret-status.ts";
 import { event } from "../telemetry/index.ts";
@@ -39,6 +42,24 @@ import { errorSummary } from "../util/error-text.ts";
  * test. There is no spelling of a URL that addresses a path no config names —
  * not a traversal, not an encoding trick, not a case fold — because no part of
  * the request is ever concatenated into a path.
+ *
+ * ## Nor does the KIND
+ *
+ * A path has a third component the caller does not name at all: the kind,
+ * `oauth/` or `static/`. It is derived from the config by `kindOf` — `oauth/`
+ * for a variable the server declares on its `oauth:` connector, `static/` for
+ * everything else — and the route never reads it off a request. The URL has no
+ * segment for it, the body has no field for it, and a caller that sends either
+ * is sending bytes nothing looks at.
+ *
+ * That is what lets one variable be BOTH consented in the console and rotated by
+ * the container that holds it. The console's callback mints the credential under
+ * `oauth/`, which outranks `static/` in every layered read; this route rotates
+ * the same path, so the write wins the read that follows it. Routing a
+ * connector's rotation to `static/` instead — which is what this route did
+ * before, and why the schema refused the combination outright — wrote to a path
+ * the `oauth/` copy permanently shadowed, and the credential died at the next
+ * restart with nothing failing.
  *
  * ## Two verbs, two allowlists
  *
@@ -107,18 +128,32 @@ export interface ParamsHandlerOptions {
 }
 
 /**
- * The config's own slug and variable for a requested pair, or null.
+ * One resolved target: which server, which variable, and under WHICH KIND.
+ *
+ * All three come out of the parsed config. None of them is a request string.
+ */
+export interface ParamTarget {
+  slug: string;
+  variable: string;
+  kind: ServerParamKind;
+}
+
+/**
+ * The config's own slug, variable and KIND for a requested pair, or null.
  *
  * Returning the CONFIG's strings rather than a boolean is the load-bearing part.
  * A caller that spells the slug or the variable differently gets null; a caller
  * that spells them identically gets back strings that came out of the parsed
- * config, so what reaches `parameterPath` never passed through a URL.
+ * config, so what reaches `serverParameterPath` never passed through a URL. The
+ * kind is the same property one step further on: it is DERIVED from the config
+ * (see `kindOf`), so there is no request — no body field, no query parameter, no
+ * header — that can move a write from one kind to the other.
  */
 export function writableTarget(
   config: StradConfig,
   slug: string,
   variable: string,
-): { slug: string; variable: string } | null {
+): ParamTarget | null {
   return targetIn(config, slug, variable, (s) => s.paramsWritable);
 }
 
@@ -143,11 +178,44 @@ export function readableTarget(
   config: StradConfig,
   slug: string,
   variable: string,
-): { slug: string; variable: string } | null {
+): ParamTarget | null {
   return targetIn(config, slug, variable, (s) => [
     ...s.paramsWritable,
     ...s.paramsRefresh,
   ]);
+}
+
+/**
+ * WHICH KIND one server's variable is addressed through, from the config alone.
+ *
+ * `oauth/` for a name that server declares on its `oauth:` connector, `static/`
+ * for every other name — which is every name on a server with no connector, so
+ * this changes nothing for the servers that had `paramsWritable:` before
+ * connectors existed.
+ *
+ * The rule is not "the refresh token"; it is "a variable this connector owns",
+ * and the wider rule is the safe one. `oauth/` OUTRANKS `static/` in every
+ * layered read strad performs (see `SERVER_PARAM_KINDS`), so the only write that
+ * is guaranteed to win the read that follows it is a write to `oauth/`. Routing
+ * a connector's client id to `static/` instead would work right up until an
+ * `oauth/` copy of that name existed, and then fail the way this whole change
+ * exists to stop: silently, at the next restart.
+ *
+ * FOLDED CASE, because `parameterId` folds case before it hashes — so
+ * `X_OAUTH_REFRESH_TOKEN` and `X_oauth_refresh_token` are one stored parameter,
+ * and a config that spelled the two lists differently would otherwise route two
+ * names that are one value through two kinds. The schema refuses that spelling
+ * WITHIN a connector; it has never had to refuse it across the two mechanisms,
+ * and folding here means it does not have to.
+ */
+export function kindOf(
+  server: StradConfig["servers"][number],
+  variable: string,
+): ServerParamKind {
+  const fold = variable.toLowerCase();
+  return connectorVariables(server).some((v) => v.toLowerCase() === fold)
+    ? "oauth"
+    : "static";
 }
 
 /** Shared by both: find the server, then match the request against ITS strings. */
@@ -161,14 +229,21 @@ function targetIn(
       { kind: "supplementary-image" }
     >,
   ) => readonly string[],
-): { slug: string; variable: string } | null {
+): ParamTarget | null {
   for (const server of config.servers) {
     if (!server.enabled) continue;
     if (server.kind !== "supplementary-image") continue;
     if (server.slug !== slug) continue;
     const allowed = allowlist(server).find((v) => v === variable);
     if (allowed === undefined) return null;
-    return { slug: server.slug, variable: allowed };
+    return {
+      slug: server.slug,
+      variable: allowed,
+      // From the config's own name, never the request's. They are equal strings
+      // here, and using the config's is what keeps that a property of the code
+      // rather than of this line happening to run after the equality test.
+      kind: kindOf(server, allowed),
+    };
   }
   return null;
 }
@@ -187,7 +262,7 @@ function target(
   res: Response,
   opts: ParamsHandlerOptions,
   lookup: typeof writableTarget,
-): { slug: string; variable: string; path: string } | null {
+): (ParamTarget & { path: string }) | null {
   const auth = authorizePresence(
     req.get("authorization"),
     opts.env.STRAD_INTERNAL_TOKEN,
@@ -227,7 +302,12 @@ function target(
 
   return {
     ...found,
-    path: parameterPath(opts.config.gateway.env, found.slug, found.variable),
+    path: serverParameterPath(
+      opts.config.gateway.env,
+      found.slug,
+      found.kind,
+      found.variable,
+    ),
   };
 }
 

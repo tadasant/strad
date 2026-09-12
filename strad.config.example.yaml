@@ -444,6 +444,11 @@ servers:
   # deploy baked — which is what makes "set it once and it keeps working" true
   # across restarts. See docs: /operate/secrets/.
   #
+  # Or CONSENT in the console and keep durability: add an `oauth:` connector whose
+  # refreshTokenVariable is X_OAUTH_REFRESH_TOKEN, and keep it under
+  # paramsWritable:. The consent writes /strad/{env}/mcp/x-twitter/oauth/, and
+  # because the name is on the connector every rotation is written back there too.
+  #
   # THE OTHER HALF, for a credential that does NOT rotate on use but does get
   # rotated by a human: `paramsRefresh:`. A supplementary server's managed
   # parameters are BAKED onto its component by the renderer, so rotating one in

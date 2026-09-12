@@ -590,8 +590,12 @@ plus two that shape how this server gets its values:
   fails rather than pick a winner.
 
 - **`paramsWritable`** (default `[]`) — the variables this server may **write
-  back** to its own `/strad/{env}/mcp/{slug}/static/` namespace, and read fresh at
-  boot rather than trusting the value the deploy baked.
+  back** to its own `/strad/{env}/mcp/{slug}/` namespace, and read fresh at boot
+  rather than trusting the value the deploy baked. A name the same server also
+  declares on its `oauth:` connector is written under `oauth/`, where the console
+  consent minted it; every other name under `static/`. The config decides the
+  kind, never the request, so one variable can be both consented in the console
+  and rotated on use.
 
   For credentials that rotate **on use** — an OAuth refresh token that is
   single-use, a session token the upstream reissues — where holding the baked

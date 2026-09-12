@@ -38,6 +38,7 @@ export {
   staticNamespace,
   oauthNamespace,
   oauthParameterPath,
+  serverParameterPath,
   gatewayNamespace,
   gatewayParameterPath,
   parameterPath,

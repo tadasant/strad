@@ -425,10 +425,10 @@ them per slug. See [Connectors](/operate/connectors/).
 The canonical path is `/strad/{env}/mcp/{slug}/{kind}/{VARIABLE}`, and `kind`
 names **where the value came from**:
 
-| Kind     | Written by                                     | Typical contents                                                  |
-| -------- | ---------------------------------------------- | ----------------------------------------------------------------- |
-| `static` | a human, in the console                        | an API key, an OAuth client id and client secret                  |
-| `oauth`  | strad's own consent callback, and nothing else | the refresh token (or long-lived access token) a human authorized |
+| Kind     | Written by                                                                                                                                                              | Typical contents                                                  |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `static` | a human, in the console; the write-back route, for a `paramsWritable:` name no connector owns                                                                           | an API key, an OAuth client id and client secret                  |
+| `oauth`  | strad's own consent callback, which creates it; the write-back route, which rotates it for a [`paramsWritable:`](#paramswritable-a-credential-that-rotates-on-use) name | the refresh token (or long-lived access token) a human authorized |
 
 Both resolve the same way. Everything on this page that is true of a `static`
 parameter is true of an `oauth` one: `params: true` injects it, a `${NAME}`
@@ -443,6 +443,15 @@ a deployment whose connector token was written under `static/` before the kind
 existed keeps working untouched, and the next **Reconnect** writes to `oauth/` and
 takes precedence from then on. The console says which path the current credential
 is being read from whenever the two differ.
+
+**Two writers, one credential.** The consent callback is the only thing that
+_creates_ an `oauth/` parameter. The write-back route can only `rotate()` one that
+already exists, which is what a provider with single-use refresh tokens needs: the
+container spends the consented token, the provider hands back its successor, and
+core writes that successor over the same path. It is the same credential
+continuing, through the same admin credential, and a rotation leaves the
+parameter secret and the consent note intact. A rotation before anyone has
+consented is a 404, not a quiet create.
 
 A value under `oauth/` is one **no person has ever seen** — it went from the
 provider's token endpoint into Secret Manager without being rendered, returned or
@@ -1110,10 +1119,42 @@ server may write back to its own namespace:
 ```
 
 It requires `params: true` — that flag is what makes
-`/strad/{env}/mcp/{slug}/static/` this server's environment in the first place,
-and writing a namespace nothing injects would be a credential going nowhere. Each
-entry is a **variable name**, never a path, so there is no spelling of one that
-addresses another server's namespace or the gateway's.
+`/strad/{env}/mcp/{slug}/` (both kinds, `oauth/` first) this server's environment
+in the first place, and writing a namespace nothing injects would be a credential
+going nowhere. Each entry is a **variable name**, never a path, so there is no
+spelling of one that addresses another server's namespace or the gateway's.
+
+### Which kind it writes: `oauth/` for a connector's variable, `static/` otherwise
+
+A name the same server also declares on its [`oauth:` connector](/operate/connectors/)
+is read and written under `oauth/`. Every other name is read and written under
+`static/`. The kind comes from the config, never from the request: the route has
+no URL segment, body field or header for it, and one sent anyway is ignored.
+
+That is what gives a consented credential that rotates on use both a console
+consent and durability:
+
+```yaml
+- slug: x-twitter
+  kind: supplementary-image
+  params: true
+  paramsWritable: [X_OAUTH_REFRESH_TOKEN]
+  oauth:
+    provider: generic
+    refreshTokenVariable: X_OAUTH_REFRESH_TOKEN
+    # ...
+```
+
+The consent writes `oauth/X_OAUTH_REFRESH_TOKEN`; every rotation after it
+rotates that same path; the boot read and the next render both read it back,
+because `oauth/` outranks `static/`. Writing a connector's rotation to `static/`
+instead would land under a copy that permanently shadows it, and the credential
+would die at the next restart with nothing failing. The match folds case, the way
+a parameter path does.
+
+The rule covers all three connector variables, not only the refresh token.
+`oauth/` wins every layered read, so a write there is the only one guaranteed to
+win the read that follows it.
 
 What counts as a legal variable name is **one rule**, in `src/config/env-name.ts`,
 and everything that gates on it imports it from there: the config check above, the
@@ -1127,7 +1168,8 @@ literal; a test greps them, and [Limitations](/limitations/) #81 says why.
 
 **Seed the parameter first.** The write is a `rotate()`, which needs a parameter
 to rotate: create the name in `/ui/secrets` (or with `store:seed`) under that
-server's namespace before the first deploy. Until it exists the boot read gets a
+server's namespace before the first deploy. For a connector's variable, the
+console consent is what creates it. Until it exists the boot read gets a
 404 and the container falls back to its baked value — which works, and quietly
 keeps working, right up until the first rotation has nowhere to land.
 
@@ -1161,7 +1203,7 @@ bindings core has always had for the reverse direction.
 
 The name in the URL is **not trusted**. Core looks the `{slug}`/`{VARIABLE}` pair
 up in that server's own `paramsWritable:` list and builds the store path out of
-the config's strings; the request's bytes are used for one thing, an equality
+the config's strings, and the config's kind; the request's bytes are used for one thing, an equality
 test. Anything that does not match — an unknown slug, a disabled server, a
 variable that is not on the list — is the same 403, so the route cannot be used
 to enumerate the config either.
@@ -1274,11 +1316,16 @@ deliberate: a change in secret resolution touches every slug on the deployment,
 and prod runs more than forty of them.
 
 It requires `params: true`, for the same reason `paramsWritable:` does and for
-one more. That flag is what makes `/strad/{env}/mcp/{slug}/static/` this server's
+one more. That flag is what makes `/strad/{env}/mcp/{slug}/` this server's
 environment at all, so re-reading a namespace nothing injects would keep a value
 current that nothing reads. And because `params: true` already bakes that whole
 namespace onto this component at render time, **the read discloses nothing new**:
 the container is already holding these values. What the read adds is freshness.
+
+It reads through the same kind rule as the write: a name the server also declares
+on its `oauth:` connector is re-read from `oauth/`, everything else from
+`static/`. So a refresh never swaps a consented credential for a stale hand-typed
+copy of the same name.
 
 ### How it travels
 

@@ -2281,6 +2281,12 @@ Two smaller edges of the same path:
   about this process. Read a degraded x-twitter as "re-seed before this restarts",
   not as "it is down". The alternative is a silent loss that surfaces hours later
   as a total outage.
+- **A console Reconnect does not reach a running process.** A connector's
+  variable on `paramsWritable:` is rotated under `oauth/`, the same path the
+  consent writes. Reconnecting writes a fresh grant there, but the running process
+  still holds the token it booted with, and its next rotation writes over the
+  reconnect. Restart the component after a reconnect. A hand re-seed of any
+  `paramsWritable:` name has the same window.
 
 **Exit.** A compare-and-set `put()` — read the latest version id, write
 conditional on it, re-read on conflict — plus dropping the render check, for any
@@ -2305,6 +2311,9 @@ Two consequences worth stating plainly:
   stored value took the console admin key behind Google SSO — so
   `STRAD_INTERNAL_TOKEN` is now also a read credential for the names on that
   union, which belongs in how often you rotate it.
+- A connector's variable listed under `paramsWritable:` is in that union too, so a
+  credential a human consented to in the console is reachable the same way. The
+  route can only rotate it, never create it.
 
 The union is opt-in and empty by default, and every name in it is by construction
 a credential that rotates, so losing one costs a re-seed rather than a durable

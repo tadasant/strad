@@ -3213,6 +3213,13 @@ has to implement the CAS first.
   this process, and it is the only shape available: the alternative is a silent
   loss that surfaces hours later as a total outage. Read a degraded x-twitter as
   "re-seed before this restarts", not as "it is down".
+- **A console Reconnect does not reach a running process.** A connector's
+  variable on `paramsWritable:` is rotated under `oauth/`, the path the consent
+  writes. Reconnecting writes a fresh grant there, but the running process still
+  holds the token it booted with, and its next rotation writes over the reconnect
+  — last-write-wins, with no compare-and-set. Restart the component after a
+  reconnect. The same window exists for a hand re-seed of any `paramsWritable:`
+  name.
 
 **Exit.** A compare-and-set `put()` — read the parameter's latest version id,
 write conditional on it, re-read on conflict — plus dropping the render check, for
@@ -3238,6 +3245,9 @@ concrete consequences, and the docs must not claim otherwise:
   stored value took the console admin key behind Google SSO. `STRAD_INTERNAL_TOKEN`
   is now also a read credential for the names on that union, which belongs in how
   often it is rotated.
+- A connector's variable listed under `paramsWritable:` is in that union too, so
+  the rotating credential a human consented to in the console is reachable the same
+  way. The route can only `rotate()` it, never create it.
 
 **Why anyway.** The union is opt-in, empty by default, and every name in it is by
 construction a credential that ROTATES — the thing `paramsWritable` exists for.

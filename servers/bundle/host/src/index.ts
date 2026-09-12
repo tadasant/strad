@@ -843,7 +843,12 @@ async function loadRemoteFilesystem(slug: string): Promise<Mount> {
 
 /**
  * The strad slug this mount is served under, and therefore the parameter
- * namespace it reads and writes: `/strad/{env}/mcp/x-twitter/static/`.
+ * namespace it reads and writes: `/strad/{env}/mcp/x-twitter/{kind}/`.
+ *
+ * This host never names the kind. Core resolves it from its own config:
+ * `oauth/` when the x-twitter server also declares X_OAUTH_REFRESH_TOKEN on an
+ * `oauth:` connector (the console consent minted it there), `static/` when it
+ * does not. The route this calls carries only the slug and the variable.
  *
  * A CONSTANT, not `mount.slug` threaded through, because the two are the same
  * string for a reason: a strad `supplementary-image` server's `path:` is what

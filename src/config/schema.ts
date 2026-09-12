@@ -766,7 +766,8 @@ const SupplementaryImageServer = ServerBase.extend({
   env: z.record(SecretRef).default({}),
   /**
    * Opt this server into PARAMETER RESOLUTION. When true, everything under
-   * `/strad/{env}/mcp/{slug}/static/*` in the secrets system (non-secret values
+   * `/strad/{env}/mcp/{slug}/*` — both kinds, `oauth/` ahead of `static/` — in
+   * the secrets system (non-secret values
    * from Parameter Manager, secret values from Secret Manager) is resolved and
    * injected as this server's environment — see src/secrets/parameters. For a
    * supplementary image that resolution happens at DEPLOY time (render-spec, with
@@ -788,9 +789,16 @@ const SupplementaryImageServer = ServerBase.extend({
    * it already holds. Enforced in the `superRefine` below — it requires
    * `params: true` (the flag that injects the namespace this writes into) and a
    * legal environment-variable name, which is what confines the write to this
-   * server's own `/{slug}/static/` namespace. A name is a variable, not a path:
-   * there is no spelling of one that escapes the namespace, because core
-   * composes the path from the slug and the name and never from a URL.
+   * server's own `/{slug}/` namespace. A name is a variable, not a path: there
+   * is no spelling of one that escapes the namespace, because core composes the
+   * path from the slug and the name and never from a URL.
+   *
+   * WHICH KIND inside that namespace is resolved from this config too. A name
+   * this server also declares on its `oauth:` connector is written to `oauth/` —
+   * the kind the console's consent minted it under, and the kind that outranks
+   * `static/` on the way back out — so a connector credential that rotates on
+   * use is written where it will be read. Every other name is written to
+   * `static/`, exactly as before connectors existed. The request never says.
    */
   paramsWritable: z.array(z.string().min(1)).default([]),
   /**
@@ -1509,15 +1517,22 @@ export const StradConfig = z
     // both come from src/config/env-name.ts — a zero-import module, so this file
     // pays nothing for importing it and the two gates cannot drift apart.
     //
+    // WHICH KIND a name is addressed through is resolved from this same config,
+    // not checked here: `kindOf` (src/http/params.ts) answers `oauth/` for a
+    // variable the server also declares on its `oauth:` connector and `static/`
+    // for every other name. A name may therefore appear on both — that is how a
+    // credential the console consented to can rotate on use and still survive a
+    // restart — and the two mechanisms address one parameter rather than two.
+    //
     // `params: true` is REQUIRED for both, and not merely for tidiness. That
-    // flag is what injects `/strad/{env}/mcp/{slug}/static/` onto this component
-    // in the first place. Without it `paramsWritable:` would write a namespace
-    // the server does not read — a credential going nowhere, the silent no-op
-    // src/deploy/server-namespaces.ts exists to stop shipping — and
-    // `paramsRefresh:` would re-read a namespace nothing injected, which is the
-    // same no-op arrived at from the other end. It is also what makes the read
-    // side disclose nothing: the value is already baked on this component, and
-    // the refresh only replaces a stale copy of it.
+    // flag is what injects `/strad/{env}/mcp/{slug}/` — both kinds, layered —
+    // onto this component in the first place. Without it `paramsWritable:` would
+    // write a namespace the server does not read — a credential going nowhere,
+    // the silent no-op src/deploy/server-namespaces.ts exists to stop shipping —
+    // and `paramsRefresh:` would re-read a namespace nothing injected, which is
+    // the same no-op arrived at from the other end. It is also what makes the
+    // read side disclose nothing: the value is already baked on this component,
+    // and the refresh only replaces a stale copy of it.
     for (const s of cfg.servers) {
       if (s.kind !== "supplementary-image") continue;
       const lists = [
@@ -1532,7 +1547,7 @@ export const StradConfig = z
             message:
               `server "${s.slug}" sets ${field}: but not params: true. ` +
               `${field} names variables in this server's own ` +
-              `/strad/{env}/mcp/${s.slug}/static/ namespace, and params: true is ` +
+              `/strad/{env}/mcp/${s.slug}/ namespace, and params: true is ` +
               `what makes that namespace this server's environment. Without it ` +
               `the server would ${verb} values nothing injects.`,
             path: ["servers"],
@@ -1552,8 +1567,8 @@ export const StradConfig = z
                 `which is not a legal environment variable name (letters, digits ` +
                 `and underscores; not starting with a digit; at most 200 ` +
                 `characters). A ${field} entry is a VARIABLE, not a path — ` +
-                `it addresses /strad/{env}/mcp/${s.slug}/static/{VARIABLE} and ` +
-                `nothing else.`,
+                `it addresses /strad/{env}/mcp/${s.slug}/{kind}/{VARIABLE} and ` +
+                `nothing else, and the kind comes from this config too.`,
               path: ["servers"],
             });
           }
@@ -1777,38 +1792,23 @@ export const StradConfig = z
         }
       }
 
-      // A CONNECTOR VARIABLE MAY NOT ALSO BE A `paramsWritable:` OR
-      // `paramsRefresh:` ENTRY.
+      // A CONNECTOR VARIABLE MAY ALSO BE A `paramsWritable:` OR `paramsRefresh:`
+      // ENTRY, and that combination is the point rather than a hole.
       //
-      // Those two name variables in this slug's `static/` namespace and nowhere
-      // else (src/http/params.ts composes `parameterPath`), while a connector's
-      // credential lives under `oauth/` and outranks `static/` for the same
-      // name. Allowing both would make the container re-read a stale hand-typed
-      // copy over the credential a human just consented to, and write a rotation
-      // back to a path the `oauth/` copy permanently shadows — silently, in both
-      // directions. Refusing the combination is what keeps the two mechanisms
-      // from addressing one name through different kinds.
-      if (s.kind === "supplementary-image") {
-        const owned = new Set(
-          named.map(({ variable }) => variable.toLowerCase()),
-        );
-        for (const field of ["paramsWritable", "paramsRefresh"] as const) {
-          for (const variable of s[field]) {
-            if (!owned.has(variable.toLowerCase())) continue;
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message:
-                `server "${s.slug}" lists "${variable}" under ${field}: and ` +
-                `names it on its oauth: connector. ${field} addresses ` +
-                `/strad/{env}/mcp/${s.slug}/static/, and a connector's ` +
-                `credential is written to the oauth/ kind, which outranks it — ` +
-                `so the two would address one name through different kinds and ` +
-                `disagree without failing. Drop it from ${field}:.`,
-              path: ["servers"],
-            });
-          }
-        }
-      }
+      // It was refused, because those two lists addressed this slug's `static/`
+      // namespace unconditionally while a connector's credential is written to
+      // `oauth/`, which outranks it: the container re-read a stale hand-typed
+      // copy over the credential a human had just consented to, and wrote its
+      // rotation back to a path the `oauth/` copy permanently shadowed. Both
+      // directions, silently. The fix was to make the route KIND-AWARE rather
+      // than to keep the two mechanisms apart — `kindOf` in src/http/params.ts
+      // resolves the kind from this same condition, out of the config, so a
+      // connector's variable is read and written under `oauth/` at both ends.
+      //
+      // What that unblocks is a provider whose refresh tokens rotate ON USE — X,
+      // Reddit, Dropbox — which until now had to choose between a console
+      // consent it could not persist and a durable credential with no console
+      // flow.
 
       const claimed = new Map<string, string>();
       for (const { field, variable } of named) {
