@@ -240,30 +240,33 @@ export function buildSecretProviders(
 
   const perServer = new Map<string, SecretProvider>();
   const isolated = new Map<string, SecretProvider>();
+  const layers = new Map<string, StoreSecretProvider[]>();
 
-  /** The slug's OWN namespace layer, memoised — shared by both accessors. */
-  const ownLayer = (slug: string): SecretProvider => {
-    const held = isolated.get(slug);
+  /**
+   * The slug's OWN namespace layers, memoised — the same set behind both
+   * accessors, so a value read through one is the value the other holds.
+   *
+   * ONE PROVIDER PER KIND, in precedence order — `oauth/` then `static/`.
+   * Each slices the SAME process snapshot of the store (see gcp.ts
+   * `snapshot()`), so the extra layer costs a map lookup rather than a round
+   * trip, and a slug with nothing under `oauth/` resolves exactly as it did.
+   */
+  const ownLayers = (slug: string): StoreSecretProvider[] => {
+    const held = layers.get(slug);
     if (held) return held;
-    // ONE PROVIDER PER KIND, in precedence order — `oauth/` then `static/`.
-    //
-    // Each slices the SAME process snapshot of the store (see gcp.ts
-    // `snapshot()`), so the extra layer costs a map lookup rather than a round
-    // trip, and a slug with nothing under `oauth/` resolves exactly as it did.
     const own = serverNamespaces(opts.config.gateway.env, slug).map(
       (namespace) =>
         new StoreSecretProvider(resolver, namespace, {
           negativeTtlMs: Infinity,
         }),
     );
-    isolated.set(slug, own);
+    layers.set(slug, own);
     return own;
   };
 
   const forServer = (slug: string): SecretProvider => {
     const held = perServer.get(slug);
     if (held) return held;
-    const own = ownLayer(slug);
     // ChainSecretProvider unchanged, including its rule that a THROW does not
     // fall through. An unreachable store must not silently demote a server to
     // whatever the shared namespace happens to hold — that is how a rotated
@@ -271,8 +274,19 @@ export function buildSecretProviders(
     // `params: true` server already has for the same namespaces, resolved by the
     // registry's parameter cache, so the two halves of `/mcp/{slug}/` fail the
     // same way.
-    const chained = new ChainSecretProvider([...own, shared]);
+    const chained = new ChainSecretProvider([...ownLayers(slug), shared]);
     perServer.set(slug, chained);
+    return chained;
+  };
+
+  // The slug's own namespaces and NOTHING behind them — no gateway namespace,
+  // no environment. Same layers, same snapshot, same throw-does-not-fall-through
+  // rule; the only difference from `forServer` is where the chain ENDS.
+  const forServerIsolated = (slug: string): SecretProvider => {
+    const held = isolated.get(slug);
+    if (held) return held;
+    const chained = new ChainSecretProvider(ownLayers(slug));
+    isolated.set(slug, chained);
     return chained;
   };
 
@@ -280,7 +294,7 @@ export function buildSecretProviders(
     shared,
     gatewayStore: store,
     forServer,
-    forServerIsolated: ownLayer,
+    forServerIsolated,
     invalidate: (name?: string) => {
       shared.invalidate(name);
       for (const provider of perServer.values()) provider.invalidate(name);

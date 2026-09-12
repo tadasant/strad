@@ -21,6 +21,7 @@ import {
 } from "../config/overlay.ts";
 import { ConfigStoreReadOnly, ConfigStoreTooLarge } from "../config/store.ts";
 import { soleRefName } from "../config/schema.ts";
+import { refreshTokenPath } from "../connectors/index.ts";
 import { serverConsolePath } from "../ui/paths.ts";
 import { errorSummary } from "../util/error-text.ts";
 
@@ -558,21 +559,39 @@ function describeAuthorization(
   const env = runtime.config().gateway.env;
 
   if (entry.oauth) {
+    // The connector's credential lands under the `oauth/` kind, not `static/`
+    // — `refreshTokenPath` is the one place that knows, so this asks it rather
+    // than spelling the path. `account` exists only on the Google flavour; the
+    // generic one authorizes against whatever the provider's consent page
+    // says, so it carries a `label` instead.
+    const oauth = entry.oauth;
+    const google = oauth.provider === "google";
+    // Narrowed on the discriminant, not on the boolean above — TypeScript
+    // does not carry a `const` narrowing across a spread.
+    const who =
+      oauth.provider === "google"
+        ? { account: oauth.account }
+        : { label: oauth.label, authorizeUrl: oauth.authorizeUrl };
     return TEXT({
       ok: true,
       slug,
-      flow: "google-connector",
+      flow: google ? "google-connector" : "oauth-connector",
       completedBy: "human",
-      account: entry.oauth.account,
-      scopes: entry.oauth.scopes,
+      provider: oauth.provider,
+      ...who,
+      scopes: oauth.scopes,
       humanUrl: consolePage,
-      credentialPath: `/strad/${env}/mcp/${slug}/static/${entry.oauth.refreshTokenVariable}`,
+      credentialPath: refreshTokenPath(runtime.config(), {
+        server: entry,
+        oauth,
+      }),
       instructions:
-        "Consent is a browser handshake with Google and cannot be completed by an " +
-        "agent. Give the person you are working with `humanUrl`: the connector page " +
-        "there has a Connect button that runs the authorization as the account named " +
-        "above and writes the refresh token to `credentialPath`. Once they say they " +
-        "have done it, the connector works with no further action from you.",
+        `Consent is a browser handshake with ${google ? "Google" : "the provider"} ` +
+        "and cannot be completed by an agent. Give the person you are working with " +
+        "`humanUrl`: the connector page there has a Connect button that runs the " +
+        `authorization${google ? " as the account named above" : ""} and writes ` +
+        "the credential to `credentialPath`. Once they say they have done it, the " +
+        "connector works with no further action from you.",
     });
   }
 
