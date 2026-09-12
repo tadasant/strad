@@ -315,7 +315,7 @@ all, the `tools:` policy on the slug that carries the write tools, and that
 slug's `entitlements:`. They are described [below](#three-layers-decide-what-a-caller-can-reach),
 and all three gate the door. None of them says anything about the **content** of
 a write that comes through it, and the content is chosen by the caller: the
-field names, the URL they are interpolated into, the roles on the entry. Two
+field names, the URL they are interpolated into, the roles on the entry. Three
 bounds cover that half.
 
 ### A runtime-authored entry reads only its own namespace
@@ -345,6 +345,62 @@ unreachable anyway, because `gateway.configStore:` requires the store provider.
 The bound is about provenance, not about the ref syntax. A `${NAME}` in an entry
 the checked-in document declares keeps resolving down the full chain exactly as
 it did.
+
+### A runtime write names a credential, it never carries one
+
+The overlay is a **non-secret** parameter — `src/config/store.ts` creates it with
+`secret: false`, because a server roster is not a secret. So a credential typed
+into a connector and saved would be a credential at rest in the clear, handed
+back by every read of the roster. `src/config/secret-position.ts` refuses it on
+the way in.
+
+The rule is that a credential-carrying value must be a **reference**: one
+`${NAME}`, optionally introduced by an auth scheme — `Bearer`, `Basic`, `Token`,
+`Bot` or `ApiKey`. That is the shape every entry in a strad config already uses:
+
+```yaml
+headers:
+  Authorization: "Bearer ${GRANOLA_TOKEN}" # accepted
+  CF-Access-Client-Id: "${ANKI_CF_ACCESS_CLIENT_ID}" # accepted
+  X-Api-Key: "abc123" # refused
+```
+
+It covers `headers:` on every kind that has one, `url:`'s userinfo (the
+`user:password@` before the host), and `oauthRefresh:`'s `clientSecret` and
+`refreshToken` — which the schema already bound to exactly one `${NAME}`, and
+which the runtime path now refuses earlier and with a message that names the fix.
+
+A **literal that is not a secret is refused too**. `Notion-Version: 2022-06-28`
+is harmless and strad cannot tell it from `sk-live-…`; a rule that tried would
+be a heuristic wearing a guarantee's clothes. The escape is the one the product
+already has — put the value in the slug's own namespace as an ordinary
+non-secret parameter and reference it. Both doors can do that, so it costs a
+step rather than a deploy.
+
+Two positions are **not** covered, and the reason is the same in both: a
+ref-only rule there would refuse the ordinary case. A **URL query parameter**
+(`?key=abc`) is a literal credential and is accepted, because there is no way to
+tell it from `?version=2` without refusing every URL that carries a query at
+all — userinfo is different, because `user:pass@` is a credential by definition.
+And a **builtin's `options:`** is an untyped bag whose normal contents are
+non-secret literals; a builtin cannot be created at runtime, so the reachable
+surface there is editing the options of one the checked-in document declares.
+Both are in [Known limitations](/limitations/) #96.
+
+The check runs twice, on purpose. `RuntimeConfig.assertAcceptable` judges the
+entry a caller composed, which is what attaches the refusal to the field the
+human is looking at. `RuntimeConfig.apply` then judges everything the write
+would newly place in the store — because `toggle` and `set_connector_enabled`
+re-upsert an entry read straight out of the merged document, so without it a
+literal in a checked-in `headers:` would be copied into the overlay by a button
+that only meant to disable something.
+
+The second check is scoped to what a write **changes**. A literal stored before
+this rule existed is still served — boot and poll stay lenient on purpose, so
+that an image rollback cannot be taken down by something a console wrote — and
+refusing every later write because of it would let one old entry freeze the
+roster. It is refused on the next write that touches its entry, which is where
+somebody can act on it.
 
 ### A runtime write cannot move access control the deploy authorised
 

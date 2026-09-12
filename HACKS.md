@@ -4936,15 +4936,33 @@ The MCP door inherits that window rather than widening it: `save_connector`
 takes `expectedRevision` optionally, so a caller that read the roster first gets
 the same refusal, and one that did not gets the same last-writer-wins.
 
-**Neither gap means a runtime write is unbounded.** Two rules bound what one may
-reach, as distinct from who may make one. A runtime-authored entry's `${NAME}`
-refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/` namespace
-and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`), so a
-connector `url:` cannot read core's process environment and send it off-box. And
-a runtime write may not change `entitlements:` or `tools:` on a slug the
+**Neither gap means a runtime write is unbounded.** Three rules bound what one
+may reach, as distinct from who may make one. A runtime-authored entry's
+`${NAME}` refs resolve against that slug's own `/strad/{env}/mcp/{slug}/static/`
+namespace and nothing else (`forServerIsolated`, `src/secrets/provider/index.ts`),
+so a connector `url:` cannot read core's process environment and send it off-box.
+A runtime write may not change `entitlements:` or `tools:` on a slug the
 checked-in document declares (`assertNoAccessControlChange`,
 `src/config/overlay.ts`), keyed on the document so remove-then-recreate is bound
-too. `docs/src/content/docs/operate/runtime-config.md` has both.
+too. And a runtime write may NAME a credential and may not CARRY one
+(`assertSecretsByReference`, `src/config/secret-position.ts`): the overlay is a
+non-secret parameter, so a literal saved into `headers:`, into `url:`'s userinfo
+or into `oauthRefresh:`'s grant would be a credential at rest in the clear.
+`docs/src/content/docs/operate/runtime-config.md` has all three.
+
+**THE THIRD RULE HAS TWO POSITIONS IT DOES NOT COVER**, and the reason is the
+same in both: a ref-only rule there would refuse the ordinary case. A **URL
+query parameter** — `https://api.example.com/mcp?key=abc` — is a literal
+credential and is accepted, because nothing can tell it from `?version=2`
+without refusing every URL that carries a query. Userinfo is different and IS
+refused: `user:pass@` is a credential by definition. And a **builtin's
+`options:`** is an untyped bag whose ordinary contents are non-secret literals
+(`echo`'s `greeting`), so the reachable surface there is editing the options of
+a builtin the checked-in document already declares — a builtin cannot be created
+at runtime. Closing either needs a typed statement of which fields carry a
+credential, per kind and per builtin, which is a schema change rather than a
+rule. `docs/src/content/docs/operate/runtime-config-plan.md` carries it as a
+later phase.
 
 **Why.** The first is physics, not policy: nothing in a running App Platform
 container can be handed a new environment variable, and a feature that pretended

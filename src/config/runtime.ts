@@ -10,6 +10,7 @@ import {
   type EntrySource,
   type ServerOverlay,
 } from "./overlay.ts";
+import { assertSecretsByReference, changedUpserts } from "./secret-position.ts";
 import { bundleUrlEnvName } from "../gateway/registry.ts";
 import type { StradConfig } from "./schema.ts";
 import type { ConfigStore } from "./store.ts";
@@ -115,6 +116,12 @@ export class RuntimeConfig {
     // is structurally a create and would otherwise walk around it.
     assertNoAccessControlChange(this.base, entry);
 
+    // And on both paths: a runtime write names a credential, it never carries
+    // one. `apply` repeats this over everything a write would newly store —
+    // see the note there — but doing it here is what attaches the refusal to
+    // the entry the human is looking at, before anything else is judged.
+    assertSecretsByReference(entry);
+
     if (before) {
       assertEditable(before, entry);
       return;
@@ -181,6 +188,23 @@ export class RuntimeConfig {
    */
   apply(overlay: ServerOverlay, by?: string): Promise<void> {
     return this.serialise(async () => {
+      // The store never gains a credential VALUE, whatever route the write
+      // arrived by. `assertAcceptable` covers the entry a caller composed; this
+      // covers the ones it did not — `toggle` and `set_connector_enabled`
+      // re-upsert an entry read straight out of the merged document, so a
+      // literal in a checked-in `headers:` would otherwise be copied into the
+      // overlay by a button that only meant to disable something.
+      //
+      // Scoped to what this write CHANGES, so a literal stored before the rule
+      // existed refuses the next write that touches its entry rather than
+      // freezing the whole roster. src/config/secret-position.ts argues it.
+      for (const entry of changedUpserts(
+        this.currentOverlay.servers.upserts,
+        overlay.servers.upserts,
+      )) {
+        assertSecretsByReference(entry);
+      }
+
       const result = this.evaluate(overlay);
       if (!result.ok) throw new ConfigRejected(result.problems);
 

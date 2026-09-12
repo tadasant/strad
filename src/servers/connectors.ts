@@ -19,6 +19,10 @@ import {
   withRestore,
   withUpsert,
 } from "../config/overlay.ts";
+import {
+  CREDENTIAL_SCHEMES,
+  LiteralCredential,
+} from "../config/secret-position.ts";
 import { ConfigStoreReadOnly, ConfigStoreTooLarge } from "../config/store.ts";
 import { soleRefName } from "../config/schema.ts";
 import { refreshTokenPath } from "../connectors/index.ts";
@@ -125,8 +129,10 @@ const READ_TOOLS: Tool[] = [
       "(a credential ref, a narrower tools policy), and pass it to save_connector. " +
       "`immutableFields` names the fields that only a deploy can move on this kind. " +
       "A credential-carrying field holding a LITERAL rather than a ${NAME} ref comes " +
-      "back redacted — save_connector refuses an entry that still carries the " +
-      "redaction, so replace it with a ref rather than copying it through.",
+      "back redacted — which now only happens for an entry the CHECKED-IN config " +
+      "declares, since a runtime write cannot store a literal in one. save_connector " +
+      "refuses an entry that still carries the redaction, so replace it with a ref " +
+      "rather than copying it through.",
     inputSchema: {
       type: "object",
       properties: {
@@ -179,9 +185,14 @@ const WRITE_TOOLS: Tool[] = [
           description:
             "The server entry. Needs at least `slug` and `kind`; a `remote-http` also " +
             "needs `url`, and every entry needs `entitlements` naming roles this config " +
-            "declares or nothing will be able to reach it. Put credentials in the store " +
-            "and reference them as ${NAME} — a literal secret here would land in the " +
-            "config document.",
+            "declares or nothing will be able to reach it. CREDENTIALS ARE NAMED, NEVER " +
+            "CARRIED: every `headers` value must be one ${NAME} ref, optionally after an " +
+            "auth scheme (" +
+            CREDENTIAL_SCHEMES.join(", ") +
+            ") — `\"Bearer ${GRANOLA_TOKEN}\"` — and a literal is refused, including one " +
+            "that is not a secret, because nothing here can tell the difference. `url` " +
+            "may not carry user:password@ userinfo. Put the value in this slug's own " +
+            "namespace through the secrets surface first and reference it here.",
         },
         previousSlug: {
           type: "string",
@@ -272,10 +283,18 @@ const REF = /\$\{[^}]+\}/;
  * schema already requires each to be exactly one `${NAME}`, so anything else
  * there cannot have come through a validated config.
  *
+ * WHAT THIS STILL HAS TO COVER, since `src/config/secret-position.ts`. A
+ * runtime write can no longer store a literal in either of these positions, so
+ * the only entries that can reach this function carrying one are the ones the
+ * CHECKED-IN document declares — which this surface reads and cannot rewrite.
+ * That is a narrower job than it was and not an empty one: a deployment mounts
+ * the read tools precisely so an agent can browse a roster it did not author.
+ *
  * Redaction for the common case, not secret detection. A credential
  * interpolated beside a ref, or typed into some field nobody thinks of as
- * credential-carrying, is not something this can find — the guarantee lives one
- * layer out, in the config never being the right place for a secret.
+ * credential-carrying, is not something this can find. For a file-declared
+ * entry the guarantee is still one layer out, in the config never being the
+ * right place for a secret.
  */
 function redacted(entry: Record<string, unknown>): Record<string, unknown> {
   const out = { ...entry };
@@ -497,7 +516,8 @@ async function write(
       err instanceof NotRuntimeCreatable ||
       err instanceof ImmutableFieldChanged ||
       err instanceof SlugCollision ||
-      err instanceof AccessControlChanged
+      err instanceof AccessControlChanged ||
+      err instanceof LiteralCredential
     ) {
       return FAILURE(err.message);
     }
@@ -515,7 +535,11 @@ async function write(
     }
     if (
       err instanceof ConfigStoreReadOnly ||
-      err instanceof ConfigStoreTooLarge
+      err instanceof ConfigStoreTooLarge ||
+      // Reachable from `set_connector_enabled` rather than from a composed
+      // entry: it re-upserts an entry this tool never built, and `apply`
+      // refuses one that would newly store a credential value.
+      err instanceof LiteralCredential
     ) {
       return FAILURE(err.message);
     }

@@ -30,6 +30,7 @@ import {
   withUpsert,
   type ServerOverlay,
 } from "../config/overlay.ts";
+import { LiteralCredential } from "../config/secret-position.ts";
 import { ConfigStoreReadOnly, ConfigStoreTooLarge } from "../config/store.ts";
 import { errorSummary } from "../util/error-text.ts";
 
@@ -428,6 +429,7 @@ async function handleSave(
     if (
       err instanceof NotRuntimeCreatable ||
       err instanceof ImmutableFieldChanged ||
+      err instanceof LiteralCredential ||
       err instanceof BadInput
     ) {
       return redraw({ tone: "error", message: err.message });
@@ -540,7 +542,11 @@ function refusal(err: unknown): Flash {
   }
   if (
     err instanceof ConfigStoreReadOnly ||
-    err instanceof ConfigStoreTooLarge
+    err instanceof ConfigStoreTooLarge ||
+    // Reachable from the roster's own buttons rather than from Save: toggling
+    // or removing re-upserts an entry this form never composed, and `apply`
+    // refuses one that would newly store a credential value.
+    err instanceof LiteralCredential
   ) {
     return { tone: "error", message: err.message };
   }

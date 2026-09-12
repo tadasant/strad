@@ -464,38 +464,85 @@ describe("the guards on the write tools", () => {
     await client.close();
   });
 
-  it("redacts a LITERAL credential out of get_connector, and keeps a ${NAME} ref", async () => {
+  it("REFUSES a save that would store a credential VALUE", async () => {
+    // The third bound on what a runtime write may reach: the overlay parameter
+    // is non-secret, so a literal saved here is a credential at rest in the
+    // clear. `test/config.secret-position.test.ts` has the rule; this is the
+    // door.
     const client = await connect(gatewayUrl, "connectors");
-    await call(client, "save_connector", {
-      entry: {
-        slug: "leaky",
-        kind: "remote-http",
-        url: "https://leaky/mcp",
-        entitlements: ["admin"],
-        headers: {
-          Authorization: "Bearer super-secret-literal",
-          "X-Key": "${LEAKY_KEY}",
-        },
+    const entry = {
+      slug: "leaky",
+      kind: "remote-http",
+      url: "https://leaky/mcp",
+      entitlements: ["admin"],
+      headers: {
+        Authorization: "Bearer super-secret-literal",
+        "X-Key": "${LEAKY_KEY}",
       },
-    });
+    };
+    const refused = await call(client, "save_connector", { entry });
+    expect(refused.isError).toBe(true);
+    expect(String(refused.body.error)).toContain("Authorization:");
+    // The refusal is returned to the caller, so it must not quote what it
+    // refused — and the header that WAS a ref is not blamed for it.
+    expect(String(refused.body.error)).not.toContain("super-secret-literal");
+    expect(String(refused.body.error)).not.toContain("X-Key");
+    expect(runtime.config().servers.map((s) => s.slug)).not.toContain("leaky");
 
+    // The same connector with the value NAMED instead is accepted, and comes
+    // back whole: naming the parameter is the point of the field.
+    const named = {
+      ...entry,
+      headers: {
+        Authorization: "Bearer ${LEAKY_TOKEN}",
+        "X-Key": "${LEAKY_KEY}",
+      },
+    };
+    expect(
+      (await call(client, "save_connector", { entry: named })).isError,
+    ).toBe(false);
     const { body } = await call(client, "get_connector", { slug: "leaky" });
-    const headers = (body.entry as { headers: Record<string, string> }).headers;
-    expect(headers.Authorization).not.toContain("super-secret-literal");
-    expect(headers.Authorization).toContain("redacted");
-    // The ref survives, because naming the parameter is the point of the field.
-    expect(headers["X-Key"]).toBe("${LEAKY_KEY}");
-
-    // And a copy-and-save round trip is refused rather than writing the
-    // sentinel in as the value.
-    const back = await call(client, "save_connector", {
-      entry: { ...(body.entry as Record<string, unknown>), slug: "leaky-copy" },
-    });
-    expect(back.isError).toBe(true);
-    expect(String(back.body.error)).toContain("redact");
+    expect((body.entry as { headers: unknown }).headers).toStrictEqual(
+      named.headers,
+    );
 
     await call(client, "remove_connector", { slug: "leaky" });
     await client.close();
+  });
+
+  it("still redacts a literal out of an entry the CHECKED-IN config declares", async () => {
+    // Which is now the only way one can reach `get_connector` at all. A
+    // deployment mounts the read tools precisely so an agent can browse a
+    // roster it did not author, and that roster is not bound by the rule above.
+    const literalYaml = GATEWAY_YAML.replace(
+      `    title: A checked-in one
+    entitlements: [admin]`,
+      `    title: A checked-in one
+    entitlements: [admin]
+    headers:
+      Authorization: "Bearer checked-in-literal"
+      X-Key: "\${RESIDENT_KEY}"`,
+    );
+    const booted = await boot(
+      parseConfig(literalYaml),
+      new MemoryConfigStore(),
+      EMPTY_OVERLAY,
+      parseYamlDocument(literalYaml),
+    );
+    try {
+      const client = await connect(booted.url, "connectors");
+      const { body } = await call(client, "get_connector", {
+        slug: "resident",
+      });
+      const headers = (body.entry as { headers: Record<string, string> })
+        .headers;
+      expect(headers.Authorization).not.toContain("checked-in-literal");
+      expect(headers.Authorization).toContain("redacted");
+      expect(headers["X-Key"]).toBe("${RESIDENT_KEY}");
+      await client.close();
+    } finally {
+      booted.server.close();
+    }
   });
 
   it("reports removals and can restore one", async () => {
