@@ -668,10 +668,20 @@ ${field(
 )}
 ${field(
   "Path",
-  input("path", text(entry.path ?? ""), { id: "path", placeholder: "/gmail" }),
-  `The mount inside that container. It has to be a mount the image ALREADY
-   serves — pointing at a path nothing answers gives a slug that lists no tools.
-   Copy it from an existing entry for the same upstream.`,
+  input("path", text(entry.path ?? ""), {
+    id: "path",
+    placeholder: "/gmail",
+    disabled: frozen.has("path"),
+  }),
+  frozen.has("path")
+    ? `The mount inside that container. Fixed here: it chooses which upstream
+       this slug reaches, and the credential at the other end belongs to the
+       container rather than to this entry — so re-pointing it would reach a
+       server this entry's roles were never granted. Point a new slug at the
+       mount you want instead.`
+    : `The mount inside that container. It has to be a mount the image ALREADY
+       serves — pointing at a path nothing answers gives a slug that lists no
+       tools. Copy it from an existing entry for the same upstream.`,
   { id: "path" },
 )}
 ${headersField}
@@ -685,8 +695,8 @@ narrower <code>tools:</code> policy wants.</p>
 
   const frozenNote =
     !creating && frozen.size > 1
-      ? `<p class="state-sub">Greyed-out fields are the ones only a deploy can
-         move on a ${esc(opts.kind)} server: ${esc(
+      ? `<p class="state-sub">Greyed-out fields are the ones a runtime write may
+         not move on a ${esc(opts.kind)} server: ${esc(
            [...frozen].filter((f) => f !== "kind").join(", "),
          )}. Change them in the checked-in config.</p>`
       : "";

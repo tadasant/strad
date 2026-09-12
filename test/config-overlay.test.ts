@@ -465,11 +465,65 @@ describe("assertEditable", () => {
     ).toThrow(/env/);
   });
 
+  it("refuses re-pointing a supplementary entry's path at another mount", () => {
+    // The escalation this closes: several mounts share one container, each with
+    // the credential the deploy baked in for it and each fronted by its own
+    // slug. Moving `path:` alone takes THIS entry's entitlements and tools to a
+    // DIFFERENT upstream, and the narrow policy on the slug that declares that
+    // upstream stays attached to that slug — a re-point inherits none of it.
+    const before = {
+      slug: "shop",
+      kind: "supplementary-image",
+      image: "i:1",
+      bundle: "bundle",
+      path: "/shop",
+      entitlements: ["fleet"],
+    };
+    expect(() =>
+      assertEditable(before, { ...before, path: "/onepassword" }),
+    ).toThrow(ImmutableFieldChanged);
+    expect(() =>
+      assertEditable(before, { ...before, path: "/onepassword" }),
+    ).toThrow(/path/);
+  });
+
+  it("says WHY a path is frozen, which is not the reason an image is", () => {
+    // The stock sentence is "the deploy is what delivers that", and for `path:`
+    // that would be a wrong explanation rather than a terse one — the mount is
+    // already running, and what a re-point reaches is a credential that is not
+    // this entry's.
+    const before = {
+      slug: "shop",
+      kind: "supplementary-image",
+      image: "i:1",
+      bundle: "bundle",
+      path: "/shop",
+    };
+    const message = (after: Record<string, unknown>): string => {
+      try {
+        assertEditable(before, after);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return "";
+    };
+    expect(message({ ...before, path: "/vault" })).toContain(
+      "belongs to the container",
+    );
+    expect(message({ ...before, path: "/vault" })).not.toContain(
+      "The deploy is what delivers",
+    );
+    expect(message({ ...before, image: "i:2" })).toContain(
+      "The deploy is what delivers image",
+    );
+  });
+
   it("does not itself bound tools policy or entitlements — that is a separate rule", () => {
-    // `assertEditable` is about fields only a DEPLOY can deliver. Who reaches a
-    // server and which of its tools they get is a different question with a
-    // different answer: `assertNoAccessControlChange`, keyed on the checked-in
-    // document rather than on edit-vs-create, and tested in
+    // `assertEditable` is about fields a runtime write may not move whatever
+    // the entry's provenance. Who reaches a server and which of its tools they
+    // get is a different question with a different answer:
+    // `assertNoAccessControlChange`, keyed on the checked-in document rather
+    // than on edit-vs-create, and tested in
     // test/connectors.isolation.test.ts. Both run from
     // `RuntimeConfig.assertAcceptable`, so a write passes only if it clears
     // both — this test is about the first one in isolation.

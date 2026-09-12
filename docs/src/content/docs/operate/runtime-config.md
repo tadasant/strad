@@ -274,15 +274,30 @@ reads, so the save is refused rather than accepted and quietly ignored.
 
 ### What an edit may not move
 
-| On a…                 | Frozen                                                    |
-| --------------------- | --------------------------------------------------------- |
-| anything              | `kind`                                                    |
-| `supplementary-image` | `image`, `bundle`, and the seven deploy-only fields above |
-| `builtin`             | `module`, `bundle`, `params`                              |
+| On a…                 | Frozen                                                            |
+| --------------------- | ----------------------------------------------------------------- |
+| anything              | `kind`                                                            |
+| `supplementary-image` | `image`, `bundle`, `path`, and the seven deploy-only fields above |
+| `builtin`             | `module`, `bundle`, `params`                                      |
 
 A `remote-http` server's `url:` is re-pointable, because the adapter resolves it
 per operation. A supplementary server's `image:` is not: the image is what the
 App Platform component is running, and only a deploy changes that.
+
+`path:` is frozen for a different reason, and it is the sharper one. A bundle is
+one container serving many mounts, each with the credential the deploy baked in
+for it and each fronted by its own slug with its own `entitlements:` and its own
+`tools:`. Re-pointing a slug's `path:` at a neighbouring mount inherits
+**neither** of that neighbour's protections: an allow-list stays attached to the
+slug that declares it, while the credential on the other end does not. So a
+widely-entitled slug that could be re-pointed at a narrowly-entitled mount is
+that mount's access control undone — and since `?servers=` is a filter and not
+an authorization, everyone the re-pointed slug's roles name can reach it. Point
+a **new** slug at the mount you want instead; that is the `gmail-ro` /
+`gmail-rw` pattern and it still works.
+
+For a slug the checked-in document declares, `path:` is bound however the write
+arrives — see [below](#a-runtime-write-cannot-move-access-control-the-deploy-authorised).
 
 ### Removing
 
@@ -334,11 +349,14 @@ it did.
 ### A runtime write cannot move access control the deploy authorised
 
 `entitlements:` and `tools:` are strad's two access-control decisions: who
-reaches a server, and which of its tools they get there. On a slug the
-checked-in document declares, a runtime write may not move either one.
-`assertNoAccessControlChange` in `src/config/overlay.ts` refuses it, and both
-doors refuse it the same way — a `409` in the console, an error result from
-`save_connector` — because both call `RuntimeConfig.assertAcceptable`.
+reaches a server, and which of its tools they get there. A supplementary
+`path:` is the third, because it decides the same thing from the far end —
+which upstream, and so which of the container's credentials, the slug's roles
+actually reach. On a slug the checked-in document declares, a runtime write may
+not move any of the three. `assertNoAccessControlChange` in
+`src/config/overlay.ts` refuses it, and both doors refuse it the same way — a
+`409` in the console, an error result from `save_connector` — because both call
+`RuntimeConfig.assertAcceptable`.
 
 For a server the deploy authorised, that authority stays with the deploy. The
 rule is keyed on the checked-in document rather than on edit-versus-create,
@@ -350,14 +368,16 @@ the write arrives, and stays bound while a removal against it is standing.
 A slug only the **overlay** declares is unbound. Giving a connector you just
 created a role is the feature, and nothing in the checked-in document is being
 overruled. Every other field on a file-declared entry still moves — `url:`,
-`title:`, `timeoutMs:`, `enabled:` — and the comparison ignores ordering and
-absent-versus-empty, so re-saving an unchanged entry is never a refusal.
+`title:`, `timeoutMs:`, `enabled:` — and the comparison ignores ordering,
+absent-versus-empty and `path:`'s `/mcp` default, so re-saving an unchanged
+entry is never a refusal.
 
 The console does not render a control the save path would reject. On a
 file-declared entry the role checkboxes and both `tools:` fields are **disabled**,
-with the reason beside them. A disabled input submits nothing, so the save hands
-those two fields back to the entry being carried rather than reading an empty
-form as "the human cleared the roles".
+with the reason beside them; on any supplementary edit, so are `image:`,
+`bundle:` and `path:`. A disabled input submits nothing, so the save hands those
+fields back to the entry being carried rather than reading an empty form as "the
+human cleared the roles".
 
 ## The console flow
 

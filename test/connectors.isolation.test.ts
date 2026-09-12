@@ -14,15 +14,15 @@ import { Registry } from "../src/gateway/registry.ts";
 import { buildSecretProviders } from "../src/secrets/provider/index.ts";
 
 /**
- * The two bounds on what a RUNTIME write may reach, as opposed to who may make
- * one. Both exist because the caller of a runtime write chooses the content,
- * and the three access layers in front of the roster editor all gate the
- * DOOR rather than the write.
+ * The bounds on what a RUNTIME write may reach, as opposed to who may make one.
+ * They exist because the caller of a runtime write chooses the content, and the
+ * three access layers in front of the roster editor all gate the DOOR rather
+ * than the write.
  *
- * These are the tests to break if either bound is ever relaxed. Neither
- * failure is loud in production: the first sends a credential off-box on a
- * request that looks like an ordinary tool call, and the second is a widened
- * entitlement nobody reviews.
+ * These are the tests to break if a bound is ever relaxed. No failure here is
+ * loud in production: the first sends a credential off-box on a request that
+ * looks like an ordinary tool call, the second is a widened entitlement nobody
+ * reviews, and the third is a slug serving an upstream nobody granted it.
  */
 
 const BASE_YAML = `
@@ -259,5 +259,147 @@ describe("a runtime write cannot move access control the deploy authorised", () 
         tools: { allow: ["read_thing"] },
       }),
     ).toThrow(AccessControlChanged);
+  });
+});
+
+describe("a runtime write cannot re-point a checked-in slug at another mount", () => {
+  /**
+   * The third bound, and the one `entitlements:`/`tools:` alone does not cover.
+   *
+   * A bundle is one container serving many mounts, each with the credential the
+   * deploy baked in for it, each fronted by its own slug with its own
+   * `entitlements:` and its own `tools:`. Moving `path:` on a widely-entitled
+   * slug lands it on a narrowly-entitled neighbour's mount, and inherits
+   * NEITHER protection — the allow-list stays attached to the slug that
+   * declares it, while the credential on the other end does not. `?servers=` is
+   * a filter and not an authorization, so the re-pointed slug is reachable by
+   * everyone its own roles name.
+   *
+   * Measured against a running gateway before the fix: re-pointing a fleet-
+   * reachable slug at an admin-only mount returned ACCEPTED, while the same
+   * call correctly refused an `entitlements:` widening and an `image:` change.
+   */
+
+  const BUNDLE_YAML = `
+version: 1
+gateway:
+  name: strad
+  env: test
+  secrets: { provider: env }
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+  fleet: { servers: ["shop"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/example/bundle:latest
+    bundle: bundle
+    path: /shop
+    entitlements: [fleet]
+  - slug: vault
+    kind: supplementary-image
+    image: ghcr.io/example/bundle:latest
+    bundle: bundle
+    path: /vault
+    entitlements: [admin]
+    tools:
+      allow: [read_item]
+`;
+
+  const DOC = parseYamlDocument(BUNDLE_YAML);
+  const CONFIG = parseConfig(BUNDLE_YAML);
+  // What the deploy binds for a bundle it rendered; without it a create is
+  // refused as unreachable before it is ever judged on its path.
+  const BUNDLE_ENV = { STRAD_BUNDLE_URL_BUNDLE: "http://bundle:8080" };
+
+  const declared = {
+    slug: "shop",
+    kind: "supplementary-image",
+    image: "ghcr.io/example/bundle:latest",
+    bundle: "bundle",
+    path: "/shop",
+    entitlements: ["fleet"],
+  };
+  const repointed = { ...declared, path: "/vault" };
+
+  function bundleRuntime(overlay = EMPTY_OVERLAY): RuntimeConfig {
+    return new RuntimeConfig({
+      baseDocument: DOC,
+      config: CONFIG,
+      overlay,
+      store: new MemoryConfigStore(),
+      rebuild: () => Promise.resolve(),
+      env: BUNDLE_ENV,
+    });
+  }
+
+  it("refuses an EDIT that moves nothing but path:", () => {
+    expect(() => bundleRuntime().assertAcceptable(repointed, declared)).toThrow(
+      /path/,
+    );
+  });
+
+  it("binds it through remove-and-recreate too, not just through edit", () => {
+    // The same two-call walk-around the access-control rule already closes. An
+    // `immutableFields` entry alone would not: after the removal the write is
+    // structurally a CREATE, and a create is never handed a `before`.
+    const runtime = bundleRuntime(
+      withRemoval(EMPTY_OVERLAY, "shop", { fileSlugs: new Set(["shop"]) }),
+    );
+    expect(() => runtime.assertAcceptable(repointed)).toThrow(
+      AccessControlChanged,
+    );
+    expect(() => runtime.assertAcceptable(repointed)).toThrow(/path/);
+  });
+
+  it("refuses it however the entry spells the slug's own kind", () => {
+    // Dropping `kind:` on the way past would take `path:` out of a comparison
+    // keyed on the CANDIDATE's kind, so the comparison is keyed on the
+    // checked-in entry's.
+    const runtime = bundleRuntime(
+      withRemoval(EMPTY_OVERLAY, "shop", { fileSlugs: new Set(["shop"]) }),
+    );
+    expect(() =>
+      runtime.assertAcceptable({
+        slug: "shop",
+        kind: "remote-http",
+        url: "https://elsewhere.example.com/mcp",
+        entitlements: ["fleet"],
+      }),
+    ).toThrow(AccessControlChanged);
+  });
+
+  it("still lets an unchanged path through, spelled either way", () => {
+    const runtime = bundleRuntime();
+    expect(() =>
+      runtime.assertAcceptable({ ...declared, title: "The shop" }, declared),
+    ).not.toThrow();
+    // `/mcp` is the schema's default, so writing it explicitly where the file
+    // left it out is not a change.
+    expect(() =>
+      assertNoAccessControlChange(
+        { servers: [{ slug: "s", kind: "supplementary-image" }] },
+        { slug: "s", kind: "supplementary-image", path: "/mcp" },
+      ),
+    ).not.toThrow();
+  });
+
+  it("leaves a supplementary slug only the OVERLAY declares free to be re-created", () => {
+    // Nothing in the checked-in document is being overruled, and pointing a new
+    // slug at a mount that is already deployed is the feature.
+    expect(() =>
+      bundleRuntime().assertAcceptable({
+        slug: "shop-ro",
+        kind: "supplementary-image",
+        image: "ghcr.io/example/bundle:latest",
+        bundle: "bundle",
+        path: "/vault",
+        entitlements: ["admin"],
+      }),
+    ).not.toThrow();
   });
 });

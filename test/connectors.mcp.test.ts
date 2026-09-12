@@ -77,6 +77,10 @@ const upstreamToken = mintToken({
 
 const env: NodeJS.ProcessEnv = {
   STRAD_TOKENS: JSON.stringify([mcpToken.record]),
+  // What a deploy binds for a rendered bundle. Only the re-point suite below
+  // declares one; without it a supplementary write is refused as unreachable
+  // before it is ever judged on its path.
+  STRAD_BUNDLE_URL_BUNDLE: "http://bundle.internal:8080",
 };
 
 /**
@@ -127,6 +131,7 @@ async function boot(
   config: StradConfig,
   configStore: ConfigStore | null,
   overlay: ServerOverlay = EMPTY_OVERLAY,
+  baseDoc: unknown = gatewayDoc,
 ): Promise<{ url: string; server: Server; runtime: RuntimeConfig }> {
   const runtimeRef: { current: RuntimeConfig | null } = { current: null };
   const build = async (next: StradConfig) => {
@@ -155,7 +160,7 @@ async function boot(
 
   const gateway = await ReloadableGateway.start(build, config, { drainMs: 10 });
   const holder = new RuntimeConfig({
-    baseDocument: gatewayDoc,
+    baseDocument: baseDoc,
     config,
     overlay,
     store: configStore,
@@ -655,5 +660,146 @@ describe("what withholds the write tools", () => {
     } finally {
       booted.server.close();
     }
+  });
+});
+
+describe("re-pointing a checked-in mount over /mcp", () => {
+  /**
+   * The escalation, driven the way it was measured: a real MCP client, an
+   * entitled caller, `save_connector` moving nothing but `path:`.
+   *
+   * `shop` and `vault` are two mounts in ONE container. `vault` is admin-only
+   * and tool-narrowed; `shop` carries no tools policy and the fleet role
+   * reaches it. Re-pointing `shop` at `/vault` would take `shop`'s roles to
+   * `vault`'s credential and inherit neither of `vault`'s protections, because
+   * an allow-list stays attached to the slug that declares it. Before the fix
+   * this call returned ok.
+   */
+  const YAML = `
+version: 1
+gateway:
+  name: strad
+  env: test
+auth:
+  staticTokens: { enabled: true }
+roles:
+  admin: { servers: ["*"] }
+bundles:
+  - name: bundle
+servers:
+  - slug: connectors
+    kind: builtin
+    module: "./servers/connectors.js"
+    bundle: core
+    entitlements: [admin]
+  - slug: shop
+    kind: supplementary-image
+    image: ghcr.io/example/bundle:latest
+    bundle: bundle
+    path: /shop
+    entitlements: [admin]
+  - slug: vault
+    kind: supplementary-image
+    image: ghcr.io/example/bundle:latest
+    bundle: bundle
+    path: /vault
+    entitlements: [admin]
+    tools:
+      allow: [read_item]
+`;
+
+  let booted: { url: string; server: Server; runtime: RuntimeConfig };
+
+  beforeAll(async () => {
+    booted = await boot(
+      parseConfig(YAML),
+      new MemoryConfigStore(),
+      EMPTY_OVERLAY,
+      parseYamlDocument(YAML),
+    );
+  });
+
+  afterAll(() => booted?.server.close());
+
+  /** The entry as `get_connector` hands it back, with one field moved. */
+  async function saveWith(
+    client: Client,
+    change: Record<string, unknown>,
+  ): Promise<{ isError: boolean; body: Record<string, unknown> }> {
+    const { body } = await call(client, "get_connector", { slug: "shop" });
+    const entry = body.entry as Record<string, unknown>;
+    return call(client, "save_connector", { entry: { ...entry, ...change } });
+  }
+
+  it("names path: among the fields only a deploy can move", async () => {
+    const client = await connect(booted.url, "connectors");
+    const { body } = await call(client, "get_connector", { slug: "shop" });
+    expect(body.immutableFields).toContain("path");
+    await client.close();
+  });
+
+  it("REFUSES a save that moves nothing but path:", async () => {
+    const client = await connect(booted.url, "connectors");
+    const refused = await saveWith(client, { path: "/vault" });
+    expect(refused.isError).toBe(true);
+    expect(String(refused.body.error)).toContain("path");
+    // Nothing was written: the slug still serves the mount the file gave it.
+    expect(
+      booted.runtime.config().servers.find((srv) => srv.slug === "shop"),
+    ).toMatchObject({ path: "/shop" });
+    expect(booted.runtime.overlay().revision).toBe(0);
+    await client.close();
+  });
+
+  it("REFUSES it through remove-then-recreate, which is two calls, not one", async () => {
+    const client = await connect(booted.url, "connectors");
+    const { body } = await call(client, "get_connector", { slug: "shop" });
+    const entry = body.entry as Record<string, unknown>;
+
+    const removed = await call(client, "remove_connector", { slug: "shop" });
+    expect(removed.isError).toBe(false);
+    try {
+      const recreated = await call(client, "save_connector", {
+        entry: { ...entry, path: "/vault" },
+      });
+      expect(recreated.isError).toBe(true);
+      expect(String(recreated.body.error)).toContain("path");
+    } finally {
+      await call(client, "restore_connector", { slug: "shop" });
+      await client.close();
+    }
+  });
+
+  it("still saves an ordinary edit to the same entry", async () => {
+    // The bound has to be narrow enough that the feature still works: a title
+    // change on a checked-in supplementary slug goes through.
+    const client = await connect(booted.url, "connectors");
+    const saved = await saveWith(client, { title: "The shop" });
+    expect(saved.isError).toBe(false);
+    expect(
+      booted.runtime.config().servers.find((srv) => srv.slug === "shop"),
+    ).toMatchObject({ title: "The shop", path: "/shop" });
+    await client.close();
+  });
+
+  it("still lets a NEW slug be pointed at a mount that is already deployed", async () => {
+    // The `gmail-ro` / `gmail-rw` pattern, which is the point of the feature.
+    // Nothing in the checked-in document is being overruled.
+    const client = await connect(booted.url, "connectors");
+    const created = await call(client, "save_connector", {
+      entry: {
+        slug: "vault-copy",
+        kind: "supplementary-image",
+        image: "ghcr.io/example/bundle:latest",
+        bundle: "bundle",
+        path: "/vault",
+        entitlements: ["admin"],
+      },
+    });
+    expect(created.isError).toBe(false);
+    expect(booted.runtime.config().servers.map((srv) => srv.slug)).toContain(
+      "vault-copy",
+    );
+    await client.close();
   });
 });

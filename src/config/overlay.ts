@@ -518,13 +518,24 @@ export function assertCreatable(
 }
 
 /**
- * Fields an EDIT may not change, per kind, because the running deployment could
- * not follow the change.
+ * Fields an EDIT may not change, per kind.
  *
- * Same argument as `assertCreatable`, from the other side: a `remote-http` url
- * may be re-pointed, because the adapter resolves it per operation, and a
- * supplementary server's `image:` may not, because the image is what the App
- * Platform component is running and only a deploy changes that.
+ * Most of them are here for the `assertCreatable` reason read from the other
+ * side: a `remote-http` url may be re-pointed, because the adapter resolves it
+ * per operation, and a supplementary server's `image:` may not, because the
+ * image is what the App Platform component is running and only a deploy
+ * changes that.
+ *
+ * `path:` is here for a different reason, and it is the sharper one. A
+ * supplementary `path:` selects WHICH MOUNT inside an already-running container
+ * the slug reaches, and the credential the mount answers with belongs to the
+ * container rather than to this entry. So a re-point is not "the same server
+ * somewhere else": it is this slug's `entitlements:` and this slug's `tools:`
+ * pointed at a DIFFERENT upstream, whose own slug's narrower policy stays
+ * attached to that slug and is inherited by nothing. A slug reachable by a
+ * fleet key that could be re-pointed at `/onepassword` would put 1Password
+ * within reach of whatever can write the roster. `assertNoAccessControlChange`
+ * carries the other half of this, for a slug the checked-in document declares.
  *
  * Both doors read these messages — the console form and the `connectors` MCP
  * tools — so none of them names one.
@@ -532,7 +543,7 @@ export function assertCreatable(
 export function immutableFields(kind: string): readonly string[] {
   switch (kind) {
     case "supplementary-image":
-      return ["kind", "image", "bundle", ...DEPLOY_ONLY_FIELDS];
+      return ["kind", "image", "bundle", "path", ...DEPLOY_ONLY_FIELDS];
     case "builtin":
       return ["kind", "module", "bundle", "params"];
     default:
@@ -542,7 +553,7 @@ export function immutableFields(kind: string): readonly string[] {
 
 export class ImmutableFieldChanged extends Error {}
 
-/** Refuse an edit that moved a field only a deploy can move. */
+/** Refuse an edit that moved a field a runtime write may not move. */
 export function assertEditable(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -551,13 +562,28 @@ export function assertEditable(
   const changed = immutableFields(kind).filter(
     (field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]),
   );
-  if (changed.length > 0) {
-    throw new ImmutableFieldChanged(
-      `${changed.join(", ")} cannot be changed at runtime on a ` +
-        `${kind} server: the deploy is what delivers ${changed.length > 1 ? "those" : "that"}. ` +
-        `Change it in the checked-in config and deploy.`,
-    );
-  }
+  if (changed.length === 0) return;
+
+  // `path:` is the one field in the list the deploy does not "deliver", so the
+  // stock sentence would be a wrong explanation of it rather than a terse one.
+  const delivered = changed.filter((field) => field !== "path");
+  const why =
+    (delivered.length > 0
+      ? `The deploy is what delivers ${delivered.join(", ")}. `
+      : "") +
+    (changed.includes("path")
+      ? `path: chooses which mount inside the container this slug reaches, and ` +
+        `the credential there belongs to the container — so re-pointing it ` +
+        `would reach an upstream this entry was never authorised for, under ` +
+        `the entitlements: and tools: it already has. `
+      : "");
+
+  throw new ImmutableFieldChanged(
+    `${changed.join(", ")} cannot be changed at runtime on a ` +
+      `${kind} server. ${why}` +
+      `Change ${changed.length > 1 ? "them" : "it"} in the checked-in config ` +
+      `and deploy, or point a NEW slug at the upstream you want.`,
+  );
 }
 
 /** Every slug in a parsed config. */
@@ -568,24 +594,39 @@ export function slugsIn(config: StradConfig): Set<string> {
 export class SlugCollision extends Error {}
 export class AccessControlChanged extends Error {}
 
-/** `entitlements` / `tools`, compared without caring about order or absence. */
-function accessShape(entry: Record<string, unknown> | undefined): string {
-  const roles = Array.isArray(entry?.entitlements)
-    ? [...entry.entitlements].map(String).sort()
-    : [];
-  const tools = isPlainObject(entry?.tools) ? entry.tools : {};
+/** What each bound field decides, so the refusal can say which one moved. */
+const ACCESS_FIELDS: Record<string, string> = {
+  entitlements: "who reaches this server",
+  tools: "which of its tools they get",
+  path: "which mount inside the container it reaches, and so which credential",
+};
+
+/**
+ * The bound fields of an entry, compared without caring about order or absence.
+ *
+ * `withPath` is decided by the CHECKED-IN entry's kind rather than the
+ * candidate's, so re-creating a supplementary slug as some other kind is
+ * compared too rather than slipping out of the comparison by dropping the
+ * field. `/mcp` is the schema's own default for an absent `path`, applied here
+ * so that writing it explicitly is not read as a change.
+ */
+function accessShape(
+  entry: Record<string, unknown> | undefined,
+  withPath: boolean,
+): Record<string, string> {
   const list = (v: unknown) =>
-    Array.isArray(v) ? [...v].map(String).sort() : [];
-  return JSON.stringify({
-    roles,
-    allow: list(tools.allow),
-    deny: list(tools.deny),
-  });
+    JSON.stringify(Array.isArray(v) ? [...v].map(String).sort() : []);
+  const tools = isPlainObject(entry?.tools) ? entry.tools : {};
+  return {
+    entitlements: list(entry?.entitlements),
+    tools: JSON.stringify({ allow: list(tools.allow), deny: list(tools.deny) }),
+    ...(withPath ? { path: String(entry?.path ?? "/mcp") } : {}),
+  };
 }
 
 /**
  * A runtime write may not change WHO reaches a server the checked-in document
- * declares, or WHICH of its tools they get there.
+ * declares, WHICH of its tools they get there, or WHICH UPSTREAM it is.
  *
  * `entitlements:` and `tools:` are strad's two access-control decisions, and
  * both are on the merge gate's permanent hold list — the ones where "the cost
@@ -594,12 +635,24 @@ function accessShape(entry: Record<string, unknown> | undefined): string {
  * authorised, that authority belongs to the deploy: a human wrote those lines
  * and a human reviewed them.
  *
+ * A supplementary `path:` is the third, because it decides the same thing from
+ * the far end. Several mounts share one container, each with the credential the
+ * deploy baked in for it, and each fronted by its own slug with its own
+ * `entitlements:` and `tools:`. Re-pointing a slug's `path:` at a neighbouring
+ * mount inherits NEITHER of that neighbour's protections — the narrow policy
+ * stays attached to the slug that declares it, while the credential on the
+ * other end does not. Since `?servers=` is a filter and not an authorization, a
+ * widely-entitled slug that could be re-pointed at a narrowly-entitled mount is
+ * that mount's access control undone.
+ *
  * Keyed on the checked-in document rather than on "is this an edit", because
  * the alternative has an obvious way around it. Removing a file-declared slug
  * and re-creating it through the overlay is, structurally, a create — so a rule
  * that only bound edits would be bypassed by two calls instead of one. A slug
  * the file names is bound however the write arrives, and stays bound while a
- * removal is standing.
+ * removal is standing. (`immutableFields` binds `path:` on the EDIT path for
+ * every supplementary entry, this binds it on both paths for a file-declared
+ * one, and it is this one that closes remove-then-recreate.)
  *
  * A slug only the OVERLAY declares is unbound: nothing in the checked-in
  * document is being overruled, and giving a connector you just created a role
@@ -611,13 +664,21 @@ export function assertNoAccessControlChange(
 ): void {
   const declared = rawEntry(baseDoc, String(entry.slug));
   if (!declared) return;
-  if (accessShape(declared) === accessShape(entry)) return;
+
+  const withPath = declared.kind === "supplementary-image";
+  const before = accessShape(declared, withPath);
+  const after = accessShape(entry, withPath);
+  const moved = Object.keys(before).filter((f) => before[f] !== after[f]);
+  if (moved.length === 0) return;
+
   throw new AccessControlChanged(
-    `entitlements: and tools: cannot be changed at runtime on ${String(entry.slug)}, ` +
-      `because the checked-in config declares it. Those two decide who reaches ` +
-      `this server and which of its tools they get, and for a server the deploy ` +
-      `authorised they stay with the deploy. Change them in the checked-in ` +
-      `config, or point a NEW slug at the same upstream.`,
+    `${moved.map((f) => `${f}:`).join(", ")} cannot be changed at runtime on ` +
+      `${String(entry.slug)}, because the checked-in config declares it. ` +
+      `${moved.length > 1 ? "They decide" : "It decides"} ` +
+      `${moved.map((f) => ACCESS_FIELDS[f]).join(", ")} — and for a server the ` +
+      `deploy authorised, that stays with the deploy. Change ` +
+      `${moved.length > 1 ? "them" : "it"} in the checked-in config, or point a ` +
+      `NEW slug at the upstream you want.`,
   );
 }
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseConfig, parseYamlDocument } from "../src/config/load.ts";
-import { EMPTY_OVERLAY, withUpsert } from "../src/config/overlay.ts";
+import {
+  EMPTY_OVERLAY,
+  assertEditable,
+  withUpsert,
+} from "../src/config/overlay.ts";
 import { entryFromForm } from "../src/ui/servers.ts";
 import { renderForm, renderRoster } from "../src/ui/servers-page.ts";
 
@@ -124,6 +128,45 @@ describe("escaping", () => {
   });
 });
 
+describe("the form does not render a control the save path would reject", () => {
+  const supplementary = {
+    slug: "shop",
+    kind: "supplementary-image",
+    image: "ghcr.io/example/bundle:latest",
+    bundle: "bundle",
+    path: "/shop",
+  };
+
+  it("greys out path: on an edit, and says why", () => {
+    const html = renderForm({
+      config: CONFIG,
+      entry: supplementary,
+      slug: "shop",
+      kind: "supplementary-image",
+      copyable: [],
+      revision: 1,
+      source: "file",
+    });
+    expect(html).toMatch(/name="path"[^>]*disabled/);
+    expect(html).toMatch(/belongs to the\s+container/);
+    // And the note naming the frozen fields agrees with the rule.
+    expect(html).toContain("image, bundle, path");
+  });
+
+  it("leaves it editable on a create, where choosing the mount is the point", () => {
+    const html = renderForm({
+      config: CONFIG,
+      entry: { kind: "supplementary-image" },
+      kind: "supplementary-image",
+      copyable: [],
+      revision: 0,
+      source: "store",
+    });
+    expect(html).toMatch(/name="path"/);
+    expect(html).not.toMatch(/name="path"[^>]*disabled/);
+  });
+});
+
 describe("entryFromForm", () => {
   const form = (over: Record<string, string> = {}) => ({
     kind: "remote-http",
@@ -217,6 +260,54 @@ describe("entryFromForm", () => {
     expect(() => entryFromForm(form({ timeoutMs: "soon" }))).toThrow(
       /must be a number/,
     );
+  });
+
+  it("hands a frozen field back on an EDIT, because a disabled input posts nothing", () => {
+    // The form greys out `image:`, `bundle:` and `path:` on an edit. A disabled
+    // input submits NOTHING, so owning those here would post an entry with no
+    // image — which `assertEditable` reads as an image CHANGE and refuses. That
+    // made every console edit of a supplementary entry unsaveable, including
+    // one that only changed the title.
+    const before = {
+      kind: "supplementary-image",
+      image: "ghcr.io/example/bundle:latest",
+      bundle: "bundle",
+      path: "/shop",
+    };
+    const body = {
+      kind: "supplementary-image",
+      slug: "shop",
+      title: "New title",
+      enabled: "on",
+      "entitlement:admin": "on",
+    };
+    const edited = entryFromForm(body, before, { editing: true });
+    expect(edited).toMatchObject({
+      image: "ghcr.io/example/bundle:latest",
+      bundle: "bundle",
+      path: "/shop",
+      title: "New title",
+    });
+    expect(() =>
+      assertEditable({ ...before, slug: "shop" }, edited),
+    ).not.toThrow();
+  });
+
+  it("still OWNS those fields on a create, where the form renders them enabled", () => {
+    // "Copy from an existing one" carries a `before` too, and there the human
+    // is choosing the mount — so a blank path is a blank path.
+    const created = entryFromForm(
+      {
+        kind: "supplementary-image",
+        slug: "shop-ro",
+        image: "ghcr.io/example/bundle:latest",
+        bundle: "bundle",
+        path: "/vault",
+        enabled: "on",
+      },
+      { kind: "supplementary-image", path: "/shop" },
+    );
+    expect(created.path).toBe("/vault");
   });
 
   it("round-trips through the overlay into a valid config", () => {
