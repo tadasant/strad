@@ -76,7 +76,7 @@ export const SHELL_PATHS = [
  * Bump it when `SHELL_PATHS` or the offline page changes: `activate` deletes
  * every cache whose name is not this one, so a bump is also the eviction.
  */
-export const SHELL_CACHE = "strad-shell-v1";
+export const SHELL_CACHE = "strad-shell-v2";
 
 /**
  * The console theme's background, from the `--bg` custom property in

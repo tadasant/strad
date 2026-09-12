@@ -1844,7 +1844,7 @@ done; the class is what is left.
 
 **What.** The console is installable, and its service worker precaches a fixed
 shell — the icons, the manifest and one static offline page — into a cache named
-by the `SHELL_CACHE` constant in `src/ui/pwa.ts`, currently `strad-shell-v1`. The
+by the `SHELL_CACHE` constant in `src/ui/pwa.ts`, currently `strad-shell-v2`. The
 worker's `activate` deletes every cache whose name is not the current one, so
 renaming the constant is also the eviction. Nothing renames it for you, and
 nothing fails if you forget.

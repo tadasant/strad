@@ -156,7 +156,7 @@ async function handleConnect(
           heading: "No connector on this server",
           sub: `"${slug}" does not declare an oauth: connector on this gateway.`,
           tone: "warn",
-          breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
     return;
@@ -296,7 +296,7 @@ async function handleCallback(
           heading,
           sub,
           tone: "error",
-          breadcrumbToIndex: true,
+          nav: "servers",
         }),
       );
   };
@@ -681,7 +681,7 @@ ${button(
   }
 
   const body = `
-<nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
+<nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(slug)}</span></nav>
 
 <section class="browse-head">
   <div class="scope"><span class="scope-l">provider</span><code>${esc(oauth.provider)}</code></div>
@@ -744,6 +744,7 @@ ${scopeRows}
         title: `${slug} · connector`,
         serverSlug: slug,
         signedInAs: extras.signedInAs,
+        nav: "servers",
         body,
       }),
     );
@@ -877,7 +878,7 @@ function renderUnexpected(res: Response, err: unknown): void {
         heading: "Something went wrong",
         sub: "The console hit an unexpected error. Nothing was written.",
         tone: "error",
-        breadcrumbToIndex: true,
+        nav: "servers",
       }),
     );
 }

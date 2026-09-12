@@ -135,7 +135,7 @@ function renderUnexpected(res: Response): void {
         heading: "Something went wrong",
         sub: "The roster editor failed on this request. Nothing was changed. The details are in the gateway's logs.",
         tone: "error",
-        breadcrumbToIndex: true,
+        nav: "connectors",
       }),
     );
 }
@@ -150,7 +150,7 @@ function unavailable(res: Response): void {
         heading: "The roster editor is not enabled",
         sub: "This gateway's config does not set gateway.configStore.enabled, so its server roster comes from the checked-in document and changes with a deploy.",
         tone: "info",
-        breadcrumbToIndex: true,
+        nav: "connectors",
       }),
     );
 }
@@ -165,7 +165,7 @@ function notFound(res: Response, slug: string): void {
         heading: `No server called ${slug}`,
         sub: "This gateway serves no entry with that slug.",
         tone: "info",
-        breadcrumbToIndex: true,
+        nav: "connectors",
       }),
     );
 }

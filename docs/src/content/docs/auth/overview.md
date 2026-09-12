@@ -696,10 +696,49 @@ may reach through `entitledServers()`, so `roles: []` reaches every console page
 and no server's tools. The icon on `/ui` that opens it is the same decision, so a
 card whose playground would refuse does not offer one.
 
+### What the console serves, and how you get between the pages
+
+Five destinations, and every page draws the same bar naming all five. That bar is
+one definition — `NAV_DESTINATIONS` in `src/ui/nav.ts`, rendered by `layout()` —
+so a page cannot disagree with its siblings about what this console can do, and a
+destination added there appears everywhere at once.
+
+| Destination  | Path          | What it is for                                                                      |
+| ------------ | ------------- | ----------------------------------------------------------------------------------- |
+| `gateway`    | `/`           | The `/mcp` endpoint to paste into a client, and a directory of what sits behind it. |
+| `servers`    | `/ui`         | Each server's scope, and whether the secrets it needs are seeded.                   |
+| `connectors` | `/connectors` | Add, edit or remove a server entry without a deploy.                                |
+| `playground` | `/playground` | Open a server by hand: list the tools it serves you, and call one.                  |
+| `tokens`     | `/tokens`     | Mint and revoke the credentials `/mcp` accepts.                                     |
+
+A per-server or per-action route is **not** a sixth destination — it marks the
+destination it belongs to. `/ui/slack` and `/ui/slack/connect` both light up
+`servers`; `/playground/slack` lights up `playground`; `/connectors/slack` and
+`/connectors/new` light up `connectors`. The bar's mark is a section, not a URL,
+and it is carried by `aria-current="page"` as well as by colour.
+
+`/connectors` is served on **every** deployment, whether or not
+`gateway.configStore.enabled` is set. With a store it is the roster editor; with
+none it is the page that says the editor is off and that this gateway's roster
+comes from the checked-in document. A nav item that resolved to a framework `404`
+on the deployments that most need the explanation would be worse than no item.
+
+The bar is omitted on exactly the pages reached **without** a console session: the
+`401` sign-in refusal, the precached offline page, and the `/mcp` OAuth consent
+and refusal screens. Every link in it is gated, so drawing it there would
+advertise five doors that answer `401`. `/console`, `/console/login` and
+`/console/logout` are not in it either — they are the session endpoints, not
+pages.
+
 ### The console playground
 
 `/playground/:server` is a human MCP client in the console: it lists a server's
-tools and calls them with arguments a human types. That makes it the one console
+tools and calls them with arguments a human types. `/playground` with no server is
+the picker: every configured slug, with the ones this console session may open as
+links and the ones it may not named with the reason — `disabled` is a config
+change, `not entitled` is a role change. It is derived from the same
+`playgroundAccess()` the `/ui` cards ask, so the two cannot disagree about which
+slugs open. That makes it the one console
 surface that has to answer an MCP question, and the two doors share no credential
 — a browser holding a console session cannot present a bearer token to `/mcp`,
 and `/mcp` reads no cookie.

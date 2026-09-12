@@ -127,13 +127,32 @@ export function mountPlayground(
 ): void {
   const policies = compileToolPolicies(opts.config);
 
-  // A bare `/playground` has no server to inspect, and the picker for it already
-  // exists — it is the console index, where every card carries the icon that
-  // lands here. Same call as `/secrets` -> `/ui`: a second list of the same
-  // servers is a second thing to keep true. Behind the gate, so an anonymous
-  // request still 401s rather than being told where to go.
+  // A bare `/playground` is the picker: the servers this console session may
+  // open, as links, and the ones it may not, with the reason.
+  //
+  // A page rather than a redirect to `/ui`, because the shared nav bar
+  // (src/ui/nav.ts) names "playground" and a bar that lands the reader on
+  // "servers" teaches them the bar is lying. The obvious objection — that the
+  // console index is already a list of the same servers, and a second list is a
+  // second thing to keep true — is answered by where this one comes from: it is
+  // derived from `playgroundAccess`, the same function that decides whether the
+  // index draws its playground icon, so the two cannot disagree about which
+  // slugs open.
+  //
+  // Behind the gate, so an anonymous request still 401s rather than being told
+  // what this gateway fronts.
   app.get("/playground", gate, (_req, res) => {
-    res.redirect(302, "/ui");
+    const principal = consolePrincipal(res);
+    const entitled = entitledServers(principal, opts.config);
+    res.type("html").send(
+      renderPlaygroundIndex({
+        entries: opts.config.servers.map((server) => ({
+          server,
+          access: playgroundAccess(opts.config, entitled, server.slug),
+        })),
+        signedInAs: signedInLabel(res),
+      }),
+    );
   });
 
   app.get("/playground/:server", gate, (req, res) => {
@@ -155,7 +174,7 @@ export function mountPlayground(
             // one this identity is not granted, one that is switched off. None
             // of them is a fault, so none of them gets the error tone.
             tone: "warn",
-            breadcrumbToIndex: true,
+            nav: "playground",
           }),
         );
       return;
@@ -641,6 +660,138 @@ function shapeTool(tool: Tool, slug: string): Record<string, unknown> {
 // The page
 // ---------------------------------------------------------------------------
 
+/** The half of `PlaygroundAccess` that means "this slug does not open". */
+type ShutAccess = Extract<PlaygroundAccess, { ok: false }>;
+
+export interface PlaygroundIndexOptions {
+  /** Every configured server, with this session's verdict on each. */
+  entries: { server: ServerConfig; access: PlaygroundAccess }[];
+  signedInAs?: string;
+}
+
+/**
+ * `/playground` — which servers this console session can open by hand.
+ *
+ * Every configured slug appears, including the ones that will not open, because
+ * "it is not in the list" and "it is not yours" are different facts and only one
+ * of them is actionable. A slug that does not open is not a link and carries the
+ * word for why: `disabled` is a config change, `not entitled` is a role change,
+ * and neither is something to keep clicking at.
+ */
+export function renderPlaygroundIndex(opts: PlaygroundIndexOptions): string {
+  const open = opts.entries.filter((e) => e.access.ok);
+  // A type predicate rather than a bare `!e.access.ok`, because `filter` does
+  // not narrow: without it `shutRow` has to handle an `ok: true` entry and a
+  // `not_configured` one, and neither can reach it — every entry is built from
+  // `config.servers`, so `playgroundAccess`'s lookup always hits.
+  const shut = opts.entries.filter(
+    (e): e is { server: ServerConfig; access: ShutAccess } => !e.access.ok,
+  );
+
+  // Most servers declare no `title:`, so the heading IS the slug — printing it
+  // again under the heading is noise on the majority of cards. Same rule the
+  // landing page's tiles follow (src/ui/landing.ts).
+  const card = (server: ServerConfig): string => {
+    const title = server.title ?? server.slug;
+    const restated =
+      title === server.slug ? "" : `<code>${esc(server.slug)}</code>`;
+    return `    <a class="card card-link" href="${esc(playgroundHref(server.slug))}">
+      <div class="card-head">
+        <span class="card-title">${esc(title)}</span>
+        <span class="chip">${esc(server.kind)}</span>
+      </div>
+      ${server.description ? `<p class="card-desc">${esc(server.description)}</p>` : ""}
+      <div class="card-foot">${restated}<span class="card-cta">Open →</span></div>
+    </a>`;
+  };
+
+  const shutRow = (entry: {
+    server: ServerConfig;
+    access: ShutAccess;
+  }): string => {
+    const reason =
+      entry.access.status === "disabled" ? "disabled" : "not entitled";
+    const title = entry.server.title ?? entry.server.slug;
+    return `    <div class="card card-shut">
+      <div class="card-head">
+        <span class="card-title">${esc(title)}</span>
+        <span class="chip chip-off">${esc(reason)}</span>
+      </div>
+      ${title === entry.server.slug ? "" : `<div class="card-foot"><code>${esc(entry.server.slug)}</code></div>`}
+    </div>`;
+  };
+
+  const body = `
+<section class="intro">
+  <h1>Playground</h1>
+  <p class="lede">A human MCP client, one server at a time. Pick a server and the page
+    opens a real MCP session against it — the tools it serves <em>you</em>, and the response
+    it gives when you call one. <strong>No model is involved</strong>, and a call runs for
+    real against the real upstream.</p>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>Open one</h2>
+    <span class="panel-note">${open.length} server${open.length === 1 ? "" : "s"} you may inspect</span>
+  </div>
+${
+  open.length
+    ? `  <div class="card-grid">
+${open.map((e) => card(e.server)).join("\n")}
+  </div>`
+    : // Three different facts reach this branch and they need three different
+      // answers: a gateway with no `servers:` at all, one whose entries are all
+      // switched off, and one whose entries are all granted to some other role.
+      // Telling an admin on an empty gateway that their identity has no grants
+      // is false, and sends them to edit roles that are not the problem.
+      opts.entries.length === 0
+      ? `  <p class="empty">This gateway has no servers configured, so there is nothing to
+     open. Add one on the connectors page, or in the checked-in config.</p>`
+      : shut.every((e) => e.access.status === "disabled")
+        ? `  <p class="empty">Every server on this gateway is switched off. A disabled entry
+     is not mounted, so there is nothing for a session to open.</p>`
+        : `  <p class="empty">Your console identity is granted no server on this gateway, so
+     there is nothing here to open. Roles are what decide it — see the servers page.</p>`
+}
+</section>
+${
+  shut.length
+    ? `
+<section class="panel">
+  <div class="panel-head">
+    <h2>Will not open here</h2>
+    <span class="panel-note">configured · not yours, or not running</span>
+  </div>
+  <div class="card-grid">
+${shut.map(shutRow).join("\n")}
+  </div>
+</section>`
+    : ""
+}
+${PLAYGROUND_INDEX_CSS}`;
+
+  return layout({
+    title: "Playground",
+    body,
+    signedInAs: opts.signedInAs,
+    nav: "playground",
+    brandHref: "/ui",
+    brandSub: "console",
+    footNote: "human MCP client · no model involved",
+  });
+}
+
+/**
+ * The two styles the picker adds: a card that is not a link, and a call to
+ * action that stays on the right even when the slug beside it is suppressed.
+ */
+const PLAYGROUND_INDEX_CSS = `<style>
+.card-shut{opacity:.62}
+.card-shut .card-title{color:var(--g2)}
+.card-foot .card-cta{margin-left:auto}
+</style>`;
+
 export interface PlaygroundPageOptions {
   server: ServerConfig;
   signedInAs?: string;
@@ -655,7 +806,7 @@ export function renderPlayground(opts: PlaygroundPageOptions): string {
 
   const body = `
 <section class="intro">
-  <nav class="breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(title)}</span></nav>
+  <nav class="breadcrumb" aria-label="Breadcrumb"><a href="/ui" class="crumb">servers</a><span class="crumb-sep">/</span><span class="crumb crumb-current">${esc(title)}</span></nav>
   <h1>Playground <span class="env-badge">${esc(slug)}</span></h1>
   <p class="lede">A human MCP client for this one server. It lists the tools this server
     actually serves you, and calls them with the arguments you type.
@@ -713,6 +864,7 @@ ${playgroundScript(server)}`;
     serverSlug: slug,
     body,
     signedInAs: opts.signedInAs,
+    nav: "playground",
     brandHref: "/ui",
     brandSub: "console",
     footNote: "human MCP client · no model involved",

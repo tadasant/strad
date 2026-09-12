@@ -230,7 +230,7 @@ every tree's factory contract, which is why it is a list.
 
 The console is [installable](/operate/console-pwa/), and its service worker
 precaches a fixed shell — the icons, the manifest, and one static offline page —
-into a cache named `strad-shell-v1`. Renaming that constant is what evicts the old
+into a cache named `strad-shell-v2`. Renaming that constant is what evicts the old
 cache. Nothing renames it for you, and nothing fails if you forget.
 
 The shell list is interpolated into the worker script, so adding or removing a

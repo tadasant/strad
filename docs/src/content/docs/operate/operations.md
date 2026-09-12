@@ -1499,7 +1499,8 @@ fails CI on the PR rather than the deploy after it.
   against the same server object `/mcp` builds, so entitlements and the `tools:`
   policy apply identically — see
   [the console playground](/auth/overview/#the-console-playground). A bare
-  `/playground` 302s to `/ui`, which is the picker.
+  `/playground` is the picker: every configured slug, with the ones this console
+  session may open as links and the ones it may not named with the reason.
 - **`/api/secrets/readiness`** is core-only and is the one authenticated surface
   there that the console gate does **not** guard: its consumer is a machine, so it
   takes a static bearer token through the same path `/mcp` does. It returns the

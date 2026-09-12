@@ -529,7 +529,6 @@ describe("siblingStrip, through renderMessage", () => {
       title: "x · not configured",
       heading: "The console's admin credential is not configured",
       sub: "detail",
-      breadcrumbToIndex: true,
       siblingPages: [
         {
           slug: "a<b",
