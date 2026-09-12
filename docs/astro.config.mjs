@@ -97,6 +97,7 @@ export default defineConfig({
               slug: "servers/local-tunnel-host",
             },
             { label: "The artifact store", slug: "servers/artifact-store" },
+            { label: "Slack attachments", slug: "servers/slack-attachments" },
             { label: "Telegram", slug: "servers/telegram" },
             { label: "BILL Spend & Expense", slug: "servers/bill-spend" },
             { label: "Google Sheets", slug: "servers/google-sheets" },

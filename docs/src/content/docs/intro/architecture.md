@@ -178,6 +178,52 @@ and without that cap a closed laptop costs a full minute per request — the run
 budget stays at `timeoutMs`, because driving a real desktop is legitimately
 slow. See [the kind's section](/servers/interface/#2-local-tunnel).
 
+### The raw data plane: files that do not fit in a tool result
+
+MCP carries text. A tool result is a message in a conversation, so anything
+travelling inside one is paid for in context — which makes it the wrong place
+for a file. And a mount cannot fall back to naming a path instead: it runs in its
+own container, so a path it writes names nothing the caller can open.
+
+So two routes sit beside `/mcp`, and they are the same idea in both directions:
+
+| Route                            | Adapter method | Body     | For                              |
+| -------------------------------- | -------------- | -------- | -------------------------------- |
+| `POST /mcp-upload/<slug>/<tok>`  | `postRaw`      | buffered | getting bytes **into** a mount   |
+| `GET /mcp-download/<slug>/<tok>` | `getRaw`       | streamed | getting bytes **out of** a mount |
+
+Both are generic: core resolves the slug to a supplementary image, forwards to
+that container's `/<mount>/upload/<tok>` or `/<mount>/download/<tok>` on the
+internal token, and otherwise stays out of the way. Nothing about either route
+knows which mount is behind it.
+
+**Neither is authenticated by a header, and that is the design.** The caller is
+an agent session that holds no strad API key and cannot be given one, so the
+token in the path is the whole credential. The mount that minted it is the only
+thing that can check it, and does.
+
+The asymmetry between them is deliberate. An upload is bounded — the artifact
+store caps it at 100MB — so `postRaw` may buffer. A download is not bounded, so
+`getRaw` pipes: the response body streams through core without ever being
+resident, and the gateway's memory does not grow with the file. `getRaw`'s
+timeout differs for the same reason. `postRaw` aborts the whole operation after
+`timeoutMs`; applied to a download that would be a size limit wearing a clock's
+clothes, so `getRaw` resets its timer on every chunk instead. It bounds a
+transfer that has **stopped moving**, and lets a large, healthy one run as long
+as it keeps going. That bound applies at both ends: the timer is driven from
+inside the pipeline, so a caller that stops reading for longer than `timeoutMs`
+is dropped too, which is what stops a stalled reader holding an upstream
+connection open indefinitely.
+
+A body that fails partway is **destroyed, not ended**. A stream ended tidily
+after a failure is a truncated file delivered under a `200`, and a half-written
+archive that looks whole is worse than an obvious error. See `streamFailure` in
+`src/http/async-route.ts`.
+
+The two users of this today are the artifact store's `get_upload_url` (in) and
+Slack's `slack_download_file` (out); the latter is described in
+[the Slack attachment flow](/servers/slack-attachments/).
+
 ### One connection per slug, shared — so nothing closes it unilaterally
 
 `HttpServerAdapter` caches **one** MCP client per slug, and every concurrent

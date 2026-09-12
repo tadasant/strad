@@ -2813,6 +2813,22 @@ See `HACKS.md` #91.
 
 ---
 
+### 95. A Slack download link is single-use against a per-process set
+
+[`slack_download_file`](/servers/slack-attachments/) returns a short-lived signed URL, and the link is single-use: the mount marks the token's nonce spent in a `Map` held by its own process. A bundle component has no database and no shared cache, so there is nowhere durable to keep a fact that is worthless fifteen minutes later — the artifact store's upload leases make the same trade.
+
+So a restart forgets which links were spent, and one could be replayed across a restart inside its own expiry. A deploy is the realistic way to get there, and it closes the window by another route: the signing key is derived from `STRAD_INTERNAL_TOKEN`, so rotating that token voids every outstanding link. Single-use is also per replica — `bundle-slack-zimmer` runs one instance, and scaled wider a link replayed against a different replica inside its window would not be caught, the same shape as the authorization-code set in #94. The set is bounded at ten thousand live nonces, oldest dropped first; eviction can only shorten a nonce's protection to less than its own expiry, never extend one, because the signature's `exp` is checked independently.
+
+The token rides in the URL path and therefore reaches App Platform's edge access log. The fifteen-minute expiry and the single use are what bound that. The expiry is fixed — no deployment configures it — and the module refuses to sign for longer than an hour whatever it is asked for. The filename is deliberately kept out of the URL and served in `Content-Disposition`, so the durable part names nothing about the file.
+
+**How you would know.** A replayed or expired link answers `403` with the same text in either case, and says to call the tool again.
+
+**Undo:** none needed — call `slack_download_file` again. A fresh link costs one round trip.
+
+See `HACKS.md` #95.
+
+---
+
 ## What the human still needs to provision
 
 The one-time steps that clear most of the list above:

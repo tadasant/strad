@@ -58,6 +58,18 @@ export interface ServerAdapter {
    */
   postRaw?(path: string, req: Request, res: Response): Promise<void>;
 
+  /**
+   * Proxy a non-MCP GET to this upstream, STREAMING the response body.
+   *
+   * The mirror of {@link postRaw}, and deliberately not a variant of it: that
+   * one buffers, which is right for an upload bounded at 100MB and wrong for a
+   * download of unknown size. This one pipes, so the gateway's memory does not
+   * scale with the artifact.
+   *
+   * The gateway verifies nothing here — the upstream owns the token it signed.
+   */
+  getRaw?(path: string, req: Request, res: Response): Promise<void>;
+
   /** Release upstream connections. */
   close(): Promise<void>;
 }

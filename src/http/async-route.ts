@@ -85,18 +85,56 @@ export function jsonFailure(
   status = 500,
 ): (res: Response, err: unknown) => void {
   return (res, err) => {
-    event({
-      evt: "strad.route_failed",
-      route,
-      error: errorSummary(err),
-      // The classification, computed HERE rather than left to the exporter's
-      // CLASSIFY_ERROR substitution: that path derives a kind from the `error`
-      // field, and this renderer never puts a message in it. `errorKind`
-      // returns one of a fixed set of words this repo wrote.
-      "error.kind": errorKind(err),
-    });
+    reportRouteFailure(route, err);
     if (res.headersSent) {
       if (!res.writableEnded) res.end();
+      return;
+    }
+    res.status(status).json(typeof body === "function" ? body(err) : body);
+  };
+}
+
+/** The one `strad.route_failed` emission, shared by both renderers below it. */
+function reportRouteFailure(route: string, err: unknown): void {
+  event({
+    evt: "strad.route_failed",
+    route,
+    error: errorSummary(err),
+    // The classification, computed HERE rather than left to the exporter's
+    // CLASSIFY_ERROR substitution: that path derives a kind from the `error`
+    // field, and this renderer never puts a message in it. `errorKind`
+    // returns one of a fixed set of words this repo wrote.
+    "error.kind": errorKind(err),
+  });
+}
+
+/**
+ * The failure answer for a route that STREAMS a body.
+ *
+ * Identical to {@link jsonFailure} up to the moment the first byte goes out, and
+ * deliberately different after it: `jsonFailure` ENDS a half-written response,
+ * which is right for `/mcp` — the caller needs the socket closed so its books
+ * balance — and wrong for an artifact. A stream ended early is a TRUNCATED FILE
+ * delivered under a 200. When a `content-length` was declared the caller can at
+ * least notice the shortfall, but a chunked response ended cleanly is
+ * indistinguishable from a complete one, and a half-written zip that looks whole
+ * is the worst outcome this route has.
+ *
+ * So the connection is destroyed instead. Every HTTP client reports that as a
+ * failed transfer, which is exactly what it was.
+ */
+export function streamFailure(
+  route: string,
+  body:
+    Record<string, unknown> | ((err: unknown) => Record<string, unknown>) = {
+    error: "internal_error",
+  },
+  status = 500,
+): (res: Response, err: unknown) => void {
+  return (res, err) => {
+    reportRouteFailure(route, err);
+    if (res.headersSent) {
+      res.destroy();
       return;
     }
     res.status(status).json(typeof body === "function" ? body(err) : body);
